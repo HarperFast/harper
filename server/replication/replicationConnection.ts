@@ -24,13 +24,14 @@ import { WebSocket } from 'ws';
 import { readFileSync } from 'fs';
 import { threadId } from 'worker_threads';
 import * as logger from '../../utility/logging/harper_logger';
-import { disconnectedFromNode, connectedToNode, getHDBNodeTable, ensureNode } from './subscriptionManager';
+import { disconnectedFromNode, connectedToNode, ensureNode } from './subscriptionManager';
 import { EventEmitter } from 'events';
 import { createSecureContext } from 'node:tls';
 import { broadcast } from '../../server/threads/manageThreads';
 import { createTLSSelector } from '../../security/keys';
 import * as https from 'node:https';
 import * as tls from 'node:tls';
+import { getHDBNodeTable } from './knownNodes';
 //import { operation } from '../../server/serverHelpers/serverUtilities';
 
 const SUBSCRIPTION_REQUEST = 129;
@@ -141,7 +142,7 @@ export class NodeReplicationConnection extends EventEmitter {
 					url: this.url,
 					connection: this,
 				},
-				{ publish: true } // pre-authorized, but should only make publish: true if we are allowing reverse subscriptions
+				{ replicates: true } // pre-authorized, but should only make publish: true if we are allowing reverse subscriptions
 			);
 		});
 		this.socket.on('error', (error) => {
@@ -449,20 +450,41 @@ export function replicateOverWS(ws, options, authorization) {
 						const [action, db, , , node_subscriptions] = message;
 						// permission check to make sure that this node is allowed to subscribe to this database, that is that
 						// we have publish permission for this node/database
-						if (
-							!(
-								authorization.replicates === true ||
-								authorization.replicates?.receives ||
-								authorization.subscriptions?.some(
-									// TODO: Verify the table permissions for each table listed in the subscriptions
-									(sub) => (sub.database || sub.schema) === database_name && sub.publish !== false
-								)
-							)
-						) {
-							ws.send(encode([DISCONNECT]));
-							close(1008, `Unauthorized database subscription to ${database_name}`);
-							return;
+						let subscription_to_hdb_nodes, when_subscribed_to_hdb_nodes;
+						let closed = false;
+						if (authorization.name) {
+							// TODO: Maybe await?
+							when_subscribed_to_hdb_nodes = getHDBNodeTable()
+								.subscribe(authorization.name)
+								.then(async (subscription) => {
+									subscription_to_hdb_nodes = subscription;
+									for await (let event of subscription_to_hdb_nodes) {
+										let node = event.value;
+										if (
+											!(
+												node?.replicates === true ||
+												node?.replicates?.receives ||
+												node?.subscriptions?.some(
+													// TODO: Verify the table permissions for each table listed in the subscriptions
+													(sub) => (sub.database || sub.schema) === database_name && sub.publish !== false
+												)
+											)
+										) {
+											closed = true;
+											ws.send(encode([DISCONNECT]));
+											close(1008, `Unauthorized database subscription to ${database_name}`);
+											return;
+										}
+									}
+								});
+						} else {
+							if (!(authorization?.permissions?.super_user || authorization.replicates)) {
+								ws.send(encode([DISCONNECT]));
+								close(1008, `Unauthorized database subscription to ${database_name}`);
+								return;
+							}
 						}
+
 						if (table_subscription_to_replicator) {
 							if (database_name !== table_subscription_to_replicator.databaseName) {
 								logger.error(
@@ -721,21 +743,19 @@ export function replicateOverWS(ws, options, authorization) {
 							ws.send(encoding_buffer.subarray(encoding_start, position));
 						};
 
-						let closed = false;
 						audit_subscription = new EventEmitter();
 						audit_subscription.once('close', () => {
 							closed = true;
 							schema_update_listener?.remove();
 							db_removal_listener?.remove();
 							schema_update_listener = null;
+							subscription_to_hdb_nodes?.end();
 						});
 						for (let { startTime } of node_subscriptions) {
 							if (startTime < current_sequence_id) current_sequence_id = startTime;
 						}
-						audit_subscription.once('close', () => {
-							closed = true;
-						});
-						(async () => {
+
+						(when_subscribed_to_hdb_nodes || Promise.resolve()).then(async () => {
 							let is_first = true;
 							do {
 								// We run subscriptions as a loop where we can alternate between our two message delivery modes:
@@ -759,6 +779,7 @@ export function replicateOverWS(ws, options, authorization) {
 												for (const entry of table.primaryStore.getRange({
 													snapshot: false,
 												})) {
+													if (closed) return;
 													logger.info(
 														connection_id,
 														'Copying record from',
@@ -811,7 +832,7 @@ export function replicateOverWS(ws, options, authorization) {
 								await whenNextTransaction(audit_store);
 								logger.info(connection_id, 'Next transaction is ready', database_name);
 							} while (!closed);
-						})();
+						});
 						break;
 				}
 				return;
@@ -988,8 +1009,10 @@ export function replicateOverWS(ws, options, authorization) {
 		);
 
 		if (node_subscriptions) {
-			// no nodes means we are unsubscribing
-			ws.send(encode([SUBSCRIPTION_REQUEST, database_name, last_sequence_id_received, null, node_subscriptions]));
+			if (node_subscriptions.length > 0)
+				ws.send(encode([SUBSCRIPTION_REQUEST, database_name, last_sequence_id_received, null, node_subscriptions]));
+			// no nodes means we are unsubscribing/disconnecting
+			else close(1008, 'No nodes to subscribe to');
 		}
 	}
 

@@ -274,11 +274,13 @@ export async function subscribeToNode(request) {
 		let connection = getConnection(request.nodes[0].url, await subscription_to_table, request.database);
 		if (request.nodes[0].name === undefined) connection.tentativeNode = request.nodes[0]; // we don't have the node name yet
 		connection.subscribe(
-			request.nodes.filter((node) => node.name),
+			request.nodes.filter((node) => {
+				return node.name && (node.replicates === true || node.replicates?.sends || node.subscriptions?.length > 0);
+			}),
 			request.replicateByDefault
 		);
 	} catch (error) {
-		logger.error('Error in subscription to node', request.nodes[0].url, error);
+		logger.error('Error in subscription to node', request.nodes[0]?.url, error);
 	}
 }
 

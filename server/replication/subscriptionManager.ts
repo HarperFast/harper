@@ -67,26 +67,30 @@ export async function startOnMainThread(options) {
 		if ((getThisNodeName() && node.name === getThisNodeName()) || (getThisNodeUrl() && node.name === getThisNodeUrl()))
 			// this is just this node, we don't need to connect to ourselves
 			return;
-		if (!(node.replicates === true || node.replicates?.sends) && !node.subscriptions?.length) return; // this node is not to be subscribed to
 		if (!node.url) {
 			logger.info(`Node ${node.name} is missing url`);
 			return;
 		}
+		let db_replication_workers = connection_replication_map.get(node.url);
+		if (db_replication_workers) db_replication_workers.iterator.remove(); // we need to remove the old iterator so we can create a new one
+		if (!(node.replicates === true || node.replicates?.sends) && !node.subscriptions?.length && !db_replication_workers)
+			return; // we don't have any subscriptions and we haven't connected yet, so just return
 		logger.info(`Added node ${node.name} at ${node.url} for process ${getThisNodeName()}`);
 		node_map.set(node.name, node);
 		const databases = getDatabases();
-		let db_replication_workers = connection_replication_map.get(node.url);
 		if (!db_replication_workers) {
 			db_replication_workers = new Map();
 			connection_replication_map.set(node.url, db_replication_workers);
 		}
-		forEachReplicatedDatabase(options, (database, database_name, replicate_by_default) => {
-			if (replicate_by_default) {
-				onDatabase(database_name, true);
-			} else {
-				onDatabase(database_name, false);
-			}
-			/*			// check to see if there are any explicit subscriptions
+		db_replication_workers.iterator = forEachReplicatedDatabase(
+			options,
+			(database, database_name, replicate_by_default) => {
+				if (replicate_by_default) {
+					onDatabase(database_name, true);
+				} else {
+					onDatabase(database_name, false);
+				}
+				/*			// check to see if there are any explicit subscriptions
 			if (node.subscriptions) {
 					// if we can't find any more granular subscriptions, then we skip this database
 					// check to see if we have any explicit node subscriptions
@@ -103,7 +107,8 @@ export async function startOnMainThread(options) {
 				database = typeof database === 'object' ? database : databases[database_name];
 				onDatabase(database_name, true);
 			}*/
-		});
+			}
+		);
 
 		function onDatabase(database_name, tables_replicate_by_default) {
 			let worker = workers[next_worker_index];
