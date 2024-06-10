@@ -155,13 +155,13 @@ export class NodeReplicationConnection extends EventEmitter {
 			}
 		});
 		this.socket.on('close', (code, reason_buffer) => {
+			session?.disconnected();
 			if (this.socket.isFinished) {
 				this.isFinished = true;
 				session?.end();
 				this.emit('finished');
 				return;
 			}
-			session?.disconnected();
 			if (++this.retries % 20 === 1) {
 				const reason = reason_buffer?.toString();
 				logger.warn(
@@ -182,6 +182,10 @@ export class NodeReplicationConnection extends EventEmitter {
 		this.nodeSubscriptions = node_subscriptions;
 		this.replicateTablesByDefault = replicate_tables_by_default;
 		this.emit('subscriptions-updated', node_subscriptions);
+	}
+	unsubscribe() {
+		this.socket.isFinished = true;
+		this.socket.close(1008, 'No longer subscribed');
 	}
 
 	send(message) {}

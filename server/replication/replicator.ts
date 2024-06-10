@@ -107,7 +107,7 @@ export function start(options) {
 	// we need to stay up-to-date with any CAs that have been replicated across the cluster
 	subscribeToNodeUpdates((node) => {
 		// TODO: handle removal of CAs?
-		if (node.ca) {
+		if (node?.ca) {
 			// we only care about nodes that have a CA
 			let x509 = new X509Certificate(node.ca);
 			x509.asString = node.ca;
@@ -235,10 +235,12 @@ function getConnection(url, subscription, db_name) {
 	}
 	let connection = db_connections.get(db_name);
 	if (connection) return connection;
-	db_connections.set(db_name, (connection = new NodeReplicationConnection(url, subscription, db_name)));
-	connection.connect();
-	connection.once('finished', () => db_connections.delete(db_name));
-	return connection;
+	if (subscription) {
+		db_connections.set(db_name, (connection = new NodeReplicationConnection(url, subscription, db_name)));
+		connection.connect();
+		connection.once('finished', () => db_connections.delete(db_name));
+		return connection;
+	}
 }
 
 export async function sendOperationToNode(node, operation, options) {
@@ -282,6 +284,10 @@ export async function subscribeToNode(request) {
 	} catch (error) {
 		logger.error('Error in subscription to node', request.nodes[0]?.url, error);
 	}
+}
+export async function unsubscribeFromNode(url) {
+	let connection = getConnection(url);
+	if (connection) connection.unsubscribe();
 }
 
 let common_name_from_cert: string;

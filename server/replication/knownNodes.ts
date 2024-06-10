@@ -48,8 +48,8 @@ export function subscribeToNodeUpdates(listener) {
 		.subscribe({})
 		.then(async (events) => {
 			for await (let event of events) {
-				if (event.type === 'put') {
-					listener(event.value);
+				if (event.type === 'put' || event.type === 'delete') {
+					listener(event.value, event.id);
 				}
 			}
 		});

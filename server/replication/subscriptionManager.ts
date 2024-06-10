@@ -51,20 +51,37 @@ export async function startOnMainThread(options) {
 					if (route.replicates == undefined) route.replicates = true;
 				}
 				// just tentatively add this node to the list of nodes in memory
-				onNewNode(route);
+				onNodeUpdate(route);
 			} catch (error) {
 				console.error(error);
 			}
 		}
-		subscribeToNodeUpdates(onNewNode);
+		subscribeToNodeUpdates(onNodeUpdate);
 	});
 
 	/**
 	 * This is called when a new node is added to the hdb_nodes table
 	 * @param node
 	 */
-	function onNewNode(node) {
-		if ((getThisNodeName() && node.name === getThisNodeName()) || (getThisNodeUrl() && node.name === getThisNodeUrl()))
+	function onNodeUpdate(node, nodeName) {
+		if (!node) {
+			// deleted noe
+			for (let [url, node] of connection_replication_map) {
+				if (node.name == nodeName) {
+					let db_replication_workers = connection_replication_map.get(url);
+					connection_replication_map.delete(url);
+					db_replication_workers.iterator.remove();
+					for (let [, { worker }] of db_replication_workers) {
+						worker.postMessage({ type: 'unsubscribe-from-node', node: nodeName });
+					}
+					break;
+				}
+			}
+		}
+		if (
+			(getThisNodeName() && node?.name === getThisNodeName()) ||
+			(getThisNodeUrl() && node?.name === getThisNodeUrl())
+		)
 			// this is just this node, we don't need to connect to ourselves
 			return;
 		if (!node.url) {
@@ -156,7 +173,16 @@ export async function startOnMainThread(options) {
 		}
 		let db_replication_workers = connection_replication_map.get(connection.url);
 		const existing_worker_entry = db_replication_workers?.get(connection.database);
+		if (!existing_worker_entry) {
+			logger.warn('Disconnected node not found in replication map', connection.database, db_replication_workers);
+			return;
+		}
 		existing_worker_entry.connected = false;
+		let main_node = existing_worker_entry.nodes[0];
+		if (!(main_node.replicates === true || main_node.replicates?.sends || main_node.subscriptions?.length)) {
+			// no
+			return;
+		}
 		let next_index = (existing_index + 1) % node_names.length;
 		while (existing_index !== next_index) {
 			const next_node_name = node_names[next_index];
