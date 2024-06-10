@@ -17885,6 +17885,913 @@
 					"response": []
 				},
 				{
+					"name": "Add node 4 target node 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Add node success message', () => {",
+									"    const response = pm.response.json();",
+									"    const node_host = pm.environment.get(\"NODE1_HOST\");",
+									"    const port = pm.environment.get(\"HDB_PORT\");",
+									"    pm.expect(response.message).to.equal(`Successfully added 'wss://${node_host}:${port}' to manifest`);",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"add_node\",\n    \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n    \"rejectUnauthorized\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    }\n}\n\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE4_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm hdb_nodes node 1  again",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Three records in hdb_nodes node-1', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.length).to.equal(4)",
+									"",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"select * from system.hdb_nodes\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm hdb_nodes node 2 again",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Three records in hdb_nodes node-2', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.length).to.equal(4)",
+									"",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"select * from system.hdb_nodes\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm hdb_nodes node 3 again",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Three records in hdb_nodes node-3', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.length).to.equal(4)",
+									"",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"select * from system.hdb_nodes\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE3_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm hdb_nodes node 4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Three records in hdb_nodes node-4', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.length).to.equal(4)",
+									"",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"select * from system.hdb_nodes\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE4_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Update plexus node 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Records updated plexus node 1', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"updated 1 of 1 records\");",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"update\",\n    \"table\": \"plexus\",\n    \"records\": [\n        {\n            \"id\":\"1\",\n            \"test\":\"Other than the test drive, it was the first time he had driven it.\"\n        }\n    ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Update plexus node 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Records updated plexus node 2', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"updated 1 of 1 records\");",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"update\",\n    \"table\": \"plexus\",\n    \"records\": [\n        {\n            \"id\":\"2\",\n            \"test\":\"Sure, as long as there won't be a test\"\n        }\n    ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Update plexus node 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Records updated plexus node 3', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"updated 1 of 1 records\");",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"update\",\n    \"table\": \"plexus\",\n    \"records\": [\n        {\n            \"id\":\"3\",\n            \"test\":\"A DNA test would start around five hundred bucks.\"\n        }\n    ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE3_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Insert plexus node 4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Records inserted into plexus node 2', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"inserted 1 of 1 records\");",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"insert\",\n    \"table\": \"plexus\",\n    \"records\": [\n        { \n            \"id\":\"4\",\n            \"test\":\"He wishes to test me!\"\n        }\n    ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm insert node 1 again",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Records inserted into plexus node 1', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response).to.eql([",
+									"    {",
+									"        \"id\": \"1\",",
+									"        \"test\": \"Other than the test drive, it was the first time he had driven it.\"",
+									"    },",
+									"    {",
+									"        \"id\": \"2\",",
+									"        \"test\": \"Sure, as long as there won't be a test\"",
+									"    },",
+									"    {",
+									"        \"id\": \"3\",",
+									"        \"test\": \"A DNA test would start around five hundred bucks.\"",
+									"    },",
+									"    { ",
+									"        \"id\":\"4\",",
+									"        \"test\":\"He wishes to test me!\"",
+									"    }",
+									"]);",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"select id, test from data.plexus\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm insert node 2 again",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Records inserted into plexus node 2', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response).to.eql([",
+									"    {",
+									"        \"id\": \"1\",",
+									"        \"test\": \"Other than the test drive, it was the first time he had driven it.\"",
+									"    },",
+									"    {",
+									"        \"id\": \"2\",",
+									"        \"test\": \"Sure, as long as there won't be a test\"",
+									"    },",
+									"    {",
+									"        \"id\": \"3\",",
+									"        \"test\": \"A DNA test would start around five hundred bucks.\"",
+									"    },",
+									"    { ",
+									"        \"id\":\"4\",",
+									"        \"test\":\"He wishes to test me!\"",
+									"    }",
+									"]);",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"select id, test from data.plexus\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm insert node 3 again",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Records inserted into plexus node 3', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response).to.eql([",
+									"    {",
+									"        \"id\": \"1\",",
+									"        \"test\": \"Other than the test drive, it was the first time he had driven it.\"",
+									"    },",
+									"    {",
+									"        \"id\": \"2\",",
+									"        \"test\": \"Sure, as long as there won't be a test\"",
+									"    },",
+									"    {",
+									"        \"id\": \"3\",",
+									"        \"test\": \"A DNA test would start around five hundred bucks.\"",
+									"    },",
+									"    { ",
+									"        \"id\":\"4\",",
+									"        \"test\":\"He wishes to test me!\"",
+									"    }",
+									"]);",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"select id, test from data.plexus\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE3_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Confirm insert node 4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Records inserted into plexus node 4', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response).to.eql([",
+									"    {",
+									"        \"id\": \"1\",",
+									"        \"test\": \"Other than the test drive, it was the first time he had driven it.\"",
+									"    },",
+									"    {",
+									"        \"id\": \"2\",",
+									"        \"test\": \"Sure, as long as there won't be a test\"",
+									"    },",
+									"    {",
+									"        \"id\": \"3\",",
+									"        \"test\": \"A DNA test would start around five hundred bucks.\"",
+									"    },",
+									"    { ",
+									"        \"id\":\"4\",",
+									"        \"test\":\"He wishes to test me!\"",
+									"    }",
+									"]);",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"select id, test from data.plexus\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE4_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "Remove node 1",
 					"event": [
 						{
@@ -17931,7 +18838,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"url\":\"wss://{{NODE1_HOST}}:{{HDB_PORT}}\"\n}",
+							"raw": "// {\n// \t\"operation\":\"remove_node\",\n// \t\"url\":\"wss://{{NODE1_HOST}}:{{HDB_PORT}}\"\n// }",
 							"options": {
 								"raw": {
 									"language": "json"
