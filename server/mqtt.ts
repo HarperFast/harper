@@ -170,6 +170,11 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 	parser.on('packet', async (packet) => {
 		if (user?.then) user = await user;
 		if (session?.then) await session;
+		const topic = packet.topic;
+		const slash_index = topic?.indexOf('/', 1);
+		const general_topic = slash_index > 0 ? topic.slice(0, slash_index) : topic;
+		recordAction(packet.length, 'bytes-received', general_topic, packetMethodName(packet), 'mqtt');
+
 		try {
 			session?.receivedPacket?.();
 			switch (packet.cmd) {
@@ -336,7 +341,8 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					// deserialize
 					const deserialize =
 						socket.deserialize || (socket.deserialize = getDeserializer(request?.headers.get?.('content-type')));
-					const data = packet.payload?.length > 0 ? deserialize(packet.payload) : undefined; // zero payload length maps to a delete
+					const message_length = packet.payload?.length || 0;
+					const data = message_length > 0 ? deserialize(packet.payload) : undefined; // zero payload length maps to a delete
 					let published;
 					try {
 						published = await session.publish(packet, data);
@@ -408,7 +414,10 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 		function sendPacket(packet_data, path?) {
 			const send_packet = generate(packet_data, mqtt_options);
 			send(send_packet);
-			recordAction(send_packet.length, 'bytes-sent', path, packet_data.cmd, 'mqtt');
+			recordAction(send_packet.length, 'bytes-sent', path, packetMethodName(packet_data), 'mqtt');
+		}
+		function packetMethodName(packet) {
+			return packet.qos > 0 ? packet.cmd + ',qos=' + packet.qos : packet.cmd;
 		}
 		function serialize(data) {
 			return serializeMessage(data, request);
