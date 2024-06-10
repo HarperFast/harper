@@ -1060,7 +1060,7 @@ export function replicateOverWS(ws, options, authorization) {
 				})),
 			});
 		}
-		logger.info('Sending database info for node', this_node_name, 'database name', database_name, tables);
+		logger.trace('Sending database info for node', this_node_name, 'database name', database_name, tables);
 		ws.send(encode([NODE_NAME, this_node_name, database_name, tables]));
 	}
 

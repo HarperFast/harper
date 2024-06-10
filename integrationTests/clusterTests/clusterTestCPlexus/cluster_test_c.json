@@ -2260,7 +2260,8 @@
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -2289,7 +2290,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"cluster_set_routes\",\n    \"server\": \"hub\",\n    \"routes\":[ {\"host\": \"{{NODE2_HOST}}\", \"port\": {{CLUSTERING_PORT}}} ]\n}",
+							"raw": "{\n    \"operation\": \"cluster_set_routes\",\n    \"routes\":[ \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\" ]\n}\n",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -2319,7 +2320,8 @@
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -2348,7 +2350,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"cluster_set_routes\",\n    \"server\": \"hub\",\n    \"routes\":[ \n        {\n            \"host\": \"{{NODE1_HOST}}\", \n            \"port\": {{CLUSTERING_PORT}}\n        },\n        {\n            \"host\": \"test.clustering.com\",\n            \"port\": \"11234\"\n        }\n    ]\n}",
+							"raw": "{\n    \"operation\": \"cluster_set_routes\",\n    \"server\": \"hub\",\n    \"routes\":[ \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\" ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -2367,79 +2369,7 @@
 					"response": []
 				},
 				{
-					"name": "Delete node 1 routes to node 2",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test('Routes deleted messaged returned', () => {",
-									"    const response = pm.response.json();",
-									"    const node1_host = pm.environment.get('NODE1_HOST');",
-									"    const clustering_port = parseInt(pm.environment.get('CLUSTERING_PORT'));",
-									"",
-									"    pm.expect(response.message).to.equal('cluster routes successfully deleted');",
-									"    pm.expect(response.deleted[0]).to.eql({",
-									"            \"host\": \"test.clustering.com\",",
-									"            \"port\": 11234",
-									"        });",
-									"    pm.expect(response.skipped).to.eql([]);",
-									"});",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"cluster_delete_routes\",\n    \"server\": \"hub\",\n    \"routes\":[\n        {\n            \"host\": \"test.clustering.com\",\n            \"port\": 11234\n        } \n    ]\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
-							"host": [
-								"{{NODE2_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Restart clustering config node 2",
+					"name": "Restart node 2",
 					"event": [
 						{
 							"listen": "test",
@@ -2451,13 +2381,14 @@
 									"",
 									"pm.test('Restart message returned', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal('Restarting clustering config');",
+									"    pm.expect(response.message).to.equal(\"Restarting HarperDB. This may take up to 60 seconds.\");",
 									"});",
 									"",
 									"// Wait for the restart complete",
 									"setTimeout(()=>{}, 30000);"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -2486,7 +2417,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"clustering config\"\n}",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -2505,7 +2436,7 @@
 					"response": []
 				},
 				{
-					"name": "Restart clustering config node 1",
+					"name": "Restart node 1",
 					"event": [
 						{
 							"listen": "test",
@@ -2517,13 +2448,14 @@
 									"",
 									"pm.test('Restart message returned', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal('Restarting clustering config');",
+									"    pm.expect(response.message).to.equal(\"Restarting HarperDB. This may take up to 60 seconds.\");",
 									"});",
 									"",
 									"// Wait for the restart complete",
 									"setTimeout(()=>{}, 30000);"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -2552,84 +2484,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"clustering config\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
-							"host": [
-								"{{NODE1_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Add node 2 to node 1 no schema and tables",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test('Add node not successful', () => {",
-									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.eql(\"Unable to create subscriptions due to schema and/or tables not existing on the local or remote node\");",
-									"    pm.expect(response.skipped).to.eql([",
-									"        {",
-									"            \"schema\": \"radio\",",
-									"            \"table\": \"genre\",",
-									"            \"publish\": false,",
-									"            \"subscribe\": true",
-									"        },",
-									"        {",
-									"            \"schema\": \"radio\",",
-									"            \"table\": \"head\",",
-									"            \"subscribe\": true,",
-									"            \"publish\": true",
-									"        }",
-									"    ]);",
-									"});"
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"publish\": false,\n            \"subscribe\": true\n        },\n        {\n            \"schema\": \"radio\",\n            \"table\": \"head\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -3039,33 +2894,11 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Add node successful messaged returned', () => {",
+									"pm.test('Add node success message', () => {",
 									"    const response = pm.response.json();",
-									"    const node_name = pm.environment.get(\"NODE2_NAME\");",
-									"    pm.expect(response.message).to.eql(\"Some subscriptions were unsuccessful due to schema and/or tables not existing on the local or remote node\");",
-									"    pm.expect(response.added).to.eql([",
-									"        {",
-									"            \"schema\": \"radio\",",
-									"            \"table\": \"genre\",",
-									"            \"subscribe\": true,",
-									"            \"publish\": false",
-									"        },",
-									"        {",
-									"            \"schema\": \"listeners\",",
-									"            \"table\": \"address\",",
-									"            \"subscribe\": false,",
-									"            \"publish\": true,",
-									"            \"start_time\": \"2022-09-02T20:06:35.993Z\"",
-									"        }",
-									"    ]);",
-									"    pm.expect(response.skipped).to.eql([",
-									"        {",
-									"            \"schema\": \"radio\",",
-									"            \"table\": \"head\",",
-									"            \"subscribe\": true,",
-									"            \"publish\": true",
-									"        }",
-									"    ]);",
+									"    const node_host = pm.environment.get(\"NODE2_HOST\");",
+									"    const port = pm.environment.get(\"HDB_PORT\");",
+									"    pm.expect(response.message).to.equal(`Successfully added 'wss://${node_host}:${port}' to manifest`);",
 									"});"
 								],
 								"type": "text/javascript",
@@ -3098,7 +2931,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_node\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"rejectUnauthorized\": false,\n    \"authorization\": \"Basic SERCX0FETUlOOnBhc3N3b3Jk\",\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"publish\": false,\n            \"subscribe\": true\n        },\n        {\n            \"schema\": \"listeners\",\n            \"table\": \"address\",\n            \"publish\": true,\n            \"subscribe\": false,\n            \"start_time\": \"2022-09-02T20:06:35.993Z\"\n        },\n        {\n            \"schema\": \"radio\",\n            \"table\": \"head\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}",
+							"raw": "{\n    \"operation\": \"add_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"rejectUnauthorized\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"publish\": false,\n            \"subscribe\": true\n        },\n        {\n            \"schema\": \"listeners\",\n            \"table\": \"address\",\n            \"publish\": true,\n            \"subscribe\": false\n        },\n        {\n            \"schema\": \"radio\",\n            \"table\": \"head\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -3319,7 +3152,7 @@
 									"    const node2_name = pm.environment.get(\"NODE2_NAME\");",
 									"",
 									"    pm.expect(response.name).to.equal(node2_name);",
-									"    pm.expect(response.subscriptions.length).to.equal(2);",
+									"    pm.expect(response.subscriptions.length).to.equal(3);",
 									"    pm.expect(response.subscriptions).to.have.deep.members([",
 									"            {",
 									"                \"schema\": \"radio\",",
@@ -3332,16 +3165,20 @@
 									"                \"table\": \"address\",",
 									"                \"publish\": true,",
 									"                \"subscribe\": false",
+									"            },",
+									"            {",
+									"                \"schema\": \"radio\",",
+									"                \"table\": \"head\",",
+									"                \"subscribe\": true,",
+									"                \"publish\": true",
 									"            }",
 									"        ]",
 									"    )",
-									"    pm.expect(response.system_info).to.haveOwnProperty('hdb_version');",
-									"    pm.expect(response.system_info).to.haveOwnProperty('node_version');",
-									"    pm.expect(response.system_info).to.haveOwnProperty('platform');",
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -3405,7 +3242,7 @@
 									"    const node1_name = pm.environment.get(\"NODE1_NAME\");",
 									"",
 									"    pm.expect(response.name).to.equal(node1_name);",
-									"    pm.expect(response.subscriptions.length).to.equal(2);",
+									"    pm.expect(response.subscriptions.length).to.equal(3);",
 									"    pm.expect(response.subscriptions).to.have.deep.members([",
 									"            {",
 									"                \"schema\": \"radio\",",
@@ -3418,16 +3255,20 @@
 									"                \"table\": \"address\",",
 									"                \"publish\": false,",
 									"                \"subscribe\": true",
+									"            },",
+									"            {",
+									"                \"schema\": \"radio\",",
+									"                \"table\": \"head\",",
+									"                \"subscribe\": true,",
+									"                \"publish\": true",
 									"            }",
 									"        ]",
 									"    )",
-									"    pm.expect(response.system_info).to.haveOwnProperty('hdb_version');",
-									"    pm.expect(response.system_info).to.haveOwnProperty('node_version');",
-									"    pm.expect(response.system_info).to.haveOwnProperty('platform');",
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -3557,13 +3398,14 @@
 									"    const response = pm.response.json();",
 									"    pm.expect(response).to.haveOwnProperty('radio');",
 									"    pm.expect(response).to.haveOwnProperty('listeners');",
-									"    pm.expect(response.radio).to.not.haveOwnProperty('artists');",
+									"    pm.expect(response.radio).to.haveOwnProperty('artists');",
 									"    pm.expect(response.radio).to.haveOwnProperty('genre');",
 									"    pm.expect(response.listeners).to.haveOwnProperty('address');",
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -3670,16 +3512,18 @@
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						},
 						{
 							"listen": "prerequest",
 							"script": {
 								"exec": [
-									"setTimeout(() => {}, 2000);"
+									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -3961,69 +3805,6 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n    \"operation\":\"describe_table\",\n    \"schema\":\"radio\",\n    \"table\":\"genre\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
-							"host": [
-								"{{NODE1_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Purge radio.genre stream node 1",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test('Purge success message is returned', () => {",
-									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"Successfully purged table 'radio.genre'\");",
-									"});"
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\":\"purge_stream\",\n    \"schema\":\"radio\",\n    \"table\":\"genre\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -5238,12 +5019,14 @@
 									"",
 									"pm.test('Update node successful messaged returned', () => {",
 									"    const response = pm.response.json();",
-									"    const node_name = pm.environment.get(\"NODE1_NAME\");",
-									"    pm.expect(response.message).to.eql(`Successfully updated '${node_name}'`);",
+									"        const node_host = pm.environment.get(\"NODE1_HOST\");",
+									"    const port = pm.environment.get(\"HDB_PORT\");",
+									"    pm.expect(response.message).to.eql(`Successfully updated 'wss://${node_host}:${port}'`);",
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -5272,7 +5055,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"update_node\",\n    \"node_name\": \"{{NODE1_NAME}}\",\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": false,\n            \"publish\": false\n        }\n    ]\n}",
+							"raw": "{\n    \"operation\": \"update_node\",\n    \"node_name\": \"{{NODE1_NAME}}\",\n    \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n    \"rejectUnauthorized\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": false,\n            \"publish\": false\n        }\n    ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -5439,12 +5222,15 @@
 									"",
 									"pm.test('Update node successful messaged returned', () => {",
 									"    const response = pm.response.json();",
-									"    const node_name = pm.environment.get(\"NODE1_NAME\");",
-									"    pm.expect(response.message).to.eql(`Successfully updated '${node_name}'`);",
+									"        const node_host = pm.environment.get(\"NODE1_HOST\");",
+									"    const port = pm.environment.get(\"HDB_PORT\");",
+									"    pm.expect(response.message).to.eql(`Successfully updated 'wss://${node_host}:${port}'`);",
 									"});",
+									"",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -5473,7 +5259,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"update_node\",\n    \"node_name\": \"{{NODE1_NAME}}\",\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}",
+							"raw": "{\n    \"operation\": \"update_node\",\n    \"node_name\": \"{{NODE1_NAME}}\",\n    \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n    \"rejectUnauthorized\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -5492,7 +5278,7 @@
 					"response": []
 				},
 				{
-					"name": "Confirm node 2 unchanged after update true/true",
+					"name": "Confirm node 2 changed after update true/true",
 					"event": [
 						{
 							"listen": "test",
@@ -5504,237 +5290,8 @@
 									"",
 									"pm.test('Confirm records unchanged node 2', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.length).to.equal(7);",
+									"    pm.expect(response.length).to.equal(5);",
 									"    pm.expect(response).to.have.deep.members([",
-									"        {",
-									"            \"id\": \"1\",",
-									"            \"type\": \"Country\"",
-									"        },",
-									"        {",
-									"            \"id\": \"2\",",
-									"            \"type\": \"Jazz\"",
-									"        },",
-									"        {",
-									"            \"id\": \"3\",",
-									"            \"type\": \"Classical\"",
-									"        },",
-									"        {",
-									"            \"id\": \"7\",",
-									"            \"type\": \"Pop\"",
-									"        },",
-									"        {",
-									"            \"id\": \"8\",",
-									"            \"type\": \"Hip hop\"",
-									"        },",
-									"        {",
-									"            \"id\": \"9\",",
-									"            \"type\": \"Electronic\"",
-									"        },",
-									"        {",
-									"            \"id\": \"10\",",
-									"            \"type\": \"Dance\"",
-									"        }",
-									"    ]);",
-									"});"
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select id, type from radio.genre\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
-							"host": [
-								"{{NODE2_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Update node pub/sub false to setup for next test",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test('Update node successful messaged returned', () => {",
-									"    const response = pm.response.json();",
-									"    const node_name = pm.environment.get(\"NODE1_NAME\");",
-									"    pm.expect(response.message).to.eql(`Successfully updated '${node_name}'`);",
-									"});",
-									"",
-									"// Give time for update to do its thing.",
-									"setTimeout(()=>{}, 5000)"
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"update_node\",\n    \"node_name\": \"{{NODE1_NAME}}\",\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": false,\n            \"publish\": false\n        }\n    ]\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
-							"host": [
-								"{{NODE2_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Update node pub/sub true on node 2 with start time",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test('Update node successful messaged returned', () => {",
-									"    const response = pm.response.json();",
-									"    const node_name = pm.environment.get(\"NODE1_NAME\");",
-									"    pm.expect(response.message).to.eql(`Successfully updated '${node_name}'`);",
-									"});",
-									"",
-									"// Give time for update to do its thing.",
-									"setTimeout(()=>{}, 20000)"
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"update_node\",\n    \"node_name\": \"{{NODE1_NAME}}\",\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": true,\n            \"publish\": true,\n            \"start_time\": \"2022-08-26T18:26:58.514Z\"\n        }\n    ]\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
-							"host": [
-								"{{NODE2_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Confirm node 1 changes after update true/true with date",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test('Confirm records changed node 1', () => {",
-									"    try {",
-									"        const response = pm.response.json();",
-									" console.log('updated entries',response);",
-									"        pm.expect(response.length).to.equal(5);",
-									"        pm.expect(response).to.have.deep.members([",
 									"    {",
 									"        \"id\": \"6\",",
 									"        \"type\": \"Hip hop opopotamus\"",
@@ -5756,128 +5313,10 @@
 									"        \"type\": \"Dance\"",
 									"    }",
 									"]);",
-									"        pm.environment.set('RETRY_COUNT', 0);",
-									"    } catch (error) {",
-									"        let retry_count = parseInt(pm.environment.get('RETRY_COUNT'));",
-									"        const retry_count_max = parseInt(pm.environment.get('RETRY_COUNT_MAX'));",
-									"        if (retry_count < retry_count_max) {",
-									"            console.error(`Retry count ${retry_count} for test ${pm.info.requestName}`);",
-									"            setTimeout(() => {}, 2000);",
-									"            retry_count++",
-									"            pm.environment.set('RETRY_COUNT', retry_count);",
-									"            postman.setNextRequest(pm.info.requestId);",
-									"        } else {",
-									"            pm.environment.set('RETRY_COUNT', 0);",
-									"            console.error(`\"${pm.info.requestName}\" reached max test retry`)",
-									"            throw error",
-									"        }",
-									"    }      ",
 									"});"
 								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select id, type from radio.genre\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
-							"host": [
-								"{{NODE1_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Confirm node 2 changes after update true/true with date",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test('Confirm records unchanged node 2', () => {",
-									"    try {",
-									"        const response = pm.response.json();",
-									"console.log('updated entries',response);",
-									"        pm.expect(response.length).to.equal(5);",
-									"        pm.expect(response).to.have.deep.members([",
-									"    {",
-									"        \"id\": \"6\",",
-									"        \"type\": \"Hip hop opopotamus\"",
-									"    },",
-									"    {",
-									"        \"id\": \"7\",",
-									"        \"type\": \"Pop\"",
-									"    },",
-									"    {",
-									"        \"id\": \"8\",",
-									"        \"type\": \"Hip hop\"",
-									"    },",
-									"    {",
-									"        \"id\": \"9\",",
-									"        \"type\": \"Electronic\"",
-									"    },",
-									"    {",
-									"        \"id\": \"10\",",
-									"        \"type\": \"Dance\"",
-									"    }",
-									"]);",
-									"        pm.environment.set('RETRY_COUNT', 0);",
-									"    } catch (error) {",
-									"        let retry_count = parseInt(pm.environment.get('RETRY_COUNT'));",
-									"        const retry_count_max = parseInt(pm.environment.get('RETRY_COUNT_MAX'));",
-									"        if (retry_count < retry_count_max) {",
-									"            console.error(`Retry count ${retry_count} for test ${pm.info.requestName}`);",
-									"            setTimeout(() => {}, 2000);",
-									"            retry_count++",
-									"            pm.environment.set('RETRY_COUNT', retry_count);",
-									"            postman.setNextRequest(pm.info.requestId);",
-									"        } else {",
-									"            pm.environment.set('RETRY_COUNT', 0);",
-									"            console.error(`\"${pm.info.requestName}\" reached max test retry`)",
-									"            throw error",
-									"        }",
-									"    }      ",
-									"});"
-								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -5937,12 +5376,14 @@
 									"",
 									"pm.test('Update node successful messaged returned', () => {",
 									"    const response = pm.response.json();",
-									"    const node_name = pm.environment.get(\"NODE2_NAME\");",
-									"    pm.expect(response.message).to.eql(`Successfully updated '${node_name}'`);",
+									"        const node_host = pm.environment.get(\"NODE2_HOST\");",
+									"    const port = pm.environment.get(\"HDB_PORT\");",
+									"    pm.expect(response.message).to.eql(`Successfully updated 'wss://${node_host}:${port}'`);",
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -5971,7 +5412,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"update_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}",
+							"raw": "{\n    \"operation\": \"update_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"rejectUnauthorized\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -7590,7 +7031,8 @@
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -7619,7 +7061,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"clustering_hubServer_cluster_network_routes\":[]\n}",
+							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"replication_routes\":[]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -7724,7 +7166,8 @@
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -7753,7 +7196,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"clustering_hubServer_cluster_network_routes\":[]\n}",
+							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"replication_routes\":[]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -7890,6 +7333,73 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n    \"operation\": \"cluster_set_routes\",\n    \"routes\":[ \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\" ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restart node 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Restart message returned', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"Restarting HarperDB. This may take up to 60 seconds.\");",
+									"});",
+									"",
+									"// Wait for the restart complete",
+									"setTimeout(()=>{}, 30000);"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -8050,7 +7560,7 @@
 									"    const response = pm.response.json();",
 									"    const node_host = pm.environment.get(\"NODE2_HOST\");",
 									"    const port = pm.environment.get(\"HDB_PORT\");",
-									"    pm.expect(response.message).to.equal(`Successfully added 'wss://${node_host}:${{port}}' to manifest`);",
+									"    pm.expect(response.message).to.equal(`Successfully added 'wss://${node_host}:${port}' to manifest`);",
 									"});"
 								],
 								"type": "text/javascript",
