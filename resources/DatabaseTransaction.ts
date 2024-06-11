@@ -7,8 +7,6 @@ import { CONTEXT } from './Resource';
 import * as env_mngr from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { convertToMS } from '../utility/common_utils';
-import { getHDBNodeTable, subscribeToNodeUpdates } from '../server/replication/subscriptionManager';
-import { forEachReplicatedDatabase } from '../server/replication/replicator';
 
 const MAX_OPTIMISTIC_SIZE = 100;
 const tracked_txns = new Set<DatabaseTransaction>();

@@ -107,7 +107,7 @@ export function start(options) {
 	// we need to stay up-to-date with any CAs that have been replicated across the cluster
 	subscribeToNodeUpdates((node) => {
 		// TODO: handle removal of CAs?
-		if (node.ca) {
+		if (node?.ca) {
 			// we only care about nodes that have a CA
 			let x509 = new X509Certificate(node.ca);
 			x509.asString = node.ca;
@@ -235,10 +235,12 @@ function getConnection(url, subscription, db_name) {
 	}
 	let connection = db_connections.get(db_name);
 	if (connection) return connection;
-	db_connections.set(db_name, (connection = new NodeReplicationConnection(url, subscription, db_name)));
-	connection.connect();
-	connection.once('finished', () => db_connections.delete(db_name));
-	return connection;
+	if (subscription) {
+		db_connections.set(db_name, (connection = new NodeReplicationConnection(url, subscription, db_name)));
+		connection.connect();
+		connection.once('finished', () => db_connections.delete(db_name));
+		return connection;
+	}
 }
 
 export async function sendOperationToNode(node, operation, options) {
@@ -275,13 +277,22 @@ export async function subscribeToNode(request) {
 		if (request.nodes[0].name === undefined) connection.tentativeNode = request.nodes[0]; // we don't have the node name yet
 		connection.subscribe(
 			request.nodes.filter((node) => {
-				return node.name && (node.replicates === true || node.replicates?.sends || node.subscriptions?.length > 0);
+				return (
+					node.name &&
+					(node.replicates === true ||
+						node.replicates?.sends ||
+						node.subscriptions.some((sub) => (sub.database || sub.schema) === request.database && sub.subscribe))
+				);
 			}),
 			request.replicateByDefault
 		);
 	} catch (error) {
 		logger.error('Error in subscription to node', request.nodes[0]?.url, error);
 	}
+}
+export async function unsubscribeFromNode({ url, database }) {
+	let connection = getConnection(url, null, database);
+	if (connection) connection.unsubscribe();
 }
 
 let common_name_from_cert: string;

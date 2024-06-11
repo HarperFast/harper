@@ -12,6 +12,7 @@ import {
 	subscribeToNode,
 	urlToNodeName,
 	forEachReplicatedDatabase,
+	unsubscribeFromNode,
 } from './replicator';
 import { parentPort } from 'worker_threads';
 import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes } from './knownNodes';
@@ -51,20 +52,47 @@ export async function startOnMainThread(options) {
 					if (route.replicates == undefined) route.replicates = true;
 				}
 				// just tentatively add this node to the list of nodes in memory
-				onNewNode(route);
+				onNodeUpdate(route);
 			} catch (error) {
 				console.error(error);
 			}
 		}
-		subscribeToNodeUpdates(onNewNode);
+		subscribeToNodeUpdates(onNodeUpdate);
 	});
 
 	/**
 	 * This is called when a new node is added to the hdb_nodes table
 	 * @param node
 	 */
-	function onNewNode(node) {
-		if ((getThisNodeName() && node.name === getThisNodeName()) || (getThisNodeUrl() && node.name === getThisNodeUrl()))
+	function onNodeUpdate(node, nodeName) {
+		if (!node) {
+			// deleted node
+			for (let [url, db_replication_workers] of connection_replication_map) {
+				let found_node;
+				for (let [database, { worker, nodes }] of db_replication_workers) {
+					let node = nodes[0];
+					if (!node) continue;
+					if (node.name == nodeName) {
+						found_node = true;
+						for (let [, { worker }] of db_replication_workers) {
+							worker?.postMessage({ type: 'unsubscribe-from-node', node: nodeName, database, url });
+						}
+						return;
+					}
+				}
+				if (found_node) {
+					let db_replication_workers = connection_replication_map.get(url);
+					db_replication_workers.iterator.remove();
+					connection_replication_map.delete(url);
+					return;
+				}
+			}
+			return;
+		}
+		if (
+			(getThisNodeName() && node?.name === getThisNodeName()) ||
+			(getThisNodeUrl() && node?.name === getThisNodeUrl())
+		)
 			// this is just this node, we don't need to connect to ourselves
 			return;
 		if (!node.url) {
@@ -114,10 +142,15 @@ export async function startOnMainThread(options) {
 			const existing_entry = db_replication_workers.get(database_name);
 			let worker;
 			let nodes = [Object.assign({ replicateByDefault: tables_replicate_by_default }, node)];
+			let should_subscribe =
+				node.replicates === true ||
+				node.replicates?.sends ||
+				node.subscriptions?.some((sub) => (sub.schema || sub.database) === database_name && sub.subscribe);
+
 			if (existing_entry) {
 				worker = existing_entry.worker;
 				existing_entry.nodes = nodes;
-			} else {
+			} else if (should_subscribe) {
 				worker = workers[next_worker_index];
 				next_worker_index = (next_worker_index + 1) % workers.length;
 
@@ -132,14 +165,25 @@ export async function startOnMainThread(options) {
 					onDatabase(database_name, tables_replicate_by_default);
 				});
 			}
-			const request = {
-				type: 'subscribe-to-node',
-				database: database_name,
-				nodes,
-			};
-			if (worker) {
-				worker.postMessage(request);
-			} else subscribeToNode(request);
+			if (should_subscribe) {
+				const request = {
+					type: 'subscribe-to-node',
+					database: database_name,
+					nodes,
+				};
+				if (worker) {
+					worker.postMessage(request);
+				} else subscribeToNode(request);
+			} else {
+				const request = {
+					type: 'unsubscribe-from-node',
+					database: database_name,
+					url: node.url,
+				};
+				if (worker) {
+					worker.postMessage(request);
+				} else unsubscribeFromNode(request);
+			}
 		}
 	}
 	// only assign these if we are on the main thread
@@ -156,7 +200,16 @@ export async function startOnMainThread(options) {
 		}
 		let db_replication_workers = connection_replication_map.get(connection.url);
 		const existing_worker_entry = db_replication_workers?.get(connection.database);
+		if (!existing_worker_entry) {
+			logger.warn('Disconnected node not found in replication map', connection.database, db_replication_workers);
+			return;
+		}
 		existing_worker_entry.connected = false;
+		let main_node = existing_worker_entry.nodes[0];
+		if (!(main_node.replicates === true || main_node.replicates?.sends || main_node.subscriptions?.length)) {
+			// no
+			return;
+		}
 		let next_index = (existing_index + 1) % node_names.length;
 		while (existing_index !== next_index) {
 			const next_node_name = node_names[next_index];
@@ -261,6 +314,9 @@ if (parentPort) {
 	};
 	onMessageByType('subscribe-to-node', (message) => {
 		subscribeToNode(message);
+	});
+	onMessageByType('unsubscribe-from-node', (message) => {
+		unsubscribeFromNode(message);
 	});
 }
 
