@@ -347,7 +347,11 @@ export function getThisNodeUrl() {
 	let url = env.get('replication_url');
 	if (url) return url;
 	let node_name = getThisNodeName();
-	let port = getPortFromListeningPort('operationsapi_network_port');
+	let port = getPortFromListeningPort('replication_port');
+	if (port) return `ws://${node_name}:${port}`;
+	port = getPortFromListeningPort('replication_secureport');
+	if (port) return `wss://${node_name}:${port}`;
+	port = getPortFromListeningPort('operationsapi_network_port');
 	if (port) return `ws://${node_name}:${port}`;
 	port = getPortFromListeningPort('operationsapi_network_secureport');
 	if (port) return `wss://${node_name}:${port}`;
