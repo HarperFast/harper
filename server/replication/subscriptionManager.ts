@@ -205,6 +205,7 @@ export async function startOnMainThread(options) {
 			return;
 		}
 		existing_worker_entry.connected = false;
+		if (connection.finished) return; // intentionally closed connection
 		let main_node = existing_worker_entry.nodes[0];
 		if (!(main_node.replicates === true || main_node.replicates?.sends || main_node.subscriptions?.length)) {
 			// no

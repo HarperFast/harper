@@ -156,7 +156,7 @@ export class NodeReplicationConnection extends EventEmitter {
 			}
 		});
 		this.socket.on('close', (code, reason_buffer) => {
-			session?.disconnected();
+			session?.disconnected(this.socket.isFinished);
 			if (this.socket.isFinished) {
 				this.isFinished = true;
 				session?.end();
@@ -1086,12 +1086,13 @@ export function replicateOverWS(ws, options, authorization) {
 			if (subscription_request) subscription_request.end();
 			if (audit_subscription) audit_subscription.emit('close');
 		},
-		disconnected() {
+		disconnected(finished) {
 			// if we get disconnected, notify subscriptions manager so we can reroute through another node
 			disconnectedFromNode({
 				name: remote_node_name,
 				database: database_name,
 				url: options.url,
+				finished,
 			});
 			// TODO: When we get reconnected, we need to undo this
 		},
