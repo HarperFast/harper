@@ -277,7 +277,12 @@ export async function subscribeToNode(request) {
 		if (request.nodes[0].name === undefined) connection.tentativeNode = request.nodes[0]; // we don't have the node name yet
 		connection.subscribe(
 			request.nodes.filter((node) => {
-				return node.name && (node.replicates === true || node.replicates?.sends || node.subscriptions?.length > 0);
+				return (
+					node.name &&
+					(node.replicates === true ||
+						node.replicates?.sends ||
+						node.subscriptions.some((sub) => (sub.database || sub.schema) === request.database && sub.subscribe))
+				);
 			}),
 			request.replicateByDefault
 		);
@@ -285,8 +290,8 @@ export async function subscribeToNode(request) {
 		logger.error('Error in subscription to node', request.nodes[0]?.url, error);
 	}
 }
-export async function unsubscribeFromNode(url) {
-	let connection = getConnection(url);
+export async function unsubscribeFromNode({ url, database }) {
+	let connection = getConnection(url, null, database);
 	if (connection) connection.unsubscribe();
 }
 
