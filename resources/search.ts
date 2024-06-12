@@ -435,6 +435,9 @@ function joinTo(right_iterable, attribute, store, is_many_to_many, joined: Map<a
 						value: has_multi_part_keys ? joined_entry.value[1].key || joined_entry.value[0] : joined_entry.value,
 					};
 				},
+				return() {
+					if (joined_iterator?.return) return joined_iterator.return();
+				},
 			};
 		},
 	});
