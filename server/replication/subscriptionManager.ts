@@ -59,12 +59,25 @@ export async function startOnMainThread(options) {
 		}
 		subscribeToNodeUpdates(onNodeUpdate);
 	});
-
+	let is_fully_replicating;
 	/**
 	 * This is called when a new node is added to the hdb_nodes table
 	 * @param node
 	 */
 	function onNodeUpdate(node, nodeName) {
+		const is_self =
+			(getThisNodeName() && nodeName === getThisNodeName()) || (getThisNodeUrl() && node?.url === getThisNodeUrl());
+		if (is_self) {
+			// this is just this node, we don't need to connect to ourselves, but if we get removed, we need to remove all fully replicating connections,
+			// so we update each one
+			const should_fully_replicate = Boolean(node?.replicates);
+			if (is_fully_replicating !== undefined && is_fully_replicating !== should_fully_replicate) {
+				for (let node of getHDBNodeTable().search([])) {
+					if (node.replicates && node.name !== nodeName) onNodeUpdate(node, node.name);
+				}
+			}
+			is_fully_replicating = should_fully_replicate;
+		}
 		if (!node) {
 			// deleted node
 			for (let [url, db_replication_workers] of connection_replication_map) {
@@ -74,10 +87,10 @@ export async function startOnMainThread(options) {
 					if (!node) continue;
 					if (node.name == nodeName) {
 						found_node = true;
-						for (let [, { worker }] of db_replication_workers) {
+						for (let [database, { worker }] of db_replication_workers) {
 							worker?.postMessage({ type: 'unsubscribe-from-node', node: nodeName, database, url });
 						}
-						return;
+						break;
 					}
 				}
 				if (found_node) {
@@ -89,12 +102,7 @@ export async function startOnMainThread(options) {
 			}
 			return;
 		}
-		if (
-			(getThisNodeName() && node?.name === getThisNodeName()) ||
-			(getThisNodeUrl() && node?.name === getThisNodeUrl())
-		)
-			// this is just this node, we don't need to connect to ourselves
-			return;
+		if (is_self) return;
 		if (!node.url) {
 			logger.info(`Node ${node.name} is missing url`);
 			return;
@@ -172,6 +180,11 @@ export async function startOnMainThread(options) {
 					worker.postMessage(request);
 				} else subscribeToNode(request);
 			} else {
+				if (!getHDBNodeTable().primaryStore.get(getThisNodeName())?.replicates) {
+					// if we are not fully replicating because it is turned off, make sure we set this
+					// flag so that we actually turn on subscriptions if full replication is turned on
+					is_fully_replicating = false;
+				}
 				const request = {
 					type: 'unsubscribe-from-node',
 					database: database_name,
@@ -243,6 +256,14 @@ export async function startOnMainThread(options) {
 		// Basically undo what we did in disconnectedFromNode and also update the latency
 		const db_replication_workers = connection_replication_map.get(connection.url);
 		const main_worker_entry = db_replication_workers?.get(connection.database);
+		if (!main_worker_entry) {
+			logger.warn(
+				'Connected node not found in replication map, this may be because the node is being removed',
+				connection.database,
+				db_replication_workers
+			);
+			return;
+		}
 		main_worker_entry.connected = true;
 		main_worker_entry.latency = connection.latency;
 		if (main_worker_entry.redirectingTo) {
@@ -287,14 +308,15 @@ export function requestClusterStatus(message, port) {
 					nodes: nodes.map((node) => node.name),
 				});
 			}
-		}
 
-		const res = cloneDeep(node);
-		res.database_sockets = databases;
-		delete res.ca;
-		delete res.node_name;
-		delete res.__updatedtime__;
-		connections.push(res);
+			const res = cloneDeep(node);
+			res.database_sockets = databases;
+			delete res.ca;
+			delete res.node_name;
+			delete res.__updatedtime__;
+			delete res.__createdtime__;
+			connections.push(res);
+		}
 	}
 	port?.postMessage({
 		type: 'cluster-status',

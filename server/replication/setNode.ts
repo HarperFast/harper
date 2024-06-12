@@ -34,21 +34,22 @@ export async function setNode(req: object) {
 		const record = await hdb_nodes.get(node_record_id);
 		if (!record) throw new ClientError(node_record_id + ' does not exist');
 
-		// If node record has subscriptions it is not part of fully replicated cluster and hdb_nodes table is not replicated,
-		// so we delete record and req that other node also deletes record
-		if (record?.subscriptions?.length > 0) {
-			await sendOperationToNode(
-				{ url: record.url },
-				{
-					operation: OPERATIONS_ENUM.REMOVE_NODE_BACK,
-					name: getThisNodeName(),
-				},
-				undefined
-			);
-			await hdb_nodes.delete(node_record_id);
-		} else {
-			await hdb_nodes.patch(node_record_id, { replicates: false });
-		}
+		// we delete record and req that other node also deletes record
+		// we do not wait for the other node to respond, it may not even be online anymore
+		sendOperationToNode(
+			{ url: record.url },
+			{
+				operation: OPERATIONS_ENUM.REMOVE_NODE_BACK,
+				name: record?.subscriptions?.length > 0 ?
+					getThisNodeName() // if we are doing a removal with explicit subscriptions, we only want to the other node to remove the record for this node
+					: node_record_id; // if we are doing a removal with full replication, we want the other node to remove its own record
+			},
+			undefined
+		).catch((err) => {
+			hdb_logger.warn(`Error removing node from target node ${node_record_id}, if it is offline and we be online in the future, you may need to clean up this node manually, or retry:`, err);
+		});
+
+		await hdb_nodes.delete(node_record_id);
 
 		return `Successfully removed '${node_record_id}' from manifest`;
 	}

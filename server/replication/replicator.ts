@@ -286,8 +286,14 @@ export async function subscribeToNode(request) {
 	}
 }
 export async function unsubscribeFromNode({ url, database }) {
-	let connection = getConnection(url, null, database);
-	if (connection) connection.unsubscribe();
+	let db_connections = connections.get(url);
+	if (db_connections) {
+		let connection = db_connections.get(database);
+		if (connection) {
+			connection.unsubscribe();
+			db_connections.delete(database);
+		}
+	}
 }
 
 let common_name_from_cert: string;
