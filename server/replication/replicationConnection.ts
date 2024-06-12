@@ -884,7 +884,7 @@ export function replicateOverWS(ws, options, authorization) {
 					nodeId: remote_short_id_to_local_id.get(audit_record.nodeId),
 					residencyList: residency_list,
 					timestamp: audit_record.version,
-					value: audit_record.getValue(table_decoders[audit_record.tableId]),
+					value: audit_record.getValue(table_decoder),
 					user: audit_record.user,
 					beginTxn: begin_txn,
 				};
