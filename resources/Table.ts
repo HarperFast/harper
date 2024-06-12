@@ -428,7 +428,7 @@ export function makeTable(options) {
 						} else if (resource_options?.ensureLoaded) {
 							const loading_from_source = ensureLoadedFromSource(id, entry, request, resource);
 							if (loading_from_source) {
-								txn?.disregardReadTxn();
+								txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
 								resource[LOADED_FROM_SOURCE] = true;
 								return when(loading_from_source, (entry) => {
 									updateResource(resource, entry);
@@ -1142,6 +1142,7 @@ export function makeTable(options) {
 						false,
 						audit_record
 					);
+					if (context.expiresAt) scheduleCleanup();
 				},
 			};
 			transaction.addWrite(write);
@@ -1632,16 +1633,15 @@ export function makeTable(options) {
 								transaction: read_txn,
 								lazy: select?.length < 4,
 							},
-							this.isSync,
+							this?.isSync,
 							(entry) => entry
 						);
 						if (entry?.then) return entry.then(transform.bind(this));
 						record = entry?.value;
 					}
 					if (
-						check_loaded &&
-						(entry.metadataFlags & (INVALIDATED | EVICTED) || // invalidated or evicted should go to load from source
-							(entry.expiresAt && entry.expiresAt < Date.now()))
+						(check_loaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
+						(entry?.expiresAt && entry?.expiresAt < Date.now())
 					) {
 						// should expiration really apply?
 						const loading_from_source = ensureLoadedFromSource(entry.key ?? entry, entry, context);
@@ -2601,6 +2601,18 @@ export function makeTable(options) {
 					if (context?.onlyIfCached && !resource.doesExist()) throw new ServerError('Entry is not cached', 504);
 					return; // go ahead and return and let the current stale value be used while we re-validate
 				} else return loading_from_source; // return the promise for the resolved value
+			}
+		} else if (entry?.value) {
+			// if we don't have a source, but we have an entry, we check the expiration
+			if (entry.expiresAt && entry.expiresAt < Date.now()) {
+				// if it has expired and there is no source, we evict it and then return null, using a fake promise to indicate that this is providing the response
+				TableResource.evict(entry.key, entry.value, entry.version);
+				entry.value = null;
+				return {
+					then(callback) {
+						return callback(entry); // return undefined, no source to get data from
+					},
+				};
 			}
 		}
 	}
