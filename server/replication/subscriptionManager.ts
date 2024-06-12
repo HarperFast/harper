@@ -15,7 +15,7 @@ import {
 	unsubscribeFromNode,
 } from './replicator';
 import { parentPort } from 'worker_threads';
-import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes } from './knownNodes';
+import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes, shouldReplicateToNode } from './knownNodes';
 import * as logger from '../../utility/logging/harper_logger';
 import { getCertsKeys } from '../../security/keys.js';
 import { cloneDeep } from 'lodash';
@@ -142,10 +142,7 @@ export async function startOnMainThread(options) {
 			const existing_entry = db_replication_workers.get(database_name);
 			let worker;
 			let nodes = [Object.assign({ replicateByDefault: tables_replicate_by_default }, node)];
-			let should_subscribe =
-				node.replicates === true ||
-				node.replicates?.sends ||
-				node.subscriptions?.some((sub) => (sub.schema || sub.database) === database_name && sub.subscribe);
+			let should_subscribe = shouldReplicateToNode(node, database_name);
 
 			if (existing_entry) {
 				worker = existing_entry.worker;
@@ -208,7 +205,7 @@ export async function startOnMainThread(options) {
 		if (connection.finished) return; // intentionally closed connection
 		let main_node = existing_worker_entry.nodes[0];
 		if (!(main_node.replicates === true || main_node.replicates?.sends || main_node.subscriptions?.length)) {
-			// no
+			// no replication, so just return
 			return;
 		}
 		let next_index = (existing_index + 1) % node_names.length;

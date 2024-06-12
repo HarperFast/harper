@@ -143,6 +143,13 @@ export async function setNode(req: object) {
 	if (req.subscriptions) node_record.subscriptions = req.subscriptions;
 	else node_record.replicates = true;
 
+	if (node_record.replicates) {
+		await ensureNode(getThisNodeName(), {
+			url: this_url,
+			ca: target_node_response.ca_certificate,
+			replicates: true,
+		});
+	}
 	await ensureNode(target_node_response.nodeName, node_record);
 
 	if (req.operation === 'update_node') {
@@ -187,7 +194,13 @@ export async function addNodeBack(req) {
 	const node_record = { url: req.url, ca: origin_ca };
 	if (req.subscriptions) node_record.subscriptions = req.subscriptions;
 	else node_record.replicates = true;
-
+	if (node_record.replicates) {
+		await ensureNode(getThisNodeName(), {
+			url: getThisNodeUrl(),
+			ca: certs.ca_certificate,
+			replicates: true,
+		});
+	}
 	await ensureNode(req.node_name, node_record);
 	certs.nodeName = getThisNodeName();
 

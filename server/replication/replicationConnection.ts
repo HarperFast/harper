@@ -837,9 +837,7 @@ export function replicateOverWS(ws, options, authorization) {
 								listeners.push((table) => {
 									// TODO: send table update
 								});
-								logger.info?.(connection_id, 'Waiting for next transaction', database_name);
 								await whenNextTransaction(audit_store);
-								logger.info?.(connection_id, 'Next transaction is ready', database_name);
 							} while (!closed);
 						});
 						break;

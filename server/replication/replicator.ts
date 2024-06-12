@@ -37,7 +37,7 @@ import { X509Certificate } from 'crypto';
 import { readFileSync } from 'fs';
 import { EventEmitter } from 'events';
 export { startOnMainThread } from './subscriptionManager';
-import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes } from './knownNodes';
+import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes, shouldReplicateToNode } from './knownNodes';
 import { encode } from 'msgpackr';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 import { exportIdMapping } from './nodeIdMapping';
@@ -277,12 +277,7 @@ export async function subscribeToNode(request) {
 		if (request.nodes[0].name === undefined) connection.tentativeNode = request.nodes[0]; // we don't have the node name yet
 		connection.subscribe(
 			request.nodes.filter((node) => {
-				return (
-					node.name &&
-					(node.replicates === true ||
-						node.replicates?.sends ||
-						node.subscriptions.some((sub) => (sub.database || sub.schema) === request.database && sub.subscribe))
-				);
+				return shouldReplicateToNode(node, request.database);
 			}),
 			request.replicateByDefault
 		);
