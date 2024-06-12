@@ -294,14 +294,24 @@ function loadCertificates() {
 								}
 								let hostnames = config.hostname ?? config.hostnames ?? config.host ?? config.hosts;
 								if (hostnames && !Array.isArray(hostnames)) hostnames = [hostnames];
+								const certificate_pem = readPEM(path);
+								const x509_cert = new X509Certificate(certificate_pem);
 								promise = certificate_table.put({
 									name: CERT_CONFIG_NAME_MAP[config_key + (ca ? '_certificateAuthority' : '_certificate')],
 									uses: ['https', ...(config_key.includes('operations') ? ['operations'] : [])],
 									ciphers: config.ciphers,
-									certificate: readPEM(path),
+									certificate: certificate_pem,
 									private_key_name,
 									is_authority: ca,
 									hostnames,
+									details: {
+										issuer: x509_cert.issuer.replace(/\n/g, ' '),
+										subject: x509_cert.subject.replace(/\n/g, ' '),
+										subject_alt_name: x509_cert.subjectAltName,
+										serial_number: x509_cert.serialNumber,
+										valid_from: x509_cert.validFrom,
+										valid_to: x509_cert.validTo,
+									},
 								});
 							},
 							ca ? 'certificate authority' : 'certificate'
@@ -437,12 +447,14 @@ function certExtensions() {
 
 async function signCertificate(req) {
 	let { app_private_key, app_ca } = await getCertsKeys();
-	app_private_key = pki.privateKeyFromPem(app_private_key);
-	const ca_app_cert = pki.certificateFromPem(app_ca.cert);
 	let response = {
 		ca_certificate: app_ca.cert,
 	};
+
 	if (req.csr) {
+		app_private_key = pki.privateKeyFromPem(app_private_key);
+		const ca_app_cert = pki.certificateFromPem(app_ca.cert);
+
 		hdb_logger.info('Signing CSR with cert named', app_ca.name, 'with cert', app_ca.cert);
 		const csr = pki.certificationRequestFromPem(req.csr);
 		try {
