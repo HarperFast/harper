@@ -1068,7 +1068,7 @@ export function replicateOverWS(ws, options, authorization) {
 				})),
 			});
 		}
-		logger.info?.(
+		logger.trace?.(
 			'Sending database info for node',
 			this_node_name,
 			'database name',

@@ -73,7 +73,6 @@ export async function setNode(req: object) {
 		throw new Error('replication url is missing from harperdb-config.yaml');
 	}
 
-	// TODO: Do we need to replicate CA if in fully replicated mode
 	// TODO: Do we need to do all the cert things for update_node
 	// This is the record that will be added to the other nodes hdb_nodes table
 	const target_add_node_obj = {
@@ -177,11 +176,6 @@ export async function addNodeBack(req) {
 		// If there is no CSR in the request there should be a CA, use this CA in the hdb_nodes record for origin node
 		origin_ca = req.cert_auth.cert;
 		hdb_logger.info('addNodeBack received CA name:', req.cert_auth.cert.name, 'from node:', req.url);
-
-		// If there is no CSR, send back to origin node the replication CA for this node.
-		const { rep_ca } = await getCertsKeys();
-		certs.ca_certificate = rep_ca.cert;
-		hdb_logger.info('addNodeBack responding to:', req.url, 'with CA named:', rep_ca.name);
 	} else {
 		origin_ca = certs.ca_certificate;
 		hdb_logger.info(
@@ -203,6 +197,10 @@ export async function addNodeBack(req) {
 	}
 	await ensureNode(req.node_name, node_record);
 	certs.nodeName = getThisNodeName();
+
+	const { rep_ca } = await getCertsKeys();
+	certs.ca_certificate = rep_ca.cert;
+	hdb_logger.info('addNodeBack responding to:', req.url, 'with CA named:', rep_ca.name);
 
 	return certs;
 }
