@@ -262,7 +262,7 @@ function loadCertificates() {
 	const root_path = env.get(terms.CONFIG_PARAMS.ROOTPATH); // need to relativize the paths so they aren't exposed
 	let promise;
 	for (let { configKey: config_key } of CERTIFICATE_CONFIGS) {
-		let configs = env_manager.get(config_key);
+		let configs = config_utils.getConfigFromFile(config_key);
 		if (configs) {
 			// the configs can be an array, so normalize to an array
 			if (!Array.isArray(configs)) {
@@ -502,6 +502,8 @@ async function signCertificate(req) {
 }
 
 async function createCertificateTable(cert, ca_cert) {
+	// await fs.writeFile('/Users/davidcockerill/testCerts/node2-ca.pem', ca_cert);
+	// await fs.writeFile('/Users/davidcockerill/testCerts/node2-cert.pem', cert);
 	await setCertTable({
 		name: certificates_terms.CERT_NAME.DEFAULT,
 		uses: ['https', 'operations', 'wss'],
@@ -511,7 +513,7 @@ async function createCertificateTable(cert, ca_cert) {
 	});
 
 	await setCertTable({
-		name: certificates_terms.CERT_NAME.CA,
+		name: certificates_terms.CERT_NAME['DEFAULT-CA'],
 		uses: ['https', 'operations', 'wss'],
 		certificate: ca_cert,
 		private_key_name: 'privateKey.pem',
