@@ -37,7 +37,7 @@ import { X509Certificate } from 'crypto';
 import { readFileSync } from 'fs';
 import { EventEmitter } from 'events';
 export { startOnMainThread } from './subscriptionManager';
-import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes } from './knownNodes';
+import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes, shouldReplicateToNode } from './knownNodes';
 import { encode } from 'msgpackr';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 import { exportIdMapping } from './nodeIdMapping';
@@ -277,12 +277,7 @@ export async function subscribeToNode(request) {
 		if (request.nodes[0].name === undefined) connection.tentativeNode = request.nodes[0]; // we don't have the node name yet
 		connection.subscribe(
 			request.nodes.filter((node) => {
-				return (
-					node.name &&
-					(node.replicates === true ||
-						node.replicates?.sends ||
-						node.subscriptions.some((sub) => (sub.database || sub.schema) === request.database && sub.subscribe))
-				);
+				return shouldReplicateToNode(node, request.database);
 			}),
 			request.replicateByDefault
 		);
@@ -291,8 +286,14 @@ export async function subscribeToNode(request) {
 	}
 }
 export async function unsubscribeFromNode({ url, database }) {
-	let connection = getConnection(url, null, database);
-	if (connection) connection.unsubscribe();
+	let db_connections = connections.get(url);
+	if (db_connections) {
+		let connection = db_connections.get(database);
+		if (connection) {
+			connection.unsubscribe();
+			db_connections.delete(database);
+		}
+	}
 }
 
 let common_name_from_cert: string;
@@ -347,7 +348,11 @@ export function getThisNodeUrl() {
 	let url = env.get('replication_url');
 	if (url) return url;
 	let node_name = getThisNodeName();
-	let port = getPortFromListeningPort('operationsapi_network_port');
+	let port = getPortFromListeningPort('replication_port');
+	if (port) return `ws://${node_name}:${port}`;
+	port = getPortFromListeningPort('replication_secureport');
+	if (port) return `wss://${node_name}:${port}`;
+	port = getPortFromListeningPort('operationsapi_network_port');
 	if (port) return `ws://${node_name}:${port}`;
 	port = getPortFromListeningPort('operationsapi_network_secureport');
 	if (port) return `wss://${node_name}:${port}`;

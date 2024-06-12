@@ -156,7 +156,7 @@ export class NodeReplicationConnection extends EventEmitter {
 			}
 		});
 		this.socket.on('close', (code, reason_buffer) => {
-			session?.disconnected();
+			session?.disconnected(this.socket.isFinished);
 			if (this.socket.isFinished) {
 				this.isFinished = true;
 				session?.end();
@@ -837,9 +837,7 @@ export function replicateOverWS(ws, options, authorization) {
 								listeners.push((table) => {
 									// TODO: send table update
 								});
-								logger.info?.(connection_id, 'Waiting for next transaction', database_name);
 								await whenNextTransaction(audit_store);
-								logger.info?.(connection_id, 'Next transaction is ready', database_name);
 							} while (!closed);
 						});
 						break;
@@ -886,7 +884,7 @@ export function replicateOverWS(ws, options, authorization) {
 					nodeId: remote_short_id_to_local_id.get(audit_record.nodeId),
 					residencyList: residency_list,
 					timestamp: audit_record.version,
-					value: audit_record.getValue(table_decoders[audit_record.tableId]),
+					value: audit_record.getValue(table_decoder),
 					user: audit_record.user,
 					beginTxn: begin_txn,
 				};
@@ -1086,12 +1084,13 @@ export function replicateOverWS(ws, options, authorization) {
 			if (subscription_request) subscription_request.end();
 			if (audit_subscription) audit_subscription.emit('close');
 		},
-		disconnected() {
+		disconnected(finished) {
 			// if we get disconnected, notify subscriptions manager so we can reroute through another node
 			disconnectedFromNode({
 				name: remote_node_name,
 				database: database_name,
 				url: options.url,
+				finished,
 			});
 			// TODO: When we get reconnected, we need to undo this
 		},
