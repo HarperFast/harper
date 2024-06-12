@@ -1,9 +1,9 @@
-import { readdirSync, promises, readFileSync, existsSync, symlinkSync, mkdirSync } from 'fs';
+import { readdirSync, promises, readFileSync, existsSync, symlinkSync, rmSync, mkdirSync } from 'fs';
 import { join, relative, basename, dirname } from 'path';
 import { isMainThread } from 'worker_threads';
 import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager';
-import { HDB_SETTINGS_NAMES, CONFIG_PARAMS } from '../utility/hdbTerms';
+import { PACKAGE_ROOT, CONFIG_PARAMS } from '../utility/hdbTerms';
 import * as graphql_handler from '../resources/graphql';
 import * as js_handler from '../resources/jsResource';
 import * as login from '../resources/login';
@@ -153,6 +153,19 @@ export async function loadComponent(
 				: parseDocument(readFileSync(config_path, 'utf8'), { simpleKeys: true }).toJSON();
 		} else {
 			config = DEFAULT_CONFIG;
+		}
+		const harperdb_module = join(folder, 'node_modules', 'harperdb');
+		try {
+			if (isMainThread && (existsSync(harperdb_module) || is_root)) {
+				// if the app has a harperdb module, we symlink it to the main app so it can be used in the main app (with the running modules)
+				rmSync(harperdb_module, { recursive: true, force: true });
+				if (!existsSync(join(folder, 'node_modules'))) {
+					mkdirSync(join(folder, 'node_modules'));
+				}
+				symlinkSync(PACKAGE_ROOT, harperdb_module, 'dir');
+			}
+		} catch (error) {
+			harper_logger.error('Error symlinking harperdb module', error);
 		}
 		const handler_modules = [];
 		let has_functionality = is_root;
