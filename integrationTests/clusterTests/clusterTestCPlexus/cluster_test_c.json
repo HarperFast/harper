@@ -10050,7 +10050,8 @@
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -10079,7 +10080,74 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"cluster_set_routes\",\n    \"server\": \"hub\",\n    \"routes\":[ {\"host\": \"{{NODE2_HOST}}\", \"port\": {{CLUSTERING_PORT}}} ]\n}",
+							"raw": "{\n    \"operation\": \"cluster_set_routes\",\n    \"routes\":[ {\"host\": \"{{NODE2_HOST}}\", \"port\": {{CLUSTERING_PORT}}} ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restart node 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Restart message returned', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"Restarting HarperDB. This may take up to 60 seconds.\");",
+									"});",
+									"",
+									"// Wait for the restart complete",
+									"setTimeout(()=>{}, 30000);"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -10772,7 +10840,7 @@
 									"    const response = pm.response.json();",
 									"    const node_host = pm.environment.get(\"NODE2_HOST\");",
 									"    const port = pm.environment.get(\"HDB_PORT\");",
-									"    pm.expect(response.message).to.equal(`Successfully added 'wss://${node_host}:${{port}}' to manifest`);",
+									"    pm.expect(response.message).to.equal(`Successfully added 'wss://${node_host}:${port}' to manifest`);",
 									"});",
 									""
 								],
@@ -10806,7 +10874,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"rejectUnauthorized\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"incredible_bulk\",\n            \"table\": \"pre_con1\",\n            \"publish\": true,\n            \"subscribe\": true\n        },\n        {\n            \"schema\": \"incredible_bulk\",\n            \"table\": \"pre_con2\",\n            \"publish\": true,\n            \"subscribe\": true,\n            \"start_time\": \"2022-09-02T20:06:35.993Z\"\n        }\n    ]\n}\n\n",
+							"raw": "{\n    \"operation\": \"add_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"rejectUnauthorized\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"incredible_bulk\",\n            \"table\": \"pre_con1\",\n            \"publish\": true,\n            \"subscribe\": true\n        },\n        {\n            \"schema\": \"incredible_bulk\",\n            \"table\": \"pre_con2\",\n            \"publish\": true,\n            \"subscribe\": true\n        }\n    ]\n}\n\n",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -11319,15 +11387,11 @@
 									"    const node1_name = pm.environment.get(\"NODE1_NAME\");",
 									"    const node2_name = pm.environment.get(\"NODE2_NAME\");",
 									"    const connection = response.connections[0];",
-									"    const hdb_port = parseInt(pm.environment.get('HDB_PORT'));",
-									"    const clustering_port = parseInt(pm.environment.get('CLUSTERING_PORT'));",
 									"",
 									"    pm.expect(response.node_name).to.equal(node1_name);",
 									"    pm.expect(response.is_enabled).to.equal(true);",
 									"    pm.expect(response.connections.length).to.equal(1);",
-									"    pm.expect(connection.node_name).to.equal(node2_name);",
-									"    pm.expect(connection.ports.operations_api).to.equal(hdb_port);",
-									"    pm.expect(connection.ports.clustering).to.equal(clustering_port);",
+									"    pm.expect(connection.name).to.equal(node2_name);",
 									"    pm.expect(connection.subscriptions).to.have.deep.members([",
 									"            {",
 									"                \"schema\": \"incredible_bulk\",",
@@ -11355,13 +11419,11 @@
 									"            }",
 									"        ]",
 									"    )",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('hdb_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('node_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('platform');",
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -11424,15 +11486,11 @@
 									"    const node1_name = pm.environment.get(\"NODE1_NAME\");",
 									"    const node2_name = pm.environment.get(\"NODE2_NAME\");",
 									"    const connection = response.connections[0];",
-									"    const hdb_port = parseInt(pm.environment.get('HDB_PORT'));",
-									"    const clustering_port = parseInt(pm.environment.get('CLUSTERING_PORT'));",
 									"",
 									"    pm.expect(response.node_name).to.equal(node2_name);",
 									"    pm.expect(response.is_enabled).to.equal(true);",
 									"    pm.expect(response.connections.length).to.equal(1);",
-									"    pm.expect(connection.node_name).to.equal(node1_name);",
-									"    pm.expect(connection.ports.operations_api).to.equal(hdb_port);",
-									"    pm.expect(connection.ports.clustering).to.equal(clustering_port);",
+									"    pm.expect(connection.name).to.equal(node1_name);",
 									"    pm.expect(connection.subscriptions).to.have.deep.members([",
 									"            {",
 									"                \"schema\": \"incredible_bulk\",",
@@ -11460,13 +11518,11 @@
 									"            }",
 									"        ]",
 									"    )",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('hdb_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('node_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('platform');",
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -11778,7 +11834,7 @@
 					"response": []
 				},
 				{
-					"name": "Csv file load node 1",
+					"name": "Csv file load node 1 **",
 					"event": [
 						{
 							"listen": "test",
@@ -18748,7 +18804,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Records inserted into plexus node 2', () => {",
+									"pm.test('Node-1 unchanged', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response).to.eql([",
 									"    {",
@@ -18766,6 +18822,10 @@
 									"    { ",
 									"        \"id\":\"4\",",
 									"        \"test\":\"He wishes to test me!\"",
+									"    },",
+									"    {",
+									"        \"id\": \"1-remove\",",
+									"        \"test\": \"this is a good test of remove_node\"",
 									"    }",
 									"]);",
 									"});"
