@@ -212,6 +212,7 @@ function configValidator(config_json, skip_fs_validation = false) {
 					required: boolean.optional(),
 				}),
 			]),
+			threadRange: Joi.alternatives([array.optional(), string.optional()]),
 		}).required(),
 		threads: Joi.alternatives(
 			threads_constraints.optional(),
