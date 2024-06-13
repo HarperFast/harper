@@ -333,6 +333,9 @@ export function replicateOverWS(ws, options, authorization) {
 										schema_update_listener = forEachReplicatedDatabase(options, (database, database_name) => {
 											sendDatabaseInfo(null, database_name);
 										});
+										ws.on('close', () => {
+											schema_update_listener?.remove();
+										});
 									}
 								} catch (error) {
 									// if this fails, we should close the connection and indicate that we should not reconnect
@@ -554,6 +557,10 @@ export function replicateOverWS(ws, options, authorization) {
 									close();
 								}
 							});
+							ws.on('close', () => {
+								schema_update_listener?.remove();
+								db_removal_listener?.remove();
+							});
 						}
 						const encoder = new Encoder();
 						const current_transaction = { txnTime: 0 };
@@ -755,9 +762,6 @@ export function replicateOverWS(ws, options, authorization) {
 						audit_subscription = new EventEmitter();
 						audit_subscription.once('close', () => {
 							closed = true;
-							schema_update_listener?.remove();
-							db_removal_listener?.remove();
-							schema_update_listener = null;
 							subscription_to_hdb_nodes?.end();
 						});
 						for (let { startTime } of node_subscriptions) {
