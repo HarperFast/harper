@@ -3,6 +3,7 @@ import { tables, databases } from '../resources/databases';
 import { Compartment as CompartmentClass } from 'ses';
 import { readFile } from 'fs/promises';
 import { extname } from 'path';
+import { pathToFileURL } from 'url';
 
 // TODO: Make this configurable
 const SECURE_JS = false;
@@ -15,7 +16,8 @@ let compartment;
  * are just loaded with a standard import.
  * @param module_url
  */
-export async function secureImport(module_url) {
+export async function secureImport(file_path) {
+	const module_url = pathToFileURL(file_path).toString();
 	if (SECURE_JS) {
 		// note that we use a single compartment that is used by all the secure JS modules and we load it on-demand, only
 		// loading if necessary (since it is actually very heavy)

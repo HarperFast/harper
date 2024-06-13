@@ -119,16 +119,25 @@ export class Resource implements ResourceInterface {
 	static getNewId() {
 		return randomUUID();
 	}
+
+	/**
+	 * Create a new resource with the provided record and id. If no id is provided, it is auto-generated. Note that this
+	 * facilitates creating a new resource, but does not guarantee that this is not overwriting an existing entry.
+	 * @param id_prefix
+	 * @param record
+	 * @param context
+	 */
 	static create(id_prefix: Id, record: any, context: Context): Promise<Id>;
 	static create(record: any, context: Context): Promise<Id>;
 	static create(id_prefix: any, record: any, context?: Context): Promise<Id> {
 		let id;
-		if (id_prefix == null) id = this.getNewId();
-		else if (Array.isArray(id_prefix) && typeof id_prefix[0] !== 'object') id = [...id_prefix, this.getNewId()];
-		else if (typeof id_prefix !== 'object') id = [id_prefix, this.getNewId()];
+		if (id_prefix == null) id = record?.[this.primaryKey] ?? this.getNewId();
+		else if (Array.isArray(id_prefix) && typeof id_prefix[0] !== 'object')
+			id = record?.[this.primaryKey] ?? [...id_prefix, this.getNewId()];
+		else if (typeof id_prefix !== 'object') id = record?.[this.primaryKey] ?? [id_prefix, this.getNewId()];
 		else {
 			// two argument form, shift the arguments
-			id = this.getNewId();
+			id = id_prefix?.[this.primaryKey] ?? this.getNewId();
 			context = record || {};
 			record = id_prefix;
 		}

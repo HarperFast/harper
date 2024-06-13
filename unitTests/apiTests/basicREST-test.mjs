@@ -109,6 +109,23 @@ describe('test REST calls', () => {
 		assert.equal(response.status, 200);
 		assert.equal(response.data, true);
 	});
+	it('POST a new record with a specified id', async () => {
+		const headers = {
+			//authorization,
+		};
+		let response = await axios.post('http://localhost:9926/VariedProps/', {
+			name: 'new record with an id',
+			id: '12345678901234567890',
+		});
+		assert.equal(response.status, 201);
+		assert.equal(typeof response.data, 'string');
+		assert.equal(response.data, '12345678901234567890');
+		response = await axios.get('http://localhost:9926/VariedProps/12345678901234567890');
+		assert.equal(response.data.id, '12345678901234567890');
+		response = await axios.delete('http://localhost:9926/VariedProps/12345678901234567890');
+		assert.equal(response.status, 200);
+		assert.equal(response.data, true);
+	});
 	describe('describe', function () {
 		it('table describe with root url', async () => {
 			let response = await axios('http://localhost:9926/FourProp');

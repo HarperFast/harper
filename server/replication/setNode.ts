@@ -40,13 +40,17 @@ export async function setNode(req: object) {
 			{ url: record.url },
 			{
 				operation: OPERATIONS_ENUM.REMOVE_NODE_BACK,
-				name: record?.subscriptions?.length > 0 ?
-					getThisNodeName() // if we are doing a removal with explicit subscriptions, we only want to the other node to remove the record for this node
-					: node_record_id; // if we are doing a removal with full replication, we want the other node to remove its own record
+				name:
+					record?.subscriptions?.length > 0
+						? getThisNodeName() // if we are doing a removal with explicit subscriptions, we only want to the other node to remove the record for this node
+						: node_record_id, // if we are doing a removal with full replication, we want the other node to remove its own record
 			},
 			undefined
 		).catch((err) => {
-			hdb_logger.warn(`Error removing node from target node ${node_record_id}, if it is offline and we be online in the future, you may need to clean up this node manually, or retry:`, err);
+			hdb_logger.warn(
+				`Error removing node from target node ${node_record_id}, if it is offline and we be online in the future, you may need to clean up this node manually, or retry:`,
+				err
+			);
 		});
 
 		await hdb_nodes.delete(node_record_id);
