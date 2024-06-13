@@ -78,7 +78,6 @@ export async function setNode(req: object) {
 		throw new Error('replication url is missing from harperdb-config.yaml');
 	}
 
-	// TODO: Do we need to do all the cert things for update_node
 	// This is the record that will be added to the other nodes hdb_nodes table
 	const target_add_node_obj = {
 		operation: OPERATIONS_ENUM.ADD_NODE_BACK,
@@ -87,7 +86,6 @@ export async function setNode(req: object) {
 		url: this_url,
 		csr,
 		cert_auth,
-		//certificate: await readFile(get(CONFIG_PARAMS.TLS_CERTIFICATE), 'utf8'), //TODO: what cert should we pass here?
 	};
 
 	if (get(CONFIG_PARAMS.REPLICATION_NODENAME)) target_add_node_obj.node_name = get(CONFIG_PARAMS.REPLICATION_NODENAME);

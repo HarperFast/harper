@@ -29,12 +29,12 @@
 									"    pm.expect(response.set).to.eql([",
 									"        \"wss://127.0.0.9:9925\",",
 									"        {",
-									"            \"host\": \"127.0.0.2\",",
-									"            \"port\": 12345",
+									"            \"host\": node2_host,",
+									"            \"port\": clustering_port",
 									"        },",
 									"        {",
-									"            \"hostname\": \"127.0.0.2\",",
-									"            \"port\": 12345",
+									"            \"hostname\": node2_host,",
+									"            \"port\": clustering_port",
 									"        }",
 									"    ]);",
 									"    pm.expect(response.skipped).to.eql([]);",
@@ -156,6 +156,140 @@
 							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restart node 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Node 2 restarted', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"Restarting HarperDB. This may take up to 60 seconds.\")",
+									"});",
+									"",
+									"setTimeout(()=>{}, 20000)",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restart node 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Node 1 restarted', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"Restarting HarperDB. This may take up to 60 seconds.\")",
+									"});",
+									"",
+									"setTimeout(()=>{}, 20000)",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE1_HOST}}"
 							],
 							"port": "{{HDB_PORT}}"
 						}
@@ -321,13 +455,14 @@
 									"    const response = pm.response.json();",
 									"    const node2_host = pm.environment.get('NODE2_HOST');",
 									"    const clustering_port = parseInt(pm.environment.get('CLUSTERING_PORT'));",
+									"    pm.expect(response.replication.routes[0]).to.eql(\"wss://127.0.0.9:9925\")",
 									"",
-									"    pm.expect(response.replication.routes[0]).to.eql({",
+									"    pm.expect(response.replication.routes[1]).to.eql({",
 									"        'host': node2_host,",
 									"        'port': clustering_port",
 									"    });",
 									"",
-									"    pm.expect(response.replication.routes[1]).to.eql({",
+									"    pm.expect(response.replication.routes[2]).to.eql({",
 									"        'hostname': node2_host,",
 									"        'port': clustering_port",
 									"    });",
@@ -1030,6 +1165,7 @@
 									"pm.test('Log has correct number of records', () => {",
 									"    pm.expect(response.length).to.equal(3)",
 									"})",
+									"const user = pm.environment.get('USERNAME')",
 									"",
 									"pm.test('Insert transaction log is correct', () => {",
 									"    const insert_tx = response[0];",
@@ -1037,7 +1173,7 @@
 									"    const record_2 = insert_tx.records[1];",
 									"",
 									"    pm.expect(insert_tx.operation).to.equal('upsert');",
-									"    pm.expect(insert_tx.user_name).to.equal('admin');",
+									"    pm.expect(insert_tx.user_name).to.equal(user);",
 									"    pm.expect(insert_tx).to.haveOwnProperty('timestamp');",
 									"    pm.expect(record_1.id).to.equal(1);",
 									"    pm.expect(record_1.name).to.equal('Hen Solo');",
@@ -1057,7 +1193,7 @@
 									"    const update_tx = response[1];",
 									"",
 									"    pm.expect(update_tx.operation).to.equal('upsert');",
-									"    pm.expect(update_tx.user_name).to.equal('admin');",
+									"    pm.expect(update_tx.user_name).to.equal(user);",
 									"    pm.expect(update_tx).to.haveOwnProperty('timestamp');",
 									"    pm.expect(update_tx.records[0].id).to.equal(2);",
 									"    pm.expect(update_tx.records[0].lays_eggs).to.equal(true);",
@@ -1068,7 +1204,7 @@
 									"    const delete_tx = response[2];",
 									"console.log({delete_tx});",
 									"    pm.expect(delete_tx.operation).to.equal('delete');",
-									"    pm.expect(delete_tx.user_name).to.equal('admin');",
+									"    pm.expect(delete_tx.user_name).to.equal(user);",
 									"    pm.expect(delete_tx).to.haveOwnProperty('timestamp');",
 									"    pm.expect(delete_tx.hash_values.length).to.equal(1);",
 									"    pm.expect(delete_tx.hash_values[0]).to.equal(2)",
@@ -1223,9 +1359,10 @@
 									"    const insert_tx = response[0];",
 									"    const record_1 = insert_tx.records[0];",
 									"    const record_2 = insert_tx.records[1];",
+									"    const user = pm.environment.get('USERNAME')",
 									"",
 									"    pm.expect(insert_tx.operation).to.equal('upsert');",
-									"    pm.expect(insert_tx.user_name).to.equal('admin');",
+									"    pm.expect(insert_tx.user_name).to.equal(user);",
 									"    pm.expect(insert_tx).to.haveOwnProperty('timestamp');",
 									"    pm.expect(record_1.id).to.equal(1);",
 									"    pm.expect(record_1.name).to.equal('Hen Solo');",
@@ -1308,11 +1445,13 @@
 									"    pm.expect(response.length).to.equal(2)",
 									"})",
 									"",
+									"const user = pm.environment.get('USERNAME')",
+									"",
 									"pm.test('Update transaction log is correct', () => {",
 									"    const update_tx = response[0];",
 									"",
 									"    pm.expect(update_tx.operation).to.equal('upsert');",
-									"    pm.expect(update_tx.user_name).to.equal('admin');",
+									"    pm.expect(update_tx.user_name).to.equal(user);",
 									"    pm.expect(update_tx).to.haveOwnProperty('timestamp');",
 									"    pm.expect(update_tx.records[0].id).to.equal(2);",
 									"    pm.expect(update_tx.records[0].lays_eggs).to.equal(true);",
@@ -1323,7 +1462,7 @@
 									"    const delete_tx = response[1];",
 									"",
 									"    pm.expect(delete_tx.operation).to.equal('delete');",
-									"    pm.expect(delete_tx.user_name).to.equal('admin');",
+									"    pm.expect(delete_tx.user_name).to.equal(user);",
 									"    pm.expect(delete_tx).to.haveOwnProperty('timestamp');",
 									"    pm.expect(delete_tx.hash_values.length).to.equal(1);",
 									"    pm.expect(delete_tx.hash_values[0]).to.equal(2)",
@@ -1395,13 +1534,15 @@
 									"    pm.expect(response.length).to.equal(2)",
 									"})",
 									"",
+									"const user = pm.environment.get('USERNAME')",
+									"",
 									"pm.test('Read from and to is correct', () => {",
 									"    const insert_tx = response[0];",
 									"    const record_1 = insert_tx.records[0];",
 									"    const record_2 = insert_tx.records[1];",
 									"",
 									"    pm.expect(insert_tx.operation).to.equal('upsert');",
-									"    pm.expect(insert_tx.user_name).to.equal('admin');",
+									"    pm.expect(insert_tx.user_name).to.equal(user);",
 									"    pm.expect(insert_tx).to.haveOwnProperty('timestamp');",
 									"    pm.expect(record_1.id).to.equal(1);",
 									"    pm.expect(record_1.name).to.equal('Hen Solo');",
@@ -1421,7 +1562,7 @@
 									"    const update_tx = response[1];",
 									"",
 									"    pm.expect(update_tx.operation).to.equal('upsert');",
-									"    pm.expect(update_tx.user_name).to.equal('admin');",
+									"    pm.expect(update_tx.user_name).to.equal(user);",
 									"    pm.expect(update_tx).to.haveOwnProperty('timestamp');",
 									"    pm.expect(update_tx.records[0].id).to.equal(2);",
 									"    pm.expect(update_tx.records[0].lays_eggs).to.equal(true);",
@@ -1489,6 +1630,7 @@
 									"});",
 									"",
 									"const response = pm.response.json();",
+									"const user = pm.environment.get('USERNAME')",
 									"",
 									"pm.test('From, to and limit return one message', () => {",
 									"    pm.expect(response.length).to.equal(1)",
@@ -1500,7 +1642,7 @@
 									"    const record_2 = insert_tx.records[1];",
 									"",
 									"    pm.expect(insert_tx.operation).to.equal('upsert');",
-									"    pm.expect(insert_tx.user_name).to.equal('admin');",
+									"    pm.expect(insert_tx.user_name).to.equal(user);",
 									"    pm.expect(insert_tx).to.haveOwnProperty('timestamp');",
 									"    pm.expect(record_1.id).to.equal(1);",
 									"    pm.expect(record_1.name).to.equal('Hen Solo');",
@@ -2971,31 +3113,33 @@
 									"    pm.expect(response.node_name).to.equal(node1_name);",
 									"    pm.expect(response.is_enabled).to.equal(true);",
 									"    pm.expect(response.connections.length).to.equal(1);",
-									"    pm.expect(connection.node_name).to.equal(node2_name);",
-									"    pm.expect(connection.ports.operations_api).to.equal(hdb_port);",
-									"    pm.expect(connection.ports.clustering).to.equal(clustering_port);",
+									"    pm.expect(connection.name).to.equal(node2_name);",
 									"    pm.expect(connection.subscriptions).to.have.deep.members([",
-									"            {",
-									"                \"schema\": \"radio\",",
-									"                \"table\": \"genre\",",
-									"                \"publish\": false,",
-									"                \"subscribe\": true",
-									"            },",
-									"            {",
-									"                \"schema\": \"listeners\",",
-									"                \"table\": \"address\",",
-									"                \"publish\": true,",
-									"                \"subscribe\": false",
-									"            }",
-									"        ]",
+									"                {",
+									"                    \"schema\": \"radio\",",
+									"                    \"table\": \"genre\",",
+									"                    \"publish\": false,",
+									"                    \"subscribe\": true",
+									"                },",
+									"                {",
+									"                    \"schema\": \"listeners\",",
+									"                    \"table\": \"address\",",
+									"                    \"publish\": true,",
+									"                    \"subscribe\": false",
+									"                },",
+									"                {",
+									"                    \"schema\": \"radio\",",
+									"                    \"table\": \"head\",",
+									"                    \"subscribe\": true,",
+									"                    \"publish\": true",
+									"                }",
+									"            ]",
 									"    )",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('hdb_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('node_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('platform');",
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -3064,31 +3208,33 @@
 									"    pm.expect(response.node_name).to.equal(node2_name);",
 									"    pm.expect(response.is_enabled).to.equal(true);",
 									"    pm.expect(response.connections.length).to.equal(1);",
-									"    pm.expect(connection.node_name).to.equal(node1_name);",
-									"    pm.expect(connection.ports.operations_api).to.equal(hdb_port);",
-									"    pm.expect(connection.ports.clustering).to.equal(clustering_port);",
+									"    pm.expect(connection.name).to.equal(node1_name);",
 									"    pm.expect(connection.subscriptions).to.have.deep.members([",
-									"            {",
-									"                \"schema\": \"radio\",",
-									"                \"table\": \"genre\",",
-									"                \"publish\": true,",
-									"                \"subscribe\": false",
-									"            },",
-									"            {",
-									"                \"schema\": \"listeners\",",
-									"                \"table\": \"address\",",
-									"                \"publish\": false,",
-									"                \"subscribe\": true",
-									"            }",
-									"        ]",
+									"                {",
+									"                    \"schema\": \"radio\",",
+									"                    \"table\": \"genre\",",
+									"                    \"publish\": true,",
+									"                    \"subscribe\": false",
+									"                },",
+									"                {",
+									"                    \"schema\": \"listeners\",",
+									"                    \"table\": \"address\",",
+									"                    \"publish\": false,",
+									"                    \"subscribe\": true",
+									"                },",
+									"                {",
+									"                    \"schema\": \"radio\",",
+									"                    \"table\": \"head\",",
+									"                    \"subscribe\": true,",
+									"                    \"publish\": true",
+									"                }",
+									"            ]",
 									"    )",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('hdb_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('node_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('platform');",
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -5452,31 +5598,21 @@
 									"    pm.expect(response.node_name).to.equal(node1_name);",
 									"    pm.expect(response.is_enabled).to.equal(true);",
 									"    pm.expect(response.connections.length).to.equal(1);",
-									"    pm.expect(connection.node_name).to.equal(node2_name);",
-									"    pm.expect(connection.ports.operations_api).to.equal(hdb_port);",
-									"    pm.expect(connection.ports.clustering).to.equal(clustering_port);",
+									"    pm.expect(connection.name).to.equal(node2_name);",
 									"    pm.expect(connection.subscriptions).to.have.deep.members([",
 									"            {",
 									"                \"schema\": \"radio\",",
 									"                \"table\": \"genre\",",
 									"                \"publish\": true,",
 									"                \"subscribe\": false",
-									"            },",
-									"            {",
-									"                \"schema\": \"listeners\",",
-									"                \"table\": \"address\",",
-									"                \"publish\": true,",
-									"                \"subscribe\": false",
 									"            }",
 									"        ]",
 									"    )",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('hdb_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('node_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('platform');",
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -5545,31 +5681,21 @@
 									"    pm.expect(response.node_name).to.equal(node2_name);",
 									"    pm.expect(response.is_enabled).to.equal(true);",
 									"    pm.expect(response.connections.length).to.equal(1);",
-									"    pm.expect(connection.node_name).to.equal(node1_name);",
-									"    pm.expect(connection.ports.operations_api).to.equal(hdb_port);",
-									"    pm.expect(connection.ports.clustering).to.equal(clustering_port);",
+									"    pm.expect(connection.name).to.equal(node1_name);",
 									"    pm.expect(connection.subscriptions).to.have.deep.members([",
 									"            {",
 									"                \"schema\": \"radio\",",
 									"                \"table\": \"genre\",",
 									"                \"publish\": false,",
 									"                \"subscribe\": true",
-									"            },",
-									"            {",
-									"                \"schema\": \"listeners\",",
-									"                \"table\": \"address\",",
-									"                \"publish\": false,",
-									"                \"subscribe\": true",
 									"            }",
 									"        ]",
 									"    )",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('hdb_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('node_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('platform');",
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -7633,9 +7759,7 @@
 									"    pm.expect(response.node_name).to.equal(node1_name);",
 									"    pm.expect(response.is_enabled).to.equal(true);",
 									"    pm.expect(response.connections.length).to.equal(1);",
-									"    pm.expect(connection.node_name).to.equal(node2_name);",
-									"    pm.expect(connection.ports.operations_api).to.equal(hdb_port);",
-									"    pm.expect(connection.ports.clustering).to.equal(clustering_port);",
+									"    pm.expect(connection.name).to.equal(node2_name);",
 									"    pm.expect(connection.subscriptions).to.have.deep.members([",
 									"            {",
 									"                \"schema\": \"dev\",",
@@ -7645,13 +7769,11 @@
 									"            }",
 									"        ]",
 									"    )",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('hdb_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('node_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('platform');",
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -7714,15 +7836,11 @@
 									"    const node1_name = pm.environment.get(\"NODE1_NAME\");",
 									"    const node2_name = pm.environment.get(\"NODE2_NAME\");",
 									"    const connection = response.connections[0];",
-									"    const hdb_port = parseInt(pm.environment.get('HDB_PORT'));",
-									"    const clustering_port = parseInt(pm.environment.get('CLUSTERING_PORT'));",
 									"",
 									"    pm.expect(response.node_name).to.equal(node2_name);",
 									"    pm.expect(response.is_enabled).to.equal(true);",
 									"    pm.expect(response.connections.length).to.equal(1);",
-									"    pm.expect(connection.node_name).to.equal(node1_name);",
-									"    pm.expect(connection.ports.operations_api).to.equal(hdb_port);",
-									"    pm.expect(connection.ports.clustering).to.equal(clustering_port);",
+									"    pm.expect(connection.name).to.equal(node1_name);",
 									"    pm.expect(connection.subscriptions).to.have.deep.members([",
 									"            {",
 									"                \"schema\": \"dev\",",
@@ -7732,13 +7850,12 @@
 									"            }",
 									"        ]",
 									"    )",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('hdb_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('node_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('platform');",
+									"",
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -13278,6 +13395,204 @@
 					"response": []
 				},
 				{
+					"name": "Restart node 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Node 1 restarted', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"Restarting HarperDB. This may take up to 60 seconds.\")",
+									"});",
+									"",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restart node 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Node 3 restarted', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"Restarting HarperDB. This may take up to 60 seconds.\")",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE3_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restart node 4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Node 1 restarted', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"Restarting HarperDB. This may take up to 60 seconds.\")",
+									"});",
+									"",
+									"setTimeout(()=>{}, 20000)",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE4_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "Create schema 'four' node 2",
 					"event": [
 						{
@@ -13774,7 +14089,7 @@
 									"    pm.expect(response.connections.length).to.equal(3);",
 									"",
 									"    response.connections.forEach((node) => {",
-									"        if (node.node_name === node1_name) {",
+									"        if (node.name === node1_name) {",
 									"            pm.expect(node.subscriptions).to.have.deep.members([",
 									"                {",
 									"                    \"schema\": \"four\",",
@@ -13789,7 +14104,7 @@
 									"                    \"subscribe\": true",
 									"                }",
 									"            ])",
-									"        } else if (node.node_name === node3_name) {",
+									"        } else if (node.name === node3_name) {",
 									"            pm.expect(node.subscriptions).to.have.deep.members([",
 									"                {",
 									"                    \"schema\": \"four\",",
@@ -13804,7 +14119,7 @@
 									"                    \"subscribe\": true",
 									"                }",
 									"            ])",
-									"        } else if (node.node_name === node4_name) {",
+									"        } else if (node.name === node4_name) {",
 									"            pm.expect(node.subscriptions).to.have.deep.members([",
 									"                {",
 									"                    \"schema\": \"four\",",
@@ -13820,7 +14135,8 @@
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						},
 						{
@@ -13829,7 +14145,8 @@
 								"exec": [
 									"setTimeout(() => {}, 2000)"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -13892,15 +14209,11 @@
 									"    const node1_name = pm.environment.get(\"NODE1_NAME\");",
 									"    const node2_name = pm.environment.get(\"NODE2_NAME\");",
 									"    const connection = response.connections[0];",
-									"    const hdb_port = parseInt(pm.environment.get('HDB_PORT'));",
-									"    const clustering_port = parseInt(pm.environment.get('CLUSTERING_PORT'));",
 									"",
 									"    pm.expect(response.node_name).to.equal(node1_name);",
 									"    pm.expect(response.is_enabled).to.equal(true);",
 									"    pm.expect(response.connections.length).to.equal(1);",
-									"    pm.expect(connection.node_name).to.equal(node2_name);",
-									"    pm.expect(connection.ports.operations_api).to.equal(hdb_port);",
-									"    pm.expect(connection.ports.clustering).to.equal(clustering_port);",
+									"    pm.expect(connection.name).to.equal(node2_name);",
 									"    pm.expect(connection.subscriptions).to.have.deep.members([",
 									"                {",
 									"                    \"schema\": \"four\",",
@@ -13916,13 +14229,11 @@
 									"                }",
 									"        ]",
 									"    )",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('hdb_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('node_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('platform');",
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -13985,15 +14296,11 @@
 									"    const node4_name = pm.environment.get(\"NODE4_NAME\");",
 									"    const node2_name = pm.environment.get(\"NODE2_NAME\");",
 									"    const connection = response.connections[0];",
-									"    const hdb_port = parseInt(pm.environment.get('HDB_PORT'));",
-									"    const clustering_port = parseInt(pm.environment.get('CLUSTERING_PORT'));",
 									"",
 									"    pm.expect(response.node_name).to.equal(node4_name);",
 									"    pm.expect(response.is_enabled).to.equal(true);",
 									"    pm.expect(response.connections.length).to.equal(1);",
-									"    pm.expect(connection.node_name).to.equal(node2_name);",
-									"    pm.expect(connection.ports.operations_api).to.equal(hdb_port);",
-									"    pm.expect(connection.ports.clustering).to.equal(clustering_port);",
+									"    pm.expect(connection.name).to.equal(node2_name);",
 									"    pm.expect(connection.subscriptions).to.have.deep.members([",
 									"                {",
 									"                    \"schema\": \"four\",",
@@ -14003,13 +14310,11 @@
 									"                }",
 									"        ]",
 									"    )",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('hdb_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('node_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('platform');",
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -14072,15 +14377,11 @@
 									"    const node3_name = pm.environment.get(\"NODE3_NAME\");",
 									"    const node2_name = pm.environment.get(\"NODE2_NAME\");",
 									"    const connection = response.connections[0];",
-									"    const hdb_port = parseInt(pm.environment.get('HDB_PORT'));",
-									"    const clustering_port = parseInt(pm.environment.get('CLUSTERING_PORT'));",
 									"",
 									"    pm.expect(response.node_name).to.equal(node3_name);",
 									"    pm.expect(response.is_enabled).to.equal(true);",
 									"    pm.expect(response.connections.length).to.equal(1);",
-									"    pm.expect(connection.node_name).to.equal(node2_name);",
-									"    pm.expect(connection.ports.operations_api).to.equal(hdb_port);",
-									"    pm.expect(connection.ports.clustering).to.equal(clustering_port);",
+									"    pm.expect(connection.name).to.equal(node2_name);",
 									"    pm.expect(connection.subscriptions).to.have.deep.members([",
 									"                {",
 									"                    \"schema\": \"four\",",
@@ -14096,13 +14397,11 @@
 									"                }",
 									"        ]",
 									"    )",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('hdb_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('node_version');",
-									"    pm.expect(connection.system_info).to.haveOwnProperty('platform');",
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -14292,13 +14591,13 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
+									"pm.test('Status code is 500', () => {",
+									"    pm.response.to.have.status(500);",
 									"});",
 									"",
 									"pm.test('Confirm bird insert not on node 3', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.length).to.equal(0);",
+									"    pm.expect(response.error).to.equal(\"unknown column type\");",
 									"});"
 								],
 								"type": "text/javascript",
@@ -14818,13 +15117,13 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
+									"pm.test('Status code is 500', () => {",
+									"    pm.response.to.have.status(500);",
 									"});",
 									"",
 									"pm.test('Confirm bird insert not on node 3', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.length).to.equal(0);",
+									"    pm.expect(response.error).to.equal(\"unknown column type\");",
 									"});"
 								],
 								"type": "text/javascript",
@@ -16222,69 +16521,6 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"node_name\":\"{{NODE4_NAME}}\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
-							"host": [
-								"{{NODE2_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Configure cluster node 2 drop all nodes",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test('Configure cluster success message', () => {",
-									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"Configure cluster complete.\");",
-									"});"
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"configure_cluster\",\n    \"connections\": []\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -19002,6 +19238,427 @@
 							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Remove node 2 on node 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"node_name\": \"{{NODE2_NAME}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Remove node 3 on node 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"node_name\": \"{{NODE3_NAME}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Remove node 4 on node 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"node_name\": \"{{NODE4_NAME}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Remove node 2 on node 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"node_name\": \"{{NODE2_NAME}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Remove node 4 on node 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"node_name\": \"{{NODE4_NAME}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE3_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Remove node 2 on node 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"node_name\": \"{{NODE2_NAME}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE3_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Remove node 2 on node 4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"node_name\": \"{{NODE2_NAME}}\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE4_HOST}}"
 							],
 							"port": "{{HDB_PORT}}"
 						}
