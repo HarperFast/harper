@@ -884,6 +884,10 @@ export function makeTable(options) {
 			}
 		}
 
+		getMetadata() {
+			return this[ENTRY_PROPERTY];
+		}
+
 		invalidate(options) {
 			const context = this[CONTEXT];
 			const id = this[ID_PROPERTY];

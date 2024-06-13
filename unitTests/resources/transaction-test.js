@@ -169,6 +169,7 @@ describe('Transactions', () => {
 			assert.equal(entity.get('new prop 1'), 'new value 1');
 			assert.equal(entity.get('new prop 2'), 'new value 2');
 			assert.equal(published_messages.length, 4);
+			assert(entity.getMetadata().version > 1);
 		});
 
 		it('Can merge replication updates', async function () {
