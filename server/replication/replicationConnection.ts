@@ -45,6 +45,7 @@ export const OPERATION_REQUEST = 136;
 const OPERATION_RESPONSE = 137;
 const SEQUENCE_ID_UPDATE = 143;
 const COMMITTED_UPDATE = 144;
+const DB_SCHEMA = 145;
 export const table_update_listeners = new Map();
 export const database_subscriptions = new Map();
 const DEBUG_MODE = true;
@@ -263,7 +264,7 @@ export function replicateOverWS(ws, options, authorization) {
 	let outstanding_commits = 0;
 	let replication_paused;
 	let subscription_request, audit_subscription;
-	let remote_sequence_number;
+	let node_subscriptions;
 	let remote_short_id_to_local_id: Map<number, number>;
 	ws.on('message', (body) => {
 		// A replication header should consist of:
@@ -283,23 +284,6 @@ export function replicateOverWS(ws, options, authorization) {
 				const [command, data, table_id] = message;
 				switch (command) {
 					case NODE_NAME: {
-						logger.info?.(
-							connection_id,
-							'Received table definitions for',
-							message[3].map((t) => t.table)
-						);
-						for (let table_definition of message[3]) {
-							const database_name = message[2];
-							table_definition.database = database_name;
-							// TODO: We need to check the permissions for the table before we just allow creating new tables
-							if (database_name === 'system') {
-								// for system connection, we only update new tables
-								if (!databases[database_name]?.[table_definition.table])
-									ensureTableIfChanged(table_definition, databases[database_name]?.[table_definition.table]);
-							} else {
-								ensureTableIfChanged(table_definition, databases[database_name]?.[table_definition.table]);
-							}
-						}
 						if (data) {
 							// this is the node name
 							if (remote_node_name) {
@@ -331,7 +315,7 @@ export function replicateOverWS(ws, options, authorization) {
 									setDatabase((database_name = message[2]));
 									if (database_name === 'system') {
 										schema_update_listener = forEachReplicatedDatabase(options, (database, database_name) => {
-											sendDatabaseInfo(null, database_name);
+											sendDBSchema(database_name);
 										});
 										ws.on('close', () => {
 											schema_update_listener?.remove();
@@ -347,7 +331,26 @@ export function replicateOverWS(ws, options, authorization) {
 							logger.info?.(connection_id, 'setDatabase', database_name, tables && Object.keys(tables));
 							sendSubscriptionRequestUpdate();
 						}
-
+						break;
+					}
+					case DB_SCHEMA: {
+						logger.info?.(
+							connection_id,
+							'Received table definitions for',
+							data.map((t) => t.table)
+						);
+						for (let table_definition of data) {
+							const database_name = message[2];
+							table_definition.database = database_name;
+							// TODO: We need to check the permissions for the table before we just allow creating new tables
+							if (database_name === 'system') {
+								// for system connection, we only update new tables
+								if (!databases[database_name]?.[table_definition.table])
+									ensureTableIfChanged(table_definition, databases[database_name]?.[table_definition.table]);
+							} else {
+								ensureTableIfChanged(table_definition, databases[database_name]?.[table_definition.table]);
+							}
+						}
 						break;
 					}
 					case DISCONNECT:
@@ -455,7 +458,7 @@ export function replicateOverWS(ws, options, authorization) {
 						});
 						break;
 					case SUBSCRIPTION_REQUEST:
-						const [action, db, , , node_subscriptions] = message;
+						node_subscriptions = data;
 						// permission check to make sure that this node is allowed to subscribe to this database, that is that
 						// we have publish permission for this node/database
 						let subscription_to_hdb_nodes, when_subscribed_to_hdb_nodes;
@@ -542,10 +545,11 @@ export function replicateOverWS(ws, options, authorization) {
 								node_subscriptions.map(({ name }) => name),
 							])
 						);
+						sendDBSchema(database_name);
 						if (!schema_update_listener) {
 							schema_update_listener = onUpdatedTable((table) => {
-								if (table.database === database_name) {
-									sendDatabaseInfo(null, database_name);
+								if (table.databaseName === database_name) {
+									sendDBSchema(database_name);
 								}
 							});
 							db_removal_listener = onRemovedDB((db) => {
@@ -1020,8 +1024,7 @@ export function replicateOverWS(ws, options, authorization) {
 		);
 
 		if (node_subscriptions) {
-			if (node_subscriptions.length > 0)
-				ws.send(encode([SUBSCRIPTION_REQUEST, database_name, last_sequence_id_received, null, node_subscriptions]));
+			if (node_subscriptions.length > 0) ws.send(encode([SUBSCRIPTION_REQUEST, node_subscriptions]));
 			// no nodes means we are unsubscribing/disconnecting
 			else close(1008, 'No nodes to subscribe to');
 		}
@@ -1054,10 +1057,10 @@ export function replicateOverWS(ws, options, authorization) {
 			if (!this_node_name) throw new Error('Node name not defined');
 			else throw new Error('Should not connect to self', this_node_name);
 		}
-		sendDatabaseInfo(this_node_name, database_name);
+		sendNodeDBName(this_node_name, database_name);
 		return true;
 	}
-	function sendDatabaseInfo(this_node_name, database_name) {
+	function sendNodeDBName(this_node_name, database_name) {
 		let database = getDatabases()?.[database_name];
 		let tables = [];
 		for (let table_name in database) {
@@ -1072,14 +1075,33 @@ export function replicateOverWS(ws, options, authorization) {
 				})),
 			});
 		}
-		logger.trace?.(
-			'Sending database info for node',
-			this_node_name,
-			'database name',
-			database_name,
-			Object.keys(tables)
-		);
+		logger.trace?.('Sending database info for node', this_node_name, 'database name', database_name);
 		ws.send(encode([NODE_NAME, this_node_name, database_name, tables]));
+	}
+	function sendDBSchema(database_name) {
+		let database = getDatabases()?.[database_name];
+		let tables = [];
+		for (let table_name in database) {
+			if (
+				node_subscriptions &&
+				!node_subscriptions.some((node) => {
+					return node.replicateByDefault ? !node.tables.includes(table_name) : node.tables.includes(table_name);
+				})
+			)
+				continue;
+			let table = database[table_name];
+			tables.push({
+				table: table_name,
+				schemaDefined: table.schemaDefined,
+				attributes: table.attributes.map((attr) => ({
+					name: attr.name,
+					type: attr.type,
+					isPrimaryKey: attr.isPrimaryKey,
+				})),
+			});
+		}
+		logger.trace?.('Sending database schema for node', 'database name', database_name, Object.keys(tables));
+		ws.send(encode([DB_SCHEMA, tables, database_name]));
 	}
 
 	return {
