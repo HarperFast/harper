@@ -260,7 +260,7 @@ export async function sendOperationToNode(node, operation, options) {
 		});
 	});
 }
-export async function subscribeToNode(request) {
+export function subscribeToNode(request) {
 	try {
 		let subscription_to_table = database_subscriptions.get(request.database);
 		if (!subscription_to_table) {
@@ -273,7 +273,7 @@ export async function subscribeToNode(request) {
 			subscription_to_table.ready = ready;
 			database_subscriptions.set(request.database, subscription_to_table);
 		}
-		let connection = getConnection(request.nodes[0].url, await subscription_to_table, request.database);
+		let connection = getConnection(request.nodes[0].url, subscription_to_table, request.database);
 		if (request.nodes[0].name === undefined) connection.tentativeNode = request.nodes[0]; // we don't have the node name yet
 		connection.subscribe(
 			request.nodes.filter((node) => {

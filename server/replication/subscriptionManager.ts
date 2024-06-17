@@ -126,25 +126,20 @@ export async function startOnMainThread(options) {
 				} else {
 					onDatabase(database_name, false);
 				}
-				/*			// check to see if there are any explicit subscriptions
-			if (node.subscriptions) {
-					// if we can't find any more granular subscriptions, then we skip this database
-					// check to see if we have any explicit node subscriptions
-					if (
-							node.subscriptions.some((sub) => (sub.database || sub.schema) === database_name && sub.subscription) ||
-							// otherwise check if there is explicit table subscriptions
-							hasExplicitlyReplicatedTable(database_name)
-						)
-						onDatabase(database_name, false);
-				)
-					continue;
-
-			} else {
-				database = typeof database === 'object' ? database : databases[database_name];
-				onDatabase(database_name, true);
-			}*/
 			}
 		);
+		// check to see if there are any explicit subscriptions to databases that don't exist yet
+		if (node.subscriptions) {
+			// if we can't find any more granular subscriptions, then we skip this database
+			// check to see if we have any explicit node subscriptions
+			for (let sub of node.subscriptions) {
+				let database_name = sub.database || sub.schema;
+				if (!databases[database_name]) {
+					logger.warn(`Database ${database_name} not found for node ${node.name}, making a subscription anyway`);
+					onDatabase(database_name, false);
+				}
+			}
+		}
 
 		function onDatabase(database_name, tables_replicate_by_default) {
 			const existing_entry = db_replication_workers.get(database_name);

@@ -456,6 +456,9 @@ export function database({ database: database_name, table: table_name }) {
 		root_store = open(env_init);
 		database_envs.set(path, root_store);
 	}
+	if (!root_store.auditStore) {
+		root_store.auditStore = openAuditStore(root_store);
+	}
 	return root_store;
 }
 /**
@@ -544,9 +547,6 @@ export function table({
 		Table.attributes.splice(0, Table.attributes.length, ...attributes);
 	} else {
 		let audit_store = root_store.auditStore;
-		if (!audit_store) {
-			audit_store = openAuditStore(root_store);
-		}
 		primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
 		primary_key = primary_key_attribute.name;
 		primary_key_attribute.is_hash_attribute = true;
