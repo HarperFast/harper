@@ -837,8 +837,8 @@ export function replicateOverWS(ws, options, authorization) {
 										}
 									}
 									for (const { key, value: audit_entry } of audit_store.getRange({
-										start: current_sequence_id || 1,
-										exclusiveStart: true,
+										start: (current_sequence_id || 1) + 1 / 4096, // TODO: Once exclusive start bug is fixed, remove the +1/4096
+										//exclusiveStart: true,
 										snapshot: false, // don't want to use a snapshot, and we want to see new entries
 									})) {
 										if (closed) return;
