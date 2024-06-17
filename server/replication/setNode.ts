@@ -27,7 +27,9 @@ export async function setNode(req: object) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 	const { url } = req;
-
+	if (!url) {
+		throw new Error('URL required for add_node operation');
+	}
 	if (req.operation === 'remove_node') {
 		const node_record_id = req.node_name ?? urlToNodeName(url);
 		const hdb_nodes = getHDBNodeTable();
