@@ -672,11 +672,11 @@ async function writeDefaultCertsToFile() {
 
 	const pub_cert = await certificate_table.get(certificates_terms.CERT_NAME.DEFAULT);
 	const pub_cert_path = path.join(keys_path, certificates_terms.CERTIFICATE_PEM_NAME);
-	await fs.writeFile(pub_cert_path, pub_cert.certificate);
+	if (!(await fs.exists(pub_cert_path))) await fs.writeFile(pub_cert_path, pub_cert.certificate);
 
-	const ca_cert = await certificate_table.get(certificates_terms.CERT_NAME.CA);
+	const ca_cert = await certificate_table.get(certificates_terms.CERT_NAME['DEFAULT-CA']);
 	const ca_cert_path = path.join(keys_path, certificates_terms.CA_PEM_NAME);
-	await fs.writeFile(ca_cert_path, ca_cert.certificate);
+	if (!(await fs.exists(ca_cert_path))) await fs.writeFile(ca_cert_path, ca_cert.certificate);
 }
 
 /**
