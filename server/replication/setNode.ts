@@ -16,6 +16,8 @@ const validation_schema = Joi.object({
 	url: Joi.string(),
 });
 
+// Test updating, can it add to existing
+
 /**
  * Can add, update or remove a node from replication
  * @param req
