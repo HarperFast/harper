@@ -347,6 +347,30 @@ export async function ensureNode(name: string, node) {
 	} else {
 		for (let key in node) {
 			if (existing[key] !== node[key]) {
+				// Update any existing subscriptions or append to subscriptions array
+				if (key === 'subscriptions') {
+					let new_subs = [];
+					const existing_subs = cloneDeep(existing[key]);
+					for (const new_sub of node[key]) {
+						let match_found = false;
+						for (const existing_sub of existing_subs) {
+							if (
+								(new_sub.database === existing_sub.database || new_sub.schema === existing_sub.schema) &&
+								new_sub.table === existing_sub.table
+							) {
+								existing_sub.publish = new_sub.publish;
+								existing_sub.subscribe = new_sub.subscribe;
+								match_found = true;
+								break;
+							}
+						}
+
+						if (!match_found) new_subs.push(new_sub);
+					}
+
+					node.subscriptions = [...existing_subs, ...new_subs];
+				}
+
 				logger.info(`Updating node ${name} at ${node.url}`);
 				await table.patch(node);
 				break;
