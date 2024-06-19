@@ -349,7 +349,7 @@ export async function ensureNode(name: string, node) {
 			if (existing[key] !== node[key]) {
 				// Update any existing subscriptions or append to subscriptions array
 				if (key === 'subscriptions') {
-					let new_subs = [];
+					const new_subs = [];
 					const existing_subs = cloneDeep(existing[key]);
 					for (const new_sub of node[key]) {
 						let match_found = false;

@@ -4,9 +4,8 @@ const path = require('path');
 const fs = require('fs-extra');
 const forge = require('node-forge');
 const net = require('net');
-let { generateKeyPair, X509Certificate, createPrivateKey } = require('crypto');
+let { generateKeyPair, X509Certificate } = require('crypto');
 const util = require('util');
-const _ = require('lodash');
 generateKeyPair = util.promisify(generateKeyPair);
 const pki = forge.pki;
 const hdb_logger = require('../utility/logging/harper_logger');
@@ -37,14 +36,11 @@ Object.assign(exports, {
 	updateConfigCert,
 	createCsr,
 	signCertificate,
-	generateCertsKeys,
 	getCertsKeys,
 	setCertTable,
 	loadCertificates,
 	setDefaultCertsKeys,
 	createTLSSelector,
-	verifyCert,
-	verifyCertAgainstCAs,
 	writeDefaultCertsToFile,
 });
 
@@ -100,46 +96,6 @@ function getCertTable() {
 	return certificate_table;
 }
 
-/**
- * This function will use preference enums to pick which cert has the highest preference and return that cert.
- * @param rep_host
- * @returns {Promise<{app: {name: undefined, cert: undefined}, app_private_key, ca_certs: *[], ops_ca: {name: undefined, cert: undefined}, ops: {name: undefined, cert: undefined}, app_ca: {name: undefined, cert: undefined}, ops_private_key, rep: {name: undefined, cert: undefined}}>}
- */
-
-async function getAllCertsKeys(preferred_name) {
-	getCertTable();
-	let preference = ca ? CA_CERT_PREFERENCE_APP : CERT_PREFERENCE_APP;
-	let best_cert, best_quality;
-	let ca_certs = new Set();
-	for await (const cert of certificate_table.search([])) {
-		if (cert.is_authority) ca_certs.add(cert.certificate);
-		else {
-			const { name, certificate } = cert;
-			let quality;
-			if (preferred_name === name) quality = 5;
-			else quality = preference[name] ?? 0;
-			if (quality > best_quality) {
-				best_cert = cert;
-				best_quality = quality;
-			}
-		}
-	}
-
-	// Add any CAs that might exist in hdb_nodes but not hdb_certificate
-	const nodes_table = getDatabases()['system']['hdb_nodes'];
-	for await (const node of nodes_table.search([])) {
-		if (node.ca) {
-			ca_certs.add(node.ca);
-		}
-	}
-
-	return (
-		best_cert && {
-			cas: Array.from(ca_certs),
-			...best_cert,
-		}
-	);
-}
 async function getCertsKeys(rep_host = undefined) {
 	await loadCertificates();
 	const app_private_pem = (await fs.exists(env_manager.get(hdb_terms.CONFIG_PARAMS.TLS_PRIVATEKEY)))
@@ -245,8 +201,10 @@ async function getCertsKeys(rep_host = undefined) {
 
 	return response;
 }
+
 let configured_certs_loaded;
 const private_keys = new Map();
+
 /**
  * This is responsible for loading any certificates that are in the harperdb-config.yaml file and putting them into the hdb_certificate table.
  * @return {*}
@@ -369,16 +327,15 @@ function getCommonName() {
 	return node_name;
 }
 
-//TODO add validation to these two op-api calls
 async function createCsr() {
-	let { app_private_key, app } = await getCertsKeys();
-	const app_cert = pki.certificateFromPem(app.cert);
-	app_private_key = pki.privateKeyFromPem(app_private_key);
+	let { ops_private_key, ops } = await getCertsKeys();
+	const ops_cert = pki.certificateFromPem(ops.cert);
+	ops_private_key = pki.privateKeyFromPem(ops_private_key);
 
-	hdb_logger.info('Creating CSR with cert named:', app.name);
+	hdb_logger.info('Creating CSR with cert named:', ops.name);
 
 	const csr = pki.createCertificationRequest();
-	csr.publicKey = app_cert.publicKey;
+	csr.publicKey = ops_cert.publicKey;
 	const subject = [
 		{
 			name: 'commonName',
@@ -402,7 +359,7 @@ async function createCsr() {
 	hdb_logger.info('Creating CSR with attributes', attributes);
 	csr.setAttributes(attributes);
 
-	csr.sign(app_private_key);
+	csr.sign(ops_private_key);
 
 	return forge.pki.certificationRequestToPem(csr);
 }
@@ -492,30 +449,10 @@ async function signCertificate(req) {
 		hdb_logger.info('Sign cert did not receive a CSR from:', req.url, 'only the CA will be returned');
 	}
 
-	if (req.certificate) {
-		//TODO: uncomment
-		/*		const req_cert = pki.certificateFromPem(req.certificate);
-		const verify = verifyCert(req_cert, ca_cert);
-		if (verify) {
-			hdb_logger.info('certificate provided to sign_certificate verified successfully');
-			adding_node();
-			return {
-				certificate: req.certificate,
-				ca_certificate: pki.certificateToPem(ca_cert),
-			};
-		} else {
-			hdb_logger.warn(
-				'certificate provided to sign_certificate was not verified. A new certificate will be created using the provided CSR.'
-			);
-		}*/
-	}
-
 	return response;
 }
 
 async function createCertificateTable(cert, ca_cert) {
-	// await fs.writeFile('/Users/davidcockerill/testCerts/node2-ca.pem', ca_cert);
-	// await fs.writeFile('/Users/davidcockerill/testCerts/node2-cert.pem', cert);
 	await setCertTable({
 		name: certificates_terms.CERT_NAME.DEFAULT,
 		uses: ['https', 'operations', 'wss'],
@@ -553,30 +490,6 @@ function rawToCert(raw) {
 	return pki.certificateFromAsn1(asn1);
 }
 
-function verifyCert(cert, ca) {
-	try {
-		const ca_store = pki.createCaStore([ca]);
-		return pki.verifyCertificateChain(ca_store, [cert]);
-	} catch (err) {
-		hdb_logger.info('verifying cert:', err);
-		return false;
-	}
-}
-
-// let crt = fs.readFileSync('/Users/davidcockerill/hdb/keys/certificate.pem');
-// let crt_ca = fs.readFileSync('/Users/davidcockerill/hdb/keys/caCertificate.pem');
-// let p_key = fs.readFileSync('/Users/davidcockerill/hdb2/keys/privateKey.pem');
-// // crt = pki.certificateFromPem(crt);
-// // crt_ca = pki.certificateFromPem(crt_ca);
-//
-// const x509 = new X509Certificate(crt);
-// const pk = createPrivateKey(p_key);
-// const value = x509.checkPrivateKey(pk);
-// console.log(value);
-//
-// const v = crt.check;
-// console.log(verifyCert(crt, crt_ca));
-
 async function generateKeys() {
 	const keys = await generateKeyPair('rsa', {
 		modulusLength: 4096,
@@ -598,7 +511,6 @@ async function generateKeys() {
 
 //https://www.openssl.org/docs/manmaster/man5/x509v3_config.html
 
-//TODO: add more logging
 async function generateCertificates(private_key, public_key, ca_cert) {
 	const public_cert = pki.createCertificate();
 
