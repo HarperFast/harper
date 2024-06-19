@@ -1,5 +1,5 @@
 import { table } from '../../resources/databases';
-import { forEachReplicatedDatabase } from './replicator';
+import { forEachReplicatedDatabase, getThisNodeName } from './replicator';
 import { replicationConfirmation } from '../../resources/DatabaseTransaction';
 import { isMainThread } from 'worker_threads';
 let hdb_node_table;
@@ -31,10 +31,7 @@ export function getHDBNodeTable() {
 					attribute: 'ca',
 				},
 				{
-					attribute: 'publish',
-				},
-				{
-					attribute: 'subscribe',
+					attribute: 'replicates',
 				},
 				{
 					attribute: '__createdtime__',
@@ -51,11 +48,20 @@ export function subscribeToNodeUpdates(listener) {
 		.subscribe({})
 		.then(async (events) => {
 			for await (let event of events) {
-				if (event.type === 'put') {
-					listener(event.value);
+				if (event.type === 'put' || event.type === 'delete') {
+					listener(event.value, event.id);
 				}
 			}
 		});
+}
+
+export function shouldReplicateToNode(node, database_name) {
+	return (
+		node.name &&
+		(((node.replicates === true || node.replicates?.sends) &&
+			getHDBNodeTable().primaryStore.get(getThisNodeName())?.replicates === true) ||
+			node.subscriptions?.some((sub) => (sub.database || sub.schema) === database_name && sub.subscribe))
+	);
 }
 
 const replication_confirmation_float64s = new Map<string, Map<string, Float64Array>>();

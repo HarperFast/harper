@@ -69,7 +69,7 @@ async function configureCluster(request) {
 	for (let j = 0, res_length = results.length; j < res_length; j++) {
 		const result = results[j];
 		if (result.status === 'rejected') {
-			hdb_logger.error(result);
+			hdb_logger.error(result.node_name, result?.error?.message, result?.error?.stack);
 			if (!failed_nodes.includes(result.node_name)) {
 				failed_nodes.push(result.node_name);
 			}
@@ -88,7 +88,7 @@ async function configureCluster(request) {
 
 		connection_results.push({
 			node_name: result?.node_name,
-			subscriptions: result?.result,
+			response: result?.result,
 		});
 	}
 

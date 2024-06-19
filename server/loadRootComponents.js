@@ -8,8 +8,6 @@ const { dirname } = require('path');
 const { getConnection } = require('./nats/utility/natsUtils');
 const env_mgr = require('../utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('../utility/hdbTerms');
-const { CERT_CONFIG_NAME_MAP } = require('../utility/terms/certificates');
-const { readFileSync, existsSync } = require('fs');
 const { loadCertificates } = require('../security/keys');
 
 let loaded_components = new Map();

@@ -57,8 +57,8 @@ if (is_source_code) {
 			if (platform() === 'win32') tsc_path += '.cmd';
 			// if we need it, run typescript compiler
 			let result = spawnSync(tsc_path, { cwd: PACKAGE_ROOT });
-			if (result.stdout.length) console.log(result.stdout.toString());
-			if (result.stderr.length) console.log(result.stderr.toString());
+			if (result.stdout?.length) console.log(result.stdout.toString());
+			if (result.stderr?.length) console.log(result.stderr.toString());
 			if (target_directory_existed) {
 				let pid_path = join(tmpdir(), 'harperdb-tsc.pid');
 				let is_running;

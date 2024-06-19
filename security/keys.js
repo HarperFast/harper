@@ -25,6 +25,7 @@ const {
 	CERT_CONFIG_NAME_MAP,
 	CERT_NAME,
 	CERTIFICATE_VALUES,
+	CA_CERT_PREFERENCE_REP,
 } = certificates_terms;
 const assign_cmdenv_vars = require('../utility/assignCmdEnvVariables');
 const config_utils = require('../config/configUtils');
@@ -47,6 +48,7 @@ Object.assign(exports, {
 	listCertificates,
 	addCertificate,
 	removeCertificate,
+	writeDefaultCertsToFile,
 });
 
 const { urlToNodeName, getThisNodeUrl, getThisNodeName } = require('../server/replication/replicator');
@@ -153,6 +155,7 @@ async function getCertsKeys(rep_host = undefined) {
 	let app_cert_quality = 0,
 		ops_cert_quality = 0,
 		rep_cert_quality = 0,
+		ca_rep_cert_quality = 0,
 		ca_app_cert_quality = 0,
 		ca_ops_cert_quality = 0,
 		response = {
@@ -175,6 +178,10 @@ async function getCertsKeys(rep_host = undefined) {
 				cert: undefined,
 			},
 			rep: {
+				name: undefined,
+				cert: undefined,
+			},
+			rep_ca: {
 				name: undefined,
 				cert: undefined,
 			},
@@ -219,9 +226,19 @@ async function getCertsKeys(rep_host = undefined) {
 			rep_cert_quality = CERT_PREFERENCE_REP[name];
 		}
 
+		if (CA_CERT_PREFERENCE_REP[name] && ca_rep_cert_quality < CA_CERT_PREFERENCE_REP[name]) {
+			response.rep_ca.cert = certificate;
+			response.rep_ca.name = name;
+			ca_rep_cert_quality = CA_CERT_PREFERENCE_REP[name];
+		}
+
 		if (name?.includes?.('issued by')) {
 			response[name] = certificate;
-			if (!name.includes('ca')) {
+			if (name.includes('ca')) {
+				response.rep_ca.cert = certificate;
+				response.rep_ca.name = name;
+				ca_rep_cert_quality = 50;
+			} else {
 				response.rep.cert = certificate;
 				response.rep.name = name;
 				rep_cert_quality = 50;
@@ -425,19 +442,8 @@ async function signCertificate(req) {
 	let { app_private_key, app_ca } = await getCertsKeys();
 	app_private_key = pki.privateKeyFromPem(app_private_key);
 	const ca_app_cert = pki.certificateFromPem(app_ca.cert);
-	const adding_node = async () => {
-		// If the sign req is coming from add node, add the requesting node to hdb_nodes
-		if (req.add_node) {
-			const node_record = { url: req.add_node.url, ca: pki.certificateToPem(ca_app_cert) };
-			if (req.add_node.subscriptions) node_record.subscriptions = req.add_node.subscriptions;
-			if (req.add_node.hasOwnProperty('subscribe')) node_record.publish = req.add_node.publish;
-			if (req.add_node.hasOwnProperty('publish')) node_record.subscribe = req.add_node.subscribe;
-			await ensureNode(req.add_node.node_name, node_record);
-		}
-	};
-
 	let response = {
-		ca_certificate: pki.certificateToPem(ca_app_cert),
+		ca_certificate: app_ca.cert,
 	};
 	if (req.csr) {
 		hdb_logger.info('Signing CSR with cert named', app_ca.name, 'with cert', app_ca.cert);
@@ -474,7 +480,7 @@ async function signCertificate(req) {
 
 		response.certificate = pki.certificateToPem(cert);
 	} else {
-		hdb_logger.info('Sign cert did not receive a CSR from:', req.add_node.url, 'only the CA will be returned');
+		hdb_logger.info('Sign cert did not receive a CSR from:', req.url, 'only the CA will be returned');
 	}
 
 	if (req.certificate) {
@@ -494,8 +500,6 @@ async function signCertificate(req) {
 			);
 		}*/
 	}
-
-	await adding_node();
 
 	return response;
 }
@@ -651,6 +655,19 @@ async function generateCertsKeys() {
 	updateConfigCert();
 }
 
+async function writeDefaultCertsToFile() {
+	getCertTable();
+	const keys_path = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
+
+	const pub_cert = await certificate_table.get(certificates_terms.CERT_NAME.DEFAULT);
+	const pub_cert_path = path.join(keys_path, certificates_terms.CERTIFICATE_PEM_NAME);
+	await fs.writeFile(pub_cert_path, pub_cert.certificate);
+
+	const ca_cert = await certificate_table.get(certificates_terms.CERT_NAME.CA);
+	const ca_cert_path = path.join(keys_path, certificates_terms.CA_PEM_NAME);
+	await fs.writeFile(ca_cert_path, ca_cert.certificate);
+}
+
 /**
  * Function does two things:
  * If there is no app cert, it will create all the default HarperDB certs and private key (which become default certs).
@@ -695,6 +712,8 @@ function updateConfigCert() {
 	const cli_env_args = assign_cmdenv_vars(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
 	const keys_path = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
 	const private_key = path.join(keys_path, certificates_terms.PRIVATEKEY_PEM_NAME);
+	const pub_cert = path.join(keys_path, certificates_terms.CERTIFICATE_PEM_NAME);
+	const ca = path.join(keys_path, certificates_terms.CA_PEM_NAME);
 
 	// This object is what will be added to the harperdb-config.yaml file.
 	// We check for any CLI of Env args and if they are present we use them instead of default values.
@@ -722,6 +741,15 @@ function updateConfigCert() {
 	if (cli_env_args[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY.toLowerCase()]) {
 		new_certs[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY] =
 			cli_env_args[conf.OPERATIONSAPI_TLS_CERTIFICATEAUTHORITY.toLowerCase()];
+	}
+
+	// Add paths for Nats TLS certs if clustering enabled
+	if (cli_env_args[conf.CLUSTERING_ENABLED.toLowerCase()] || cli_env_args['clustering']) {
+		new_certs[conf.CLUSTERING_TLS_CERTIFICATE] =
+			cli_env_args[conf.CLUSTERING_TLS_CERTIFICATE.toLowerCase()] ?? pub_cert;
+		new_certs[conf.CLUSTERING_TLS_CERT_AUTH] = cli_env_args[conf.CLUSTERING_TLS_CERT_AUTH.toLowerCase()] ?? ca;
+		new_certs[conf.CLUSTERING_TLS_PRIVATEKEY] =
+			cli_env_args[conf.CLUSTERING_TLS_PRIVATEKEY.toLowerCase()] ?? private_key;
 	}
 
 	config_utils.updateConfigValue(undefined, undefined, new_certs, false, true);

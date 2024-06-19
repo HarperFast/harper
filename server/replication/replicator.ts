@@ -37,7 +37,7 @@ import { X509Certificate } from 'crypto';
 import { readFileSync } from 'fs';
 import { EventEmitter } from 'events';
 export { startOnMainThread } from './subscriptionManager';
-import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes } from './knownNodes';
+import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes, shouldReplicateToNode } from './knownNodes';
 import { encode } from 'msgpackr';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 import { exportIdMapping } from './nodeIdMapping';
@@ -107,7 +107,7 @@ export function start(options) {
 	// we need to stay up-to-date with any CAs that have been replicated across the cluster
 	subscribeToNodeUpdates((node) => {
 		// TODO: handle removal of CAs?
-		if (node.ca) {
+		if (node?.ca) {
 			// we only care about nodes that have a CA
 			let x509 = new X509Certificate(node.ca);
 			x509.asString = node.ca;
@@ -235,10 +235,12 @@ function getConnection(url, subscription, db_name) {
 	}
 	let connection = db_connections.get(db_name);
 	if (connection) return connection;
-	db_connections.set(db_name, (connection = new NodeReplicationConnection(url, subscription, db_name)));
-	connection.connect();
-	connection.once('finished', () => db_connections.delete(db_name));
-	return connection;
+	if (subscription) {
+		db_connections.set(db_name, (connection = new NodeReplicationConnection(url, subscription, db_name)));
+		connection.connect();
+		connection.once('finished', () => db_connections.delete(db_name));
+		return connection;
+	}
 }
 
 export async function sendOperationToNode(node, operation, options) {
@@ -258,7 +260,7 @@ export async function sendOperationToNode(node, operation, options) {
 		});
 	});
 }
-export async function subscribeToNode(request) {
+export function subscribeToNode(request) {
 	try {
 		let subscription_to_table = database_subscriptions.get(request.database);
 		if (!subscription_to_table) {
@@ -271,14 +273,26 @@ export async function subscribeToNode(request) {
 			subscription_to_table.ready = ready;
 			database_subscriptions.set(request.database, subscription_to_table);
 		}
-		let connection = getConnection(request.nodes[0].url, await subscription_to_table, request.database);
+		let connection = getConnection(request.nodes[0].url, subscription_to_table, request.database);
 		if (request.nodes[0].name === undefined) connection.tentativeNode = request.nodes[0]; // we don't have the node name yet
 		connection.subscribe(
-			request.nodes.filter((node) => node.name),
+			request.nodes.filter((node) => {
+				return shouldReplicateToNode(node, request.database);
+			}),
 			request.replicateByDefault
 		);
 	} catch (error) {
-		logger.error('Error in subscription to node', request.nodes[0].url, error);
+		logger.error('Error in subscription to node', request.nodes[0]?.url, error);
+	}
+}
+export async function unsubscribeFromNode({ url, database }) {
+	let db_connections = connections.get(url);
+	if (db_connections) {
+		let connection = db_connections.get(database);
+		if (connection) {
+			connection.unsubscribe();
+			db_connections.delete(database);
+		}
 	}
 }
 
@@ -334,7 +348,11 @@ export function getThisNodeUrl() {
 	let url = env.get('replication_url');
 	if (url) return url;
 	let node_name = getThisNodeName();
-	let port = getPortFromListeningPort('operationsapi_network_port');
+	let port = getPortFromListeningPort('replication_port');
+	if (port) return `ws://${node_name}:${port}`;
+	port = getPortFromListeningPort('replication_secureport');
+	if (port) return `wss://${node_name}:${port}`;
+	port = getPortFromListeningPort('operationsapi_network_port');
 	if (port) return `ws://${node_name}:${port}`;
 	port = getPortFromListeningPort('operationsapi_network_secureport');
 	if (port) return `wss://${node_name}:${port}`;

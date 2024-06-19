@@ -45,6 +45,7 @@ const { transformReq } = require('../../utility/common_utils');
 const { server } = require('../../server/Server');
 const operation_log = harper_logger.loggerWithTag('operation');
 const keys = require('../../security/keys');
+const set_node = require('../../server/replication/setNode');
 
 const operation_function_caller = require(`../../utility/OperationFunctionCaller`);
 
@@ -340,6 +341,8 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.LIST_CERTIFICATES, new OperationFunctionObject(keys.listCertificates));
 	op_func_map.set(terms.OPERATIONS_ENUM.ADD_CERTIFICATES, new OperationFunctionObject(keys.addCertificate));
 	op_func_map.set(terms.OPERATIONS_ENUM.REMOVE_CERTIFICATE, new OperationFunctionObject(keys.removeCertificate));
+	op_func_map.set(terms.OPERATIONS_ENUM.ADD_NODE_BACK, new OperationFunctionObject(set_node.addNodeBack));
+	op_func_map.set(terms.OPERATIONS_ENUM.REMOVE_NODE_BACK, new OperationFunctionObject(set_node.removeNodeBack));
 
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE,

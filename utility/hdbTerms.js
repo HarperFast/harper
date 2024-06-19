@@ -382,6 +382,8 @@ const OPERATIONS_ENUM = {
 	LIST_CERTIFICATES: 'list_certificates',
 	ADD_CERTIFICATES: 'add_certificate',
 	REMOVE_CERTIFICATE: 'remove_certificate',
+	ADD_NODE_BACK: 'add_node_back',
+	REMOVE_NODE_BACK: 'remove_node_back',
 };
 
 // Defines valid file types that we are able to handle in 'import_from_s3' ops
@@ -632,6 +634,7 @@ const CONFIG_PARAMS = {
 	REPLICATION_NODENAME: 'replication_nodeName',
 	REPLICATION_URL: 'replication_url',
 	REPLICATION_PORT: 'replication_port',
+	REPLICATION_SECUREPORT: 'replication_securePort',
 	REPLICATION_ROUTES: 'replication_routes',
 	ROOTPATH: 'rootPath',
 	SERIALIZATION_BIGINT: 'serialization_bigInt',
@@ -830,6 +833,7 @@ const CONFIG_PARAM_MAP = {
 	componentsroot: CONFIG_PARAMS.COMPONENTSROOT,
 	replication: CONFIG_PARAMS.REPLICATION,
 	replication_port: CONFIG_PARAMS.REPLICATION_PORT,
+	replication_secureport: CONFIG_PARAMS.REPLICATION_SECUREPORT,
 	replication_nodename: CONFIG_PARAMS.REPLICATION_NODENAME,
 	replication_url: CONFIG_PARAMS.REPLICATION_URL,
 	replication_routes: CONFIG_PARAMS.REPLICATION_ROUTES,

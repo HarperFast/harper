@@ -23,14 +23,15 @@ import { decode, encode, Packr } from 'msgpackr';
 import { WebSocket } from 'ws';
 import { readFileSync } from 'fs';
 import { threadId } from 'worker_threads';
-import * as logger from '../../utility/logging/harper_logger';
-import { disconnectedFromNode, connectedToNode, getHDBNodeTable, ensureNode } from './subscriptionManager';
+import * as logger from '../../utility/logging/logger';
+import { disconnectedFromNode, connectedToNode, ensureNode } from './subscriptionManager';
 import { EventEmitter } from 'events';
 import { createSecureContext } from 'node:tls';
 import { broadcast } from '../../server/threads/manageThreads';
 import { createTLSSelector } from '../../security/keys';
 import * as https from 'node:https';
 import * as tls from 'node:tls';
+import { getHDBNodeTable } from './knownNodes';
 //import { operation } from '../../server/serverHelpers/serverUtilities';
 
 const SUBSCRIPTION_REQUEST = 129;
@@ -44,6 +45,7 @@ export const OPERATION_REQUEST = 136;
 const OPERATION_RESPONSE = 137;
 const SEQUENCE_ID_UPDATE = 143;
 const COMMITTED_UPDATE = 144;
+const DB_SCHEMA = 145;
 export const table_update_listeners = new Map();
 export const database_subscriptions = new Map();
 const DEBUG_MODE = true;
@@ -69,7 +71,8 @@ export async function createWebSocket(url, options?) {
 		}
 		await SNICallback.initialize();
 		secure_context = SNICallback.defaultContext;
-		if (secure_context) logger.info('Creating web socket for URL', url, 'with certificate named:', secure_context.name);
+		if (secure_context)
+			logger.debug?.('Creating web socket for URL', url, 'with certificate named:', secure_context.name);
 		if (!secure_context && rejectUnauthorized !== false) {
 			throw new Error('Unable to find a valid certificate to use for replication to connect to ' + url);
 		}
@@ -122,8 +125,9 @@ export class NodeReplicationConnection extends EventEmitter {
 		this.socket = await createWebSocket(this.url);
 
 		let session;
+		logger.info?.('Connecting to ' + this.url);
 		this.socket.on('open', () => {
-			logger.info('Connected to ' + this.url, this.socket._socket.writableHighWaterMark);
+			logger.info?.('Connected to ' + this.url);
 			this.retries = 0;
 			this.retryTime = 2000;
 			// if we have already connected, we need to send a reconnected event
@@ -141,29 +145,29 @@ export class NodeReplicationConnection extends EventEmitter {
 					url: this.url,
 					connection: this,
 				},
-				{ publish: true } // pre-authorized, but should only make publish: true if we are allowing reverse subscriptions
+				{ replicates: true } // pre-authorized, but should only make publish: true if we are allowing reverse subscriptions
 			);
 		});
 		this.socket.on('error', (error) => {
 			if (error.code !== 'ECONNREFUSED') {
 				if (error.code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE')
-					logger.error(
+					logger.error?.(
 						`Can not connect to ${this.url}, the certificate is not trusted, this node needs to be added to the cluster, or a certificate authority needs to be added`
 					);
-				else logger.error(`Error in connection to ${this.url} due to ${error.message}`);
+				else logger.error?.(`Error in connection to ${this.url} due to ${error.message}`);
 			}
 		});
 		this.socket.on('close', (code, reason_buffer) => {
+			session?.disconnected(this.socket.isFinished);
 			if (this.socket.isFinished) {
 				this.isFinished = true;
 				session?.end();
 				this.emit('finished');
 				return;
 			}
-			session?.disconnected();
 			if (++this.retries % 20 === 1) {
 				const reason = reason_buffer?.toString();
-				logger.warn(
+				logger.warn?.(
 					`${session ? 'Disconnected from' : 'Failed to connect to'} ${this.url} (db: "${this.databaseName}"), due to ${
 						reason ? '"' + reason + '" ' : ''
 					}(code: ${code})`
@@ -182,6 +186,10 @@ export class NodeReplicationConnection extends EventEmitter {
 		this.replicateTablesByDefault = replicate_tables_by_default;
 		this.emit('subscriptions-updated', node_subscriptions);
 	}
+	unsubscribe() {
+		this.socket.isFinished = true;
+		this.socket.close(1008, 'No longer subscribed');
+	}
 
 	send(message) {}
 }
@@ -198,7 +206,7 @@ export function replicateOverWS(ws, options, authorization) {
 		(p ? 's:' + p : 'c:' + options.url?.slice(-4)) +
 		' ' +
 		Math.random().toString().slice(2, 3);
-	logger.info(connection_id, 'registering');
+	logger.info?.(connection_id, 'registering');
 
 	let encoding_start = 0;
 	let encoding_buffer = Buffer.allocUnsafeSlow(1024);
@@ -212,9 +220,11 @@ export function replicateOverWS(ws, options, authorization) {
 	// are sent to this subscription queue:
 	let subscribed = false;
 	let table_subscription_to_replicator = options.subscription;
+	if (table_subscription_to_replicator?.then)
+		table_subscription_to_replicator.then((sub) => (table_subscription_to_replicator = sub));
 	let tables = options.tables || (database_name && getDatabases()[database_name]);
 	if (!authorization) {
-		logger.error('No authorization provided');
+		logger.error?.('No authorization provided');
 		// don't send disconnect because we want the client to potentially retry
 		close(1008, 'Unauthorized');
 		return;
@@ -240,7 +250,7 @@ export function replicateOverWS(ws, options, authorization) {
 	function resetPingTimer() {
 		clearTimeout(receive_ping_timer);
 		receive_ping_timer = setTimeout(() => {
-			logger.warn(`Timeout waiting for ping from ${remote_node_name}, terminating connection and reconnecting`);
+			logger.warn?.(`Timeout waiting for ping from ${remote_node_name}, terminating connection and reconnecting`);
 			ws.terminate();
 		}, PING_INTERVAL * 2);
 	}
@@ -257,7 +267,7 @@ export function replicateOverWS(ws, options, authorization) {
 	let outstanding_commits = 0;
 	let replication_paused;
 	let subscription_request, audit_subscription;
-	let remote_sequence_number;
+	let node_subscriptions;
 	let remote_short_id_to_local_id: Map<number, number>;
 	ws.on('message', (body) => {
 		// A replication header should consist of:
@@ -277,28 +287,11 @@ export function replicateOverWS(ws, options, authorization) {
 				const [command, data, table_id] = message;
 				switch (command) {
 					case NODE_NAME: {
-						logger.info(
-							connection_id,
-							'Received table definitions for',
-							message[3].map((t) => t.table)
-						);
-						for (let table_definition of message[3]) {
-							const database_name = message[2];
-							table_definition.database = database_name;
-							// TODO: We need to check the permissions for the table before we just allow creating new tables
-							if (database_name === 'system') {
-								// for system connection, we only update new tables
-								if (!databases[database_name]?.[table_definition.table])
-									ensureTableIfChanged(table_definition, databases[database_name]?.[table_definition.table]);
-							} else {
-								ensureTableIfChanged(table_definition, databases[database_name]?.[table_definition.table]);
-							}
-						}
 						if (data) {
 							// this is the node name
 							if (remote_node_name) {
 								if (remote_node_name !== data) {
-									logger.error(
+									logger.error?.(
 										connection_id,
 										`Node name mismatch, expecting to connect to ${remote_node_name}, but peer reported name as ${data}, disconnecting`
 									);
@@ -318,27 +311,53 @@ export function replicateOverWS(ws, options, authorization) {
 							}
 							if (options.connection) options.connection.nodeName = remote_node_name;
 							//const url = message[3] ?? this_node_url;
-							logger.info(connection_id, 'received node id', remote_node_name, database_name);
+							logger.info?.(connection_id, 'received node id', remote_node_name, database_name);
 							if (!database_name) {
 								// this means we are the server
 								try {
 									setDatabase((database_name = message[2]));
 									if (database_name === 'system') {
 										schema_update_listener = forEachReplicatedDatabase(options, (database, database_name) => {
-											sendDatabaseInfo(null, database_name);
+											sendDBSchema(database_name);
+										});
+										ws.on('close', () => {
+											schema_update_listener?.remove();
 										});
 									}
 								} catch (error) {
 									// if this fails, we should close the connection and indicate that we should not reconnect
+									logger.warn?.(connection_id, 'Error setting database', error);
 									ws.send(encode([DISCONNECT]));
 									close(1008, error.message);
 									return;
 								}
 							}
-							logger.info(connection_id, 'setDatabase', database_name, tables && Object.keys(tables));
+							logger.info?.(connection_id, 'setDatabase', database_name, tables && Object.keys(tables));
 							sendSubscriptionRequestUpdate();
 						}
-
+						break;
+					}
+					case DB_SCHEMA: {
+						logger.info?.(
+							connection_id,
+							'Received table definitions for',
+							data.map((t) => t.table)
+						);
+						for (let table_definition of data) {
+							const database_name = message[2];
+							table_definition.database = database_name;
+							let table;
+							// TODO: We need to check the permissions for the table before we just allow creating new tables
+							if (database_name === 'system') {
+								// for system connection, we only update new tables
+								if (!databases[database_name]?.[table_definition.table])
+									table = ensureTableIfChanged(table_definition, databases[database_name]?.[table_definition.table]);
+							} else {
+								table = ensureTableIfChanged(table_definition, databases[database_name]?.[table_definition.table]);
+							}
+							if (!audit_store) audit_store = table.auditStore;
+							if (!tables) tables = getDatabases()?.[database_name];
+						}
 						break;
 					}
 					case DISCONNECT:
@@ -385,8 +404,8 @@ export function replicateOverWS(ws, options, authorization) {
 					case TABLE_FIXED_STRUCTURE:
 						const table_name = message[3];
 						if (!tables) {
-							if (database_name) logger.error(connection_id, 'No tables found for', database_name);
-							else logger.error(connection_id, 'Database name never received');
+							if (database_name) logger.error?.(connection_id, 'No tables found for', database_name);
+							else logger.error?.(connection_id, 'Database name never received');
 						}
 						let table = tables[table_name];
 						table = ensureTableIfChanged(
@@ -416,7 +435,7 @@ export function replicateOverWS(ws, options, authorization) {
 					case NODE_NAME_TO_ID_MAP:
 						remote_short_id_to_local_id = remoteToLocalNodeId(remote_node_name, data, audit_store);
 						incoming_subscription_nodes = message[2];
-						logger.info(
+						logger.info?.(
 							connection_id,
 							`Acknowledged subscription request, receiving messages for nodes: ${incoming_subscription_nodes}`
 						);
@@ -433,7 +452,7 @@ export function replicateOverWS(ws, options, authorization) {
 								audit_store.getUserSharedBuffer(replication_key, new ArrayBuffer(8))
 							);
 						replication_confirmation_float64[0] = data;
-						logger.info(connection_id, 'received and broadcasting committed update', data);
+						logger.info?.(connection_id, 'received and broadcasting committed update', data);
 						replication_confirmation_float64.buffer.notify();
 						break;
 					case SEQUENCE_ID_UPDATE:
@@ -446,26 +465,17 @@ export function replicateOverWS(ws, options, authorization) {
 						});
 						break;
 					case SUBSCRIPTION_REQUEST:
-						const [action, db, , , node_subscriptions] = message;
+						node_subscriptions = data;
 						// permission check to make sure that this node is allowed to subscribe to this database, that is that
 						// we have publish permission for this node/database
-						if (
-							!(
-								authorization.replicates === true ||
-								authorization.replicates?.receives ||
-								authorization.subscriptions?.some(
-									// TODO: Verify the table permissions for each table listed in the subscriptions
-									(sub) => (sub.database || sub.schema) === database_name && sub.publish !== false
-								)
-							)
-						) {
-							ws.send(encode([DISCONNECT]));
-							close(1008, `Unauthorized database subscription to ${database_name}`);
-							return;
-						}
+						let subscription_to_hdb_nodes, when_subscribed_to_hdb_nodes;
+						let closed = false;
 						if (table_subscription_to_replicator) {
-							if (database_name !== table_subscription_to_replicator.databaseName) {
-								logger.error(
+							if (
+								database_name !== table_subscription_to_replicator.databaseName &&
+								!table_subscription_to_replicator.then
+							) {
+								logger.error?.(
 									'Subscription request for wrong database',
 									database_name,
 									table_subscription_to_replicator.databaseName
@@ -473,13 +483,51 @@ export function replicateOverWS(ws, options, authorization) {
 								return;
 							}
 						} else table_subscription_to_replicator = db_subscriptions.get(database_name);
-						logger.info(connection_id, 'received subscription request for', database_name, 'at', node_subscriptions);
+						logger.info?.(connection_id, 'received subscription request for', database_name, 'at', node_subscriptions);
 						if (!table_subscription_to_replicator) {
-							logger.error('No database is registered to receive updates for', database_name);
-							return;
+							// Wait for it to be created
+							let ready;
+							table_subscription_to_replicator = new Promise((resolve) => {
+								logger.info('Waiting for subscription to database ' + database_name);
+								ready = resolve;
+							});
+							table_subscription_to_replicator.ready = ready;
+							database_subscriptions.set(database_name, table_subscription_to_replicator);
 						}
+						if (authorization.name) {
+							// TODO: Maybe await?
+							when_subscribed_to_hdb_nodes = getHDBNodeTable().subscribe(authorization.name);
+							when_subscribed_to_hdb_nodes.then(async (subscription) => {
+								subscription_to_hdb_nodes = subscription;
+								for await (let event of subscription_to_hdb_nodes) {
+									let node = event.value;
+									if (
+										!(
+											node?.replicates === true ||
+											node?.replicates?.receives ||
+											node?.subscriptions?.some(
+												// TODO: Verify the table permissions for each table listed in the subscriptions
+												(sub) => (sub.database || sub.schema) === database_name && sub.publish !== false
+											)
+										)
+									) {
+										closed = true;
+										ws.send(encode([DISCONNECT]));
+										close(1008, `Unauthorized database subscription to ${database_name}`);
+										return;
+									}
+								}
+							});
+						} else {
+							if (!(authorization?.permissions?.super_user || authorization.replicates)) {
+								ws.send(encode([DISCONNECT]));
+								close(1008, `Unauthorized database subscription to ${database_name}`);
+								return;
+							}
+						}
+
 						if (audit_subscription) {
-							logger.info(connection_id, 'stopping previous subscription', database_name);
+							logger.info?.(connection_id, 'stopping previous subscription', database_name);
 							audit_subscription.emit('close');
 						}
 						if (node_subscriptions.length === 0)
@@ -498,39 +546,9 @@ export function replicateOverWS(ws, options, authorization) {
 								return { table };
 							}
 						};
-						const table_by_id = table_subscription_to_replicator.tableById.map(tableToTableEntry);
-						const subscribed_node_ids = [];
-						for (let { name, startTime } of node_subscriptions) {
-							const local_id = getIdOfRemoteNode(name, audit_store);
-							subscribed_node_ids[local_id] = startTime;
-						}
-						// Send a message to the remote node with the node id mapping, indicating how each node name is mapped to a short id
-						// and a list of the node names that are subscribed to this node
-						ws.send(
-							encode([
-								NODE_NAME_TO_ID_MAP,
-								exportIdMapping(table_subscription_to_replicator.auditStore),
-								node_subscriptions.map(({ name }) => name),
-							])
-						);
-						if (!schema_update_listener) {
-							schema_update_listener = onUpdatedTable((table) => {
-								if (table.database === database_name) {
-									sendDatabaseInfo(null, database_name);
-								}
-							});
-							db_removal_listener = onRemovedDB((db) => {
-								// I guess we if a database is removed then we disconnect. This is kind of weird situation for replication,
-								// as the replication system will try to preserve consistency between nodes and their databases, and
-								// it is unclear what to do if a database is removed and what that means for consistency seekingd
-								if (db === database_name) {
-									ws.send(encode([DISCONNECT]));
-									close();
-								}
-							});
-						}
 						const encoder = new Encoder();
 						const current_transaction = { txnTime: 0 };
+						let subscribed_node_ids, table_by_id;
 						let listening_for_overload = false;
 						let current_sequence_id = Infinity; // the last sequence number in the audit log that we have processed, set this with a finite number from the subscriptions
 						let sent_sequence_id; // the last sequence number we have sent
@@ -539,9 +557,9 @@ export function replicateOverWS(ws, options, authorization) {
 							// TOOD: Use begin_txn instead to find transaction delimiting
 							if (audit_record.type === 'end_txn') {
 								if (current_transaction.txnTime) {
-									//if (DEBUG_MODE) logger.info(connection_id, 'sending replication message', encoding_start, position);
+									//if (DEBUG_MODE) logger.info?.(connection_id, 'sending replication message', encoding_start, position);
 									if (encoding_buffer[encoding_start] !== 66) {
-										logger.error('Invalid encoding of message');
+										logger.error?.('Invalid encoding of message');
 									}
 									writeInt(9); // replication message of nine bytes long
 									writeInt(REMOTE_SEQUENCE_UPDATE); // action id
@@ -560,7 +578,7 @@ export function replicateOverWS(ws, options, authorization) {
 									table_subscription_to_replicator.tableById[table_id]
 								);
 								if (!table_entry) {
-									return logger.trace('Not subscribed to table', table_id);
+									return logger.trace?.('Not subscribed to table', table_id);
 								}
 							}
 							const table = table_entry.table;
@@ -573,7 +591,7 @@ export function replicateOverWS(ws, options, authorization) {
 							}
 							if (!(subscribed_node_ids[node_id] < local_time)) {
 								if (DEBUG_MODE)
-									logger.info(
+									logger.info?.(
 										connection_id,
 										'skipping replication update',
 										audit_record.recordId,
@@ -593,7 +611,7 @@ export function replicateOverWS(ws, options, authorization) {
 										// check to see if we are too far behind, but if so, send a sequence update
 										if ((sent_sequence_id || 0) + SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY / 2 < current_sequence_id) {
 											if (DEBUG_MODE)
-												logger.info(connection_id, 'sending skipped sequence update', current_sequence_id);
+												logger.info?.(connection_id, 'sending skipped sequence update', current_sequence_id);
 											ws.send(encode([SEQUENCE_ID_UPDATE, current_sequence_id]));
 										}
 									}, SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY).unref();
@@ -601,7 +619,7 @@ export function replicateOverWS(ws, options, authorization) {
 								return;
 							}
 							if (DEBUG_MODE)
-								logger.info(
+								logger.info?.(
 									connection_id,
 									'preparing replication update',
 									audit_record.recordId,
@@ -617,9 +635,9 @@ export function replicateOverWS(ws, options, authorization) {
 								// send the queued transaction
 								if (current_transaction.txnTime) {
 									if (DEBUG_MODE)
-										logger.info(connection_id, 'new txn time, sending queued txn', current_transaction.txnTime);
+										logger.info?.(connection_id, 'new txn time, sending queued txn', current_transaction.txnTime);
 									if (encoding_buffer[encoding_start] !== 66) {
-										logger.error('Invalid encoding of message');
+										logger.error?.('Invalid encoding of message');
 									}
 									sendQueuedData();
 								}
@@ -643,7 +661,7 @@ export function replicateOverWS(ws, options, authorization) {
 								) {
 									const record_id = audit_record.recordId;
 									// send out invalidation messages
-									logger.info(connection_id, 'sending invalidation', record_id, remote_node_name, 'from', node_id);
+									logger.info?.(connection_id, 'sending invalidation', record_id, remote_node_name, 'from', node_id);
 									let extended_type = 0;
 									if (residency_id) extended_type |= HAS_CURRENT_RESIDENCY_ID;
 									if (audit_record.previousResidencyId) extended_type |= HAS_PREVIOUS_RESIDENCY_ID;
@@ -675,7 +693,12 @@ export function replicateOverWS(ws, options, authorization) {
 							) {
 								table_entry.typed_length = typed_structs?.length;
 								table_entry.structure_length = structures.length;
-								logger.info(connection_id, 'send table struct', table_entry.typed_length, table_entry.structure_length);
+								logger.info?.(
+									connection_id,
+									'send table struct',
+									table_entry.typed_length,
+									table_entry.structure_length
+								);
 								if (!table_entry.sentName) {
 									// TODO: only send the table name once
 									table_entry.sentName = true;
@@ -721,21 +744,56 @@ export function replicateOverWS(ws, options, authorization) {
 							ws.send(encoding_buffer.subarray(encoding_start, position));
 						};
 
-						let closed = false;
 						audit_subscription = new EventEmitter();
 						audit_subscription.once('close', () => {
 							closed = true;
-							schema_update_listener?.remove();
-							db_removal_listener?.remove();
-							schema_update_listener = null;
+							subscription_to_hdb_nodes?.end();
 						});
 						for (let { startTime } of node_subscriptions) {
 							if (startTime < current_sequence_id) current_sequence_id = startTime;
 						}
-						audit_subscription.once('close', () => {
-							closed = true;
-						});
-						(async () => {
+
+						(when_subscribed_to_hdb_nodes || Promise.resolve()).then(async () => {
+							table_subscription_to_replicator = await table_subscription_to_replicator;
+							audit_store = table_subscription_to_replicator.auditStore;
+							table_by_id = table_subscription_to_replicator.tableById.map(tableToTableEntry);
+							subscribed_node_ids = [];
+							for (let { name, startTime } of node_subscriptions) {
+								const local_id = getIdOfRemoteNode(name, audit_store);
+								subscribed_node_ids[local_id] = startTime;
+							}
+
+							sendDBSchema(database_name);
+							if (!schema_update_listener) {
+								schema_update_listener = onUpdatedTable((table) => {
+									if (table.databaseName === database_name) {
+										sendDBSchema(database_name);
+									}
+								});
+								db_removal_listener = onRemovedDB((db) => {
+									// I guess we if a database is removed then we disconnect. This is kind of weird situation for replication,
+									// as the replication system will try to preserve consistency between nodes and their databases, and
+									// it is unclear what to do if a database is removed and what that means for consistency seekingd
+									if (db === database_name) {
+										ws.send(encode([DISCONNECT]));
+										close();
+									}
+								});
+								ws.on('close', () => {
+									schema_update_listener?.remove();
+									db_removal_listener?.remove();
+								});
+							}
+							// Send a message to the remote node with the node id mapping, indicating how each node name is mapped to a short id
+							// and a list of the node names that are subscribed to this node
+							ws.send(
+								encode([
+									NODE_NAME_TO_ID_MAP,
+									exportIdMapping(table_subscription_to_replicator.auditStore),
+									node_subscriptions.map(({ name }) => name),
+								])
+							);
+
 							let is_first = true;
 							do {
 								// We run subscriptions as a loop where we can alternate between our two message delivery modes:
@@ -756,9 +814,18 @@ export function replicateOverWS(ws, options, authorization) {
 											let last_sequence_id = current_sequence_id;
 											for (let table_name in tables) {
 												const table = tables[table_name];
-												for (const entry of table.primaryStore({
+												for (const entry of table.primaryStore.getRange({
 													snapshot: false,
 												})) {
+													if (closed) return;
+													logger.info?.(
+														connection_id,
+														'Copying record from',
+														database_name,
+														table_name,
+														entry.key,
+														entry.localTime
+													);
 													if (entry.localTime >= current_sequence_id) {
 														last_sequence_id = Math.max(entry.localTime, last_sequence_id);
 														queued_entries = true;
@@ -770,8 +837,8 @@ export function replicateOverWS(ws, options, authorization) {
 										}
 									}
 									for (const { key, value: audit_entry } of audit_store.getRange({
-										start: current_sequence_id || 1,
-										exclusiveStart: true,
+										start: (current_sequence_id || 1) + 1 / 4096, // TODO: Once exclusive start bug is fixed, remove the +1/4096
+										//exclusiveStart: true,
 										snapshot: false, // don't want to use a snapshot, and we want to see new entries
 									})) {
 										if (closed) return;
@@ -799,11 +866,9 @@ export function replicateOverWS(ws, options, authorization) {
 								listeners.push((table) => {
 									// TODO: send table update
 								});
-								logger.info(connection_id, 'Waiting for next transaction', database_name);
 								await whenNextTransaction(audit_store);
-								logger.info(connection_id, 'Next transaction is ready', database_name);
 							} while (!closed);
-						})();
+						});
 						break;
 				}
 				return;
@@ -821,19 +886,19 @@ export function replicateOverWS(ws, options, authorization) {
 				if (event_length === 9 && decoder.getUint8(decoder.position) == REMOTE_SEQUENCE_UPDATE) {
 					decoder.position++;
 					last_sequence_id_received = sequence_id_received = decoder.readFloat64();
-					logger.info('received remote sequence update', last_sequence_id_received, database_name);
+					logger.info?.('received remote sequence update', last_sequence_id_received, database_name);
 					break;
 				}
 				const start = decoder.position;
 				const audit_record = readAuditEntry(body.subarray(start, start + event_length));
 				const table_decoder = table_decoders[audit_record.tableId];
 				if (!table_decoder) {
-					logger.error(`No table found with an id of ${audit_record.tableId}`);
+					logger.error?.(`No table found with an id of ${audit_record.tableId}`);
 				}
 				let residency_list;
 				if (audit_record.residencyId) {
 					residency_list = received_residency_lists[audit_record.residencyId];
-					logger.info(
+					logger.info?.(
 						connection_id,
 						'received residency list',
 						residency_list,
@@ -848,14 +913,14 @@ export function replicateOverWS(ws, options, authorization) {
 					nodeId: remote_short_id_to_local_id.get(audit_record.nodeId),
 					residencyList: residency_list,
 					timestamp: audit_record.version,
-					value: audit_record.getValue(table_decoders[audit_record.tableId]),
+					value: audit_record.getValue(table_decoder),
 					user: audit_record.user,
 					beginTxn: begin_txn,
 				};
 				begin_txn = false;
 				// TODO: Once it is committed, also record the localtime in the table with symbol metadata, so we can resume from that point
 				if (DEBUG_MODE)
-					logger.info(
+					logger.info?.(
 						connection_id,
 						'received replication message, id:',
 						event.id,
@@ -885,10 +950,10 @@ export function replicateOverWS(ws, options, authorization) {
 						ws.resume();
 					}
 					if (!last_sequence_id_committed && sequence_id_received) {
-						logger.info(connection_id, 'queuing confirmation of a commit at', sequence_id_received);
+						logger.info?.(connection_id, 'queuing confirmation of a commit at', sequence_id_received);
 						setTimeout(() => {
 							ws.send(encode([COMMITTED_UPDATE, last_sequence_id_committed]));
-							logger.info(connection_id, 'sent confirmation of a commit at', last_sequence_id_committed);
+							logger.info?.(connection_id, 'sent confirmation of a commit at', last_sequence_id_committed);
 							last_sequence_id_committed = null;
 						}, COMMITTED_UPDATE_DELAY);
 					}
@@ -896,7 +961,7 @@ export function replicateOverWS(ws, options, authorization) {
 				},
 			});
 		} catch (error) {
-			logger.error(connection_id, 'Error handling incoming replication message', error);
+			logger.error?.(connection_id, 'Error handling incoming replication message', error);
 		}
 	});
 	ws.on('ping', resetPingTimer);
@@ -915,7 +980,7 @@ export function replicateOverWS(ws, options, authorization) {
 		clearTimeout(receive_ping_timer);
 		if (audit_subscription) audit_subscription.emit('close');
 		if (subscription_request) subscription_request.end();
-		logger.info(connection_id, 'closed', code, reason_buffer?.toString());
+		logger.info?.(connection_id, 'closed', code, reason_buffer?.toString());
 	});
 
 	function recordRemoteNodeSequence() {}
@@ -946,7 +1011,7 @@ export function replicateOverWS(ws, options, authorization) {
 					// if there is an explicit subscription listed
 					if (subscription.subscribe && (subscription.schema || subscription.database) === database_name) {
 						const table_name = subscription.table;
-						if (tables[table_name]?.replicate !== false)
+						if (tables?.[table_name]?.replicate !== false)
 							// if replication is enabled for this table
 							table_subs.push(table_name);
 					}
@@ -959,7 +1024,7 @@ export function replicateOverWS(ws, options, authorization) {
 						table_subs.push(table_name);
 				}
 			}
-			let start_time = table_subscription_to_replicator.dbisDB.get([Symbol.for('seq'), node.name]) ?? 1;
+			let start_time = table_subscription_to_replicator.dbisDB?.get([Symbol.for('seq'), node.name]) ?? 1;
 			if (index > 0 && start_time > 1) {
 				// if we are subscribing to secondary nodes to catch up, we aren't guaranteed the same sequence ids
 				// so we go back in time a bit to make sure we get all the records
@@ -972,16 +1037,17 @@ export function replicateOverWS(ws, options, authorization) {
 				startTime: start_time,
 			};
 		});
-		logger.info(
+		logger.info?.(
 			connection_id,
 			'sending subscription request',
 			node_subscriptions,
-			table_subscription_to_replicator?.dbisDB.path
+			table_subscription_to_replicator?.dbisDB?.path
 		);
 
 		if (node_subscriptions) {
-			// no nodes means we are unsubscribing
-			ws.send(encode([SUBSCRIPTION_REQUEST, database_name, last_sequence_id_received, null, node_subscriptions]));
+			if (node_subscriptions.length > 0) ws.send(encode([SUBSCRIPTION_REQUEST, node_subscriptions]));
+			// no nodes means we are unsubscribing/disconnecting
+			else close(1008, 'No nodes to subscribe to');
 		}
 	}
 
@@ -998,12 +1064,16 @@ export function replicateOverWS(ws, options, authorization) {
 
 	function setDatabase(database_name) {
 		table_subscription_to_replicator = table_subscription_to_replicator || db_subscriptions.get(database_name);
-		if (!table_subscription_to_replicator) {
-			return logger.warn(`No database named "${database_name}" was declared and registered`);
+		if (options.databases && options.databases != '*' && !options.databases[database_name]) {
+			// TODO: Check the node subscriptions
+			return logger.warn(`Access to database "${database_name}" is not permitted`);
 		}
-		audit_store = table_subscription_to_replicator.auditStore;
+		if (!table_subscription_to_replicator) {
+			logger.warn(`No database named "${database_name}" was declared and registered`);
+		}
+		audit_store = table_subscription_to_replicator?.auditStore;
 		if (!audit_store) {
-			throw new Error('No audit store found in ' + database_name);
+			logger.warn?.('No audit store found in ' + database_name + ' creating it');
 		}
 		if (!tables) tables = getDatabases()?.[database_name];
 
@@ -1012,10 +1082,10 @@ export function replicateOverWS(ws, options, authorization) {
 			if (!this_node_name) throw new Error('Node name not defined');
 			else throw new Error('Should not connect to self', this_node_name);
 		}
-		sendDatabaseInfo(this_node_name, database_name);
+		sendNodeDBName(this_node_name, database_name);
 		return true;
 	}
-	function sendDatabaseInfo(this_node_name, database_name) {
+	function sendNodeDBName(this_node_name, database_name) {
 		let database = getDatabases()?.[database_name];
 		let tables = [];
 		for (let table_name in database) {
@@ -1030,8 +1100,33 @@ export function replicateOverWS(ws, options, authorization) {
 				})),
 			});
 		}
-		logger.info('Sending database info for node', this_node_name, 'database name', database_name, tables);
+		logger.trace?.('Sending database info for node', this_node_name, 'database name', database_name);
 		ws.send(encode([NODE_NAME, this_node_name, database_name, tables]));
+	}
+	function sendDBSchema(database_name) {
+		let database = getDatabases()?.[database_name];
+		let tables = [];
+		for (let table_name in database) {
+			if (
+				node_subscriptions &&
+				!node_subscriptions.some((node) => {
+					return node.replicateByDefault ? !node.tables.includes(table_name) : node.tables.includes(table_name);
+				})
+			)
+				continue;
+			let table = database[table_name];
+			tables.push({
+				table: table_name,
+				schemaDefined: table.schemaDefined,
+				attributes: table.attributes.map((attr) => ({
+					name: attr.name,
+					type: attr.type,
+					isPrimaryKey: attr.isPrimaryKey,
+				})),
+			});
+		}
+		logger.trace?.('Sending database schema for node', 'database name', database_name, Object.keys(tables));
+		ws.send(encode([DB_SCHEMA, tables, database_name]));
 	}
 
 	return {
@@ -1040,12 +1135,13 @@ export function replicateOverWS(ws, options, authorization) {
 			if (subscription_request) subscription_request.end();
 			if (audit_subscription) audit_subscription.emit('close');
 		},
-		disconnected() {
+		disconnected(finished) {
 			// if we get disconnected, notify subscriptions manager so we can reroute through another node
 			disconnectedFromNode({
 				name: remote_node_name,
 				database: database_name,
 				url: options.url,
+				finished,
 			});
 			// TODO: When we get reconnected, we need to undo this
 		},
@@ -1113,7 +1209,7 @@ function ensureTableIfChanged(table_definition, existing_table) {
 		}
 	}
 	if (has_changes) {
-		logger.error('(Re)creating', table_definition);
+		logger.error?.('(Re)creating', table_definition);
 		return ensureTable({
 			table: table_definition.table,
 			database: table_definition.database,
