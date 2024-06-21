@@ -101,6 +101,7 @@ export async function createWebSocket(url, options?) {
 					),
 				})
 			),
+		ALPNProtocols: ['http/1.1', 'harperdb-replication'],
 		// we set this very high (2x times the v22 default) because it performs better
 		highWaterMark: 128 * 1024,
 	});

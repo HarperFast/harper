@@ -814,11 +814,13 @@ function createTLSSelector(type, options) {
 	return SNICallback;
 	function SNICallback(servername, cb) {
 		// find the matching server name, substituting wildcards for each part of the domain to find matches
+		harper_logger.warn('TLS requested for', servername, this.isReplicationConnection);
 		let matching_name = servername;
 		while (true) {
 			let context = secure_contexts.get(matching_name);
 			if (context) {
 				harper_logger.debug('Found certificate for', servername, context.certStart);
+				if (this.isReplicationConnection && context.replicationContext) context = context.replicationContext;
 				return cb(null, context);
 			}
 			if (has_wildcards && matching_name) {
