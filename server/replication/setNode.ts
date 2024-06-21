@@ -1,10 +1,9 @@
 import { createCsr, getCertsKeys, setCertTable, signCertificate } from '../../security/keys';
 import { validateBySchema } from '../../validation/validationWrapper';
 import Joi from 'joi';
-import { pki } from 'node-forge';
+import { basename } from 'path';
 import { get } from '../../utility/environment/environmentManager';
-import { OPERATIONS_ENUM, CONFIG_PARAMS, LICENSE_KEY_DIR_NAME } from '../../utility/hdbTerms';
-import { CERTIFICATE_PEM_NAME, CA_PEM_NAME, CERT_NAME } from '../../utility/terms/certificates';
+import { OPERATIONS_ENUM, CONFIG_PARAMS } from '../../utility/hdbTerms';
 import { ensureNode } from './subscriptionManager';
 import { getHDBNodeTable } from './knownNodes';
 import { getThisNodeUrl, sendOperationToNode, urlToNodeName, getThisNodeName } from './replicator';
@@ -14,6 +13,10 @@ const { HTTP_STATUS_CODES } = hdb_errors;
 
 const validation_schema = Joi.object({
 	url: Joi.string(),
+	node_name: Joi.string(),
+	rejectUnauthorized: Joi.boolean(),
+	replicates: Joi.boolean(),
+	subscriptions: Joi.array(),
 });
 
 /**
@@ -21,16 +24,14 @@ const validation_schema = Joi.object({
  * @param req
  */
 export async function setNode(req: object) {
-	// TODO: improve the validation here
 	const validation = validateBySchema(req, validation_schema);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
+
 	const { url } = req;
-	if (!url) {
-		throw new Error('URL required for add_node operation');
-	}
 	if (req.operation === 'remove_node') {
+		if (!url && !req.node_name) throw new ClientError('url or node_name is required for remove_node operation');
 		const node_record_id = req.node_name ?? urlToNodeName(url);
 		const hdb_nodes = getHDBNodeTable();
 		const record = await hdb_nodes.get(node_record_id);
@@ -60,9 +61,17 @@ export async function setNode(req: object) {
 		return `Successfully removed '${node_record_id}' from manifest`;
 	}
 
+	if (!url) throw new ClientError('url required for this operation');
+
+	const this_url = getThisNodeUrl();
+	if (this_url == null) throw new ClientError('replication url is missing from harperdb-config.yaml');
+
 	let csr;
 	let cert_auth;
 	if (url?.startsWith('wss:')) {
+		if (req.operation === 'add_node' && !req.authorization)
+			throw new ClientError('authorization parameter is required');
+
 		const { rep, rep_ca } = await getCertsKeys();
 		if (rep.name === 'default') {
 			// Create the certificate signing request that will be sent to the other node
@@ -74,13 +83,6 @@ export async function setNode(req: object) {
 		}
 	}
 
-	// TODO: test adding a node to an instance without previous replication config.
-	const this_url = getThisNodeUrl();
-	if (this_url == null) {
-		throw new Error('replication url is missing from harperdb-config.yaml');
-	}
-
-	// TODO: Do we need to do all the cert things for update_node
 	// This is the record that will be added to the other nodes hdb_nodes table
 	const target_add_node_obj = {
 		operation: OPERATIONS_ENUM.ADD_NODE_BACK,
@@ -89,7 +91,6 @@ export async function setNode(req: object) {
 		url: this_url,
 		csr,
 		cert_auth,
-		//certificate: await readFile(get(CONFIG_PARAMS.TLS_CERTIFICATE), 'utf8'), //TODO: what cert should we pass here?
 	};
 
 	if (get(CONFIG_PARAMS.REPLICATION_NODENAME)) target_add_node_obj.node_name = get(CONFIG_PARAMS.REPLICATION_NODENAME);
@@ -134,11 +135,15 @@ export async function setNode(req: object) {
 		});
 
 		if (target_node_response.certificate) {
+			const private_key_name = basename(
+				get(CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY) ?? get(CONFIG_PARAMS.TLS_PRIVATEKEY)
+			);
+
 			await setCertTable({
 				name: `issued by ${urlToNodeName(url)}`,
 				uses: ['https', 'operations', 'wss'],
 				certificate: target_node_response.certificate,
-				private_key_name: 'privateKey.pem', // TODO: this needs to be the name of the private key file that was used for CSR
+				private_key_name,
 				is_authority: false,
 			});
 		}
