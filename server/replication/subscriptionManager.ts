@@ -345,10 +345,11 @@ export async function ensureNode(name: string, node) {
 	if (!existing) {
 		await table.put(node);
 	} else {
+		if (node.replicates) node.subscriptions = null; // if we are fully replicating, we don't need to have subscriptions
 		for (let key in node) {
 			if (existing[key] !== node[key]) {
 				// Update any existing subscriptions or append to subscriptions array
-				if (key === 'subscriptions') {
+				if (key === 'subscriptions' && node[key] && existing[key]) {
 					const new_subs = [];
 					const existing_subs = cloneDeep(existing[key]);
 					for (const new_sub of node[key]) {
