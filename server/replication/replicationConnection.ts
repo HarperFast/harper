@@ -10,7 +10,7 @@ import {
 import { exportIdMapping, getIdOfRemoteNode, remoteToLocalNodeId } from './nodeIdMapping';
 import { whenNextTransaction } from '../../resources/transactionBroadcast';
 import {
-	cluster_certificate_authorities,
+	replication_certificate_authorities,
 	forEachReplicatedDatabase,
 	getThisNodeName,
 	urlToNodeName,
@@ -26,8 +26,6 @@ import { threadId } from 'worker_threads';
 import * as logger from '../../utility/logging/logger';
 import { disconnectedFromNode, connectedToNode, ensureNode } from './subscriptionManager';
 import { EventEmitter } from 'events';
-import { createSecureContext } from 'node:tls';
-import { broadcast } from '../../server/threads/manageThreads';
 import { createTLSSelector } from '../../security/keys';
 import * as https from 'node:https';
 import * as tls from 'node:tls';
@@ -94,11 +92,9 @@ export async function createWebSocket(url, options?) {
 		noDelay: true,
 		secureContext:
 			secure_context &&
-			createSecureContext(
+			tls.createSecureContext(
 				Object.assign({}, secure_context.options, {
-					ca: [...cluster_certificate_authorities.values(), ...secure_context.certificateAuthorities.values()].map(
-						(cert) => cert.asString
-					),
+					ca: Array.from(replication_certificate_authorities), // do we need to add CA if secure context had one?
 				})
 			),
 		ALPNProtocols: ['http/1.1', 'harperdb-replication'],

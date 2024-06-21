@@ -28,7 +28,7 @@ const {
 } = certificates_terms;
 const assign_cmdenv_vars = require('../utility/assignCmdEnvVariables');
 const config_utils = require('../config/configUtils');
-
+const broken_alpn_callback = parseInt(process.version.slice(1)) < 20;
 const { table, getDatabases, databases } = require('../resources/databases');
 
 Object.assign(exports, {
@@ -47,7 +47,6 @@ Object.assign(exports, {
 const { urlToNodeName, getThisNodeUrl, getThisNodeName } = require('../server/replication/replicator');
 const { ensureNode } = require('../server/replication/subscriptionManager');
 const { readFileSync, watchFile, statSync } = require('node:fs');
-const { createSecureContext, rootCertificates } = require('node:tls');
 const env = require('../utility/environment/environmentManager');
 const { getTicketKeys } = require('../server/threads/manageThreads');
 const harper_logger = require('../utility/logging/harper_logger');
@@ -696,27 +695,23 @@ function updateConfigCert() {
 	config_utils.updateConfigValue(undefined, undefined, new_certs, false, true);
 }
 
-async function getReplicationCAs() {
-	// Add any CAs that might exist in hdb_nodes
-	let ca_certs = new Set();
-	const nodes_table = getDatabases()['system']['hdb_nodes'];
-	for await (const node of nodes_table.search([])) {
-		if (node.ca) {
-			ca_certs.add(node.ca);
-		}
-	}
-	return ca_certs;
-}
 function readPEM(path) {
 	if (path.startsWith('-----BEGIN')) return path;
 	return readFileSync(path, 'utf8');
 }
 // this horifying hack is brought to you by https://github.com/nodejs/node/issues/36655
 const origCreateSecureContext = tls.createSecureContext;
-let instantiated_context;
 tls.createSecureContext = function (options) {
-	if (instantiated_context) return instantiated_context;
-	return origCreateSecureContext(options);
+	if (!options.cert || !options.key) {
+		return origCreateSecureContext(options);
+	}
+	let lessOptions = { ...options };
+	delete lessOptions.key;
+	delete lessOptions.cert;
+	let ctx = origCreateSecureContext(lessOptions);
+	ctx.context.setCert(options.cert);
+	ctx.context.setKey(options.key, undefined);
+	return ctx;
 };
 
 let ca_certs = new Map();
@@ -726,12 +721,15 @@ function createTLSSelector(type, options) {
 	let has_wildcards = false;
 	SNICallback.initialize = (server) => {
 		if (SNICallback.ready) return SNICallback.ready;
+		if (server) {
+			server.secureContexts = secure_contexts;
+			server.secureContextsListeners = [];
+		}
 		return (SNICallback.ready = new Promise((resolve, reject) => {
 			async function updateTLS() {
 				try {
 					secure_contexts.clear();
 					ca_certs.clear();
-					const replication_cas = await getReplicationCAs();
 					let best_quality = 0;
 					for await (const cert of databases.system.hdb_certificate.search([])) {
 						if (type !== 'operations-api' && cert.name.includes('operations')) continue;
@@ -757,25 +755,21 @@ function createTLSSelector(type, options) {
 							if (!private_key || !certificate) {
 								throw new Error('Missing private key or certificate for secure server');
 							}
+							let cert_authorities = ca_certs.get(type);
 							const secure_options = {
 								ciphers: cert.ciphers,
 								ticketKeys: getTicketKeys(),
+								ca: cert_authorities,
+								cert: certificate,
+								key: private_key,
 							};
 							if (server) secure_options.sessionIdContext = server.sessionIdContext;
-							let secure_context = createSecureContext(secure_options);
+							let secure_context = tls.createSecureContext(secure_options);
 							secure_context.name = cert.name;
 							secure_context.options = secure_options;
 							secure_context.quality = quality;
-							// Due to https://github.com/nodejs/node/issues/36655, we need to ensure that we apply the key and cert
-							// *after* the context is created, so that the ciphers are set and allow for lower security ciphers if needed
-							// We also maintain the instantiated context because for the default context we need to set it on the server,
-							// but since we have already built the context, we can directly provide it to the server
-							secure_context.context.setCert(certificate);
-							secure_context.context.setKey(private_key, undefined);
-							secure_options.key = private_key;
-							secure_options.cert = certificate;
-							secure_context.certificateAuthorities = ca_certs;
-
+							secure_context.certificateAuthorities = cert_authorities;
+							harper_logger.warn('Create secure context', secure_context.rid);
 							// we store the first 100 bytes of the certificate just for debug logging
 							secure_context.certStart = certificate.toString().slice(0, 100);
 							if (quality > best_quality) {
@@ -783,12 +777,8 @@ function createTLSSelector(type, options) {
 								SNICallback.defaultContext = default_context = secure_context;
 								best_quality = quality;
 								if (server) {
-									instantiated_context = secure_context;
-									try {
-										server.setSecureContext(secure_options);
-									} finally {
-										instantiated_context = null;
-									}
+									server.defaultContext = secure_context;
+									server.setSecureContext(server, secure_options);
 									harper_logger.info('Applying default TLS', secure_context.name, 'for', server.ports);
 								}
 							}
@@ -824,12 +814,12 @@ function createTLSSelector(type, options) {
 							harper_logger.error('Error applying TLS for', cert.name, error);
 						}
 					}
+					server?.secureContextsListeners.forEach((listener) => listener());
 					resolve(default_context);
 				} catch (error) {
 					reject(error);
 				}
 			}
-
 			databases.system.hdb_certificate.subscribe({
 				listener: updateTLS,
 			});
@@ -844,7 +834,10 @@ function createTLSSelector(type, options) {
 			let context = secure_contexts.get(matching_name);
 			if (context) {
 				harper_logger.debug('Found certificate for', servername, context.certStart);
-				if (this.isReplicationConnection && context.replicationContext) context = context.replicationContext;
+				// check if this is a replication connection, based on ALPN, and if so, use the replication context
+				// if ALPN callbacks are broken (node 18), we need to always use the replication context if it exists
+				if (context.replicationContext && (this.isReplicationConnection || broken_alpn_callback))
+					context = context.replicationContext;
 				return cb(null, context);
 			}
 			if (has_wildcards && matching_name) {
