@@ -1195,6 +1195,7 @@ class Encoder {
 function ensureTableIfChanged(table_definition, existing_table) {
 	if (!existing_table) existing_table = {};
 	let has_changes = false;
+	let schema_defined = table_definition.schemaDefined;
 	let attributes = existing_table.attributes || [];
 	for (let i = 0; i < table_definition.attributes.length; i++) {
 		let ensure_attribute = table_definition.attributes[i];
@@ -1205,11 +1206,12 @@ function ensureTableIfChanged(table_definition, existing_table) {
 			existing_attribute.type !== ensure_attribute.type
 		) {
 			has_changes = true;
+			if (!schema_defined) ensure_attribute.indexed = true; // if it is a dynamic schema, we need to index (all) the attributes
 			attributes[i] = ensure_attribute;
 		}
 	}
 	if (has_changes) {
-		logger.error?.('(Re)creating', table_definition);
+		logger.info?.('(Re)creating', table_definition);
 		return ensureTable({
 			table: table_definition.table,
 			database: table_definition.database,
