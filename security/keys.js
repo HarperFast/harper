@@ -485,11 +485,29 @@ async function setCertTable(cert_record) {
 	await certificate_table.patch(cert_record);
 }
 
-function rawToCert(raw) {
-	let asn1 = forge.asn1.fromDer(forge.util.createBuffer(raw));
-	return pki.certificateFromAsn1(asn1);
+function verifyCert(cert, ca) {
+	try {
+		const ca_store = pki.createCaStore([ca]);
+		return pki.verifyCertificateChain(ca_store, [cert]);
+	} catch (err) {
+		hdb_logger.info('verifying cert:', err);
+		return false;
+	}
 }
 
+// let crt = fs.readFileSync('/Users/davidcockerill/hdb/keys/certificate.pem');
+// let crt_ca = fs.readFileSync('/Users/davidcockerill/hdb/keys/caCertificate.pem');
+// let p_key = fs.readFileSync('/Users/davidcockerill/hdb2/keys/privateKey.pem');
+// // crt = pki.certificateFromPem(crt);
+// // crt_ca = pki.certificateFromPem(crt_ca);
+//
+// const x509 = new X509Certificate(crt);
+// const pk = createPrivateKey(p_key);
+// const value = x509.checkPrivateKey(pk);
+// console.log(value);
+//
+// const v = crt.check;
+// console.log(verifyCert(crt, crt_ca));
 async function generateKeys() {
 	const keys = await generateKeyPair('rsa', {
 		modulusLength: 4096,
@@ -678,6 +696,17 @@ function updateConfigCert() {
 	config_utils.updateConfigValue(undefined, undefined, new_certs, false, true);
 }
 
+async function getReplicationCAs() {
+	// Add any CAs that might exist in hdb_nodes
+	let ca_certs = new Set();
+	const nodes_table = getDatabases()['system']['hdb_nodes'];
+	for await (const node of nodes_table.search([])) {
+		if (node.ca) {
+			ca_certs.add(node.ca);
+		}
+	}
+	return ca_certs;
+}
 function readPEM(path) {
 	if (path.startsWith('-----BEGIN')) return path;
 	return readFileSync(path, 'utf8');
@@ -702,6 +731,7 @@ function createTLSSelector(type, options) {
 				try {
 					secure_contexts.clear();
 					ca_certs.clear();
+					const replication_cas = await getReplicationCAs();
 					let best_quality = 0;
 					for await (const cert of databases.system.hdb_certificate.search([])) {
 						if (type !== 'operations-api' && cert.name.includes('operations')) continue;
@@ -709,7 +739,7 @@ function createTLSSelector(type, options) {
 						const cert_parsed = new X509Certificate(certificate);
 						if (cert.is_authority) {
 							cert_parsed.asString = certificate;
-							ca_certs.set(cert_parsed.subject, cert_parsed);
+							ca_certs.set(cert.type, cert_parsed);
 						}
 					}
 					for await (const cert of databases.system.hdb_certificate.search([])) {
@@ -731,12 +761,6 @@ function createTLSSelector(type, options) {
 								ciphers: cert.ciphers,
 								ticketKeys: getTicketKeys(),
 							};
-							if (options?.required) {
-								// we only set the ca if we are rejecting unauthorized connections
-								// otherwise we verify the cert against any CAs later as needed to avoid the
-								// performance hit of loading all CAs (or every connection)
-								secure_options.ca = [...ca_certs.values()].map((cert) => cert.asString);
-							}
 							if (server) secure_options.sessionIdContext = server.sessionIdContext;
 							let secure_context = createSecureContext(secure_options);
 							secure_context.name = cert.name;
@@ -833,11 +857,6 @@ function createTLSSelector(type, options) {
 		// no matches, return the first one
 		cb(null, default_context);
 	}
-}
-function verifyCertAgainstCAs(cert) {
-	if (!cert) return false;
-	const ca = ca_certs.get(cert.issuer);
-	return ca && cert.checkIssued(ca);
 }
 function reverseSubscription(subscription) {
 	const { subscribe, publish } = subscription;

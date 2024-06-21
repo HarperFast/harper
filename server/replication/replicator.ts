@@ -40,11 +40,9 @@ export { startOnMainThread } from './subscriptionManager';
 import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes, shouldReplicateToNode } from './knownNodes';
 import { encode } from 'msgpackr';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
+import { WebSocket } from 'ws';
+import * as https from 'node:https';
 import { exportIdMapping } from './nodeIdMapping';
-import { verifyCertAgainstCAs } from '../../security/keys';
-import { rootCertificates } from 'node:tls';
-
-export let cluster_certificate_authorities = new Map();
 let replication_disabled;
 let next_id = 1; // for request ids
 
@@ -70,38 +68,60 @@ export function start(options) {
 	// noinspection JSVoidFunctionReturnValueUsed
 	const ws_servers = server.ws(async (ws, request, chain_completion) => {
 		await chain_completion;
-		let authorization = request?.user;
-		if (!authorization) {
-			let cert = request.peerX509Certificate;
-			if (cert) {
-				let ca = cluster_certificate_authorities.get(cert.issuer);
-				if (ca ? cert.checkIssued(ca) : verifyCertAgainstCAs(cert)) {
-					// TODO: We may also need to verify that the certificate has not expired and other validity checks
-					let common_name = cert.subject.match(/CN=(.*)/)?.[1];
-					authorization = common_name && getHDBNodeTable().primaryStore.get(common_name);
-				}
-			} else {
-				// try by IP address
-				authorization = getHDBNodeTable().primaryStore.get(request.ip) || route_by_hostname.get(request.ip);
-			}
-			if (!authorization && request._nodeRequest.socket.authorizationError)
-				logger.error(
-					'Error in authorizing incoming WS client connection',
-					request._nodeRequest.socket.authorizationError
-				);
-		}
-		replicateOverWS(ws, options, authorization);
+		replicateOverWS(ws, options, request?.user);
 		ws.on('error', (error) => {
 			if (error.code !== 'ECONNREFUSED') logger.error('Error in connection to ' + this.url, error.message);
 		});
 	}, options);
+	options.runFirst = true;
+	// now setup authentication for the replication server, authorizing by certificate
+	// or IP address and then falling back to standard authorization
+	server.http((request, next_handler) => {
+		if (request.isWebSocket && request.headers.get('Sec-WebSocket-Protocol') === 'harperdb-replication-v1') {
+			if (!request.authorized && request._nodeRequest.socket.authorizationError) {
+				logger.error(request._nodeRequest.socket.authorizationError);
+			}
+			if (request.authorized && request.peerCertificate.subject) {
+				const subject = request.peerCertificate.subject;
+				const node = subject && getHDBNodeTable().primaryStore.get(subject.CN);
+				if (node) {
+					request.user = node;
+				}
+			} else {
+				// try by IP address
+				const node = getHDBNodeTable().primaryStore.get(request.ip);
+				if (node) {
+					request.user = node;
+				}
+			}
+		}
+		return next_handler(request);
+	}, options);
 
-	if (!cluster_certificate_authorities.addedRoot) {
-		cluster_certificate_authorities.addedRoot = true;
-		for (let ca of rootCertificates) {
-			let x509 = new X509Certificate(ca);
-			x509.asString = ca;
-			cluster_certificate_authorities.set(x509.subject, x509);
+	for (let ws_server of ws_servers) {
+		servers.push(ws_server);
+		if (ws_server.setSecureContext) {
+			let certificate_authorities = new Set();
+			let last_ca_count = 0;
+			// we need to stay up-to-date with any CAs that have been replicated across the cluster
+			subscribeToNodeUpdates((node) => {
+				if (node.ca) {
+					// we only care about nodes that have a CA
+					certificate_authorities.add(node.ca);
+					// created a set of all the CAs that have been replicated, if changed, update the secure context
+					if (certificate_authorities.size !== last_ca_count) {
+						last_ca_count = certificate_authorities.size;
+						/*ws_server.setSecureContext({
+							ca: Array.from(certificate_authorities),
+							requestCert: true,
+							cert: ws_server.cert,
+							key: ws_server.key,
+							ciphers: ws_server.ciphers,
+							ticketKeys: ws_server.ticketKeys,
+						});*/
+					}
+				}
+			});
 		}
 	}
 	// we need to stay up-to-date with any CAs that have been replicated across the cluster

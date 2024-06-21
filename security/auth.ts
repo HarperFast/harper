@@ -9,7 +9,6 @@ import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/h
 import { loggerWithTag, AuthAuditLog, debug } from '../utility/logging/harper_logger.js';
 import { user } from '../server/itc/serverHandlers';
 import { Headers } from '../server/serverHelpers/Headers';
-import { verifyCertAgainstCAs } from '../security/keys';
 const auth_event_log = loggerWithTag('auth-event');
 env.initSync();
 
@@ -112,21 +111,25 @@ export async function authentication(request, next_handler) {
 			else auth_event_log.error(log);
 		};
 
-		if (request.mtlsConfig) {
-			let cert = request.peerX509Certificate;
-			if (request.authorized || (cert && verifyCertAgainstCAs(cert))) {
-				let username = request.mtlsConfig.user;
-				if (username !== null) {
-					// null means no user is defined from certificate, need regular authentication as well
-					if (username === undefined || username === 'Common Name' || username === 'CN')
-						username = request.peerCertificate.subject.CN;
-					request.user = await server.getUser(username, null, null);
-					authAuditLog(username, AUTH_AUDIT_STATUS.SUCCESS, 'mTLS');
-				} else {
-					debug('HTTPS/WSS mTLS authorized connection (mTLS did not authorize a user)', 'from', request.ip);
-				}
-			} else if (request?._nodeRequest?.socket?.authorizationError)
-				auth_event_log.error('Authorization error:', request._nodeRequest.socket.authorizationError);
+		if (
+			!request.authorized &&
+			request.mtlsConfig &&
+			request.peerCertificate.subject &&
+			request?._nodeRequest?.socket?.authorizationError
+		)
+			auth_event_log.error('Authorization error:', request._nodeRequest.socket.authorizationError);
+
+		if (request.mtlsConfig && request.authorized && request.peerCertificate.subject) {
+			let username = request.mtlsConfig.user;
+			if (username !== null) {
+				// null means no user is defined from certificate, need regular authentication as well
+				if (username === undefined || username === 'Common Name' || username === 'CN')
+					username = request.peerCertificate.subject.CN;
+				request.user = await server.getUser(username, null, null);
+				authAuditLog(username, AUTH_AUDIT_STATUS.SUCCESS, 'mTLS');
+			} else {
+				debug('HTTPS/WSS mTLS authorized connection (mTLS did not authorize a user)', 'from', request.ip);
+			}
 		}
 
 		let new_user;
