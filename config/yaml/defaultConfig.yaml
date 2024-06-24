@@ -68,6 +68,4 @@ storage:
   path: null
   prefetchWrites: true
 tls:
-  certificate: null
-  certificateAuthority: null
   privateKey: null

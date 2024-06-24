@@ -13,8 +13,9 @@ const env_manager = require('../utility/environment/environmentManager');
 const hdb_terms = require('../utility/hdbTerms');
 const { CONFIG_PARAMS } = hdb_terms;
 const certificates_terms = require('../utility/terms/certificates');
+const { ClientError } = require('../utility/errors/hdbError');
 const tls = require('node:tls');
-const { basename } = require('node:path');
+const { basename, relative, join } = require('node:path');
 const {
 	CA_CERT_PREFERENCE_APP,
 	CA_CERT_PREFERENCE_OPS,
@@ -90,6 +91,9 @@ function getCertTable() {
 					},
 					{
 						attribute: 'details',
+					},
+					{
+						attribute: 'private_key_name',
 					},
 				],
 			});
@@ -231,7 +235,7 @@ function loadCertificates() {
 			}
 			for (let config of configs) {
 				const private_key_path = config.privateKey;
-				let private_key_name = private_key_path && basename(private_key_path);
+				let private_key_name = private_key_path && relative(join(root_path, 'keys'), private_key_path);
 				if (private_key_name) {
 					loadAndWatch(
 						private_key_path,
@@ -869,8 +873,93 @@ async function listCertificates() {
 	return response;
 }
 
-async function addCertificate() {}
+// TODO: check what name load certs gives to certs in config - it should use the CN
+async function addCertificate(req) {
+	const { name, certificate, private_key, is_authority } = req;
+	const x509_cert = new X509Certificate(certificate);
+	let private_key_exists = false;
+	let private_key_match = false;
+	let existing_private_key_name;
+	for (const [key_name, key] of private_keys) {
+		// If a private key is not provided we search all existing private keys to see if there is one that was used to sign the cert.
+		if (!private_key && !private_key_exists) {
+			const check = x509_cert.checkPrivateKey(createPrivateKey(key));
+			if (check) {
+				private_key_exists = true;
+				existing_private_key_name = key_name;
+			}
+		}
 
-async function removeCertificate() {
+		// If a private key was provided we check to see if it already exists, so that we don't store the same key twice.
+		if (private_key && private_key === key) {
+			private_key_match = true;
+			existing_private_key_name = key_name;
+		}
+	}
+
+	if (!is_authority && !private_key && !private_key_exists)
+		throw new ClientError('A suitable private key was not found for this certificate');
+
+	let cert_cn;
+	if (!name) {
+		try {
+			cert_cn = x509_cert.subject.split('\n')[0].slice(3);
+		} catch (err) {
+			hdb_logger.error(err);
+		}
+
+		if (cert_cn == null) {
+			throw new ClientError('Error extracting certificate common name, please provide a name parameter');
+		}
+	}
+
+	const sani_name = sanitizeName(name ?? cert_cn);
+	if (private_key && !private_key_exists && !private_key_match) {
+		// TODO - we need to add coverage for subfolders?
+		await fs.writeFile(
+			path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME, sani_name + '.pem'),
+			private_key
+		);
+		private_keys.set(sani_name, private_key);
+	}
+
+	const record = {
+		name: sani_name,
+		certificate,
+		is_authority,
+		hosts: req.hosts,
+	};
+
+	if (!is_authority || (is_authority && existing_private_key_name) || (is_authority && private_key)) {
+		record.private_key_name = (existing_private_key_name ?? sani_name) + '.pem';
+	}
+
+	await setCertTable(record);
+
+	return 'Successfully added certificate under name: ' + sani_name;
+}
+
+function sanitizeName(cn) {
+	return cn.replace(/[^a-z0-9\.]/gi, '-');
+}
+
+async function removeCertificate(req) {
+	const { name } = req;
 	getCertTable();
+	const cert_record = await certificate_table.get(name);
+	if (!cert_record) throw new ClientError(name + ' not found');
+	const { private_key_name } = cert_record;
+	if (private_key_name) {
+		const matching_keys = Array.from(
+			await certificate_table.search([{ attribute: 'private_key_name', value: private_key_name }])
+		);
+
+		if (matching_keys.length === 1 && matching_keys[0].name === name) {
+			hdb_logger.info('Removing private key named', private_key_name);
+			await fs.remove(path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME, private_key_name));
+		}
+	}
+
+	await certificate_table.delete(name);
+	return 'Successfully removed ' + name;
 }

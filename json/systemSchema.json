@@ -175,6 +175,9 @@
         "attribute": "is_authority"
       },
       {
+        "attribute": "private_key_name"
+      },
+      {
         "attribute": "details"
       }
     ]
