@@ -402,6 +402,14 @@ function getHTTPServer(port, secure, is_operations_server) {
 				ticketKeys: getTicketKeys(),
 				maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 				SNICallback: createTLSSelector(is_operations_server ? 'operations-api' : 'server', { required: mtls_required }),
+				ALPNCallback: function (connection) {
+					// we use this as an indicator that the connection is a replication connection and that
+					// we should use the full set of replication CAs. Loading all of them for each connection
+					// is expensive
+					if (connection.protocols.includes('harperdb-replication')) this.isReplicationConnection = true;
+					return 'http/1.1';
+				},
+				ALPNProtocols: null,
 			});
 		}
 		let license_warning = checkMemoryLimit();

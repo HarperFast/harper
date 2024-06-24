@@ -753,6 +753,7 @@ const MAX_OUTSTANDING_INDEXING = 1000;
 const MIN_OUTSTANDING_INDEXING = 10;
 async function runIndexing(Table, attributes, indicesToRemove) {
 	try {
+		harper_logger.info(`Indexing ${Table.tableName} attributes`, attributes);
 		const schema_version = Table.schemaVersion;
 		await signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
@@ -833,6 +834,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 		await signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'indexing-finished', Table.databaseName, Table.tableName)
 		);
+		harper_logger.info(`Finished indexing ${Table.tableName} attributes`, attributes);
 	} catch (error) {
 		harper_logger.error('Error in indexing', error);
 	}

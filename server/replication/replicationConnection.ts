@@ -10,7 +10,7 @@ import {
 import { exportIdMapping, getIdOfRemoteNode, remoteToLocalNodeId } from './nodeIdMapping';
 import { whenNextTransaction } from '../../resources/transactionBroadcast';
 import {
-	cluster_certificate_authorities,
+	replication_certificate_authorities,
 	forEachReplicatedDatabase,
 	getThisNodeName,
 	urlToNodeName,
@@ -26,8 +26,6 @@ import { threadId } from 'worker_threads';
 import * as logger from '../../utility/logging/logger';
 import { disconnectedFromNode, connectedToNode, ensureNode } from './subscriptionManager';
 import { EventEmitter } from 'events';
-import { createSecureContext } from 'node:tls';
-import { broadcast } from '../../server/threads/manageThreads';
 import { createTLSSelector } from '../../security/keys';
 import * as https from 'node:https';
 import * as tls from 'node:tls';
@@ -94,13 +92,12 @@ export async function createWebSocket(url, options?) {
 		noDelay: true,
 		secureContext:
 			secure_context &&
-			createSecureContext(
+			tls.createSecureContext(
 				Object.assign({}, secure_context.options, {
-					ca: [...cluster_certificate_authorities.values(), ...secure_context.certificateAuthorities.values()].map(
-						(cert) => cert.asString
-					),
+					ca: Array.from(replication_certificate_authorities), // do we need to add CA if secure context had one?
 				})
 			),
+		ALPNProtocols: ['http/1.1', 'harperdb-replication'],
 		// we set this very high (2x times the v22 default) because it performs better
 		highWaterMark: 128 * 1024,
 	});
@@ -1195,6 +1192,7 @@ class Encoder {
 function ensureTableIfChanged(table_definition, existing_table) {
 	if (!existing_table) existing_table = {};
 	let has_changes = false;
+	let schema_defined = table_definition.schemaDefined;
 	let attributes = existing_table.attributes || [];
 	for (let i = 0; i < table_definition.attributes.length; i++) {
 		let ensure_attribute = table_definition.attributes[i];
@@ -1205,11 +1203,12 @@ function ensureTableIfChanged(table_definition, existing_table) {
 			existing_attribute.type !== ensure_attribute.type
 		) {
 			has_changes = true;
+			if (!schema_defined) ensure_attribute.indexed = true; // if it is a dynamic schema, we need to index (all) the attributes
 			attributes[i] = ensure_attribute;
 		}
 	}
 	if (has_changes) {
-		logger.error?.('(Re)creating', table_definition);
+		logger.info?.('(Re)creating', table_definition);
 		return ensureTable({
 			table: table_definition.table,
 			database: table_definition.database,

@@ -4,9 +4,8 @@ const path = require('path');
 const fs = require('fs-extra');
 const forge = require('node-forge');
 const net = require('net');
-let { generateKeyPair, X509Certificate, createPrivateKey } = require('crypto');
+let { generateKeyPair, X509Certificate } = require('crypto');
 const util = require('util');
-const _ = require('lodash');
 generateKeyPair = util.promisify(generateKeyPair);
 const pki = forge.pki;
 const hdb_logger = require('../utility/logging/harper_logger');
@@ -29,7 +28,7 @@ const {
 } = certificates_terms;
 const assign_cmdenv_vars = require('../utility/assignCmdEnvVariables');
 const config_utils = require('../config/configUtils');
-
+const broken_alpn_callback = parseInt(process.version.slice(1)) < 20;
 const { table, getDatabases, databases } = require('../resources/databases');
 
 Object.assign(exports, {
@@ -37,14 +36,12 @@ Object.assign(exports, {
 	updateConfigCert,
 	createCsr,
 	signCertificate,
-	generateCertsKeys,
 	getCertsKeys,
 	setCertTable,
 	loadCertificates,
 	setDefaultCertsKeys,
 	createTLSSelector,
 	verifyCert,
-	verifyCertAgainstCAs,
 	listCertificates,
 	addCertificate,
 	removeCertificate,
@@ -54,7 +51,6 @@ Object.assign(exports, {
 const { urlToNodeName, getThisNodeUrl, getThisNodeName } = require('../server/replication/replicator');
 const { ensureNode } = require('../server/replication/subscriptionManager');
 const { readFileSync, watchFile, statSync } = require('node:fs');
-const { createSecureContext, rootCertificates } = require('node:tls');
 const env = require('../utility/environment/environmentManager');
 const { getTicketKeys } = require('../server/threads/manageThreads');
 const harper_logger = require('../utility/logging/harper_logger');
@@ -103,46 +99,6 @@ function getCertTable() {
 	return certificate_table;
 }
 
-/**
- * This function will use preference enums to pick which cert has the highest preference and return that cert.
- * @param rep_host
- * @returns {Promise<{app: {name: undefined, cert: undefined}, app_private_key, ca_certs: *[], ops_ca: {name: undefined, cert: undefined}, ops: {name: undefined, cert: undefined}, app_ca: {name: undefined, cert: undefined}, ops_private_key, rep: {name: undefined, cert: undefined}}>}
- */
-
-async function getAllCertsKeys(preferred_name) {
-	getCertTable();
-	let preference = ca ? CA_CERT_PREFERENCE_APP : CERT_PREFERENCE_APP;
-	let best_cert, best_quality;
-	let ca_certs = new Set();
-	for await (const cert of certificate_table.search([])) {
-		if (cert.is_authority) ca_certs.add(cert.certificate);
-		else {
-			const { name, certificate } = cert;
-			let quality;
-			if (preferred_name === name) quality = 5;
-			else quality = preference[name] ?? 0;
-			if (quality > best_quality) {
-				best_cert = cert;
-				best_quality = quality;
-			}
-		}
-	}
-
-	// Add any CAs that might exist in hdb_nodes but not hdb_certificate
-	const nodes_table = getDatabases()['system']['hdb_nodes'];
-	for await (const node of nodes_table.search([])) {
-		if (node.ca) {
-			ca_certs.add(node.ca);
-		}
-	}
-
-	return (
-		best_cert && {
-			cas: Array.from(ca_certs),
-			...best_cert,
-		}
-	);
-}
 async function getCertsKeys(rep_host = undefined) {
 	await loadCertificates();
 	const app_private_pem = (await fs.exists(env_manager.get(hdb_terms.CONFIG_PARAMS.TLS_PRIVATEKEY)))
@@ -248,8 +204,10 @@ async function getCertsKeys(rep_host = undefined) {
 
 	return response;
 }
+
 let configured_certs_loaded;
 const private_keys = new Map();
+
 /**
  * This is responsible for loading any certificates that are in the harperdb-config.yaml file and putting them into the hdb_certificate table.
  * @return {*}
@@ -265,7 +223,7 @@ function loadCertificates() {
 	const root_path = env.get(terms.CONFIG_PARAMS.ROOTPATH); // need to relativize the paths so they aren't exposed
 	let promise;
 	for (let { configKey: config_key } of CERTIFICATE_CONFIGS) {
-		let configs = env_manager.get(config_key);
+		let configs = config_utils.getConfigFromFile(config_key);
 		if (configs) {
 			// the configs can be an array, so normalize to an array
 			if (!Array.isArray(configs)) {
@@ -297,14 +255,24 @@ function loadCertificates() {
 								}
 								let hostnames = config.hostname ?? config.hostnames ?? config.host ?? config.hosts;
 								if (hostnames && !Array.isArray(hostnames)) hostnames = [hostnames];
+								const certificate_pem = readPEM(path);
+								const x509_cert = new X509Certificate(certificate_pem);
 								promise = certificate_table.put({
 									name: CERT_CONFIG_NAME_MAP[config_key + (ca ? '_certificateAuthority' : '_certificate')],
 									uses: ['https', ...(config_key.includes('operations') ? ['operations'] : [])],
 									ciphers: config.ciphers,
-									certificate: readPEM(path),
+									certificate: certificate_pem,
 									private_key_name,
 									is_authority: ca,
 									hostnames,
+									details: {
+										issuer: x509_cert.issuer.replace(/\n/g, ' '),
+										subject: x509_cert.subject.replace(/\n/g, ' '),
+										subject_alt_name: x509_cert.subjectAltName,
+										serial_number: x509_cert.serialNumber,
+										valid_from: x509_cert.validFrom,
+										valid_to: x509_cert.validTo,
+									},
 								});
 							},
 							ca ? 'certificate authority' : 'certificate'
@@ -362,16 +330,15 @@ function getCommonName() {
 	return node_name;
 }
 
-//TODO add validation to these two op-api calls
 async function createCsr() {
-	let { app_private_key, app } = await getCertsKeys();
-	const app_cert = pki.certificateFromPem(app.cert);
-	app_private_key = pki.privateKeyFromPem(app_private_key);
+	let { ops_private_key, ops } = await getCertsKeys();
+	const ops_cert = pki.certificateFromPem(ops.cert);
+	ops_private_key = pki.privateKeyFromPem(ops_private_key);
 
-	hdb_logger.info('Creating CSR with cert named:', app.name);
+	hdb_logger.info('Creating CSR with cert named:', ops.name);
 
 	const csr = pki.createCertificationRequest();
-	csr.publicKey = app_cert.publicKey;
+	csr.publicKey = ops_cert.publicKey;
 	const subject = [
 		{
 			name: 'commonName',
@@ -395,7 +362,7 @@ async function createCsr() {
 	hdb_logger.info('Creating CSR with attributes', attributes);
 	csr.setAttributes(attributes);
 
-	csr.sign(app_private_key);
+	csr.sign(ops_private_key);
 
 	return forge.pki.certificationRequestToPem(csr);
 }
@@ -440,12 +407,14 @@ function certExtensions() {
 
 async function signCertificate(req) {
 	let { app_private_key, app_ca } = await getCertsKeys();
-	app_private_key = pki.privateKeyFromPem(app_private_key);
-	const ca_app_cert = pki.certificateFromPem(app_ca.cert);
 	let response = {
 		ca_certificate: app_ca.cert,
 	};
+
 	if (req.csr) {
+		app_private_key = pki.privateKeyFromPem(app_private_key);
+		const ca_app_cert = pki.certificateFromPem(app_ca.cert);
+
 		hdb_logger.info('Signing CSR with cert named', app_ca.name, 'with cert', app_ca.cert);
 		const csr = pki.certificationRequestFromPem(req.csr);
 		try {
@@ -483,24 +452,6 @@ async function signCertificate(req) {
 		hdb_logger.info('Sign cert did not receive a CSR from:', req.url, 'only the CA will be returned');
 	}
 
-	if (req.certificate) {
-		//TODO: uncomment
-		/*		const req_cert = pki.certificateFromPem(req.certificate);
-		const verify = verifyCert(req_cert, ca_cert);
-		if (verify) {
-			hdb_logger.info('certificate provided to sign_certificate verified successfully');
-			adding_node();
-			return {
-				certificate: req.certificate,
-				ca_certificate: pki.certificateToPem(ca_cert),
-			};
-		} else {
-			hdb_logger.warn(
-				'certificate provided to sign_certificate was not verified. A new certificate will be created using the provided CSR.'
-			);
-		}*/
-	}
-
 	return response;
 }
 
@@ -514,7 +465,7 @@ async function createCertificateTable(cert, ca_cert) {
 	});
 
 	await setCertTable({
-		name: certificates_terms.CERT_NAME.CA,
+		name: certificates_terms.CERT_NAME['DEFAULT-CA'],
 		uses: ['https', 'operations', 'wss'],
 		certificate: ca_cert,
 		private_key_name: 'privateKey.pem',
@@ -535,11 +486,6 @@ async function setCertTable(cert_record) {
 
 	getCertTable();
 	await certificate_table.patch(cert_record);
-}
-
-function rawToCert(raw) {
-	let asn1 = forge.asn1.fromDer(forge.util.createBuffer(raw));
-	return pki.certificateFromAsn1(asn1);
 }
 
 function verifyCert(cert, ca) {
@@ -565,7 +511,6 @@ function verifyCert(cert, ca) {
 //
 // const v = crt.check;
 // console.log(verifyCert(crt, crt_ca));
-
 async function generateKeys() {
 	const keys = await generateKeyPair('rsa', {
 		modulusLength: 4096,
@@ -587,7 +532,6 @@ async function generateKeys() {
 
 //https://www.openssl.org/docs/manmaster/man5/x509v3_config.html
 
-//TODO: add more logging
 async function generateCertificates(private_key, public_key, ca_cert) {
 	const public_cert = pki.createCertificate();
 
@@ -661,11 +605,11 @@ async function writeDefaultCertsToFile() {
 
 	const pub_cert = await certificate_table.get(certificates_terms.CERT_NAME.DEFAULT);
 	const pub_cert_path = path.join(keys_path, certificates_terms.CERTIFICATE_PEM_NAME);
-	await fs.writeFile(pub_cert_path, pub_cert.certificate);
+	if (!(await fs.exists(pub_cert_path))) await fs.writeFile(pub_cert_path, pub_cert.certificate);
 
-	const ca_cert = await certificate_table.get(certificates_terms.CERT_NAME.CA);
+	const ca_cert = await certificate_table.get(certificates_terms.CERT_NAME['DEFAULT-CA']);
 	const ca_cert_path = path.join(keys_path, certificates_terms.CA_PEM_NAME);
-	await fs.writeFile(ca_cert_path, ca_cert.certificate);
+	if (!(await fs.exists(ca_cert_path))) await fs.writeFile(ca_cert_path, ca_cert.certificate);
 }
 
 /**
@@ -761,10 +705,17 @@ function readPEM(path) {
 }
 // this horifying hack is brought to you by https://github.com/nodejs/node/issues/36655
 const origCreateSecureContext = tls.createSecureContext;
-let instantiated_context;
 tls.createSecureContext = function (options) {
-	if (instantiated_context) return instantiated_context;
-	return origCreateSecureContext(options);
+	if (!options.cert || !options.key) {
+		return origCreateSecureContext(options);
+	}
+	let lessOptions = { ...options };
+	delete lessOptions.key;
+	delete lessOptions.cert;
+	let ctx = origCreateSecureContext(lessOptions);
+	ctx.context.setCert(options.cert);
+	ctx.context.setKey(options.key, undefined);
+	return ctx;
 };
 
 let ca_certs = new Map();
@@ -774,6 +725,10 @@ function createTLSSelector(type, options) {
 	let has_wildcards = false;
 	SNICallback.initialize = (server) => {
 		if (SNICallback.ready) return SNICallback.ready;
+		if (server) {
+			server.secureContexts = secure_contexts;
+			server.secureContextsListeners = [];
+		}
 		return (SNICallback.ready = new Promise((resolve, reject) => {
 			async function updateTLS() {
 				try {
@@ -786,7 +741,7 @@ function createTLSSelector(type, options) {
 						const cert_parsed = new X509Certificate(certificate);
 						if (cert.is_authority) {
 							cert_parsed.asString = certificate;
-							ca_certs.set(cert_parsed.subject, cert_parsed);
+							ca_certs.set(cert.type, cert_parsed);
 						}
 					}
 					for await (const cert of databases.system.hdb_certificate.search([])) {
@@ -804,31 +759,21 @@ function createTLSSelector(type, options) {
 							if (!private_key || !certificate) {
 								throw new Error('Missing private key or certificate for secure server');
 							}
+							let cert_authorities = ca_certs.get(type);
 							const secure_options = {
 								ciphers: cert.ciphers,
 								ticketKeys: getTicketKeys(),
+								ca: cert_authorities,
+								cert: certificate,
+								key: private_key,
 							};
-							if (options?.required) {
-								// we only set the ca if we are rejecting unauthorized connections
-								// otherwise we verify the cert against any CAs later as needed to avoid the
-								// performance hit of loading all CAs (or every connection)
-								secure_options.ca = [...ca_certs.values()].map((cert) => cert.asString);
-							}
 							if (server) secure_options.sessionIdContext = server.sessionIdContext;
-							let secure_context = createSecureContext(secure_options);
+							let secure_context = tls.createSecureContext(secure_options);
 							secure_context.name = cert.name;
 							secure_context.options = secure_options;
 							secure_context.quality = quality;
-							// Due to https://github.com/nodejs/node/issues/36655, we need to ensure that we apply the key and cert
-							// *after* the context is created, so that the ciphers are set and allow for lower security ciphers if needed
-							// We also maintain the instantiated context because for the default context we need to set it on the server,
-							// but since we have already built the context, we can directly provide it to the server
-							secure_context.context.setCert(certificate);
-							secure_context.context.setKey(private_key, undefined);
-							secure_options.key = private_key;
-							secure_options.cert = certificate;
-							secure_context.certificateAuthorities = ca_certs;
-
+							secure_context.certificateAuthorities = cert_authorities;
+							harper_logger.warn('Create secure context', secure_context.rid);
 							// we store the first 100 bytes of the certificate just for debug logging
 							secure_context.certStart = certificate.toString().slice(0, 100);
 							if (quality > best_quality) {
@@ -836,12 +781,8 @@ function createTLSSelector(type, options) {
 								SNICallback.defaultContext = default_context = secure_context;
 								best_quality = quality;
 								if (server) {
-									instantiated_context = secure_context;
-									try {
-										server.setSecureContext(secure_options);
-									} finally {
-										instantiated_context = null;
-									}
+									server.defaultContext = secure_context;
+									server.setSecureContext(server, secure_options);
 									harper_logger.info('Applying default TLS', secure_context.name, 'for', server.ports);
 								}
 							}
@@ -877,12 +818,12 @@ function createTLSSelector(type, options) {
 							harper_logger.error('Error applying TLS for', cert.name, error);
 						}
 					}
+					server?.secureContextsListeners.forEach((listener) => listener());
 					resolve(default_context);
 				} catch (error) {
 					reject(error);
 				}
 			}
-
 			databases.system.hdb_certificate.subscribe({
 				listener: updateTLS,
 			});
@@ -891,11 +832,16 @@ function createTLSSelector(type, options) {
 	return SNICallback;
 	function SNICallback(servername, cb) {
 		// find the matching server name, substituting wildcards for each part of the domain to find matches
+		harper_logger.warn('TLS requested for', servername, this.isReplicationConnection);
 		let matching_name = servername;
 		while (true) {
 			let context = secure_contexts.get(matching_name);
 			if (context) {
 				harper_logger.debug('Found certificate for', servername, context.certStart);
+				// check if this is a replication connection, based on ALPN, and if so, use the replication context
+				// if ALPN callbacks are broken (node 18), we need to always use the replication context if it exists
+				if (context.replicationContext && (this.isReplicationConnection || broken_alpn_callback))
+					context = context.replicationContext;
 				return cb(null, context);
 			}
 			if (has_wildcards && matching_name) {
@@ -908,11 +854,6 @@ function createTLSSelector(type, options) {
 		// no matches, return the first one
 		cb(null, default_context);
 	}
-}
-function verifyCertAgainstCAs(cert) {
-	if (!cert) return false;
-	const ca = ca_certs.get(cert.issuer);
-	return ca && cert.checkIssued(ca);
 }
 function reverseSubscription(subscription) {
 	const { subscribe, publish } = subscription;

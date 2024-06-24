@@ -950,6 +950,7 @@ export function makeTable(options) {
 						// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
 						partial_record[name] = this.getProperty(name);
 					}
+					logger.trace?.(`Invalidating entry id: ${id}, timestamp: ${new Date(txn_time).toISOString()}`);
 
 					updateRecord(
 						id,
@@ -1179,6 +1180,16 @@ export function makeTable(options) {
 						// that is a CRDT, we use our own data as the basis for the audit record, which will include information about the incremental updates
 						audit_record = record_update;
 					}
+					const expires_at = context?.expiresAt || (expiration_ms ? expiration_ms + Date.now() : 0);
+					logger.trace?.(
+						`Saving record with id: ${id}, timestamp: ${new Date(txn_time).toISOString()}${
+							expires_at ? ', expires at: ' + new Date(expires_at).toISOString() : ''
+						}${
+							existing_entry
+								? ', replaces entry from: ' + new Date(existing_entry.version).toISOString()
+								: ', new entry'
+						}`
+					);
 					updateIndices(id, existing_record, record_to_store);
 					const type = full_update ? 'put' : 'patch';
 
@@ -1192,7 +1203,7 @@ export function makeTable(options) {
 						{
 							user: context?.user,
 							residencyId: residency_id,
-							expiresAt: context?.expiresAt || (expiration_ms ? expiration_ms + Date.now() : 0),
+							expiresAt: expires_at,
 							nodeId: options?.nodeId,
 						},
 						type,
@@ -1241,7 +1252,7 @@ export function makeTable(options) {
 					}
 					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId)) return; // a newer record exists locally
 					updateIndices(this[ID_PROPERTY], existing_record);
-					logger.trace?.(`Write delete entry`, id, txn_time);
+					logger.trace?.(`Deleting record with id: ${id}, txn timestamp: ${new Date(txn_time).toISOString()}`);
 					if (audit || track_deletes) {
 						updateRecord(
 							id,
@@ -2040,6 +2051,7 @@ export function makeTable(options) {
 					if (existing_entry === undefined && track_deletes && !audit) {
 						scheduleCleanup();
 					}
+					logger.trace?.(`Publishing message to id: ${id}, timestamp: ${new Date(txn_time).toISOString()}`);
 					// always audit this, but don't change existing version
 					// TODO: Use direct writes in the future (copying binary data is hard because it invalidates the cache)
 					updateRecord(
@@ -2948,6 +2960,9 @@ export function makeTable(options) {
 							const has_index_changes = updateIndices(id, existing_record, updated_record);
 							if (updated_record) {
 								apply_to_sources_intermediate.put?.(source_context, id, updated_record);
+								logger.trace?.(
+									`Writing resolved record from source with id: ${id}, timestamp: ${new Date(txn_time).toISOString()}`
+								);
 								// TODO: We are doing a double check for ifVersion that should probably be cleaned out
 								updateRecord(
 									id,
@@ -2962,7 +2977,9 @@ export function makeTable(options) {
 								);
 							} else {
 								apply_to_sources_intermediate.delete?.(source_context, id);
-
+								logger.trace?.(
+									`Deleting resolved record from source with id: ${id}, timestamp: ${new Date(txn_time).toISOString()}`
+								);
 								if (audit || track_deletes) {
 									updateRecord(
 										id,

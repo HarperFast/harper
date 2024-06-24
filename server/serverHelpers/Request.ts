@@ -36,10 +36,7 @@ export class Request {
 		return this._nodeRequest.socket.authorized;
 	}
 	get peerCertificate() {
-		return this._nodeRequest.socket.getPeerCertificate?.();
-	}
-	get peerX509Certificate() {
-		return this._nodeRequest.socket.getPeerX509Certificate?.();
+		return this._nodeRequest.socket.getPeerCertificate();
 	}
 	get mtlsConfig() {
 		return this._nodeRequest.socket.server.mtlsConfig;
