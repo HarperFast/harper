@@ -53,7 +53,7 @@ const SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY = 300;
 const COMMITTED_UPDATE_DELAY = 2;
 const PING_INTERVAL = 300000;
 export let awaiting_response = new Map();
-let SNICallback;
+let secure_contexts: Map<string, tls.SecureContext>;
 /**
  * Handles reconnection, and requesting catch-up
  */
@@ -64,11 +64,15 @@ export async function createWebSocket(url, options?) {
 	let node_name = getThisNodeName();
 	let secure_context;
 	if (url.includes('wss://')) {
-		if (!SNICallback) {
-			SNICallback = createTLSSelector('operations-api');
+		if (!secure_contexts) {
+			let SNICallback = createTLSSelector('operations-api');
+			let secure_target = {
+				secureContexts: null,
+			};
+			await SNICallback.initialize(secure_target);
+			secure_contexts = secure_target.secureContexts;
 		}
-		await SNICallback.initialize();
-		secure_context = SNICallback.defaultContext;
+		secure_context = secure_contexts.get(node_name);
 		if (secure_context)
 			logger.debug?.('Creating web socket for URL', url, 'with certificate named:', secure_context.name);
 		if (!secure_context && rejectUnauthorized !== false) {
@@ -226,6 +230,7 @@ export function replicateOverWS(ws, options, authorization) {
 		close(1008, 'Unauthorized');
 		return;
 	}
+	let receiving_data_from_node_ids = [];
 	let remote_node_name = authorization.name;
 	if (remote_node_name && options.connection) options.connection.nodeName = remote_node_name;
 	let last_sequence_id_received, last_sequence_id_committed;
@@ -256,7 +261,7 @@ export function replicateOverWS(ws, options, authorization) {
 	}
 	let schema_update_listener, db_removal_listener;
 	const table_decoders = [];
-	let incoming_subscription_nodes;
+	let receiving_data_from_node_names;
 	const residency_map = [];
 	const sent_residency_lists = [];
 	const received_residency_lists = [];
@@ -431,10 +436,10 @@ export function replicateOverWS(ws, options, authorization) {
 						break;
 					case NODE_NAME_TO_ID_MAP:
 						remote_short_id_to_local_id = remoteToLocalNodeId(remote_node_name, data, audit_store);
-						incoming_subscription_nodes = message[2];
+						receiving_data_from_node_names = message[2];
 						logger.info?.(
 							connection_id,
-							`Acknowledged subscription request, receiving messages for nodes: ${incoming_subscription_nodes}`
+							`Acknowledged subscription request, receiving messages for nodes: ${receiving_data_from_node_names}`
 						);
 						break;
 					case RESIDENCY_LIST:
@@ -458,7 +463,7 @@ export function replicateOverWS(ws, options, authorization) {
 						table_subscription_to_replicator.send({
 							type: 'end_txn',
 							localTime: last_sequence_id_received,
-							remoteNodes: incoming_subscription_nodes,
+							remoteNodeIds: receiving_data_from_node_ids,
 						});
 						break;
 					case SUBSCRIPTION_REQUEST:
@@ -799,65 +804,68 @@ export function replicateOverWS(ws, options, authorization) {
 								// Then we switch to the real-time push subscription mode where we are listening for updates
 								// and sending them out immediately as we get them. If/when this mode gets overloaded, we switch back to
 								// the catch-up mode.
-								if (isFinite(current_sequence_id)) {
-									let queued_entries;
-									if (is_first) {
-										is_first = false;
-										let last_removed = getLastRemoved(audit_store);
-										if (!(last_removed <= current_sequence_id)) {
-											// this means the audit log doesn't extend far enough back, so we need to replicate all the tables
-											// TODO: This should only be done on a single node, we don't want full table replication from all the
-											// nodes that are connected to this one.
-											let last_sequence_id = current_sequence_id;
-											for (let table_name in tables) {
-												const table = tables[table_name];
-												for (const entry of table.primaryStore.getRange({
-													snapshot: false,
-												})) {
-													if (closed) return;
-													logger.info?.(
-														connection_id,
-														'Copying record from',
-														database_name,
-														table_name,
-														entry.key,
-														entry.localTime
-													);
-													if (entry.localTime >= current_sequence_id) {
-														last_sequence_id = Math.max(entry.localTime, last_sequence_id);
-														queued_entries = true;
-														sendAuditRecord(null, entry, entry.localTime);
-													}
+								if (!isFinite(current_sequence_id)) {
+									logger.warn?.('Invalid sequence id ' + current_sequence_id);
+									close(1008, 'Invalid sequence id' + current_sequence_id);
+								}
+								let queued_entries;
+								if (is_first) {
+									is_first = false;
+									let last_removed = getLastRemoved(audit_store);
+									if (!(last_removed <= current_sequence_id)) {
+										// this means the audit log doesn't extend far enough back, so we need to replicate all the tables
+										// TODO: This should only be done on a single node, we don't want full table replication from all the
+										// nodes that are connected to this one.
+										let last_sequence_id = current_sequence_id;
+										for (let table_name in tables) {
+											const table = tables[table_name];
+											for (const entry of table.primaryStore.getRange({
+												snapshot: false,
+											})) {
+												if (closed) return;
+												logger.info?.(
+													connection_id,
+													'Copying record from',
+													database_name,
+													table_name,
+													entry.key,
+													entry.localTime
+												);
+												if (entry.localTime >= current_sequence_id) {
+													last_sequence_id = Math.max(entry.localTime, last_sequence_id);
+													queued_entries = true;
+													sendAuditRecord(null, entry, entry.localTime);
 												}
 											}
-											current_sequence_id = last_sequence_id;
 										}
+										current_sequence_id = last_sequence_id;
 									}
-									for (const { key, value: audit_entry } of audit_store.getRange({
-										start: (current_sequence_id || 1) + 1 / 4096, // TODO: Once exclusive start bug is fixed, remove the +1/4096
-										//exclusiveStart: true,
-										snapshot: false, // don't want to use a snapshot, and we want to see new entries
-									})) {
-										if (closed) return;
-										const audit_record = readAuditEntry(audit_entry);
-										sendAuditRecord(null, audit_record, key);
-										// wait if there is back-pressure
-										if (ws._socket.writableNeedDrain) {
-											await new Promise((resolve) => ws._socket.once('drain', resolve));
-										}
-										//await rest(); // possibly yield occasionally for fairness
-										audit_subscription.startTime = key; // update so don't double send
-										queued_entries = true;
-									}
-									if (queued_entries)
-										sendAuditRecord(
-											null,
-											{
-												type: 'end_txn',
-											},
-											current_sequence_id
-										);
 								}
+								for (const { key, value: audit_entry } of audit_store.getRange({
+									start: (current_sequence_id || 1) + 1 / 4096, // TODO: Once exclusive start bug is fixed, remove the +1/4096
+									//exclusiveStart: true,
+									snapshot: false, // don't want to use a snapshot, and we want to see new entries
+								})) {
+									if (closed) return;
+									const audit_record = readAuditEntry(audit_entry);
+									sendAuditRecord(null, audit_record, key);
+									// wait if there is back-pressure
+									if (ws._socket.writableNeedDrain) {
+										await new Promise((resolve) => ws._socket.once('drain', resolve));
+									}
+									//await rest(); // possibly yield occasionally for fairness
+									audit_subscription.startTime = key; // update so don't double send
+									queued_entries = true;
+								}
+								if (queued_entries)
+									sendAuditRecord(
+										null,
+										{
+											type: 'end_txn',
+										},
+										current_sequence_id
+									);
+
 								let listeners = table_update_listeners.get(first_table);
 								if (!listeners) table_update_listeners.set(first_table, (listeners = []));
 								listeners.push((table) => {
@@ -939,7 +947,7 @@ export function replicateOverWS(ws, options, authorization) {
 			table_subscription_to_replicator.send({
 				type: 'end_txn',
 				localTime: last_sequence_id_received,
-				remoteNodes: incoming_subscription_nodes,
+				remoteNodeIds: receiving_data_from_node_ids,
 				onCommit() {
 					outstanding_commits--;
 					if (replication_paused) {
@@ -995,11 +1003,19 @@ export function replicateOverWS(ws, options, authorization) {
 		}
 		if (options.connection?.isFinished)
 			throw new Error('Can not make a subscription request on a connection that is already closed');
-		/*		if (!last_sequence_id_received) {
-			last_sequence_id_received =
-				table_subscription_to_replicator.dbisDB.get([Symbol.for('seq'), remote_node_name]) ?? 1;
-		}*/
-		const node_subscriptions = options.connection?.nodeSubscriptions.map((node, index) => {
+		let last_txn_times = new Map();
+		// iterate through all the sequence entries and find the new txn time for each node
+		for (let entry of table_subscription_to_replicator.dbisDB?.getRange({
+			start: Symbol.for('seq'),
+			end: [Symbol.for('seq'), Buffer.from([0xff])],
+		})) {
+			for (let node of entry.value.nodes || []) {
+				if (node.lastTxnTime > (last_txn_times.get(node.id) ?? 0)) last_txn_times[node.id] = node.lastTxnTime;
+			}
+		}
+		let connected_node = options.connection?.nodeSubscriptions?.[0];
+		receiving_data_from_node_ids = [];
+		const node_subscriptions = options.connection?.nodeSubscriptions.map((node: any, index: number) => {
 			let table_subs = [];
 			let { replicateByDefault: replicate_by_default } = node;
 			if (node.subscriptions) {
@@ -1021,12 +1037,25 @@ export function replicateOverWS(ws, options, authorization) {
 						table_subs.push(table_name);
 				}
 			}
-			let start_time = table_subscription_to_replicator.dbisDB?.get([Symbol.for('seq'), node.name]) ?? 1;
-			if (index > 0 && start_time > 1) {
-				// if we are subscribing to secondary nodes to catch up, we aren't guaranteed the same sequence ids
-				// so we go back in time a bit to make sure we get all the records
-				start_time -= 10000;
+
+			const node_id = getIdOfRemoteNode(node.name, audit_store);
+			let sequence_entry = table_subscription_to_replicator.dbisDB?.get([Symbol.for('seq'), node_id]) ?? 1;
+			let start_time;
+			if (connected_node === node) start_time = sequence_entry.seqId ?? 1;
+			// if we are connected directly to the node, we start from the last sequence number we received at the top level
+			else {
+				// otherwise we are starting from the last sequence id we received through the proxying node
+				start_time = 1;
+				for (let seq_node of sequence_entry.nodes || []) {
+					if (seq_node.name === node.name) {
+						start_time = seq_node.seqId;
+					}
+				}
 			}
+			receiving_data_from_node_ids.push(node_id);
+			// if another node had previously acted as a proxy, it may not have the same sequence ids, but we can use the last
+			// originating txn time, and sequence ids should always be higher than their originating txn time, and starting from them should overlap
+			if (last_txn_times.get(node_id) > start_time) start_time = last_txn_times.get(node_id);
 			return {
 				name: node.name,
 				replicateByDefault: replicate_by_default,

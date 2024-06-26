@@ -30,12 +30,6 @@ export async function startOnMainThread(options) {
 	let new_node_listeners = [];
 	let all_nodes: any[];
 	let next_worker_index = 0;
-	/*const { app_ca } = await getCertsKeys();
-	// make sure this node exists is in the hdb_nodes table
-	await ensureNode(getThisNodeName(), {
-		url: getThisNodeUrl(),
-		ca: app_ca.cert,
-	});*/
 	// we need to wait for the threads to start before we can start adding nodes
 	// but don't await this because this start function has to finish before the threads can start
 	whenThreadsStarted.then(async () => {
