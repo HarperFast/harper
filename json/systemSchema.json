@@ -179,6 +179,9 @@
       },
       {
         "attribute": "details"
+      },
+      {
+        "attribute": "__updatedtime__"
       }
     ]
   },

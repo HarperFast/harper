@@ -4,10 +4,13 @@ const path = require('path');
 const fs = require('fs-extra');
 const forge = require('node-forge');
 const net = require('net');
-let { generateKeyPair, X509Certificate } = require('crypto');
+let { generateKeyPair, X509Certificate, createPrivateKey } = require('crypto');
 const util = require('util');
 generateKeyPair = util.promisify(generateKeyPair);
 const pki = forge.pki;
+const Joi = require('joi');
+const { v4: uuidv4 } = require('uuid');
+const { validateBySchema } = require('../validation/validationWrapper');
 const hdb_logger = require('../utility/logging/harper_logger');
 const env_manager = require('../utility/environment/environmentManager');
 const hdb_terms = require('../utility/hdbTerms');
@@ -15,7 +18,7 @@ const { CONFIG_PARAMS } = hdb_terms;
 const certificates_terms = require('../utility/terms/certificates');
 const { ClientError } = require('../utility/errors/hdbError');
 const tls = require('node:tls');
-const { basename, relative, join } = require('node:path');
+const { relative, join } = require('node:path');
 const {
 	CA_CERT_PREFERENCE_APP,
 	CA_CERT_PREFERENCE_OPS,
@@ -40,22 +43,30 @@ Object.assign(exports, {
 	getCertsKeys,
 	setCertTable,
 	loadCertificates,
-	setDefaultCertsKeys,
+	reviewSelfSignedCert,
 	createTLSSelector,
 	verifyCert,
 	listCertificates,
 	addCertificate,
 	removeCertificate,
 	writeDefaultCertsToFile,
+	generateCertsKeys,
+	getReplicationCert,
+	sanitizeName,
+	getReplicationCertAuth,
 });
 
-const { urlToNodeName, getThisNodeUrl, getThisNodeName } = require('../server/replication/replicator');
+const {
+	urlToNodeName,
+	getThisNodeUrl,
+	getThisNodeName,
+	clearThisNodeName,
+} = require('../server/replication/replicator');
 const { ensureNode } = require('../server/replication/subscriptionManager');
 const { readFileSync, watchFile, statSync } = require('node:fs');
 const env = require('../utility/environment/environmentManager');
-const { getTicketKeys } = require('../server/threads/manageThreads');
+const { getTicketKeys, onMessageFromWorkers } = require('../server/threads/manageThreads');
 const harper_logger = require('../utility/logging/harper_logger');
-const terms = require('../utility/hdbTerms');
 const { isMainThread } = require('worker_threads');
 
 const CERT_VALIDITY_DAYS = 3650;
@@ -66,6 +77,13 @@ const CERT_ATTRIBUTES = [
 	{ name: 'localityName', value: 'Denver' },
 	{ name: 'organizationName', value: 'HarperDB, Inc.' },
 ];
+onMessageFromWorkers(async (message) => {
+	if (message.type === hdb_terms.ITC_EVENT_TYPES.RESTART) {
+		env_manager.initSync(true);
+		// This will also call loadCertificates
+		await reviewSelfSignedCert();
+	}
+});
 
 let certificate_table;
 function getCertTable() {
@@ -101,6 +119,24 @@ function getCertTable() {
 	}
 
 	return certificate_table;
+}
+
+async function getReplicationCert() {
+	const SNICallback = createTLSSelector('operations-api');
+	const secure_target = {
+		secureContexts: null,
+		setSecureContext: (ctx) => {},
+	};
+	await SNICallback.initialize(secure_target);
+	return secure_target.secureContexts.get(getThisNodeName());
+}
+
+//TODO: Will this always work? Will a certs CA always be in hdb_cert...
+async function getReplicationCertAuth() {
+	getCertTable();
+	const rep_cert = pki.certificateFromPem((await getReplicationCert()).options.cert);
+	const ca_name = rep_cert.issuer.getField('CN').value;
+	return certificate_table.get(sanitizeName(ca_name));
 }
 
 async function getCertsKeys(rep_host = undefined) {
@@ -224,7 +260,7 @@ function loadCertificates() {
 
 	getCertTable();
 
-	const root_path = env.get(terms.CONFIG_PARAMS.ROOTPATH); // need to relativize the paths so they aren't exposed
+	const root_path = env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH); // need to relativize the paths so they aren't exposed
 	let promise;
 	for (let { configKey: config_key } of CERTIFICATE_CONFIGS) {
 		let configs = config_utils.getConfigFromFile(config_key);
@@ -261,8 +297,28 @@ function loadCertificates() {
 								if (hostnames && !Array.isArray(hostnames)) hostnames = [hostnames];
 								const certificate_pem = readPEM(path);
 								const x509_cert = new X509Certificate(certificate_pem);
+								let cert_cn;
+								try {
+									cert_cn = x509_cert.subject.split('\n')[0].slice(3);
+								} catch (err) {
+									hdb_logger.error('error extracting common name from certificate', err);
+									return;
+								}
+
+								if (cert_cn == null) {
+									hdb_logger.error('error extracting common name from certificate');
+									return;
+								}
+
+								cert_cn = sanitizeName(cert_cn);
+
+								// If a record already exists for cert check to see who is newer, cert record or cert file.
+								// If cert file is newer, add it to table
+								const cert_record = certificate_table.primaryStore.get(cert_cn);
+								if (cert_record && statSync(path).mtimeMs < cert_record.__updatedtime__) return;
+
 								promise = certificate_table.put({
-									name: CERT_CONFIG_NAME_MAP[config_key + (ca ? '_certificateAuthority' : '_certificate')],
+									name: cert_cn,
 									uses: ['https', ...(config_key.includes('operations') ? ['operations'] : [])],
 									ciphers: config.ciphers,
 									certificate: certificate_pem,
@@ -335,11 +391,15 @@ function getCommonName() {
 }
 
 async function createCsr() {
-	let { ops_private_key, ops } = await getCertsKeys();
-	const ops_cert = pki.certificateFromPem(ops.cert);
-	ops_private_key = pki.privateKeyFromPem(ops_private_key);
+	const rep = await getReplicationCert();
+	const ops_cert = pki.certificateFromPem(rep.options.cert);
+	const ops_private_key = pki.privateKeyFromPem(
+		await fs.readFile(
+			path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME, certificates_terms.PRIVATEKEY_PEM_NAME)
+		)
+	); // TODO is it safe assume CSR will only happen with hdb certs?
 
-	hdb_logger.info('Creating CSR with cert named:', ops.name);
+	hdb_logger.info('Creating CSR with cert named:', rep.name);
 
 	const csr = pki.createCertificationRequest();
 	csr.publicKey = ops_cert.publicKey;
@@ -410,16 +470,20 @@ function certExtensions() {
 }
 
 async function signCertificate(req) {
-	let { app_private_key, app_ca } = await getCertsKeys();
+	const rep_ca = await getReplicationCertAuth();
 	let response = {
-		ca_certificate: app_ca.cert,
+		ca_certificate: rep_ca.certificate,
 	};
 
 	if (req.csr) {
-		app_private_key = pki.privateKeyFromPem(app_private_key);
-		const ca_app_cert = pki.certificateFromPem(app_ca.cert);
-
-		hdb_logger.info('Signing CSR with cert named', app_ca.name, 'with cert', app_ca.cert);
+		// Use HDB generated private key, the same that was used to sign HDB CA
+		const app_private_key = pki.privateKeyFromPem(
+			await fs.readFile(
+				path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME, certificates_terms.PRIVATEKEY_PEM_NAME)
+			)
+		);
+		const ca_app_cert = pki.certificateFromPem(rep_ca.certificate);
+		hdb_logger.info('Signing CSR with cert named', rep_ca.name);
 		const csr = pki.certificationRequestFromPem(req.csr);
 		try {
 			csr.verify();
@@ -461,7 +525,7 @@ async function signCertificate(req) {
 
 async function createCertificateTable(cert, ca_cert) {
 	await setCertTable({
-		name: certificates_terms.CERT_NAME.DEFAULT,
+		name: sanitizeName(getThisNodeName()),
 		uses: ['https', 'operations', 'wss'],
 		certificate: cert,
 		private_key_name: 'privateKey.pem',
@@ -469,9 +533,9 @@ async function createCertificateTable(cert, ca_cert) {
 	});
 
 	await setCertTable({
-		name: certificates_terms.CERT_NAME['DEFAULT-CA'],
+		name: sanitizeName(ca_cert.subject.getField('CN').value),
 		uses: ['https', 'operations', 'wss'],
-		certificate: ca_cert,
+		certificate: pki.certificateToPem(ca_cert),
 		private_key_name: 'privateKey.pem',
 		is_authority: true,
 	});
@@ -502,19 +566,6 @@ function verifyCert(cert, ca) {
 	}
 }
 
-// let crt = fs.readFileSync('/Users/davidcockerill/hdb/keys/certificate.pem');
-// let crt_ca = fs.readFileSync('/Users/davidcockerill/hdb/keys/caCertificate.pem');
-// let p_key = fs.readFileSync('/Users/davidcockerill/hdb2/keys/privateKey.pem');
-// // crt = pki.certificateFromPem(crt);
-// // crt_ca = pki.certificateFromPem(crt_ca);
-//
-// const x509 = new X509Certificate(crt);
-// const pk = createPrivateKey(p_key);
-// const value = x509.checkPrivateKey(pk);
-// console.log(value);
-//
-// const v = crt.check;
-// console.log(verifyCert(crt, crt_ca));
 async function generateKeys() {
 	const keys = await generateKeyPair('rsa', {
 		modulusLength: 4096,
@@ -562,6 +613,20 @@ async function generateCertificates(private_key, public_key, ca_cert) {
 	return pki.certificateToPem(public_cert);
 }
 
+async function getHDBCertAuthority() {
+	const records = certificate_table.search({
+		conditions: [{ attribute: 'name', comparator: 'contains', value: 'HarperDB-Certificate-Authority' }],
+	});
+
+	let result = [];
+	for await (let record of records) {
+		result.push(record);
+	}
+
+	// There should only ever be one HDB CA created by this node
+	return result[0];
+}
+
 async function generateCertAuthority() {
 	const { private_key, public_key } = await generateKeys();
 	const ca_cert = pki.createCertificate();
@@ -576,7 +641,11 @@ async function generateCertAuthority() {
 	const subject = [
 		{
 			name: 'commonName',
-			value: 'HarperDB Certificate Authority for ' + getCommonName(),
+			value: `HarperDB Certificate Authority ${
+				env_manager.get('replication_nodeName') ??
+				urlToNodeName(env_manager.get('replication_url')) ??
+				uuidv4().split('-')[0]
+			}`,
 		},
 		...CERT_ATTRIBUTES,
 	];
@@ -599,7 +668,7 @@ async function generateCertAuthority() {
 async function generateCertsKeys() {
 	const { private_key, public_key, ca_cert } = await generateCertAuthority();
 	const public_cert = await generateCertificates(private_key, public_key, ca_cert);
-	await createCertificateTable(public_cert, pki.certificateToPem(ca_cert));
+	await createCertificateTable(public_cert, ca_cert);
 	updateConfigCert();
 }
 
@@ -616,41 +685,32 @@ async function writeDefaultCertsToFile() {
 	if (!(await fs.exists(ca_cert_path))) await fs.writeFile(ca_cert_path, ca_cert.certificate);
 }
 
-/**
- * Function does two things:
- * If there is no app cert, it will create all the default HarperDB certs and private key (which become default certs).
- * If the default cert common name and altnames array doesn't contain the hostname from replication.url config it
- * will create a new cert with this hostname value.
- * @returns {Promise<void>}
- */
-async function setDefaultCertsKeys() {
+async function getSelfSignedCert() {
+	loadCertificates();
 	getCertTable();
-	const { app, app_private_key, app_ca } = await getCertsKeys();
-	if (!app.name) {
-		await generateCertsKeys();
-	}
+	return certificate_table.get(sanitizeName(getThisNodeName()));
+}
 
-	// This block of code is here to check the common name and altnames on the default app cert.
-	// If the cert does not have this nodes hostname it will create a new public cert with the hostname.
-	if (app.name === CERT_NAME.DEFAULT && env_manager.get(CONFIG_PARAMS.REPLICATION_URL)) {
-		const host = getCommonName();
-		const cert_obj = new X509Certificate(app.cert);
-		if (!cert_obj.subjectAltName.includes(host) || !cert_obj.subject.includes(host)) {
-			hdb_logger.info('Creating a new HarperDB generated public with host:', host);
-			const pc = pki.certificateFromPem(app.cert);
-			const public_cert = await generateCertificates(
-				pki.privateKeyFromPem(app_private_key),
-				pc.publicKey,
-				pki.certificateFromPem(app_ca.cert)
-			);
-
-			await setCertTable({
-				name: certificates_terms.CERT_NAME.DEFAULT,
-				uses: ['https', 'operations', 'wss'],
-				certificate: public_cert,
-				is_authority: false,
-			});
-		}
+async function reviewSelfSignedCert() {
+	// Clear any cached node name var
+	clearThisNodeName();
+	const existing_cert = await getSelfSignedCert();
+	if (!existing_cert) {
+		const cert_name = sanitizeName(getThisNodeName());
+		hdb_logger.info(`Creating new HarperDB self singed cert named: ${cert_name}`);
+		const hdb_ca = pki.certificateFromPem((await getHDBCertAuthority()).certificate);
+		const public_key = hdb_ca.publicKey;
+		const private_key = await fs.readFile(
+			path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME, certificates_terms.PRIVATEKEY_PEM_NAME)
+		);
+		const new_public_cert = await generateCertificates(pki.privateKeyFromPem(private_key), public_key, hdb_ca);
+		await setCertTable({
+			name: cert_name,
+			uses: ['https', 'operations', 'wss'],
+			certificate: new_public_cert,
+			is_authority: false,
+			private_key_name: certificates_terms.PRIVATEKEY_PEM_NAME,
+		});
 	}
 }
 
@@ -777,7 +837,6 @@ function createTLSSelector(type, options) {
 							secure_context.options = secure_options;
 							secure_context.quality = quality;
 							secure_context.certificateAuthorities = cert_authorities;
-							harper_logger.warn('Create secure context', secure_context.rid);
 							// we store the first 100 bytes of the certificate just for debug logging
 							secure_context.certStart = certificate.toString().slice(0, 100);
 							if (quality > best_quality) {
@@ -864,6 +923,10 @@ function reverseSubscription(subscription) {
 	return { ...subscription, subscribe: publish, publish: subscribe };
 }
 
+/**
+ * List all the records in hdb_certificate table
+ * @returns {Promise<*[]>}
+ */
 async function listCertificates() {
 	getCertTable();
 	let response = [];
@@ -873,8 +936,30 @@ async function listCertificates() {
 	return response;
 }
 
-// TODO: check what name load certs gives to certs in config - it should use the CN
+/**
+ * Adds a certificate to hdb_certificate table. If a private key is provided it will write it to file
+ * Can be used to add a new one or update existing
+ * @param req.name - primary key of hdb_certificate
+ * @param req.certificate - cert that will be added, as a string
+ * @param req.private_key - optional, private key as a string. Will be written to file and not to hdb_certificate
+ * @param req.is_authority - is the certificate a CA
+ * @param req.hosts - array of allowable hosts
+ * @returns {Promise<string>}
+ */
 async function addCertificate(req) {
+	const validation = validateBySchema(
+		req,
+		Joi.object({
+			name: Joi.string().required(),
+			certificate: Joi.string().required(),
+			is_authority: Joi.boolean().required(),
+			private_key: Joi.string(),
+			hosts: Joi.array(),
+		})
+	);
+	if (validation) throw new ClientError(validation.message);
+
+	//TODO: check plexus code after cert name change
 	const { name, certificate, private_key, is_authority } = req;
 	const x509_cert = new X509Certificate(certificate);
 	let private_key_exists = false;
@@ -915,7 +1000,6 @@ async function addCertificate(req) {
 
 	const sani_name = sanitizeName(name ?? cert_cn);
 	if (private_key && !private_key_exists && !private_key_match) {
-		// TODO - we need to add coverage for subfolders?
 		await fs.writeFile(
 			path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME, sani_name + '.pem'),
 			private_key
@@ -939,11 +1023,29 @@ async function addCertificate(req) {
 	return 'Successfully added certificate under name: ' + sani_name;
 }
 
+/**
+ * Used to sanitize a cert common name or the 'name' param used in cert ops
+ * @param cn
+ * @returns {*}
+ */
 function sanitizeName(cn) {
 	return cn.replace(/[^a-z0-9\.]/gi, '-');
 }
 
+/**
+ * Removes certificate from hdb_certificate and corresponding private key file
+ * @param req.name - Name of the cert as it is in hdb_certificate
+ * @returns {Promise<string>}
+ */
 async function removeCertificate(req) {
+	const validation = validateBySchema(
+		req,
+		Joi.object({
+			name: Joi.string().required(),
+		})
+	);
+	if (validation) throw new ClientError(validation.message);
+
 	const { name } = req;
 	getCertTable();
 	const cert_record = await certificate_table.get(name);

@@ -30,6 +30,7 @@ async function loadRootComponents(is_worker_thread = false) {
 	let resources = resetResources();
 	getTables();
 	resources.isWorker = is_worker_thread;
+
 	await loadCertificates();
 	// the HarperDB root component
 	await loadComponent(dirname(config_utils.getConfigFilePath()), resources, 'hdb', true, loaded_components);

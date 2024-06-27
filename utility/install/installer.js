@@ -182,6 +182,7 @@ async function install() {
 
 	// Create cert and private keys.
 	await keys.updateConfigCert();
+	await keys.generateCertsKeys();
 
 	// Insert current version of HarperDB into versions table.
 	await insertHdbVersionInfo();

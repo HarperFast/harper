@@ -1,7 +1,16 @@
-import { createCsr, getCertsKeys, setCertTable, signCertificate } from '../../security/keys';
+import {
+	createCsr,
+	getCertsKeys,
+	setCertTable,
+	signCertificate,
+	getReplicationCert,
+	sanitizeName,
+	getReplicationCertAuth,
+} from '../../security/keys';
 import { validateBySchema } from '../../validation/validationWrapper';
 import Joi from 'joi';
 import { basename } from 'path';
+const { pki } = require('node-forge');
 import { get } from '../../utility/environment/environmentManager';
 import { OPERATIONS_ENUM, CONFIG_PARAMS } from '../../utility/hdbTerms';
 import { ensureNode } from './subscriptionManager';
@@ -72,14 +81,16 @@ export async function setNode(req: object) {
 		if (req.operation === 'add_node' && !req.authorization)
 			throw new ClientError('authorization parameter is required');
 
-		const { rep, rep_ca } = await getCertsKeys();
-		if (rep.name === 'default') {
+		const rep = await getReplicationCert();
+		const ca_record = await getReplicationCertAuth();
+		// If the cert is a self signed HDB created cert that belongs to this node, send CSR
+		if (rep.name === sanitizeName(getThisNodeName()) && ca_record.name?.includes('HarperDB-Certificate-Authority')) {
 			// Create the certificate signing request that will be sent to the other node
 			csr = await createCsr();
 			hdb_logger.info('Sending CSR to target node:', url);
 		} else {
-			cert_auth = rep_ca;
-			hdb_logger.info('Sending CA named', rep_ca.name, 'to target node', url);
+			cert_auth = ca_record;
+			hdb_logger.info('Sending CA named', ca_record.name, 'to target node', url);
 		}
 	}
 
@@ -186,8 +197,8 @@ export async function addNodeBack(req) {
 	let origin_ca;
 	if (!req.csr) {
 		// If there is no CSR in the request there should be a CA, use this CA in the hdb_nodes record for origin node
-		origin_ca = req.cert_auth.cert;
-		hdb_logger.info('addNodeBack received CA name:', req.cert_auth.cert.name, 'from node:', req.url);
+		origin_ca = req.cert_auth.certificate;
+		hdb_logger.info('addNodeBack received CA name:', req.cert_auth.name, 'from node:', req.url);
 	} else {
 		origin_ca = certs.ca_certificate;
 		hdb_logger.info(
@@ -210,8 +221,8 @@ export async function addNodeBack(req) {
 	await ensureNode(req.node_name, node_record);
 	certs.nodeName = getThisNodeName();
 
-	const { rep_ca } = await getCertsKeys();
-	certs.ca_certificate = rep_ca.cert;
+	const rep_ca = await getReplicationCertAuth();
+	certs.ca_certificate = rep_ca.certificate;
 	hdb_logger.info('addNodeBack responding to:', req.url, 'with CA named:', rep_ca.name);
 
 	return certs;

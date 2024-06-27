@@ -352,6 +352,11 @@ export function getThisNodeName() {
 			'127.0.0.1')
 	);
 }
+
+export function clearThisNodeName() {
+	node_name = undefined;
+}
+
 Object.defineProperty(server, 'nodeName', {
 	get() {
 		return getThisNodeName();
