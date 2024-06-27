@@ -1,6 +1,5 @@
 import {
 	createCsr,
-	getCertsKeys,
 	setCertTable,
 	signCertificate,
 	getReplicationCert,
@@ -140,18 +139,19 @@ export async function setNode(req: object) {
 	if (csr) {
 		hdb_logger.info('CSR response received from node:', url, 'saving certificate and CA in hdb_certificate');
 		await setCertTable({
-			name: `issued by ${urlToNodeName(url)}-ca`,
+			name: `issued-by-${urlToNodeName(url)}-ca`,
 			certificate: target_node_response.ca_certificate,
 			is_authority: true,
 		});
 
+		// TODO: Is this correct? If CSR is only used for HDB certs the key name wont change?
 		if (target_node_response.certificate) {
 			const private_key_name = basename(
 				get(CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY) ?? get(CONFIG_PARAMS.TLS_PRIVATEKEY)
 			);
 
 			await setCertTable({
-				name: `issued by ${urlToNodeName(url)}`,
+				name: `issued-by-${urlToNodeName(url)}`,
 				uses: ['https', 'operations', 'wss'],
 				certificate: target_node_response.certificate,
 				private_key_name,

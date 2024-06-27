@@ -19,17 +19,7 @@ const certificates_terms = require('../utility/terms/certificates');
 const { ClientError } = require('../utility/errors/hdbError');
 const tls = require('node:tls');
 const { relative, join } = require('node:path');
-const {
-	CA_CERT_PREFERENCE_APP,
-	CA_CERT_PREFERENCE_OPS,
-	CERT_PREFERENCE_APP,
-	CERT_PREFERENCE_OPS,
-	CERT_PREFERENCE_REP,
-	CERT_CONFIG_NAME_MAP,
-	CERT_NAME,
-	CERTIFICATE_VALUES,
-	CA_CERT_PREFERENCE_REP,
-} = certificates_terms;
+const { CERT_PREFERENCE_APP, CERTIFICATE_VALUES } = certificates_terms;
 const assign_cmdenv_vars = require('../utility/assignCmdEnvVariables');
 const config_utils = require('../config/configUtils');
 const broken_alpn_callback = parseInt(process.version.slice(1)) < 20;
@@ -40,7 +30,6 @@ Object.assign(exports, {
 	updateConfigCert,
 	createCsr,
 	signCertificate,
-	getCertsKeys,
 	setCertTable,
 	loadCertificates,
 	reviewSelfSignedCert,
@@ -62,7 +51,6 @@ const {
 	getThisNodeName,
 	clearThisNodeName,
 } = require('../server/replication/replicator');
-const { ensureNode } = require('../server/replication/subscriptionManager');
 const { readFileSync, watchFile, statSync } = require('node:fs');
 const env = require('../utility/environment/environmentManager');
 const { getTicketKeys, onMessageFromWorkers } = require('../server/threads/manageThreads');
@@ -131,118 +119,14 @@ async function getReplicationCert() {
 	return secure_target.secureContexts.get(getThisNodeName());
 }
 
+// TODO: Im getting a situation where the cert that was signed by CSR has the same CN as original cert
+// TODO: When I want the non-CSR cert (what i call original) I get the CSR one
 //TODO: Will this always work? Will a certs CA always be in hdb_cert...
 async function getReplicationCertAuth() {
 	getCertTable();
 	const rep_cert = pki.certificateFromPem((await getReplicationCert()).options.cert);
 	const ca_name = rep_cert.issuer.getField('CN').value;
 	return certificate_table.get(sanitizeName(ca_name));
-}
-
-async function getCertsKeys(rep_host = undefined) {
-	await loadCertificates();
-	const app_private_pem = (await fs.exists(env_manager.get(hdb_terms.CONFIG_PARAMS.TLS_PRIVATEKEY)))
-		? await fs.readFile(env_manager.get(hdb_terms.CONFIG_PARAMS.TLS_PRIVATEKEY), 'utf8')
-		: undefined;
-	const ops_private_pem = (await fs.exists(env_manager.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY)))
-		? await fs.readFile(env_manager.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY), 'utf8')
-		: app_private_pem;
-
-	let app_cert_quality = 0,
-		ops_cert_quality = 0,
-		rep_cert_quality = 0,
-		ca_rep_cert_quality = 0,
-		ca_app_cert_quality = 0,
-		ca_ops_cert_quality = 0,
-		response = {
-			app_private_key: app_private_pem,
-			ops_private_key: ops_private_pem,
-			app: {
-				name: undefined,
-				cert: undefined,
-			},
-			app_ca: {
-				name: undefined,
-				cert: undefined,
-			},
-			ops: {
-				name: undefined,
-				cert: undefined,
-			},
-			ops_ca: {
-				name: undefined,
-				cert: undefined,
-			},
-			rep: {
-				name: undefined,
-				cert: undefined,
-			},
-			rep_ca: {
-				name: undefined,
-				cert: undefined,
-			},
-		};
-
-	getCertTable();
-	for await (const cert of certificate_table.search([])) {
-		const { name, certificate } = cert;
-		if (CERT_PREFERENCE_APP[name] && app_cert_quality < CERT_PREFERENCE_APP[name]) {
-			response.app.cert = certificate;
-			response.app.name = name;
-			app_cert_quality = CERT_PREFERENCE_APP[name];
-		}
-
-		if (CA_CERT_PREFERENCE_APP[name] && ca_app_cert_quality < CA_CERT_PREFERENCE_APP[name]) {
-			response.app_ca.cert = certificate;
-			response.app_ca.name = name;
-			ca_app_cert_quality = CA_CERT_PREFERENCE_APP[name];
-		}
-
-		if (CERT_PREFERENCE_OPS[name] && ops_cert_quality < CERT_PREFERENCE_OPS[name]) {
-			response.ops.cert = certificate;
-			response.ops.name = name;
-			ops_cert_quality = CERT_PREFERENCE_OPS[name];
-		}
-
-		if (CA_CERT_PREFERENCE_OPS[name] && ca_ops_cert_quality < CA_CERT_PREFERENCE_OPS[name]) {
-			response.ops_ca.cert = certificate;
-			response.ops_ca.name = name;
-			ca_ops_cert_quality = CA_CERT_PREFERENCE_OPS[name];
-		}
-
-		if (name === rep_host) {
-			response.rep.cert = certificate;
-			response.rep.name = name;
-			rep_cert_quality = 100;
-		}
-
-		if (CERT_PREFERENCE_REP[name] && rep_cert_quality < CERT_PREFERENCE_REP[name]) {
-			response.rep.cert = certificate;
-			response.rep.name = name;
-			rep_cert_quality = CERT_PREFERENCE_REP[name];
-		}
-
-		if (CA_CERT_PREFERENCE_REP[name] && ca_rep_cert_quality < CA_CERT_PREFERENCE_REP[name]) {
-			response.rep_ca.cert = certificate;
-			response.rep_ca.name = name;
-			ca_rep_cert_quality = CA_CERT_PREFERENCE_REP[name];
-		}
-
-		if (name?.includes?.('issued by')) {
-			response[name] = certificate;
-			if (name.includes('ca')) {
-				response.rep_ca.cert = certificate;
-				response.rep_ca.name = name;
-				ca_rep_cert_quality = 50;
-			} else {
-				response.rep.cert = certificate;
-				response.rep.name = name;
-				rep_cert_quality = 50;
-			}
-		}
-	}
-
-	return response;
 }
 
 let configured_certs_loaded;
@@ -816,6 +700,7 @@ function createTLSSelector(type, options) {
 							let is_operations = type === 'operations-api';
 							if (!is_operations && cert.name.includes('operations')) continue;
 							let quality;
+							// TODO: When connecting nodes with no node name the issued by cert is not getting pref
 							if (type === cert.name) quality = 5;
 							else quality = CERT_PREFERENCE_APP[cert.name] ?? (is_operations ? 4 : 0);
 							const private_key = private_keys.get(cert.private_key_name);
@@ -846,7 +731,14 @@ function createTLSSelector(type, options) {
 								if (server) {
 									server.defaultContext = secure_context;
 									server.setSecureContext(server, secure_options);
-									harper_logger.info('Applying default TLS', secure_context.name, 'for', server.ports);
+									harper_logger.info(
+										'Applying default TLS',
+										secure_context.name,
+										'for',
+										server.ports,
+										'cert named',
+										cert.name
+									);
 								}
 							}
 							const cert_parsed = new X509Certificate(certificate);
