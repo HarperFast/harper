@@ -509,6 +509,65 @@ describe('test MQTT connections and commands', () => {
 		});
 		client.end();
 	});
+	it('received binary/string messages', async function () {
+		let client = connect('mqtt://localhost:1883', {
+			clean: true,
+			clientId: 'test-client-sub2',
+		});
+		await new Promise((resolve, reject) => {
+			client.on('connect', resolve);
+			client.on('error', reject);
+		});
+		await new Promise((resolve, reject) => {
+			client.subscribe(
+				'SimpleRecord/22',
+				{
+					qos: 0,
+				},function (err) {
+					if (err) reject(err);
+					else resolve();
+				}
+			);
+		});
+		await new Promise((resolve, reject) => {
+			client.on('message', (topic, payload, packet) => {
+				assert.equal(payload.toString(), 'This is a test of a plain string');
+				resolve();
+			});
+			client.publish(
+				'SimpleRecord/22',
+				'This is a test of a plain string',
+				{
+					retain: true,
+					qos: 1,
+				}
+			);
+		});
+		client.end();
+		client = connect('mqtt://localhost:1883', {
+			clean: true,
+			clientId: 'test-client-sub2',
+		});
+		await new Promise((resolve, reject) => {
+			client.on('connect', resolve);
+			client.on('error', reject);
+		});
+		await new Promise((resolve, reject) => {
+			client.on('message', (topic, payload, packet) => {
+				assert.equal(payload.toString(), 'This is a test of a plain string');
+				resolve();
+			});
+
+			client.subscribe(
+				'SimpleRecord/22',
+				{
+					qos: 0,
+				},function (err) {
+					if (err) reject(err);
+				}
+			);
+		});
+	});
 	it('subscribe and unsubscribe with mTLS', async function () {
 		let server;
 		await new Promise((resolve, reject) => {

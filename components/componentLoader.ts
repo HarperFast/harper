@@ -1,4 +1,4 @@
-import { readdirSync, promises, readFileSync, existsSync, symlinkSync, rmSync, mkdirSync } from 'fs';
+import { readdirSync, promises, readFileSync, existsSync, symlinkSync, rmSync, mkdirSync, realpathSync } from 'fs';
 import { join, relative, basename, dirname } from 'path';
 import { isMainThread } from 'worker_threads';
 import { parseDocument } from 'yaml';
@@ -145,8 +145,9 @@ export async function loadComponent(
 	provided_loaded_components?: Map,
 	auto_reload?: boolean
 ) {
-	if (loaded_paths.has(folder)) return;
-	loaded_paths.set(folder, true);
+	let resolved_folder = realpathSync(folder);
+	if (loaded_paths.has(resolved_folder)) return;
+	loaded_paths.set(resolved_folder, true);
 	if (provided_loaded_components) loaded_components = provided_loaded_components;
 	try {
 		let config;

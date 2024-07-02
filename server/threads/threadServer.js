@@ -184,7 +184,14 @@ function startServers() {
 						);
 						continue;
 					}
-
+					const thread_range = env.get(terms.CONFIG_PARAMS.HTTP_THREADRANGE);
+					if (thread_range) {
+						let thread_range_array = typeof thread_range === 'string' ? thread_range.split('-') : thread_range;
+						let thread_index = getWorkerIndex();
+						if (thread_index < thread_range_array[0] || thread_index > thread_range_array[1]) {
+							continue;
+						}
+					}
 					let fd;
 					try {
 						fd = createReuseportFd(+port, '::');

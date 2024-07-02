@@ -354,7 +354,8 @@ class SubscriptionsSession {
 		if (this.keepalive) {
 			clearTimeout(this.keepaliveTimer);
 			this.keepaliveTimer = setTimeout(() => {
-				this.disconnect(false);
+				if (this.socket?.destroy) this.socket.destroy(new Error('Keepalive timeout'));
+				else this.socket?.terminate();
 			}, this.keepalive * 1500);
 		}
 	}

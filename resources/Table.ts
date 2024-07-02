@@ -1930,7 +1930,7 @@ export function makeTable(options) {
 					subscription.send({
 						id: this_id,
 						timestamp: local_time,
-						value: this,
+						value: this[RECORD_PROPERTY],
 						version: this[VERSION_PROPERTY],
 						type: 'put',
 					});
