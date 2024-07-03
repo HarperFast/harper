@@ -730,7 +730,7 @@ function createTLSSelector(type, options) {
 								best_quality = quality;
 								if (server) {
 									server.defaultContext = secure_context;
-									server.setSecureContext(server, secure_options);
+									server.setSecureContext?.(server, secure_options);
 									harper_logger.info(
 										'Applying default TLS',
 										secure_context.name,

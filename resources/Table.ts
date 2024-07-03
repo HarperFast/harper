@@ -337,8 +337,33 @@ export function makeTable(options) {
 								if (event.type === 'end_txn') {
 									txn_in_progress?.resolve();
 									if (event.localTime && last_sequence_id !== event.localTime) {
-										for (const remote_node of event.remoteNodes)
-											dbis_db.put([Symbol.for('seq'), remote_node], event.localTime);
+										if (event.remoteNodeIds?.length > 0) {
+											// the key for tracking the sequence ids and txn times received from this node
+											const seq_key = [Symbol.for('seq'), event.remoteNodeIds[0]];
+											let existing = dbis_db.get(seq_key);
+											let node_states = existing?.nodes;
+											if (!node_states) {
+												// if we don't have a list of nodes, we need to create one, with the main one using the existing seqId
+												node_states = [];
+											}
+											// if we are not the only node in the list, we are getting proxied subscriptions, and we need
+											// to track this separately
+											// track the other nodes in the list
+											for (let node_id of event.remoteNodeIds.slice(1)) {
+												let node_state = node_states.find((existing) => existing.name === node_id);
+												if (!node_state) {
+													node_state = { id: node_id, seqId: 0 };
+													node_states.push(node_state);
+												}
+												node_state.seqId = Math.max(existing.seqId, event.localTime);
+												if (node_id === event.nodeId) node_state.lastTxnTime = event.timestamp;
+											}
+											let seq_id = Math.max(existing?.seqId ?? 1, event.localTime);
+											dbis_db.put(seq_key, {
+												seqId: seq_id,
+												nodes: node_states,
+											});
+										}
 										last_sequence_id = event.localTime;
 									}
 									if (event.onCommit) txn_in_progress?.committed.then(event.onCommit);
