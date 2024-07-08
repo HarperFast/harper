@@ -133,7 +133,7 @@ export function start(options) {
 			ws_server.secureContextsListeners.push(updateContexts);
 			// we need to stay up-to-date with any CAs that have been replicated across the cluster
 			subscribeToNodeUpdates((node) => {
-				if (node.ca) {
+				if (node?.ca) {
 					// we only care about nodes that have a CA
 					replication_certificate_authorities.add(node.ca);
 					// created a set of all the CAs that have been replicated, if changed, update the secure context

@@ -119,9 +119,6 @@ async function getReplicationCert() {
 	return secure_target.secureContexts.get(getThisNodeName());
 }
 
-// TODO: Im getting a situation where the cert that was signed by CSR has the same CN as original cert
-// TODO: When I want the non-CSR cert (what i call original) I get the CSR one
-//TODO: Will this always work? Will a certs CA always be in hdb_cert...
 async function getReplicationCertAuth() {
 	getCertTable();
 	const rep_cert = pki.certificateFromPem((await getReplicationCert()).options.cert);
@@ -281,7 +278,7 @@ async function createCsr() {
 		await fs.readFile(
 			path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME, certificates_terms.PRIVATEKEY_PEM_NAME)
 		)
-	); // TODO is it safe assume CSR will only happen with hdb certs?
+	);
 
 	hdb_logger.info('Creating CSR with cert named:', rep.name);
 
@@ -354,20 +351,19 @@ function certExtensions() {
 }
 
 async function signCertificate(req) {
-	const rep_ca = await getReplicationCertAuth();
-	let response = {
-		ca_certificate: rep_ca.certificate,
-	};
+	const response = {};
 
 	if (req.csr) {
+		const default_ca = await getHDBCertAuthority();
+		response.ca_certificate = default_ca.certificate;
 		// Use HDB generated private key, the same that was used to sign HDB CA
 		const app_private_key = pki.privateKeyFromPem(
 			await fs.readFile(
 				path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME, certificates_terms.PRIVATEKEY_PEM_NAME)
 			)
 		);
-		const ca_app_cert = pki.certificateFromPem(rep_ca.certificate);
-		hdb_logger.info('Signing CSR with cert named', rep_ca.name);
+		const ca_app_cert = pki.certificateFromPem(default_ca.certificate);
+		hdb_logger.info('Signing CSR with cert named', default_ca.name);
 		const csr = pki.certificationRequestFromPem(req.csr);
 		try {
 			csr.verify();
@@ -401,6 +397,7 @@ async function signCertificate(req) {
 
 		response.certificate = pki.certificateToPem(cert);
 	} else {
+		response.ca_certificate = (await getReplicationCertAuth()).certificate;
 		hdb_logger.info('Sign cert did not receive a CSR from:', req.url, 'only the CA will be returned');
 	}
 
@@ -422,6 +419,7 @@ async function createCertificateTable(cert, ca_cert) {
 		certificate: pki.certificateToPem(ca_cert),
 		private_key_name: 'privateKey.pem',
 		is_authority: true,
+		is_default: true,
 	});
 }
 
@@ -499,7 +497,7 @@ async function generateCertificates(private_key, public_key, ca_cert) {
 
 async function getHDBCertAuthority() {
 	const records = certificate_table.search({
-		conditions: [{ attribute: 'name', comparator: 'contains', value: 'HarperDB-Certificate-Authority' }],
+		conditions: [{ attribute: 'is_default', comparator: 'equals', value: true }],
 	});
 
 	let result = [];
@@ -684,7 +682,7 @@ function createTLSSelector(type, options) {
 					ca_certs.clear();
 					let best_quality = 0;
 					for await (const cert of databases.system.hdb_certificate.search([])) {
-						if (type !== 'operations-api' && cert.name.includes('operations')) continue;
+						if (type !== 'operations-api' && cert.uses?.includes?.('operations')) continue;
 						const certificate = cert.certificate;
 						const cert_parsed = new X509Certificate(certificate);
 						if (cert.is_authority) {
@@ -698,9 +696,8 @@ function createTLSSelector(type, options) {
 								continue;
 							}
 							let is_operations = type === 'operations-api';
-							if (!is_operations && cert.name.includes('operations')) continue;
+							if (!is_operations && cert.uses?.includes?.('operations')) continue;
 							let quality;
-							// TODO: When connecting nodes with no node name the issued by cert is not getting pref
 							if (type === cert.name) quality = 5;
 							else quality = CERT_PREFERENCE_APP[cert.name] ?? (is_operations ? 4 : 0);
 							const private_key = private_keys.get(cert.private_key_name);

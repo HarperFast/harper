@@ -181,6 +181,9 @@
         "attribute": "details"
       },
       {
+        "attribute": "is_default"
+      },
+      {
         "attribute": "__updatedtime__"
       }
     ]

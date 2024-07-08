@@ -12,6 +12,7 @@ import { basename } from 'path';
 const { pki } = require('node-forge');
 import { get } from '../../utility/environment/environmentManager';
 import { OPERATIONS_ENUM, CONFIG_PARAMS } from '../../utility/hdbTerms';
+import { PRIVATEKEY_PEM_NAME } from '../../utility/terms/certificates';
 import { ensureNode } from './subscriptionManager';
 import { getHDBNodeTable } from './knownNodes';
 import { getThisNodeUrl, sendOperationToNode, urlToNodeName, getThisNodeName } from './replicator';
@@ -83,13 +84,13 @@ export async function setNode(req: object) {
 		const rep = await getReplicationCert();
 		const ca_record = await getReplicationCertAuth();
 		// If the cert is a self signed HDB created cert that belongs to this node, send CSR
-		if (rep.name === sanitizeName(getThisNodeName()) && ca_record.name?.includes('HarperDB-Certificate-Authority')) {
+		if (rep.name === sanitizeName(getThisNodeName()) && ca_record?.name?.includes('HarperDB-Certificate-Authority')) {
 			// Create the certificate signing request that will be sent to the other node
 			csr = await createCsr();
 			hdb_logger.info('Sending CSR to target node:', url);
 		} else {
 			cert_auth = ca_record;
-			hdb_logger.info('Sending CA named', ca_record.name, 'to target node', url);
+			hdb_logger.info('Sending CA named', ca_record?.name, 'to target node', url);
 		}
 	}
 
@@ -138,23 +139,19 @@ export async function setNode(req: object) {
 
 	if (csr) {
 		hdb_logger.info('CSR response received from node:', url, 'saving certificate and CA in hdb_certificate');
+
 		await setCertTable({
-			name: `issued-by-${urlToNodeName(url)}-ca`,
+			name: sanitizeName(pki.certificateFromPem(target_node_response.ca_certificate).issuer.getField('CN').value),
 			certificate: target_node_response.ca_certificate,
 			is_authority: true,
 		});
 
-		// TODO: Is this correct? If CSR is only used for HDB certs the key name wont change?
 		if (target_node_response.certificate) {
-			const private_key_name = basename(
-				get(CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY) ?? get(CONFIG_PARAMS.TLS_PRIVATEKEY)
-			);
-
 			await setCertTable({
-				name: `issued-by-${urlToNodeName(url)}`,
+				name: sanitizeName(getThisNodeName()),
 				uses: ['https', 'operations', 'wss'],
 				certificate: target_node_response.certificate,
-				private_key_name,
+				private_key_name: PRIVATEKEY_PEM_NAME,
 				is_authority: false,
 			});
 		}
@@ -197,8 +194,8 @@ export async function addNodeBack(req) {
 	let origin_ca;
 	if (!req.csr) {
 		// If there is no CSR in the request there should be a CA, use this CA in the hdb_nodes record for origin node
-		origin_ca = req.cert_auth.certificate;
-		hdb_logger.info('addNodeBack received CA name:', req.cert_auth.name, 'from node:', req.url);
+		origin_ca = req?.cert_auth?.certificate;
+		hdb_logger.info('addNodeBack received CA name:', req.cert_auth?.name, 'from node:', req.url);
 	} else {
 		origin_ca = certs.ca_certificate;
 		hdb_logger.info(
