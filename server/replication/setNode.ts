@@ -224,7 +224,7 @@ export async function addNodeBack(req) {
 export async function removeNodeBack(req) {
 	hdb_logger.trace('removeNodeBack received request:', req);
 	const hdb_nodes = getHDBNodeTable();
-	await hdb_nodes.delete(req.name);
+	await hdb_nodes.patch(req.name, { replicates: false });
 }
 
 function reverseSubscription(subscription) {

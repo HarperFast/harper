@@ -1090,7 +1090,12 @@ export function replicateOverWS(ws, options, authorization) {
 
 	function setDatabase(database_name) {
 		table_subscription_to_replicator = table_subscription_to_replicator || db_subscriptions.get(database_name);
-		if (options.databases && options.databases != '*' && !options.databases[database_name]) {
+		if (
+			options.databases &&
+			options.databases != '*' &&
+			!options.databases[database_name] &&
+			!options.databases.includes?.(database_name)
+		) {
 			// TODO: Check the node subscriptions
 			return logger.warn(`Access to database "${database_name}" is not permitted`);
 		}

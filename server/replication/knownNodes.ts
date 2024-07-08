@@ -57,11 +57,10 @@ export function subscribeToNodeUpdates(listener) {
 
 export function shouldReplicateToNode(node, database_name) {
 	return (
-		node.name &&
-		(((node.replicates === true || node.replicates?.sends) &&
+		((node.replicates === true || node.replicates?.sends) &&
 			databases[database_name] &&
-			getHDBNodeTable().primaryStore.get(getThisNodeName())?.replicates === true) ||
-			node.subscriptions?.some((sub) => (sub.database || sub.schema) === database_name && sub.subscribe))
+			getHDBNodeTable().primaryStore.get(getThisNodeName())?.replicates !== false) ||
+		node.subscriptions?.some((sub) => (sub.database || sub.schema) === database_name && sub.subscribe)
 	);
 }
 
