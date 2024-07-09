@@ -2455,7 +2455,9 @@ export function makeTable(options) {
 				// TODO: We could potentially have a faster test here, Buffer.byteLength is close, but we have to handle characters < 4 that are escaped in ordered-binary
 				break; // otherwise we have to test it, in this range, unicode characters could put it over the limit
 			case 'object':
-				if (id === null) throw new Error('Invalid primary key of null');
+				if (id === null) {
+					throw new Error('Invalid primary key of null');
+				}
 				break; // otherwise we have to test it
 			case 'bigint':
 				if (id < 2n ** 64n && id > -(2n ** 64n)) return true;
