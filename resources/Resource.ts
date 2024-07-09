@@ -1,4 +1,4 @@
-import { ResourceInterface, Request, SubscriptionRequest, Id, Context, Query } from './ResourceInterface';
+import { ResourceInterface, SubscriptionRequest, Id, Context, Query } from './ResourceInterface';
 import { randomUUID } from 'crypto';
 import { Transaction } from './DatabaseTransaction';
 import { IterableEventQueue } from './IterableEventQueue';
@@ -34,6 +34,7 @@ const EXTENSION_TYPES = {
  */
 export class Resource implements ResourceInterface {
 	static transactions: Transaction[] & { timestamp: number };
+	[CONTEXT]: Context;
 	constructor(identifier: Id, source: any) {
 		this[ID_PROPERTY] = identifier;
 		const context = source?.[CONTEXT];
@@ -43,11 +44,10 @@ export class Resource implements ResourceInterface {
 	/**
 	 * The get methods are for directly getting a resource, and called for HTTP GET requests.
 	 */
-	static get(identifier: Id, context?: Context): Promise<object>;
-	static get(request: Request, context?: Context): Promise<object>;
+	static get(identifier: Id, context?: Context): Promise<Resource>;
 	static get(query: Query, context?: Context): Promise<AsyncIterable<object>>;
 	static get = transactional(
-		function (resource: Resource, query?: Map, request: Request, data?: any) {
+		function (resource: Resource, query?: Map, request: Context, data?: any) {
 			const result = resource.get?.(query);
 			if (result?.then) return result.then(handleSelect);
 			return handleSelect(result);
@@ -77,7 +77,7 @@ export class Resource implements ResourceInterface {
 	 * Store the provided record by the provided id. If no id is provided, it is auto-generated.
 	 */
 	static put = transactional(
-		function (resource: Resource, query?: Map, request: Request, data?: any) {
+		function (resource: Resource, query?: Map, request: Context, data?: any) {
 			if (Array.isArray(data) && resource[IS_COLLECTION]) {
 				const results = [];
 				const authorize = request.authorize;
@@ -97,7 +97,7 @@ export class Resource implements ResourceInterface {
 	);
 
 	static patch = transactional(
-		function (resource: Resource, query?: Map, request: Request, data?: any) {
+		function (resource: Resource, query?: Map, request: Context, data?: any) {
 			// TODO: Allow array like put?
 			return resource.patch ? resource.patch(data, query) : missingMethod(resource, 'patch');
 		},
@@ -105,9 +105,9 @@ export class Resource implements ResourceInterface {
 	);
 
 	static delete(identifier: Id, context?: Context): Promise<boolean>;
-	static delete(request: Request, context?: Context): Promise<object>;
+	static delete(request: Context, context?: Context): Promise<object>;
 	static delete = transactional(
-		function (resource: Resource, query?: Map, request: Request, data?: any) {
+		function (resource: Resource, query?: Map, request: Context, data?: any) {
 			return resource.delete ? resource.delete(query) : missingMethod(resource, 'delete');
 		},
 		{ hasContent: false, type: 'delete' }
@@ -142,14 +142,14 @@ export class Resource implements ResourceInterface {
 		});
 	}
 	static invalidate = transactional(
-		function (resource: Resource, query?: Map, request: Request, data?: any) {
+		function (resource: Resource, query?: Map, request: Context, data?: any) {
 			return resource.invalidate ? resource.invalidate(query) : missingMethod(resource, 'delete');
 		},
 		{ hasContent: false, type: 'update' }
 	);
 
 	static post = transactional(
-		function (resource: Resource, query?: Map, request: Request, data?: any) {
+		function (resource: Resource, query?: Map, request: Context, data?: any) {
 			if (resource[ID_PROPERTY] != null) resource.update?.(); // save any changes made during post
 			return resource.post(data, query);
 		},
@@ -157,7 +157,7 @@ export class Resource implements ResourceInterface {
 	);
 
 	static connect = transactional(
-		function (resource: Resource, query?: Map, request: Request, data?: any) {
+		function (resource: Resource, query?: Map, request: Context, data?: any) {
 			return resource.connect ? resource.connect(data, query) : missingMethod(resource, 'connect');
 		},
 		{ hasContent: true, type: 'read' }
@@ -165,14 +165,14 @@ export class Resource implements ResourceInterface {
 
 	static subscribe(request: SubscriptionRequest): Promise<AsyncIterable<{ id: any; operation: string; value: object }>>;
 	static subscribe = transactional(
-		function (resource: Resource, query?: Map, request: Request, data?: any) {
+		function (resource: Resource, query?: Map, request: Context, data?: any) {
 			return resource.subscribe ? resource.subscribe(query) : missingMethod(resource, 'subscribe');
 		},
 		{ type: 'read' }
 	);
 
 	static publish = transactional(
-		function (resource: Resource, query?: Map, request: Request, data?: any) {
+		function (resource: Resource, query?: Map, request: Context, data?: any) {
 			if (resource[ID_PROPERTY] != null) resource.update?.(); // save any changes made during publish
 			return resource.publish ? resource.publish(data, query) : missingMethod(resource, 'publish');
 		},
@@ -180,7 +180,7 @@ export class Resource implements ResourceInterface {
 	);
 
 	static search = transactional(
-		function (resource: Resource, query?: Map, request: Request, data?: any) {
+		function (resource: Resource, query?: Map, request: Context, data?: any) {
 			const result = resource.search ? resource.search(query) : missingMethod(resource, 'search');
 			const select = request.select;
 			if (select && request.hasOwnProperty('select') && result != null && !result.selectApplied) {
@@ -193,21 +193,21 @@ export class Resource implements ResourceInterface {
 	);
 
 	static query = transactional(
-		function (resource: Resource, query?: Map, request: Request, data?: any) {
+		function (resource: Resource, query?: Map, request: Context, data?: any) {
 			return resource.search ? resource.search(data, query) : missingMethod(resource, 'search');
 		},
 		{ hasContent: true, type: 'read' }
 	);
 
 	static copy = transactional(
-		function (resource: Resource, query?: Map, request: Request, data?: any) {
+		function (resource: Resource, query?: Map, request: Context, data?: any) {
 			return resource.copy ? resource.copy(data, query) : missingMethod(resource, 'copy');
 		},
 		{ type: 'create' }
 	);
 
 	static move = transactional(
-		function (resource: Resource, query?: Map, request: Request, data?: any) {
+		function (resource: Resource, query?: Map, request: Context, data?: any) {
 			return resource.move ? resource.move(data, query) : missingMethod(resource, 'move');
 		},
 		{ type: 'delete' }
@@ -259,7 +259,7 @@ export class Resource implements ResourceInterface {
 	 * @param options
 	 * @returns
 	 */
-	static getResource(id: Id, request: Request, options?: any): Resource | Promise<Resource> {
+	static getResource(id: Id, request: Context, options?: any): Resource | Promise<Resource> {
 		let resource;
 		let context = request[CONTEXT];
 		let is_collection;
@@ -354,7 +354,7 @@ export class Resource implements ResourceInterface {
 	 * Get the context for this resource
 	 * @returns context object with information about the current transaction, user, and more
 	 */
-	getContext() {
+	getContext(): Context {
 		return this[CONTEXT];
 	}
 }

@@ -9,6 +9,7 @@ import { IterableEventQueue } from '../resources/IterableEventQueue';
 import { transaction } from '../resources/transaction';
 import { Headers } from '../server/serverHelpers/Headers';
 import { generateJsonApi } from '../resources/openApi';
+import { Context } from '../resources/ResourceInterface';
 
 interface Response {
 	status?: number;
@@ -22,7 +23,7 @@ let http_options = {};
 
 const OPENAPI_DOMAIN = 'openapi';
 
-async function http(request, next_handler) {
+async function http(request: Context & Request, next_handler) {
 	const headers_object = request.headers.asObject;
 	const method = headers_object.accept === 'text/event-stream' ? 'CONNECT' : request.method;
 	if (request.search) parseQuery(request);
@@ -32,7 +33,7 @@ async function http(request, next_handler) {
 		const url = request.url.slice(1);
 
 		let resource_request;
-		let resource;
+		let resource: typeof Resource;
 		if (url !== OPENAPI_DOMAIN) {
 			const entry = resources.getMatch(url);
 			if (!entry) return next_handler(request); // no resource handler found
