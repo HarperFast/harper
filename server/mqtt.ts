@@ -423,5 +423,10 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 			return serializeMessage(data, request);
 		}
 	});
+	parser.on('error', (error) => {
+		mqtt_log.warn('MQTT parsing error, closing connection:', error.message);
+		if (socket?.destroy) socket.destroy();
+		else socket?.terminate();
+	});
 	return { onMessage, onClose };
 }
