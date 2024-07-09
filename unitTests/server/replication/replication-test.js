@@ -259,7 +259,8 @@ describe('Replication', () => {
 				break;
 			} while (true);
 		});
-		it.skip('A write to the table with sharding defined should replicate to one node', async function () {
+		it('A write to the table with sharding defined should replicate to one node', async function () {
+			this.timeout(100000);
 			let name = 'name ' + Math.random();
 			await TestTable.put({
 				id: '8',
@@ -286,7 +287,14 @@ describe('Replication', () => {
 				assert(result.length > 50);
 				break;
 			} while (true);
-			// now verify that the record can be loaded on-demand
+			// now verify that the record can be loaded on-demand in the other thread
+			child_processes[0].send({
+				action: 'get',
+				id: '8',
+			});
+			await new Promise((resolve) => {
+				child_processes[0].once('message', resolve);
+			});
 			let result = test_stores[1].get('8')?.value;
 			assert.equal(result.name, name);
 		});

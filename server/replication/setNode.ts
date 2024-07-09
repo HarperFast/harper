@@ -37,7 +37,7 @@ export async function setNode(req: object) {
 		const record = await hdb_nodes.get(node_record_id);
 		if (!record) throw new ClientError(node_record_id + ' does not exist');
 
-		// we delete record and req that other node also deletes record
+		// we delete record and req that other node also deletes record (or mark itself as non-replicating)
 		// we do not wait for the other node to respond, it may not even be online anymore
 		sendOperationToNode(
 			{ url: record.url },
@@ -46,7 +46,7 @@ export async function setNode(req: object) {
 				name:
 					record?.subscriptions?.length > 0
 						? getThisNodeName() // if we are doing a removal with explicit subscriptions, we only want to the other node to remove the record for this node
-						: node_record_id, // if we are doing a removal with full replication, we want the other node to remove its own record
+						: node_record_id, // if we are doing a removal with full replication, we want the other node to mark its own record as non-replicating
 			},
 			undefined
 		).catch((err) => {
@@ -224,7 +224,14 @@ export async function addNodeBack(req) {
 export async function removeNodeBack(req) {
 	hdb_logger.trace('removeNodeBack received request:', req);
 	const hdb_nodes = getHDBNodeTable();
-	await hdb_nodes.patch(req.name, { replicates: false });
+	if (req.node == getThisNodeName()) {
+		// Mark this node as not replicating. Deleting a self node doesn't work well with situations where
+		// replication is defined declaratively and self-node auto-creation would need to happen automatically
+		await hdb_nodes.patch(req.name, { replicates: false });
+	} else {
+		// for other nodes, just delete the record
+		await hdb_nodes.delete(req.name);
+	}
 }
 
 function reverseSubscription(subscription) {
