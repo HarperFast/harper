@@ -17,6 +17,7 @@ const { Request, createReuseportFd } = require('../serverHelpers/Request');
 const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
 const { X509Certificate } = require('crypto');
 const tls = require('tls');
+const { resolvePath } = require('../../config/configUtils');
 
 const origCreateSecureContext = tls.createSecureContext;
 let instantiated_context;
@@ -140,7 +141,7 @@ function startServers() {
 							server.close?.(() => {
 								if (env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET) && getWorkerIndex() == 0) {
 									try {
-										unlinkSync(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET));
+										unlinkSync(resolvePath(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)));
 									} catch (err) {}
 								}
 
@@ -354,7 +355,10 @@ function getPorts(options) {
 	}
 
 	if (options?.isOperationsServer && env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)) {
-		ports.push({ port: env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET), secure: false });
+		ports.push({
+			port: resolvePath(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)),
+			secure: false,
+		});
 	}
 	return ports;
 }
@@ -663,7 +667,7 @@ function defaultNotFound(request, response) {
 
 function readPEM(path) {
 	if (path.startsWith('-----BEGIN')) return path;
-	return readFileSync(path);
+	return readFileSync(resolvePath(path));
 }
 function createSNICallback(tls_config) {
 	let tls_contexts = [];

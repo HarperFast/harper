@@ -18,6 +18,7 @@ const ALGORITHM = 'aes-256-cbc';
 const IV_LENGTH = 16;
 const KEY_LENGTH = 32;
 const env = require('../../utility/environment/environmentManager');
+const { resolvePath } = require('../../config/configUtils');
 env.initSync();
 
 let current_license = undefined;
@@ -36,12 +37,12 @@ function getLicenseDirPath() {
 
 function getLicenseFilePath() {
 	const license_path = getLicenseDirPath();
-	return path.join(license_path, terms.LICENSE_FILE_NAME);
+	return resolvePath(path.join(license_path, terms.LICENSE_FILE_NAME));
 }
 
 function getFingerPrintFilePath() {
 	const license_path = getLicenseDirPath();
-	return path.join(license_path, terms.REG_KEY_FILE_NAME);
+	return resolvePath(path.join(license_path, terms.REG_KEY_FILE_NAME));
 }
 
 async function generateFingerPrint() {

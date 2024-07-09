@@ -26,13 +26,13 @@ import * as operationsServer from '../server/operationsServer';
 import * as auth from '../security/auth';
 import * as natsReplicator from '../server/nats/natsReplicator';
 import * as mqtt from '../server/mqtt';
-import { getConfigObj } from '../config/configUtils';
+import { getConfigObj, resolvePath } from '../config/configUtils';
 import { createReuseportFd } from '../server/serverHelpers/Request';
 
 const { readFile } = promises;
 
 const CONFIG_FILENAME = 'config.yaml';
-const CF_ROUTES_DIR = env.get(CONFIG_PARAMS.COMPONENTSROOT);
+const CF_ROUTES_DIR = resolvePath(env.get(CONFIG_PARAMS.COMPONENTSROOT));
 let loaded_components = new Map<any, any>();
 let watches_setup;
 let resources;
