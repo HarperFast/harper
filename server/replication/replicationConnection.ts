@@ -438,7 +438,10 @@ export function replicateOverWS(ws, options, authorization) {
 						};
 						break;
 					case NODE_NAME_TO_ID_MAP:
-						remote_short_id_to_local_id = remoteToLocalNodeId(remote_node_name, data, audit_store);
+						// this is the mapping of node names to short ids. if there is audit_store (yet), just make an empty map, but not sure why that would happen.
+						remote_short_id_to_local_id = audit_store
+							? remoteToLocalNodeId(remote_node_name, data, audit_store)
+							: new Map();
 						receiving_data_from_node_names = message[2];
 						logger.info?.(
 							connection_id,
