@@ -1014,10 +1014,10 @@ export function replicateOverWS(ws, options, authorization) {
 			throw new Error('Can not make a subscription request on a connection that is already closed');
 		let last_txn_times = new Map();
 		// iterate through all the sequence entries and find the new txn time for each node
-		for (let entry of table_subscription_to_replicator.dbisDB?.getRange({
+		for (let entry of table_subscription_to_replicator?.dbisDB?.getRange({
 			start: Symbol.for('seq'),
 			end: [Symbol.for('seq'), Buffer.from([0xff])],
-		})) {
+		}) || []) {
 			for (let node of entry.value.nodes || []) {
 				if (node.lastTxnTime > (last_txn_times.get(node.id) ?? 0)) last_txn_times[node.id] = node.lastTxnTime;
 			}
@@ -1047,15 +1047,15 @@ export function replicateOverWS(ws, options, authorization) {
 				}
 			}
 
-			const node_id = getIdOfRemoteNode(node.name, audit_store);
-			let sequence_entry = table_subscription_to_replicator.dbisDB?.get([Symbol.for('seq'), node_id]) ?? 1;
+			const node_id = audit_store && getIdOfRemoteNode(node.name, audit_store);
+			let sequence_entry = table_subscription_to_replicator?.dbisDB?.get([Symbol.for('seq'), node_id]) ?? 1;
 			let start_time;
-			if (connected_node === node) start_time = sequence_entry.seqId ?? 1;
+			if (connected_node === node) start_time = sequence_entry?.seqId ?? 1;
 			// if we are connected directly to the node, we start from the last sequence number we received at the top level
 			else {
 				// otherwise we are starting from the last sequence id we received through the proxying node
 				start_time = 1;
-				for (let seq_node of sequence_entry.nodes || []) {
+				for (let seq_node of sequence_entry?.nodes || []) {
 					if (seq_node.name === node.name) {
 						start_time = seq_node.seqId;
 					}

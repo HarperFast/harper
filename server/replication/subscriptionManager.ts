@@ -350,7 +350,7 @@ export async function ensureNode(name: string, node) {
 						let match_found = false;
 						for (const existing_sub of existing_subs) {
 							if (
-								(new_sub.database === existing_sub.database || new_sub.schema === existing_sub.schema) &&
+								(new_sub.database ?? new_sub.schema) === (existing_sub.database ?? existing_sub.schema) &&
 								new_sub.table === existing_sub.table
 							) {
 								existing_sub.publish = new_sub.publish;
