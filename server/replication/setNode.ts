@@ -3,7 +3,6 @@ import {
 	setCertTable,
 	signCertificate,
 	getReplicationCert,
-	sanitizeName,
 	getReplicationCertAuth,
 } from '../../security/keys';
 import { validateBySchema } from '../../validation/validationWrapper';
@@ -141,14 +140,14 @@ export async function setNode(req: object) {
 		hdb_logger.info('CSR response received from node:', url, 'saving certificate and CA in hdb_certificate');
 
 		await setCertTable({
-			name: sanitizeName(pki.certificateFromPem(target_node_response.ca_certificate).issuer.getField('CN').value),
+			name: pki.certificateFromPem(target_node_response.ca_certificate).issuer.getField('CN').value,
 			certificate: target_node_response.ca_certificate,
 			is_authority: true,
 		});
 
 		if (target_node_response.certificate) {
 			await setCertTable({
-				name: sanitizeName(getThisNodeName()),
+				name: getThisNodeName(),
 				uses: ['https', 'operations', 'wss'],
 				certificate: target_node_response.certificate,
 				private_key_name: rep?.options?.key_file,
