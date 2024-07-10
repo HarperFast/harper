@@ -9,9 +9,13 @@ async function startNode() {
 
 		//await new Promise((resolve) => setTimeout(resolve, 1000));
 		process.send({ type: 'replication-started' });
-		process.on('message', (message) => {
+		process.on('message', async (message) => {
 			if (message.action === 'put') {
 				TestTable.put(message.data, message);
+			}
+			if (message.action === 'get') {
+				const data = await TestTable.get(message.id);
+				process.send({ type: 'get-result', data });
 			}
 		});
 	} catch (e) {

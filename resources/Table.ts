@@ -2682,7 +2682,7 @@ export function makeTable(options) {
 				let available;
 				for (const source of TableResource.sources) {
 					if (source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
-						if (source.available?.(id) === false) continue;
+						if (source.available?.(entry, entry && entry.metadataFlags & INVALIDATED) === false) continue;
 						available = true;
 					}
 				}
@@ -2898,6 +2898,7 @@ export function makeTable(options) {
 			requestContext: context,
 			// provide access to previous data
 			replacingRecord: existing_record,
+			replacingEntry: existing_entry,
 			replacingVersion: existing_version,
 			source: null,
 			// use the same resource cache as a parent context so that if modifications are made to resources,

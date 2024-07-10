@@ -39,6 +39,7 @@ const DISCONNECT = 142;
 const RESIDENCY_LIST = 130;
 const TABLE_STRUCTURE = 131;
 const TABLE_FIXED_STRUCTURE = 132;
+const RECORD_REQUEST = 133; // request a specific record
 export const OPERATION_REQUEST = 136;
 const OPERATION_RESPONSE = 137;
 const SEQUENCE_ID_UPDATE = 143;
@@ -192,7 +193,9 @@ export class NodeReplicationConnection extends EventEmitter {
 		this.socket.close(1008, 'No longer subscribed');
 	}
 
-	send(message) {}
+	sendRecordRequest(request) {
+		this.socket.send(encode([RECORD_REQUEST, request]));
+	}
 }
 
 /**
@@ -466,6 +469,12 @@ export function replicateOverWS(ws, options, authorization) {
 							remoteNodeIds: receiving_data_from_node_ids,
 						});
 						break;
+					case RECORD_REQUEST: {
+						const { tableId: table_id, id: record_id, requestId: request_id } = data;
+						// TODO: Retrieve the record and update the record with the new residency id
+
+						break;
+					}
 					case SUBSCRIPTION_REQUEST:
 						node_subscriptions = data;
 						// permission check to make sure that this node is allowed to subscribe to this database, that is that
@@ -1090,7 +1099,12 @@ export function replicateOverWS(ws, options, authorization) {
 
 	function setDatabase(database_name) {
 		table_subscription_to_replicator = table_subscription_to_replicator || db_subscriptions.get(database_name);
-		if (options.databases && options.databases != '*' && !options.databases[database_name]) {
+		if (
+			options.databases &&
+			options.databases != '*' &&
+			!options.databases[database_name] &&
+			!options.databases.includes?.(database_name)
+		) {
 			// TODO: Check the node subscriptions
 			return logger.warn(`Access to database "${database_name}" is not permitted`);
 		}

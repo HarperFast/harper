@@ -50,7 +50,7 @@ exports.createNode = async function createNode(index, database_path, node_count)
 		databases: ['test'],
 	};
 	server.http((request, next_handler) => {
-		request.user = { sends: true, receives: true }; // the authorization
+		request.user = { replicates: true }; // the authorization
 		return next_handler(request);
 	}, options);
 	setMainIsWorker(true);

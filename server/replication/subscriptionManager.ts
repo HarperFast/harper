@@ -153,7 +153,7 @@ export async function startOnMainThread(options) {
 					nodes,
 					url: node.url,
 				});
-				worker.on('exit', () => {
+				worker?.on('exit', () => {
 					// when a worker exits, we need to remove the entry from the map, and then reassign the subscriptions
 					db_replication_workers.delete(database_name);
 					onDatabase(database_name, tables_replicate_by_default);
