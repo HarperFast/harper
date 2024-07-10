@@ -116,13 +116,25 @@ async function getReplicationCert() {
 		setSecureContext: (ctx) => {},
 	};
 	await SNICallback.initialize(secure_target);
-	return secure_target.secureContexts.get(getThisNodeName());
+	const cert = secure_target.secureContexts.get(getThisNodeName());
+	const cert_parsed = new X509Certificate(cert.options.cert);
+	cert.cert_parsed = cert_parsed;
+	cert.issuer = cert_parsed.issuer;
+	cert.hostnames = cert_parsed.subjectAltName
+		? cert_parsed.subjectAltName.split(',').map((part) => {
+				let colon_index = part.indexOf(':');
+				return part.slice(colon_index + 1);
+		  })
+		: [cert_parsed.subject.match(/CN=(.*)/)?.[1]];
+
+	return cert;
 }
 
 async function getReplicationCertAuth() {
 	getCertTable();
-	const rep_cert = pki.certificateFromPem((await getReplicationCert()).options.cert);
-	const ca_name = rep_cert.issuer.getField('CN').value;
+	const cert_pem = (await getReplicationCert()).options.cert;
+	const rep_cert = new X509Certificate(cert_pem);
+	const ca_name = rep_cert.issuer.match(/CN=(.*)/)?.[1];
 	return certificate_table.get(sanitizeName(ca_name));
 }
 
@@ -274,11 +286,7 @@ function getCommonName() {
 async function createCsr() {
 	const rep = await getReplicationCert();
 	const ops_cert = pki.certificateFromPem(rep.options.cert);
-	const ops_private_key = pki.privateKeyFromPem(
-		await fs.readFile(
-			path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME, certificates_terms.PRIVATEKEY_PEM_NAME)
-		)
-	);
+	const ops_private_key = pki.privateKeyFromPem(rep.options.key);
 
 	hdb_logger.info('Creating CSR with cert named:', rep.name);
 
@@ -352,18 +360,38 @@ function certExtensions() {
 
 async function signCertificate(req) {
 	const response = {};
+	const hdb_keys_dir = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
 
 	if (req.csr) {
-		const default_ca = await getHDBCertAuthority();
-		response.ca_certificate = default_ca.certificate;
-		// Use HDB generated private key, the same that was used to sign HDB CA
-		const app_private_key = pki.privateKeyFromPem(
-			await fs.readFile(
-				path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME, certificates_terms.PRIVATEKEY_PEM_NAME)
-			)
-		);
-		const ca_app_cert = pki.certificateFromPem(default_ca.certificate);
-		hdb_logger.info('Signing CSR with cert named', default_ca.name);
+		let private_key;
+		let cert_auth;
+		getCertTable();
+
+		// Search hdb_certificate for a non-HDB CA that also has a local private key
+		for await (const cert of certificate_table.search([])) {
+			if (cert.is_authority && !cert.details.issuer.includes('HarperDB-Certificate-Authority')) {
+				if (private_keys.has(cert.private_key_name)) {
+					private_key = private_keys.get(cert.private_key_name);
+					cert_auth = cert;
+					break;
+				} else if (cert.private_key_name && (await fs.exists(path.join(hdb_keys_dir, cert.private_key_name)))) {
+					private_key = fs.readFile(path.join(hdb_keys_dir, cert.private_key_name));
+					cert_auth = cert;
+					break;
+				}
+			}
+		}
+
+		// If the search above did not find a CA use the HDB self singed one that was created by this instance
+		if (!private_key) {
+			cert_auth = await getHDBCertAuthority();
+			private_key = await fs.readFile(path.join(hdb_keys_dir, certificates_terms.PRIVATEKEY_PEM_NAME));
+		}
+
+		private_key = pki.privateKeyFromPem(private_key);
+		response.ca_certificate = cert_auth.certificate;
+		const ca_app_cert = pki.certificateFromPem(cert_auth.certificate);
+		hdb_logger.info('Signing CSR with cert named', cert_auth.name);
 		const csr = pki.certificationRequestFromPem(req.csr);
 		try {
 			csr.verify();
@@ -393,11 +421,11 @@ async function signCertificate(req) {
 		cert.setExtensions(extensions);
 
 		cert.publicKey = csr.publicKey;
-		cert.sign(app_private_key, forge.md.sha256.create());
+		cert.sign(private_key, forge.md.sha256.create());
 
 		response.certificate = pki.certificateToPem(cert);
 	} else {
-		response.ca_certificate = (await getReplicationCertAuth()).certificate;
+		response.ca_certificate = (await getReplicationCertAuth())?.certificate;
 		hdb_logger.info('Sign cert did not receive a CSR from:', req.url, 'only the CA will be returned');
 	}
 
@@ -523,7 +551,7 @@ async function generateCertAuthority() {
 	const subject = [
 		{
 			name: 'commonName',
-			value: `HarperDB Certificate Authority ${
+			value: `HarperDB-Certificate-Authority-${
 				env_manager.get('replication_nodeName') ??
 				urlToNodeName(env_manager.get('replication_url')) ??
 				uuidv4().split('-')[0]
@@ -690,6 +718,7 @@ function createTLSSelector(type, options) {
 							ca_certs.set(cert.type, cert_parsed);
 						}
 					}
+
 					for await (const cert of databases.system.hdb_certificate.search([])) {
 						try {
 							if (cert.is_authority) {
@@ -697,10 +726,33 @@ function createTLSSelector(type, options) {
 							}
 							let is_operations = type === 'operations-api';
 							if (!is_operations && cert.uses?.includes?.('operations')) continue;
+
 							let quality;
-							if (type === cert.name) quality = 5;
-							else quality = CERT_PREFERENCE_APP[cert.name] ?? (is_operations ? 4 : 0);
-							const private_key = private_keys.get(cert.private_key_name);
+							if (type === cert.name) quality = 6;
+							else if (CERT_PREFERENCE_APP[cert.name]) quality = CERT_PREFERENCE_APP[cert.name];
+							else if (!cert?.details?.issuer?.includes?.('HarperDB-Certificate-Authority')) quality = 5;
+							else quality = is_operations ? 4 : 0;
+
+							let private_key = private_keys.get(cert.private_key_name);
+							if (
+								!private_key &&
+								cert.private_key_name &&
+								(await fs.exists(
+									path.join(
+										env_manager.get(CONFIG_PARAMS.ROOTPATH),
+										hdb_terms.LICENSE_KEY_DIR_NAME,
+										cert.private_key_name
+									)
+								))
+							) {
+								private_key = await fs.readFile(
+									path.join(
+										env_manager.get(CONFIG_PARAMS.ROOTPATH),
+										hdb_terms.LICENSE_KEY_DIR_NAME,
+										cert.private_key_name
+									)
+								);
+							}
 							const certificate = cert.certificate;
 							if (!private_key || !certificate) {
 								throw new Error('Missing private key or certificate for secure server');
@@ -712,6 +764,7 @@ function createTLSSelector(type, options) {
 								ca: cert_authorities,
 								cert: certificate,
 								key: private_key,
+								key_file: cert.private_key_name,
 							};
 							if (server) secure_options.sessionIdContext = server.sessionIdContext;
 							let secure_context = tls.createSecureContext(secure_options);
@@ -844,11 +897,11 @@ async function addCertificate(req) {
 			is_authority: Joi.boolean().required(),
 			private_key: Joi.string(),
 			hosts: Joi.array(),
+			uses: Joi.array(),
 		})
 	);
 	if (validation) throw new ClientError(validation.message);
 
-	//TODO: check plexus code after cert name change
 	const { name, certificate, private_key, is_authority } = req;
 	const x509_cert = new X509Certificate(certificate);
 	let private_key_exists = false;
@@ -901,6 +954,7 @@ async function addCertificate(req) {
 		certificate,
 		is_authority,
 		hosts: req.hosts,
+		uses: req.uses,
 	};
 
 	if (!is_authority || (is_authority && existing_private_key_name) || (is_authority && private_key)) {
@@ -909,7 +963,7 @@ async function addCertificate(req) {
 
 	await setCertTable(record);
 
-	return 'Successfully added certificate under name: ' + sani_name;
+	return 'Successfully added certificate: ' + sani_name;
 }
 
 /**

@@ -75,16 +75,16 @@ export async function setNode(req: object) {
 	const this_url = getThisNodeUrl();
 	if (this_url == null) throw new ClientError('replication url is missing from harperdb-config.yaml');
 
+	let rep;
 	let csr;
 	let cert_auth;
 	if (url?.startsWith('wss:')) {
 		if (req.operation === 'add_node' && !req.authorization)
 			throw new ClientError('authorization parameter is required');
 
-		const rep = await getReplicationCert();
+		rep = await getReplicationCert();
 		const ca_record = await getReplicationCertAuth();
-		// If the cert is a self signed HDB created cert that belongs to this node, send CSR
-		if (rep.name === sanitizeName(getThisNodeName()) && ca_record?.name?.includes('HarperDB-Certificate-Authority')) {
+		if (rep.issuer.includes('HarperDB-Certificate-Authority') || !rep.hostnames.includes(getThisNodeName())) {
 			// Create the certificate signing request that will be sent to the other node
 			csr = await createCsr();
 			hdb_logger.info('Sending CSR to target node:', url);
@@ -151,7 +151,7 @@ export async function setNode(req: object) {
 				name: sanitizeName(getThisNodeName()),
 				uses: ['https', 'operations', 'wss'],
 				certificate: target_node_response.certificate,
-				private_key_name: PRIVATEKEY_PEM_NAME,
+				private_key_name: rep?.options?.key_file,
 				is_authority: false,
 			});
 		}
@@ -219,8 +219,8 @@ export async function addNodeBack(req) {
 	certs.nodeName = getThisNodeName();
 
 	const rep_ca = await getReplicationCertAuth();
-	certs.ca_certificate = rep_ca.certificate;
-	hdb_logger.info('addNodeBack responding to:', req.url, 'with CA named:', rep_ca.name);
+	certs.ca_certificate = rep_ca?.certificate;
+	hdb_logger.info('addNodeBack responding to:', req.url, 'with CA named:', rep_ca?.name);
 
 	return certs;
 }
