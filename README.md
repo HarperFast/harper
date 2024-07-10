@@ -9,9 +9,9 @@
 6. [Installing HarperDB](#installing-harperdb)
 
 ## HarperDB Overview
-HarperDB is a globally-distributed edge application platform. It reduces complexity, increases performance, and lowers costs by combining user-defined applications, a high-performance database, and an enterprise-grade streaming broker into a single package. The platform offers unlimited horizontal scale at the click of a button, and syncs data across the cluster in milliseconds. HarperDB simplifies the process of delivering applications and the data that drives them to the edge, which dramatically improves both the user experience and total cost of ownership for large-scale applications. Deploying HarperDB on global infrastructure enables a CDN-like solution for enterprise data and applications.
+HarperDB eliminates the complexity typically synonymous with distributed services by combining an ultra-fast document data store, in-memory cache, real-time message broker, and your application components into a single distributed technology. When clustered and geo-distributed, HarperDB nodes instantly synchronize data creating a real-time service fabric, ensuring low-latency in-region responses for clients worldwide. In addition to massive cost savings at scale, HarperDB’s REST, GraphQL, SQL, and real-time interfaces make light work of servicing frontend requirements. Install and manage on your hardware with npm, or have us host your services with HarperDB Cloud. For questions, reach us at [hello@harperdb.io](mailto:hello@harperdb.io).
 
-[Learn more about HarperDB](https://harperdb.io/?utm_source=repo&utm_medium=npm)
+[Learn more about HarperDB](https://www.harperdb.io/?utm_source=repo&utm_medium=npm)
 
 ## HarperDB Studio
 Every Installation of HarperDB can be administered online using HarperDB Studio. This web-based interface provides you the ability to set up new schemas and tables, configure users and roles, manage data replication, and purchase and deploy enterprise licenses.
