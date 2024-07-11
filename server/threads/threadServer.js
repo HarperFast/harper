@@ -133,7 +133,7 @@ function startServers() {
 							server.close?.(() => {
 								if (env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET) && getWorkerIndex() == 0) {
 									try {
-										unlinkSync(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET));
+										unlinkSync(resolvePath(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)));
 									} catch (err) {}
 								}
 
@@ -189,6 +189,15 @@ function listenOnPorts() {
 			continue;
 		}
 		let listen_on;
+		const thread_range = env.get(terms.CONFIG_PARAMS.HTTP_THREADRANGE);
+		if (thread_range) {
+			let thread_range_array = typeof thread_range === 'string' ? thread_range.split('-') : thread_range;
+			let thread_index = getWorkerIndex();
+			if (thread_index < thread_range_array[0] || thread_index > thread_range_array[1]) {
+				continue;
+			}
+		}
+
 		let fd;
 		try {
 			const last_colon = port.lastIndexOf(':');
@@ -355,7 +364,10 @@ function getPorts(options) {
 	}
 
 	if (options?.isOperationsServer && env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)) {
-		ports.push({ port: env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET), secure: false });
+		ports.push({
+			port: resolvePath(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)),
+			secure: false,
+		});
 	}
 	return ports;
 }
@@ -376,6 +388,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 	if (!http_servers[port]) {
 		let server_prefix = is_operations_server ? 'operationsApi_network' : 'http';
 		let options = {
+			noDelay: true,
 			keepAliveTimeout: env.get(server_prefix + '_keepAliveTimeout'),
 			headersTimeout: env.get(server_prefix + '_headersTimeout'),
 			requestTimeout: env.get(server_prefix + '_timeout'),

@@ -24,6 +24,7 @@ const THREAD_INFO = 'thread_info';
 const ADDED_PORT = 'added-port';
 const ACKNOWLEDGEMENT = 'ack';
 let getThreadInfo;
+let main_thread_port = parentPort;
 _assignPackageExport('threads', connected_ports);
 
 module.exports = {

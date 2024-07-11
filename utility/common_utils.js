@@ -447,9 +447,6 @@ function getHomeDir() {
 		// could get here in android
 		home_dir = process.env.HOME;
 	}
-	if (!home_dir) {
-		home_dir = '~/';
-	}
 	return home_dir;
 }
 

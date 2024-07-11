@@ -603,6 +603,7 @@ const CONFIG_PARAMS = {
 	HTTP_MTLS_REQUIRED: 'http_mtls_required',
 	HTTP_MTLS_USER: 'http_mtls_user',
 	HTTP_MAXHEADERSIZE: 'http_maxHeaderSize',
+	HTTP_THREADRANGE: 'http_threadRange',
 	LOCALSTUDIO_ENABLED: 'localStudio_enabled',
 	LOGGING_FILE: 'logging_file',
 	LOGGING_LEVEL: 'logging_level',
@@ -780,6 +781,8 @@ const CONFIG_PARAM_MAP = {
 	http_mtls: CONFIG_PARAMS.HTTP_MTLS,
 	http_mtls_user: CONFIG_PARAMS.HTTP_MTLS_USER,
 	http_mtls_required: CONFIG_PARAMS.HTTP_MTLS_REQUIRED,
+	http_maxheadersize: CONFIG_PARAMS.HTTP_MAXHEADERSIZE,
+	http_threadrange: CONFIG_PARAMS.HTTP_THREADRANGE,
 	customfunctions_processes: CONFIG_PARAMS.THREADS_COUNT,
 	customfunctions_root: CONFIG_PARAMS.COMPONENTSROOT,
 	localstudio_enabled: CONFIG_PARAMS.LOCALSTUDIO_ENABLED,
@@ -867,6 +870,7 @@ const JOB_TYPE_ENUM = {
 	export_local: 'export_local',
 	export_to_s3: 'export_to_s3',
 	import_from_s3: 'import_from_s3',
+	restart_service: 'restart_service',
 };
 
 const CLUSTER_MESSAGE_TYPE_ENUM = {
@@ -1025,6 +1029,7 @@ const ITC_EVENT_TYPES = {
 	METRICS: 'metrics',
 	GET_METRICS: 'get_metrics',
 	RESTART: 'restart',
+	START_JOB: 'start_job',
 	NATS_CONSUMER_UPDATE: 'nats_consumer_update',
 };
 

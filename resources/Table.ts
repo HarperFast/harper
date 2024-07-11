@@ -1241,7 +1241,7 @@ export function makeTable(options) {
 			transaction.addWrite(write);
 		}
 
-		async delete(request: Request): Promise<boolean> {
+		async delete(request?: Query | string): Promise<boolean> {
 			if (typeof request === 'string') return this.deleteProperty(request);
 			// TODO: Handle deletion of a collection/query
 			if (this[IS_COLLECTION]) {
@@ -2557,7 +2557,9 @@ export function makeTable(options) {
 				// TODO: We could potentially have a faster test here, Buffer.byteLength is close, but we have to handle characters < 4 that are escaped in ordered-binary
 				break; // otherwise we have to test it, in this range, unicode characters could put it over the limit
 			case 'object':
-				if (id === null) throw new Error('Invalid primary key of null');
+				if (id === null) {
+					throw new Error('Invalid primary key of null');
+				}
 				break; // otherwise we have to test it
 			case 'bigint':
 				if (id < 2n ** 64n && id > -(2n ** 64n)) return true;
@@ -2900,6 +2902,7 @@ export function makeTable(options) {
 			replacingRecord: existing_record,
 			replacingEntry: existing_entry,
 			replacingVersion: existing_version,
+			noCacheStore: false,
 			source: null,
 			// use the same resource cache as a parent context so that if modifications are made to resources,
 			// they are visible in the parent requesting context
@@ -2967,7 +2970,7 @@ export function makeTable(options) {
 						source_context.transaction.abort();
 						return;
 					}
-					if (context?.noCacheStore) {
+					if (context?.noCacheStore || source_context.noCacheStore) {
 						// abort before we write any change
 						source_context.transaction.abort();
 						return;

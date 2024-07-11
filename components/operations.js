@@ -379,8 +379,8 @@ async function deployComponent(req) {
 	if (payload) {
 		path_to_project = path.join(cf_dir, project);
 		pkg = 'file:' + path_to_project;
-		// check if the project exists, if it doesn't, create it.
-		await fs.ensureDir(path_to_project);
+		// check if the project exists, if it doesn't, create it, if it does, empty it.
+		await fs.emptyDir(path_to_project);
 
 		// extract the reconstituted file to the proper project directory
 		const stream = Readable.from(Buffer.from(payload, 'base64'));

@@ -45,7 +45,9 @@ module.exports = fp(
 				recordAction(bytes_sent, 'bytes-sent', action, method, type);
 			}
 			let rounded_time = response_time.toFixed(3);
-			reply.header('Server-Timing', `db;dur=${rounded_time}`);
+			let app_server_timing = reply.getHeader('Server-Timing');
+			let server_timing = `db;dur=${rounded_time}`;
+			reply.header('Server-Timing', app_server_timing ? `${app_server_timing}, ${server_timing}` : server_timing);
 		});
 		done();
 	},
