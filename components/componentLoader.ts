@@ -157,7 +157,10 @@ export async function loadComponent(
 		}
 		const harperdb_module = join(folder, 'node_modules', 'harperdb');
 		try {
-			if (isMainThread && (existsSync(harperdb_module) || is_root)) {
+			if (
+				isMainThread &&
+				(is_root || (existsSync(harperdb_module) && realpathSync(PACKAGE_ROOT) !== realpathSync(harperdb_module)))
+			) {
 				// if the app has a harperdb module, we symlink it to the main app so it can be used in the main app (with the running modules)
 				rmSync(harperdb_module, { recursive: true, force: true });
 				if (!existsSync(join(folder, 'node_modules'))) {
