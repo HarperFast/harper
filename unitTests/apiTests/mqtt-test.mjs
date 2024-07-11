@@ -395,7 +395,9 @@ describe('test MQTT connections and commands', () => {
 			client.subscribe(path, { qos: 1 }, function (err) {
 				if (err) reject(err);
 			});
+			let last_sent = 0;
 			const onMessage = (topic, payload, packet) => {
+				console.log('got message', performance.now());
 				let record = JSON.parse(payload);
 				messages.push(record);
 				if (messages.length == 2) {
@@ -409,7 +411,9 @@ describe('test MQTT connections and commands', () => {
 				}
 			};
 			client.on('message', onMessage);
+			console.log('sent message', performance.now());
 			await axios.put('http://localhost:9926/SimpleRecord/78', { name: 'a starting point', count: 2 }, { headers });
+			console.log('sent message', performance.now());
 			await axios.patch(
 				'http://localhost:9926/SimpleRecord/78',
 				{ name: 'an updated name', newProperty: 'new value', count: { __op__: 'add', value: 1 } },

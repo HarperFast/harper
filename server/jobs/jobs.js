@@ -131,6 +131,11 @@ async function addJob(json_body) {
 		case hdb_terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE:
 			validation_msg = deleteTransactionLogsBeforeValidator(json_body);
 			break;
+		case hdb_terms.OPERATIONS_ENUM.RESTART_SERVICE:
+			if (hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[json_body.service] === undefined) {
+				throw handleHDBError(new Error(), 'Invalid service', HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
+			}
+			break;
 		default:
 			break;
 	}

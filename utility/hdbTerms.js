@@ -851,6 +851,7 @@ const JOB_TYPE_ENUM = {
 	export_local: 'export_local',
 	export_to_s3: 'export_to_s3',
 	import_from_s3: 'import_from_s3',
+	restart_service: 'restart_service',
 };
 
 const CLUSTER_MESSAGE_TYPE_ENUM = {
@@ -1009,6 +1010,7 @@ const ITC_EVENT_TYPES = {
 	METRICS: 'metrics',
 	GET_METRICS: 'get_metrics',
 	RESTART: 'restart',
+	START_JOB: 'start_job',
 	NATS_CONSUMER_UPDATE: 'nats_consumer_update',
 };
 
