@@ -154,7 +154,7 @@ export class NodeReplicationConnection extends EventEmitter {
 			if (error.code !== 'ECONNREFUSED') {
 				if (error.code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE')
 					logger.error?.(
-						`Can not connect to ${this.url}, the certificate is not trusted, this node needs to be added to the cluster, or a certificate authority needs to be added`
+						`Can not connect to ${this.url}, the certificate provided by ${this.url} is not trusted, this node needs to be added to the cluster, or a certificate authority needs to be added`
 					);
 				else logger.error?.(`Error in connection to ${this.url} due to ${error.message}`);
 			}

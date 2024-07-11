@@ -17,6 +17,7 @@ const { recordAction, recordActionBinary } = require('../../resources/analytics'
 const { Request, createReuseportFd } = require('../serverHelpers/Request');
 const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
 const { createTLSSelector } = require('../../security/keys');
+const { resolvePath } = require('../../config/configUtils');
 const debug_threads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
 if (debug_threads) {
 	let port;
