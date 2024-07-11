@@ -727,6 +727,22 @@ describe('test MQTT connections and commands', () => {
 			});
 		});
 	});
+	it('Invalid packet', async function () {
+		let client = connect('mqtt://localhost:1883', {
+			clean: true,
+			clientId: 'test-client1',
+		});
+		await new Promise((resolve, reject) => {
+			client.on('connect', resolve);
+			client.on('error', reject);
+		});
+		// directly send an invalid packet, which should cause the connection to close
+		client.stream.write(Buffer.from([67,255]));
+
+		await new Promise((resolve, reject) => {
+			client.on('close', resolve);
+		});
+	});
 	it('subscribe to single-level wildcard/full table', async function () {
 		const topic_expectations = {
 			'SimpleRecord/+': ['SimpleRecord/', 'SimpleRecord/44', 'SimpleRecord/47'],

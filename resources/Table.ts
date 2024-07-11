@@ -1152,7 +1152,7 @@ export function makeTable(options) {
 			transaction.addWrite(write);
 		}
 
-		async delete(request: Request): Promise<boolean> {
+		async delete(request?: Query | string): Promise<boolean> {
 			if (typeof request === 'string') return this.deleteProperty(request);
 			// TODO: Handle deletion of a collection/query
 			if (this[IS_COLLECTION]) {
@@ -2762,6 +2762,7 @@ export function makeTable(options) {
 			// provide access to previous data
 			replacingRecord: existing_record,
 			replacingVersion: existing_version,
+			noCacheStore: false,
 			source: null,
 			// use the same resource cache as a parent context so that if modifications are made to resources,
 			// they are visible in the parent requesting context
@@ -2829,7 +2830,7 @@ export function makeTable(options) {
 						source_context.transaction.abort();
 						return;
 					}
-					if (context?.noCacheStore) {
+					if (context?.noCacheStore || source_context.noCacheStore) {
 						// abort before we write any change
 						source_context.transaction.abort();
 						return;

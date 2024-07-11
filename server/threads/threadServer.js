@@ -379,6 +379,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 	if (!http_servers[port]) {
 		let server_prefix = is_operations_server ? 'operationsApi_network' : 'http';
 		let options = {
+			noDelay: true,
 			keepAliveTimeout: env.get(server_prefix + '_keepAliveTimeout'),
 			headersTimeout: env.get(server_prefix + '_headersTimeout'),
 			requestTimeout: env.get(server_prefix + '_timeout'),
@@ -576,6 +577,7 @@ function onSocket(listener, options) {
 		const tls_config = Object.assign({}, env.get('tls'));
 		if (options.mtls?.certificateAuthority) tls_config.certificateAuthority = options.mtls.certificateAuthority;
 		let server_options = {
+			noDelay: true,
 			rejectUnauthorized: Boolean(options.mtls?.required),
 			requestCert: Boolean(options.mtls),
 			SNICallback: createSNICallback(tls_config),
@@ -592,7 +594,7 @@ function onSocket(listener, options) {
 		SERVERS[options.securePort] = socket_server;
 	}
 	if (options.port) {
-		socket_server = createSocketServer(listener);
+		socket_server = createSocketServer({ noDelay: true }, listener);
 		SERVERS[options.port] = socket_server;
 	}
 	return socket_server;
