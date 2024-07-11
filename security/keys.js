@@ -120,12 +120,6 @@ async function getReplicationCert() {
 	const cert_parsed = new X509Certificate(cert.options.cert);
 	cert.cert_parsed = cert_parsed;
 	cert.issuer = cert_parsed.issuer;
-	cert.hostnames = cert_parsed.subjectAltName
-		? cert_parsed.subjectAltName.split(',').map((part) => {
-				let colon_index = part.indexOf(':');
-				return part.slice(colon_index + 1);
-		  })
-		: [extractCommonName(cert_parsed)];
 
 	return cert;
 }
@@ -437,6 +431,7 @@ async function createCertificateTable(cert, ca_cert) {
 		certificate: cert,
 		private_key_name: 'privateKey.pem',
 		is_authority: false,
+		is_default: true,
 	});
 
 	await setCertTable({
@@ -752,6 +747,7 @@ function createTLSSelector(type, options) {
 								cert: certificate,
 								key: private_key,
 								key_file: cert.private_key_name,
+								is_default: cert.is_default,
 							};
 							if (server) secure_options.sessionIdContext = server.sessionIdContext;
 							let secure_context = tls.createSecureContext(secure_options);

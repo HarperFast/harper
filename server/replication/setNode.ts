@@ -83,7 +83,8 @@ export async function setNode(req: object) {
 
 		rep = await getReplicationCert();
 		const ca_record = await getReplicationCertAuth();
-		if (rep.issuer.includes('HarperDB-Certificate-Authority') || !rep.hostnames.includes(getThisNodeName())) {
+		if (!rep) throw new Error('Unable to find a certificate to use for replication');
+		if (rep.options.is_default) {
 			// Create the certificate signing request that will be sent to the other node
 			csr = await createCsr();
 			hdb_logger.info('Sending CSR to target node:', url);
