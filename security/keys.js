@@ -34,7 +34,6 @@ Object.assign(exports, {
 	loadCertificates,
 	reviewSelfSignedCert,
 	createTLSSelector,
-	verifyCert,
 	listCertificates,
 	addCertificate,
 	removeCertificate,
@@ -459,16 +458,6 @@ async function setCertTable(cert_record) {
 	await certificate_table.patch(cert_record);
 }
 
-function verifyCert(cert, ca) {
-	try {
-		const ca_store = pki.createCaStore([ca]);
-		return pki.verifyCertificateChain(ca_store, [cert]);
-	} catch (err) {
-		hdb_logger.info('verifying cert:', err);
-		return false;
-	}
-}
-
 async function generateKeys() {
 	const keys = await generateKeyPair('rsa', {
 		modulusLength: 4096,
@@ -518,7 +507,10 @@ async function generateCertificates(private_key, public_key, ca_cert) {
 
 async function getHDBCertAuthority() {
 	const records = certificate_table.search({
-		conditions: [{ attribute: 'is_default', comparator: 'equals', value: true }],
+		conditions: [
+			{ attribute: 'is_default', comparator: 'equals', value: true },
+			{ attribute: 'is_authority', comparator: 'equals', value: true },
+		],
 	});
 
 	let result = [];
