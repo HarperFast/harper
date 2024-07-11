@@ -80,6 +80,20 @@ jobs:
         run: |
           #!/usr/bin/env bash
           
+          # make sure we know what the value of dryrun is 
+          if [[ "${dryrun}" == "true" ]]; then
+            echo "dryrun=true" >> "${GITHUB_OUTPUT}"
+          elif [[ "${dryrun}" == "false" ]]; then
+            echo "dryrun=false" >> "${GITHUB_OUTPUT}"
+          
+          # if this workflow is triggered on push, inputs.dryrun will be empty, and we default dryrun=false
+          elif [[ "${GITHUB_EVENT_NAME}" == 'push' ]]; then
+            echo "dryrun=false" >> "${GITHUB_OUTPUT}"
+          else
+            echo "Exiting as I have no idea what dryrun is supposed to be: ${dryrun}" >> "${GITHUB_STEP_SUMMARY}"
+            exit 1
+          fi
+          
           harperdbVersion=$(jq -r '.version' package.json)
           echo "harperdbVersion=${harperdbVersion}" >> "${GITHUB_OUTPUT}"
           
@@ -121,11 +135,7 @@ jobs:
           npm_extra_tags=${npm_extra_tags}
           dockerhub_tag_latest=${dockerhub_tag_latest}
           EOF
-          
-          [[ "${dryrun}" == "true" ]] && echo "dryrun=true" >> "${GITHUB_OUTPUT}"
-          [[ "${dryrun}" == "false" ]] && echo "dryrun=false" >> "${GITHUB_OUTPUT}"
-          [[ -z "${dryrun}" && "${GITHUB_EVENT_NAME}" == 'push' ]] && echo "dryrun=false" >> "${GITHUB_OUTPUT}"
-          
+         
           cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
           ## Release ${version} ##
           harperdbVersion:  ${harperdbVersion}
