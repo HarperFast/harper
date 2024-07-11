@@ -10,6 +10,9 @@ const hdb_export = require('../../dataLayer/export');
 const hdb_delete = require('../../dataLayer/delete');
 const threads_start = require('../threads/manageThreads');
 const transaction_log = require('../../utility/logging/transactionLog');
+const restart = require('../../bin/restart');
+const { parentPort, isMainThread } = require('worker_threads');
+const { onMessageByType } = require('../threads/manageThreads');
 
 class RunnerMessage {
 	constructor(job_object, message_json) {
@@ -71,6 +74,10 @@ async function parseMessage(runner_message) {
 		case hdb_terms.JOB_TYPE_ENUM.delete_transaction_logs_before:
 			await runJob(runner_message, transaction_log.deleteTransactionLogsBefore);
 			break;
+		case hdb_terms.JOB_TYPE_ENUM.restart_service:
+			await runJob(runner_message, restart.restartService);
+			return `Restarting ${runner_message.json.service}`;
+			break;
 		default:
 			return `Invalid operation ${runner_message.json.operation} specified`;
 	}
@@ -120,10 +127,29 @@ async function runJob(runner_message, operation) {
  */
 async function launchJobThread(job_id) {
 	log.trace('launching job thread:', job_id);
-	threads_start.startWorker('server/jobs/jobProcess.js', {
-		autoRestart: false,
-		name: 'job',
-		env: Object.assign({}, process.env, { [hdb_terms.PROCESS_NAME_ENV_PROP]: `JOB-${job_id}` }),
+	if (isMainThread)
+		threads_start.startWorker('server/jobs/jobProcess.js', {
+			autoRestart: false,
+			name: 'job',
+			env: Object.assign({}, process.env, { [hdb_terms.PROCESS_NAME_ENV_PROP]: `JOB-${job_id}` }),
+		});
+	else
+		parentPort.postMessage({
+			type: hdb_terms.ITC_EVENT_TYPES.START_JOB,
+			jobId: job_id,
+		});
+}
+if (isMainThread) {
+	onMessageByType(hdb_terms.ITC_EVENT_TYPES.START_JOB, async (message, port) => {
+		try {
+			threads_start.startWorker('server/jobs/jobProcess.js', {
+				autoRestart: false,
+				name: 'job',
+				env: Object.assign({}, process.env, { [hdb_terms.PROCESS_NAME_ENV_PROP]: `JOB-${message.jobId}` }),
+			});
+		} catch (e) {
+			log.error(e);
+		}
 	});
 }
 
