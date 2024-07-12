@@ -112,7 +112,8 @@ export class NodeReplicationConnection extends EventEmitter {
 	startTime: number;
 	retryTime = 2000;
 	retries = 0;
-	hasConnected: boolean;
+	isConnected = true; // we start out assuming we will be connected
+	isFinished = false;
 	nodeSubscriptions = [];
 	replicateTablesByDefault: boolean;
 	nodeName: string;
@@ -138,7 +139,7 @@ export class NodeReplicationConnection extends EventEmitter {
 				database: this.databaseName,
 				url: this.url,
 			});
-			this.hasConnected = true;
+			this.isConnected = true;
 			session = replicateOverWS(
 				this.socket,
 				{
@@ -160,7 +161,17 @@ export class NodeReplicationConnection extends EventEmitter {
 			}
 		});
 		this.socket.on('close', (code, reason_buffer) => {
-			session?.disconnected(this.socket.isFinished);
+			// if we get disconnected, notify subscriptions manager so we can reroute through another node
+			if (this.isConnected) {
+				disconnectedFromNode({
+					name: this.nodeName,
+					database: this.databaseName,
+					url: this.url,
+					finished: this.socket.isFinished,
+				});
+				this.isConnected = false;
+			}
+
 			if (this.socket.isFinished) {
 				this.isFinished = true;
 				session?.end();
@@ -762,6 +773,7 @@ export function replicateOverWS(ws, options, authorization) {
 						audit_subscription.once('close', () => {
 							closed = true;
 							subscription_to_hdb_nodes?.end();
+							logger.info?.(connection_id, 'closing subscription', database_name);
 						});
 						for (let { startTime } of node_subscriptions) {
 							if (startTime < current_sequence_id) current_sequence_id = startTime;
@@ -1052,12 +1064,13 @@ export function replicateOverWS(ws, options, authorization) {
 
 			const node_id = audit_store && getIdOfRemoteNode(node.name, audit_store);
 			let sequence_entry = table_subscription_to_replicator?.dbisDB?.get([Symbol.for('seq'), node_id]) ?? 1;
-			let start_time;
-			if (connected_node === node) start_time = sequence_entry?.seqId ?? 1;
+			let start_time = sequence_entry?.seqId ?? 1;
 			// if we are connected directly to the node, we start from the last sequence number we received at the top level
-			else {
-				// otherwise we are starting from the last sequence id we received through the proxying node
-				start_time = 1;
+			// TODO: If we become disconnected, and received updates through a proxy, we may want to use that for an updating starting point once we reconnect to the original node
+			if (connected_node !== node) {
+				// indirect connection through a proxying node
+				if (start_time > 5000) start_time -= 5000; // first, decrement the start time to cover some clock drift between nodes (5 seconds)
+				// if there is last sequence id we received through the proxying node that is newer, we can start from there
 				for (let seq_node of sequence_entry?.nodes || []) {
 					if (seq_node.name === node.name) {
 						start_time = seq_node.seqId;
@@ -1177,16 +1190,6 @@ export function replicateOverWS(ws, options, authorization) {
 			// cleanup
 			if (subscription_request) subscription_request.end();
 			if (audit_subscription) audit_subscription.emit('close');
-		},
-		disconnected(finished) {
-			// if we get disconnected, notify subscriptions manager so we can reroute through another node
-			disconnectedFromNode({
-				name: remote_node_name,
-				database: database_name,
-				url: options.url,
-				finished,
-			});
-			// TODO: When we get reconnected, we need to undo this
 		},
 	};
 

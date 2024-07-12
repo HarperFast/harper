@@ -3004,7 +3004,7 @@ export function makeTable(options) {
 									'put',
 									Boolean(invalidated)
 								);
-							} else {
+							} else if (existing_entry) {
 								apply_to_sources_intermediate.delete?.(source_context, id);
 								logger.trace?.(
 									`Deleting resolved record from source with id: ${id}, timestamp: ${new Date(txn_time).toISOString()}`
