@@ -128,9 +128,9 @@ export class NodeReplicationConnection extends EventEmitter {
 		this.socket = await createWebSocket(this.url);
 
 		let session;
-		logger.info?.('Connecting to ' + this.url);
+		logger.info?.(`Connecting to ${this.url}, db: ${this.databaseName}`);
 		this.socket.on('open', () => {
-			logger.info?.('Connected to ' + this.url);
+			logger.info?.(`Connected to ${this.url}, db: ${this.databaseName}`);
 			this.retries = 0;
 			this.retryTime = 2000;
 			// if we have already connected, we need to send a reconnected event
@@ -221,7 +221,6 @@ export function replicateOverWS(ws, options, authorization) {
 		(p ? 's:' + p : 'c:' + options.url?.slice(-4)) +
 		' ' +
 		Math.random().toString().slice(2, 3);
-	logger.info?.(connection_id, 'registering');
 
 	let encoding_start = 0;
 	let encoding_buffer = Buffer.allocUnsafeSlow(1024);
@@ -773,7 +772,6 @@ export function replicateOverWS(ws, options, authorization) {
 						audit_subscription.once('close', () => {
 							closed = true;
 							subscription_to_hdb_nodes?.end();
-							logger.info?.(connection_id, 'closing subscription', database_name);
 						});
 						for (let { startTime } of node_subscriptions) {
 							if (startTime < current_sequence_id) current_sequence_id = startTime;
