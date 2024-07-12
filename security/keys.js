@@ -430,7 +430,7 @@ async function createCertificateTable(cert, ca_cert) {
 		certificate: cert,
 		private_key_name: 'privateKey.pem',
 		is_authority: false,
-		is_default: true,
+		is_self_signed: true,
 	});
 
 	await setCertTable({
@@ -439,7 +439,7 @@ async function createCertificateTable(cert, ca_cert) {
 		certificate: pki.certificateToPem(ca_cert),
 		private_key_name: 'privateKey.pem',
 		is_authority: true,
-		is_default: true,
+		is_self_signed: true,
 	});
 }
 
@@ -508,7 +508,7 @@ async function generateCertificates(private_key, public_key, ca_cert) {
 async function getHDBCertAuthority() {
 	const records = certificate_table.search({
 		conditions: [
-			{ attribute: 'is_default', comparator: 'equals', value: true },
+			{ attribute: 'is_self_signed', comparator: 'equals', value: true },
 			{ attribute: 'is_authority', comparator: 'equals', value: true },
 		],
 	});
@@ -739,7 +739,7 @@ function createTLSSelector(type, options) {
 								cert: certificate,
 								key: private_key,
 								key_file: cert.private_key_name,
-								is_default: cert.is_default,
+								is_self_signed: cert.is_self_signed,
 							};
 							if (server) secure_options.sessionIdContext = server.sessionIdContext;
 							let secure_context = tls.createSecureContext(secure_options);

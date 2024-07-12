@@ -84,7 +84,7 @@ export async function setNode(req: object) {
 		rep = await getReplicationCert();
 		const ca_record = await getReplicationCertAuth();
 		if (!rep) throw new Error('Unable to find a certificate to use for replication');
-		if (rep.options.is_default) {
+		if (rep.options.is_self_signed) {
 			// Create the certificate signing request that will be sent to the other node
 			csr = await createCsr();
 			hdb_logger.info('Sending CSR to target node:', url);
@@ -153,6 +153,7 @@ export async function setNode(req: object) {
 				certificate: target_node_response.certificate,
 				private_key_name: rep?.options?.key_file,
 				is_authority: false,
+				is_self_signed: false,
 			});
 		}
 	}
@@ -214,13 +215,14 @@ export async function addNodeBack(req) {
 			ca: certs.ca_certificate,
 			replicates: true,
 		});
+
+		const rep_ca = await getReplicationCertAuth();
+		certs.ca_certificate = rep_ca?.certificate;
 	}
 	await ensureNode(req.node_name, node_record);
 	certs.nodeName = getThisNodeName();
 
-	const rep_ca = await getReplicationCertAuth();
-	certs.ca_certificate = rep_ca?.certificate;
-	hdb_logger.info('addNodeBack responding to:', req.url, 'with CA named:', rep_ca?.name);
+	hdb_logger.info('addNodeBack responding to:', req.url);
 
 	return certs;
 }
