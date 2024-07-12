@@ -467,11 +467,19 @@ export function database({ database: database_name, table: table_name }) {
  */
 export async function dropDatabase(database_name) {
 	if (!databases[database_name]) throw new Error('Schema does not exist');
-	const database = databases[database_name];
-	for (const table_name in database) {
-		const table = database[table_name];
-		const root_store = table.primaryStore.rootStore;
+	const db_tables = databases[database_name];
+	let root_store;
+	for (const table_name in db_tables) {
+		const table = db_tables[table_name];
+		root_store = table.primaryStore.rootStore;
 		database_envs.delete(root_store.path);
+		if (root_store.status === 'open') {
+			await root_store.close();
+			await fs.remove(root_store.path);
+		}
+	}
+	if (!root_store) {
+		root_store = database({ database: database_name, table: null });
 		if (root_store.status === 'open') {
 			await root_store.close();
 			await fs.remove(root_store.path);

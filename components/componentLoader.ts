@@ -1,4 +1,4 @@
-import { readdirSync, promises, readFileSync, existsSync, symlinkSync, rmSync, mkdirSync } from 'fs';
+import { readdirSync, promises, readFileSync, existsSync, symlinkSync, rmSync, mkdirSync, realpathSync } from 'fs';
 import { join, relative, basename, dirname } from 'path';
 import { isMainThread } from 'worker_threads';
 import { parseDocument } from 'yaml';
@@ -26,13 +26,13 @@ import * as auth from '../security/auth';
 import * as natsReplicator from '../server/nats/natsReplicator';
 import * as replication from '../server/replication/replicator';
 import * as mqtt from '../server/mqtt';
-import { getConfigObj } from '../config/configUtils';
+import { getConfigObj, resolvePath } from '../config/configUtils';
 import { createReuseportFd } from '../server/serverHelpers/Request';
 
 const { readFile } = promises;
 
 const CONFIG_FILENAME = 'config.yaml';
-const CF_ROUTES_DIR = env.get(CONFIG_PARAMS.COMPONENTSROOT);
+const CF_ROUTES_DIR = resolvePath(env.get(CONFIG_PARAMS.COMPONENTSROOT));
 let loaded_components = new Map<any, any>();
 let watches_setup;
 let resources;
@@ -142,8 +142,9 @@ export async function loadComponent(
 	provided_loaded_components?: Map,
 	auto_reload?: boolean
 ) {
-	if (loaded_paths.has(folder)) return;
-	loaded_paths.set(folder, true);
+	let resolved_folder = realpathSync(folder);
+	if (loaded_paths.has(resolved_folder)) return;
+	loaded_paths.set(resolved_folder, true);
 	if (provided_loaded_components) loaded_components = provided_loaded_components;
 	try {
 		let config;
@@ -158,7 +159,10 @@ export async function loadComponent(
 		}
 		const harperdb_module = join(folder, 'node_modules', 'harperdb');
 		try {
-			if (isMainThread && (existsSync(harperdb_module) || is_root)) {
+			if (
+				isMainThread &&
+				(is_root || (existsSync(harperdb_module) && realpathSync(PACKAGE_ROOT) !== realpathSync(harperdb_module)))
+			) {
 				// if the app has a harperdb module, we symlink it to the main app so it can be used in the main app (with the running modules)
 				rmSync(harperdb_module, { recursive: true, force: true });
 				if (!existsSync(join(folder, 'node_modules'))) {

@@ -756,7 +756,7 @@ function createTLSSelector(type, options) {
 								if (server) {
 									server.defaultContext = secure_context;
 									server.setSecureContext?.(server, secure_options);
-									harper_logger.info(
+									harper_logger.trace(
 										'Applying default TLS',
 										secure_context.name,
 										'for',
@@ -806,7 +806,9 @@ function createTLSSelector(type, options) {
 			}
 			databases.system.hdb_certificate.subscribe({
 				listener: updateTLS,
+				omitCurrent: true,
 			});
+			updateTLS();
 		}));
 	};
 	return SNICallback;

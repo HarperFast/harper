@@ -7,7 +7,7 @@ describe('Parsing queries', () => {
 	before(function () {});
 	it('Basic AND query', function () {
 		const query = parseQuery('id=1&name=2');
-		const conditions = Array.from(query.conditions);
+		const conditions = Array.from(query);
 		assert.equal(conditions.length, 2);
 		assert.equal(conditions[0][0], 'id');
 		assert.equal(conditions[0][1], '1');

@@ -230,7 +230,7 @@ export function setReplicator(db_name, table, options) {
 				return true;
 			}
 			static available(entry, is_invalidated) {
-				return is_invalidated; // conditionally set this is partial records
+				return !!is_invalidated; // conditionally set this is partial records
 			}
 
 			/**

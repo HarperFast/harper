@@ -222,13 +222,16 @@ export async function startOnMainThread(options) {
 			}
 			const { worker, nodes } = failover_worker_entry;
 			// record which node we are now redirecting to
+			let has_moved_nodes = false;
 			for (let node of existing_worker_entry.nodes) {
 				if (nodes.some((n) => n.name === node.name)) {
 					logger.info(`Disconnected node is already failing over to ${next_node_name} for ${connection.database}`);
 					continue;
 				}
 				nodes.push(node);
+				has_moved_nodes = true;
 			}
+			if (!has_moved_nodes) return;
 			existing_worker_entry.redirectingTo = failover_worker_entry;
 			if (worker) {
 				worker.postMessage({

@@ -81,7 +81,7 @@ async function addRole(role) {
 		);
 	}
 
-	if (!role.id) role.id = uuidV4();
+	if (!role.id) role.id = role.role;
 
 	let insert_object = {
 		operation: 'insert',

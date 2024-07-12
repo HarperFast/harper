@@ -1,3 +1,4 @@
+import assert from 'node:assert';
 export class Echo extends Resource {
 	async connect(incoming_messages) {
 		if (incoming_messages) {

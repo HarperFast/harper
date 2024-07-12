@@ -112,7 +112,8 @@ export class NodeReplicationConnection extends EventEmitter {
 	startTime: number;
 	retryTime = 2000;
 	retries = 0;
-	hasConnected: boolean;
+	isConnected = true; // we start out assuming we will be connected
+	isFinished = false;
 	nodeSubscriptions = [];
 	replicateTablesByDefault: boolean;
 	nodeName: string;
@@ -127,9 +128,9 @@ export class NodeReplicationConnection extends EventEmitter {
 		this.socket = await createWebSocket(this.url);
 
 		let session;
-		logger.info?.('Connecting to ' + this.url);
+		logger.info?.(`Connecting to ${this.url}, db: ${this.databaseName}`);
 		this.socket.on('open', () => {
-			logger.info?.('Connected to ' + this.url);
+			logger.info?.(`Connected to ${this.url}, db: ${this.databaseName}`);
 			this.retries = 0;
 			this.retryTime = 2000;
 			// if we have already connected, we need to send a reconnected event
@@ -138,7 +139,7 @@ export class NodeReplicationConnection extends EventEmitter {
 				database: this.databaseName,
 				url: this.url,
 			});
-			this.hasConnected = true;
+			this.isConnected = true;
 			session = replicateOverWS(
 				this.socket,
 				{
@@ -154,13 +155,23 @@ export class NodeReplicationConnection extends EventEmitter {
 			if (error.code !== 'ECONNREFUSED') {
 				if (error.code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE')
 					logger.error?.(
-						`Can not connect to ${this.url}, the certificate is not trusted, this node needs to be added to the cluster, or a certificate authority needs to be added`
+						`Can not connect to ${this.url}, the certificate provided by ${this.url} is not trusted, this node needs to be added to the cluster, or a certificate authority needs to be added`
 					);
 				else logger.error?.(`Error in connection to ${this.url} due to ${error.message}`);
 			}
 		});
 		this.socket.on('close', (code, reason_buffer) => {
-			session?.disconnected(this.socket.isFinished);
+			// if we get disconnected, notify subscriptions manager so we can reroute through another node
+			if (this.isConnected) {
+				disconnectedFromNode({
+					name: this.nodeName,
+					database: this.databaseName,
+					url: this.url,
+					finished: this.socket.isFinished,
+				});
+				this.isConnected = false;
+			}
+
 			if (this.socket.isFinished) {
 				this.isFinished = true;
 				session?.end();
@@ -210,7 +221,6 @@ export function replicateOverWS(ws, options, authorization) {
 		(p ? 's:' + p : 'c:' + options.url?.slice(-4)) +
 		' ' +
 		Math.random().toString().slice(2, 3);
-	logger.info?.(connection_id, 'registering');
 
 	let encoding_start = 0;
 	let encoding_buffer = Buffer.allocUnsafeSlow(1024);
@@ -1052,12 +1062,13 @@ export function replicateOverWS(ws, options, authorization) {
 
 			const node_id = audit_store && getIdOfRemoteNode(node.name, audit_store);
 			let sequence_entry = table_subscription_to_replicator?.dbisDB?.get([Symbol.for('seq'), node_id]) ?? 1;
-			let start_time;
-			if (connected_node === node) start_time = sequence_entry?.seqId ?? 1;
+			let start_time = sequence_entry?.seqId ?? 1;
 			// if we are connected directly to the node, we start from the last sequence number we received at the top level
-			else {
-				// otherwise we are starting from the last sequence id we received through the proxying node
-				start_time = 1;
+			// TODO: If we become disconnected, and received updates through a proxy, we may want to use that for an updating starting point once we reconnect to the original node
+			if (connected_node !== node) {
+				// indirect connection through a proxying node
+				if (start_time > 5000) start_time -= 5000; // first, decrement the start time to cover some clock drift between nodes (5 seconds)
+				// if there is last sequence id we received through the proxying node that is newer, we can start from there
 				for (let seq_node of sequence_entry?.nodes || []) {
 					if (seq_node.name === node.name) {
 						start_time = seq_node.seqId;
@@ -1177,16 +1188,6 @@ export function replicateOverWS(ws, options, authorization) {
 			// cleanup
 			if (subscription_request) subscription_request.end();
 			if (audit_subscription) audit_subscription.emit('close');
-		},
-		disconnected(finished) {
-			// if we get disconnected, notify subscriptions manager so we can reroute through another node
-			disconnectedFromNode({
-				name: remote_node_name,
-				database: database_name,
-				url: options.url,
-				finished,
-			});
-			// TODO: When we get reconnected, we need to undo this
 		},
 	};
 

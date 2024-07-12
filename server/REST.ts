@@ -9,6 +9,8 @@ import { IterableEventQueue } from '../resources/IterableEventQueue';
 import { transaction } from '../resources/transaction';
 import { Headers } from '../server/serverHelpers/Headers';
 import { generateJsonApi } from '../resources/openApi';
+import { SimpleURLQuery } from '../resources/search';
+import { Context } from '../resources/ResourceInterface';
 
 interface Response {
 	status?: number;
@@ -22,7 +24,7 @@ let http_options = {};
 
 const OPENAPI_DOMAIN = 'openapi';
 
-async function http(request, next_handler) {
+async function http(request: Context & Request, next_handler) {
 	const headers_object = request.headers.asObject;
 	const is_sse = headers_object.accept === 'text/event-stream';
 	const method = is_sse ? 'CONNECT' : request.method;
@@ -33,12 +35,13 @@ async function http(request, next_handler) {
 		const url = request.url.slice(1);
 
 		let resource_request;
-		let resource;
+		let resource: typeof Resource;
 		if (url !== OPENAPI_DOMAIN) {
 			const entry = resources.getMatch(url, is_sse ? 'sse' : 'rest');
 			if (!entry) return next_handler(request); // no resource handler found
 			request.handlerPath = entry.path;
-			resource_request = { url: entry.relativeURL, async: true }; // TODO: We don't want to have to remove the forward slash and then re-add it
+			resource_request = new SimpleURLQuery(entry.relativeURL); // TODO: We don't want to have to remove the forward slash and then re-add it
+			resource_request.async = true;
 			resource = entry.Resource;
 		}
 
@@ -251,7 +254,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 					'ws'
 				);
 				request.authorize = true;
-				const resource_request = { url: entry.relativeURL, async: true }; // TODO: We don't want to have to remove the forward slash and then re-add it
+				const resource_request = new SimpleURLQuery(entry.relativeURL); // TODO: We don't want to have to remove the forward slash and then re-add it
 				const resource = entry.Resource;
 				const response_stream = await transaction(request, () => {
 					return resource.connect(resource_request, incoming_messages, request);

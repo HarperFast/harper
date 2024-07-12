@@ -12,9 +12,7 @@ const PropertiesReader = require('properties-reader');
 const _ = require('lodash');
 const { handleHDBError } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = require('../utility/errors/commonErrors');
-const minimist = require('minimist');
 const { server } = require('../server/Server');
-
 const { DATABASES_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdb_terms;
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
 const CONFIG_INIT_MSG = 'Config successfully initialized';
@@ -56,7 +54,16 @@ module.exports = {
 	addConfig,
 	deleteConfigFromFile,
 	getConfigObj,
+	resolvePath,
 };
+
+function resolvePath(relative_path) {
+	if (relative_path?.startsWith('~/')) {
+		return path.join(hdb_utils.getHomeDir(), relative_path.slice(1));
+	}
+	const env = require('../utility/environment/environmentManager');
+	return path.resolve(env.getHdbBasePath(), relative_path);
+}
 
 /**
  * Builds the HarperDB config file using user inputs and default values from defaultConfig.yaml
@@ -208,9 +215,9 @@ function getConfigValue(param) {
 
 function getConfigFilePath(boot_props_file_path = hdb_utils.getPropsFilePath()) {
 	const cmd_args = hdb_utils.getEnvCliRootPath();
-	if (cmd_args) return path.join(cmd_args, hdb_terms.HDB_CONFIG_FILE);
+	if (cmd_args) return resolvePath(path.join(cmd_args, hdb_terms.HDB_CONFIG_FILE));
 	const hdb_properties = PropertiesReader(boot_props_file_path);
-	return hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY);
+	return resolvePath(hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
 }
 
 /**
