@@ -1032,13 +1032,18 @@ export function replicateOverWS(ws, options, authorization) {
 			throw new Error('Can not make a subscription request on a connection that is already closed');
 		let last_txn_times = new Map();
 		// iterate through all the sequence entries and find the new txn time for each node
-		for (let entry of table_subscription_to_replicator?.dbisDB?.getRange({
-			start: Symbol.for('seq'),
-			end: [Symbol.for('seq'), Buffer.from([0xff])],
-		}) || []) {
-			for (let node of entry.value.nodes || []) {
-				if (node.lastTxnTime > (last_txn_times.get(node.id) ?? 0)) last_txn_times[node.id] = node.lastTxnTime;
+		try {
+			for (let entry of table_subscription_to_replicator?.dbisDB?.getRange({
+				start: Symbol.for('seq'),
+				end: [Symbol.for('seq'), Buffer.from([0xff])],
+			}) || []) {
+				for (let node of entry.value.nodes || []) {
+					if (node.lastTxnTime > (last_txn_times.get(node.id) ?? 0)) last_txn_times[node.id] = node.lastTxnTime;
+				}
 			}
+		} catch (error) {
+			// if the database is closed, just proceed
+			if (!error.message.includes('Can not re')) throw error;
 		}
 		let connected_node = options.connection?.nodeSubscriptions?.[0];
 		receiving_data_from_node_ids = [];
