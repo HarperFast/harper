@@ -571,13 +571,13 @@ async function writeDefaultCertsToFile() {
 	getCertTable();
 	const keys_path = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
 
-	const pub_cert = await certificate_table.get(certificates_terms.CERT_NAME.DEFAULT);
+	const pub_cert = (await getReplicationCert())?.options?.cert;
 	const pub_cert_path = path.join(keys_path, certificates_terms.CERTIFICATE_PEM_NAME);
-	if (!(await fs.exists(pub_cert_path))) await fs.writeFile(pub_cert_path, pub_cert.certificate);
+	if (!(await fs.exists(pub_cert_path))) await fs.writeFile(pub_cert_path, pub_cert);
 
-	const ca_cert = await certificate_table.get(certificates_terms.CERT_NAME['DEFAULT-CA']);
+	const ca_cert = (await getReplicationCertAuth())?.certificate;
 	const ca_cert_path = path.join(keys_path, certificates_terms.CA_PEM_NAME);
-	if (!(await fs.exists(ca_cert_path))) await fs.writeFile(ca_cert_path, ca_cert.certificate);
+	if (!(await fs.exists(ca_cert_path))) await fs.writeFile(ca_cert_path, ca_cert);
 }
 
 async function reviewSelfSignedCert() {
@@ -935,7 +935,7 @@ async function addCertificate(req) {
 	};
 
 	if (!is_authority || (is_authority && existing_private_key_name) || (is_authority && private_key)) {
-		record.private_key_name = (existing_private_key_name ?? sani_name) + '.pem';
+		record.private_key_name = existing_private_key_name ?? sani_name + '.pem';
 	}
 
 	await setCertTable(record);

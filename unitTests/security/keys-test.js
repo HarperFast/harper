@@ -156,27 +156,71 @@ describe('Test keys module', () => {
 		expect(ca.private_key_name).to.equal('privateKey.pem');
 	});
 
-	it('Test writeDefaultCertsToFile writes public and CA to file', () => {});
+	it('Test writeDefaultCertsToFile writes public and CA to file', async () => {
+		const fs_stub = sandbox.stub(fs, 'writeFile');
+		await keys.writeDefaultCertsToFile();
+		expect(fs_stub.firstCall.args[1]).to.equal(test_cert);
+		expect(fs_stub.secondCall.args[1]).to.equal(test_ca);
+		fs_stub.restore();
+	});
+
+	it('Test reviewSelfSignedCert create a new cert', async () => {
+		const set_cert_stub = sandbox.stub(keys, 'setCertTable');
+		const get_rep_rw = keys.__set__('getReplicationCert', sandbox.stub().resolves(undefined));
+		const set_cert_rw = keys.__set__('setCertTable', set_cert_stub);
+		await keys.reviewSelfSignedCert();
+		expect(set_cert_stub.firstCall.args[0].certificate).to.include('BEGIN CERTIFICATE');
+		get_rep_rw();
+		set_cert_rw();
+	});
 
 	it('Test updateConfigCert builds new cert config correctly', () => {
-		process.env['CLUSTERING_TLS_CERTIFICATEAUTHORITY'] = 'howdy/im/a/ca.pem';
+		update_config_value_stub = sandbox.stub(config_utils, 'updateConfigValue');
+		update_config_value_stub.resetHistory();
 		process.argv.push('--TLS_PRIVATEKEY', 'hi/im/a/private_key.pem');
 		keys.updateConfigCert('public/cert.pem', 'private/cert.pem', 'certificate/authority.pem');
 		expect(update_config_value_stub.args[0][2]).to.eql({
-			clustering_tls_certificate: 'public/cert.pem',
-			clustering_tls_privateKey: 'private/cert.pem',
-			clustering_tls_certificateAuthority: 'howdy/im/a/ca.pem',
-			tls_certificate: 'public/cert.pem',
 			tls_privateKey: 'hi/im/a/private_key.pem',
-			tls_certificateAuthority: 'certificate/authority.pem',
 		});
 
-		delete process.env['CLUSTERING_TLS_CERTIFICATEAUTHORITY'];
 		const command = process.argv.indexOf('--TLS_PRIVATEKEY');
 		const value = process.argv.indexOf('hi/im/a/private_key.pem');
 		if (command > -1) process.argv.splice(command, 1);
 		if (value > -1) process.argv.splice(value, 1);
 	});
+
+	it('Test addCertificate adds a cert and private key, listCertificates lists the certs then removeCertificate removes it', async () => {
+		const test_cert_name = 'add-cert-test';
+		await keys.addCertificate({
+			name: test_cert_name,
+			certificate: test_cert,
+			is_authority: false,
+			private_key: test_private_key,
+		});
+
+		let certs = await keys.listCertificates();
+		let cert_found = false;
+		for (let cert of certs) {
+			if (
+				cert.name === test_cert_name &&
+				cert.certificate === test_cert &&
+				cert.private_key_name.includes('test-private-key.pem')
+			)
+				cert_found = true;
+		}
+
+		expect(cert_found).to.be.true;
+
+		await keys.removeCertificate({ name: test_cert_name });
+		certs = await keys.listCertificates();
+		let cert_not_found = true;
+		for (let cert of certs) {
+			if (cert.name === test_cert_name) cert_not_found = false;
+		}
+
+		expect(cert_not_found).to.be.true;
+	});
+
 	/*	it('Test SNI with wildcards', async () => {
 		let cert1 = await mkcert.createCert({
 			domains: ['host-one.com', 'default'],

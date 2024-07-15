@@ -2709,6 +2709,71 @@
 					"response": []
 				},
 				{
+					"name": "Create schema 'radio' node 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Radio schema created', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"database 'radio' successfully created\");",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"create_schema\",\n    \"schema\": \"radio\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "Create schema 'listeners' node 2",
 					"event": [
 						{
@@ -2766,6 +2831,71 @@
 							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Create schema 'listeners' node 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Radio schema created', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"database 'listeners' successfully created\");",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"create_schema\",\n    \"schema\": \"listeners\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE1_HOST}}"
 							],
 							"port": "{{HDB_PORT}}"
 						}
@@ -2837,6 +2967,71 @@
 					"response": []
 				},
 				{
+					"name": "Create table 'radio.genre' node 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Genre table created', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"table 'radio.genre' successfully created.\");",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"create_table\",\n    \"schema\": \"radio\",\n    \"table\": \"genre\",\n    \"hash_attribute\": \"id\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "Create table 'radio.artists' node 1",
 					"event": [
 						{
@@ -2900,6 +3095,70 @@
 					"response": []
 				},
 				{
+					"name": "Create table 'radio.artists' node 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Artists table created', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"table 'radio.artists' successfully created.\");",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"create_table\",\n    \"schema\": \"radio\",\n    \"table\": \"artists\",\n    \"hash_attribute\": \"id\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "Create table 'listeners.address' node 2",
 					"event": [
 						{
@@ -2956,6 +3215,70 @@
 							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Create table 'listeners.address' node 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Listeners table created', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"table 'listeners.address' successfully created.\");",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"create_table\",\n    \"schema\": \"listeners\",\n    \"table\": \"address\",\n    \"hash_attribute\": \"id\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE1_HOST}}"
 							],
 							"port": "{{HDB_PORT}}"
 						}
@@ -10475,6 +10798,71 @@
 					"response": []
 				},
 				{
+					"name": "Create table 'incredible_bulk.pre_con1' node 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('pre_con1 table created', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"table 'incredible_bulk.pre_con1' successfully created.\");",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"create_table\",\n    \"schema\": \"incredible_bulk\",\n    \"table\": \"pre_con1\",\n    \"hash_attribute\": \"id\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "Create table 'incredible_bulk.pre_con2' node 1",
 					"event": [
 						{
@@ -13593,7 +13981,7 @@
 					"response": []
 				},
 				{
-					"name": "Create schema 'four' node 2",
+					"name": "Create table 'frog' node 1",
 					"event": [
 						{
 							"listen": "test",
@@ -13603,13 +13991,14 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('four schema created', () => {",
+									"pm.test('frog table created', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"database 'four' successfully created\");",
+									"    pm.expect(response.message).to.equal(\"table 'four.frog' successfully created.\");",
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -13638,7 +14027,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"create_schema\",\n    \"schema\": \"four\"\n}",
+							"raw": "{\n    \"operation\": \"create_table\",\n    \"schema\": \"four\",\n    \"table\": \"frog\",\n    \"hash_attribute\": \"name\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -13646,74 +14035,10 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
 							"protocol": "https",
 							"host": [
-								"{{NODE2_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Create schema 'four' node 4",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test('four schema created', () => {",
-									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"database 'four' successfully created\");",
-									"});",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"create_schema\",\n    \"schema\": \"four\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
-							"host": [
-								"{{NODE4_HOST}}"
+								"{{NODE1_HOST}}"
 							],
 							"port": "{{HDB_PORT}}"
 						}
@@ -13785,6 +14110,201 @@
 					"response": []
 				},
 				{
+					"name": "Create table 'frog' node 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('frog table created', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"table 'four.frog' successfully created.\");",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"create_table\",\n    \"schema\": \"four\",\n    \"table\": \"frog\",\n    \"hash_attribute\": \"name\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE3_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Create table 'frog' node 4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('frog table created', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"table 'four.frog' successfully created.\");",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"create_table\",\n    \"schema\": \"four\",\n    \"table\": \"frog\",\n    \"hash_attribute\": \"name\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE4_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Create table 'bird' node 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('bird table created', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"table 'four.bird' successfully created.\");",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"create_table\",\n    \"schema\": \"four\",\n    \"table\": \"bird\",\n    \"hash_attribute\": \"name\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
 					"name": "Create table 'bird' node 2",
 					"event": [
 						{
@@ -13842,6 +14362,71 @@
 							"protocol": "https",
 							"host": [
 								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Create table 'bird' node 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('bird table created', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"table 'four.bird' successfully created.\");",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"create_table\",\n    \"schema\": \"four\",\n    \"table\": \"bird\",\n    \"hash_attribute\": \"name\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE3_HOST}}"
 							],
 							"port": "{{HDB_PORT}}"
 						}
@@ -14591,13 +15176,13 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test('Status code is 500', () => {",
-									"    pm.response.to.have.status(500);",
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
 									"});",
 									"",
 									"pm.test('Confirm bird insert not on node 3', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.error).to.equal(\"unknown column type\");",
+									"    pm.expect(response).to.eql([]);",
 									"});"
 								],
 								"type": "text/javascript",
@@ -14630,7 +15215,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select name, type from four.bird\"\n}\n",
+							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select * from four.bird\"\n}\n",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -14655,16 +15240,17 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test('Status code is 500', () => {",
-									"    pm.response.to.have.status(500);",
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
 									"});",
 									"",
 									"pm.test('Confirm bird insert not on node 4', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.error).to.equal(\"unknown column type\");",
+									"    pm.expect(response).to.eql([]);",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -14693,7 +15279,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select name, type from four.bird\"\n}\n",
+							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select * from four.bird\"\n}\n",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -14854,13 +15440,13 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test('Status code is 500', () => {",
-									"    pm.response.to.have.status(500);",
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
 									"});",
 									"",
 									"pm.test('Confirm frog insert not on node 4', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.error).to.equal(\"unknown column type\");",
+									"    pm.expect(response).to.eql([]);",
 									"});"
 								],
 								"type": "text/javascript",
@@ -14893,7 +15479,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select name, type from four.frog\"\n}\n",
+							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select * from four.frog\"\n}\n",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -15117,13 +15703,13 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test('Status code is 500', () => {",
-									"    pm.response.to.have.status(500);",
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
 									"});",
 									"",
 									"pm.test('Confirm bird insert not on node 3', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.error).to.equal(\"unknown column type\");",
+									"    pm.expect(response).to.eql([]);",
 									"});"
 								],
 								"type": "text/javascript",
@@ -15156,7 +15742,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select name, type from four.bird\"\n}\n",
+							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select * from four.bird\"\n}\n",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -15463,16 +16049,17 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test('Status code is 500', () => {",
-									"    pm.response.to.have.status(500);",
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
 									"});",
 									"",
 									"pm.test('Confirm frog insert not on node 3', () => {",
 									"    const response = pm.response.json();",
-									"    pm.expect(response.error).to.equal(\"unknown column type\");",
+									"    pm.expect(response).to.eql([]);",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -15501,7 +16088,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select name, type from four.frog\"\n}\n",
+							"raw": "{\n\t\"operation\":\"sql\",\n\t\"sql\":\"select * from four.frog\"\n}\n",
 							"options": {
 								"raw": {
 									"language": "json"
