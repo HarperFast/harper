@@ -341,7 +341,7 @@ export function makeTable(options) {
 											// the key for tracking the sequence ids and txn times received from this node
 											const seq_key = [Symbol.for('seq'), event.remoteNodeIds[0]];
 											let existing_seq = dbis_db.get(seq_key);
-											let node_states = existing?.nodes;
+											let node_states = existing_seq?.nodes;
 											if (!node_states) {
 												// if we don't have a list of nodes, we need to create one, with the main one using the existing seqId
 												node_states = [];

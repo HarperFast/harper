@@ -114,19 +114,23 @@ export function start(options) {
 				let contexts_to_update = new Set(ws_server.secureContexts.values());
 				if (ws_server.defaultContext) contexts_to_update.add(ws_server.defaultContext);
 				for (let context of contexts_to_update) {
-					let ca = Array.from(replication_certificate_authorities);
-					// add the replication CAs (and root CAs) to any existing CAs for the context
-					if (context.options.ca) ca.push(...context.options.ca);
-					const tls_options = // make sure we use the overriden tls.createSecureContext
-						// create a new security context with the extra CAs
-						Object.assign({}, context.options, {
-							ca,
-						});
-					context.replicationContext = tls.createSecureContext(tls_options);
-					if (context === ws_server.defaultContext) {
-						// there is no SNI for ip addresses so we forced to replace the
-						// default context even though it is slower
-						ws_server.setSecureContext(tls_options);
+					try {
+						let ca = Array.from(replication_certificate_authorities);
+						// add the replication CAs (and root CAs) to any existing CAs for the context
+						if (context.options.ca) ca.push(...context.options.ca);
+						const tls_options = // make sure we use the overriden tls.createSecureContext
+							// create a new security context with the extra CAs
+							Object.assign({}, context.options, {
+								ca,
+							});
+						context.replicationContext = tls.createSecureContext(tls_options);
+						if (context === ws_server.defaultContext) {
+							// there is no SNI for ip addresses so we forced to replace the
+							// default context even though it is slower
+							ws_server.setSecureContext(tls_options);
+						}
+					} catch (error) {
+						logger.error('Error creating replication TLS config', error);
 					}
 				}
 			};

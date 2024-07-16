@@ -89,7 +89,7 @@ export async function setNode(req: object) {
 			csr = await createCsr();
 			hdb_logger.info('Sending CSR to target node:', url);
 		} else {
-			cert_auth = ca_record;
+			cert_auth = ca_record?.certificate;
 			hdb_logger.info('Sending CA named', ca_record?.name, 'to target node', url);
 		}
 	}
@@ -141,7 +141,7 @@ export async function setNode(req: object) {
 		hdb_logger.info('CSR response received from node:', url, 'saving certificate and CA in hdb_certificate');
 
 		await setCertTable({
-			name: pki.certificateFromPem(target_node_response.ca_certificate).issuer.getField('CN').value,
+			name: pki.certificateFromPem(target_node_response.signingCA).issuer.getField('CN').value,
 			certificate: target_node_response.signingCA,
 			is_authority: true,
 		});
@@ -217,9 +217,6 @@ export async function addNodeBack(req) {
 			ca: rep_ca?.certificate,
 			replicates: true,
 		});
-
-		const rep_ca = await getReplicationCertAuth();
-		certs.ca_certificate = rep_ca?.certificate;
 	}
 	await ensureNode(req.node_name, node_record);
 	certs.nodeName = getThisNodeName();
