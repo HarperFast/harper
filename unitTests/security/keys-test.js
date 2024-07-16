@@ -73,8 +73,9 @@ describe('Test keys module', () => {
 		// update_config_value_stub = sandbox.stub(config_utils, 'updateConfigValue');
 	});
 
-	afterEach(() => {
+	afterEach(async () => {
 		sandbox.restore();
+		await fs.remove(test_dir);
 	});
 
 	it('Test loadCertificates loads certs from config file', async () => {
