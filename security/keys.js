@@ -34,14 +34,12 @@ Object.assign(exports, {
 	loadCertificates,
 	reviewSelfSignedCert,
 	createTLSSelector,
-	verifyCert,
 	listCertificates,
 	addCertificate,
 	removeCertificate,
 	writeDefaultCertsToFile,
 	generateCertsKeys,
 	getReplicationCert,
-	sanitizeName,
 	getReplicationCertAuth,
 });
 
@@ -117,15 +115,10 @@ async function getReplicationCert() {
 	};
 	await SNICallback.initialize(secure_target);
 	const cert = secure_target.secureContexts.get(getThisNodeName());
+	if (!cert) return;
 	const cert_parsed = new X509Certificate(cert.options.cert);
 	cert.cert_parsed = cert_parsed;
 	cert.issuer = cert_parsed.issuer;
-	cert.hostnames = cert_parsed.subjectAltName
-		? cert_parsed.subjectAltName.split(',').map((part) => {
-				let colon_index = part.indexOf(':');
-				return part.slice(colon_index + 1);
-		  })
-		: [cert_parsed.subject.match(/CN=(.*)/)?.[1]];
 
 	return cert;
 }
@@ -135,7 +128,7 @@ async function getReplicationCertAuth() {
 	const cert_pem = (await getReplicationCert()).options.cert;
 	const rep_cert = new X509Certificate(cert_pem);
 	const ca_name = rep_cert.issuer.match(/CN=(.*)/)?.[1];
-	return certificate_table.get(sanitizeName(ca_name));
+	return certificate_table.get(ca_name);
 }
 
 let configured_certs_loaded;
@@ -192,7 +185,7 @@ function loadCertificates() {
 								const x509_cert = new X509Certificate(certificate_pem);
 								let cert_cn;
 								try {
-									cert_cn = x509_cert.subject.split('\n')[0].slice(3);
+									cert_cn = extractCommonName(x509_cert);
 								} catch (err) {
 									hdb_logger.error('error extracting common name from certificate', err);
 									return;
@@ -202,8 +195,6 @@ function loadCertificates() {
 									hdb_logger.error('error extracting common name from certificate');
 									return;
 								}
-
-								cert_cn = sanitizeName(cert_cn);
 
 								// If a record already exists for cert check to see who is newer, cert record or cert file.
 								// If cert file is newer, add it to table
@@ -433,20 +424,21 @@ async function signCertificate(req) {
 
 async function createCertificateTable(cert, ca_cert) {
 	await setCertTable({
-		name: sanitizeName(getThisNodeName()),
+		name: getThisNodeName(),
 		uses: ['https', 'operations', 'wss'],
 		certificate: cert,
 		private_key_name: 'privateKey.pem',
 		is_authority: false,
+		is_self_signed: true,
 	});
 
 	await setCertTable({
-		name: sanitizeName(ca_cert.subject.getField('CN').value),
+		name: ca_cert.subject.getField('CN').value,
 		uses: ['https', 'operations', 'wss'],
 		certificate: pki.certificateToPem(ca_cert),
 		private_key_name: 'privateKey.pem',
 		is_authority: true,
-		is_default: true,
+		is_self_signed: true,
 	});
 }
 
@@ -463,16 +455,6 @@ async function setCertTable(cert_record) {
 
 	getCertTable();
 	await certificate_table.patch(cert_record);
-}
-
-function verifyCert(cert, ca) {
-	try {
-		const ca_store = pki.createCaStore([ca]);
-		return pki.verifyCertificateChain(ca_store, [cert]);
-	} catch (err) {
-		hdb_logger.info('verifying cert:', err);
-		return false;
-	}
 }
 
 async function generateKeys() {
@@ -524,7 +506,10 @@ async function generateCertificates(private_key, public_key, ca_cert) {
 
 async function getHDBCertAuthority() {
 	const records = certificate_table.search({
-		conditions: [{ attribute: 'is_default', comparator: 'equals', value: true }],
+		conditions: [
+			{ attribute: 'is_self_signed', comparator: 'equals', value: true },
+			{ attribute: 'is_authority', comparator: 'equals', value: true },
+		],
 	});
 
 	let result = [];
@@ -585,28 +570,26 @@ async function writeDefaultCertsToFile() {
 	getCertTable();
 	const keys_path = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
 
-	const pub_cert = await certificate_table.get(certificates_terms.CERT_NAME.DEFAULT);
+	const pub_cert = (await getReplicationCert())?.options?.cert;
 	const pub_cert_path = path.join(keys_path, certificates_terms.CERTIFICATE_PEM_NAME);
-	if (!(await fs.exists(pub_cert_path))) await fs.writeFile(pub_cert_path, pub_cert.certificate);
+	if (!(await fs.exists(pub_cert_path))) await fs.writeFile(pub_cert_path, pub_cert);
 
-	const ca_cert = await certificate_table.get(certificates_terms.CERT_NAME['DEFAULT-CA']);
+	const ca_cert = (await getReplicationCertAuth())?.certificate;
 	const ca_cert_path = path.join(keys_path, certificates_terms.CA_PEM_NAME);
-	if (!(await fs.exists(ca_cert_path))) await fs.writeFile(ca_cert_path, ca_cert.certificate);
-}
-
-async function getSelfSignedCert() {
-	loadCertificates();
-	getCertTable();
-	return certificate_table.get(sanitizeName(getThisNodeName()));
+	if (!(await fs.exists(ca_cert_path))) await fs.writeFile(ca_cert_path, ca_cert);
 }
 
 async function reviewSelfSignedCert() {
 	// Clear any cached node name var
 	clearThisNodeName();
-	const existing_cert = await getSelfSignedCert();
+	loadCertificates();
+	getCertTable();
+	const existing_cert = await getReplicationCert();
 	if (!existing_cert) {
-		const cert_name = sanitizeName(getThisNodeName());
-		hdb_logger.info(`Creating new HarperDB self singed cert named: ${cert_name}`);
+		const cert_name = getThisNodeName();
+		hdb_logger.info(
+			`A suitable replication certificate was not found, creating new HarperDB self singed cert named: ${cert_name}`
+		);
 		const hdb_ca = pki.certificateFromPem((await getHDBCertAuthority()).certificate);
 		const public_key = hdb_ca.publicKey;
 		const private_key = await fs.readFile(
@@ -733,17 +716,7 @@ function createTLSSelector(type, options) {
 							else quality = is_operations ? 4 : 0;
 
 							let private_key = private_keys.get(cert.private_key_name);
-							if (
-								!private_key &&
-								cert.private_key_name &&
-								(await fs.exists(
-									path.join(
-										env_manager.get(CONFIG_PARAMS.ROOTPATH),
-										hdb_terms.LICENSE_KEY_DIR_NAME,
-										cert.private_key_name
-									)
-								))
-							) {
+							if (!private_key && cert.private_key_name) {
 								private_key = await fs.readFile(
 									path.join(
 										env_manager.get(CONFIG_PARAMS.ROOTPATH),
@@ -752,6 +725,7 @@ function createTLSSelector(type, options) {
 									)
 								);
 							}
+
 							const certificate = cert.certificate;
 							if (!private_key || !certificate) {
 								throw new Error('Missing private key or certificate for secure server');
@@ -763,6 +737,7 @@ function createTLSSelector(type, options) {
 								cert: certificate,
 								key: private_key,
 								key_file: cert.private_key_name,
+								is_self_signed: cert.is_self_signed,
 							};
 							harper_logger.error('assigning secure options', server?.ports, ca_certs.size);
 							if (server) secure_options.sessionIdContext = server.sessionIdContext;
@@ -801,7 +776,7 @@ function createTLSSelector(type, options) {
 											return part.slice(colon_index + 1);
 									  })
 									: // finally we fall back to the common name
-									  [cert_parsed.subject.match(/CN=(.*)/)?.[1]]);
+									  [extractCommonName(cert_parsed)]);
 							if (!Array.isArray(hostnames)) hostnames = [hostnames];
 							for (let hostname of hostnames) {
 								if (hostname) {
@@ -931,7 +906,7 @@ async function addCertificate(req) {
 	let cert_cn;
 	if (!name) {
 		try {
-			cert_cn = x509_cert.subject.split('\n')[0].slice(3);
+			cert_cn = extractCommonName(x509_cert);
 		} catch (err) {
 			hdb_logger.error(err);
 		}
@@ -951,7 +926,7 @@ async function addCertificate(req) {
 	}
 
 	const record = {
-		name: sani_name,
+		name: name ?? cert_cn,
 		certificate,
 		is_authority,
 		hosts: req.hosts,
@@ -959,7 +934,7 @@ async function addCertificate(req) {
 	};
 
 	if (!is_authority || (is_authority && existing_private_key_name) || (is_authority && private_key)) {
-		record.private_key_name = (existing_private_key_name ?? sani_name) + '.pem';
+		record.private_key_name = existing_private_key_name ?? sani_name + '.pem';
 	}
 
 	await setCertTable(record);
@@ -1008,4 +983,8 @@ async function removeCertificate(req) {
 
 	await certificate_table.delete(name);
 	return 'Successfully removed ' + name;
+}
+
+function extractCommonName(cert_obj) {
+	return cert_obj.subject.match(/CN=(.*)/)?.[1];
 }

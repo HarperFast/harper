@@ -181,7 +181,7 @@
         "attribute": "details"
       },
       {
-        "attribute": "is_default"
+        "attribute": "is_self_signed"
       },
       {
         "attribute": "__updatedtime__"

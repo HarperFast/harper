@@ -3,7 +3,6 @@ import {
 	setCertTable,
 	signCertificate,
 	getReplicationCert,
-	sanitizeName,
 	getReplicationCertAuth,
 } from '../../security/keys';
 import { validateBySchema } from '../../validation/validationWrapper';
@@ -84,7 +83,8 @@ export async function setNode(req: object) {
 
 		rep = await getReplicationCert();
 		const ca_record = await getReplicationCertAuth();
-		if (rep.issuer.includes('HarperDB-Certificate-Authority') || !rep.hostnames.includes(getThisNodeName())) {
+		if (!rep) throw new Error('Unable to find a certificate to use for replication');
+		if (rep.options.is_self_signed) {
 			// Create the certificate signing request that will be sent to the other node
 			csr = await createCsr();
 			hdb_logger.info('Sending CSR to target node:', url);
@@ -141,18 +141,19 @@ export async function setNode(req: object) {
 		hdb_logger.info('CSR response received from node:', url, 'saving certificate and CA in hdb_certificate');
 
 		await setCertTable({
-			name: sanitizeName(pki.certificateFromPem(target_node_response.signingCA).issuer.getField('CN').value),
+			name: pki.certificateFromPem(target_node_response.ca_certificate).issuer.getField('CN').value,
 			certificate: target_node_response.signingCA,
 			is_authority: true,
 		});
 
 		if (target_node_response.certificate) {
 			await setCertTable({
-				name: sanitizeName(getThisNodeName()),
+				name: getThisNodeName(),
 				uses: ['https', 'operations', 'wss'],
 				certificate: target_node_response.certificate,
 				private_key_name: rep?.options?.key_file,
 				is_authority: false,
+				is_self_signed: false,
 			});
 		}
 		cert_auth = target_node_response.signingCA;
@@ -216,6 +217,9 @@ export async function addNodeBack(req) {
 			ca: rep_ca?.certificate,
 			replicates: true,
 		});
+
+		const rep_ca = await getReplicationCertAuth();
+		certs.ca_certificate = rep_ca?.certificate;
 	}
 	await ensureNode(req.node_name, node_record);
 	certs.nodeName = getThisNodeName();
