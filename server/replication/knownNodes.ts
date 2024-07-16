@@ -59,7 +59,7 @@ export function shouldReplicateToNode(node, database_name) {
 	return (
 		((node.replicates === true || node.replicates?.sends) &&
 			databases[database_name] &&
-			getHDBNodeTable().primaryStore.get(getThisNodeName())?.replicates !== false) ||
+			getHDBNodeTable().primaryStore.get(getThisNodeName())?.replicates) ||
 		node.subscriptions?.some((sub) => (sub.database || sub.schema) === database_name && sub.subscribe)
 	);
 }

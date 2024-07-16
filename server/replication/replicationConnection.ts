@@ -777,125 +777,130 @@ export function replicateOverWS(ws, options, authorization) {
 							if (startTime < current_sequence_id) current_sequence_id = startTime;
 						}
 
-						(when_subscribed_to_hdb_nodes || Promise.resolve()).then(async () => {
-							table_subscription_to_replicator = await table_subscription_to_replicator;
-							audit_store = table_subscription_to_replicator.auditStore;
-							table_by_id = table_subscription_to_replicator.tableById.map(tableToTableEntry);
-							subscribed_node_ids = [];
-							for (let { name, startTime } of node_subscriptions) {
-								const local_id = getIdOfRemoteNode(name, audit_store);
-								subscribed_node_ids[local_id] = startTime;
-							}
-
-							sendDBSchema(database_name);
-							if (!schema_update_listener) {
-								schema_update_listener = onUpdatedTable((table) => {
-									if (table.databaseName === database_name) {
-										sendDBSchema(database_name);
-									}
-								});
-								db_removal_listener = onRemovedDB((db) => {
-									// I guess we if a database is removed then we disconnect. This is kind of weird situation for replication,
-									// as the replication system will try to preserve consistency between nodes and their databases, and
-									// it is unclear what to do if a database is removed and what that means for consistency seekingd
-									if (db === database_name) {
-										ws.send(encode([DISCONNECT]));
-										close();
-									}
-								});
-								ws.on('close', () => {
-									schema_update_listener?.remove();
-									db_removal_listener?.remove();
-								});
-							}
-							// Send a message to the remote node with the node id mapping, indicating how each node name is mapped to a short id
-							// and a list of the node names that are subscribed to this node
-							ws.send(
-								encode([
-									NODE_NAME_TO_ID_MAP,
-									exportIdMapping(table_subscription_to_replicator.auditStore),
-									node_subscriptions.map(({ name }) => name),
-								])
-							);
-
-							let is_first = true;
-							do {
-								// We run subscriptions as a loop where we can alternate between our two message delivery modes:
-								// The catch-up pull mode where we are iterating a query since the last start time
-								// and sending out the results while applying back-pressure from the socket.
-								// Then we switch to the real-time push subscription mode where we are listening for updates
-								// and sending them out immediately as we get them. If/when this mode gets overloaded, we switch back to
-								// the catch-up mode.
-								if (!isFinite(current_sequence_id)) {
-									logger.warn?.('Invalid sequence id ' + current_sequence_id);
-									close(1008, 'Invalid sequence id' + current_sequence_id);
+						(when_subscribed_to_hdb_nodes || Promise.resolve())
+							.then(async () => {
+								table_subscription_to_replicator = await table_subscription_to_replicator;
+								audit_store = table_subscription_to_replicator.auditStore;
+								table_by_id = table_subscription_to_replicator.tableById.map(tableToTableEntry);
+								subscribed_node_ids = [];
+								for (let { name, startTime } of node_subscriptions) {
+									const local_id = getIdOfRemoteNode(name, audit_store);
+									subscribed_node_ids[local_id] = startTime;
 								}
-								let queued_entries;
-								if (is_first) {
-									is_first = false;
-									let last_removed = getLastRemoved(audit_store);
-									if (!(last_removed <= current_sequence_id)) {
-										// this means the audit log doesn't extend far enough back, so we need to replicate all the tables
-										// TODO: This should only be done on a single node, we don't want full table replication from all the
-										// nodes that are connected to this one.
-										let last_sequence_id = current_sequence_id;
-										for (let table_name in tables) {
-											const table = tables[table_name];
-											for (const entry of table.primaryStore.getRange({
-												snapshot: false,
-											})) {
-												if (closed) return;
-												logger.info?.(
-													connection_id,
-													'Copying record from',
-													database_name,
-													table_name,
-													entry.key,
-													entry.localTime
-												);
-												if (entry.localTime >= current_sequence_id) {
-													last_sequence_id = Math.max(entry.localTime, last_sequence_id);
-													queued_entries = true;
-													sendAuditRecord(null, entry, entry.localTime);
+
+								sendDBSchema(database_name);
+								if (!schema_update_listener) {
+									schema_update_listener = onUpdatedTable((table) => {
+										if (table.databaseName === database_name) {
+											sendDBSchema(database_name);
+										}
+									});
+									db_removal_listener = onRemovedDB((db) => {
+										// I guess if a database is removed then we disconnect. This is kind of weird situation for replication,
+										// as the replication system will try to preserve consistency between nodes and their databases, and
+										// it is unclear what to do if a database is removed and what that means for consistency seekingd
+										if (db === database_name) {
+											ws.send(encode([DISCONNECT]));
+											close();
+										}
+									});
+									ws.on('close', () => {
+										schema_update_listener?.remove();
+										db_removal_listener?.remove();
+									});
+								}
+								// Send a message to the remote node with the node id mapping, indicating how each node name is mapped to a short id
+								// and a list of the node names that are subscribed to this node
+								ws.send(
+									encode([
+										NODE_NAME_TO_ID_MAP,
+										exportIdMapping(table_subscription_to_replicator.auditStore),
+										node_subscriptions.map(({ name }) => name),
+									])
+								);
+
+								let is_first = true;
+								do {
+									// We run subscriptions as a loop where we can alternate between our two message delivery modes:
+									// The catch-up pull mode where we are iterating a query since the last start time
+									// and sending out the results while applying back-pressure from the socket.
+									// Then we switch to the real-time push subscription mode where we are listening for updates
+									// and sending them out immediately as we get them. If/when this mode gets overloaded, we switch back to
+									// the catch-up mode.
+									if (!isFinite(current_sequence_id)) {
+										logger.warn?.('Invalid sequence id ' + current_sequence_id);
+										close(1008, 'Invalid sequence id' + current_sequence_id);
+									}
+									let queued_entries;
+									if (is_first && !closed) {
+										is_first = false;
+										let last_removed = getLastRemoved(audit_store);
+										if (!(last_removed <= current_sequence_id)) {
+											// this means the audit log doesn't extend far enough back, so we need to replicate all the tables
+											// TODO: This should only be done on a single node, we don't want full table replication from all the
+											// nodes that are connected to this one.
+											let last_sequence_id = current_sequence_id;
+											for (let table_name in tables) {
+												const table = tables[table_name];
+												for (const entry of table.primaryStore.getRange({
+													snapshot: false,
+												})) {
+													if (closed) return;
+													logger.info?.(
+														connection_id,
+														'Copying record from',
+														database_name,
+														table_name,
+														entry.key,
+														entry.localTime
+													);
+													if (entry.localTime >= current_sequence_id) {
+														last_sequence_id = Math.max(entry.localTime, last_sequence_id);
+														queued_entries = true;
+														sendAuditRecord(null, entry, entry.localTime);
+													}
 												}
 											}
+											current_sequence_id = last_sequence_id;
 										}
-										current_sequence_id = last_sequence_id;
 									}
-								}
-								for (const { key, value: audit_entry } of audit_store.getRange({
-									start: (current_sequence_id || 1) + 1 / 4096, // TODO: Once exclusive start bug is fixed, remove the +1/4096
-									//exclusiveStart: true,
-									snapshot: false, // don't want to use a snapshot, and we want to see new entries
-								})) {
-									if (closed) return;
-									const audit_record = readAuditEntry(audit_entry);
-									sendAuditRecord(null, audit_record, key);
-									// wait if there is back-pressure
-									if (ws._socket.writableNeedDrain) {
-										await new Promise((resolve) => ws._socket.once('drain', resolve));
+									for (const { key, value: audit_entry } of audit_store.getRange({
+										start: (current_sequence_id || 1) + 1 / 4096, // TODO: Once exclusive start bug is fixed, remove the +1/4096
+										//exclusiveStart: true,
+										snapshot: false, // don't want to use a snapshot, and we want to see new entries
+									})) {
+										if (closed) return;
+										const audit_record = readAuditEntry(audit_entry);
+										sendAuditRecord(null, audit_record, key);
+										// wait if there is back-pressure
+										if (ws._socket.writableNeedDrain) {
+											await new Promise((resolve) => ws._socket.once('drain', resolve));
+										}
+										//await rest(); // possibly yield occasionally for fairness
+										audit_subscription.startTime = key; // update so don't double send
+										queued_entries = true;
 									}
-									//await rest(); // possibly yield occasionally for fairness
-									audit_subscription.startTime = key; // update so don't double send
-									queued_entries = true;
-								}
-								if (queued_entries)
-									sendAuditRecord(
-										null,
-										{
-											type: 'end_txn',
-										},
-										current_sequence_id
-									);
+									if (queued_entries)
+										sendAuditRecord(
+											null,
+											{
+												type: 'end_txn',
+											},
+											current_sequence_id
+										);
 
-								let listeners = table_update_listeners.get(first_table);
-								if (!listeners) table_update_listeners.set(first_table, (listeners = []));
-								listeners.push((table) => {
-									// TODO: send table update
-								});
-								await whenNextTransaction(audit_store);
-							} while (!closed);
-						});
+									let listeners = table_update_listeners.get(first_table);
+									if (!listeners) table_update_listeners.set(first_table, (listeners = []));
+									listeners.push((table) => {
+										// TODO: send table update
+									});
+									await whenNextTransaction(audit_store);
+								} while (!closed);
+							})
+							.catch((error) => {
+								logger.error?.(connection_id, 'Error handling subscription to node', error);
+								close(1008, 'Error handling subscription to node');
+							});
 						break;
 				}
 				return;
@@ -1027,13 +1032,18 @@ export function replicateOverWS(ws, options, authorization) {
 			throw new Error('Can not make a subscription request on a connection that is already closed');
 		let last_txn_times = new Map();
 		// iterate through all the sequence entries and find the new txn time for each node
-		for (let entry of table_subscription_to_replicator?.dbisDB?.getRange({
-			start: Symbol.for('seq'),
-			end: [Symbol.for('seq'), Buffer.from([0xff])],
-		}) || []) {
-			for (let node of entry.value.nodes || []) {
-				if (node.lastTxnTime > (last_txn_times.get(node.id) ?? 0)) last_txn_times[node.id] = node.lastTxnTime;
+		try {
+			for (let entry of table_subscription_to_replicator?.dbisDB?.getRange({
+				start: Symbol.for('seq'),
+				end: [Symbol.for('seq'), Buffer.from([0xff])],
+			}) || []) {
+				for (let node of entry.value.nodes || []) {
+					if (node.lastTxnTime > (last_txn_times.get(node.id) ?? 0)) last_txn_times[node.id] = node.lastTxnTime;
+				}
 			}
+		} catch (error) {
+			// if the database is closed, just proceed
+			if (!error.message.includes('Can not re')) throw error;
 		}
 		let connected_node = options.connection?.nodeSubscriptions?.[0];
 		receiving_data_from_node_ids = [];

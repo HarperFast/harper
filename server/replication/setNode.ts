@@ -53,8 +53,8 @@ export async function setNode(req: object) {
 				operation: OPERATIONS_ENUM.REMOVE_NODE_BACK,
 				name:
 					record?.subscriptions?.length > 0
-						? getThisNodeName() // if we are doing a removal with explicit subscriptions, we only want to the other node to remove the record for this node
-						: node_record_id, // if we are doing a removal with full replication, we want the other node to mark its own record as non-replicating
+						? getThisNodeName() // if we are doing a removal with explicit subscriptions, we want to the other node to remove the record for this node
+						: node_record_id, // if we are doing a removal with full replication, we want the other node to remove its own record to indicate it is not replicating
 			},
 			undefined
 		).catch((err) => {
@@ -158,7 +158,7 @@ export async function setNode(req: object) {
 		}
 	}
 
-	const node_record = { url, ca: target_node_response.ca_certificate };
+	const node_record = { url, ca: target_node_response.usingCA };
 	if (req.node_name) node_record.name = req.node_name;
 	if (req.subscriptions) node_record.subscriptions = req.subscriptions;
 	else node_record.replicates = true;
@@ -166,7 +166,7 @@ export async function setNode(req: object) {
 	if (node_record.replicates) {
 		await ensureNode(getThisNodeName(), {
 			url: this_url,
-			ca: target_node_response.ca_certificate,
+			ca: await getReplicationCertAuth()?.certificate,
 			replicates: true,
 		});
 	}
@@ -198,7 +198,7 @@ export async function addNodeBack(req) {
 		origin_ca = req?.cert_auth?.certificate;
 		hdb_logger.info('addNodeBack received CA name:', req.cert_auth?.name, 'from node:', req.url);
 	} else {
-		origin_ca = certs.ca_certificate;
+		origin_ca = certs.signingCA;
 		hdb_logger.info(
 			'addNodeBack received CSR from node:',
 			req.url,
@@ -209,10 +209,11 @@ export async function addNodeBack(req) {
 	const node_record = { url: req.url, ca: origin_ca };
 	if (req.subscriptions) node_record.subscriptions = req.subscriptions;
 	else node_record.replicates = true;
+	const rep_ca = await getReplicationCertAuth();
 	if (node_record.replicates) {
 		await ensureNode(getThisNodeName(), {
 			url: getThisNodeUrl(),
-			ca: certs.ca_certificate,
+			ca: rep_ca?.certificate,
 			replicates: true,
 		});
 
@@ -223,6 +224,8 @@ export async function addNodeBack(req) {
 	certs.nodeName = getThisNodeName();
 
 	hdb_logger.info('addNodeBack responding to:', req.url);
+	certs.usingCA = rep_ca?.certificate; // in addition to the signed CA, we need to return the CA that is being used for the active certificate
+	hdb_logger.info('addNodeBack responding to:', req.url, 'with CA named:', rep_ca?.name);
 
 	return certs;
 }
@@ -234,14 +237,8 @@ export async function addNodeBack(req) {
 export async function removeNodeBack(req) {
 	hdb_logger.trace('removeNodeBack received request:', req);
 	const hdb_nodes = getHDBNodeTable();
-	if (req.node == getThisNodeName()) {
-		// Mark this node as not replicating. Deleting a self node doesn't work well with situations where
-		// replication is defined declaratively and self-node auto-creation would need to happen automatically
-		await hdb_nodes.patch(req.name, { replicates: false });
-	} else {
-		// for other nodes, just delete the record
-		await hdb_nodes.delete(req.name);
-	}
+	//  delete the record
+	await hdb_nodes.delete(req.name);
 }
 
 function reverseSubscription(subscription) {

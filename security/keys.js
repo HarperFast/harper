@@ -380,7 +380,7 @@ async function signCertificate(req) {
 		}
 
 		private_key = pki.privateKeyFromPem(private_key);
-		response.ca_certificate = cert_auth.certificate;
+		response.signingCA = cert_auth.certificate;
 		const ca_app_cert = pki.certificateFromPem(cert_auth.certificate);
 		hdb_logger.info('Signing CSR with cert named', cert_auth.name);
 		const csr = pki.certificationRequestFromPem(req.csr);
@@ -416,7 +416,6 @@ async function signCertificate(req) {
 
 		response.certificate = pki.certificateToPem(cert);
 	} else {
-		response.ca_certificate = (await getReplicationCertAuth())?.certificate;
 		hdb_logger.info('Sign cert did not receive a CSR from:', req.url, 'only the CA will be returned');
 	}
 
@@ -675,7 +674,7 @@ tls.createSecureContext = function (options) {
 	return ctx;
 };
 
-let ca_certs = new Map();
+let ca_certs = new Set();
 function createTLSSelector(type, options) {
 	let secure_contexts = new Map();
 	let default_context;
@@ -698,7 +697,7 @@ function createTLSSelector(type, options) {
 						const cert_parsed = new X509Certificate(certificate);
 						if (cert.is_authority) {
 							cert_parsed.asString = certificate;
-							ca_certs.set(cert.type, cert_parsed);
+							ca_certs.add(certificate);
 						}
 					}
 
@@ -731,22 +730,22 @@ function createTLSSelector(type, options) {
 							if (!private_key || !certificate) {
 								throw new Error('Missing private key or certificate for secure server');
 							}
-							let cert_authorities = ca_certs.get(type);
 							const secure_options = {
 								ciphers: cert.ciphers,
 								ticketKeys: getTicketKeys(),
-								ca: cert_authorities,
+								ca: Array.from(ca_certs),
 								cert: certificate,
 								key: private_key,
 								key_file: cert.private_key_name,
 								is_self_signed: cert.is_self_signed,
 							};
+							harper_logger.error('assigning secure options', server?.ports, ca_certs.size);
 							if (server) secure_options.sessionIdContext = server.sessionIdContext;
 							let secure_context = tls.createSecureContext(secure_options);
 							secure_context.name = cert.name;
 							secure_context.options = secure_options;
 							secure_context.quality = quality;
-							secure_context.certificateAuthorities = cert_authorities;
+							secure_context.certificateAuthorities = Array.from(ca_certs);
 							// we store the first 100 bytes of the certificate just for debug logging
 							secure_context.certStart = certificate.toString().slice(0, 100);
 							if (quality > best_quality) {
