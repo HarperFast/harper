@@ -25,15 +25,9 @@ async function lmdbGetTableSize(table_object) {
 		//get the txn log record count
 		let txn_dbi_stat = table.auditStore?.getStats();
 
-		//get table data size in bytes
-		let table_bytes = await lmdb_environment_utility.environmentDataSize(schema_path, table_object.name);
-		let txn_bytes = await lmdb_environment_utility.environmentDataSize(txn_path, table_object.name);
-
 		table_stats.schema = table_object.schema;
 		table_stats.table = table_object.name;
-		table_stats.table_size = table_bytes;
 		table_stats.record_count = dbi_stat.entryCount;
-		table_stats.transaction_log_size = txn_bytes;
 		table_stats.transaction_log_record_count = txn_dbi_stat.entryCount;
 	} catch (e) {
 		log.warn(`unable to stat table dbi due to ${e}`);

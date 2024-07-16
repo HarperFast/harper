@@ -89,7 +89,7 @@ export async function setNode(req: object) {
 			csr = await createCsr();
 			hdb_logger.info('Sending CSR to target node:', url);
 		} else {
-			cert_auth = ca_record;
+			cert_auth = ca_record?.certificate;
 			hdb_logger.info('Sending CA named', ca_record?.name, 'to target node', url);
 		}
 	}
@@ -156,6 +156,7 @@ export async function setNode(req: object) {
 				is_self_signed: false,
 			});
 		}
+		cert_auth = target_node_response.signingCA;
 	}
 
 	const node_record = { url, ca: target_node_response.usingCA };
@@ -166,7 +167,7 @@ export async function setNode(req: object) {
 	if (node_record.replicates) {
 		await ensureNode(getThisNodeName(), {
 			url: this_url,
-			ca: await getReplicationCertAuth()?.certificate,
+			ca: cert_auth,
 			replicates: true,
 		});
 	}
@@ -185,8 +186,8 @@ export async function setNode(req: object) {
  */
 export async function addNodeBack(req) {
 	hdb_logger.trace('addNodeBack received request:', req);
-	if (req.target_node_name && req.target_node_name !== get(CONFIG_PARAMS.REPLICATION_NODENAME)) {
-		return { error: 'node_name does not match configured node name' };
+	if (req.target_node_name && req.target_node_name !== getThisNodeName()) {
+		return { error: `node_name does not match configured node name ${getThisNodeName()}` };
 	}
 
 	const certs = await signCertificate(req);
@@ -220,7 +221,6 @@ export async function addNodeBack(req) {
 	await ensureNode(req.node_name, node_record);
 	certs.nodeName = getThisNodeName();
 
-	hdb_logger.info('addNodeBack responding to:', req.url);
 	certs.usingCA = rep_ca?.certificate; // in addition to the signed CA, we need to return the CA that is being used for the active certificate
 	hdb_logger.info('addNodeBack responding to:', req.url, 'with CA named:', rep_ca?.name);
 
