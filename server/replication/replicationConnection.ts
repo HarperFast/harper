@@ -5,6 +5,7 @@ import {
 	getLastRemoved,
 	HAS_CURRENT_RESIDENCY_ID,
 	HAS_PREVIOUS_RESIDENCY_ID,
+	REMOTE_SEQUENCE_UPDATE,
 	readAuditEntry,
 } from '../../resources/auditStore';
 import { exportIdMapping, getIdOfRemoteNode, remoteToLocalNodeId } from './nodeIdMapping';
@@ -16,7 +17,6 @@ import {
 	urlToNodeName,
 } from './replicator';
 import env from '../../utility/environment/environmentManager';
-import { readAuditEntry, Decoder, REMOTE_SEQUENCE_UPDATE } from '../../resources/auditStore';
 import { HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
 import { CERT_PREFERENCE_REP } from '../../utility/terms/certificates';
 import { decode, encode, Packr } from 'msgpackr';
@@ -74,8 +74,9 @@ export async function createWebSocket(url, options?) {
 			secure_contexts = secure_target.secureContexts;
 		}
 		secure_context = secure_contexts.get(node_name);
-		if (secure_context)
+		if (secure_context) {
 			logger.debug?.('Creating web socket for URL', url, 'with certificate named:', secure_context.name);
+		}
 		if (!secure_context && rejectUnauthorized !== false) {
 			throw new Error('Unable to find a valid certificate to use for replication to connect to ' + url);
 		}

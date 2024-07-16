@@ -340,7 +340,7 @@ export function makeTable(options) {
 										if (event.remoteNodeIds?.length > 0) {
 											// the key for tracking the sequence ids and txn times received from this node
 											const seq_key = [Symbol.for('seq'), event.remoteNodeIds[0]];
-											let existing = dbis_db.get(seq_key);
+											let existing_seq = dbis_db.get(seq_key);
 											let node_states = existing?.nodes;
 											if (!node_states) {
 												// if we don't have a list of nodes, we need to create one, with the main one using the existing seqId
@@ -350,15 +350,15 @@ export function makeTable(options) {
 											// to track this separately
 											// track the other nodes in the list
 											for (let node_id of event.remoteNodeIds.slice(1)) {
-												let node_state = node_states.find((existing) => existing.name === node_id);
+												let node_state = node_states.find((existing_node) => existing_node.name === node_id);
 												if (!node_state) {
 													node_state = { id: node_id, seqId: 0 };
 													node_states.push(node_state);
 												}
-												node_state.seqId = Math.max(existing.seqId, event.localTime);
+												node_state.seqId = Math.max(existing_seq?.seqId ?? 1, event.localTime);
 												if (node_id === event.nodeId) node_state.lastTxnTime = event.timestamp;
 											}
-											let seq_id = Math.max(existing?.seqId ?? 1, event.localTime);
+											let seq_id = Math.max(existing_seq?.seqId ?? 1, event.localTime);
 											dbis_db.put(seq_key, {
 												seqId: seq_id,
 												nodes: node_states,

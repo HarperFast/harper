@@ -155,6 +155,7 @@ export async function setNode(req: object) {
 				is_authority: false,
 			});
 		}
+		cert_auth = target_node_response.signingCA;
 	}
 
 	const node_record = { url, ca: target_node_response.usingCA };
@@ -165,7 +166,7 @@ export async function setNode(req: object) {
 	if (node_record.replicates) {
 		await ensureNode(getThisNodeName(), {
 			url: this_url,
-			ca: await getReplicationCertAuth()?.certificate,
+			ca: cert_auth,
 			replicates: true,
 		});
 	}
@@ -184,8 +185,8 @@ export async function setNode(req: object) {
  */
 export async function addNodeBack(req) {
 	hdb_logger.trace('addNodeBack received request:', req);
-	if (req.target_node_name && req.target_node_name !== get(CONFIG_PARAMS.REPLICATION_NODENAME)) {
-		return { error: 'node_name does not match configured node name' };
+	if (req.target_node_name && req.target_node_name !== getThisNodeName()) {
+		return { error: `node_name does not match configured node name ${getThisNodeName()}` };
 	}
 
 	const certs = await signCertificate(req);
