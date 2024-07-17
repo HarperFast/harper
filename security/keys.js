@@ -673,6 +673,15 @@ tls.createSecureContext = function (options) {
 	ctx.context.setKey(options.key, undefined);
 	return ctx;
 };
+const origTLSServer = tls.Server;
+// In node v18 (only in 18.20 and up) the node https module will set the ALPN protocols leading to an error, so we
+// have to null out of the protocols if there is a callback
+tls.Server = function (options, secureConnectionListener) {
+	if (options.ALPNCallback) {
+		options.ALPNProtocols = null;
+	}
+	return origTLSServer.call(this, options, secureConnectionListener);
+};
 
 let ca_certs = new Set();
 function createTLSSelector(type, options) {
