@@ -536,8 +536,8 @@ async function generateCertAuthority() {
 		{
 			name: 'commonName',
 			value: `HarperDB-Certificate-Authority-${
-				env_manager.get('replication_nodeName') ??
-				urlToNodeName(env_manager.get('replication_url')) ??
+				env_manager.get(CONFIG_PARAMS.REPLICATION_HOSTNAME) ??
+				urlToNodeName(env_manager.get(CONFIG_PARAMS.REPLICATION_URL)) ??
 				uuidv4().split('-')[0]
 			}`,
 		},

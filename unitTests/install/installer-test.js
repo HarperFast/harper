@@ -105,14 +105,14 @@ describe('Test installer module', () => {
 	});
 
 	it('Test checkForPromptOverride gets prompts and config vars', () => {
-		process.env.DEV_MODE = 'dev';
+		process.env.DEFAULTS_MODE = 'dev';
 		process.env.ROOTPATH = 'user/unit/test';
 		process.env.TC_AGREEMENT = 'yes';
 		process.env.CLUSTERING = 'true';
 		process.env.NODE_NAME = 'dog1';
 		const checkForPromptOverride = installer.__get__('checkForPromptOverride');
 		const result = checkForPromptOverride();
-		expect(result.DEV_MODE).to.equal('dev');
+		expect(result.DEFAULTS_MODE).to.equal('dev');
 		expect(result.ROOTPATH).to.equal('user/unit/test');
 		expect(result.TC_AGREEMENT).to.equal('yes');
 		expect(result.CLUSTERING_ENABLED).to.equal('true');
@@ -260,7 +260,7 @@ describe('Test installer module', () => {
 		const prompt_stub = sandbox.stub(inquirer, 'prompt');
 		const installPrompts = installer.__get__('installPrompts');
 		const override = {
-			DEV_MODE: 'dev',
+			DEFAULTS_MODE: 'dev',
 			CLUSTERING_ENABLED: true,
 			CLUSTERING_NODENAME: 'im_a_node',
 		};
@@ -272,7 +272,7 @@ describe('Test installer module', () => {
 		};
 
 		const expected_result = {
-			DEV_MODE: 'dev',
+			DEFAULTS_MODE: 'dev',
 			CLUSTERING_ENABLED: true,
 			CLUSTERING_NODENAME: 'im_a_node',
 			ROOTPATH: 'i/am/root/',
@@ -284,21 +284,23 @@ describe('Test installer module', () => {
 		const result = await installPrompts(override);
 		expect(result).to.eql(expected_result);
 		const prompts_schema = prompt_stub.args[0][0];
-		expect(prompts_schema.length).to.equal(7);
+		expect(prompts_schema.length).to.equal(8);
 		expect(prompts_schema[0].name).to.equal('ROOTPATH');
 		expect(prompts_schema[0].when).to.be.true;
 		expect(prompts_schema[1].name).to.equal('HDB_ADMIN_USERNAME');
 		expect(prompts_schema[1].when).to.be.true;
 		expect(prompts_schema[2].name).to.equal('HDB_ADMIN_PASSWORD');
 		expect(prompts_schema[2].when).to.be.true;
-		expect(prompts_schema[3].name).to.equal('DEV_MODE');
+		expect(prompts_schema[3].name).to.equal('DEFAULTS_MODE');
 		expect(prompts_schema[3].when).to.be.false;
-		expect(prompts_schema[4].name).to.equal('CLUSTERING_NODENAME');
-		expect(prompts_schema[4].when).to.be.false;
-		expect(prompts_schema[5].name).to.equal('CLUSTERING_USER');
-		expect(prompts_schema[5].when).to.be.true;
-		expect(prompts_schema[6].name).to.equal('CLUSTERING_PASSWORD');
+		expect(prompts_schema[4].name).to.equal('REPLICATION_HOSTNAME');
+		expect(prompts_schema[4].when).to.be.true;
+		expect(prompts_schema[5].name).to.equal('CLUSTERING_NODENAME');
+		expect(prompts_schema[5].when).to.be.false;
+		expect(prompts_schema[6].name).to.equal('CLUSTERING_USER');
 		expect(prompts_schema[6].when).to.be.true;
+		expect(prompts_schema[7].name).to.equal('CLUSTERING_PASSWORD');
+		expect(prompts_schema[7].when).to.be.true;
 	});
 
 	it('Test createSuperUser calls create admin user with correct params', async () => {

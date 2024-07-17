@@ -34,7 +34,7 @@ exports.createTestTable = async function createTestTable(database_path, table_na
 };
 exports.createNode = async function createNode(index, database_path, node_count) {
 	const node_name = 'node-' + (1 + index);
-	env.setProperty('replication_nodename', node_name);
+	env.setProperty('replication_hostname', node_name);
 	let routes = [];
 	for (let i = 0; i < node_count; i++) {
 		if (i === index) continue;

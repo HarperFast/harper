@@ -35,7 +35,7 @@ onMessageByType('cluster-status', async (message) => {
 async function clusterStatus() {
 	if (
 		env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_URL) ||
-		env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_NODENAME)
+		env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_HOSTNAME)
 	) {
 		let response;
 		if (parentPort) {

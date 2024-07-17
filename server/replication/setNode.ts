@@ -97,14 +97,14 @@ export async function setNode(req: object) {
 	// This is the record that will be added to the other nodes hdb_nodes table
 	const target_add_node_obj = {
 		operation: OPERATIONS_ENUM.ADD_NODE_BACK,
-		node_name: get(CONFIG_PARAMS.REPLICATION_NODENAME),
+		node_name: get(CONFIG_PARAMS.REPLICATION_HOSTNAME),
 		target_node_name: req.node_name,
 		url: this_url,
 		csr,
 		cert_auth,
 	};
 
-	if (get(CONFIG_PARAMS.REPLICATION_NODENAME)) target_add_node_obj.node_name = get(CONFIG_PARAMS.REPLICATION_NODENAME);
+	if (get(CONFIG_PARAMS.REPLICATION_HOSTNAME)) target_add_node_obj.node_name = get(CONFIG_PARAMS.REPLICATION_HOSTNAME);
 	if (req.subscriptions) {
 		target_add_node_obj.subscriptions = req.subscriptions.map(reverseSubscription);
 	}

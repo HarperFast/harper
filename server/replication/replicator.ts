@@ -355,7 +355,7 @@ export function getThisNodeName() {
 	return (
 		node_name ||
 		(node_name =
-			env.get('replication_nodename') ??
+			env.get('replication_hostname') ??
 			urlToNodeName(env.get('replication_url')) ??
 			getCommonNameFromCert() ??
 			getHostFromListeningPort('operationsapi_network_secureport') ??

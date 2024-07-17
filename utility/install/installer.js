@@ -53,6 +53,7 @@ const DEFAULT_HDB_PORT = 9925;
 const DEFAULT_ADMIN_USERNAME = 'HDB_ADMIN';
 const DEFAULT_CLUSTER_USERNAME = 'CLUSTER_USER';
 const DEFAULT_CONFIG_MODE = 'dev';
+const DEFAULT_HOST_NAME = 'localhost';
 
 const DEV_MODE_CONFIG = {
 	[CONFIG_PARAMS.HTTP_CORS]: true,
@@ -76,12 +77,14 @@ const INSTALL_PROMPTS = {
 	CLUSTER_USERNAME: 'Please enter a username for the CLUSTER_USER:',
 	CLUSTER_PASS: 'Please enter a password for the CLUSTER_USER:',
 	DEFAULTS_MODE: 'Default Config - dev (easy access/debugging) or prod (security/performance): (dev/prod)',
+	REPLICATION_HOSTNAME: 'Please enter the hostname for this server:',
 };
 
 const cfg_env = assignCMDENVVariables([hdb_terms.INSTALL_PROMPTS.HDB_CONFIG]);
 let hdb_root = undefined;
 let conditional_rollback = false;
 let ignore_existing = false;
+let skip_hostname = false;
 
 /**
  * This module orchestrates the installation of HarperDB.
@@ -106,13 +109,14 @@ async function install() {
 	// Check to see if any cmd/env vars are passed that override install prompts.
 	const prompt_override = checkForPromptOverride();
 	Object.assign(prompt_override, config_from_file);
-	// For backwards compatibility for a time before DEFAULTS_MODE assume prod when these args used
+	// For backwards compatibility for a time before DEFAULTS_MODE (and host name) assume prod when these args used
 	if (
 		prompt_override[hdb_terms.INSTALL_PROMPTS.TC_AGREEMENT] &&
 		prompt_override[hdb_terms.INSTALL_PROMPTS.ROOTPATH] &&
 		prompt_override[hdb_terms.INSTALL_PROMPTS.HDB_ADMIN_USERNAME] &&
 		prompt_override[hdb_terms.INSTALL_PROMPTS.HDB_ADMIN_PASSWORD]
 	) {
+		skip_hostname = true;
 		prompt_override[hdb_terms.INSTALL_PROMPTS.DEFAULTS_MODE] = 'prod';
 	}
 
@@ -281,6 +285,21 @@ async function installPrompts(prompt_override) {
 			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.DEFAULTS_MODE),
 		},
 	];
+
+	if (!skip_hostname) {
+		prompts_schema.push({
+			type: 'input',
+			name: hdb_terms.INSTALL_PROMPTS.REPLICATION_HOSTNAME,
+			transformer: PROMPT_ANSWER_TRANSFORMER,
+			when: displayCmdEnvVar(
+				prompt_override[hdb_terms.INSTALL_PROMPTS.REPLICATION_HOSTNAME],
+				INSTALL_PROMPTS.REPLICATION_HOSTNAME
+			),
+			prefix: PROMPT_PREFIX,
+			default: DEFAULT_HOST_NAME,
+			message: HDB_PROMPT_MSG(INSTALL_PROMPTS.REPLICATION_HOSTNAME),
+		});
+	}
 
 	// If clustering is enabled we add a couple more clustering question to the install.
 	if (hdb_utils.autoCastBoolean(prompt_override[hdb_terms.INSTALL_PROMPTS.CLUSTERING_ENABLED]) === true) {
@@ -473,7 +492,7 @@ async function checkForExistingInstall() {
  */
 async function termsAgreement(prompt_override) {
 	hdb_logger.info('Asking for terms agreement.');
-	const tc_msg = `Terms & Conditions can be found at ${TERMS_ADDRESS}${LINE_BREAK}and can be viewed by typing or copying and pasting the URL into your web browser.${LINE_BREAK}I Agree to the HarperDB Terms and Conditions: (yes/no)`;
+	const tc_msg = `Terms & Conditions can be found at ${TERMS_ADDRESS}${LINE_BREAK}and can be viewed by typing or copying and pasting the URL into your web browser.${LINE_BREAK}I agree to the HarperDB Terms and Conditions: (yes/no)`;
 
 	const terms_question = {
 		prefix: PROMPT_PREFIX,
