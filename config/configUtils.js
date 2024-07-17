@@ -529,7 +529,11 @@ function updateConfigValue(
 
 function backupConfigFile(config_path, hdb_root) {
 	try {
-		const backup_folder_path = path.join(hdb_root, 'backup', `${hdb_terms.HDB_CONFIG_FILE}.bak`);
+		const backup_folder_path = path.join(
+			hdb_root,
+			'backup',
+			`${new Date(Date.now()).toISOString().replaceAll(':', '-')}-${hdb_terms.HDB_CONFIG_FILE}.bak`
+		);
 		fs.copySync(config_path, backup_folder_path);
 		logger.trace(`Config file: ${config_path} backed up to: ${backup_folder_path}`);
 	} catch (err) {
