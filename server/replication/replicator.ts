@@ -233,17 +233,13 @@ export function setReplicator(db_name, table, options) {
 				// incoming TCP connection
 				return true;
 			}
-			static available(entry, is_invalidated) {
-				return !!is_invalidated; // conditionally set this is partial records
-			}
 
 			/**
 			 * This should be called when there is a local invalidated entry, or an entry that is known to be available
 			 * elsewhere on the cluster, and will retrieve from the appropriate node
 			 * @param query
 			 */
-			get(query) {
-				const entry = this.getContext().replacingEntry;
+			static load(entry) {
 				if (entry) {
 					const residency_id = entry.residencyId;
 					if (residency_id) {
@@ -251,11 +247,11 @@ export function setReplicator(db_name, table, options) {
 						for (let node_name of residency) {
 							let node = getHDBNodeTable().primaryStore.get(node_name);
 							const connection = getConnection(node.url, Replicator.subscription, db_name);
-							return new Promise((resolve) => {
+							return new Promise((resolve, reject) => {
 								let request = {
 									requestId: next_id++,
 									tableId: table.tableId,
-									id: this[ID_PROPERTY],
+									id: entry.key,
 								};
 								awaiting_response.set(request.requestId, { resolve, reject });
 								connection.sendRecordRequest(request);

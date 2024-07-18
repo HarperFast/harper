@@ -111,8 +111,7 @@ export function makeTable(options) {
 	let { attributes } = options;
 	if (!attributes) attributes = [];
 	const updateRecord = getUpdateRecord(primary_store, table_id, audit_store);
-	const deletion_count = 0;
-	let deletion_cleanup;
+	let source_load; // if a source has a load function (replicator), record it here
 	let has_source_get, has_source_available;
 	let primary_key_attribute = {};
 	let last_eviction_completion: Promise<void> = Promise.resolve();
@@ -191,7 +190,7 @@ export function makeTable(options) {
 				this.sources.push(source);
 			}
 			has_source_get = has_source_get || (source.get && (!source.get.reliesOnPrototype || source.prototype.get));
-			has_source_available = has_source_available || source.available;
+			source_load = source_load || source.load;
 			// These functions define how write operations are propagate to the sources.
 			// We define the last source in the array as the "canonical" source, the one that can authoritatively
 			// reject or accept a write. The other sources are "intermediate" sources that can also be
@@ -1689,7 +1688,10 @@ export function makeTable(options) {
 		 * @returns
 		 */
 		static transformEntryForSelect(select, context, read_txn, filtered, ensure_loaded?, can_skip?) {
-			if (select && (select === primary_key || (select?.length === 1 && select[0] === primary_key))) {
+			if (
+				select &&
+				(select === primary_key || (select?.length === 1 && select[0] === primary_key && Array.isArray(select)))
+			) {
 				// fast path if only the primary key is selected, so we don't have to load records
 				const transform = (entry) => {
 					if (context?.transaction?.stale) context.transaction.stale = false;
@@ -1704,7 +1706,7 @@ export function makeTable(options) {
 				ensure_loaded &&
 				has_source_get &&
 				// determine if we need to fully loading the records ahead of time, this is why we would not need to load the full record:
-				!select?.every((attribute) => {
+				!(typeof select === 'string' ? [select] : select)?.every((attribute) => {
 					let attribute_name;
 					if (typeof attribute === 'object') {
 						attribute_name = attribute.name;
@@ -2574,6 +2576,18 @@ export function makeTable(options) {
 		return true;
 	}
 	function loadLocalRecord(id, context, options, sync, with_entry) {
+		if (TableResource.getResidencyById) {
+			const residency = TableResource.getResidencyById(id);
+			if (residency) {
+				if (!residency.includes(server.replication.nodeName)) {
+					// this record is not on this node, so we shouldn't load it here
+					return source_load({ key: id, residencyId: residency }).then(with_entry, (error) => {
+						// TODO: This doesn't have a mechanism for returning errors yet
+						logger.error?.('Unable to retrieve data', error);
+					});
+				}
+			}
+		}
 		// TODO: determine if we use lazy access properties
 		const whenPrefetched = () => {
 			if (context?.transaction?.stale) context.transaction.stale = false;
@@ -2581,6 +2595,10 @@ export function makeTable(options) {
 			// through query results and the iterator ends (abruptly)
 			if (options.transaction?.isDone) return with_entry(null, id);
 			const entry = primary_store.getEntry(id, options);
+			if (entry?.residencyId && entry.metadataFlags & INVALIDATED && source_load) {
+				// load from other node
+				return source_load(entry).then(whenPrefetched);
+			}
 			if (entry && context) {
 				if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
 				if (entry?.localTime && !context.lastRefreshed) context.lastRefreshed = entry.localTime;
@@ -2680,17 +2698,7 @@ export function makeTable(options) {
 
 	function ensureLoadedFromSource(id, entry, context, resource?) {
 		if (has_source_get) {
-			if (has_source_available) {
-				let available;
-				for (const source of TableResource.sources) {
-					if (source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
-						if (source.available?.(entry, entry && entry.metadataFlags & INVALIDATED) === false) continue;
-						available = true;
-					}
-				}
-				if (!available) return;
-			}
-			let needs_source_data;
+			let needs_source_data = false;
 			if (context.noCache) needs_source_data = true;
 			else {
 				if (entry) {
@@ -2922,6 +2930,7 @@ export function makeTable(options) {
 						// find the first data source that will fulfill our request for data
 						for (const source of TableResource.sources) {
 							if (source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
+								if (source.available?.(existing_entry) === false) continue;
 								source_context.source = source;
 								updated_record = await source.get(id, source_context);
 								if (updated_record) break;
@@ -2945,6 +2954,7 @@ export function makeTable(options) {
 						}
 						resolved = true;
 						resolve({
+							key: id,
 							version,
 							value: updated_record,
 						});
@@ -2962,6 +2972,7 @@ export function makeTable(options) {
 						) {
 							// these are conditions under which we can use stale data after an error
 							resolve({
+								key: id,
 								version: existing_version,
 								value: existing_record,
 							});
