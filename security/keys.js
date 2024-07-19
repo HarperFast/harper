@@ -146,7 +146,7 @@ function loadCertificates() {
 
 	getCertTable();
 
-	const root_path = env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH); // need to relativize the paths so they aren't exposed
+	const root_path = path.dirname(config_utils.getConfigFilePath());
 	let promise;
 	for (let { configKey: config_key } of CERTIFICATE_CONFIGS) {
 		let configs = config_utils.getConfigFromFile(config_key);
@@ -157,6 +157,7 @@ function loadCertificates() {
 			}
 			for (let config of configs) {
 				const private_key_path = config.privateKey;
+				// need to relativize the paths so they aren't exposed
 				let private_key_name = private_key_path && relative(join(root_path, 'keys'), private_key_path);
 				if (private_key_name) {
 					loadAndWatch(
@@ -425,7 +426,7 @@ async function signCertificate(req) {
 async function createCertificateTable(cert, ca_cert) {
 	await setCertTable({
 		name: getThisNodeName(),
-		uses: ['https', 'operations', 'wss'],
+		uses: ['https', 'wss'],
 		certificate: cert,
 		private_key_name: 'privateKey.pem',
 		is_authority: false,
@@ -434,7 +435,7 @@ async function createCertificateTable(cert, ca_cert) {
 
 	await setCertTable({
 		name: ca_cert.subject.getField('CN').value,
-		uses: ['https', 'operations', 'wss'],
+		uses: ['https', 'wss'],
 		certificate: pki.certificateToPem(ca_cert),
 		private_key_name: 'privateKey.pem',
 		is_authority: true,
@@ -684,7 +685,7 @@ tls.Server = function (options, secureConnectionListener) {
 };
 
 let ca_certs = new Set();
-function createTLSSelector(type, options) {
+function createTLSSelector(type, mtls_options) {
 	let secure_contexts = new Map();
 	let default_context;
 	let has_wildcards = false;
@@ -719,10 +720,8 @@ function createTLSSelector(type, options) {
 							if (!is_operations && cert.uses?.includes?.('operations')) continue;
 
 							let quality;
-							if (type === cert.name) quality = 6;
-							else if (CERT_PREFERENCE_APP[cert.name]) quality = CERT_PREFERENCE_APP[cert.name];
-							else if (!cert?.details?.issuer?.includes?.('HarperDB-Certificate-Authority')) quality = 5;
-							else quality = is_operations ? 4 : 0;
+							if (!cert?.details?.issuer?.includes?.('HarperDB-Certificate-Authority')) quality = 1;
+							else quality = 2;
 
 							let private_key = private_keys.get(cert.private_key_name);
 							if (!private_key && cert.private_key_name) {
@@ -742,7 +741,7 @@ function createTLSSelector(type, options) {
 							const secure_options = {
 								ciphers: cert.ciphers,
 								ticketKeys: getTicketKeys(),
-								ca: Array.from(ca_certs),
+								ca: mtls_options && Array.from(ca_certs),
 								cert: certificate,
 								key: private_key,
 								key_file: cert.private_key_name,
@@ -822,7 +821,7 @@ function createTLSSelector(type, options) {
 	return SNICallback;
 	function SNICallback(servername, cb) {
 		// find the matching server name, substituting wildcards for each part of the domain to find matches
-		harper_logger.warn('TLS requested for', servername, this.isReplicationConnection);
+		harper_logger.info('TLS requested for', servername, this.isReplicationConnection);
 		let matching_name = servername;
 		while (true) {
 			let context = secure_contexts.get(matching_name);

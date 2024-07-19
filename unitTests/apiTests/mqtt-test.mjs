@@ -579,7 +579,7 @@ describe('test MQTT connections and commands', () => {
 				server: global.server,
 				securePort: 8884,
 				network: { mtls: { user: 'HDB_ADMIN', required: true } },
-			}).listen(8884, resolve);
+			})[0].listen(8884, resolve);
 			server.on('error', reject);
 		});
 		let bad_client = connect('mqtts://localhost:8884', {
@@ -587,15 +587,18 @@ describe('test MQTT connections and commands', () => {
 		});
 
 		const private_key_path = env_get('tls_privateKey');
-		const certificate_path = env_get('tls_certificate');
-		const certificate_authority_path = env_get('tls_certificateAuthority');
+		let cert, ca;
+		for await (const certificate of databases.system.hdb_certificate.search([])) {
+			if (certificate.is_authority)
+				ca = certificate.certificate;
+			else
+				cert = certificate.certificate;
+		}
 		let client = connect('mqtts://localhost:8884', {
 			key: readFileSync(private_key_path),
 			// if they have a CA, we append it, so it is included
-			cert:
-				readFileSync(certificate_path) +
-				(certificate_authority_path ? '\n\n' + readFileSync(certificate_authority_path) : ''),
-			ca: certificate_authority_path && readFileSync(certificate_authority_path),
+			cert,
+			ca,
 			clean: true,
 			clientId: 'test-client-mtls',
 		});
@@ -653,7 +656,7 @@ describe('test MQTT connections and commands', () => {
 						securePort: 8885,
 						network: { mtls: { user: 'HDB_ADMIN', required: true } },
 					},
-				}).listen(8885, resolve);
+				})[0].listen(8885, resolve);
 				server.on('error', reject);
 			});
 			let bad_client = connect('wss://localhost:8885', {
@@ -661,15 +664,18 @@ describe('test MQTT connections and commands', () => {
 			});
 
 			const private_key_path = env_get('tls_privateKey');
-			const certificate_path = env_get('tls_certificate');
-			const certificate_authority_path = env_get('tls_certificateAuthority');
+			let cert, ca;
+			for await (const certificate of databases.system.hdb_certificate.search([])) {
+				if (certificate.is_authority)
+					ca = certificate.certificate;
+				else
+					cert = certificate.certificate;
+			}
 			let client = connect('wss://localhost:8885', {
 				key: readFileSync(private_key_path),
 				// if they have a CA, we append it, so it is included
-				cert:
-					readFileSync(certificate_path) +
-					(certificate_authority_path ? '\n\n' + readFileSync(certificate_authority_path) : ''),
-				ca: certificate_authority_path && readFileSync(certificate_authority_path),
+				cert,
+				ca,
 				clean: true,
 				clientId: 'test-client-mtls',
 			});

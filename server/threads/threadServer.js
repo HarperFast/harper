@@ -415,7 +415,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 				requestCert: Boolean(mtls || is_operations_server),
 				ticketKeys: getTicketKeys(),
 				maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
-				SNICallback: createTLSSelector(is_operations_server ? 'operations-api' : 'server', { required: mtls_required }),
+				SNICallback: createTLSSelector(is_operations_server ? 'operations-api' : 'server', mtls),
 				ALPNCallback: function (connection) {
 					// we use this as an indicator that the connection is a replication connection and that
 					// we should use the full set of replication CAs. Loading all of them for each connection
@@ -593,7 +593,7 @@ function onRequest(listener, options) {
  * @param listener
  * @param options
  */
-async function onSocket(listener, options) {
+function onSocket(listener, options) {
 	let socket_server;
 	if (options.securePort) {
 		let SNICallback = createTLSSelector('server', options.mtls);

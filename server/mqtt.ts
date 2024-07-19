@@ -30,10 +30,10 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 		server.mqtt.events.on('error', () => {});
 	}
 	const mqtt_settings = server.mqtt;
-	let server_instance;
+	let server_instances = [];
 	const mtls = network?.mtls;
 	if (webSocket)
-		server_instance = server.ws((ws, request, chain_completion) => {
+		server_instances = server.ws((ws, request, chain_completion) => {
 			if (ws.protocol === 'mqtt') {
 				mqtt_settings.events.emit('connection', ws);
 				mqtt_log.debug?.('Received WebSocket connection for MQTT from', ws._socket.remoteAddress);
@@ -60,78 +60,86 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 		}, Object.assign({ subProtocol: 'mqtt' }, webSocket)); // if there is no port, we are piggy-backing off of default app http server
 	// standard TCP socket
 	if (port || securePort) {
-		server_instance = server.socket(
-			async (socket) => {
-				let user;
-				mqtt_settings.events.emit('connection', socket);
-				mqtt_log.debug?.(
-					`Received ${socket.getCertificate ? 'SSL' : 'TCP'} connection for MQTT from ${socket.remoteAddress}`
-				);
-				if (mtls) {
-					if (socket.authorized) {
-						try {
-							let username = mtls.user;
-							if (username !== null) {
-								// null means no user is defined from certificate, need regular authentication as well
-								if (username === undefined || username === 'Common Name' || username === 'CN')
-									username = socket.getPeerCertificate().subject.CN;
-								try {
-									user = await server.getUser(username, null, null);
-									if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
-										auth_event_log.notify({
-											username: user?.username,
-											status: AUTH_AUDIT_STATUS.SUCCESS,
-											type: AUTH_AUDIT_TYPES.AUTHENTICATION,
-											auth_strategy: 'MQTT mTLS',
-											remote_address: socket.remoteAddress,
-										});
+		server_instances.push(
+			server.socket(
+				async (socket) => {
+					let user;
+					mqtt_settings.events.emit('connection', socket);
+					mqtt_log.debug?.(
+						`Received ${socket.getCertificate ? 'SSL' : 'TCP'} connection for MQTT from ${socket.remoteAddress}`
+					);
+					if (mtls) {
+						if (socket.authorized) {
+							try {
+								let username = mtls.user;
+								if (username !== null) {
+									// null means no user is defined from certificate, need regular authentication as well
+									if (username === undefined || username === 'Common Name' || username === 'CN')
+										username = socket.getPeerCertificate().subject.CN;
+									try {
+										user = await server.getUser(username, null, null);
+										if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
+											auth_event_log.notify({
+												username: user?.username,
+												status: AUTH_AUDIT_STATUS.SUCCESS,
+												type: AUTH_AUDIT_TYPES.AUTHENTICATION,
+												auth_strategy: 'MQTT mTLS',
+												remote_address: socket.remoteAddress,
+											});
+										}
+									} catch (error) {
+										if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED)) {
+											auth_event_log.error?.({
+												username,
+												status: AUTH_AUDIT_STATUS.FAILURE,
+												type: AUTH_AUDIT_TYPES.AUTHENTICATION,
+												auth_strategy: 'mqtt',
+												remote_address: socket.remoteAddress,
+											});
+										}
+										throw error;
 									}
-								} catch (error) {
-									if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED)) {
-										auth_event_log.error?.({
-											username,
-											status: AUTH_AUDIT_STATUS.FAILURE,
-											type: AUTH_AUDIT_TYPES.AUTHENTICATION,
-											auth_strategy: 'mqtt',
-											remote_address: socket.remoteAddress,
-										});
-									}
-									throw error;
+								} else {
+									mqtt_log.debug?.(
+										'MQTT mTLS authorized connection (mTLS did not authorize a user)',
+										'from',
+										socket.remoteAddress
+									);
 								}
-							} else {
-								mqtt_log.debug?.(
-									'MQTT mTLS authorized connection (mTLS did not authorize a user)',
-									'from',
-									socket.remoteAddress
-								);
+							} catch (error) {
+								mqtt_settings.events.emit('error', error, socket);
+								mqtt_log.error?.(error);
 							}
-						} catch (error) {
-							mqtt_settings.events.emit('error', error, socket);
-							mqtt_log.error?.(error);
+						} else if (mtls.required) {
+							mqtt_log.info?.(
+								`Unauthorized connection attempt, no authorized client certificate provided, error: ${socket.authorizationError}`
+							);
+							return socket.end();
 						}
-					} else if (mtls.required) {
-						mqtt_log.info?.(
-							`Unauthorized connection attempt, no authorized client certificate provided, error: ${socket.authorizationError}`
-						);
-						return socket.end();
 					}
-				}
-				if (!user && AUTHORIZE_LOCAL && socket.remoteAddress.includes('127.0.0.1')) {
-					user = await getSuperUser();
-					mqtt_log.debug?.('Auto-authorizing local connection', user?.username);
-				}
+					if (!user && AUTHORIZE_LOCAL && socket.remoteAddress.includes('127.0.0.1')) {
+						user = await getSuperUser();
+						mqtt_log.debug?.('Auto-authorizing local connection', user?.username);
+					}
 
-				const { onMessage, onClose } = onSocket(socket, (message) => socket.write(message), null, user, mqtt_settings);
-				socket.on('data', onMessage);
-				socket.on('close', onClose);
-				socket.on('error', (error) => {
-					mqtt_log.info?.('Socket error', error);
-				});
-			},
-			{ port, securePort, mtls }
+					const { onMessage, onClose } = onSocket(
+						socket,
+						(message) => socket.write(message),
+						null,
+						user,
+						mqtt_settings
+					);
+					socket.on('data', onMessage);
+					socket.on('close', onClose);
+					socket.on('error', (error) => {
+						mqtt_log.info?.('Socket error', error);
+					});
+				},
+				{ port, securePort, mtls }
+			)
 		);
 	}
-	return server_instance;
+	return server_instances;
 }
 let adding_metrics,
 	number_of_connections = 0;
