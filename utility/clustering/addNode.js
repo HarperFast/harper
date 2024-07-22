@@ -34,7 +34,10 @@ module.exports = addNode;
  */
 async function addNode(req, skip_validation = false) {
 	hdb_logger.trace('addNode called with:', req);
-	if (env_mgr.get(terms.CONFIG_PARAMS.REPLICATION)) {
+	if (
+		env_manager.get(hdb_terms.CONFIG_PARAMS.REPLICATION_URL) ??
+		env_manager.get(hdb_terms.CONFIG_PARAMS.REPLICATION_HOSTNAME)
+	) {
 		return plexus_set_node(req);
 	}
 

@@ -32,7 +32,10 @@ module.exports = updateNode;
  */
 async function updateNode(req) {
 	hdb_logger.trace('updateNode called with:', req);
-	if (env_manager.get(hdb_terms.CONFIG_PARAMS.REPLICATION_URL)) {
+	if (
+		env_manager.get(hdb_terms.CONFIG_PARAMS.REPLICATION_URL) ??
+		env_manager.get(hdb_terms.CONFIG_PARAMS.REPLICATION_HOSTNAME)
+	) {
 		return plexus_set_node(req);
 	}
 

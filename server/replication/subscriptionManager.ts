@@ -41,6 +41,17 @@ export async function startOnMainThread(options) {
 			try {
 				if (nodes.find((node) => node.url === route.url)) continue;
 				const replicate_all = !route.subscriptions;
+				if (replicate_all) {
+					let this_name = getThisNodeName();
+					// If it doesn't exist and hasn't been created. Note that this will be null if it has previously been deleted,
+					// and we want don't to recreate nodes for deleted nodes
+					if (getHDBNodeTable().primaryStore.get(this_name) === undefined)
+						await ensureNode(this_name, {
+							name: this_name,
+							url: getThisNodeUrl(),
+							replicates: true,
+						});
+				}
 				const replicate_system = route.trusted !== false;
 				if (replicate_all) {
 					if (route.replicates == undefined) route.replicates = true;

@@ -28,7 +28,10 @@ module.exports = removeNode;
  */
 async function removeNode(req) {
 	hdb_logger.trace('removeNode called with:', req);
-	if (env_manager.get(hdb_terms.CONFIG_PARAMS.REPLICATION_URL)) {
+	if (
+		env_manager.get(hdb_terms.CONFIG_PARAMS.REPLICATION_URL) ??
+		env_manager.get(hdb_terms.CONFIG_PARAMS.REPLICATION_HOSTNAME)
+	) {
 		return plexus_set_node(req);
 	}
 

@@ -92,7 +92,7 @@ export function start(options) {
 				}
 			} else {
 				// try by IP address
-				const node = getHDBNodeTable().primaryStore.get(request.ip);
+				const node = getHDBNodeTable().primaryStore.get(request.ip) || route_by_hostname.get(request.ip);
 				if (node) {
 					request.user = node;
 				}
@@ -247,15 +247,12 @@ export function setReplicator(db_name, table, options) {
 						for (let node_name of residency) {
 							let node = getHDBNodeTable().primaryStore.get(node_name);
 							const connection = getConnection(node.url, Replicator.subscription, db_name);
-							return new Promise((resolve, reject) => {
-								let request = {
-									requestId: next_id++,
-									tableId: table.tableId,
-									id: entry.key,
-								};
-								awaiting_response.set(request.requestId, { resolve, reject });
-								connection.sendRecordRequest(request);
-							});
+							let request = {
+								requestId: next_id++,
+								tableId: table.tableId,
+								id: entry.key,
+							};
+							return connection.sendRecordRequest(request);
 						}
 					}
 				}

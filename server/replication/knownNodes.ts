@@ -2,6 +2,8 @@ import { table } from '../../resources/databases';
 import { forEachReplicatedDatabase, getThisNodeName } from './replicator';
 import { replicationConfirmation } from '../../resources/DatabaseTransaction';
 import { isMainThread } from 'worker_threads';
+import env from '../../utility/environment/environmentManager';
+import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 let hdb_node_table;
 
 export function getHDBNodeTable() {
@@ -125,15 +127,35 @@ function startSubscriptionToReplications() {
 
 export function* iterateRoutes(options) {
 	for (const route of options.routes || []) {
-		let url = typeof route === 'string' ? route : route.url;
-		if (!url) {
-			if (route.host) url = 'wss://' + route.host + ':' + (route.port || 9925);
-			else if (route.hostname) url = 'wss://' + route.hostname + ':' + (route.port || 9925);
-			else {
-				if (isMainThread) console.error('Invalid route, must specify a url or host (with port)');
-				continue;
-			}
+		let url, host;
+		if (typeof route === 'string') {
+			// a plain route string can be a url or hostname (or host)
+			if (route.includes('://')) url = route;
+			else host = route;
+		} else host = route.hostname ?? route.host;
+		if (host) {
+			// construct a url from the host and port
+			let secure_port =
+				env.get(CONFIG_PARAMS.REPLICATION_SECUREPORT) ??
+				(!env.get(CONFIG_PARAMS.REPLICATION_PORT) && env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT));
+			let port: number | string;
+			// if the host includes a port, use that port
+			if ((port = host.match(/:(\d+)$/)?.[1])) host = host.slice(0, -port[0].length - 1);
+			else if (route.port) port = route.port; // could be in the routes config
+			// otherwise use the default port for the service
+			else
+				port =
+					secure_port || env.get(CONFIG_PARAMS.REPLICATION_PORT) || env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
+			const last_colon = port?.lastIndexOf?.(':');
+			if (last_colon > 0) port = +port.slice(last_colon + 1).replace(/[\[\]]/g, '');
+
+			url = (secure_port ? 'wss://' : 'ws://') + host + ':' + port; // now construct the full url
 		}
+		if (!url) {
+			if (isMainThread) console.error('Invalid route, must specify a url or host (with port)');
+			continue;
+		}
+
 		yield {
 			url,
 			subscription: route.subscriptions,
