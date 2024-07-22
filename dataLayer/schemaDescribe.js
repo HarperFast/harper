@@ -11,6 +11,7 @@ const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const env_mngr = require('../utility/environment/environmentManager');
 env_mngr.initSync();
 const { getDatabases } = require('../resources/databases');
+const fs = require('fs-extra');
 
 module.exports = {
 	describeAll,
@@ -179,7 +180,12 @@ async function descTable(describe_table_object, attr_perms) {
 	} else {
 		table_obj.attributes?.forEach((att) => pushAtt(att));
 	}
-
+	let db_size;
+	try {
+		db_size = (await fs.stat(table_obj.primaryStore.env.path)).size;
+	} catch (error) {
+		logger.warn(`unable to get database size`, error);
+	}
 	let table_result = {
 		schema,
 		name: table_obj.tableName,
@@ -188,6 +194,7 @@ async function descTable(describe_table_object, attr_perms) {
 		audit: table_obj.audit,
 		schema_defined: table_obj.schemaDefined,
 		attributes,
+		db_size,
 	};
 
 	// Nats/clustering stream names are hashed to ensure constant length alphanumeric values.

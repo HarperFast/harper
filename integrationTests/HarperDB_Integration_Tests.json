@@ -53104,7 +53104,8 @@
 													"pm.test(\"Should return the ONE schema w/ ONE table user has permissions for\", function() {",
 													"    pm.expect(Object.keys(jsonResponse).length).to.eql(1);",
 													"    pm.expect(Object.keys(jsonResponse.northnwd).length).to.eql(1);",
-													"    pm.expect(Object.keys(jsonResponse.northnwd.employees).length).to.eql(9)",
+													"    pm.expect(Object.keys(jsonResponse.northnwd.employees).length).to.eql(10)",
+                                                    "    pm.expect(jsonResponse.northnwd.employees.db_size).to.be.a('number')",
 													"    pm.expect(jsonResponse.northnwd.employees.attributes.length).to.eql(4)",
 													"});",
 													""
