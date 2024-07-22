@@ -137,7 +137,7 @@ describe('Test keys module', () => {
 		expect(x509.checkPrivateKey(createPrivateKey(test_private_key))).to.be.true;
 		expect(cert_obj.issuer.getField('CN').value).to.equal('Unit Test CA');
 		expect(cert_obj.subject.getField('O').value).to.equal('HarperDB, Inc.');
-		expect(signed_cert.ca_certificate).to.equal(test_ca);
+		expect(signed_cert.signingCA).to.equal(test_ca);
 	});
 
 	it('Test generateCertificates happy path', async () => {

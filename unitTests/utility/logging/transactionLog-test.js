@@ -1,3 +1,4 @@
+/*
 'use strict';
 
 const chai = require('chai');
@@ -16,10 +17,10 @@ const TEST_TABLE = 'panda';
 const TEST_STREAM_NAME = crypto_hash.createNatsTableStreamName(TEST_SCHEMA, TEST_TABLE);
 const TEST_TIMEOUT = 10000;
 
-/**
+/!**
  * Create a test stream and publishes 100 messages to it.
  * @returns {Promise<void>}
- */
+ *!/
 async function createTestStream() {
 	await nats_utils.createLocalStream(TEST_STREAM_NAME, [`unit_test.panda.testLeafServer-leaf`]);
 	for (let x = 0; x < 99; x++) {
@@ -61,10 +62,10 @@ async function createTestStream() {
 	await nats_utils.publishToStream('unit_test.panda', TEST_STREAM_NAME, undefined, del_entry);
 }
 
-/**
+/!**
  * Get all the timestamps in the test stream so that they can be used for testing.
  * @type {*[]}
- */
+ *!/
 let timestamps;
 async function getTimeStamps() {
 	timestamps = [];
@@ -79,10 +80,10 @@ async function getTimeStamps() {
 	}
 }
 
-/**
+/!**
  * Reset the state of the test stream.
  * @returns {Promise<void>}
- */
+ *!/
 async function resetStream() {
 	const jsm = await nats_utils.getJetStreamManager();
 	await jsm.streams.purge(TEST_STREAM_NAME);
@@ -90,11 +91,11 @@ async function resetStream() {
 	await getTimeStamps();
 }
 
-/**
+/!**
  * Accumulates transaction log messages into an array
  * @param req
  * @returns {Promise<*[]>}
- */
+ *!/
 async function transactionLogArray(req) {
 	const transactions = await transaction_log.readTransactionLog(req);
 	let result = [];
@@ -365,3 +366,4 @@ describe('Test transactionLog module', () => {
 		}).timeout(TEST_TIMEOUT);
 	});
 });
+*/

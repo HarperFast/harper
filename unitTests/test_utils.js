@@ -678,7 +678,7 @@ function requireUncached(module) {
 async function launchTestLeafServer(ls_net_port = 9991, node_name = 'testLeafServer', hsln_net_port = 9992) {
 	await fs.mkdirp(TEMP_CLUSTERING_TEST_DIR);
 	await generateTestKeys(TEMP_CLUSTERING_TEST_DIR);
-	const test_ca_path = path.join(TEMP_CLUSTERING_TEST_DIR, 'keys', 'ca.pem');
+	const test_ca_path = path.join(TEMP_CLUSTERING_TEST_DIR, 'keys', 'caCertificate.pem');
 	const test_cert_path = path.join(TEMP_CLUSTERING_TEST_DIR, 'keys', 'certificate.pem');
 	const test_private_key_path = path.join(TEMP_CLUSTERING_TEST_DIR, 'keys', 'privateKey.pem');
 	const test_leaf_pid_path = path.join(TEMP_CLUSTERING_TEST_DIR, 'leaf.pid');
@@ -733,13 +733,38 @@ async function launchTestLeafServer(ls_net_port = 9991, node_name = 'testLeafSer
 async function generateTestKeys(test_root) {
 	const keys_test_path = path.join(test_root, 'keys');
 	await fs.mkdirp(keys_test_path);
+	await fs.mkdirp(path.join(ENV_DIR_PATH, 'keys'));
 	const keys = rewire('../security/keys');
 	const get_hdb_path_stub = sinon.stub().returns(test_root);
 	const update_config_stub = sinon.stub();
 	const get_hdb_path_rw = keys.__set__('env_manager.getHdbBasePath', get_hdb_path_stub);
 	const update_config_rw = keys.__set__('config_utils.updateConfigValue', update_config_stub);
-	await keys.generateKeys();
-	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH, path.join(keys_test_path, 'ca.pem'));
+
+	let rep_ca;
+	let rep_cert;
+	const all_certs = await keys.listCertificates();
+	for (const cert of all_certs) {
+		if (cert.is_self_signed && cert.is_authority) rep_ca = cert.certificate;
+		if (cert.is_self_signed && !cert.is_authority) rep_cert = cert.certificate;
+	}
+
+	if (!rep_ca || !rep_cert) {
+		throw new Error('Unable to find test cert for setting up test nats server');
+	}
+
+	const r_path = config_utils.getConfigFromFile(terms.CONFIG_PARAMS.ROOTPATH);
+
+	const private_key = await fs.readFile(
+		path.join(config_utils.getConfigFromFile(terms.CONFIG_PARAMS.ROOTPATH), 'keys', 'privateKey.pem')
+	);
+	await fs.writeFile(path.join(keys_test_path, 'caCertificate.pem'), rep_ca);
+	await fs.writeFile(path.join(keys_test_path, 'certificate.pem'), rep_cert);
+	await fs.writeFile(path.join(keys_test_path, 'privateKey.pem'), private_key);
+	await fs.writeFile(path.join(ENV_DIR_PATH, 'keys', 'caCertificate.pem'), rep_ca);
+	await fs.writeFile(path.join(ENV_DIR_PATH, 'keys', 'certificate.pem'), rep_cert);
+	await fs.writeFile(path.join(ENV_DIR_PATH, 'keys', 'privateKey.pem'), private_key);
+	//await keys.generateKeys();
+	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH, path.join(keys_test_path, 'caCertificate.pem'));
 	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE, path.join(keys_test_path, 'certificate.pem'));
 	env.setProperty(terms.CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY, path.join(keys_test_path, 'privateKey.pem'));
 	get_hdb_path_rw();
@@ -879,4 +904,5 @@ module.exports = {
 	unsetFakeClusterUser,
 	COMMON_TEST_TERMS,
 	NATS_TEST_SERVER_VALUES,
+	ENV_DIR_PATH,
 };

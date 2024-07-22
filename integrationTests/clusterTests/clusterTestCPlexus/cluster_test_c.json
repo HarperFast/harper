@@ -7102,7 +7102,18 @@
 									"    pm.expect(response.message).to.equal(\"successfully deleted 'radio'\");",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(()=>{}, 1500)"
+								],
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -7165,7 +7176,18 @@
 									"    pm.expect(response.message).to.equal(\"successfully deleted 'listeners'\");",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(()=>{}, 1500)"
+								],
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -7228,7 +7250,18 @@
 									"    pm.expect(response.message).to.equal(\"successfully deleted 'radio'\");",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(()=>{}, 1500)"
+								],
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -7291,7 +7324,18 @@
 									"    pm.expect(response.message).to.equal(\"successfully deleted 'listeners'\");",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(()=>{}, 1500)"
+								],
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -10085,7 +10129,18 @@
 									"    pm.expect(response.message).to.equal(\"successfully deleted 'dev'\");",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(()=>{}, 2000)"
+								],
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -10221,7 +10276,18 @@
 									"    pm.expect(response.message).to.equal(\"successfully deleted 'dev'\");",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(()=>{}, 2000)"
+								],
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -11417,6 +11483,16 @@
 								"type": "text/javascript",
 								"packages": {}
 							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(()=>{}, 2000)"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
 						}
 					],
 					"request": {
@@ -11997,6 +12073,18 @@
 									"    pm.expect(response.connections.length).to.equal(1);",
 									"    pm.expect(connection.name).to.equal(node1_name);",
 									"    pm.expect(connection.subscriptions).to.have.deep.members([",
+									"                       {",
+									"                    \"schema\": \"incredible_bulk\",",
+									"                    \"table\": \"pre_con1\",",
+									"                    \"publish\": true,",
+									"                    \"subscribe\": true",
+									"                },",
+									"                {",
+									"                    \"schema\": \"incredible_bulk\",",
+									"                    \"table\": \"pre_con2\",",
+									"                    \"publish\": true,",
+									"                    \"subscribe\": true",
+									"                },",
 									"            {",
 									"                \"schema\": \"incredible_bulk\",",
 									"                \"table\": \"csv_data_load\",",
@@ -12339,7 +12427,7 @@
 					"response": []
 				},
 				{
-					"name": "Csv file load node 1 **",
+					"name": "Csv file load node 1",
 					"event": [
 						{
 							"listen": "test",
@@ -13272,7 +13360,18 @@
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(()=>{}, 3000)"
+								],
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -13336,7 +13435,18 @@
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(()=>{}, 3000)"
+								],
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -16691,7 +16801,18 @@
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(()=>{}, 2000)"
+								],
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -16755,7 +16876,18 @@
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(()=>{}, 2000)"
+								],
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -16819,7 +16951,18 @@
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(()=>{}, 2000)"
+								],
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -16883,7 +17026,18 @@
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(()=>{}, 2000)"
+								],
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
