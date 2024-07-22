@@ -17,7 +17,7 @@ import {
 	urlToNodeName,
 } from './replicator';
 import env from '../../utility/environment/environmentManager';
-import { HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
+import { getUpdateRecord, HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
 import { CERT_PREFERENCE_REP } from '../../utility/terms/certificates';
 import { decode, encode, Packr } from 'msgpackr';
 import { WebSocket } from 'ws';
@@ -30,6 +30,7 @@ import { createTLSSelector } from '../../security/keys';
 import * as https from 'node:https';
 import * as tls from 'node:tls';
 import { getHDBNodeTable } from './knownNodes';
+import { asBinary } from 'lmdb';
 //import { operation } from '../../server/serverHelpers/serverUtilities';
 
 const SUBSCRIPTION_REQUEST = 129;
@@ -39,7 +40,8 @@ const DISCONNECT = 142;
 const RESIDENCY_LIST = 130;
 const TABLE_STRUCTURE = 131;
 const TABLE_FIXED_STRUCTURE = 132;
-const RECORD_REQUEST = 133; // request a specific record
+const GET_RECORD = 133; // request a specific record
+const GET_RECORD_RESPONSE = 134; // request a specific record
 export const OPERATION_REQUEST = 136;
 const OPERATION_RESPONSE = 137;
 const SEQUENCE_ID_UPDATE = 143;
@@ -206,7 +208,21 @@ export class NodeReplicationConnection extends EventEmitter {
 	}
 
 	sendRecordRequest(request) {
-		this.socket.send(encode([RECORD_REQUEST, request]));
+		// send a request for a specific record
+		return new Promise((resolve, reject) => {
+			this.socket.send(encode([GET_RECORD, request]));
+			awaiting_response.set(request.requestId, {
+				resolve(data) {
+					// we can immediately resolve this because the data is available.
+					resolve(data);
+					// However, if we are going to record this locally, we need to record it as a relocation event
+					// Determine new residency information
+					let residency = getResidency();
+
+					const updateRecord = getUpdateRecord(primary_store, table_id, audit_store);
+					const record = updateRecord(record_id, record, existing_entry, version, metadata, true, {}, 'relocate',
+				}, reject });
+		});
 	}
 }
 
@@ -483,10 +499,24 @@ export function replicateOverWS(ws, options, authorization) {
 							remoteNodeIds: receiving_data_from_node_ids,
 						});
 						break;
-					case RECORD_REQUEST: {
+					case GET_RECORD: {
 						const { tableId: table_id, id: record_id, requestId: request_id } = data;
-						// TODO: Retrieve the record and update the record with the new residency id
-
+						let table_entry = table_by_id[table_id];
+						if (!table_entry) {
+							return logger.trace?.('Not subscribed to table', table_id);
+						}
+						// we might want to prefetch here
+						let binary_record = table_entry.table.primaryStore.getBinaryFast(record_id);
+						let response_data = Buffer.concat([encode([GET_RECORD_RESPONSE, request_id]), binary_record]);
+						ws.send(response_data);
+						break;
+					}
+					case GET_RECORD_RESPONSE: {
+						// TODO: Decode the data
+						const { resolve, reject } = awaiting_response.get(data.requestId);
+						if (data.error) reject(new Error(data.error));
+						else resolve(data);
+						awaiting_response.delete(data.requestId);
 						break;
 					}
 					case SUBSCRIPTION_REQUEST:

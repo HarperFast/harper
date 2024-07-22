@@ -173,6 +173,7 @@ const DELETE = 2;
 const MESSAGE = 3;
 const INVALIDATE = 4;
 const PATCH = 5;
+const RELOCATE = 6;
 /** Used to indicate we have received a remote local time update */
 export const REMOTE_SEQUENCE_UPDATE = 11;
 const HAS_PREVIOUS_VERSION = 64;
@@ -190,6 +191,8 @@ const EVENT_TYPES = {
 	[INVALIDATE]: 'invalidate',
 	patch: PATCH | HAS_PARTIAL_RECORD,
 	[PATCH]: 'patch',
+	relocate: RELOCATE,
+	[RELOCATE]: 'relocate',
 };
 export function createAuditEntry(
 	txn_time,
