@@ -683,6 +683,7 @@ tls.Server = function (options, secureConnectionListener) {
 	}
 	return origTLSServer.call(this, options, secureConnectionListener);
 };
+tls.Server.prototype = origTLSServer.prototype;
 
 let ca_certs = new Set();
 function createTLSSelector(type, mtls_options) {
