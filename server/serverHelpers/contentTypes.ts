@@ -3,6 +3,7 @@ import { toCsvStream } from '../../dataLayer/export';
 import { pack, unpack, encodeIter } from 'msgpackr';
 import { decode, Encoder, EncoderStream } from 'cbor-x';
 import { createBrotliCompress, brotliCompress, constants } from 'zlib';
+import { ClientError } from '../../utility/errors/hdbError';
 import { Readable } from 'stream';
 import { server } from '../Server';
 import { _assignPackageExport } from '../../index';
@@ -267,14 +268,11 @@ export function findBestSerializer(incoming_message) {
 	}
 	if (!best_serializer) {
 		if (accept_header) {
-			return {
-				serializer() {
-					this.code(406).send(
-						'No supported content types found in Accept header, supported types include: ' +
-							Array.from(media_types.keys()).join(', ')
-					);
-				},
-			};
+			throw new ClientError(
+				'No supported content types found in Accept header, supported types include: ' +
+					Array.from(media_types.keys()).join(', '),
+				406
+			);
 		} else {
 			// default if Accept header is absent
 			best_serializer = media_types.get('application/json');
