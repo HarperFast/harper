@@ -14,14 +14,13 @@ import { OPERATIONS_ENUM, CONFIG_PARAMS } from '../../utility/hdbTerms';
 import { PRIVATEKEY_PEM_NAME } from '../../utility/terms/certificates';
 import { ensureNode } from './subscriptionManager';
 import { getHDBNodeTable } from './knownNodes';
-import { getThisNodeUrl, sendOperationToNode, urlToNodeName, getThisNodeName } from './replicator';
+import { getThisNodeUrl, sendOperationToNode, urlToNodeName, getThisNodeName, hostnameToUrl } from './replicator';
 import * as hdb_logger from '../../utility/logging/harper_logger';
 import { handleHDBError, hdb_errors, ClientError } from '../../utility/errors/hdbError.js';
 const { HTTP_STATUS_CODES } = hdb_errors;
 
 const validation_schema = Joi.object({
-	url: Joi.string(),
-	node_name: Joi.string(),
+	hostname: Joi.string(),
 	rejectUnauthorized: Joi.boolean(),
 	replicates: Joi.boolean(),
 	subscriptions: Joi.array(),
@@ -32,15 +31,18 @@ const validation_schema = Joi.object({
  * @param req
  */
 export async function setNode(req: object) {
+	if (req.node_name && !req.hostname) req.hostname = req.node_name;
+	let { url, hostname } = req;
+	if (!url) url = hostnameToUrl(hostname);
+	else if (!hostname) hostname = req.hostname = urlToNodeName(url);
 	const validation = validateBySchema(req, validation_schema);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
-	const { url } = req;
 	if (req.operation === 'remove_node') {
-		if (!url && !req.node_name) throw new ClientError('url or node_name is required for remove_node operation');
-		const node_record_id = req.node_name ?? urlToNodeName(url);
+		if (!url && !hostname) throw new ClientError('url or hostname is required for remove_node operation');
+		const node_record_id = hostname;
 		const hdb_nodes = getHDBNodeTable();
 		const record = await hdb_nodes.get(node_record_id);
 		if (!record) throw new ClientError(node_record_id + ' does not exist');
@@ -99,14 +101,13 @@ export async function setNode(req: object) {
 	// This is the record that will be added to the other nodes hdb_nodes table
 	const target_add_node_obj = {
 		operation: OPERATIONS_ENUM.ADD_NODE_BACK,
-		node_name: get(CONFIG_PARAMS.REPLICATION_HOSTNAME),
-		target_node_name: req.node_name,
+		hostname: get(CONFIG_PARAMS.REPLICATION_HOSTNAME),
+		target_hostname: hostname,
 		url: this_url,
 		csr,
 		cert_auth,
 	};
 
-	if (get(CONFIG_PARAMS.REPLICATION_HOSTNAME)) target_add_node_obj.node_name = get(CONFIG_PARAMS.REPLICATION_HOSTNAME);
 	if (req.subscriptions) {
 		target_add_node_obj.subscriptions = req.subscriptions.map(reverseSubscription);
 	}
@@ -162,7 +163,7 @@ export async function setNode(req: object) {
 	}
 
 	const node_record = { url, ca: target_node_response.usingCA };
-	if (req.node_name) node_record.name = req.node_name;
+	if (req.hostname) node_record.name = req.hostname;
 	if (req.subscriptions) node_record.subscriptions = req.subscriptions;
 	else node_record.replicates = true;
 
@@ -188,8 +189,8 @@ export async function setNode(req: object) {
  */
 export async function addNodeBack(req) {
 	hdb_logger.trace('addNodeBack received request:', req);
-	if (req.target_node_name && req.target_node_name !== getThisNodeName()) {
-		return { error: `node_name does not match configured node name ${getThisNodeName()}` };
+	if (req.target_hostname && req.target_hostname !== getThisNodeName()) {
+		return { error: `hostname does not match configured node name ${getThisNodeName()}` };
 	}
 
 	const certs = await signCertificate(req);
@@ -220,7 +221,7 @@ export async function addNodeBack(req) {
 			replicates: true,
 		});
 	}
-	await ensureNode(req.node_name, node_record);
+	await ensureNode(req.hostname, node_record);
 	certs.nodeName = getThisNodeName();
 
 	certs.usingCA = rep_ca?.certificate; // in addition to the signed CA, we need to return the CA that is being used for the active certificate

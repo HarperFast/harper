@@ -387,15 +387,17 @@ server.replication = {
 export function getThisNodeUrl() {
 	let url = env.get('replication_url');
 	if (url) return url;
-	let node_name = getThisNodeName();
+	return hostnameToUrl(getThisNodeName());
+}
+export function hostnameToUrl(hostname) {
 	let port = getPortFromListeningPort('replication_port');
-	if (port) return `ws://${node_name}:${port}`;
+	if (port) return `ws://${hostname}:${port}`;
 	port = getPortFromListeningPort('replication_secureport');
-	if (port) return `wss://${node_name}:${port}`;
+	if (port) return `wss://${hostname}:${port}`;
 	port = getPortFromListeningPort('operationsapi_network_port');
-	if (port) return `ws://${node_name}:${port}`;
+	if (port) return `ws://${hostname}:${port}`;
 	port = getPortFromListeningPort('operationsapi_network_secureport');
-	if (port) return `wss://${node_name}:${port}`;
+	if (port) return `wss://${hostname}:${port}`;
 }
 export function urlToNodeName(node_url) {
 	if (node_url) return new URL(node_url).hostname; // this the part of the URL that is the node name, as we want it to match common name in the certificate

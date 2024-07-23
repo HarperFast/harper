@@ -683,9 +683,17 @@ tls.Server = function (options, secureConnectionListener) {
 	}
 	return origTLSServer.call(this, options, secureConnectionListener);
 };
+// restore the original prototype, as it is used internally by Node.js
 tls.Server.prototype = origTLSServer.prototype;
 
 let ca_certs = new Set();
+
+/**
+ * Create a TLS selector that will choose the best TLS configuration/context for a given hostname
+ * @param type
+ * @param mtls_options
+ * @return {(function(*, *): (*|undefined))|*}
+ */
 function createTLSSelector(type, mtls_options) {
 	let secure_contexts = new Map();
 	let default_context;
@@ -748,7 +756,6 @@ function createTLSSelector(type, mtls_options) {
 								key_file: cert.private_key_name,
 								is_self_signed: cert.is_self_signed,
 							};
-							harper_logger.error('assigning secure options', server?.ports, ca_certs.size);
 							if (server) secure_options.sessionIdContext = server.sessionIdContext;
 							let secure_context = tls.createSecureContext(secure_options);
 							secure_context.name = cert.name;
@@ -774,6 +781,8 @@ function createTLSSelector(type, mtls_options) {
 									);
 								}
 							}
+							// we want to configure SNI handling to pick the right certificate based on all the registered SANs
+							// in the certificate
 							const cert_parsed = new X509Certificate(certificate);
 							let hostnames =
 								cert.hostnames ??

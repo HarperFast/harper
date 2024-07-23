@@ -127,13 +127,14 @@ function startSubscriptionToReplications() {
 
 export function* iterateRoutes(options) {
 	for (const route of options.routes || []) {
-		let url, host;
+		let url = route.url;
+		let host;
 		if (typeof route === 'string') {
 			// a plain route string can be a url or hostname (or host)
 			if (route.includes('://')) url = route;
 			else host = route;
 		} else host = route.hostname ?? route.host;
-		if (host) {
+		if (host && !url) {
 			// construct a url from the host and port
 			let secure_port =
 				env.get(CONFIG_PARAMS.REPLICATION_SECUREPORT) ??
