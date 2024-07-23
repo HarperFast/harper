@@ -13,7 +13,7 @@ const cluster_network = require('../utility/clustering/clusterNetwork');
 const cluster_status = require('../utility/clustering/clusterStatus');
 const sys_info = require('../utility/environment/systemInformation');
 const env_mgr = require('../utility/environment/environmentManager');
-const { isHdbInstalled } = require('./run');
+const run = require('./run');
 env_mgr.initSync();
 
 const STATUSES = {
@@ -38,7 +38,7 @@ async function status() {
 		},
 	};
 
-	if (!(await isHdbInstalled())) {
+	if (!(await run.isHdbInstalled())) {
 		status.harperdb.status = STATUSES.NOT_INSTALLED;
 		console.log(YAML.stringify(status));
 		return;
