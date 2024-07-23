@@ -166,13 +166,18 @@ export async function setNode(req: object) {
 	if (req.hostname) node_record.name = req.hostname;
 	if (req.subscriptions) node_record.subscriptions = req.subscriptions;
 	else node_record.replicates = true;
+	if (req.start_time) {
+		node_record.start_time = typeof req.start_time === 'string' ? new Date(req.start_time).getTime() : req.start_time;
+	}
 
 	if (node_record.replicates) {
-		await ensureNode(getThisNodeName(), {
+		const this_node = {
 			url: this_url,
 			ca: cert_auth,
 			replicates: true,
-		});
+		};
+		if (req.start_time) this_node.start_time = req.start_time;
+		await ensureNode(getThisNodeName(), this_node);
 	}
 	await ensureNode(target_node_response.nodeName, node_record);
 
@@ -212,14 +217,17 @@ export async function addNodeBack(req) {
 
 	const node_record = { url: req.url, ca: origin_ca };
 	if (req.subscriptions) node_record.subscriptions = req.subscriptions;
+	if (req.start_time) node_record.start_time = req.start_time;
 	else node_record.replicates = true;
 	const rep_ca = await getReplicationCertAuth();
 	if (node_record.replicates) {
-		await ensureNode(getThisNodeName(), {
+		const this_node = {
 			url: getThisNodeUrl(),
 			ca: rep_ca?.certificate,
 			replicates: true,
-		});
+		};
+		if (req.start_time) this_node.start_time = req.start_time;
+		await ensureNode(getThisNodeName(), this_node);
 	}
 	await ensureNode(req.hostname, node_record);
 	certs.nodeName = getThisNodeName();

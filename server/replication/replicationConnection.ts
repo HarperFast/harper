@@ -1073,7 +1073,7 @@ export function replicateOverWS(ws, options, authorization) {
 				}
 			}
 		} catch (error) {
-			// if the database is closed, just proceed
+			// if the database is closed, just proceed (matches multiple error messages)
 			if (!error.message.includes('Can not re')) throw error;
 		}
 		let connected_node = options.connection?.nodeSubscriptions?.[0];
@@ -1103,7 +1103,7 @@ export function replicateOverWS(ws, options, authorization) {
 
 			const node_id = audit_store && getIdOfRemoteNode(node.name, audit_store);
 			let sequence_entry = table_subscription_to_replicator?.dbisDB?.get([Symbol.for('seq'), node_id]) ?? 1;
-			let start_time = sequence_entry?.seqId ?? 1;
+			let start_time = sequence_entry?.seqId ?? (typeof node.start_time === 'string' ? new Date(node.start_time).getTime() : node.start_time) ?? 1;
 			// if we are connected directly to the node, we start from the last sequence number we received at the top level
 			// TODO: If we become disconnected, and received updates through a proxy, we may want to use that for an updating starting point once we reconnect to the original node
 			if (connected_node !== node) {

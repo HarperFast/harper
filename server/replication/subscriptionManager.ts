@@ -44,7 +44,7 @@ export async function startOnMainThread(options) {
 				if (replicate_all) {
 					let this_name = getThisNodeName();
 					// If it doesn't exist and hasn't been created. Note that this will be null if it has previously been deleted,
-					// and we want don't to recreate nodes for deleted nodes
+					// and we don't want to recreate nodes for deleted nodes
 					if (getHDBNodeTable().primaryStore.get(this_name) === undefined)
 						await ensureNode(this_name, {
 							name: this_name,
@@ -69,16 +69,16 @@ export async function startOnMainThread(options) {
 	 * This is called when a new node is added to the hdb_nodes table
 	 * @param node
 	 */
-	function onNodeUpdate(node, nodeName) {
+	function onNodeUpdate(node, host_name) {
 		const is_self =
-			(getThisNodeName() && nodeName === getThisNodeName()) || (getThisNodeUrl() && node?.url === getThisNodeUrl());
+			(getThisNodeName() && host_name === getThisNodeName()) || (getThisNodeUrl() && node?.url === getThisNodeUrl());
 		if (is_self) {
 			// this is just this node, we don't need to connect to ourselves, but if we get removed, we need to remove all fully replicating connections,
 			// so we update each one
 			const should_fully_replicate = Boolean(node?.replicates);
 			if (is_fully_replicating !== undefined && is_fully_replicating !== should_fully_replicate) {
 				for (let node of getHDBNodeTable().search([])) {
-					if (node.replicates && node.name !== nodeName) onNodeUpdate(node, node.name);
+					if (node.replicates && node.name !== host_name) onNodeUpdate(node, node.name);
 				}
 			}
 			is_fully_replicating = should_fully_replicate;
@@ -90,10 +90,10 @@ export async function startOnMainThread(options) {
 				for (let [database, { worker, nodes }] of db_replication_workers) {
 					let node = nodes[0];
 					if (!node) continue;
-					if (node.name == nodeName) {
+					if (node.name == host_name) {
 						found_node = true;
 						for (let [database, { worker }] of db_replication_workers) {
-							worker?.postMessage({ type: 'unsubscribe-from-node', node: nodeName, database, url });
+							worker?.postMessage({ type: 'unsubscribe-from-node', node: host_name, database, url });
 						}
 						break;
 					}
