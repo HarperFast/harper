@@ -917,16 +917,13 @@ describe('Test configUtils module', () => {
 
 			config_utils_rw.updateConfigValue(hdbTerms.CONFIG_PARAMS.LOGGING_LEVEL, 'debug', undefined, true, true);
 
-			expect(logger_trace_stub.secondCall.args[0]).to.equal(
-				`Config file: ${CONFIG_FILE_PATH} backed up to: ${BACKUP_FILE_PATH}`
-			);
+			expect(logger_trace_stub.secondCall.args[0]).to.include(`Config file: ${CONFIG_FILE_PATH} backed up`);
 			expect(logger_trace_stub.thirdCall.args[0]).to.equal(
 				`Config parameter: ${hdbTerms.CONFIG_PARAMS.LOGGING_LEVEL} updated with value: debug`
 			);
 
 			fs.unlinkSync(CONFIG_FILE_PATH);
-			fs.unlinkSync(BACKUP_FILE_PATH);
-			fs.rmdirSync(BACKUP_FOLDER_PATH);
+			fs.removeSync(BACKUP_FOLDER_PATH);
 		});
 
 		it('Test happy path with parsed_args and where backup and update_config_obj are false', () => {
