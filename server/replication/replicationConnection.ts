@@ -220,8 +220,10 @@ export class NodeReplicationConnection extends EventEmitter {
 					let residency = getResidency();
 
 					const updateRecord = getUpdateRecord(primary_store, table_id, audit_store);
-					const record = updateRecord(record_id, record, existing_entry, version, metadata, true, {}, 'relocate',
-				}, reject });
+					const record = updateRecord(record_id, record, existing_entry, version, metadata, true, {}, 'patch');
+				},
+				reject,
+			});
 		});
 	}
 }
@@ -1103,7 +1105,10 @@ export function replicateOverWS(ws, options, authorization) {
 
 			const node_id = audit_store && getIdOfRemoteNode(node.name, audit_store);
 			let sequence_entry = table_subscription_to_replicator?.dbisDB?.get([Symbol.for('seq'), node_id]) ?? 1;
-			let start_time = sequence_entry?.seqId ?? (typeof node.start_time === 'string' ? new Date(node.start_time).getTime() : node.start_time) ?? 1;
+			let start_time =
+				sequence_entry?.seqId ??
+				(typeof node.start_time === 'string' ? new Date(node.start_time).getTime() : node.start_time) ??
+				1;
 			// if we are connected directly to the node, we start from the last sequence number we received at the top level
 			// TODO: If we become disconnected, and received updates through a proxy, we may want to use that for an updating starting point once we reconnect to the original node
 			if (connected_node !== node) {
