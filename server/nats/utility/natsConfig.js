@@ -47,7 +47,7 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 	const CERT_FILE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE);
 
 	if (!(await fs.exists(CERT_FILE)) && !(await fs.exists(!CA_FILE))) {
-		await keys.writeDefaultCertsToFile();
+		await keys.createNatsCerts();
 	}
 
 	const HDB_ROOT = env_manager.get(CONFIG_PARAMS.ROOTPATH);
