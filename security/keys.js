@@ -37,7 +37,7 @@ Object.assign(exports, {
 	listCertificates,
 	addCertificate,
 	removeCertificate,
-	writeDefaultCertsToFile,
+	createNatsCerts,
 	generateCertsKeys,
 	getReplicationCert,
 	getReplicationCertAuth,
@@ -482,6 +482,12 @@ async function generateKeys() {
 async function generateCertificates(private_key, public_key, ca_cert) {
 	const public_cert = pki.createCertificate();
 
+	if (!public_key) {
+		const rep_cert = await getReplicationCert();
+		const ops_cert = pki.certificateFromPem(rep_cert.options.cert);
+		public_key = ops_cert.publicKey;
+	}
+
 	public_cert.publicKey = public_key;
 	public_cert.serialNumber = Math.random().toString().slice(2, 10);
 	public_cert.validity.notBefore = new Date();
@@ -567,17 +573,20 @@ async function generateCertsKeys() {
 	updateConfigCert();
 }
 
-async function writeDefaultCertsToFile() {
-	getCertTable();
+async function createNatsCerts() {
+	const public_cert = await generateCertificates(
+		pki.privateKeyFromPem(certificates_terms.CERTIFICATE_VALUES.key),
+		undefined,
+		pki.certificateFromPem(certificates_terms.CERTIFICATE_VALUES.cert)
+	);
+
 	const keys_path = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
 
-	const pub_cert = (await getReplicationCert())?.options?.cert;
-	const pub_cert_path = path.join(keys_path, certificates_terms.CERTIFICATE_PEM_NAME);
-	if (!(await fs.exists(pub_cert_path))) await fs.writeFile(pub_cert_path, pub_cert);
+	const pub_cert_path = path.join(keys_path, certificates_terms.NATS_CERTIFICATE_PEM_NAME);
+	if (!(await fs.exists(pub_cert_path))) await fs.writeFile(pub_cert_path, public_cert);
 
-	const ca_cert = (await getReplicationCertAuth())?.certificate;
-	const ca_cert_path = path.join(keys_path, certificates_terms.CA_PEM_NAME);
-	if (!(await fs.exists(ca_cert_path))) await fs.writeFile(ca_cert_path, ca_cert);
+	const ca_cert_path = path.join(keys_path, certificates_terms.NATS_CA_PEM_NAME);
+	if (!(await fs.exists(ca_cert_path))) await fs.writeFile(ca_cert_path, certificates_terms.CERTIFICATE_VALUES.cert);
 }
 
 async function reviewSelfSignedCert() {
@@ -613,8 +622,8 @@ function updateConfigCert() {
 	const cli_env_args = assign_cmdenv_vars(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
 	const keys_path = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
 	const private_key = path.join(keys_path, certificates_terms.PRIVATEKEY_PEM_NAME);
-	const pub_cert = path.join(keys_path, certificates_terms.CERTIFICATE_PEM_NAME);
-	const ca = path.join(keys_path, certificates_terms.CA_PEM_NAME);
+	const nats_pub_cert = path.join(keys_path, certificates_terms.NATS_CERTIFICATE_PEM_NAME);
+	const nats_ca = path.join(keys_path, certificates_terms.NATS_CA_PEM_NAME);
 
 	// This object is what will be added to the harperdb-config.yaml file.
 	// We check for any CLI of Env args and if they are present we use them instead of default values.
@@ -647,8 +656,8 @@ function updateConfigCert() {
 	// Add paths for Nats TLS certs if clustering enabled
 	if (cli_env_args[conf.CLUSTERING_ENABLED.toLowerCase()] || cli_env_args['clustering']) {
 		new_certs[conf.CLUSTERING_TLS_CERTIFICATE] =
-			cli_env_args[conf.CLUSTERING_TLS_CERTIFICATE.toLowerCase()] ?? pub_cert;
-		new_certs[conf.CLUSTERING_TLS_CERT_AUTH] = cli_env_args[conf.CLUSTERING_TLS_CERT_AUTH.toLowerCase()] ?? ca;
+			cli_env_args[conf.CLUSTERING_TLS_CERTIFICATE.toLowerCase()] ?? nats_pub_cert;
+		new_certs[conf.CLUSTERING_TLS_CERT_AUTH] = cli_env_args[conf.CLUSTERING_TLS_CERT_AUTH.toLowerCase()] ?? nats_ca;
 		new_certs[conf.CLUSTERING_TLS_PRIVATEKEY] =
 			cli_env_args[conf.CLUSTERING_TLS_PRIVATEKEY.toLowerCase()] ?? private_key;
 	}
