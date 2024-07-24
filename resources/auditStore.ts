@@ -180,6 +180,7 @@ const HAS_PREVIOUS_VERSION = 64;
 const HAS_EXTENDED_TYPE = 128;
 export const HAS_CURRENT_RESIDENCY_ID = 512;
 export const HAS_PREVIOUS_RESIDENCY_ID = 1024;
+export const HAS_EXPIRATION_EXTENDED_TYPE = 0x1000;
 const EVENT_TYPES = {
 	put: PUT | HAS_RECORD,
 	[PUT]: 'put',
@@ -194,6 +195,21 @@ const EVENT_TYPES = {
 	relocate: RELOCATE,
 	[RELOCATE]: 'relocate',
 };
+
+/**
+ * Creates a binary audit entry
+ * @param txn_time
+ * @param table_id
+ * @param record_id
+ * @param previous_local_time
+ * @param node_id
+ * @param username
+ * @param type
+ * @param encoded_record
+ * @param extended_type
+ * @param residency_id
+ * @param previous_residency_id
+ */
 export function createAuditEntry(
 	txn_time,
 	table_id,
@@ -205,7 +221,8 @@ export function createAuditEntry(
 	encoded_record,
 	extended_type,
 	residency_id,
-	previous_residency_id
+	previous_residency_id,
+	expires_at
 ) {
 	const action = EVENT_TYPES[type];
 	if (!action) {
@@ -229,6 +246,10 @@ export function createAuditEntry(
 	position += 8;
 	if (extended_type & HAS_CURRENT_RESIDENCY_ID) writeInt(residency_id);
 	if (extended_type & HAS_PREVIOUS_RESIDENCY_ID) writeInt(previous_residency_id);
+	if (extended_type & HAS_EXPIRATION_EXTENDED_TYPE) {
+		ENTRY_DATAVIEW.setFloat64(position, expires_at);
+		position += 8;
+	}
 
 	if (username) writeValue(username);
 	else ENTRY_HEADER[position++] = 0;
@@ -293,12 +314,15 @@ export function readAuditEntry(buffer) {
 		const record_id_start = decoder.position;
 		const record_id_end = (decoder.position += length);
 		const version = decoder.readFloat64();
-		let residency_id, previous_residency_id;
+		let residency_id, previous_residency_id, expires_at;
 		if (action & HAS_CURRENT_RESIDENCY_ID) {
 			residency_id = decoder.readInt();
 		}
 		if (action & HAS_PREVIOUS_RESIDENCY_ID) {
 			previous_residency_id = decoder.readInt();
+		}
+		if (action & HAS_EXPIRATION_EXTENDED_TYPE) {
+			expires_at = decoder.readFloat64();
 		}
 		length = decoder.readInt();
 		const username_start = decoder.position;
@@ -332,6 +356,7 @@ export function readAuditEntry(buffer) {
 			extendedType: action,
 			residencyId: residency_id,
 			previousResidencyId: previous_residency_id,
+			expiresAt: expires_at,
 		};
 	} catch (error) {
 		harper_logger.error('Reading audit entry error', error, buffer);

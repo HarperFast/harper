@@ -6,7 +6,13 @@
  */
 
 import { Encoder } from 'msgpackr';
-import { createAuditEntry, readAuditEntry, HAS_PREVIOUS_RESIDENCY_ID, HAS_CURRENT_RESIDENCY_ID } from './auditStore';
+import {
+	createAuditEntry,
+	readAuditEntry,
+	HAS_PREVIOUS_RESIDENCY_ID,
+	HAS_CURRENT_RESIDENCY_ID,
+	HAS_EXPIRATION_EXTENDED_TYPE,
+} from './auditStore';
 import * as harper_logger from '../utility/logging/harper_logger';
 
 // these are matched by lmdb-js for timestamp replacement. the first byte here is used to xor with the first byte of the date as a double so that it ends up less than 32 for easier identification (otherwise dates start with 66)
@@ -142,7 +148,9 @@ export class RecordEncoder extends Encoder {
 						position += 4;
 					}
 				}
-				const value = super.decode(buffer.subarray(position, end), end - position);
+				const value = options?.valueAsBuffer
+					? buffer.subarray(position, end)
+					: super.decode(buffer.subarray(position, end), end - position);
 				return {
 					localTime: local_time,
 					value,
@@ -151,7 +159,7 @@ export class RecordEncoder extends Encoder {
 					residencyId: residency_id,
 				};
 			} // else a normal entry
-			return super.decode(buffer, options);
+			return options?.valueAsBuffer ? buffer : super.decode(buffer, options);
 		} catch (error) {
 			error.message += ', data: ' + buffer.slice(0, 40).toString('hex');
 			throw error;
@@ -314,6 +322,7 @@ export function getUpdateRecord(store, table_id, audit_store) {
 				extended_type |= HAS_PREVIOUS_RESIDENCY_ID;
 				if (!previous_residency_id) previous_residency_id = 0;
 			}
+			if (assign_metadata & HAS_EXPIRATION) extended_type |= HAS_EXPIRATION_EXTENDED_TYPE; // we need to record the expiration in the audit log
 			// we use resolve_record outside of transaction, so must explicitly make it conditional
 			if (resolve_record) put_options.ifVersion = if_version = existing_entry?.version ?? null;
 			const result = store.put(id, record, put_options);
@@ -350,7 +359,8 @@ export function getUpdateRecord(store, table_id, audit_store) {
 								last_value_encoding,
 								extended_type,
 								residency_id,
-								previous_residency_id
+								previous_residency_id,
+								expires_at
 							),
 							{ ifVersion: if_version }
 						);
@@ -370,7 +380,8 @@ export function getUpdateRecord(store, table_id, audit_store) {
 						last_value_encoding,
 						extended_type,
 						residency_id,
-						previous_residency_id
+						previous_residency_id,
+						expires_at
 					),
 					{
 						append: type !== 'invalidate', // for invalidation, we expect the record to be rewritten, so we don't want to necessarily expect pure sequential writes that create full pages
