@@ -250,6 +250,8 @@ export function setReplicator(db_name, table, options) {
 							let request = {
 								requestId: next_id++,
 								tableId: table.tableId,
+								table,
+								entry,
 								id: entry.key,
 							};
 							return connection.sendRecordRequest(request);

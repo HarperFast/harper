@@ -162,6 +162,7 @@ export function makeTable(options) {
 		static updatedTimeProperty = updated_time_property;
 		static propertyResolvers;
 		static sources = [];
+		static _updateRecord = updateRecord;
 		static get expirationMS() {
 			return expiration_ms;
 		}
@@ -2597,7 +2598,7 @@ export function makeTable(options) {
 			const entry = primary_store.getEntry(id, options);
 			if (entry?.residencyId && entry.metadataFlags & INVALIDATED && source_load) {
 				// load from other node
-				return source_load(entry).then(whenPrefetched);
+				return source_load(entry).then((entry) => with_entry(entry, id));
 			}
 			if (entry && context) {
 				if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;

@@ -19,7 +19,7 @@ import {
 import env from '../../utility/environment/environmentManager';
 import { getUpdateRecord, HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
 import { CERT_PREFERENCE_REP } from '../../utility/terms/certificates';
-import { decode, encode, Packr } from 'msgpackr';
+import { decode, encode, Packr, unpackMultiple } from 'msgpackr';
 import { WebSocket } from 'ws';
 import { readFileSync } from 'fs';
 import { threadId } from 'worker_threads';
@@ -31,6 +31,7 @@ import * as https from 'node:https';
 import * as tls from 'node:tls';
 import { getHDBNodeTable } from './knownNodes';
 import { asBinary } from 'lmdb';
+import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility';
 //import { operation } from '../../server/serverHelpers/serverUtilities';
 
 const SUBSCRIPTION_REQUEST = 129;
@@ -212,15 +213,25 @@ export class NodeReplicationConnection extends EventEmitter {
 		return new Promise((resolve, reject) => {
 			this.socket.send(encode([GET_RECORD, request]));
 			awaiting_response.set(request.requestId, {
-				resolve(data) {
+				tableId: request.table.tableId,
+				resolve(entry) {
+					const { table, id, entry: existing_entry } = request;
 					// we can immediately resolve this because the data is available.
-					resolve(data);
+					resolve(entry);
 					// However, if we are going to record this locally, we need to record it as a relocation event
 					// Determine new residency information
-					let residency = getResidency();
-
-					const updateRecord = getUpdateRecord(primary_store, table_id, audit_store);
-					const record = updateRecord(record_id, record, existing_entry, version, metadata, true, {}, 'patch');
+					let residency = table.getResidency(entry.value);
+					let metadata = 0;
+					const record = table._updateRecord(
+						id,
+						entry.value,
+						existing_entry,
+						getNextMonotonicTime(),
+						metadata,
+						true,
+						{},
+						'patch'
+					);
 				},
 				reject,
 			});
@@ -299,6 +310,7 @@ export function replicateOverWS(ws, options, authorization) {
 	const received_residency_lists = [];
 	const MAX_OUTSTANDING_COMMITS = 150;
 	let outstanding_commits = 0;
+	let last_structure_length = 0;
 	let replication_paused;
 	let subscription_request, audit_subscription;
 	let node_subscriptions;
@@ -503,21 +515,52 @@ export function replicateOverWS(ws, options, authorization) {
 						break;
 					case GET_RECORD: {
 						const { tableId: table_id, id: record_id, requestId: request_id } = data;
-						let table_entry = table_by_id[table_id];
-						if (!table_entry) {
-							return logger.trace?.('Not subscribed to table', table_id);
+						let table = table_subscription_to_replicator.tableById[table_id];
+						if (!table) {
+							return logger.warn?.('Unknown table id trying to handle record request', table_id);
+						}
+						// we are sending raw binary data back, so we have to send the typed structure information so the
+						// receiving side can properly decode it. We only need to send this once until it changes again, so we can check if the structure
+						// has changed. It will only grow, so we can just check the length.
+						let structures_binary = table.primaryStore.getBinaryFast(Symbol.for('structures'));
+						let structure_length = structures_binary.length;
+						if (structure_length !== last_structure_length) {
+							last_structure_length = structure_length;
+							let structure = decode(structures_binary);
+							ws.send(
+								encode([
+									TABLE_FIXED_STRUCTURE,
+									{
+										typedStructs: structure.typed,
+										structures: structure.named,
+									},
+									table_id,
+									table.tableName,
+								])
+							);
 						}
 						// we might want to prefetch here
-						let binary_record = table_entry.table.primaryStore.getBinaryFast(record_id);
-						let response_data = Buffer.concat([encode([GET_RECORD_RESPONSE, request_id]), binary_record]);
+						let binary_entry = table.primaryStore.getBinaryFast(record_id);
+						let entry = table.primaryStore.decoder.decode(binary_entry, { valueAsBuffer: true });
+						let response_data = encode([
+							GET_RECORD_RESPONSE,
+							request_id,
+							{
+								value: entry.value,
+								expiresAt: entry.expiresAt,
+							},
+						]);
 						ws.send(response_data);
 						break;
 					}
 					case GET_RECORD_RESPONSE: {
 						// TODO: Decode the data
-						const { resolve, reject } = awaiting_response.get(data.requestId);
+						const { resolve, reject, tableId: table_id } = awaiting_response.get(message[1]);
+						const entry = message[2];
+						const record = table_decoders[table_id].decoder.decode(entry.value);
+						entry.value = record;
 						if (data.error) reject(new Error(data.error));
-						else resolve(data);
+						else resolve(entry);
 						awaiting_response.delete(data.requestId);
 						break;
 					}
@@ -733,7 +776,8 @@ export function replicateOverWS(ws, options, authorization) {
 										encoder.encode({ [table.primaryKey]: record_id }),
 										extended_type,
 										residency_id,
-										audit_record.previousResidencyId
+										audit_record.previousResidencyId,
+										audit_record.expiresAt
 									);
 									writeInt(encoded_invalidation_entry.length);
 									writeBytes(encoded_invalidation_entry);
@@ -981,6 +1025,7 @@ export function replicateOverWS(ws, options, authorization) {
 					value: audit_record.getValue(table_decoder),
 					user: audit_record.user,
 					beginTxn: begin_txn,
+					expiresAt: audit_record.expiresAt,
 				};
 				begin_txn = false;
 				// TODO: Once it is committed, also record the localtime in the table with symbol metadata, so we can resume from that point
