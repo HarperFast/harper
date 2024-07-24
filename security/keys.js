@@ -479,7 +479,7 @@ async function generateKeys() {
 
 //https://www.openssl.org/docs/manmaster/man5/x509v3_config.html
 
-async function generateCertificates(private_key, public_key, ca_cert) {
+async function generateCertificates(ca_private_key, public_key, ca_cert) {
 	const public_cert = pki.createCertificate();
 
 	if (!public_key) {
@@ -506,7 +506,7 @@ async function generateCertificates(private_key, public_key, ca_cert) {
 	public_cert.setSubject(subject);
 	public_cert.setIssuer(ca_cert.subject.attributes);
 	public_cert.setExtensions(certExtensions());
-	public_cert.sign(private_key, forge.md.sha256.create());
+	public_cert.sign(ca_private_key, forge.md.sha256.create());
 
 	return pki.certificateToPem(public_cert);
 }
