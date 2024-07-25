@@ -376,6 +376,13 @@ function validateConfig(config_doc, skip_fs_validation = false) {
 		['operationsApi', 'network', 'domainSocket'],
 		validation.value?.operationsApi?.network?.domainSocket
 	);
+
+	if (config_json?.clustering?.enabled) {
+		config_doc.setIn(
+			['clustering', 'leafServer', 'streams', 'path'],
+			validation.value.clustering.leafServer.streams?.path
+		);
+	}
 }
 
 /**
