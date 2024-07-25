@@ -363,7 +363,7 @@ export function clearThisNodeName() {
 	node_name = undefined;
 }
 
-Object.defineProperty(server, 'nodeName', {
+Object.defineProperty(server, 'hostname', {
 	get() {
 		return getThisNodeName();
 	},
@@ -420,6 +420,7 @@ export function forEachReplicatedDatabase(options, callback) {
 			options?.databases === undefined ||
 			options.databases === '*' ||
 			options.databases.includes(database_name) ||
+			options.databases.some?.((db_config) => db_config.name === database_name) ||
 			!database
 		)
 			callback(database, database_name, true);

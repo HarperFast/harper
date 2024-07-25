@@ -139,6 +139,16 @@ export function makeTable(options) {
 	let residency_list_to_id = new Map();
 	let residency_id_to_list = new Map();
 	let id_incrementer;
+	let replicate_to_count;
+	let database_replications = env_mngr.get(CONFIG_PARAMS.REPLICATION_DATABASES);
+	if (Array.isArray(database_replications)) {
+		for (let db_replication of database_replications) {
+			if (db_replication.name === database_name && db_replication.replicateTo >= 0) {
+				replicate_to_count = db_replication.replicateTo;
+				break;
+			}
+		}
+	}
 	const RangeIterable = primary_store.getRange({ start: false, end: false }).constructor;
 	const MAX_PREFETCH_SEQUENCE = 10;
 	const MAX_PREFETCH_BUNDLE = 6;
@@ -162,7 +172,6 @@ export function makeTable(options) {
 		static updatedTimeProperty = updated_time_property;
 		static propertyResolvers;
 		static sources = [];
-		static _updateRecord = updateRecord;
 		static get expirationMS() {
 			return expiration_ms;
 		}
@@ -528,7 +537,7 @@ export function makeTable(options) {
 				let last_key;
 				if (
 					id_allocation &&
-					id_allocation.nodeName === server.nodeName &&
+					id_allocation.nodeName === server.hostname &&
 					(!hasOtherProcesses(primary_store) || id_allocation.pid === process.pid)
 				) {
 					// the database has an existing id allocation that we can continue from
@@ -588,7 +597,7 @@ export function makeTable(options) {
 							{
 								start: updated_id_allocation.start,
 								end: id_incrementer.maxSafeId,
-								nodeName: server.nodeName,
+								nodeName: server.hostname,
 								pid: process.pid,
 							},
 							Date.now(),
@@ -637,7 +646,7 @@ export function makeTable(options) {
 					id_allocation = {
 						start: last_key,
 						end: last_key + (type === 'Int' ? 0x400 : 0x400000),
-						nodeName: server.nodeName,
+						nodeName: server.hostname,
 						pid: process.pid,
 					};
 					id_before = 0;
@@ -711,7 +720,36 @@ export function makeTable(options) {
 			return dbis_db.get([Symbol.for('residency_by_id'), id]);
 		}
 
-		static getResidency(record, previous_residency_id) {
+		static setResidency(getResidency: (record: object, context: Context, previous_residency: string[]) => string[]) {
+			TableResource.getResidency = getResidency;
+		}
+		static getResidency(record: object, context: Context, previous_residency: string[]) {
+			let count = replicate_to_count;
+			if (context.replicateTo != undefined) {
+				// if the context specifies where we are replicating to, use that
+				if (Array.isArray(context.replicateTo)) {
+					return context.replicateTo.includes(server.hostname)
+						? context.replicateTo
+						: [server.hostname, ...context.replicateTo];
+				}
+				if (context.replicateTo >= 0) count = context.replicateTo;
+			}
+			if (count >= 0 && server.nodes) {
+				// if we are given a count, choose nodes and return them
+				let replicate_to = [server.hostname]; // start with ourselves, we should always be in the list
+				if (previous_residency) {
+					// if we have a previous residency, we should preserve it
+					replicate_to.push(...previous_residency.slice(0, count));
+				} else {
+					// otherwise need to create a new list of nodes to replicate to, based on available nodes
+					// randomize this to ensure distribution of data
+					let starting_index = Math.floor(server.nodes.length * Math.random());
+					replicate_to.push(...server.nodes.slice(starting_index, starting_index + count));
+					let remaining_to_add = starting_index + count - server.nodes.length;
+					if (remaining_to_add > 0) replicate_to.push(...server.nodes.slice(0, remaining_to_add));
+				}
+				return replicate_to;
+			}
 			return; // returning undefined will return the default residency of replicating everywhere
 		}
 
@@ -991,6 +1029,38 @@ export function makeTable(options) {
 				},
 			});
 		}
+
+		/**
+		 * Record the relocation of an entry (when a record is moved to a different node)
+		 * @param existing_entry
+		 * @param entry
+		 */
+		static _recordRelocate(existing_entry, entry) {
+			let context = {
+				previousResidency: this.getResidencyRecord(existing_entry.residencyId),
+				isRelocation: true,
+			};
+			let residency = this.getResidency(entry.value, context);
+			let residency_id: number;
+			if (residency) {
+				if (!Array.isArray(residency)) throw new Error('Residency must be an array');
+				if (!residency.includes(server.hostname)) return; // if we aren't in the residency, we don't need to do anything, we are not responsible for storing this record
+				residency_id = getResidencyId(residency);
+			}
+			let metadata = 0;
+			const record = updateRecord(
+				existing_entry.key,
+				entry.value, // store the record we downloaded
+				existing_entry,
+				getNextMonotonicTime(), // version number is just the current time
+				metadata,
+				true,
+				{ residencyId: residency_id, expiresAt: entry.expiresAt },
+				'patch',
+				false,
+				null // the audit record value should be empty since there are no changes to the actual data
+			);
+		}
 		/**
 		 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
 		 */
@@ -1195,11 +1265,8 @@ export function makeTable(options) {
 					let audit_record, residency_id;
 					if (options) residency_id = options.residencyId;
 					else {
-						residency_id = getResidencyId(
-							TableResource.getResidency(record_to_store, () => {
-								return TableResource.getResidencyRecord(entry.residencyId);
-							})
-						);
+						if (entry?.residencyId) context.previousResidency = TableResource.getResidencyRecord(entry.residencyId);
+						residency_id = getResidencyId(TableResource.getResidency(record_to_store, context));
 					}
 					if (!full_update) {
 						// that is a CRDT, we use our own data as the basis for the audit record, which will include information about the incremental updates
@@ -2578,9 +2645,10 @@ export function makeTable(options) {
 	}
 	function loadLocalRecord(id, context, options, sync, with_entry) {
 		if (TableResource.getResidencyById) {
+			// this is a special for when the residency can be determined from the id (hash-based sharding)
 			const residency = TableResource.getResidencyById(id);
 			if (residency) {
-				if (!residency.includes(server.replication.nodeName)) {
+				if (!residency.includes(server.hostname)) {
 					// this record is not on this node, so we shouldn't load it here
 					return source_load({ key: id, residencyId: residency }).then(with_entry, (error) => {
 						// TODO: This doesn't have a mechanism for returning errors yet

@@ -219,19 +219,8 @@ export class NodeReplicationConnection extends EventEmitter {
 					// we can immediately resolve this because the data is available.
 					resolve(entry);
 					// However, if we are going to record this locally, we need to record it as a relocation event
-					// Determine new residency information
-					let residency = table.getResidency(entry.value);
-					let metadata = 0;
-					const record = table._updateRecord(
-						id,
-						entry.value,
-						existing_entry,
-						getNextMonotonicTime(),
-						metadata,
-						true,
-						{},
-						'patch'
-					);
+					// and determine new residency information
+					table._recordRelocate(existing_entry, entry);
 				},
 				reject,
 			});
@@ -1208,7 +1197,8 @@ export function replicateOverWS(ws, options, authorization) {
 			options.databases &&
 			options.databases != '*' &&
 			!options.databases[database_name] &&
-			!options.databases.includes?.(database_name)
+			!options.databases.includes?.(database_name) &&
+			!options.databases.some?.((db_config) => db_config.name === database_name)
 		) {
 			// TODO: Check the node subscriptions
 			return logger.warn(`Access to database "${database_name}" is not permitted`);
@@ -1332,7 +1322,7 @@ function ensureTableIfChanged(table_definition, existing_table) {
 	let has_changes = false;
 	let schema_defined = table_definition.schemaDefined;
 	let attributes = existing_table.attributes || [];
-	for (let i = 0; i < table_definition.attributes.length; i++) {
+	for (let i = 0; i < table_definition.attributes?.length; i++) {
 		let ensure_attribute = table_definition.attributes[i];
 		let existing_attribute = attributes[i];
 		if (
