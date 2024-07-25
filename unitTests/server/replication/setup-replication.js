@@ -27,9 +27,10 @@ exports.createTestTable = async function createTestTable(database_path, table_na
 	});
 	// wait for the database to be resynced
 	await new Promise((resolve) => setTimeout(resolve, 10));
-	TestTable.getResidency = (record) => {
-		return record.locations;
-	};
+	let originalGetResidency = TestTable.getResidency;
+	TestTable.setResidency((record, context) => {
+		return record.locations ?? originalGetResidency(record, context);
+	});
 	return TestTable;
 };
 exports.createNode = async function createNode(index, database_path, node_count) {

@@ -26,7 +26,7 @@ describe('Replication', () => {
 	let database_config;
 	function addWorkerNode(index) {
 		const child_process = fork(
-			__filename.replace(/\.js/, '-thread.js'),
+			__filename.replace(/\-test.js/, '-thread.js'),
 			[index, database_config.data.path + '/test-replication-' + index],
 			{}
 		);
@@ -262,11 +262,16 @@ describe('Replication', () => {
 		it('A write to the table with sharding defined should replicate to one node', async function () {
 			this.timeout(100000);
 			let name = 'name ' + Math.random();
-			await TestTable.put({
-				id: '8',
-				name,
-				locations: ['node-1', 'node-3'],
-			});
+			await TestTable.put(
+				{
+					id: '8',
+					name,
+					//locations: ['node-1', 'node-3'],
+				},
+				{
+					replicateTo: ['node-3'],
+				}
+			);
 
 			let retries = 10;
 			do {
@@ -277,14 +282,14 @@ describe('Replication', () => {
 					continue;
 				}
 				// verify that this is a small partial record, and invalidation entry
-				assert(result.length < 40);
+				assert(result.length < 30);
 				result = test_stores[2].getBinary('8');
 				if (!result) {
 					assert(--retries > 0);
 					continue;
 				}
 				// verify that this is a full record
-				assert(result.length > 50);
+				assert(result.length > 30);
 				break;
 			} while (true);
 			// now verify that the record can be loaded on-demand in the other thread

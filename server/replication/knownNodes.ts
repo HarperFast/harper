@@ -5,6 +5,7 @@ import { isMainThread } from 'worker_threads';
 import env from '../../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 let hdb_node_table;
+server.nodes = [];
 
 export function getHDBNodeTable() {
 	return (
@@ -50,6 +51,12 @@ export function subscribeToNodeUpdates(listener) {
 		.subscribe({})
 		.then(async (events) => {
 			for await (let event of events) {
+				// remove any nodes that have been updated or deleted
+				server.nodes = server.nodes.filter((node) => node.name !== event.id);
+				if (event.type === 'put' && event.id !== getThisNodeName()) {
+					// add any new nodes
+					server.nodes.push(event.value);
+				}
 				if (event.type === 'put' || event.type === 'delete') {
 					listener(event.value, event.id);
 				}

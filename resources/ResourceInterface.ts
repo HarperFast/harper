@@ -35,6 +35,8 @@ export interface Context {
 	staleIfError?: boolean;
 	/**	 Indicates any cached data must be revalidated	 */
 	mustRevalidate?: boolean;
+	/**	 An array of nodes to replicate to */
+	replicateTo?: string[];
 }
 interface DirectCondition {
 	attribute: string;
