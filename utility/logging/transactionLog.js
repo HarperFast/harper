@@ -53,7 +53,7 @@ async function readTransactionLog(req) {
 
 		return harperBridge.readAuditLog(req);
 	} else {
-		await readTransactionLogNats(req);
+		return await readTransactionLogNats(req);
 	}
 }
 
