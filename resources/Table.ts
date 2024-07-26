@@ -1043,7 +1043,9 @@ export function makeTable(options) {
 			let residency = this.getResidency(entry.value, context);
 			let residency_id: number;
 			if (residency) {
-				if (!Array.isArray(residency)) throw new Error('Residency must be an array');
+				if (!Array.isArray(residency)) {
+					throw new Error('Residency must be an array, but was: ' + residency);
+				}
 				if (!residency.includes(server.hostname)) return; // if we aren't in the residency, we don't need to do anything, we are not responsible for storing this record
 				residency_id = getResidencyId(residency);
 			}
@@ -1267,11 +1269,17 @@ export function makeTable(options) {
 					else {
 						if (entry?.residencyId) context.previousResidency = TableResource.getResidencyRecord(entry.residencyId);
 						let residency = TableResource.getResidency(record_to_store, context);
-						if (!Array.isArray(residency)) throw new Error('Residency must be an array');
-						if (!residency.includes(server.hostname)) return; // if we aren't in the residency, we don't need to do anything, we are not responsible for storing this record
+						if (residency) {
+							if (!Array.isArray(residency)) {
+								throw new Error('Residency must be an array, got: ' + residency);
+							}
+							if (!residency.includes(server.hostname)) {
+								// if we aren't in the residency, add ourselves.
+								// TODO: we probably want to allow this, but we need to write the partial record in the main table and the full record in the audit log
+								residency.push(server.hostname);
+							}
+						}
 						residency_id = getResidencyId(residency);
-
-						residency_id = getResidencyId();
 					}
 					if (!full_update) {
 						// that is a CRDT, we use our own data as the basis for the audit record, which will include information about the incremental updates
