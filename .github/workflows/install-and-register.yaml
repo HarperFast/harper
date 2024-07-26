@@ -70,6 +70,14 @@ jobs:
              
         export SERVER_IP="\$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)"
         
+        export HTTP_VARS="--HTTP_PORT 9926 --OPERATIONSAPI_NETWORK_PORT 9925"
+        if [ "${{ inputs.httpsOn }}" == "true" ];
+        then
+        export HTTP_VARS="--HTTP_SECUREPORT 9926 --OPERATIONSAPI_NETWORK_SECUREPORT 9925"
+        fi
+        
+        export CLI_ARGS=--TC_AGREEMENT yes --ROOTPATH /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --LOGGING_LEVEL trace --REPLICATION_HOSTNAME $(echo "$public_dns_name" | cut -d '.' -f 1) --REPLICATION_URL wss://\$SERVER_IP:9925 --HARPERDB_FINGERPRINT '${{ secrets.HDB_FINGERPRINT }}' --HARPERDB_LICENSE '${{ secrets.HDB_LICENSE }}' --CLUSTERING_ENABLED false --CLUSTERING true --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PORT 12345 --CLUSTERING_LOGLEVEL info --CLUSTERING_REPUBLISHMESSAGES true --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) \$HTTP_VARS
+    
         if [ "${{ inputs.installType }}" == "sourceCode" ];
         then
           echo "hdb_install_type parameter set to ${{inputs.installType }}. Installing HarperDB from source code..."
@@ -84,7 +92,7 @@ jobs:
 
           echo "HarperDB install..."
           cd /home/ubuntu/harperdb/bin
-          node harperdb.js start --TC_AGREEMENT yes --ROOTPATH /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --OPERATIONSAPI_NETWORK_PORT 9925 --HTTP_PORT 9926 --LOGGING_LEVEL trace --REPLICATION_HOSTNAME $(echo "$public_dns_name" | cut -d '.' -f 1) --REPLICATION_URL wss://\$SERVER_IP:9925 --HARPERDB_FINGERPRINT '${{ secrets.HDB_FINGERPRINT }}' --HARPERDB_LICENSE '${{ secrets.HDB_LICENSE }}' --CLUSTERING_ENABLED true --CLUSTERING true --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PORT 12345 --CLUSTERING_LOGLEVEL info --CLUSTERING_REPUBLISHMESSAGES true --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) --OPERATIONSAPI_NETWORK_HTTPS ${{ inputs.httpsOn }} --CUSTOMFUNCTIONS_NETWORK_HTTPS ${{ inputs.httpsOn }}
+          node harperdb.js start \$CLI_ARGS
           
           echo "Register HarperDB..."
           cd /home/ubuntu/harperdb/utility/devops
@@ -101,7 +109,7 @@ jobs:
           npm --loglevel=error install -g harperdb-${{ inputs.harperdbVersion }}.tgz --legacy-peer-deps
 
           echo "HarperDB install..."
-          harperdb start --TC_AGREEMENT yes --ROOTPATH /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --OPERATIONSAPI_NETWORK_PORT 9925 --HTTP_PORT 9926 --LOGGING_LEVEL trace --REPLICATION_HOSTNAME $(echo "$public_dns_name" | cut -d '.' -f 1) --REPLICATION_URL wss://\$SERVER_IP:9925 --HARPERDB_FINGERPRINT '${{ secrets.HDB_FINGERPRINT }}' --HARPERDB_LICENSE '${{ secrets.HDB_LICENSE }}' --CLUSTERING_ENABLED true --CLUSTERING true --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PORT 12345 --CLUSTERING_LOGLEVEL info --CLUSTERING_REPUBLISHMESSAGES true --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) --OPERATIONSAPI_NETWORK_HTTPS ${{ inputs.httpsOn }} --CUSTOMFUNCTIONS_NETWORK_HTTPS ${{ inputs.httpsOn }}
+          harperdb start \$CLI_ARGS
         
         elif [ "${{ inputs.installType }}" == 'none' ];
         then
