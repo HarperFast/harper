@@ -48733,7 +48733,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"set_configuration\",\n    \"logging_auditLog\": true,\n    \"customFunctions_enabled\": true,\n    \"localStudio_enabled\": true,\n \"clustering_enabled\": true\n}"
+							"raw": "{\n\t\"operation\": \"set_configuration\",\n    \"logging_auditLog\": true,\n    \"customFunctions_enabled\": true,\n    \"localStudio_enabled\": true,\n    \"clustering_enabled\": true,\n    \"replication_url\": null\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -48763,7 +48763,7 @@
 									"});",
 									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
-									"setTimeout(() => {}, 20000)"
+									"setTimeout(() => {}, 60000)"
 								],
 								"type": "text/javascript"
 							}

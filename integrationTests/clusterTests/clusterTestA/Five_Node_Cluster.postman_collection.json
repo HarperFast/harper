@@ -580,7 +580,7 @@
 									"    const jsonData = pm.response.json();",
 									"    pm.expect(jsonData.message).to.eql(\"Restarting HarperDB. This may take up to 60 seconds.\")",
 									"});",
-									"setTimeout(() => {}, 30000) // wait for the restart to complete"
+									"setTimeout(() => {}, 60000) // wait for the restart to complete"
 								],
 								"type": "text/javascript",
 								"packages": {}
