@@ -520,6 +520,7 @@ function updateConfigValue(
 
 	// Creates a backup of config before new config is written to disk.
 	if (create_backup === true) {
+		logger.notify('the config:', String(config_doc));
 		backupConfigFile(old_config_path, hdb_root);
 	}
 
