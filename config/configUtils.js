@@ -198,7 +198,7 @@ function getDefaultConfig(param) {
  */
 function getConfigValue(param) {
 	if (param == null) {
-		logger.error(EMPTY_GET_VALUE);
+		logger.info(EMPTY_GET_VALUE);
 		return undefined;
 	}
 
