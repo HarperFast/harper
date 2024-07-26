@@ -56,7 +56,6 @@ const SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY = 300;
 // We want it be fairly quick so we can let the sending node know that we have received and committed the update.
 const COMMITTED_UPDATE_DELAY = 2;
 const PING_INTERVAL = 300000;
-export let awaiting_response = new Map();
 let secure_contexts: Map<string, tls.SecureContext>;
 /**
  * Handles reconnection, and requesting catch-up
@@ -111,6 +110,11 @@ export async function createWebSocket(url, options?) {
 		highWaterMark: 128 * 1024,
 	});
 }
+
+/**
+ * This represents a persistent connection to a node for replication, which handles
+ * sockets that may be disconnected and reconnected
+ */
 export class NodeReplicationConnection extends EventEmitter {
 	socket: WebSocket;
 	startTime: number;
@@ -120,6 +124,9 @@ export class NodeReplicationConnection extends EventEmitter {
 	isFinished = false;
 	nodeSubscriptions = [];
 	replicateTablesByDefault: boolean;
+	session: any;
+	sessionResolve: Function;
+	sessionReject: Function;
 	nodeName: string;
 	constructor(public url, public subscription, public databaseName) {
 		super();
@@ -127,6 +134,7 @@ export class NodeReplicationConnection extends EventEmitter {
 	}
 
 	async connect() {
+		if (!this.session) this.resetSession();
 		const tables = [];
 		// TODO: Need to do this specifically for each node
 		this.socket = await createWebSocket(this.url);
@@ -154,6 +162,7 @@ export class NodeReplicationConnection extends EventEmitter {
 				},
 				{ replicates: true } // pre-authorized, but should only make publish: true if we are allowing reverse subscriptions
 			);
+			this.sessionResolve(session);
 		});
 		this.socket.on('error', (error) => {
 			if (error.code !== 'ECONNREFUSED') {
@@ -163,6 +172,7 @@ export class NodeReplicationConnection extends EventEmitter {
 					);
 				else logger.error?.(`Error in connection to ${this.url} due to ${error.message}`);
 			}
+			this.sessionReject(error);
 		});
 		this.socket.on('close', (code, reason_buffer) => {
 			// if we get disconnected, notify subscriptions manager so we can reroute through another node
@@ -191,11 +201,18 @@ export class NodeReplicationConnection extends EventEmitter {
 				);
 			}
 			session = null;
+			this.resetSession();
 			// try to reconnect
 			setTimeout(() => {
 				this.connect();
 			}, this.retryTime).unref();
 			this.retryTime += this.retryTime >> 3; // increase by 12% each time
+		});
+	}
+	resetSession() {
+		this.session = new Promise((resolve, reject) => {
+			this.sessionResolve = resolve;
+			this.sessionReject = reject;
 		});
 	}
 	subscribe(node_subscriptions, replicate_tables_by_default) {
@@ -208,22 +225,9 @@ export class NodeReplicationConnection extends EventEmitter {
 		this.socket.close(1008, 'No longer subscribed');
 	}
 
-	sendRecordRequest(request) {
-		// send a request for a specific record
-		return new Promise((resolve, reject) => {
-			this.socket.send(encode([GET_RECORD, request]));
-			awaiting_response.set(request.requestId, {
-				tableId: request.table.tableId,
-				resolve(entry) {
-					const { table, id, entry: existing_entry } = request;
-					// we can immediately resolve this because the data is available.
-					resolve(entry);
-					// However, if we are going to record this locally, we need to record it as a relocation event
-					// and determine new residency information
-					table._recordRelocate(existing_entry, entry);
-				},
-				reject,
-			});
+	getRecord(request) {
+		return this.session.then((session) => {
+			return session.getRecord(request);
 		});
 	}
 }
@@ -262,6 +266,7 @@ export function replicateOverWS(ws, options, authorization) {
 		close(1008, 'Unauthorized');
 		return;
 	}
+	let awaiting_response = new Map();
 	let receiving_data_from_node_ids = [];
 	let remote_node_name = authorization.name;
 	if (remote_node_name && options.connection) options.connection.nodeName = remote_node_name;
@@ -293,6 +298,7 @@ export function replicateOverWS(ws, options, authorization) {
 	}
 	let schema_update_listener, db_removal_listener;
 	const table_decoders = [];
+	const remote_table_by_id = [];
 	let receiving_data_from_node_names;
 	const residency_map = [];
 	const sent_residency_lists = [];
@@ -503,42 +509,54 @@ export function replicateOverWS(ws, options, authorization) {
 						});
 						break;
 					case GET_RECORD: {
-						const { tableId: table_id, id: record_id, requestId: request_id } = data;
-						let table = table_subscription_to_replicator.tableById[table_id];
-						if (!table) {
-							return logger.warn?.('Unknown table id trying to handle record request', table_id);
+						const request_id = data;
+						let response_data: Buffer;
+						try {
+							const record_id = message[3];
+							let table = remote_table_by_id[table_id] || (remote_table_by_id[table_id] = tables[message[4]]);
+							if (!table) {
+								return logger.warn?.('Unknown table id trying to handle record request', table_id);
+							}
+							// we are sending raw binary data back, so we have to send the typed structure information so the
+							// receiving side can properly decode it. We only need to send this once until it changes again, so we can check if the structure
+							// has changed. It will only grow, so we can just check the length.
+							let structures_binary = table.primaryStore.getBinaryFast(Symbol.for('structures'));
+							let structure_length = structures_binary.length;
+							if (structure_length !== last_structure_length) {
+								last_structure_length = structure_length;
+								let structure = decode(structures_binary);
+								ws.send(
+									encode([
+										TABLE_FIXED_STRUCTURE,
+										{
+											typedStructs: structure.typed,
+											structures: structure.named,
+										},
+										table_id,
+										table.tableName,
+									])
+								);
+							}
+							// we might want to prefetch here
+							let binary_entry = table.primaryStore.getBinaryFast(record_id);
+							let entry = table.primaryStore.decoder.decode(binary_entry, { valueAsBuffer: true });
+							response_data = encode([
+								GET_RECORD_RESPONSE,
+								request_id,
+								{
+									value: entry.value,
+									expiresAt: entry.expiresAt,
+								},
+							]);
+						} catch (error) {
+							response_data = encode([
+								GET_RECORD_RESPONSE,
+								request_id,
+								{
+									error: error.message,
+								},
+							]);
 						}
-						// we are sending raw binary data back, so we have to send the typed structure information so the
-						// receiving side can properly decode it. We only need to send this once until it changes again, so we can check if the structure
-						// has changed. It will only grow, so we can just check the length.
-						let structures_binary = table.primaryStore.getBinaryFast(Symbol.for('structures'));
-						let structure_length = structures_binary.length;
-						if (structure_length !== last_structure_length) {
-							last_structure_length = structure_length;
-							let structure = decode(structures_binary);
-							ws.send(
-								encode([
-									TABLE_FIXED_STRUCTURE,
-									{
-										typedStructs: structure.typed,
-										structures: structure.named,
-									},
-									table_id,
-									table.tableName,
-								])
-							);
-						}
-						// we might want to prefetch here
-						let binary_entry = table.primaryStore.getBinaryFast(record_id);
-						let entry = table.primaryStore.decoder.decode(binary_entry, { valueAsBuffer: true });
-						let response_data = encode([
-							GET_RECORD_RESPONSE,
-							request_id,
-							{
-								value: entry.value,
-								expiresAt: entry.expiresAt,
-							},
-						]);
 						ws.send(response_data);
 						break;
 					}
@@ -546,11 +564,13 @@ export function replicateOverWS(ws, options, authorization) {
 						// TODO: Decode the data
 						const { resolve, reject, tableId: table_id } = awaiting_response.get(message[1]);
 						const entry = message[2];
-						const record = table_decoders[table_id].decoder.decode(entry.value);
-						entry.value = record;
-						if (data.error) reject(new Error(data.error));
-						else resolve(entry);
-						awaiting_response.delete(data.requestId);
+						if (entry.error) reject(new Error(entry.error));
+						else {
+							const record = table_decoders[table_id].decoder.decode(entry.value);
+							entry.value = record;
+							resolve(entry);
+						}
+						awaiting_response.delete(message[1]);
 						break;
 					}
 					case SUBSCRIPTION_REQUEST:
@@ -1079,6 +1099,9 @@ export function replicateOverWS(ws, options, authorization) {
 		clearTimeout(receive_ping_timer);
 		if (audit_subscription) audit_subscription.emit('close');
 		if (subscription_request) subscription_request.end();
+		for (let [id, { reject }] of awaiting_response) {
+			reject(new Error('Connection closed'));
+		}
 		logger.info?.(connection_id, 'closed', code, reason_buffer?.toString());
 	});
 
@@ -1263,12 +1286,45 @@ export function replicateOverWS(ws, options, authorization) {
 		logger.trace?.('Sending database schema for node', 'database name', database_name, Object.keys(tables));
 		ws.send(encode([DB_SCHEMA, tables, database_name]));
 	}
-
+	let next_id = 1;
+	let sent_table_names = [];
 	return {
 		end() {
 			// cleanup
 			if (subscription_request) subscription_request.end();
 			if (audit_subscription) audit_subscription.emit('close');
+		},
+		getRecord(request) {
+			// send a request for a specific record
+			let request_id = next_id++;
+			return new Promise((resolve, reject) => {
+				const message = [GET_RECORD, request_id, request.table.tableId, request.id];
+				if (!sent_table_names[request.table.tableId]) {
+					message.push(request.table.tableName);
+					sent_table_names[request.table.tableId] = true;
+				}
+				ws.send(encode(message));
+				awaiting_response.set(request_id, {
+					tableId: request.table.tableId,
+					resolve(entry) {
+						const { table, entry: existing_entry } = request;
+						// we can immediately resolve this because the data is available.
+						resolve(entry);
+						// However, if we are going to record this locally, we need to record it as a relocation event
+						// and determine new residency information
+						table._recordRelocate(existing_entry, entry);
+					},
+					reject,
+				});
+			});
+		},
+		sendOperation(operation) {
+			const request_id = next_id++;
+			operation.requestId = request_id;
+			ws.send(encode([OPERATION_REQUEST, operation]));
+			return new Promise((resolve, reject) => {
+				awaiting_response.set(request_id, { resolve, reject });
+			});
 		},
 	};
 

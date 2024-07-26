@@ -218,7 +218,7 @@ export function setReplicator(db_name, table, options) {
 					// We only need one subscription for the database
 					// TODO: Eventually would be nice to have a real database subscription that delegated each specific table
 					// event to each table
-					subscription = this.subscription = new IterableEventQueue();
+					subscription = new IterableEventQueue();
 					db_subscriptions.set(db_name, subscription);
 					subscription.tableById = table_by_id;
 					subscription.auditStore = table.auditStore;
@@ -227,6 +227,7 @@ export function setReplicator(db_name, table, options) {
 					if (resolve) resolve(subscription);
 					return subscription;
 				}
+				this.subscription = subscription;
 			}
 			static subscribeOnThisThread(worker_index, total_workers) {
 				// we need a subscription on every thread because we could get subscription requests from any
@@ -249,12 +250,11 @@ export function setReplicator(db_name, table, options) {
 							const connection = getConnection(node.url, Replicator.subscription, db_name);
 							let request = {
 								requestId: next_id++,
-								tableId: table.tableId,
 								table,
 								entry,
 								id: entry.key,
 							};
-							return connection.sendRecordRequest(request);
+							return connection.getRecord(request);
 						}
 					}
 				}
@@ -282,12 +282,10 @@ function getConnection(url, subscription, db_name) {
 
 export async function sendOperationToNode(node, operation, options) {
 	const socket = await createWebSocket(node.url, options);
-	replicateOverWS(socket, {}, {});
-	operation.requestId = next_id++;
+	let session = replicateOverWS(socket, {}, {});
 	return new Promise((resolve, reject) => {
 		socket.on('open', () => {
-			socket.send(encode([OPERATION_REQUEST, operation]));
-			awaiting_response.set(operation.requestId, { resolve, reject });
+			resolve(session.sendOperation(operation));
 		});
 		socket.on('error', (error) => {
 			reject(error);

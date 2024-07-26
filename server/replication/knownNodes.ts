@@ -52,10 +52,11 @@ export function subscribeToNodeUpdates(listener) {
 		.then(async (events) => {
 			for await (let event of events) {
 				// remove any nodes that have been updated or deleted
-				server.nodes = server.nodes.filter((node) => node.name !== event.id);
-				if (event.type === 'put' && event.id !== getThisNodeName()) {
+				let name = event.value.name;
+				server.nodes = server.nodes.filter((node) => node !== name);
+				if (event.type === 'put' && name !== getThisNodeName()) {
 					// add any new nodes
-					server.nodes.push(event.value);
+					server.nodes.push(name);
 				}
 				if (event.type === 'put' || event.type === 'delete') {
 					listener(event.value, event.id);

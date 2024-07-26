@@ -1,6 +1,7 @@
 const { createNode, createTestTable } = require('./setup-replication');
 
 async function startNode() {
+	if (!process.send) return; // not a child process
 	try {
 		const index = +process.argv[2];
 		const database_path = process.argv[3];

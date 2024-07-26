@@ -384,7 +384,7 @@ export function makeTable(options) {
 										txn_in_progress.resolve();
 									} else {
 										// write in the current transaction if one is in progress
-										writeUpdate(event, txn_in_progress);
+										txn_in_progress.write_promises.push(writeUpdate(event, txn_in_progress));
 										continue;
 									}
 								}
@@ -428,10 +428,10 @@ export function makeTable(options) {
 											// event/context as transaction in progress and then future events
 											// are applied with that context until the next transaction begins/ends
 											txn_in_progress = event;
-											writeUpdate(event, event);
+											txn_in_progress.write_promises = [writeUpdate(event, event)];
 											return new Promise((resolve) => {
-												// callback for when this transaction is finished (will be called on next txn begin/end)
-												txn_in_progress.resolve = resolve;
+												// callback for when this transaction is finished (will be called on next txn begin/end).
+												txn_in_progress.resolve = () => resolve(Promise.all(txn_in_progress.write_promises)); // and make sure we wait for the write update to finish
 											});
 										}
 										return writeUpdate(event, event);
@@ -1052,11 +1052,11 @@ export function makeTable(options) {
 				existing_entry.key,
 				entry.value, // store the record we downloaded
 				existing_entry,
-				getNextMonotonicTime(), // version number is just the current time
+				existing_entry.version, // version number should not change
 				metadata,
 				true,
 				{ residencyId: residency_id, expiresAt: entry.expiresAt },
-				'patch',
+				'relocate',
 				false,
 				null // the audit record value should be empty since there are no changes to the actual data
 			);
@@ -1263,10 +1263,15 @@ export function makeTable(options) {
 					if (record_to_store?.[RECORD_PROPERTY])
 						throw new Error('Can not assign a record to a record, check for circular references');
 					let audit_record, residency_id;
-					if (options) residency_id = options.residencyId;
+					if (options?.residencyId != undefined) residency_id = options.residencyId;
 					else {
 						if (entry?.residencyId) context.previousResidency = TableResource.getResidencyRecord(entry.residencyId);
-						residency_id = getResidencyId(TableResource.getResidency(record_to_store, context));
+						let residency = TableResource.getResidency(record_to_store, context);
+						if (!Array.isArray(residency)) throw new Error('Residency must be an array');
+						if (!residency.includes(server.hostname)) return; // if we aren't in the residency, we don't need to do anything, we are not responsible for storing this record
+						residency_id = getResidencyId(residency);
+
+						residency_id = getResidencyId();
 					}
 					if (!full_update) {
 						// that is a CRDT, we use our own data as the basis for the audit record, which will include information about the incremental updates
@@ -1353,7 +1358,7 @@ export function makeTable(options) {
 							txn_time,
 							0,
 							audit,
-							{ user: context?.user, residencyId: options?.residencyId, nodeId: options?.nodeId },
+							{ user: context?.user, nodeId: options?.nodeId },
 							'delete'
 						);
 						if (!audit) scheduleCleanup();
