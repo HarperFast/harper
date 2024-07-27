@@ -218,7 +218,7 @@ export function setReplicator(db_name, table, options) {
 					// We only need one subscription for the database
 					// TODO: Eventually would be nice to have a real database subscription that delegated each specific table
 					// event to each table
-					subscription = new IterableEventQueue();
+					this.subscription = subscription = new IterableEventQueue();
 					db_subscriptions.set(db_name, subscription);
 					subscription.tableById = table_by_id;
 					subscription.auditStore = table.auditStore;
@@ -243,8 +243,8 @@ export function setReplicator(db_name, table, options) {
 			static load(entry) {
 				if (entry) {
 					const residency_id = entry.residencyId;
-					if (residency_id) {
-						const residency = table.dbisDB.get([Symbol.for('residency_by_id'), residency_id]);
+					let residency = entry.residency || table.dbisDB.get([Symbol.for('residency_by_id'), residency_id]);
+					if (residency) {
 						for (let node_name of residency) {
 							let node = getHDBNodeTable().primaryStore.get(node_name);
 							const connection = getConnection(node.url, Replicator.subscription, db_name);

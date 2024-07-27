@@ -724,6 +724,9 @@ export function makeTable(options) {
 			TableResource.getResidency = getResidency;
 		}
 		static getResidency(record: object, context: Context, previous_residency: string[]) {
+			if (this.getResidencyById) {
+				return this.getResidencyById(record[primary_key]);
+			}
 			let count = replicate_to_count;
 			if (context.replicateTo != undefined) {
 				// if the context specifies where we are replicating to, use that
@@ -2658,12 +2661,13 @@ export function makeTable(options) {
 	}
 	function loadLocalRecord(id, context, options, sync, with_entry) {
 		if (TableResource.getResidencyById) {
-			// this is a special for when the residency can be determined from the id (hash-based sharding)
+			// this is a special case for when the residency can be determined from the id alone (hash-based sharding),
+			// allow for a fast path to load the record from the correct node
 			const residency = TableResource.getResidencyById(id);
 			if (residency) {
 				if (!residency.includes(server.hostname)) {
 					// this record is not on this node, so we shouldn't load it here
-					return source_load({ key: id, residencyId: residency }).then(with_entry, (error) => {
+					return source_load({ key: id, residency }).then(with_entry, (error) => {
 						// TODO: This doesn't have a mechanism for returning errors yet
 						logger.error?.('Unable to retrieve data', error);
 					});

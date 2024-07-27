@@ -766,7 +766,8 @@ export function replicateOverWS(ws, options, authorization) {
 								if (
 									(!previous_residency || previous_residency.includes(remote_node_name)) &&
 									residency &&
-									!residency.includes(remote_node_name)
+									!residency.includes(remote_node_name) &&
+									!table.getResidencyById
 								) {
 									const record_id = audit_record.recordId;
 									// send out invalidation messages
