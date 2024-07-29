@@ -481,28 +481,34 @@ export function makeTable(options) {
 					if (read_txn?.isDone) {
 						throw new Error('You can not read from a transaction that has already been committed/aborted');
 					}
-					return loadLocalRecord(id, request, { transaction: read_txn }, sync, (entry) => {
-						if (entry) {
-							updateResource(resource, entry);
-						} else resource[RECORD_PROPERTY] = null;
-						if (request.onlyIfCached && request.noCacheStore) {
-							// don't go into the loading from source condition, but HTTP spec says to
-							// return 504 (rather than 404) if there is no content and the cache-control header
-							// dictates not to go to source (and not store new value)
-							if (!resource.doesExist()) throw new ServerError('Entry is not cached', 504);
-						} else if (resource_options?.ensureLoaded) {
-							const loading_from_source = ensureLoadedFromSource(id, entry, request, resource);
-							if (loading_from_source) {
-								txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
-								resource[LOADED_FROM_SOURCE] = true;
-								return when(loading_from_source, (entry) => {
-									updateResource(resource, entry);
-									return resource;
-								});
+					return loadLocalRecord(
+						id,
+						request,
+						{ transaction: read_txn, ensureLoaded: resource_options?.ensureLoaded },
+						sync,
+						(entry) => {
+							if (entry) {
+								updateResource(resource, entry);
+							} else resource[RECORD_PROPERTY] = null;
+							if (request.onlyIfCached && request.noCacheStore) {
+								// don't go into the loading from source condition, but HTTP spec says to
+								// return 504 (rather than 404) if there is no content and the cache-control header
+								// dictates not to go to source (and not store new value)
+								if (!resource.doesExist()) throw new ServerError('Entry is not cached', 504);
+							} else if (resource_options?.ensureLoaded) {
+								const loading_from_source = ensureLoadedFromSource(id, entry, request, resource);
+								if (loading_from_source) {
+									txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
+									resource[LOADED_FROM_SOURCE] = true;
+									return when(loading_from_source, (entry) => {
+										updateResource(resource, entry);
+										return resource;
+									});
+								}
 							}
+							return resource;
 						}
-						return resource;
-					});
+					);
 				} catch (error) {
 					if (error.message.includes('Unable to serialize object')) error.message += ': ' + JSON.stringify(id);
 					throw error;
@@ -2660,7 +2666,7 @@ export function makeTable(options) {
 		return true;
 	}
 	function loadLocalRecord(id, context, options, sync, with_entry) {
-		if (TableResource.getResidencyById) {
+		if (TableResource.getResidencyById && options.ensureLoaded) {
 			// this is a special case for when the residency can be determined from the id alone (hash-based sharding),
 			// allow for a fast path to load the record from the correct node
 			const residency = TableResource.getResidencyById(id);
@@ -2681,7 +2687,7 @@ export function makeTable(options) {
 			// through query results and the iterator ends (abruptly)
 			if (options.transaction?.isDone) return with_entry(null, id);
 			const entry = primary_store.getEntry(id, options);
-			if (entry?.residencyId && entry.metadataFlags & INVALIDATED && source_load) {
+			if (entry?.residencyId && entry.metadataFlags & INVALIDATED && source_load && options.ensureLoaded) {
 				// load from other node
 				return source_load(entry).then((entry) => with_entry(entry, id));
 			}

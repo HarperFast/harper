@@ -539,15 +539,23 @@ export function replicateOverWS(ws, options, authorization) {
 							}
 							// we might want to prefetch here
 							let binary_entry = table.primaryStore.getBinaryFast(record_id);
-							let entry = table.primaryStore.decoder.decode(binary_entry, { valueAsBuffer: true });
-							response_data = encode([
-								GET_RECORD_RESPONSE,
-								request_id,
-								{
-									value: entry.value,
-									expiresAt: entry.expiresAt,
-								},
-							]);
+							if (binary_entry) {
+								let entry = table.primaryStore.decoder.decode(binary_entry, { valueAsBuffer: true });
+								response_data = encode([
+									GET_RECORD_RESPONSE,
+									request_id,
+									{
+										value: entry.value,
+										expiresAt: entry.expiresAt,
+										version: entry.version,
+										residencyId: entry.residencyId,
+										nodeId: entry.nodeId,
+										user: entry.user,
+									},
+								]);
+							} else {
+								response_data = encode([GET_RECORD_RESPONSE, request_id]);
+							}
 						} catch (error) {
 							response_data = encode([
 								GET_RECORD_RESPONSE,
@@ -562,14 +570,15 @@ export function replicateOverWS(ws, options, authorization) {
 					}
 					case GET_RECORD_RESPONSE: {
 						// TODO: Decode the data
-						const { resolve, reject, tableId: table_id } = awaiting_response.get(message[1]);
+						const { resolve, reject, tableId: table_id, key } = awaiting_response.get(message[1]);
 						const entry = message[2];
-						if (entry.error) reject(new Error(entry.error));
-						else {
+						if (entry?.error) reject(new Error(entry.error));
+						else if (entry) {
 							const record = table_decoders[table_id].decoder.decode(entry.value);
 							entry.value = record;
+							entry.key = key;
 							resolve(entry);
-						}
+						} else resolve();
 						awaiting_response.delete(message[1]);
 						break;
 					}
@@ -1307,13 +1316,14 @@ export function replicateOverWS(ws, options, authorization) {
 				ws.send(encode(message));
 				awaiting_response.set(request_id, {
 					tableId: request.table.tableId,
+					key: request.id,
 					resolve(entry) {
 						const { table, entry: existing_entry } = request;
 						// we can immediately resolve this because the data is available.
 						resolve(entry);
 						// However, if we are going to record this locally, we need to record it as a relocation event
 						// and determine new residency information
-						table._recordRelocate(existing_entry, entry);
+						if (entry) table._recordRelocate(existing_entry, entry);
 					},
 					reject,
 				});
