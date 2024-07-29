@@ -802,6 +802,7 @@ export function replicateOverWS(ws, options, authorization) {
 								);
 								// entry is encoded, send it after checks for new structure and residency
 							}
+							// when we can skip an audit record, we still need to occasionally send a sequence update:
 							function skipAuditRecord() {
 								if (!skipped_message_sequence_update_timer) {
 									skipped_message_sequence_update_timer = setTimeout(() => {
@@ -823,6 +824,7 @@ export function replicateOverWS(ws, options, authorization) {
 							) {
 								table_entry.typed_length = typed_structs?.length;
 								table_entry.structure_length = structures.length;
+								// the structure used for encoding records has changed, so we need to send the new structure
 								logger.info?.(
 									connection_id,
 									'send table struct',
@@ -947,32 +949,34 @@ export function replicateOverWS(ws, options, authorization) {
 										is_first = false;
 										let last_removed = getLastRemoved(audit_store);
 										if (!(last_removed <= current_sequence_id)) {
-											// this means the audit log doesn't extend far enough back, so we need to replicate all the tables
-											// TODO: This should only be done on a single node, we don't want full table replication from all the
-											// nodes that are connected to this one.
-											let last_sequence_id = current_sequence_id;
-											for (let table_name in tables) {
-												const table = tables[table_name];
-												for (const entry of table.primaryStore.getRange({
-													snapshot: false,
-												})) {
-													if (closed) return;
-													logger.info?.(
-														connection_id,
-														'Copying record from',
-														database_name,
-														table_name,
-														entry.key,
-														entry.localTime
-													);
-													if (entry.localTime >= current_sequence_id) {
-														last_sequence_id = Math.max(entry.localTime, last_sequence_id);
-														queued_entries = true;
-														sendAuditRecord(null, entry, entry.localTime);
+											// This means the audit log doesn't extend far enough back, so we need to replicate all the tables
+											// This should only be done on a single node, we don't want full table replication from all the
+											// nodes that are connected to this one:
+											if (server.nodes[0] === remote_node_name) {
+												let last_sequence_id = current_sequence_id;
+												for (let table_name in tables) {
+													const table = tables[table_name];
+													for (const entry of table.primaryStore.getRange({
+														snapshot: false,
+													})) {
+														if (closed) return;
+														if (entry.localTime >= current_sequence_id) {
+															logger.info?.(
+																connection_id,
+																'Copying record from',
+																database_name,
+																table_name,
+																entry.key,
+																entry.localTime
+															);
+															last_sequence_id = Math.max(entry.localTime, last_sequence_id);
+															queued_entries = true;
+															sendAuditRecord(null, entry, entry.localTime);
+														}
 													}
 												}
+												current_sequence_id = last_sequence_id;
 											}
-											current_sequence_id = last_sequence_id;
 										}
 									}
 									for (const { key, value: audit_entry } of audit_store.getRange({
