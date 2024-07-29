@@ -48759,7 +48759,7 @@
 									"",
 									"pm.test(\"Restart success message is returned\", function () {",
 									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.message).to.equal(\"Restarting HarperDB. This may take up to 60 seconds.\");",
+									"    pm.expect(json_data.message).to.equal(\"Restarting http_workers\");",
 									"});",
 									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
@@ -62483,7 +62483,7 @@
 							}
 						},
 						"url": {
-							"raw": "{{host}}:{{cf_port}}/Greeting",
+							"raw": "{{host}}:9926/Greeting",
 							"host": [
 								"{{host}}"
 							],
