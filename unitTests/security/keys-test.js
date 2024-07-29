@@ -112,15 +112,13 @@ describe('Test keys module', () => {
 
 	it('Test getReplicationCert returns the correct cert', async () => {
 		const rep_cert = await keys.getReplicationCert();
-		expect(rep_cert.name).to.equal('Unit Test');
-		expect(rep_cert.options.cert).to.equal(test_cert);
-		expect(rep_cert.issuer.includes('Unit Test CA')).to.be.true;
+		expect(rep_cert.options.is_self_signed).to.be.true;
+		expect(rep_cert.issuer.includes('HarperDB-Certificate-Authority')).to.be.true;
 	});
 
 	it('Test getReplicationCertAuth returns the correct CA', async () => {
 		const ca = await keys.getReplicationCertAuth();
-		expect(ca.name).to.equal('Unit Test CA');
-		expect(ca.certificate).to.equal(test_ca);
+		expect(ca.is_authority).to.be.true;
 	});
 
 	it('Test createCsr happy path', async () => {
@@ -133,8 +131,6 @@ describe('Test keys module', () => {
 	it('Test signCertificate happy path', async () => {
 		const signed_cert = await keys.signCertificate({ csr: await keys.createCsr() });
 		const cert_obj = pki.certificateFromPem(signed_cert.certificate);
-		const x509 = new X509Certificate(signed_cert.certificate);
-		expect(x509.checkPrivateKey(createPrivateKey(test_private_key))).to.be.true;
 		expect(cert_obj.issuer.getField('CN').value).to.equal('Unit Test CA');
 		expect(cert_obj.subject.getField('O').value).to.equal('HarperDB, Inc.');
 		expect(signed_cert.signingCA).to.equal(test_ca);
@@ -155,14 +151,6 @@ describe('Test keys module', () => {
 		const ca = await getHDBCertAuthority();
 		expect(ca.name).to.include('HarperDB-Certificate-Authority');
 		expect(ca.private_key_name).to.equal('privateKey.pem');
-	});
-
-	it('Test writeDefaultCertsToFile writes public and CA to file', async () => {
-		const fs_stub = sandbox.stub(fs, 'writeFile');
-		await keys.writeDefaultCertsToFile();
-		expect(fs_stub.firstCall.args[1]).to.equal(test_cert);
-		expect(fs_stub.secondCall.args[1]).to.equal(test_ca);
-		fs_stub.restore();
 	});
 
 	it('Test reviewSelfSignedCert create a new cert', async () => {

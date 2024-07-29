@@ -114,11 +114,11 @@ describe('Test configureCluster module', () => {
 			connections: [
 				{
 					node_name: 'remote_node_test',
-					subscriptions: 'Successfully added node',
+					response: 'Successfully added node',
 				},
 				{
 					node_name: 'mr_node',
-					subscriptions: 'Successfully added node',
+					response: 'Successfully added node',
 				},
 			],
 			message: 'Configure cluster complete.',
@@ -145,11 +145,11 @@ describe('Test configureCluster module', () => {
 			connections: [
 				{
 					node_name: 'remote_node_test',
-					subscriptions: undefined,
+					response: undefined,
 				},
 				{
 					node_name: 'mr_node',
-					subscriptions: undefined,
+					response: undefined,
 				},
 			],
 			failed_nodes: ['even_remoter_node_test'],
