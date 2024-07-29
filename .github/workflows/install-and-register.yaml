@@ -92,7 +92,7 @@ jobs:
 
           echo "HarperDB install..."
           cd /home/ubuntu/harperdb/bin
-          node harperdb.js start \$CLI_ARGS
+          node harperdb.js \$CLI_ARGS &
           
           echo "Register HarperDB..."
           cd /home/ubuntu/harperdb/utility/devops
@@ -101,7 +101,7 @@ jobs:
           sleep 2
           node harperdb.js stop
           sleep 2
-          node harperdb.js start
+          node harperdb.js &
         elif [ "${{ inputs.installType }}" == "buildPackage" ];
         then
           echo "hdb_install_type paramater set to ${{ inputs.installType }}. Installing HarperDB from build package..."
@@ -109,7 +109,7 @@ jobs:
           npm --loglevel=error install -g harperdb-${{ inputs.harperdbVersion }}.tgz --legacy-peer-deps
 
           echo "HarperDB install..."
-          harperdb start \$CLI_ARGS
+          harperdb \$CLI_ARGS &
         
         elif [ "${{ inputs.installType }}" == 'none' ];
         then
