@@ -48794,7 +48794,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart\"\n}",
+							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
