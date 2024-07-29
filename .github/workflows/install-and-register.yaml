@@ -92,7 +92,7 @@ jobs:
 
           echo "HarperDB install..."
           cd /home/ubuntu/harperdb/bin
-          node nohup harperdb.js \$CLI_ARGS &
+          nohup node harperdb.js \$CLI_ARGS &
         elif [ "${{ inputs.installType }}" == "buildPackage" ];
         then
           echo "hdb_install_type paramater set to ${{ inputs.installType }}. Installing HarperDB from build package..."
