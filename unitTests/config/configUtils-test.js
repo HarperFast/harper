@@ -321,6 +321,11 @@ describe('Test configUtils module', () => {
 					},
 					user: 'test_user',
 				},
+				replication: {
+					databases: '*',
+					hostname: null,
+					routes: null,
+				},
 				componentsRoot: path.join(DIRNAME, '/test_custom_functions'),
 				localStudio: {
 					enabled: true,
@@ -476,6 +481,9 @@ describe('Test configUtils module', () => {
 				threads_debug: false,
 				http_timeout: 119999,
 				http_headerstimeout: 59999,
+				replication_databases: '*',
+				replication_hostname: null,
+				replication_routes: null,
 				rootpath: path.join(DIRNAME, '/yaml'),
 				storage_writeasync: true,
 				storage_caching: false,
@@ -522,30 +530,6 @@ describe('Test configUtils module', () => {
 			authentication_enablesessions: true,
 			authentication_operationtokentimeout: '1d',
 			authentication_refreshtokentimeout: '30d',
-			clustering_enabled: false,
-			clustering_hubserver_cluster_name: 'harperdb',
-			clustering_hubserver_cluster_network_port: 9932,
-			clustering_hubserver_cluster_network_routes: null,
-			clustering_hubserver_leafnodes_network_port: 9931,
-			clustering_hubserver_network_port: 9930,
-			clustering_leafserver_network_port: 9940,
-			clustering_leafserver_network_routes: null,
-			clustering_leafserver_streams_maxage: null,
-			clustering_leafserver_streams_maxbytes: null,
-			clustering_leafserver_streams_maxmsgs: null,
-			clustering_leafserver_streams_maxconsumemsgs: 100,
-			clustering_leafserver_streams_maxingestthreads: 2,
-			clustering_leafserver_streams_path: null,
-			clustering_loglevel: 'info',
-			clustering_nodename: null,
-			clustering_republishmessages: false,
-			clustering_databaselevel: false,
-			clustering_tls_certificate: null,
-			clustering_tls_certificateauthority: null,
-			clustering_tls_privatekey: null,
-			clustering_tls_insecure: true,
-			clustering_tls_verify: true,
-			clustering_user: null,
 			http_cors: false,
 			http_corsaccesslist: [null],
 			http_compressionthreshold: 0,
@@ -555,8 +539,6 @@ describe('Test configUtils module', () => {
 			http_timeout: 120000,
 			http_mtls: false,
 			componentsroot: null,
-			tls_certificate: null,
-			tls_certificateauthority: null,
 			tls_privatekey: null,
 			threads_count: null,
 			threads_debug: false,
@@ -587,10 +569,11 @@ describe('Test configUtils module', () => {
 			operationsapi_network_secureport: 9925,
 			operationsapi_network_timeout: 120000,
 			operationsapi_network_mtls: false,
-			operationsapi_tls_certificate: null,
-			operationsapi_tls_certificateauthority: null,
 			operationsapi_tls_privatekey: null,
 			operationsapi_network_compressionthreshold: 0,
+			replication_databases: '*',
+			replication_hostname: null,
+			replication_routes: null,
 			rootpath: null,
 			storage_writeasync: false,
 			storage_caching: true,
@@ -608,10 +591,8 @@ describe('Test configUtils module', () => {
 		it('Test if in-memory object is undefined, the default config obj is instantiated and default value is returned', () => {
 			flat_default_config_obj_rw = config_utils_rw.__set__('flat_default_config_obj', undefined);
 
-			const value = config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED);
+			config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED);
 			const flat_default_config_obj = config_utils_rw.__get__('flat_default_config_obj');
-
-			expect(value).to.be.false;
 			const non_object_flat_default_config_obj = Object.assign({}, flat_default_config_obj);
 			for (let key in non_object_flat_default_config_obj) {
 				if (
@@ -627,14 +608,8 @@ describe('Test configUtils module', () => {
 		it('Test that if the in-memory object exists, the correct default value is returned', () => {
 			flat_default_config_obj_rw = config_utils_rw.__set__('flat_default_config_obj', expected_flat_default_config_obj);
 			const parse_document_spy = sandbox.spy(YAML, 'parseDocument');
-
 			const value = config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.LOGGING_ROTATION_ENABLED);
-			const value2 = config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.TLS_CERTIFICATE);
-			const value3 = config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT);
-
 			expect(value).to.be.false;
-			expect(value2).to.be.null;
-			expect(value3).to.equal(9932);
 			expect(parse_document_spy.callCount).to.equal(0);
 		});
 	});
@@ -665,11 +640,11 @@ describe('Test configUtils module', () => {
 
 		it('Test if param isnt defined in instantiated default config, returns undefined', () => {
 			flat_config_obj_rw = config_utils_rw.__set__('flat_config_obj', FLAT_CONFIG_OBJ);
-			const logger_error_stub = sandbox.stub(logger, 'error');
+			const logger_info_stub = sandbox.stub(logger, 'info');
 
 			const value = config_utils_rw.getConfigValue(hdbTerms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ON);
 
-			expect(logger_error_stub.firstCall.args[0]).to.equal(EMPTY_GET_VALUE);
+			expect(logger_info_stub.firstCall.args[0]).to.equal(EMPTY_GET_VALUE);
 			expect(value).to.be.undefined;
 		});
 

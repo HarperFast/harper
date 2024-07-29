@@ -322,7 +322,7 @@
 									"",
 									"pm.test(\"Clustering service is restarted\", function () {",
 									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"Restarting HarperDB. This may take up to 60 seconds.\")",
+									"    pm.expect(jsonData.message).to.eql(\"Restarting http_workers\")",
 									"});"
 								],
 								"type": "text/javascript",
@@ -355,7 +355,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart\"\n}",
+							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -386,7 +386,7 @@
 									"",
 									"pm.test(\"Clustering service is restarted\", function () {",
 									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"Restarting HarperDB. This may take up to 60 seconds.\")",
+									"    pm.expect(jsonData.message).to.eql(\"Restarting http_workers\")",
 									"});"
 								],
 								"type": "text/javascript",
@@ -419,7 +419,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart\"\n}",
+							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -450,7 +450,7 @@
 									"",
 									"pm.test(\"Clustering service is restarted\", function () {",
 									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"Restarting HarperDB. This may take up to 60 seconds.\")",
+									"    pm.expect(jsonData.message).to.eql(\"Restarting http_workers\")",
 									"});"
 								],
 								"type": "text/javascript",
@@ -483,7 +483,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart\"\n}",
+							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -514,7 +514,7 @@
 									"",
 									"pm.test(\"Clustering service is restarted\", function () {",
 									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"Restarting HarperDB. This may take up to 60 seconds.\")",
+									"    pm.expect(jsonData.message).to.eql(\"Restarting http_workers\")",
 									"});"
 								],
 								"type": "text/javascript",
@@ -547,7 +547,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart\"\n}",
+							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -578,9 +578,9 @@
 									"",
 									"pm.test(\"Clustering service is restarted\", function () {",
 									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"Restarting HarperDB. This may take up to 60 seconds.\")",
+									"    pm.expect(jsonData.message).to.eql(\"Restarting http_workers\")",
 									"});",
-									"setTimeout(() => {}, 60000) // wait for the restart to complete"
+									"setTimeout(() => {}, 30000) // wait for the restart to complete"
 								],
 								"type": "text/javascript",
 								"packages": {}
@@ -612,7 +612,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart\"\n}",
+							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
