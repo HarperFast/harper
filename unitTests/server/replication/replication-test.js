@@ -234,6 +234,7 @@ describe('Replication', () => {
 			console.log('added child_process');
 		});
 		it('A write to the table should replicate to both nodes', async function () {
+			this.timeout(100000);
 			let name = 'name ' + Math.random();
 			await TestTable.put({
 				id: '5',
@@ -260,7 +261,6 @@ describe('Replication', () => {
 			} while (true);
 		});
 		it('A write to the table with sharding defined should replicate to one node', async function () {
-			this.timeout(100000);
 			let name = 'name ' + Math.random();
 			await TestTable.put(
 				{
@@ -273,7 +273,7 @@ describe('Replication', () => {
 				}
 			);
 
-			let retries = 10;
+			let retries = 20;
 			do {
 				await new Promise((resolve) => setTimeout(resolve, 500));
 				let result = test_stores[1].getBinary('8');

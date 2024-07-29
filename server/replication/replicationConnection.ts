@@ -755,6 +755,7 @@ export function replicateOverWS(ws, options, authorization) {
 
 							const residency_id = audit_record.residencyId;
 							const residency = getResidence(residency_id, table);
+							let invalidation_entry;
 							if (residency && !residency.includes(remote_node_name)) {
 								// If this node won't have residency, we need to send out invalidation messages
 								const previous_residency = getResidence(audit_record.previousResidencyId, table);
@@ -774,7 +775,18 @@ export function replicateOverWS(ws, options, authorization) {
 								let extended_type = 0;
 								if (residency_id) extended_type |= HAS_CURRENT_RESIDENCY_ID;
 								if (audit_record.previousResidencyId) extended_type |= HAS_PREVIOUS_RESIDENCY_ID;
-								const encoded_invalidation_entry = createAuditEntry(
+								let full_record,
+									partial_record = null;
+								for (const name in table.indices) {
+									if (!partial_record) {
+										partial_record = {};
+										full_record = audit_record.getValue(primary_store, true);
+									}
+									// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
+									partial_record[name] = full_record[name];
+								}
+
+								invalidation_entry = createAuditEntry(
 									audit_record.version,
 									table_id,
 									record_id,
@@ -782,14 +794,13 @@ export function replicateOverWS(ws, options, authorization) {
 									node_id,
 									audit_record.user,
 									'invalidate',
-									encoder.encode({ [table.primaryKey]: record_id }),
+									encoder.encode(partial_record), // use the store's encoder; note that this may actually result in a new structure being created
 									extended_type,
 									residency_id,
 									audit_record.previousResidencyId,
 									audit_record.expiresAt
 								);
-								writeInt(encoded_invalidation_entry.length);
-								writeBytes(encoded_invalidation_entry);
+								// entry is encoded, send it after checks for new structure and residency
 							}
 							function skipAuditRecord() {
 								if (!skipped_message_sequence_update_timer) {
@@ -840,7 +851,6 @@ export function replicateOverWS(ws, options, authorization) {
 								ws.send(encode([RESIDENCY_LIST, residency, residency_id]));
 								sent_residency_lists[residency_id] = true;
 							}
-							if (residency && !residency.includes(remote_node_name)) return; // we don't need to send this record to this node, is it doesn't have a copy of it and doesn't own it
 							/*
 							TODO: At some point we may want some fancier logic to elide the version (which is the same as txn_time)
 							and username from subsequent audit entries in multiple entry transactions*/
@@ -853,11 +863,17 @@ export function replicateOverWS(ws, options, authorization) {
 							writeInt(encoded_record.length);
 							writeBytes(encoded_record);
 							*/
-							// directly write the audit record. If it starts with the previous local time, we omit that
-							const encoded = audit_record.encoded;
-							const start = encoded[0] === 66 ? 8 : 0;
-							writeInt(encoded.length - start);
-							writeBytes(encoded, start);
+							if (invalidation_entry) {
+								// if we have an invalidation entry to send, do that now
+								writeInt(invalidation_entry.length);
+								writeBytes(invalidation_entry);
+							} else {
+								// directly write the audit record. If it starts with the previous local time, we omit that
+								const encoded = audit_record.encoded;
+								const start = encoded[0] === 66 ? 8 : 0;
+								writeInt(encoded.length - start);
+								writeBytes(encoded, start);
+							}
 						};
 						const sendQueuedData = () => {
 							ws.send(encoding_buffer.subarray(encoding_start, position));
@@ -1050,9 +1066,11 @@ export function replicateOverWS(ws, options, authorization) {
 				if (DEBUG_MODE)
 					logger.info?.(
 						connection_id,
-						'received replication message, id:',
+						'received replication message',
+						audit_record.type,
+						'id',
 						event.id,
-						'version:',
+						'version',
 						audit_record.version,
 						'nodeId',
 						event.nodeId,
