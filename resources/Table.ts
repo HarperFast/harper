@@ -384,7 +384,7 @@ export function makeTable(options) {
 										txn_in_progress.resolve();
 									} else {
 										// write in the current transaction if one is in progress
-										writeUpdate(event, txn_in_progress);
+										txn_in_progress.write_promises.push(writeUpdate(event, txn_in_progress));
 										continue;
 									}
 								}
@@ -428,10 +428,10 @@ export function makeTable(options) {
 											// event/context as transaction in progress and then future events
 											// are applied with that context until the next transaction begins/ends
 											txn_in_progress = event;
-											writeUpdate(event, event);
+											txn_in_progress.write_promises = [writeUpdate(event, event)];
 											return new Promise((resolve) => {
-												// callback for when this transaction is finished (will be called on next txn begin/end)
-												txn_in_progress.resolve = resolve;
+												// callback for when this transaction is finished (will be called on next txn begin/end).
+												txn_in_progress.resolve = () => resolve(Promise.all(txn_in_progress.write_promises)); // and make sure we wait for the write update to finish
 											});
 										}
 										return writeUpdate(event, event);
@@ -481,28 +481,34 @@ export function makeTable(options) {
 					if (read_txn?.isDone) {
 						throw new Error('You can not read from a transaction that has already been committed/aborted');
 					}
-					return loadLocalRecord(id, request, { transaction: read_txn }, sync, (entry) => {
-						if (entry) {
-							updateResource(resource, entry);
-						} else resource[RECORD_PROPERTY] = null;
-						if (request.onlyIfCached && request.noCacheStore) {
-							// don't go into the loading from source condition, but HTTP spec says to
-							// return 504 (rather than 404) if there is no content and the cache-control header
-							// dictates not to go to source (and not store new value)
-							if (!resource.doesExist()) throw new ServerError('Entry is not cached', 504);
-						} else if (resource_options?.ensureLoaded) {
-							const loading_from_source = ensureLoadedFromSource(id, entry, request, resource);
-							if (loading_from_source) {
-								txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
-								resource[LOADED_FROM_SOURCE] = true;
-								return when(loading_from_source, (entry) => {
-									updateResource(resource, entry);
-									return resource;
-								});
+					return loadLocalRecord(
+						id,
+						request,
+						{ transaction: read_txn, ensureLoaded: resource_options?.ensureLoaded },
+						sync,
+						(entry) => {
+							if (entry) {
+								updateResource(resource, entry);
+							} else resource[RECORD_PROPERTY] = null;
+							if (request.onlyIfCached && request.noCacheStore) {
+								// don't go into the loading from source condition, but HTTP spec says to
+								// return 504 (rather than 404) if there is no content and the cache-control header
+								// dictates not to go to source (and not store new value)
+								if (!resource.doesExist()) throw new ServerError('Entry is not cached', 504);
+							} else if (resource_options?.ensureLoaded) {
+								const loading_from_source = ensureLoadedFromSource(id, entry, request, resource);
+								if (loading_from_source) {
+									txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
+									resource[LOADED_FROM_SOURCE] = true;
+									return when(loading_from_source, (entry) => {
+										updateResource(resource, entry);
+										return resource;
+									});
+								}
 							}
+							return resource;
 						}
-						return resource;
-					});
+					);
 				} catch (error) {
 					if (error.message.includes('Unable to serialize object')) error.message += ': ' + JSON.stringify(id);
 					throw error;
@@ -724,6 +730,9 @@ export function makeTable(options) {
 			TableResource.getResidency = getResidency;
 		}
 		static getResidency(record: object, context: Context, previous_residency: string[]) {
+			if (this.getResidencyById) {
+				return this.getResidencyById(record[primary_key]);
+			}
 			let count = replicate_to_count;
 			if (context.replicateTo != undefined) {
 				// if the context specifies where we are replicating to, use that
@@ -1043,7 +1052,9 @@ export function makeTable(options) {
 			let residency = this.getResidency(entry.value, context);
 			let residency_id: number;
 			if (residency) {
-				if (!Array.isArray(residency)) throw new Error('Residency must be an array');
+				if (!Array.isArray(residency)) {
+					throw new Error('Residency must be an array, but was: ' + residency);
+				}
 				if (!residency.includes(server.hostname)) return; // if we aren't in the residency, we don't need to do anything, we are not responsible for storing this record
 				residency_id = getResidencyId(residency);
 			}
@@ -1052,11 +1063,11 @@ export function makeTable(options) {
 				existing_entry.key,
 				entry.value, // store the record we downloaded
 				existing_entry,
-				getNextMonotonicTime(), // version number is just the current time
+				existing_entry.version, // version number should not change
 				metadata,
 				true,
 				{ residencyId: residency_id, expiresAt: entry.expiresAt },
-				'patch',
+				'relocate',
 				false,
 				null // the audit record value should be empty since there are no changes to the actual data
 			);
@@ -1263,10 +1274,21 @@ export function makeTable(options) {
 					if (record_to_store?.[RECORD_PROPERTY])
 						throw new Error('Can not assign a record to a record, check for circular references');
 					let audit_record, residency_id;
-					if (options) residency_id = options.residencyId;
+					if (options?.residencyId != undefined) residency_id = options.residencyId;
 					else {
 						if (entry?.residencyId) context.previousResidency = TableResource.getResidencyRecord(entry.residencyId);
-						residency_id = getResidencyId(TableResource.getResidency(record_to_store, context));
+						let residency = TableResource.getResidency(record_to_store, context);
+						if (residency) {
+							if (!Array.isArray(residency)) {
+								throw new Error('Residency must be an array, got: ' + residency);
+							}
+							if (!residency.includes(server.hostname)) {
+								// if we aren't in the residency, add ourselves.
+								// TODO: we probably want to allow this, but we need to write the partial record in the main table and the full record in the audit log
+								residency.push(server.hostname);
+							}
+						}
+						residency_id = getResidencyId(residency);
 					}
 					if (!full_update) {
 						// that is a CRDT, we use our own data as the basis for the audit record, which will include information about the incremental updates
@@ -1353,7 +1375,7 @@ export function makeTable(options) {
 							txn_time,
 							0,
 							audit,
-							{ user: context?.user, residencyId: options?.residencyId, nodeId: options?.nodeId },
+							{ user: context?.user, nodeId: options?.nodeId },
 							'delete'
 						);
 						if (!audit) scheduleCleanup();
@@ -2644,13 +2666,14 @@ export function makeTable(options) {
 		return true;
 	}
 	function loadLocalRecord(id, context, options, sync, with_entry) {
-		if (TableResource.getResidencyById) {
-			// this is a special for when the residency can be determined from the id (hash-based sharding)
+		if (TableResource.getResidencyById && options.ensureLoaded) {
+			// this is a special case for when the residency can be determined from the id alone (hash-based sharding),
+			// allow for a fast path to load the record from the correct node
 			const residency = TableResource.getResidencyById(id);
 			if (residency) {
 				if (!residency.includes(server.hostname)) {
 					// this record is not on this node, so we shouldn't load it here
-					return source_load({ key: id, residencyId: residency }).then(with_entry, (error) => {
+					return source_load({ key: id, residency }).then(with_entry, (error) => {
 						// TODO: This doesn't have a mechanism for returning errors yet
 						logger.error?.('Unable to retrieve data', error);
 					});
@@ -2664,7 +2687,7 @@ export function makeTable(options) {
 			// through query results and the iterator ends (abruptly)
 			if (options.transaction?.isDone) return with_entry(null, id);
 			const entry = primary_store.getEntry(id, options);
-			if (entry?.residencyId && entry.metadataFlags & INVALIDATED && source_load) {
+			if (entry?.residencyId && entry.metadataFlags & INVALIDATED && source_load && options.ensureLoaded) {
 				// load from other node
 				return source_load(entry).then((entry) => with_entry(entry, id));
 			}
