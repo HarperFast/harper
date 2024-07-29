@@ -92,16 +92,7 @@ jobs:
 
           echo "HarperDB install..."
           cd /home/ubuntu/harperdb/bin
-          node harperdb.js \$CLI_ARGS &
-          
-          echo "Register HarperDB..."
-          cd /home/ubuntu/harperdb/utility/devops
-          node register.js --reset_license --ram_allocation=16384
-          cd /home/ubuntu/harperdb/bin/
-          sleep 2
-          node harperdb.js stop
-          sleep 2
-          node harperdb.js &
+          node harperdb.js \$CLI_ARGS 
         elif [ "${{ inputs.installType }}" == "buildPackage" ];
         then
           echo "hdb_install_type paramater set to ${{ inputs.installType }}. Installing HarperDB from build package..."
