@@ -723,18 +723,7 @@ export function replicateOverWS(ws, options, authorization) {
 								// we are skipping this message because it is being sent from another node, but we still want to
 								// occasionally send a sequence update so that if we reconnect we don't have to go back to far in the
 								// audit log
-								if (!skipped_message_sequence_update_timer) {
-									skipped_message_sequence_update_timer = setTimeout(() => {
-										skipped_message_sequence_update_timer = null;
-										// check to see if we are too far behind, but if so, send a sequence update
-										if ((sent_sequence_id || 0) + SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY / 2 < current_sequence_id) {
-											if (DEBUG_MODE)
-												logger.info?.(connection_id, 'sending skipped sequence update', current_sequence_id);
-											ws.send(encode([SEQUENCE_ID_UPDATE, current_sequence_id]));
-										}
-									}, SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY).unref();
-								}
-								return;
+								return skipAuditRecord();
 							}
 							if (DEBUG_MODE)
 								logger.info?.(
@@ -766,43 +755,53 @@ export function replicateOverWS(ws, options, authorization) {
 
 							const residency_id = audit_record.residencyId;
 							const residency = getResidence(residency_id, table);
-							if (audit_record.previousResidencyId != undefined) {
-								// or does it have a special type? auditRecord.type === 'residency-change') {
-								// TODO: handle residency change, based on previous residency, we may need to send out full records
-								// to the new owners of the record.
-								// For previous owners, that are no longer owners, we need to send out invalidation messages
+							if (residency && !residency.includes(remote_node_name)) {
+								// If this node won't have residency, we need to send out invalidation messages
 								const previous_residency = getResidence(audit_record.previousResidencyId, table);
 								if (
-									(!previous_residency || previous_residency.includes(remote_node_name)) &&
-									residency &&
-									!residency.includes(remote_node_name) &&
-									!table.getResidencyById
+									(previous_residency &&
+										!previous_residency.includes(remote_node_name) &&
+										(audit_record.type === 'put' || audit_record.type === 'patch')) ||
+									table.getResidencyById
 								) {
-									const record_id = audit_record.recordId;
-									// send out invalidation messages
-									logger.info?.(connection_id, 'sending invalidation', record_id, remote_node_name, 'from', node_id);
-									let extended_type = 0;
-									if (residency_id) extended_type |= HAS_CURRENT_RESIDENCY_ID;
-									if (audit_record.previousResidencyId) extended_type |= HAS_PREVIOUS_RESIDENCY_ID;
-									const encoded_invalidation_entry = createAuditEntry(
-										audit_record.version,
-										table_id,
-										record_id,
-										null,
-										node_id,
-										audit_record.user,
-										'invalidate',
-										encoder.encode({ [table.primaryKey]: record_id }),
-										extended_type,
-										residency_id,
-										audit_record.previousResidencyId,
-										audit_record.expiresAt
-									);
-									writeInt(encoded_invalidation_entry.length);
-									writeBytes(encoded_invalidation_entry);
+									// if we were already omitted from the previous residency, we don't need to send out invalidation messages for record updates
+									// or if we are using residency by id, this means we don't even need any data sent to other servers
+									return skipAuditRecord();
 								}
-								if (previous_residency && !previous_residency[remote_node_name] && audit_record.type !== 'put') {
-									// send out full record if it is not a put
+								const record_id = audit_record.recordId;
+								// send out invalidation messages
+								logger.info?.(connection_id, 'sending invalidation', record_id, remote_node_name, 'from', node_id);
+								let extended_type = 0;
+								if (residency_id) extended_type |= HAS_CURRENT_RESIDENCY_ID;
+								if (audit_record.previousResidencyId) extended_type |= HAS_PREVIOUS_RESIDENCY_ID;
+								const encoded_invalidation_entry = createAuditEntry(
+									audit_record.version,
+									table_id,
+									record_id,
+									null,
+									node_id,
+									audit_record.user,
+									'invalidate',
+									encoder.encode({ [table.primaryKey]: record_id }),
+									extended_type,
+									residency_id,
+									audit_record.previousResidencyId,
+									audit_record.expiresAt
+								);
+								writeInt(encoded_invalidation_entry.length);
+								writeBytes(encoded_invalidation_entry);
+							}
+							function skipAuditRecord() {
+								if (!skipped_message_sequence_update_timer) {
+									skipped_message_sequence_update_timer = setTimeout(() => {
+										skipped_message_sequence_update_timer = null;
+										// check to see if we are too far behind, but if so, send a sequence update
+										if ((sent_sequence_id || 0) + SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY / 2 < current_sequence_id) {
+											if (DEBUG_MODE)
+												logger.info?.(connection_id, 'sending skipped sequence update', current_sequence_id);
+											ws.send(encode([SEQUENCE_ID_UPDATE, current_sequence_id]));
+										}
+									}, SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY).unref();
 								}
 							}
 							const typed_structs = encoder.typedStructs;
