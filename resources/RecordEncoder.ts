@@ -12,6 +12,7 @@ import {
 	HAS_PREVIOUS_RESIDENCY_ID,
 	HAS_CURRENT_RESIDENCY_ID,
 	HAS_EXPIRATION_EXTENDED_TYPE,
+	HAS_ORIGINATING_OPERATION,
 } from './auditStore';
 import * as harper_logger from '../utility/logging/harper_logger';
 
@@ -323,6 +324,7 @@ export function getUpdateRecord(store, table_id, audit_store) {
 				if (!previous_residency_id) previous_residency_id = 0;
 			}
 			if (assign_metadata & HAS_EXPIRATION) extended_type |= HAS_EXPIRATION_EXTENDED_TYPE; // we need to record the expiration in the audit log
+			if (options?.originatingOperation) extended_type |= HAS_ORIGINATING_OPERATION;
 			// we use resolve_record outside of transaction, so must explicitly make it conditional
 			if (resolve_record) put_options.ifVersion = if_version = existing_entry?.version ?? null;
 			const result = store.put(id, record, put_options);
@@ -381,7 +383,8 @@ export function getUpdateRecord(store, table_id, audit_store) {
 						extended_type,
 						residency_id,
 						previous_residency_id,
-						expires_at
+						expires_at,
+						options?.originatingOperation
 					),
 					{
 						append: type !== 'invalidate', // for invalidation, we expect the record to be rewritten, so we don't want to necessarily expect pure sequential writes that create full pages
