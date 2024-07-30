@@ -8377,7 +8377,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)",
+									"setTimeout(()=> {}, 60000)",
 									""
 								],
 								"type": "text/javascript",
@@ -11305,7 +11305,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)",
+									"setTimeout(()=> {}, 60000)",
 									""
 								],
 								"type": "text/javascript",
@@ -14816,7 +14816,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)",
+									"setTimeout(()=> {}, 60000)",
 									""
 								],
 								"type": "text/javascript",
@@ -15775,7 +15775,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)",
+									"setTimeout(()=> {}, 60000)",
 									""
 								],
 								"type": "text/javascript",
