@@ -47,6 +47,7 @@ describe('Replication', () => {
 	before(async function () {
 		this.timeout(100000);
 		getMockLMDBPath();
+		databases.system.hdb_nodes.primaryStore.clearSync(); // clear the nodes
 		database_config = env_get(CONFIG_PARAMS.DATABASES);
 		TestTable = await createTestTable(database_config.data.path + '/test-replication-0');
 
