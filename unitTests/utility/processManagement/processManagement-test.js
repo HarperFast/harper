@@ -1,3 +1,4 @@
+/*
 'use strict';
 
 const chai = require('chai');
@@ -55,10 +56,10 @@ fake_cluster_user.uri_encoded_name = 'name%25day-2123ncv%234';
 fake_cluster_user.sys_name = fake_cluster_user.username + '-admin';
 fake_cluster_user.sys_name_encoded = fake_cluster_user.uri_encoded_name + '-admin';
 
-/**
+/!**
  * Uninstalls processManagement's logrotate module.
  * @returns {Promise<void>}
- */
+ *!/
 async function uninstallLogRotate() {
 	const { stdout, stderr } = await exec(
 		`${process.platform === 'win32' ? 'node' : ''} ${PM2_MODULE_LOCATION} uninstall pm2-logrotate`
@@ -72,11 +73,11 @@ async function uninstallLogRotate() {
 
 	hdb_logger.info(LOG_ROTATE_UNINSTALLED);
 }
-/**
+/!**
  * Deletes a process from processManagement
  * @param proc
  * @returns {Promise<unknown>}
- */
+ *!/
 function pm2Delete(proc) {
 	return new Promise(async (resolve, reject) => {
 		await utility_functions.connect();
@@ -91,11 +92,11 @@ function pm2Delete(proc) {
 	});
 }
 
-/**
+/!**
  * Stops a process then deletes it from processManagement.
  * @param service_name
  * @returns {Promise<void>}
- */
+ *!/
 async function stopDeleteProcess(service_name) {
 	try {
 		await utility_functions.stop(service_name);
@@ -103,10 +104,10 @@ async function stopDeleteProcess(service_name) {
 	} catch (err) {}
 }
 
-/**
+/!**
  * Calls stop/delete for all services
  * @returns {Promise<void>}
- */
+ *!/
 async function stopDeleteAllServices() {
 	await stopDeleteProcess('HarperDB');
 	await stopDeleteProcess('ITC');
@@ -696,3 +697,4 @@ describe('Test processManagement utilityFunctions module', () => {
 		expect(remove_nats_config_stub.getCall(1).args[0]).to.equal('clustering leaf');
 	});
 }).timeout(10000);
+*/

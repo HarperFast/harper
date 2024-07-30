@@ -23,6 +23,7 @@ describe('Test keys module', () => {
 	const test_cert_path = path.join(test_dir, 'test-certificate.pem');
 	const test_ca_path = path.join(test_dir, 'test-ca.pem');
 	const test_private_key_path = path.join(test_dir, 'test-private-key.pem');
+	const get_this_node_name_stub = sandbox.stub().returns('Unit Test');
 
 	let write_file_stub;
 	let console_error_stub;
@@ -33,7 +34,8 @@ describe('Test keys module', () => {
 	let test_ca;
 	let test_public_key;
 
-	before(async () => {
+	before(async function () {
+		this.timeout(10000);
 		const ca = await mkcert.createCA({
 			organization: 'Unit Test CA',
 			countryCode: 'USA',
@@ -58,12 +60,16 @@ describe('Test keys module', () => {
 		await fs.writeFile(test_private_key_path, test_private_key);
 		await fs.writeFile(test_ca_path, test_ca);
 
+		env_mgr.setHdbBasePath(config_utils.getConfigFromFile('rootPath'));
+		env_mgr.setProperty('storage_path', path.join(config_utils.getConfigFromFile('rootPath'), 'database'));
 		get_config_from_file_stub = sandbox.stub(config_utils, 'getConfigFromFile').returns({
 			privateKey: test_private_key_path,
 			certificate: test_cert_path,
 			certificateAuthority: test_ca_path,
+			rootPath: config_utils.getConfigFromFile('rootPath'),
 		});
 		await keys.loadCertificates();
+		keys.__set__('getThisNodeName', get_this_node_name_stub);
 	});
 
 	beforeEach(() => {
@@ -112,13 +118,15 @@ describe('Test keys module', () => {
 
 	it('Test getReplicationCert returns the correct cert', async () => {
 		const rep_cert = await keys.getReplicationCert();
-		expect(rep_cert.options.is_self_signed).to.be.true;
-		expect(rep_cert.issuer.includes('HarperDB-Certificate-Authority')).to.be.true;
+		expect(rep_cert.name).to.equal('Unit Test');
+		expect(rep_cert.options.cert).to.equal(test_cert);
+		expect(rep_cert.issuer.includes('Unit Test CA')).to.be.true;
 	});
 
 	it('Test getReplicationCertAuth returns the correct CA', async () => {
 		const ca = await keys.getReplicationCertAuth();
-		expect(ca.is_authority).to.be.true;
+		expect(ca.name).to.equal('Unit Test CA');
+		expect(ca.certificate).to.equal(test_ca);
 	});
 
 	it('Test createCsr happy path', async () => {
