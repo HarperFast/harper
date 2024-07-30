@@ -240,22 +240,32 @@ export function setReplicator(db_name, table, options) {
 			 * elsewhere on the cluster, and will retrieve from the appropriate node
 			 * @param query
 			 */
-			static load(entry) {
+			static async load(entry) {
 				if (entry) {
 					const residency_id = entry.residencyId;
 					let residency = entry.residency || table.dbisDB.get([Symbol.for('residency_by_id'), residency_id]);
 					if (residency) {
+						let first_error;
 						for (let node_name of residency) {
-							let node = getHDBNodeTable().primaryStore.get(node_name);
-							const connection = getConnection(node.url, Replicator.subscription, db_name);
-							let request = {
-								requestId: next_id++,
-								table,
-								entry,
-								id: entry.key,
-							};
-							return connection.getRecord(request);
+							try {
+								let node = getHDBNodeTable().primaryStore.get(node_name);
+								if (node) {
+									const connection = getConnection(node.url, Replicator.subscription, db_name);
+									let request = {
+										requestId: next_id++,
+										table,
+										entry,
+										id: entry.key,
+									};
+									return await connection.getRecord(request);
+								}
+							} catch (error) {
+								// if we got an error, record it and try the next node
+								logger.warn('Error in load from node', node_name, error);
+								if (!first_error) first_error = error;
+							}
 						}
+						if (first_error) throw first_error;
 					}
 				}
 			}

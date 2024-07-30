@@ -15,6 +15,7 @@ import {
 	forEachReplicatedDatabase,
 	getThisNodeName,
 	urlToNodeName,
+	getThisNodeId,
 } from './replicator';
 import env from '../../utility/environment/environmentManager';
 import { getUpdateRecord, HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
@@ -670,7 +671,7 @@ export function replicateOverWS(ws, options, authorization) {
 						let listening_for_overload = false;
 						let current_sequence_id = Infinity; // the last sequence number in the audit log that we have processed, set this with a finite number from the subscriptions
 						let sent_sequence_id; // the last sequence number we have sent
-						const sendAuditRecord = (record_id, audit_record, local_time, begin_txn) => {
+						const sendAuditRecord = (audit_record, local_time) => {
 							current_sequence_id = local_time;
 							// TOOD: Use begin_txn instead to find transaction delimiting
 							if (audit_record.type === 'end_txn') {
@@ -723,18 +724,7 @@ export function replicateOverWS(ws, options, authorization) {
 								// we are skipping this message because it is being sent from another node, but we still want to
 								// occasionally send a sequence update so that if we reconnect we don't have to go back to far in the
 								// audit log
-								if (!skipped_message_sequence_update_timer) {
-									skipped_message_sequence_update_timer = setTimeout(() => {
-										skipped_message_sequence_update_timer = null;
-										// check to see if we are too far behind, but if so, send a sequence update
-										if ((sent_sequence_id || 0) + SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY / 2 < current_sequence_id) {
-											if (DEBUG_MODE)
-												logger.info?.(connection_id, 'sending skipped sequence update', current_sequence_id);
-											ws.send(encode([SEQUENCE_ID_UPDATE, current_sequence_id]));
-										}
-									}, SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY).unref();
-								}
-								return;
+								return skipAuditRecord();
 							}
 							if (DEBUG_MODE)
 								logger.info?.(
@@ -766,43 +756,65 @@ export function replicateOverWS(ws, options, authorization) {
 
 							const residency_id = audit_record.residencyId;
 							const residency = getResidence(residency_id, table);
-							if (audit_record.previousResidencyId != undefined) {
-								// or does it have a special type? auditRecord.type === 'residency-change') {
-								// TODO: handle residency change, based on previous residency, we may need to send out full records
-								// to the new owners of the record.
-								// For previous owners, that are no longer owners, we need to send out invalidation messages
+							let invalidation_entry;
+							if (residency && !residency.includes(remote_node_name)) {
+								// If this node won't have residency, we need to send out invalidation messages
 								const previous_residency = getResidence(audit_record.previousResidencyId, table);
 								if (
-									(!previous_residency || previous_residency.includes(remote_node_name)) &&
-									residency &&
-									!residency.includes(remote_node_name) &&
-									!table.getResidencyById
+									(previous_residency &&
+										!previous_residency.includes(remote_node_name) &&
+										(audit_record.type === 'put' || audit_record.type === 'patch')) ||
+									table.getResidencyById
 								) {
-									const record_id = audit_record.recordId;
-									// send out invalidation messages
-									logger.info?.(connection_id, 'sending invalidation', record_id, remote_node_name, 'from', node_id);
-									let extended_type = 0;
-									if (residency_id) extended_type |= HAS_CURRENT_RESIDENCY_ID;
-									if (audit_record.previousResidencyId) extended_type |= HAS_PREVIOUS_RESIDENCY_ID;
-									const encoded_invalidation_entry = createAuditEntry(
-										audit_record.version,
-										table_id,
-										record_id,
-										null,
-										node_id,
-										audit_record.user,
-										'invalidate',
-										encoder.encode({ [table.primaryKey]: record_id }),
-										extended_type,
-										residency_id,
-										audit_record.previousResidencyId,
-										audit_record.expiresAt
-									);
-									writeInt(encoded_invalidation_entry.length);
-									writeBytes(encoded_invalidation_entry);
+									// if we were already omitted from the previous residency, we don't need to send out invalidation messages for record updates
+									// or if we are using residency by id, this means we don't even need any data sent to other servers
+									return skipAuditRecord();
 								}
-								if (previous_residency && !previous_residency[remote_node_name] && audit_record.type !== 'put') {
-									// send out full record if it is not a put
+								const record_id = audit_record.recordId;
+								// send out invalidation messages
+								logger.info?.(connection_id, 'sending invalidation', record_id, remote_node_name, 'from', node_id);
+								let extended_type = 0;
+								if (residency_id) extended_type |= HAS_CURRENT_RESIDENCY_ID;
+								if (audit_record.previousResidencyId) extended_type |= HAS_PREVIOUS_RESIDENCY_ID;
+								let full_record,
+									partial_record = null;
+								for (const name in table.indices) {
+									if (!partial_record) {
+										partial_record = {};
+										full_record = audit_record.getValue(primary_store, true);
+									}
+									// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
+									partial_record[name] = full_record[name];
+								}
+
+								invalidation_entry = createAuditEntry(
+									audit_record.version,
+									table_id,
+									record_id,
+									null,
+									node_id,
+									audit_record.user,
+									'invalidate',
+									encoder.encode(partial_record), // use the store's encoder; note that this may actually result in a new structure being created
+									extended_type,
+									residency_id,
+									audit_record.previousResidencyId,
+									audit_record.expiresAt
+								);
+								// entry is encoded, send it after checks for new structure and residency
+							}
+							// when we can skip an audit record, we still need to occasionally send a sequence update:
+							function skipAuditRecord() {
+								if (!skipped_message_sequence_update_timer) {
+									skipped_message_sequence_update_timer = setTimeout(() => {
+										skipped_message_sequence_update_timer = null;
+										// check to see if we are too far behind, but if so, send a sequence update
+										if ((sent_sequence_id || 0) + SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY / 2 < current_sequence_id) {
+											if (DEBUG_MODE)
+												logger.info?.(connection_id, 'sending skipped sequence update', current_sequence_id);
+											ws.send(encode([SEQUENCE_ID_UPDATE, current_sequence_id]));
+										}
+									}, SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY).unref();
 								}
 							}
 							const typed_structs = encoder.typedStructs;
@@ -813,6 +825,7 @@ export function replicateOverWS(ws, options, authorization) {
 							) {
 								table_entry.typed_length = typed_structs?.length;
 								table_entry.structure_length = structures.length;
+								// the structure used for encoding records has changed, so we need to send the new structure
 								logger.info?.(
 									connection_id,
 									'send table struct',
@@ -841,7 +854,6 @@ export function replicateOverWS(ws, options, authorization) {
 								ws.send(encode([RESIDENCY_LIST, residency, residency_id]));
 								sent_residency_lists[residency_id] = true;
 							}
-							if (residency && !residency.includes(remote_node_name)) return; // we don't need to send this record to this node, is it doesn't have a copy of it and doesn't own it
 							/*
 							TODO: At some point we may want some fancier logic to elide the version (which is the same as txn_time)
 							and username from subsequent audit entries in multiple entry transactions*/
@@ -854,11 +866,17 @@ export function replicateOverWS(ws, options, authorization) {
 							writeInt(encoded_record.length);
 							writeBytes(encoded_record);
 							*/
-							// directly write the audit record. If it starts with the previous local time, we omit that
-							const encoded = audit_record.encoded;
-							const start = encoded[0] === 66 ? 8 : 0;
-							writeInt(encoded.length - start);
-							writeBytes(encoded, start);
+							if (invalidation_entry) {
+								// if we have an invalidation entry to send, do that now
+								writeInt(invalidation_entry.length);
+								writeBytes(invalidation_entry);
+							} else {
+								// directly write the audit record. If it starts with the previous local time, we omit that
+								const encoded = audit_record.encoded;
+								const start = encoded[0] === 66 ? 8 : 0;
+								writeInt(encoded.length - start);
+								writeBytes(encoded, start);
+							}
 						};
 						const sendQueuedData = () => {
 							ws.send(encoding_buffer.subarray(encoding_start, position));
@@ -917,12 +935,10 @@ export function replicateOverWS(ws, options, authorization) {
 
 								let is_first = true;
 								do {
-									// We run subscriptions as a loop where we can alternate between our two message delivery modes:
-									// The catch-up pull mode where we are iterating a query since the last start time
-									// and sending out the results while applying back-pressure from the socket.
-									// Then we switch to the real-time push subscription mode where we are listening for updates
-									// and sending them out immediately as we get them. If/when this mode gets overloaded, we switch back to
-									// the catch-up mode.
+									// We run subscriptions as a loop where retrieve entries from the audit log, since the last entry
+									// and sending out the results while applying back-pressure from the socket. When we are out of entries
+									// then we switch to waiting/listening for the next transaction notifications before resuming the iteration
+									// through the audit log.
 									if (!isFinite(current_sequence_id)) {
 										logger.warn?.('Invalid sequence id ' + current_sequence_id);
 										close(1008, 'Invalid sequence id' + current_sequence_id);
@@ -932,32 +948,51 @@ export function replicateOverWS(ws, options, authorization) {
 										is_first = false;
 										let last_removed = getLastRemoved(audit_store);
 										if (!(last_removed <= current_sequence_id)) {
-											// this means the audit log doesn't extend far enough back, so we need to replicate all the tables
-											// TODO: This should only be done on a single node, we don't want full table replication from all the
-											// nodes that are connected to this one.
-											let last_sequence_id = current_sequence_id;
-											for (let table_name in tables) {
-												const table = tables[table_name];
-												for (const entry of table.primaryStore.getRange({
-													snapshot: false,
-												})) {
-													if (closed) return;
-													logger.info?.(
-														connection_id,
-														'Copying record from',
-														database_name,
-														table_name,
-														entry.key,
-														entry.localTime
-													);
-													if (entry.localTime >= current_sequence_id) {
-														last_sequence_id = Math.max(entry.localTime, last_sequence_id);
-														queued_entries = true;
-														sendAuditRecord(null, entry, entry.localTime);
+											// This means the audit log doesn't extend far enough back, so we need to replicate all the tables
+											// This should only be done on a single node, we don't want full table replication from all the
+											// nodes that are connected to this one:
+											if (server.nodes[0] === remote_node_name) {
+												let last_sequence_id = current_sequence_id;
+												const node_id = getThisNodeId(audit_store);
+												for (let table_name in tables) {
+													const table = tables[table_name];
+													for (const entry of table.primaryStore.getRange({
+														snapshot: false,
+														// values: false, // TODO: eventually, we don't want to decode, we want to use fast binary transfer
+													})) {
+														if (closed) return;
+														if (entry.localTime >= current_sequence_id) {
+															logger.info?.(
+																connection_id,
+																'Copying record from',
+																database_name,
+																table_name,
+																entry.key,
+																entry.localTime
+															);
+															last_sequence_id = Math.max(entry.localTime, last_sequence_id);
+															queued_entries = true;
+															sendAuditRecord(
+																{
+																	// make it look like an audit record
+																	recordId: entry.key,
+																	tableId: table.tableId,
+																	type: 'put',
+																	getValue() {
+																		return entry.value;
+																	},
+																	encoded: table.primaryStore.getBinary(entry.key), // directly transfer binary data
+																	version: entry.version,
+																	residencyId: entry.residencyId,
+																	nodeId: node_id,
+																},
+																entry.localTime
+															);
+														}
 													}
 												}
+												current_sequence_id = last_sequence_id;
 											}
-											current_sequence_id = last_sequence_id;
 										}
 									}
 									for (const { key, value: audit_entry } of audit_store.getRange({
@@ -967,7 +1002,7 @@ export function replicateOverWS(ws, options, authorization) {
 									})) {
 										if (closed) return;
 										const audit_record = readAuditEntry(audit_entry);
-										sendAuditRecord(null, audit_record, key);
+										sendAuditRecord(audit_record, key);
 										// wait if there is back-pressure
 										if (ws._socket.writableNeedDrain) {
 											await new Promise((resolve) => ws._socket.once('drain', resolve));
@@ -978,7 +1013,6 @@ export function replicateOverWS(ws, options, authorization) {
 									}
 									if (queued_entries)
 										sendAuditRecord(
-											null,
 											{
 												type: 'end_txn',
 											},
@@ -1051,9 +1085,11 @@ export function replicateOverWS(ws, options, authorization) {
 				if (DEBUG_MODE)
 					logger.info?.(
 						connection_id,
-						'received replication message, id:',
+						'received replication message',
+						audit_record.type,
+						'id',
 						event.id,
-						'version:',
+						'version',
 						audit_record.version,
 						'nodeId',
 						event.nodeId,
@@ -1138,7 +1174,7 @@ export function replicateOverWS(ws, options, authorization) {
 				end: [Symbol.for('seq'), Buffer.from([0xff])],
 			}) || []) {
 				for (let node of entry.value.nodes || []) {
-					if (node.lastTxnTime > (last_txn_times.get(node.id) ?? 0)) last_txn_times[node.id] = node.lastTxnTime;
+					if (node.seqId > (last_txn_times.get(node.id) ?? 0)) last_txn_times.set(node.id, node.seqId);
 				}
 			}
 		} catch (error) {

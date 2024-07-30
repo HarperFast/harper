@@ -180,6 +180,7 @@ const HAS_PREVIOUS_VERSION = 64;
 const HAS_EXTENDED_TYPE = 128;
 export const HAS_CURRENT_RESIDENCY_ID = 512;
 export const HAS_PREVIOUS_RESIDENCY_ID = 1024;
+export const HAS_ORIGINATING_OPERATION = 2048;
 export const HAS_EXPIRATION_EXTENDED_TYPE = 0x1000;
 const EVENT_TYPES = {
 	put: PUT | HAS_RECORD,
@@ -194,6 +195,14 @@ const EVENT_TYPES = {
 	[PATCH]: 'patch',
 	relocate: RELOCATE,
 	[RELOCATE]: 'relocate',
+};
+const ORIGINATING_OPERATIONS = {
+	insert: 1,
+	update: 2,
+	upsert: 3,
+	1: 'insert',
+	2: 'update',
+	3: 'upsert',
 };
 
 /**
@@ -222,7 +231,8 @@ export function createAuditEntry(
 	extended_type,
 	residency_id,
 	previous_residency_id,
-	expires_at
+	expires_at,
+	originating_operation?: string
 ) {
 	const action = EVENT_TYPES[type];
 	if (!action) {
@@ -249,6 +259,9 @@ export function createAuditEntry(
 	if (extended_type & HAS_EXPIRATION_EXTENDED_TYPE) {
 		ENTRY_DATAVIEW.setFloat64(position, expires_at);
 		position += 8;
+	}
+	if (extended_type & HAS_ORIGINATING_OPERATION) {
+		writeInt(ORIGINATING_OPERATIONS[originating_operation]);
 	}
 
 	if (username) writeValue(username);
@@ -314,7 +327,7 @@ export function readAuditEntry(buffer) {
 		const record_id_start = decoder.position;
 		const record_id_end = (decoder.position += length);
 		const version = decoder.readFloat64();
-		let residency_id, previous_residency_id, expires_at;
+		let residency_id, previous_residency_id, expires_at, originating_operation;
 		if (action & HAS_CURRENT_RESIDENCY_ID) {
 			residency_id = decoder.readInt();
 		}
@@ -323,6 +336,10 @@ export function readAuditEntry(buffer) {
 		}
 		if (action & HAS_EXPIRATION_EXTENDED_TYPE) {
 			expires_at = decoder.readFloat64();
+		}
+		if (action & HAS_ORIGINATING_OPERATION) {
+			let operation_id = decoder.readInt();
+			originating_operation = ORIGINATING_OPERATIONS[operation_id];
 		}
 		length = decoder.readInt();
 		const username_start = decoder.position;
@@ -357,6 +374,7 @@ export function readAuditEntry(buffer) {
 			residencyId: residency_id,
 			previousResidencyId: previous_residency_id,
 			expiresAt: expires_at,
+			originatingOperation: originating_operation,
 		};
 	} catch (error) {
 		harper_logger.error('Reading audit entry error', error, buffer);

@@ -729,9 +729,12 @@ export function makeTable(options) {
 		static setResidency(getResidency: (record: object, context: Context, previous_residency: string[]) => string[]) {
 			TableResource.getResidency = getResidency;
 		}
+		static setResidencyById(getResidencyById: (id: Id) => string[]) {
+			TableResource.getResidencyById = getResidencyById;
+		}
 		static getResidency(record: object, context: Context, previous_residency: string[]) {
-			if (this.getResidencyById) {
-				return this.getResidencyById(record[primary_key]);
+			if (TableResource.getResidencyById) {
+				return TableResource.getResidencyById(record[primary_key]);
 			}
 			let count = replicate_to_count;
 			if (context.replicateTo != undefined) {
@@ -907,7 +910,7 @@ export function makeTable(options) {
 						}
 					}
 				}
-				return true;
+				return checkContextPermissions(this[CONTEXT]);
 			}
 		}
 		/**
@@ -926,8 +929,9 @@ export function makeTable(options) {
 						for (const key in new_data) {
 							if (!attrs_for_type[key]) return false;
 						}
+						return checkContextPermissions(this[CONTEXT]);
 					} else {
-						return true;
+						return checkContextPermissions(this[CONTEXT]);
 					}
 				}
 			} else {
@@ -944,7 +948,7 @@ export function makeTable(options) {
 		 */
 		allowDelete(user) {
 			const table_permission = getTablePermissions(user);
-			return table_permission?.delete;
+			return table_permission?.delete && checkContextPermissions(this[CONTEXT]);
 		}
 
 		/**
@@ -1319,6 +1323,7 @@ export function makeTable(options) {
 							residencyId: residency_id,
 							expiresAt: expires_at,
 							nodeId: options?.nodeId,
+							originatingOperation: context?.originatingOperation,
 						},
 						type,
 						false,
@@ -2536,6 +2541,7 @@ export function makeTable(options) {
 					type: audit_record.type,
 					value: audit_record.getValue(primary_store, true, key),
 					user: audit_record.user,
+					operation: audit_record.originatingOperation,
 				};
 			}
 		}
@@ -3141,6 +3147,20 @@ export function makeTable(options) {
 				}
 			);
 		});
+	}
+
+	/**
+	 * Verify that the context does not have any replication parameters that are not allowed
+	 * @param context
+	 */
+	function checkContextPermissions(context: Context) {
+		if (!context) return true;
+		if (context.user?.role?.permission?.super_user) return true;
+		if (context.replicateTo)
+			throw new ClientError('Can not specify replication parameters without super user permissions', 403);
+		if (context.replicatedConfirmation)
+			throw new ClientError('Can not specify replication confirmation without super user permissions', 403);
+		return true;
 	}
 	function scheduleCleanup() {
 		// Periodically evict expired records and deleted records searching for records who expiresAt timestamp is before now

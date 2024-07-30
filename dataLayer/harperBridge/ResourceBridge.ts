@@ -179,7 +179,13 @@ export class ResourceBridge extends LMDBBridge {
 
 		let new_attributes;
 		const Table = getDatabases()[upsert_obj.schema][upsert_obj.table];
-		const context = { user: upsert_obj.hdb_user, expiresAt: upsert_obj.expiresAt };
+		const context = {
+			user: upsert_obj.hdb_user,
+			expiresAt: upsert_obj.expiresAt,
+			originatingOperation: upsert_obj.operation,
+		};
+		if (upsert_obj.replicateTo) context.replicateTo = upsert_obj.replicateTo;
+		if (upsert_obj.replicatedConfirmation) context.replicatedConfirmation = upsert_obj.replicatedConfirmation;
 		return transaction(context, async (transaction) => {
 			if (!Table.schemaDefined) {
 				new_attributes = [];
@@ -250,6 +256,8 @@ export class ResourceBridge extends LMDBBridge {
 	async deleteRecords(delete_obj) {
 		const Table = getDatabases()[delete_obj.schema][delete_obj.table];
 		const context = { user: delete_obj.hdb_user };
+		if (delete_obj.replicateTo) context.replicateTo = delete_obj.replicateTo;
+		if (delete_obj.replicatedConfirmation) context.replicatedConfirmation = delete_obj.replicatedConfirmation;
 		return transaction(context, async (transaction) => {
 			const ids: Id[] = delete_obj.hash_values || delete_obj.records.map((record) => record[Table.primaryKey]);
 			const deleted = [];
@@ -438,7 +446,7 @@ export class ResourceBridge extends LMDBBridge {
 				// get the history of each record
 				for (const id of read_audit_log_obj.search_values) {
 					histories[id] = (await table.getHistoryOfRecord(id)).map((audit_record) => {
-						let operation = audit_record.type;
+						let operation = audit_record.operation ?? audit_record.type;
 						if (operation === 'put') operation = 'upsert';
 						return {
 							operation,
@@ -563,7 +571,7 @@ async function* groupRecordsInHistory(table, start?, end?, limit?) {
 	let enqueued;
 	let count = 0;
 	for await (const entry of table.getHistory(start, end)) {
-		let operation = entry.type;
+		let operation = entry.operation ?? entry.type;
 		if (operation === 'put') operation = 'upsert';
 		const { id, version: timestamp, value } = entry;
 		if (enqueued?.timestamp === timestamp) {
