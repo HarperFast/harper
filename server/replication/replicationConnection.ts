@@ -15,6 +15,7 @@ import {
 	forEachReplicatedDatabase,
 	getThisNodeName,
 	urlToNodeName,
+	getThisNodeId,
 } from './replicator';
 import env from '../../utility/environment/environmentManager';
 import { getUpdateRecord, HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
@@ -670,7 +671,7 @@ export function replicateOverWS(ws, options, authorization) {
 						let listening_for_overload = false;
 						let current_sequence_id = Infinity; // the last sequence number in the audit log that we have processed, set this with a finite number from the subscriptions
 						let sent_sequence_id; // the last sequence number we have sent
-						const sendAuditRecord = (record_id, audit_record, local_time, begin_txn) => {
+						const sendAuditRecord = (audit_record, local_time) => {
 							current_sequence_id = local_time;
 							// TOOD: Use begin_txn instead to find transaction delimiting
 							if (audit_record.type === 'end_txn') {
@@ -934,12 +935,10 @@ export function replicateOverWS(ws, options, authorization) {
 
 								let is_first = true;
 								do {
-									// We run subscriptions as a loop where we can alternate between our two message delivery modes:
-									// The catch-up pull mode where we are iterating a query since the last start time
-									// and sending out the results while applying back-pressure from the socket.
-									// Then we switch to the real-time push subscription mode where we are listening for updates
-									// and sending them out immediately as we get them. If/when this mode gets overloaded, we switch back to
-									// the catch-up mode.
+									// We run subscriptions as a loop where retrieve entries from the audit log, since the last entry
+									// and sending out the results while applying back-pressure from the socket. When we are out of entries
+									// then we switch to waiting/listening for the next transaction notifications before resuming the iteration
+									// through the audit log.
 									if (!isFinite(current_sequence_id)) {
 										logger.warn?.('Invalid sequence id ' + current_sequence_id);
 										close(1008, 'Invalid sequence id' + current_sequence_id);
@@ -954,10 +953,12 @@ export function replicateOverWS(ws, options, authorization) {
 											// nodes that are connected to this one:
 											if (server.nodes[0] === remote_node_name) {
 												let last_sequence_id = current_sequence_id;
+												const node_id = getThisNodeId(audit_store);
 												for (let table_name in tables) {
 													const table = tables[table_name];
 													for (const entry of table.primaryStore.getRange({
 														snapshot: false,
+														// values: false, // TODO: eventually, we don't want to decode, we want to use fast binary transfer
 													})) {
 														if (closed) return;
 														if (entry.localTime >= current_sequence_id) {
@@ -971,7 +972,22 @@ export function replicateOverWS(ws, options, authorization) {
 															);
 															last_sequence_id = Math.max(entry.localTime, last_sequence_id);
 															queued_entries = true;
-															sendAuditRecord(null, entry, entry.localTime);
+															sendAuditRecord(
+																{
+																	// make it look like an audit record
+																	recordId: entry.key,
+																	tableId: table.tableId,
+																	type: 'put',
+																	getValue() {
+																		return entry.value;
+																	},
+																	encoded: table.primaryStore.getBinary(entry.key), // directly transfer binary data
+																	version: entry.version,
+																	residencyId: entry.residencyId,
+																	nodeId: node_id,
+																},
+																entry.localTime
+															);
 														}
 													}
 												}
@@ -986,7 +1002,7 @@ export function replicateOverWS(ws, options, authorization) {
 									})) {
 										if (closed) return;
 										const audit_record = readAuditEntry(audit_entry);
-										sendAuditRecord(null, audit_record, key);
+										sendAuditRecord(audit_record, key);
 										// wait if there is back-pressure
 										if (ws._socket.writableNeedDrain) {
 											await new Promise((resolve) => ws._socket.once('drain', resolve));
@@ -997,7 +1013,6 @@ export function replicateOverWS(ws, options, authorization) {
 									}
 									if (queued_entries)
 										sendAuditRecord(
-											null,
 											{
 												type: 'end_txn',
 											},
@@ -1159,7 +1174,7 @@ export function replicateOverWS(ws, options, authorization) {
 				end: [Symbol.for('seq'), Buffer.from([0xff])],
 			}) || []) {
 				for (let node of entry.value.nodes || []) {
-					if (node.lastTxnTime > (last_txn_times.get(node.id) ?? 0)) last_txn_times[node.id] = node.lastTxnTime;
+					if (node.seqId > (last_txn_times.get(node.id) ?? 0)) last_txn_times.set(node.id, node.seqId);
 				}
 			}
 		} catch (error) {
