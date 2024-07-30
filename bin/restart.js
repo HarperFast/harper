@@ -153,6 +153,7 @@ async function restartService(req) {
 		case 'custom functions':
 		case SERVICES.harperdb:
 		case SERVICES.http_workers:
+		case SERVICES.http:
 			if (called_from_cli && !pm2_mode) {
 				err_msg = `Restart ${service} is not available from the CLI when running in non-pm2 mode. Either call restart ${service} from the API or stop and start HarperDB.`;
 				break;
