@@ -70,6 +70,7 @@ describe('Test keys module', () => {
 		});
 		await keys.loadCertificates();
 		keys.__set__('getThisNodeName', get_this_node_name_stub);
+		//
 	});
 
 	beforeEach(() => {
