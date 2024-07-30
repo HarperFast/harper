@@ -67,6 +67,7 @@ jobs:
   cluster-test-c:
     needs:
       - build
+      - dockerBuild
     uses: ./.github/workflows/docker-cluster-test.yaml
     strategy:
       fail-fast: false
