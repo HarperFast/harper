@@ -9,6 +9,9 @@ const replicator = require('../../../server/replication/replicator');
 const sub_mgr = require('../../../server/replication/subscriptionManager');
 const keys = require('../../../security/keys');
 const known_nodes = require('../../../server/replication/knownNodes');
+const path = require('path');
+const env_mgr = require('../../../utility/environment/environmentManager');
+const config_utils = require('../../../config/configUtils');
 
 const test_this_node_name = '127.0.0.4';
 const test_response_node_name = '127.0.0.8';
@@ -39,6 +42,8 @@ describe('Test setNode', () => {
 	let get_rep_ca_stub;
 
 	before(() => {
+		env_mgr.setHdbBasePath(config_utils.getConfigFromFile('rootPath'));
+		env_mgr.setProperty('storage_path', path.join(config_utils.getConfigFromFile('rootPath'), 'database'));
 		get_this_node_url_stub = sandbox.stub(replicator, 'getThisNodeUrl').returns(`wss://${test_this_node_name}:9925`);
 		send_to_node_stub = sandbox.stub(replicator, 'sendOperationToNode');
 		set_cert_table_stub = sandbox.stub(keys, 'setCertTable');
@@ -48,6 +53,7 @@ describe('Test setNode', () => {
 			.stub(keys, 'getReplicationCert')
 			.resolves({ options: { is_self_signed: true, key_file: 'privateKey.pem' } });
 		get_rep_ca_stub = sandbox.stub(keys, 'getReplicationCertAuth').resolves({ certificate: test_using_ca });
+		sandbox.stub(keys, 'createCsr').resolves(test_csr);
 		keys.loadCertificates();
 	});
 
@@ -96,6 +102,7 @@ describe('Test setNode', () => {
 			test_response_node_name,
 			{
 				url: 'wss://123.0.0.1:9925',
+				name: '123.0.0.1',
 				ca: test_using_ca,
 				replicates: true,
 			},
