@@ -51,7 +51,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"clustering_enabled\": true,\n    \"replication_url\": null,\n    \"replication_hostname\": null\n}",
+							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"clustering_enabled\": true,\n    \"replication_url\": null,\n    \"replication_hostname\": null,\n    \"clustering_hubServer_cluster_network_routes\": [\n            {\"host\": \"{{NODE2_HOST}}\", \"port\": {{CLUSTERING_PORT}}}, \n            {\"host\": \"{{NODE3_HOST}}\", \"port\": {{CLUSTERING_PORT}}}, \n            {\"host\": \"{{NODE4_HOST}}\", \"port\": {{CLUSTERING_PORT}}},\n            {\"host\": \"{{NODE5_HOST}}\", \"port\": {{CLUSTERING_PORT}}}\n        ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -310,70 +310,6 @@
 					"response": []
 				},
 				{
-					"name": "Restart node 1",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test(\"Clustering service is restarted\", function () {",
-									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"Restarting http_workers\")",
-									"});"
-								],
-								"type": "text/javascript",
-								"packages": {}
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{password}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{username}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "http://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "http",
-							"host": [
-								"{{NODE1_HOST}}"
-							],
-							"port": "{{SERVER_HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
 					"name": "Restart node 2",
 					"event": [
 						{
@@ -384,7 +320,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test(\"Clustering service is restarted\", function () {",
+									"pm.test(\"service is restarted\", function () {",
 									"    const jsonData = pm.response.json();",
 									"    pm.expect(jsonData.message).to.eql(\"Restarting http_workers\")",
 									"});"
@@ -448,7 +384,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test(\"Clustering service is restarted\", function () {",
+									"pm.test(\"service is restarted\", function () {",
 									"    const jsonData = pm.response.json();",
 									"    pm.expect(jsonData.message).to.eql(\"Restarting http_workers\")",
 									"});"
@@ -512,7 +448,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test(\"Clustering service is restarted\", function () {",
+									"pm.test(\"service is restarted\", function () {",
 									"    const jsonData = pm.response.json();",
 									"    pm.expect(jsonData.message).to.eql(\"Restarting http_workers\")",
 									"});"
@@ -576,11 +512,11 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test(\"Clustering service is restarted\", function () {",
+									"pm.test(\"service is restarted\", function () {",
 									"    const jsonData = pm.response.json();",
 									"    pm.expect(jsonData.message).to.eql(\"Restarting http_workers\")",
 									"});",
-									"setTimeout(() => {}, 30000) // wait for the restart to complete"
+									""
 								],
 								"type": "text/javascript",
 								"packages": {}
@@ -629,88 +565,6 @@
 						}
 					},
 					"response": []
-				}
-			]
-		},
-		{
-			"name": "Add Routes",
-			"item": [
-				{
-					"name": "Config Node1",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"const node2_host = pm.environment.get('NODE2_HOST');",
-									"const node3_host = pm.environment.get('NODE3_HOST');",
-									"const node4_host = pm.environment.get('NODE4_HOST');",
-									"const node5_host = pm.environment.get('NODE5_HOST');",
-									"const clustering_port = pm.environment.get('CLUSTERING_PORT');",
-									"",
-									"pm.test(\"Node 1 is configured\", function () {",
-									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"cluster routes successfully set\");",
-									"",
-									"    for (const route of jsonData.set) {",
-									"        pm.expect(route.host).to.be.oneOf([node2_host, node3_host, node4_host, node5_host])",
-									"        pm.expect(route.port).to.equal(+clustering_port);",
-									"    }",
-									"    pm.expect(jsonData.skipped).to.eql([]);",
-									"});",
-									"",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{password}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{username}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"cluster_set_routes\",\n    \"server\": \"hub\",\n    \"routes\":[\n            {\"host\": \"{{NODE2_HOST}}\", \"port\": {{CLUSTERING_PORT}}}, \n            {\"host\": \"{{NODE3_HOST}}\", \"port\": {{CLUSTERING_PORT}}}, \n            {\"host\": \"{{NODE4_HOST}}\", \"port\": {{CLUSTERING_PORT}}},\n            {\"host\": \"{{NODE5_HOST}}\", \"port\": {{CLUSTERING_PORT}}}\n        ]\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "http://{{NODE1_HOST}}:{{SERVER_HDB_PORT}}",
-							"protocol": "http",
-							"host": [
-								"{{NODE1_HOST}}"
-							],
-							"port": "{{SERVER_HDB_PORT}}"
-						}
-					},
-					"response": []
 				},
 				{
 					"name": "Restart node 1",
@@ -723,22 +577,15 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test(\"Clustering service is restarted\", function () {",
+									"pm.test(\"service is restarted\", function () {",
 									"    const jsonData = pm.response.json();",
 									"    pm.expect(jsonData.message).to.eql(\"Restarting http_workers\")",
 									"});",
 									"",
-									"setTimeout(() => {}, 30000) // wait for the restart to complete"
+									"setTimeout(() => {}, 60000) // wait for the restart to complete"
 								],
 								"type": "text/javascript",
 								"packages": {}
-							}
-						},
-						{
-							"listen": "prerequest",
-							"script": {
-								"packages": {},
-								"type": "text/javascript"
 							}
 						}
 					],
