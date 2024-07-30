@@ -62483,11 +62483,12 @@
 							}
 						},
 						"url": {
-							"raw": "{{host}}:9926/Greeting",
+							"raw": "http://localhost:9926/Greeting",
+							"protocol": "http",
 							"host": [
-								"{{host}}"
+								"localhost"
 							],
-							"port": "{{cf_port}}",
+							"port": "9926",
 							"path": [
 								"Greeting"
 							]
