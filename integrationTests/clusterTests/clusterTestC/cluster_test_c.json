@@ -440,7 +440,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"setTimeout(() => {}, 30000) ",
+									"setTimeout(() => {}, 60000) ",
 									""
 								],
 								"type": "text/javascript",
@@ -3066,7 +3066,7 @@
 									"});",
 									"",
 									"// Wait for the restart complete",
-									"setTimeout(()=>{}, 30000);"
+									"setTimeout(()=>{}, 60000);"
 								],
 								"type": "text/javascript"
 							}
@@ -3132,7 +3132,7 @@
 									"});",
 									"",
 									"// Wait for the restart complete",
-									"setTimeout(()=>{}, 30000);"
+									"setTimeout(()=>{}, 60000);"
 								],
 								"type": "text/javascript"
 							}
@@ -5709,7 +5709,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)"
+									"setTimeout(()=> {}, 60000)"
 								],
 								"type": "text/javascript",
 								"packages": {}
@@ -7018,7 +7018,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)"
+									"setTimeout(()=> {}, 60000)"
 								],
 								"type": "text/javascript",
 								"packages": {}
@@ -8241,7 +8241,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)",
+									"setTimeout(()=> {}, 60000)",
 									""
 								],
 								"type": "text/javascript",
@@ -8509,7 +8509,7 @@
 									"});",
 									"",
 									"// Wait for the restart complete",
-									"setTimeout(()=>{}, 30000);"
+									"setTimeout(()=>{}, 60000);"
 								],
 								"type": "text/javascript"
 							}
@@ -9207,7 +9207,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"setTimeout(()=>{}, 30000)"
+									"setTimeout(()=>{}, 60000)"
 								],
 								"type": "text/javascript"
 							}
@@ -9267,7 +9267,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"setTimeout(()=>{}, 30000)"
+									"setTimeout(()=>{}, 60000)"
 								],
 								"type": "text/javascript"
 							}
@@ -10507,7 +10507,7 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)",
+									"setTimeout(()=> {}, 60000)",
 									""
 								],
 								"type": "text/javascript",
@@ -11442,7 +11442,7 @@
 									"});",
 									"",
 									"// Wait for the restart complete",
-									"setTimeout(()=>{}, 30000);"
+									"setTimeout(()=>{}, 60000);"
 								],
 								"type": "text/javascript"
 							}
@@ -14953,7 +14953,7 @@
 									"});",
 									"",
 									"// Wait for the restart complete",
-									"setTimeout(()=>{}, 30000);"
+									"setTimeout(()=>{}, 60000);"
 								],
 								"type": "text/javascript"
 							}
@@ -15912,7 +15912,7 @@
 									"});",
 									"",
 									"// Wait for the restart complete",
-									"setTimeout(()=>{}, 30000);"
+									"setTimeout(()=>{}, 60000);"
 								],
 								"type": "text/javascript"
 							}
@@ -16042,7 +16042,7 @@
 									"});",
 									"",
 									"// Wait for the restart complete",
-									"setTimeout(()=>{}, 30000);"
+									"setTimeout(()=>{}, 60000);"
 								],
 								"type": "text/javascript"
 							}
@@ -16172,7 +16172,7 @@
 									"});",
 									"",
 									"// Wait for the restart complete",
-									"setTimeout(()=>{}, 30000);"
+									"setTimeout(()=>{}, 60000);"
 								],
 								"type": "text/javascript"
 							}
