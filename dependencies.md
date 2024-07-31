@@ -71,3 +71,10 @@ Unfortuneately this project has not been published for three years, although it 
 * Can be deferred: Too small to matter
 * Binary compilation: No
 * Eventual removal: This code could be maintained within our codebase, if necessary, as it is not very large.
+
+## segfault-handler
+* Need for usage: Provides a way to log segfaults in native code
+* Size/memory cost: 10KB
+* Security: No reported vulnerabilities
+* Binary compilation: Yes (but included as an optional dependency)
+* Eventual removal: This is a very small package, and it is not necessary, just adds debugging information
