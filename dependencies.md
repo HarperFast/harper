@@ -78,3 +78,19 @@ Unfortuneately this project has not been published for three years, although it 
 * Security: No reported vulnerabilities
 * Binary compilation: Yes (but included as an optional dependency)
 * Eventual removal: This is a very small package, and it is not necessary, just adds debugging information
+
+## tar-fs
+* Need for usage: Used by package component to pack component project into tarball and by deploy component to extract tarball into component directory.
+* Size/memory cost: Approximately 13KB
+* Security: One medium level where an attacker can overwrite files on the system when extracting a tarball containing a hardlink to a file that already exists, this has since been fixed.
+* Overlap: None
+* Can be deferred: Potentially, we could load it on-demand
+* Eventual removal: We could write our own code that read/writes multiple files from/to a tar file
+
+## gunzip-maybe
+* Need for usage: Used by deploy component 
+* Size/memory cost: Approximately 320B
+* Security: None
+* Overlap: None
+* Can be deferred: Potentially, we could load it on-demand
+* Eventual removal: We could write code to read the first bytes to determine what type of file it is and choose whether to gunzip it or not

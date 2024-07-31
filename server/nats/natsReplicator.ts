@@ -53,7 +53,9 @@ function assignReplicationSource() {
 	});
 	if (subscribed_to_nodes) return;
 	subscribed_to_nodes = true;
-} /*
+}
+const NEVER_REPLICATE_SYSTEM_TABLES = ['hdb_job', 'hdb_analytics', 'hdb_raw_analytics', 'hdb_info', 'hdb_license'];
+/*
 onMessageFromWorkers((event) => {
 	if (event.type === 'nats_update') {
 		assignReplicationSource();
@@ -65,6 +67,7 @@ onMessageFromWorkers((event) => {
  * @param db_name
  */
 export function setNATSReplicator(table_name, db_name, Table) {
+	if (db_name === 'system' && NEVER_REPLICATE_SYSTEM_TABLES.includes(table_name)) return;
 	if (!Table) {
 		return console.error(`Attempt to replicate non-existent table ${table_name} from database ${db_name}`);
 	}

@@ -91,6 +91,7 @@ const PROCESS_DESCRIPTORS_VALIDATE = {
 	'clustering config': 'clustering config',
 	'clustering_config': 'clustering_config',
 	'http_workers': 'http_workers',
+	'http': 'http',
 };
 
 // All the processes that make up clustering
