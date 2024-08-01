@@ -3396,7 +3396,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"rejectUnauthorized\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"publish\": false,\n            \"subscribe\": true\n        },\n        {\n            \"schema\": \"listeners\",\n            \"table\": \"address\",\n            \"publish\": true,\n            \"subscribe\": false\n        },\n        {\n            \"schema\": \"radio\",\n            \"table\": \"head\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}",
+							"raw": "{\n    \"operation\": \"add_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"publish\": false,\n            \"subscribe\": true\n        },\n        {\n            \"schema\": \"listeners\",\n            \"table\": \"address\",\n            \"publish\": true,\n            \"subscribe\": false\n        },\n        {\n            \"schema\": \"radio\",\n            \"table\": \"head\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -5524,7 +5524,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"update_node\",\n    \"node_name\": \"{{NODE1_NAME}}\",\n    \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n    \"rejectUnauthorized\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": false,\n            \"publish\": false\n        }\n    ]\n}",
+							"raw": "{\n    \"operation\": \"update_node\",\n    \"node_name\": \"{{NODE1_NAME}}\",\n    \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": false,\n            \"publish\": false\n        }\n    ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -5728,7 +5728,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"update_node\",\n    \"node_name\": \"{{NODE1_NAME}}\",\n    \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n    \"rejectUnauthorized\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}",
+							"raw": "{\n    \"operation\": \"update_node\",\n    \"node_name\": \"{{NODE1_NAME}}\",\n    \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -5881,7 +5881,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"update_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"rejectUnauthorized\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}",
+							"raw": "{\n    \"operation\": \"update_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -8086,7 +8086,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"rejectUnauthorized\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"dev\",\n            \"table\": \"fish\",\n            \"publish\": true,\n            \"subscribe\": true\n        }\n    ]\n}\n",
+							"raw": "{\n    \"operation\": \"add_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"dev\",\n            \"table\": \"fish\",\n            \"publish\": true,\n            \"subscribe\": true\n        }\n    ]\n}\n",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -11445,7 +11445,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"rejectUnauthorized\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"incredible_bulk\",\n            \"table\": \"pre_con1\",\n            \"publish\": true,\n            \"subscribe\": true\n        },\n        {\n            \"schema\": \"incredible_bulk\",\n            \"table\": \"pre_con2\",\n            \"publish\": true,\n            \"subscribe\": true\n        }\n    ]\n}\n\n",
+							"raw": "{\n    \"operation\": \"add_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"incredible_bulk\",\n            \"table\": \"pre_con1\",\n            \"publish\": true,\n            \"subscribe\": true\n        },\n        {\n            \"schema\": \"incredible_bulk\",\n            \"table\": \"pre_con2\",\n            \"publish\": true,\n            \"subscribe\": true\n        }\n    ]\n}\n\n",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -11934,7 +11934,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"configure_cluster\",\n    \"connections\": [\n        {\n            \"node_name\": \"{{NODE1_NAME}}\",\n            \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n            \"rejectUnauthorized\": false,\n            \"authorization\": {\n                \"username\": \"{{USERNAME}}\",\n                \"password\": \"{{PASSWORD}}\"\n            },\n            \"subscriptions\": [\n                {\n                    \"schema\": \"incredible_bulk\",\n                    \"table\": \"csv_data_load\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                },\n                {\n                    \"schema\": \"incredible_bulk\",\n                    \"table\": \"csv_file_load\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                },\n                {\n                    \"schema\": \"incredible_bulk\",\n                    \"table\": \"csv_url_load\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                },\n                {\n                    \"schema\": \"incredible_bulk\",\n                    \"table\": \"csv_s3_load\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                }\n            ]\n        }\n    ]\n}",
+							"raw": "{\n    \"operation\": \"configure_cluster\",\n    \"connections\": [\n        {\n            \"node_name\": \"{{NODE1_NAME}}\",\n            \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n            \"verify_tls\": false,\n            \"authorization\": {\n                \"username\": \"{{USERNAME}}\",\n                \"password\": \"{{PASSWORD}}\"\n            },\n            \"subscriptions\": [\n                {\n                    \"schema\": \"incredible_bulk\",\n                    \"table\": \"csv_data_load\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                },\n                {\n                    \"schema\": \"incredible_bulk\",\n                    \"table\": \"csv_file_load\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                },\n                {\n                    \"schema\": \"incredible_bulk\",\n                    \"table\": \"csv_url_load\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                },\n                {\n                    \"schema\": \"incredible_bulk\",\n                    \"table\": \"csv_s3_load\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                }\n            ]\n        }\n    ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -14682,7 +14682,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"configure_cluster\",\n    \"connections\": [\n         {\n            \"node_name\": \"{{NODE1_NAME}}\",\n            \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n            \"rejectUnauthorized\": false,\n            \"authorization\": {\n                \"username\": \"{{USERNAME}}\",\n                \"password\": \"{{PASSWORD}}\"\n            },\n            \"subscriptions\": [\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"frog\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                },\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"bird\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                }\n            ]\n        },\n        {\n            \"node_name\": \"{{NODE3_NAME}}\",\n            \"url\": \"wss://{{NODE3_HOST}}:{{HDB_PORT}}\",\n            \"rejectUnauthorized\": false,\n            \"authorization\": {\n                \"username\": \"{{USERNAME}}\",\n                \"password\": \"{{PASSWORD}}\"\n            },\n            \"subscriptions\": [\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"frog\",\n                    \"publish\": false,\n                    \"subscribe\": true\n                },\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"bird\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                }\n            ]\n        },\n        {\n            \"node_name\": \"{{NODE4_NAME}}\",\n            \"url\": \"wss://{{NODE4_HOST}}:{{HDB_PORT}}\",\n            \"rejectUnauthorized\": false,\n            \"authorization\": {\n                \"username\": \"{{USERNAME}}\",\n                \"password\": \"{{PASSWORD}}\"\n            },\n            \"subscriptions\": [\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"frog\",\n                    \"publish\": true,\n                    \"subscribe\": false\n                }\n            ]\n        }\n    ]\n}",
+							"raw": "{\n    \"operation\": \"configure_cluster\",\n    \"connections\": [\n         {\n            \"node_name\": \"{{NODE1_NAME}}\",\n            \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n            \"verify_tls\": false,\n            \"authorization\": {\n                \"username\": \"{{USERNAME}}\",\n                \"password\": \"{{PASSWORD}}\"\n            },\n            \"subscriptions\": [\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"frog\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                },\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"bird\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                }\n            ]\n        },\n        {\n            \"node_name\": \"{{NODE3_NAME}}\",\n            \"url\": \"wss://{{NODE3_HOST}}:{{HDB_PORT}}\",\n            \"verify_tls\": false,\n            \"authorization\": {\n                \"username\": \"{{USERNAME}}\",\n                \"password\": \"{{PASSWORD}}\"\n            },\n            \"subscriptions\": [\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"frog\",\n                    \"publish\": false,\n                    \"subscribe\": true\n                },\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"bird\",\n                    \"publish\": true,\n                    \"subscribe\": true\n                }\n            ]\n        },\n        {\n            \"node_name\": \"{{NODE4_NAME}}\",\n            \"url\": \"wss://{{NODE4_HOST}}:{{HDB_PORT}}\",\n            \"verify_tls\": false,\n            \"authorization\": {\n                \"username\": \"{{USERNAME}}\",\n                \"password\": \"{{PASSWORD}}\"\n            },\n            \"subscriptions\": [\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"frog\",\n                    \"publish\": true,\n                    \"subscribe\": false\n                }\n            ]\n        }\n    ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -14747,7 +14747,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"configure_cluster\",\n    \"connections\": [\n        {\n            \"node_name\": \"badNode\",\n            \"url\": \"wss://badnode:{{HDB_PORT}}\",\n            \"rejectUnauthorized\": false,\n            \"authorization\": {\n                \"username\": \"{{USERNAME}}\",\n                \"password\": \"who-you-calling-a-password\"\n            },\n            \"subscriptions\": [\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"frog\",\n                    \"publish\": true,\n                    \"subscribe\": false\n                }\n            ]\n        }\n    ]\n}",
+							"raw": "{\n    \"operation\": \"configure_cluster\",\n    \"connections\": [\n        {\n            \"node_name\": \"badNode\",\n            \"url\": \"wss://badnode:{{HDB_PORT}}\",\n            \"verify_tls\": false,\n            \"authorization\": {\n                \"username\": \"{{USERNAME}}\",\n                \"password\": \"who-you-calling-a-password\"\n            },\n            \"subscriptions\": [\n                {\n                    \"schema\": \"four\",\n                    \"table\": \"frog\",\n                    \"publish\": true,\n                    \"subscribe\": false\n                }\n            ]\n        }\n    ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -17659,7 +17659,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_node\",\n    \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n    \"rejectUnauthorized\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    }\n}\n\n",
+							"raw": "{\n    \"operation\": \"add_node\",\n    \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    }\n}\n\n",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -17791,7 +17791,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_node\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"rejectUnauthorized\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    }\n}\n\n",
+							"raw": "{\n    \"operation\": \"add_node\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    }\n}\n\n",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -18476,7 +18476,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_node\",\n    \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n    \"rejectUnauthorized\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    }\n}\n\n",
+							"raw": "{\n    \"operation\": \"add_node\",\n    \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    }\n}\n\n",
 							"options": {
 								"raw": {
 									"language": "json"

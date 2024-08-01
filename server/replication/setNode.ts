@@ -21,7 +21,7 @@ const { HTTP_STATUS_CODES } = hdb_errors;
 
 const validation_schema = Joi.object({
 	hostname: Joi.string(),
-	rejectUnauthorized: Joi.boolean(),
+	verify_tls: Joi.boolean(),
 	replicates: Joi.boolean(),
 	subscriptions: Joi.array(),
 });
@@ -32,6 +32,7 @@ const validation_schema = Joi.object({
  */
 export async function setNode(req: object) {
 	if (req.node_name && !req.hostname) req.hostname = req.node_name;
+	if (req.verify_tls) req.rejectUnauthorized = req.verify_tls;
 	let { url, hostname } = req;
 	if (!url) url = hostnameToUrl(hostname);
 	else if (!hostname) hostname = req.hostname = urlToNodeName(url);

@@ -70,7 +70,7 @@ describe('Test setNode', () => {
 		const res = await set_node.setNode({
 			operation: 'add_node',
 			url: 'wss://123.0.0.1:9925',
-			rejectUnauthorized: false,
+			verify_tls: false,
 			authorization: {
 				username: 'harper',
 				password: 'i-like-sticks',
