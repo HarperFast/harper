@@ -18,6 +18,7 @@ exports.createTestTable = async function createTestTable(database_path, table_na
 	}
 	database_config[DATABASE_NAME] = { path: database_path };
 	databases[DATABASE_NAME] = undefined; // ensure that there is no old database from the wrong path
+	logger.info('Databases before TestTable', Object.keys(databases));
 	const TestTable = table({
 		table: table_name,
 		database: DATABASE_NAME,
@@ -27,8 +28,9 @@ exports.createTestTable = async function createTestTable(database_path, table_na
 		],
 	});
 	// wait for the database to be resynced
-	await new Promise((resolve) => setTimeout(resolve, 10));
 	logger.info('Created TestTable', TestTable.databaseName, TestTable.databasePath, Object.keys(databases));
+	await new Promise((resolve) => setTimeout(resolve, 10));
+	logger.info('Created TestTable after delay', TestTable.databaseName, TestTable.databasePath, Object.keys(databases));
 	let originalGetResidency = TestTable.getResidency;
 	TestTable.setResidency((record, context) => {
 		return record.locations ?? originalGetResidency(record, context);
