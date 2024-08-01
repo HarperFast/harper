@@ -116,10 +116,12 @@ async function restartService(req) {
 			type: hdb_terms.ITC_EVENT_TYPES.RESTART,
 			workerType: service,
 		});
+		parentPort.ref(); // don't let the parent thread exit until we're done
 		return new Promise((resolve) => {
 			parentPort.on('message', (msg) => {
 				if (msg.type === 'restart-complete') {
 					resolve();
+					parentPort.unref();
 				}
 			});
 		});

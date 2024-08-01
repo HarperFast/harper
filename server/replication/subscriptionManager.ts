@@ -147,17 +147,18 @@ export async function startOnMainThread(options) {
 		}
 
 		function onDatabase(database_name, tables_replicate_by_default) {
+			logger.trace('Setting up replication for database', database_name, 'on node', node.name);
 			const existing_entry = db_replication_workers.get(database_name);
 			let worker;
 			let nodes = [Object.assign({ replicateByDefault: tables_replicate_by_default }, node)];
 			let should_subscribe = shouldReplicateToNode(node, database_name);
-
+			let http_workers = workers.filter((worker) => worker.name === 'http');
 			if (existing_entry) {
 				worker = existing_entry.worker;
 				existing_entry.nodes = nodes;
 			} else if (should_subscribe) {
-				worker = workers[next_worker_index];
-				next_worker_index = (next_worker_index + 1) % workers.length;
+				next_worker_index = next_worker_index % http_workers.length; // wrap around as necessary
+				worker = http_workers[next_worker_index++];
 
 				db_replication_workers.set(database_name, {
 					worker,

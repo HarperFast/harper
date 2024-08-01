@@ -144,6 +144,7 @@ export class NodeReplicationConnection extends EventEmitter {
 		let session;
 		logger.info?.(`Connecting to ${this.url}, db: ${this.databaseName}, process ${process.pid}`);
 		this.socket.on('open', () => {
+			this.socket._socket.unref();
 			logger.info?.(`Connected to ${this.url}, db: ${this.databaseName}`);
 			this.retries = 0;
 			this.retryTime = 2000;
@@ -238,6 +239,7 @@ export class NodeReplicationConnection extends EventEmitter {
  * This handles both incoming and outgoing WS allowing either one to issue a subscription and get replication and/or handle subscription requests
  */
 export function replicateOverWS(ws, options, authorization) {
+	//ws._socket.unref();
 	const p = options.port || options.securePort;
 	const connection_id =
 		(process.pid % 1000) +
@@ -283,7 +285,7 @@ export function replicateOverWS(ws, options, authorization) {
 				ws.ping();
 			}
 		};
-		send_ping_interval = setInterval(send_ping, PING_INTERVAL);
+		send_ping_interval = setInterval(send_ping, PING_INTERVAL).unref();
 		send_ping(); // send the first ping immediately so we can measure latency
 	} else {
 		resetPingTimer();
@@ -293,7 +295,7 @@ export function replicateOverWS(ws, options, authorization) {
 		receive_ping_timer = setTimeout(() => {
 			logger.warn?.(`Timeout waiting for ping from ${remote_node_name}, terminating connection and reconnecting`);
 			ws.terminate();
-		}, PING_INTERVAL * 2);
+		}, PING_INTERVAL * 2).unref();
 	}
 	if (database_name) {
 		setDatabase(database_name);
