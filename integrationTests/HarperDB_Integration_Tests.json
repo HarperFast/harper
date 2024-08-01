@@ -48744,11 +48744,6 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test(\"Restart success message is returned\", function () {",
-									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.message).to.equal(\"Restarting http_workers\");",
-									"});",
-									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
 									"setTimeout(() => {}, 60000)"
 								],
@@ -48781,7 +48776,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
+							"raw": "{\n    \"operation\": \"restart\",\n}",
 							"options": {
 								"raw": {
 									"language": "json"

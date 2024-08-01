@@ -93,6 +93,10 @@ jobs:
           echo "HarperDB install..."
           cd /home/ubuntu/harperdb/bin
           node harperdb.js start \$CLI_ARGS
+          sleep 2
+          node harperdb.js stop
+          sleep 2
+          node harperdb.js start
         elif [ "${{ inputs.installType }}" == "buildPackage" ];
         then
           echo "hdb_install_type paramater set to ${{ inputs.installType }}. Installing HarperDB from build package..."
@@ -101,7 +105,10 @@ jobs:
 
           echo "HarperDB install..."
           harperdb start \$CLI_ARGS
-        
+          sleep 2
+          harperdb stop
+          sleep 2
+          harperdb start
         elif [ "${{ inputs.installType }}" == 'none' ];
         then
             echo "hdb_install_type paramater set to ${{ inputs.installType }}. Skipping HarperDB install."
