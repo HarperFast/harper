@@ -39,7 +39,6 @@ export async function startOnMainThread(options) {
 		}
 		for (const route of iterateRoutes(options)) {
 			try {
-				if (nodes.find((node) => node.url === route.url)) continue;
 				const replicate_all = !route.subscriptions;
 				if (replicate_all) {
 					let this_name = getThisNodeName();
@@ -48,7 +47,7 @@ export async function startOnMainThread(options) {
 					if (getHDBNodeTable().primaryStore.get(this_name) === undefined)
 						await ensureNode(this_name, {
 							name: this_name,
-							url: getThisNodeUrl(),
+							url: options.url ?? getThisNodeUrl(),
 							replicates: true,
 						});
 				}
@@ -56,6 +55,7 @@ export async function startOnMainThread(options) {
 				if (replicate_all) {
 					if (route.replicates == undefined) route.replicates = true;
 				}
+				if (nodes.find((node) => node.url === route.url)) continue;
 				// just tentatively add this node to the list of nodes in memory
 				onNodeUpdate(route);
 			} catch (error) {
@@ -69,16 +69,16 @@ export async function startOnMainThread(options) {
 	 * This is called when a new node is added to the hdb_nodes table
 	 * @param node
 	 */
-	function onNodeUpdate(node, host_name) {
+	function onNodeUpdate(node, hostname = node.name) {
 		const is_self =
-			(getThisNodeName() && host_name === getThisNodeName()) || (getThisNodeUrl() && node?.url === getThisNodeUrl());
+			(getThisNodeName() && hostname === getThisNodeName()) || (getThisNodeUrl() && node?.url === getThisNodeUrl());
 		if (is_self) {
 			// this is just this node, we don't need to connect to ourselves, but if we get removed, we need to remove all fully replicating connections,
 			// so we update each one
 			const should_fully_replicate = Boolean(node?.replicates);
 			if (is_fully_replicating !== undefined && is_fully_replicating !== should_fully_replicate) {
 				for (let node of getHDBNodeTable().search([])) {
-					if (node.replicates && node.name !== host_name) onNodeUpdate(node, node.name);
+					if (node.replicates && node.name !== hostname) onNodeUpdate(node, node.name);
 				}
 			}
 			is_fully_replicating = should_fully_replicate;
@@ -90,10 +90,10 @@ export async function startOnMainThread(options) {
 				for (let [database, { worker, nodes }] of db_replication_workers) {
 					let node = nodes[0];
 					if (!node) continue;
-					if (node.name == host_name) {
+					if (node.name == hostname) {
 						found_node = true;
 						for (let [database, { worker }] of db_replication_workers) {
-							worker?.postMessage({ type: 'unsubscribe-from-node', node: host_name, database, url });
+							worker?.postMessage({ type: 'unsubscribe-from-node', node: hostname, database, url });
 						}
 						break;
 					}
@@ -299,26 +299,30 @@ export async function startOnMainThread(options) {
 export function requestClusterStatus(message, port) {
 	const connections = [];
 	for (let [, node] of node_map) {
-		const db_replication_map = connection_replication_map.get(node.url);
-		const databases = [];
-		if (db_replication_map) {
-			for (let [database, { worker, connected, nodes, latency }] of db_replication_map) {
-				databases.push({
-					database,
-					connected,
-					latency,
-					threadId: worker?.threadId,
-					nodes: nodes.map((node) => node.name),
-				});
-			}
+		try {
+			const db_replication_map = connection_replication_map.get(node.url);
+			const databases = [];
+			if (db_replication_map) {
+				for (let [database, { worker, connected, nodes, latency }] of db_replication_map) {
+					databases.push({
+						database,
+						connected,
+						latency,
+						threadId: worker?.threadId,
+						nodes: nodes.map((node) => node.name),
+					});
+				}
 
-			const res = cloneDeep(node);
-			res.database_sockets = databases;
-			delete res.ca;
-			delete res.node_name;
-			delete res.__updatedtime__;
-			delete res.__createdtime__;
-			connections.push(res);
+				const res = cloneDeep(node);
+				res.database_sockets = databases;
+				delete res.ca;
+				delete res.node_name;
+				delete res.__updatedtime__;
+				delete res.__createdtime__;
+				connections.push(res);
+			}
+		} catch (error) {
+			logger.warn('Error getting cluster status for', node?.url, error);
 		}
 	}
 	port?.postMessage({

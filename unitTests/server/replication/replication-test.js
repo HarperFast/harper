@@ -45,7 +45,7 @@ describe('Replication', () => {
 		});
 	}
 	before(async function () {
-		this.timeout(100000);
+		this.timeout(10000);
 		getMockLMDBPath();
 		databases.system.hdb_nodes.primaryStore.clearSync(); // clear the nodes
 		database_config = env_get(CONFIG_PARAMS.DATABASES);
@@ -229,7 +229,7 @@ describe('Replication', () => {
 
 	describe('With third node', function () {
 		before(async function () {
-			this.timeout(10000);
+			this.timeout(100000);
 			await addWorkerNode(2);
 			await new Promise((resolve) => setTimeout(resolve, 500));
 			console.log('added child_process');

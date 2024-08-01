@@ -58,6 +58,8 @@ interface SubSelect {
 	select: (string | SubSelect)[];
 }
 export interface Query {
+	/** Retrieve a specific record, but can be combined with select */
+	id?: Id;
 	/**	 The conditions to use in the query, that the returned records must satisfy	 */
 	conditions?: Condition[];
 	/**	 The number of records to return	 */

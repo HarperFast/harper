@@ -33,6 +33,7 @@ import * as tls from 'node:tls';
 import { getHDBNodeTable } from './knownNodes';
 import { asBinary } from 'lmdb';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility';
+import * as process from 'node:process';
 //import { operation } from '../../server/serverHelpers/serverUtilities';
 
 const SUBSCRIPTION_REQUEST = 129;
@@ -141,7 +142,7 @@ export class NodeReplicationConnection extends EventEmitter {
 		this.socket = await createWebSocket(this.url);
 
 		let session;
-		logger.info?.(`Connecting to ${this.url}, db: ${this.databaseName}`);
+		logger.info?.(`Connecting to ${this.url}, db: ${this.databaseName}, process ${process.pid}`);
 		this.socket.on('open', () => {
 			logger.info?.(`Connected to ${this.url}, db: ${this.databaseName}`);
 			this.retries = 0;

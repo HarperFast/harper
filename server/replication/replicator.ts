@@ -213,6 +213,11 @@ export function setReplicator(db_name, table, options) {
 				const table_by_id = subscription?.tableById || [];
 				table_by_id[table.tableId] = table;
 				const resolve = subscription?.ready;
+				logger.trace(
+					'Setting up replicator subscription to database',
+					db_name,
+					subscription && Object.keys(subscription)
+				);
 				if (!subscription?.auditStore) {
 					// if and only if we are the first table for the database, then we set up the subscription.
 					// We only need one subscription for the database
