@@ -7,6 +7,7 @@ const env = require('../../..//utility/environment/environmentManager');
 const { CONFIG_PARAMS } = require('../../../utility/hdbTerms');
 const { get: env_get } = require('../../../utility/environment/environmentManager');
 const { clusterStatus } = require('../../../utility/clustering/clusterStatus');
+const logger = require('../../../utility/logging/harper_logger');
 
 const DATABASE_NAME = 'test';
 
@@ -27,6 +28,7 @@ exports.createTestTable = async function createTestTable(database_path, table_na
 	});
 	// wait for the database to be resynced
 	await new Promise((resolve) => setTimeout(resolve, 10));
+	logger.info('Created TestTable', TestTable.databaseName, TestTable.databasePath, Object.keys(databases));
 	let originalGetResidency = TestTable.getResidency;
 	TestTable.setResidency((record, context) => {
 		return record.locations ?? originalGetResidency(record, context);
