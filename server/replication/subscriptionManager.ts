@@ -69,7 +69,7 @@ export async function startOnMainThread(options) {
 	 * This is called when a new node is added to the hdb_nodes table
 	 * @param node
 	 */
-	function onNodeUpdate(node, hostname = node.name) {
+	function onNodeUpdate(node, hostname = node?.name) {
 		const is_self =
 			(getThisNodeName() && hostname === getThisNodeName()) || (getThisNodeUrl() && node?.url === getThisNodeUrl());
 		if (is_self) {
@@ -83,6 +83,7 @@ export async function startOnMainThread(options) {
 			}
 			is_fully_replicating = should_fully_replicate;
 		}
+		logger.trace('Setting up node replication for', node);
 		if (!node) {
 			// deleted node
 			for (let [url, db_replication_workers] of connection_replication_map) {

@@ -440,6 +440,7 @@ export function forEachReplicatedDatabase(options, callback) {
 	});
 	function forDatabase(database_name) {
 		const database = databases[database_name];
+		logger.trace('Checking replication status of ', database_name, options?.databases);
 		if (
 			options?.databases === undefined ||
 			options.databases === '*' ||
