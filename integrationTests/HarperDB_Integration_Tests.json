@@ -1,7 +1,9 @@
 {
 	"info": {
+		"_postman_id": "55dc0e6d-fa71-4365-8594-5bf2e3c1aa87",
 		"name": "HarperDB Integration Tests",
-		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "7046690"
 	},
 	"item": [
 		{
@@ -48744,15 +48746,11 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test(\"Restart success message is returned\", function () {",
-									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.message).to.equal(\"Restarting http_workers\");",
-									"});",
-									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
 									"setTimeout(() => {}, 60000)"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -48781,7 +48779,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -53105,7 +53103,7 @@
 													"    pm.expect(Object.keys(jsonResponse).length).to.eql(1);",
 													"    pm.expect(Object.keys(jsonResponse.northnwd).length).to.eql(1);",
 													"    pm.expect(Object.keys(jsonResponse.northnwd.employees).length).to.eql(10)",
-                                                    "    pm.expect(jsonResponse.northnwd.employees.db_size).to.be.a('number')",
+													"    pm.expect(jsonResponse.northnwd.employees.db_size).to.be.a('number')",
 													"    pm.expect(jsonResponse.northnwd.employees.attributes.length).to.eql(4)",
 													"});",
 													""
@@ -62622,7 +62620,8 @@
 									"",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -62666,7 +62665,7 @@
 							"host": [
 								"{{host}}"
 							],
-							"port": "{{cf_port}}",
+							"port": "9926",
 							"path": [
 								"Greeting"
 							]

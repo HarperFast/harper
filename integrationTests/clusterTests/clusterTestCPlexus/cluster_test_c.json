@@ -3363,7 +3363,7 @@
 									"    const response = pm.response.json();",
 									"    const node_host = pm.environment.get(\"NODE2_HOST\");",
 									"    const port = pm.environment.get(\"HDB_PORT\");",
-									"    pm.expect(response.message).to.equal(`Successfully added 'wss://${node_host}:${port}' to manifest`);",
+									"    pm.expect(response.message).to.equal(`Successfully added 'wss://${node_host}:${port}' to cluster`);",
 									"});"
 								],
 								"type": "text/javascript",
@@ -6492,7 +6492,7 @@
 									"pm.test('Node is removed from node 2', () => {",
 									"    const response = pm.response.json();",
 									"    const node1_name = pm.environment.get('NODE1_NAME');",
-									"    pm.expect(response.message).to.equal(`Successfully removed '${node1_name}' from manifest`);",
+									"    pm.expect(response.message).to.equal(`Successfully removed '${node1_name}' from cluster`);",
 									"});"
 								],
 								"type": "text/javascript"
@@ -8053,7 +8053,7 @@
 									"    const response = pm.response.json();",
 									"    const node_host = pm.environment.get(\"NODE2_HOST\");",
 									"    const port = pm.environment.get(\"HDB_PORT\");",
-									"    pm.expect(response.message).to.equal(`Successfully added 'wss://${node_host}:${port}' to manifest`);",
+									"    pm.expect(response.message).to.equal(`Successfully added 'wss://${node_host}:${port}' to cluster`);",
 									"});"
 								],
 								"type": "text/javascript",
@@ -10348,7 +10348,7 @@
 									"pm.test('Node is removed from node 2', () => {",
 									"    const response = pm.response.json();",
 									"    const node1_name = pm.environment.get('NODE1_NAME');",
-									"    pm.expect(response.message).to.equal(`Successfully removed '${node1_name}' from manifest`);",
+									"    pm.expect(response.message).to.equal(`Successfully removed '${node1_name}' from cluster`);",
 									"});"
 								],
 								"type": "text/javascript",
@@ -11411,7 +11411,7 @@
 									"    const response = pm.response.json();",
 									"    const node_host = pm.environment.get(\"NODE2_HOST\");",
 									"    const port = pm.environment.get(\"HDB_PORT\");",
-									"    pm.expect(response.message).to.equal(`Successfully added 'wss://${node_host}:${port}' to manifest`);",
+									"    pm.expect(response.message).to.equal(`Successfully added 'wss://${node_host}:${port}' to cluster`);",
 									"});",
 									""
 								],
@@ -13507,7 +13507,7 @@
 									"pm.test('Node is removed from node 1', () => {",
 									"    const response = pm.response.json();",
 									"    const node2_name = pm.environment.get('NODE2_NAME');",
-									"    pm.expect(response.message).to.equal(`Successfully removed '${node2_name}' from manifest`);",
+									"    pm.expect(response.message).to.equal(`Successfully removed '${node2_name}' from cluster`);",
 									"});"
 								],
 								"type": "text/javascript",

@@ -108,7 +108,7 @@ describe('Test setNode', () => {
 			},
 		]);
 
-		expect(res).to.equal("Successfully added 'wss://123.0.0.1:9925' to manifest");
+		expect(res).to.equal("Successfully added 'wss://123.0.0.1:9925' to cluster");
 	});
 
 	it('Test addNodeBack', async () => {
