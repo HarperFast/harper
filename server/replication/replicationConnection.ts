@@ -783,8 +783,9 @@ export function replicateOverWS(ws, options, authorization) {
 									partial_record = null;
 								for (const name in table.indices) {
 									if (!partial_record) {
-										partial_record = {};
 										full_record = audit_record.getValue(primary_store, true);
+										if (!full_record) break; // if there is no record, as is the case with a relocate, we can't send it
+										partial_record = {};
 									}
 									// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
 									partial_record[name] = full_record[name];
@@ -1332,7 +1333,7 @@ export function replicateOverWS(ws, options, authorization) {
 				})),
 			});
 		}
-		logger.trace?.('Sending database schema for node', 'database name', database_name, Object.keys(tables));
+
 		ws.send(encode([DB_SCHEMA, tables, database_name]));
 	}
 	let next_id = 1;

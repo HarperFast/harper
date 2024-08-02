@@ -305,6 +305,8 @@ export function makeTable(options) {
 							return resource._writePublish(value, options);
 						case 'invalidate':
 							return resource._writeInvalidate(options);
+						case 'relocate':
+							return resource._writeRelocate(options);
 						default:
 							logger.error?.('Unknown operation', event.type, event.id);
 					}
@@ -1039,6 +1041,57 @@ export function makeTable(options) {
 						'invalidate'
 					);
 					// TODO: record_deletion?
+				},
+			});
+		}
+		_writeRelocate(options) {
+			const context = this[CONTEXT];
+			const id = this[ID_PROPERTY];
+			checkValidId(id);
+			const transaction = txnForContext(this[CONTEXT]);
+			transaction.addWrite({
+				key: id,
+				store: primary_store,
+				invalidated: true,
+				entry: this[ENTRY_PROPERTY],
+				before: apply_to_sources.relocate?.bind(this, context, id),
+				beforeIntermediate: apply_to_sources_intermediate.relocate?.bind(this, context, id),
+				commit: (txn_time, existing_entry) => {
+					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId)) return;
+					let residency = this.getResidencyRecord(options.residencyId);
+					let metadata = 0;
+					let new_record = null;
+					const existing_record = existing_entry?.value;
+					if (residency && !residency.includes(server.hostname)) {
+						for (const name in indices) {
+							if (!new_record) new_record = {};
+							// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
+							new_record[name] = existing_record(name);
+						}
+						metadata = INVALIDATED;
+					} else {
+						new_record = existing_record;
+					}
+
+					logger.trace?.(`Relocating entry id: ${id}, timestamp: ${new Date(txn_time).toISOString()}`);
+
+					updateRecord(
+						id,
+						new_record,
+						this[ENTRY_PROPERTY],
+						txn_time,
+						metadata,
+						audit,
+						{
+							user: context.user,
+							residencyId: options.residencyId,
+							nodeId: options.nodeId,
+							expiresAt: options.expiresAt,
+						},
+						'relocate',
+						false,
+						null
+					);
 				},
 			});
 		}
