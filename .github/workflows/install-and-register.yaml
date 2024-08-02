@@ -73,6 +73,7 @@ jobs:
         export HTTP_VARS="--HTTP_PORT 9926 --OPERATIONSAPI_NETWORK_PORT 9925"
         if [ "${{ inputs.httpsOn }}" == "true" ];
         then
+        echo "Using secure ports"
         export HTTP_VARS="--HTTP_SECUREPORT 9926 --OPERATIONSAPI_NETWORK_SECUREPORT 9925"
         fi
         
