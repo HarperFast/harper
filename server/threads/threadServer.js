@@ -674,7 +674,7 @@ function createSNICallback(tls_config) {
 	}
 	if (!tls_contexts.length) tls_contexts.push(tls_config);
 	let secure_contexts = new Map();
-	let first_context;
+	let first_context, first_context_with_ip_address;
 	let has_wildcards = false;
 	for (let tls of tls_contexts) {
 		const private_key = readPEM(tls.privateKey);
@@ -702,6 +702,7 @@ function createSNICallback(tls_config) {
 		secure_context.certStart = certificate.slice(0, 100).toString();
 		if (!first_context) first_context = secure_context;
 		let cert_parsed = new X509Certificate(certificate);
+		secure_context.subject = cert_parsed.subject;
 		let hostnames =
 			tls.hostname ??
 			tls.host ??
@@ -724,6 +725,9 @@ function createSNICallback(tls_config) {
 					hostname = hostname.slice(1);
 				}
 				if (!secure_contexts.has(hostname)) secure_contexts.set(hostname, secure_context);
+				if (!first_context_with_ip_address && hostname.match(/\d+\.\d+\.\d+\.\d+/)) {
+					first_context_with_ip_address = secure_context;
+				}
 			} else {
 				harper_logger.error('No hostname found for certificate at', tls.certificate);
 			}
@@ -746,6 +750,8 @@ function createSNICallback(tls_config) {
 		}
 		harper_logger.debug('No certificate found to match', servername, 'using the first certificate');
 		// no matches, return the first one
-		cb(null, first_context);
+		if (servername) cb(null, first_context);
+		else cb(null, first_context_with_ip_address); // used to get the default context, which is only used for direct IP
+		// addresses
 	};
 }
