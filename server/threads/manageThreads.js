@@ -249,7 +249,10 @@ async function restartWorkers(
 			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
 			let when_done = new Promise((resolve) => {
 				// in case the exit inside the thread doesn't timeout, call terminate if necessary
-				let timeout = setTimeout(() => worker.terminate(), thread_termination_timeout * 2).unref();
+				let timeout = setTimeout(() => {
+					harper_logger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
+					worker.terminate();
+				}, thread_termination_timeout * 2).unref();
 				worker.on('exit', () => {
 					clearTimeout(timeout);
 					waiting_to_finish.splice(waiting_to_finish.indexOf(when_done));

@@ -41,6 +41,7 @@ import { encode } from 'msgpackr';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 import { exportIdMapping } from './nodeIdMapping';
 import * as tls from 'node:tls';
+import { isMainThread } from 'worker_threads';
 
 let replication_disabled;
 let next_id = 1; // for request ids
@@ -68,6 +69,7 @@ export function start(options) {
 	// noinspection JSVoidFunctionReturnValueUsed
 	const ws_servers = server.ws(async (ws, request, chain_completion) => {
 		await chain_completion;
+		ws._socket.unref(); // we don't want the socket to keep the thread alive
 		replicateOverWS(ws, options, request?.user);
 		ws.on('error', (error) => {
 			if (error.code !== 'ECONNREFUSED') logger.error('Error in connection to ' + this.url, error.message);
@@ -308,10 +310,19 @@ export async function sendOperationToNode(node, operation, options) {
 		socket.on('close', (error) => {
 			logger.error('Sending operation connection to ' + node.url + ' closed', error);
 		});
+	}).finally(() => {
+		socket.close();
 	});
 }
 export function subscribeToNode(request) {
 	try {
+		if (isMainThread) {
+			logger.trace(
+				`Subscribing on main thread (should not happen in multi-threaded instance)`,
+				request.nodes[0].url,
+				request.database
+			);
+		}
 		let subscription_to_table = database_subscriptions.get(request.database);
 		if (!subscription_to_table) {
 			// Wait for it to be created
@@ -429,6 +440,7 @@ export function forEachReplicatedDatabase(options, callback) {
 	});
 	function forDatabase(database_name) {
 		const database = databases[database_name];
+		logger.trace('Checking replication status of ', database_name, options?.databases);
 		if (
 			options?.databases === undefined ||
 			options.databases === '*' ||
