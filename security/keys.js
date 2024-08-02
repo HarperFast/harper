@@ -94,10 +94,16 @@ function getCertTable() {
 						attribute: 'is_authority',
 					},
 					{
+						attribute: 'private_key_name',
+					},
+					{
 						attribute: 'details',
 					},
 					{
-						attribute: 'private_key_name',
+						attribute: 'is_self_signed',
+					},
+					{
+						attribute: '__updatedtime__',
 					},
 				],
 			});
@@ -773,23 +779,6 @@ function createTLSSelector(type, mtls_options) {
 							secure_context.certificateAuthorities = Array.from(ca_certs);
 							// we store the first 100 bytes of the certificate just for debug logging
 							secure_context.certStart = certificate.toString().slice(0, 100);
-							if (quality > best_quality) {
-								// we use this certificate as the default if it has a higher quality than the existing one
-								SNICallback.defaultContext = default_context = secure_context;
-								best_quality = quality;
-								if (server) {
-									server.defaultContext = secure_context;
-									server.setSecureContext?.(server, secure_options);
-									harper_logger.trace(
-										'Applying default TLS',
-										secure_context.name,
-										'for',
-										server.ports,
-										'cert named',
-										cert.name
-									);
-								}
-							}
 							// we want to configure SNI handling to pick the right certificate based on all the registered SANs
 							// in the certificate
 							const cert_parsed = new X509Certificate(certificate);
@@ -805,12 +794,14 @@ function createTLSSelector(type, mtls_options) {
 									: // finally we fall back to the common name
 									  [extractCommonName(cert_parsed)]);
 							if (!Array.isArray(hostnames)) hostnames = [hostnames];
+							let has_ip_address;
 							for (let hostname of hostnames) {
 								if (hostname) {
 									if (hostname[0] === '*') {
 										has_wildcards = true;
 										hostname = hostname.slice(1);
 									}
+									if (net.isIP(hostname)) has_ip_address = true;
 									// we use this certificate if it has a higher quality than the existing one for this hostname
 									let existing_cert_quality = secure_contexts.get(hostname)?.quality ?? 0;
 									if (quality > existing_cert_quality) {
@@ -818,6 +809,23 @@ function createTLSSelector(type, mtls_options) {
 									}
 								} else {
 									harper_logger.error('No hostname found for certificate at', tls.certificate);
+								}
+							}
+							if (quality > best_quality && has_ip_address) {
+								// we use this certificate as the default if it has a higher quality than the existing one
+								SNICallback.defaultContext = default_context = secure_context;
+								best_quality = quality;
+								if (server) {
+									server.defaultContext = secure_context;
+									server.setSecureContext?.(server, secure_options);
+									harper_logger.trace(
+										'Applying default TLS',
+										secure_context.name,
+										'for',
+										server.ports,
+										'cert named',
+										cert.name
+									);
 								}
 							}
 						} catch (error) {
