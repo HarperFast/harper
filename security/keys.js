@@ -701,7 +701,7 @@ tls.Server = function (options, secureConnectionListener) {
 // restore the original prototype, as it is used internally by Node.js
 tls.Server.prototype = origTLSServer.prototype;
 
-let ca_certs = new Set();
+let ca_certs = new Map();
 
 /**
  * Create a TLS selector that will choose the best TLS configuration/context for a given hostname
@@ -731,7 +731,7 @@ function createTLSSelector(type, mtls_options) {
 						const cert_parsed = new X509Certificate(certificate);
 						if (cert.is_authority) {
 							cert_parsed.asString = certificate;
-							ca_certs.add(certificate);
+							ca_certs.set(cert_parsed.subject, certificate);
 						}
 					}
 
@@ -743,9 +743,7 @@ function createTLSSelector(type, mtls_options) {
 							let is_operations = type === 'operations-api';
 							if (!is_operations && cert.uses?.includes?.('operations')) continue;
 
-							let quality;
-							if (!cert?.details?.issuer?.includes?.('HarperDB-Certificate-Authority')) quality = 1;
-							else quality = 2;
+							let quality = cert.is_self_signed ? 1 : 2;
 
 							let private_key = private_keys.get(cert.private_key_name);
 							if (!private_key && cert.private_key_name) {
@@ -758,14 +756,18 @@ function createTLSSelector(type, mtls_options) {
 								);
 							}
 
-							const certificate = cert.certificate;
+							let certificate = cert.certificate;
+							const cert_parsed = new X509Certificate(certificate);
+							if (ca_certs.has(cert_parsed.issuer)) {
+								certificate += '\n' + ca_certs.get(cert_parsed.issuer);
+							}
 							if (!private_key || !certificate) {
 								throw new Error('Missing private key or certificate for secure server');
 							}
 							const secure_options = {
 								ciphers: cert.ciphers,
 								ticketKeys: getTicketKeys(),
-								ca: mtls_options && Array.from(ca_certs),
+								ca: mtls_options && Array.from(ca_certs.values()),
 								cert: certificate,
 								key: private_key,
 								key_file: cert.private_key_name,
@@ -781,7 +783,6 @@ function createTLSSelector(type, mtls_options) {
 							secure_context.certStart = certificate.toString().slice(0, 100);
 							// we want to configure SNI handling to pick the right certificate based on all the registered SANs
 							// in the certificate
-							const cert_parsed = new X509Certificate(certificate);
 							let hostnames =
 								cert.hostnames ??
 								(cert_parsed.subjectAltName
@@ -811,7 +812,7 @@ function createTLSSelector(type, mtls_options) {
 									harper_logger.error('No hostname found for certificate at', tls.certificate);
 								}
 							}
-							if (quality > best_quality && has_ip_address) {
+							if (quality > best_quality /* && has_ip_address*/) {
 								// we use this certificate as the default if it has a higher quality than the existing one
 								SNICallback.defaultContext = default_context = secure_context;
 								best_quality = quality;

@@ -798,7 +798,7 @@ export function replicateOverWS(ws, options, authorization) {
 									null,
 									node_id,
 									audit_record.user,
-									'invalidate',
+									audit_record.type === 'put' || audit_record.type === 'patch' ? 'invalidate' : audit_record.type,
 									encoder.encode(partial_record), // use the store's encoder; note that this may actually result in a new structure being created
 									extended_type,
 									residency_id,

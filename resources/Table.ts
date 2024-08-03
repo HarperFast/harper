@@ -1058,7 +1058,7 @@ export function makeTable(options) {
 				beforeIntermediate: apply_to_sources_intermediate.relocate?.bind(this, context, id),
 				commit: (txn_time, existing_entry) => {
 					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId)) return;
-					let residency = this.getResidencyRecord(options.residencyId);
+					let residency = TableResource.getResidencyRecord(options.residencyId);
 					let metadata = 0;
 					let new_record = null;
 					const existing_record = existing_entry?.value;
