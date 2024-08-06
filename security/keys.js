@@ -206,7 +206,8 @@ function loadCertificates() {
 								// If a record already exists for cert check to see who is newer, cert record or cert file.
 								// If cert file is newer, add it to table
 								const cert_record = certificate_table.primaryStore.get(cert_cn);
-								if (cert_record && statSync(path).mtimeMs < cert_record.__updatedtime__) return;
+								if (cert_record && statSync(path).mtimeMs < cert_record.__updatedtime__ && !cert_record.is_self_signed)
+									return;
 
 								promise = certificate_table.put({
 									name: cert_cn,
