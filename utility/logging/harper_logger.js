@@ -11,11 +11,10 @@ const assignCMDENVVariables = require('../assignCmdEnvVariables');
 const os = require('os');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 const { _assignPackageExport } = require('../../index');
+// store the native write function so we can call it after we write to the log file (and store it on process.stdout
+// because unit tests will create multiple instances of this module)
+let native_std_write = process.stdout.nativeWrite || (process.stdout.nativeWrite = process.stdout.write);
 
-const native_console_methods = {};
-for (let key in console) {
-	if (!native_console_methods[key]) native_console_methods[key] = console[key];
-}
 const LOG_LEVEL_HIERARCHY = {
 	notify: 7,
 	fatal: 6,
@@ -52,7 +51,7 @@ let log_fd;
 let hdb_properties;
 if (hdb_properties === undefined) initLogSettings();
 
-module.exports = {
+Object.assign(exports, {
 	notify,
 	fatal,
 	error,
@@ -65,14 +64,25 @@ module.exports = {
 	loggerWithTag,
 	suppressLogging,
 	initLogSettings,
-	setupConsoleLogging,
 	logCustomLevel,
 	closeLogFile,
+	logsAtLevel,
 	getLogFilePath: () => log_file_path,
 	OUTPUTS,
 	AuthAuditLog,
-};
+});
 _assignPackageExport('logger', module.exports);
+let logged_fd_err;
+
+/**
+ * Check if the current log level is at or below the given level.
+ * @param level
+ * @return {boolean}
+ */
+function logsAtLevel(level) {
+	return LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY[level];
+}
+
 /**
  * Get the log settings from the settings file.
  * If the settings file doesn't exist (during install) check for command or env vars, if there aren't
@@ -162,40 +172,58 @@ function initLogSettings(force_init = false) {
 		throw err;
 	}
 	if (process.env.DEV_MODE) log_to_stdstreams = true;
-	setupConsoleLogging();
+	stdioLogging();
 }
 let logging_enabled = true;
-
-function setupConsoleLogging() {
-	logConsole('error', error);
-	logConsole('warn', warn);
-	logConsole('log', info);
-	logConsole('info', info);
-	logConsole('debug', debug);
-	logConsole('trace', trace);
+function stdioLogging() {
+	if (log_to_file) {
+		process.stdout.write = function (data) {
+			if (
+				typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
+				log_fd &&
+				logging_enabled &&
+				LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['info']
+			) {
+				openLogFile();
+				data = data.toString();
+				if (data[data.length - 1] === '\n') data = data.slice(0, -1);
+				fs.appendFileSync(log_fd, createLogRecord('info', [data]));
+			}
+			return native_std_write.apply(process.stdout, arguments);
+		};
+		process.stderr.write = function (data) {
+			if (
+				typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
+				log_fd &&
+				logging_enabled &&
+				LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['error']
+			) {
+				openLogFile();
+				if (data[data.length - 1] === '\n') data = data.slice(0, -1);
+				fs.appendFileSync(log_fd, createLogRecord('error', [data]));
+			}
+			return native_std_write.apply(process.stderr, arguments);
+		};
+	}
 }
-function logConsole(level, logger) {
-	console[level] = function (...args) {
-		if (logging_enabled) logger(...args);
-		if (!/PM2 log:|App \[/.test(args[0])) return native_console_methods[level](...args);
-	};
-}
 
-function loggerWithTag(tag) {
+function loggerWithTag(tag, conditional) {
 	let tag_object = { tagName: tag.replace(/ /g, '-') }; // tag can't have spaces
 	return {
-		notify: logWithTag(notify),
-		fatal: logWithTag(fatal),
-		error: logWithTag(error),
-		warn: logWithTag(warn),
-		info: logWithTag(info),
-		debug: logWithTag(debug),
-		trace: logWithTag(trace),
+		notify: logWithTag(notify, 'notify'),
+		fatal: logWithTag(fatal, 'fatal'),
+		error: logWithTag(error, 'error'),
+		warn: logWithTag(warn, 'warn'),
+		info: logWithTag(info, 'info'),
+		debug: logWithTag(debug, 'debug'),
+		trace: logWithTag(trace, 'trace'),
 	};
-	function logWithTag(logger) {
-		return function (...args) {
-			return logger(tag_object, ...args);
-		};
+	function logWithTag(logger, level) {
+		return !conditional || LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY[level]
+			? function (...args) {
+					return logger(tag_object, ...args);
+			  }
+			: null;
 	}
 }
 
@@ -259,8 +287,18 @@ function createLogRecord(level, args) {
  * @param log
  */
 function logStdOut(log) {
-	if (log_to_file) logToFile(log);
-	if (log_to_stdstreams) process.stdout.write(log);
+	if (log_to_file) {
+		logToFile(log);
+		if (log_to_stdstreams) {
+			logging_enabled = false;
+			try {
+				// if we are writing std streams we don't want to double write to the file through the stdio capture
+				process.stdout.write(log);
+			} finally {
+				logging_enabled = true;
+			}
+		}
+	} else if (log_to_stdstreams) process.stdout.write(log);
 }
 
 /**
@@ -268,14 +306,24 @@ function logStdOut(log) {
  * @param log
  */
 function logStdErr(log) {
-	if (log_to_file) logToFile(log);
-	if (log_to_stdstreams) process.stderr.write(log);
+	if (log_to_file) {
+		logToFile(log);
+		if (log_to_stdstreams) {
+			logging_enabled = false;
+			try {
+				// if we are writing std streams we don't want to double write to the file through the stdio capture
+				process.stderr.write(log);
+			} finally {
+				logging_enabled = true;
+			}
+		}
+	} else if (log_to_stdstreams) process.stderr.write(log);
 }
 
 function logToFile(log) {
 	openLogFile();
 	if (log_fd) fs.appendFileSync(log_fd, log);
-	else native_console_methods.log(log);
+	else if (!logged_fd_err) console.log(log);
 }
 
 function closeLogFile() {
@@ -284,14 +332,15 @@ function closeLogFile() {
 	} catch (err) {}
 	log_fd = null;
 }
-
 function openLogFile() {
 	if (!log_fd) {
 		try {
-			if (!log_file_path) debugger;
 			log_fd = fs.openSync(log_file_path, 'a');
 		} catch (error) {
-			native_console_methods.error(error);
+			if (!logged_fd_err) {
+				logged_fd_err = true;
+				console.error(error);
+			}
 		}
 		setTimeout(() => {
 			closeLogFile();

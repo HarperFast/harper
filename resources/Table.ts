@@ -27,7 +27,7 @@ import {
 	COERCIBLE_OPERATORS,
 	executeConditions,
 } from './search';
-import * as harper_logger from '../utility/logging/harper_logger';
+import logger from '../utility/logging/logger';
 import { Addition, assignTrackedAccessors, deepFreeze, hasChanges, OWN_DATA } from './tracked';
 import { transaction } from './transaction';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
@@ -277,7 +277,7 @@ export function makeTable(options) {
 						case 'invalidate':
 							return resource.invalidate(NOTIFICATION);
 						default:
-							harper_logger.error('Unknown operation', event.type, event.id);
+							logger.error?.('Unknown operation', event.type, event.id);
 					}
 				};
 
@@ -310,7 +310,7 @@ export function makeTable(options) {
 							try {
 								const first_write = event.type === 'transaction' ? event.writes[0] : event;
 								if (!first_write) {
-									harper_logger.error('Bad subscription event', event);
+									logger.error?.('Bad subscription event', event);
 									continue;
 								}
 								event.source = source;
@@ -384,12 +384,12 @@ export function makeTable(options) {
 									else event.onCommit();
 								}
 							} catch (error) {
-								harper_logger.error('error in subscription handler', error);
+								logger.error?.('error in subscription handler', error);
 							}
 						}
 					}
 				} catch (error) {
-					harper_logger.error(error);
+					logger.error?.(error);
 				}
 			})();
 			return this;
@@ -429,7 +429,7 @@ export function makeTable(options) {
 						} else if (resource_options?.ensureLoaded) {
 							const loading_from_source = ensureLoadedFromSource(id, entry, request, resource);
 							if (loading_from_source) {
-								txn?.disregardReadTxn();
+								txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
 								resource[LOADED_FROM_SOURCE] = true;
 								return when(loading_from_source, (entry) => {
 									updateResource(resource, entry);
@@ -527,7 +527,7 @@ export function makeTable(options) {
 							// the allocation was already updated by another thread
 							return;
 						}
-						harper_logger.info('New id allocation', next_id, id_incrementer.maxSafeId, version);
+						logger.info?.('New id allocation', next_id, id_incrementer.maxSafeId, version);
 						primary_store.put(
 							Symbol.for('id_allocation'),
 							{
@@ -541,7 +541,7 @@ export function makeTable(options) {
 						);
 					} else {
 						// indicate that we have run out of ids in the allocated range, so we need to allocate a new range
-						harper_logger.warn(
+						logger.warn?.(
 							`Id conflict detected, starting new id allocation range, attempting to allocate to ${id_incrementer.maxSafeId}, but id of ${id_after} detected`
 						);
 						const id_allocation = createNewAllocation(version);
@@ -554,7 +554,7 @@ export function makeTable(options) {
 				if (next_id + async_id_expansion_threshold === id_incrementer.maxSafeId) {
 					setImmediate(updateEnd); // if we are getting kind of close to the end, we try to update it asynchronously
 				} else if (next_id + 100 >= id_incrementer.maxSafeId) {
-					harper_logger.warn(
+					logger.warn?.(
 						`Synchronous id allocation required on table ${table_name}${
 							type == 'Int'
 								? ', it is highly recommended that you use Long or Float as the type for auto-incremented primary keys'
@@ -598,7 +598,7 @@ export function makeTable(options) {
 					safe_distance *= 0.875; // if we fail, we try again with a smaller range, looking for a good gap without really knowing how packed the ids are
 					if (safe_distance < 1000 && !complained) {
 						complained = true;
-						harper_logger.error(
+						logger.error?.(
 							`Id allocation in table ${table_name} is very dense, limited safe range of numbers to allocate ids in${
 								type === 'Int'
 									? ', it is highly recommended that you use Long or Float as the type for auto-incremented primary keys'
@@ -617,11 +617,11 @@ export function makeTable(options) {
 					// first check to see if it actually got set by another thread
 					let updated_id_allocation = primary_store.getEntry(Symbol.for('id_allocation'));
 					if ((updated_id_allocation?.version ?? null) == expected_version) {
-						harper_logger.info('Allocated new id range', id_allocation);
+						logger.info?.('Allocated new id range', id_allocation);
 						primary_store.put(Symbol.for('id_allocation'), id_allocation, Date.now());
 						return id_allocation;
 					} else {
-						harper_logger.debug('Looks like ids were already allocated');
+						logger.debug?.('Looks like ids were already allocated');
 						return Object.assign({ alreadyUpdated: true }, updated_id_allocation.value);
 					}
 				});
@@ -885,6 +885,10 @@ export function makeTable(options) {
 			}
 		}
 
+		getMetadata() {
+			return this[ENTRY_PROPERTY];
+		}
+
 		invalidate(options) {
 			const context = this[CONTEXT];
 			const id = this[ID_PROPERTY];
@@ -1143,12 +1147,13 @@ export function makeTable(options) {
 						false,
 						audit_record
 					);
+					if (context.expiresAt) scheduleCleanup();
 				},
 			};
 			transaction.addWrite(write);
 		}
 
-		async delete(request: Request): Promise<boolean> {
+		async delete(request?: Query | string): Promise<boolean> {
 			if (typeof request === 'string') return this.deleteProperty(request);
 			// TODO: Handle deletion of a collection/query
 			if (this[IS_COLLECTION]) {
@@ -1186,7 +1191,7 @@ export function makeTable(options) {
 						// a newer record exists locally
 						return;
 					updateIndices(this[ID_PROPERTY], existing_record);
-					harper_logger.trace(`Write delete entry`, id, txn_time);
+					logger.trace?.(`Write delete entry`, id, txn_time);
 					if (audit || track_deletes) {
 						updateRecord(id, null, this[ENTRY_PROPERTY], txn_time, 0, audit, this[CONTEXT], 0, 'delete');
 						if (!audit) scheduleCleanup();
@@ -1635,16 +1640,15 @@ export function makeTable(options) {
 								transaction: read_txn,
 								lazy: select?.length < 4,
 							},
-							this.isSync,
+							this?.isSync,
 							(entry) => entry
 						);
 						if (entry?.then) return entry.then(transform.bind(this));
 						record = entry?.value;
 					}
 					if (
-						check_loaded &&
-						(entry.metadataFlags & (INVALIDATED | EVICTED) || // invalidated or evicted should go to load from source
-							(entry.expiresAt && entry.expiresAt < Date.now()))
+						(check_loaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
+						(entry?.expiresAt && entry?.expiresAt < Date.now())
 					) {
 						// should expiration really apply?
 						const loading_from_source = ensureLoadedFromSource(entry.key ?? entry, entry, context);
@@ -1820,7 +1824,7 @@ export function makeTable(options) {
 							beginTxn: begin_txn,
 						});
 					} catch (error) {
-						harper_logger.error(error);
+						logger.error?.(error);
 					}
 				},
 				request.startTime || 0,
@@ -1870,7 +1874,7 @@ export function makeTable(options) {
 								if (--count <= 0) break;
 							}
 						} catch (error) {
-							harper_logger.error('Error getting history entry', key, error);
+							logger.error?.('Error getting history entry', key, error);
 						}
 						// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
 						//await rest(); // yield for fairness
@@ -1897,10 +1901,10 @@ export function makeTable(options) {
 					// so try to retrieve the previous/committed record
 					primary_store.cache?.delete(this_id);
 					this[ENTRY_PROPERTY] = primary_store.getEntry(this_id);
-					harper_logger.trace('re-retrieved record', local_time, this[ENTRY_PROPERTY]?.localTime);
+					logger.trace?.('re-retrieved record', local_time, this[ENTRY_PROPERTY]?.localTime);
 					local_time = this[ENTRY_PROPERTY]?.localTime;
 				}
-				harper_logger.trace('Subscription from', start_time, 'from', this_id, local_time);
+				logger.trace?.('Subscription from', start_time, 'from', this_id, local_time);
 				if (start_time < local_time) {
 					// start time specified, get the audit history for this record
 					const history = [];
@@ -1929,7 +1933,7 @@ export function makeTable(options) {
 					subscription.send({
 						id: this_id,
 						timestamp: local_time,
-						value: this,
+						value: this[RECORD_PROPERTY],
 						version: this[VERSION_PROPERTY],
 						type: 'put',
 					});
@@ -2472,7 +2476,9 @@ export function makeTable(options) {
 				// TODO: We could potentially have a faster test here, Buffer.byteLength is close, but we have to handle characters < 4 that are escaped in ordered-binary
 				break; // otherwise we have to test it, in this range, unicode characters could put it over the limit
 			case 'object':
-				if (id === null) throw new Error('Invalid primary key of null');
+				if (id === null) {
+					throw new Error('Invalid primary key of null');
+				}
 				break; // otherwise we have to test it
 			case 'bigint':
 				if (id < 2n ** 64n && id > -(2n ** 64n)) return true;
@@ -2608,7 +2614,7 @@ export function makeTable(options) {
 			}
 			if (needs_source_data) {
 				const loading_from_source = getFromSource(id, entry, context).then((entry) => {
-					if (entry?.value?.[RECORD_PROPERTY]) harper_logger.error('Can not assign a record with a record property');
+					if (entry?.value?.[RECORD_PROPERTY]) logger.error?.('Can not assign a record with a record property');
 					if (context) {
 						if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
 						context.lastRefreshed = Date.now(); // localTime is probably not available yet
@@ -2618,10 +2624,22 @@ export function makeTable(options) {
 				// if the resource defines a method for indicating if stale-while-revalidate is allowed for a record
 				if (context?.onlyIfCached || (entry?.value && resource?.allowStaleWhileRevalidate?.(entry, id))) {
 					// since we aren't waiting for it any errors won't propagate so we should at least log them
-					loading_from_source.catch((error) => harper_logger.warn(error));
+					loading_from_source.catch((error) => logger.warn?.(error));
 					if (context?.onlyIfCached && !resource.doesExist()) throw new ServerError('Entry is not cached', 504);
 					return; // go ahead and return and let the current stale value be used while we re-validate
 				} else return loading_from_source; // return the promise for the resolved value
+			}
+		} else if (entry?.value) {
+			// if we don't have a source, but we have an entry, we check the expiration
+			if (entry.expiresAt && entry.expiresAt < Date.now()) {
+				// if it has expired and there is no source, we evict it and then return null, using a fake promise to indicate that this is providing the response
+				TableResource.evict(entry.key, entry.value, entry.version);
+				entry.value = null;
+				return {
+					then(callback) {
+						return callback(entry); // return undefined, no source to get data from
+					},
+				};
 			}
 		}
 	}
@@ -2765,6 +2783,7 @@ export function makeTable(options) {
 			// provide access to previous data
 			replacingRecord: existing_record,
 			replacingVersion: existing_version,
+			noCacheStore: false,
 			source: null,
 			// use the same resource cache as a parent context so that if modifications are made to resources,
 			// they are visible in the parent requesting context
@@ -2827,12 +2846,12 @@ export function makeTable(options) {
 								version: existing_version,
 								value: existing_record,
 							});
-							harper_logger.trace(error.message, '(returned stale record)');
+							logger.trace?.(error.message, '(returned stale record)');
 						} else reject(error);
 						source_context.transaction.abort();
 						return;
 					}
-					if (context?.noCacheStore) {
+					if (context?.noCacheStore || source_context.noCacheStore) {
 						// abort before we write any change
 						source_context.transaction.abort();
 						return;
@@ -2892,7 +2911,7 @@ export function makeTable(options) {
 				},
 				(error) => {
 					primary_store.unlock(id, existing_version);
-					if (resolved) harper_logger.error('Error committing cache update', error);
+					if (resolved) logger.error?.('Error committing cache update', error);
 					// else the error was already propagated as part of the promise that we returned
 				}
 			);
@@ -2917,7 +2936,7 @@ export function makeTable(options) {
 				Math.ceil((Date.now() - start_of_year.getTime()) / cleanup_interval) * cleanup_interval +
 				start_of_year.getTime();
 			const startNextTimer = (next_scheduled) => {
-				harper_logger.trace(`Scheduled next cleanup scan at ${new Date(next_scheduled)}ms`);
+				logger.trace?.(`Scheduled next cleanup scan at ${new Date(next_scheduled)}ms`);
 				// noinspection JSVoidFunctionReturnValueUsed
 				cleanup_timer = setTimeout(
 					() =>
@@ -2931,7 +2950,7 @@ export function makeTable(options) {
 							const MAX_CLEANUP_CONCURRENCY = 50;
 							const outstanding_cleanup_operations = new Array(MAX_CLEANUP_CONCURRENCY);
 							let cleanup_index = 0;
-							harper_logger.trace(`Starting cleanup scan for ${table_name}`);
+							logger.trace?.(`Starting cleanup scan for ${table_name}`);
 							try {
 								let count = 0;
 								// iterate through all entries to find expired records and deleted records
@@ -2955,15 +2974,15 @@ export function makeTable(options) {
 									if (resolution) {
 										await outstanding_cleanup_operations[cleanup_index];
 										outstanding_cleanup_operations[cleanup_index] = resolution.catch((error) => {
-											harper_logger.error('Cleanup error', error);
+											logger.error?.('Cleanup error', error);
 										});
 										if (++cleanup_index >= MAX_CLEANUP_CONCURRENCY) cleanup_index = 0;
 									}
 									await rest();
 								}
-								harper_logger.trace(`Finished cleanup scan for ${table_name}, evicted ${count} entries`);
+								logger.trace?.(`Finished cleanup scan for ${table_name}, evicted ${count} entries`);
 							} catch (error) {
-								harper_logger.trace(`Error in cleanup scan for ${table_name}:`, error);
+								logger.trace?.(`Error in cleanup scan for ${table_name}:`, error);
 							}
 						})),
 					Math.min(next_scheduled - Date.now(), 0x7fffffff) // make sure it can fit in 32-bit signed number
@@ -3013,7 +3032,7 @@ export function makeTable(options) {
 						await rest();
 					}
 				} catch (error) {
-					harper_logger.error('Error in evicting old records', error);
+					logger.error?.('Error in evicting old records', error);
 				} finally {
 					running_record_expiration = false;
 				}

@@ -15,9 +15,8 @@ import { dirname } from 'path';
  */
 export async function handleFile(js, url_path, file_path, resources) {
 	const handlers = new Map();
-	const module_url = pathToFileURL(file_path).toString();
 	// use our configurable secure JS import loader
-	const exports = await secureImport(module_url);
+	const exports = await secureImport(file_path);
 	// allow default to be used as root path handler
 	if (isResource(exports.default)) resources.set(dirname(url_path), exports.default);
 	recurseForResources(exports, dirname(url_path));

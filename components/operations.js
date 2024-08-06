@@ -4,6 +4,7 @@ const fs = require('fs-extra');
 const fg = require('fast-glob');
 const path = require('path');
 const tar = require('tar-fs');
+const gunzip = require('gunzip-maybe');
 const uuidV4 = require('uuid').v4;
 const normalize = require('normalize-path');
 
@@ -22,6 +23,7 @@ const hdb_terms = require('../utility/hdbTerms');
 const { Readable } = require('stream');
 const { isMainThread } = require('worker_threads');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
+const manage_threads = require('../server/threads/manageThreads');
 
 const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
 const TMP_PATH = path.join(env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY), 'tmp');
@@ -379,13 +381,16 @@ async function deployComponent(req) {
 	if (payload) {
 		path_to_project = path.join(cf_dir, project);
 		pkg = 'file:' + path_to_project;
-		// check if the project exists, if it doesn't, create it.
-		await fs.ensureDir(path_to_project);
+		// check if the project exists, if it doesn't, create it, if it does, empty it.
+		await fs.emptyDir(path_to_project);
 
 		// extract the reconstituted file to the proper project directory
 		const stream = Readable.from(Buffer.from(payload, 'base64'));
 		await new Promise((resolve, reject) => {
-			stream.pipe(tar.extract(path_to_project, { finish: resolve })).on('error', reject);
+			stream
+				.pipe(gunzip())
+				.pipe(tar.extract(path_to_project, { finish: resolve }))
+				.on('error', reject);
 		});
 
 		const comp_dir = await fs.readdir(path_to_project);
@@ -424,6 +429,11 @@ async function deployComponent(req) {
 	}
 	if (last_error) throw last_error;
 	log.info('Installed component');
+
+	if (req.restart === true) {
+		manage_threads.restartWorkers('http');
+		return `Successfully deployed: ${project}, restarting HarperDB`;
+	}
 
 	return `Successfully deployed: ${project}`;
 }
@@ -584,7 +594,7 @@ async function dropComponent(req) {
 	return 'Successfully dropped: ' + project_path;
 }
 
-module.exports = {
+Object.assign(exports, {
 	customFunctionsStatus,
 	getCustomFunctions,
 	getCustomFunction,
@@ -598,4 +608,4 @@ module.exports = {
 	getComponentFile,
 	setComponentFile,
 	dropComponent,
-};
+});

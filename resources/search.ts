@@ -417,6 +417,9 @@ function joinTo(right_iterable, attribute, store, is_many_to_many, joined: Map<a
 						value: has_multi_part_keys ? joined_entry.value[1].key || joined_entry.value[0] : joined_entry.value,
 					};
 				},
+				return() {
+					if (joined_iterator?.return) return joined_iterator.return();
+				},
 			};
 		},
 	});
@@ -817,7 +820,6 @@ export function parseQuery(query_to_parse) {
 		}
 	} else {
 		const query = new URLSearchParams(query_to_parse);
-		query.conditions = query;
 		return query;
 	}
 }
@@ -1123,4 +1125,13 @@ function estimatedEntryCount(store) {
 
 export function intersectionEstimate(store, left, right) {
 	return (left * right) / estimatedEntryCount(store);
+}
+export class SimpleURLQuery {
+	constructor(public url: string) {}
+	get() {
+		// this is a simple holder for the URL query, so we don't return anything (will be parsed later into a USP or Query object as needed)
+	}
+	[Symbol.iterator]() {
+		return [][Symbol.iterator]();
+	}
 }

@@ -268,10 +268,10 @@ async function executeJob(json) {
 		new_job_object = result.createdJob;
 		operation_log.info('addJob result', result);
 		let job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
-		await job_runner.parseMessage(job_runner_message);
+		let return_message = await job_runner.parseMessage(job_runner_message);
 
 		return {
-			message: `Starting job with id ${new_job_object.id}`,
+			message: return_message ?? `Starting job with id ${new_job_object.id}`,
 			job_id: new_job_object.id,
 		};
 	} catch (err) {
@@ -351,7 +351,10 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.SET_LICENSE, new OperationFunctionObject(reg.setLicense));
 	op_func_map.set(terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO, new OperationFunctionObject(reg.getRegistrationInfo));
 	op_func_map.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(restart.restart));
-	op_func_map.set(terms.OPERATIONS_ENUM.RESTART_SERVICE, new OperationFunctionObject(restart.restartService));
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.RESTART_SERVICE,
+		new OperationFunctionObject(executeJob, restart.restartService)
+	);
 	op_func_map.set(terms.OPERATIONS_ENUM.CATCHUP, new OperationFunctionObject(catchup));
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.SYSTEM_INFORMATION,

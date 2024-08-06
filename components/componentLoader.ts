@@ -1,9 +1,9 @@
-import { readdirSync, promises, readFileSync, existsSync, symlinkSync, mkdirSync } from 'fs';
+import { readdirSync, promises, readFileSync, existsSync, symlinkSync, rmSync, mkdirSync, realpathSync } from 'fs';
 import { join, relative, basename, dirname } from 'path';
 import { isMainThread } from 'worker_threads';
 import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager';
-import { HDB_SETTINGS_NAMES, CONFIG_PARAMS } from '../utility/hdbTerms';
+import { PACKAGE_ROOT, CONFIG_PARAMS } from '../utility/hdbTerms';
 import * as graphql_handler from '../resources/graphql';
 import * as roles from '../resources/roles';
 import * as js_handler from '../resources/jsResource';
@@ -26,13 +26,13 @@ import * as operationsServer from '../server/operationsServer';
 import * as auth from '../security/auth';
 import * as natsReplicator from '../server/nats/natsReplicator';
 import * as mqtt from '../server/mqtt';
-import { getConfigObj } from '../config/configUtils';
+import { getConfigObj, resolvePath } from '../config/configUtils';
 import { createReuseportFd } from '../server/serverHelpers/Request';
 
 const { readFile } = promises;
 
 const CONFIG_FILENAME = 'config.yaml';
-const CF_ROUTES_DIR = env.get(CONFIG_PARAMS.COMPONENTSROOT);
+const CF_ROUTES_DIR = resolvePath(env.get(CONFIG_PARAMS.COMPONENTSROOT));
 let loaded_components = new Map<any, any>();
 let watches_setup;
 let resources;
@@ -145,8 +145,9 @@ export async function loadComponent(
 	provided_loaded_components?: Map,
 	auto_reload?: boolean
 ) {
-	if (loaded_paths.has(folder)) return;
-	loaded_paths.set(folder, true);
+	let resolved_folder = realpathSync(folder);
+	if (loaded_paths.has(resolved_folder)) return;
+	loaded_paths.set(resolved_folder, true);
 	if (provided_loaded_components) loaded_components = provided_loaded_components;
 	try {
 		let config;
@@ -158,6 +159,22 @@ export async function loadComponent(
 				: parseDocument(readFileSync(config_path, 'utf8'), { simpleKeys: true }).toJSON();
 		} else {
 			config = DEFAULT_CONFIG;
+		}
+		const harperdb_module = join(folder, 'node_modules', 'harperdb');
+		try {
+			if (
+				isMainThread &&
+				(is_root || (existsSync(harperdb_module) && realpathSync(PACKAGE_ROOT) !== realpathSync(harperdb_module)))
+			) {
+				// if the app has a harperdb module, we symlink it to the main app so it can be used in the main app (with the running modules)
+				rmSync(harperdb_module, { recursive: true, force: true });
+				if (!existsSync(join(folder, 'node_modules'))) {
+					mkdirSync(join(folder, 'node_modules'));
+				}
+				symlinkSync(PACKAGE_ROOT, harperdb_module, 'dir');
+			}
+		} catch (error) {
+			harper_logger.error('Error symlinking harperdb module', error);
 		}
 		const handler_modules = [];
 		let has_functionality = is_root;

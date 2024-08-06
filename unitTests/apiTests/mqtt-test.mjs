@@ -395,7 +395,9 @@ describe('test MQTT connections and commands', () => {
 			client.subscribe(path, { qos: 1 }, function (err) {
 				if (err) reject(err);
 			});
+			let last_sent = 0;
 			const onMessage = (topic, payload, packet) => {
+				console.log('got message', performance.now());
 				let record = JSON.parse(payload);
 				messages.push(record);
 				if (messages.length == 2) {
@@ -409,7 +411,9 @@ describe('test MQTT connections and commands', () => {
 				}
 			};
 			client.on('message', onMessage);
+			console.log('sent message', performance.now());
 			await axios.put('http://localhost:9926/SimpleRecord/78', { name: 'a starting point', count: 2 }, { headers });
+			console.log('sent message', performance.now());
 			await axios.patch(
 				'http://localhost:9926/SimpleRecord/78',
 				{ name: 'an updated name', newProperty: 'new value', count: { __op__: 'add', value: 1 } },
@@ -508,6 +512,65 @@ describe('test MQTT connections and commands', () => {
 			);
 		});
 		client.end();
+	});
+	it('received binary/string messages', async function () {
+		let client = connect('mqtt://localhost:1883', {
+			clean: true,
+			clientId: 'test-client-sub2',
+		});
+		await new Promise((resolve, reject) => {
+			client.on('connect', resolve);
+			client.on('error', reject);
+		});
+		await new Promise((resolve, reject) => {
+			client.subscribe(
+				'SimpleRecord/22',
+				{
+					qos: 0,
+				},function (err) {
+					if (err) reject(err);
+					else resolve();
+				}
+			);
+		});
+		await new Promise((resolve, reject) => {
+			client.on('message', (topic, payload, packet) => {
+				assert.equal(payload.toString(), 'This is a test of a plain string');
+				resolve();
+			});
+			client.publish(
+				'SimpleRecord/22',
+				'This is a test of a plain string',
+				{
+					retain: true,
+					qos: 1,
+				}
+			);
+		});
+		client.end();
+		client = connect('mqtt://localhost:1883', {
+			clean: true,
+			clientId: 'test-client-sub2',
+		});
+		await new Promise((resolve, reject) => {
+			client.on('connect', resolve);
+			client.on('error', reject);
+		});
+		await new Promise((resolve, reject) => {
+			client.on('message', (topic, payload, packet) => {
+				assert.equal(payload.toString(), 'This is a test of a plain string');
+				resolve();
+			});
+
+			client.subscribe(
+				'SimpleRecord/22',
+				{
+					qos: 0,
+				},function (err) {
+					if (err) reject(err);
+				}
+			);
+		});
 	});
 	it('subscribe and unsubscribe with mTLS', async function () {
 		let server;
@@ -666,6 +729,22 @@ describe('test MQTT connections and commands', () => {
 					resolve(assert.equal(granted[0].qos, 0x8f));
 				}
 			});
+		});
+	});
+	it('Invalid packet', async function () {
+		let client = connect('mqtt://localhost:1883', {
+			clean: true,
+			clientId: 'test-client1',
+		});
+		await new Promise((resolve, reject) => {
+			client.on('connect', resolve);
+			client.on('error', reject);
+		});
+		// directly send an invalid packet, which should cause the connection to close
+		client.stream.write(Buffer.from([67,255]));
+
+		await new Promise((resolve, reject) => {
+			client.on('close', resolve);
 		});
 	});
 	it('subscribe to single-level wildcard/full table', async function () {

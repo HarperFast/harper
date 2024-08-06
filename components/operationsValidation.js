@@ -233,6 +233,7 @@ function deployComponentValidator(req) {
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		payload: Joi.string().optional().messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PACKAGE }),
 		package: Joi.string().optional(),
+		restart: Joi.boolean().optional(),
 	});
 
 	return validator.validateBySchema(req, deploy_proj_schema);

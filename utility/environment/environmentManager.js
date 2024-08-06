@@ -21,17 +21,19 @@ const install_props_to_save = {
 	BOOT_PROPS_FILE_PATH: true,
 };
 let install_props = {};
-
-module.exports = {
-	BOOT_PROPS_FILE_PATH,
-	getHdbBasePath,
-	setHdbBasePath,
-	get,
-	initSync,
-	setProperty,
-	initTestEnvironment,
-	setCloneVar,
-};
+Object.assign(
+	exports,
+	(module.exports = {
+		BOOT_PROPS_FILE_PATH,
+		getHdbBasePath,
+		setHdbBasePath,
+		get,
+		initSync,
+		setProperty,
+		initTestEnvironment,
+		setCloneVar,
+	})
+);
 
 /**
  * The base path of the HDB install is often referenced, but is referenced as a const variable at the top of many

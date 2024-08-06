@@ -79,7 +79,7 @@ export function openAuditStore(root_store) {
 		clearTimeout(pending_cleanup);
 		pending_cleanup = setTimeout(async () => {
 			// query for audit entries that are old
-			if (audit_store.rootStore.status === 'closed') return;
+			if (audit_store.rootStore.status === 'closed' || audit_store.rootStore.status === 'closing') return;
 			let deleted = 0;
 			let committed;
 			try {

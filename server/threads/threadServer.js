@@ -17,6 +17,7 @@ const { Request, createReuseportFd } = require('../serverHelpers/Request');
 const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
 const { X509Certificate } = require('crypto');
 const tls = require('tls');
+const { resolvePath } = require('../../config/configUtils');
 
 const origCreateSecureContext = tls.createSecureContext;
 let instantiated_context;
@@ -51,7 +52,7 @@ if (debug_threads) {
 			harper_logger.trace(`Could not start debugging on port ${port}, you may already be debugging:`, error.message);
 		}
 	}
-} else if (process.env.DEV_MODE) {
+} else if (process.env.DEV_MODE && isMainThread) {
 	try {
 		require('inspector').open(9229);
 	} catch (error) {
@@ -140,7 +141,7 @@ function startServers() {
 							server.close?.(() => {
 								if (env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET) && getWorkerIndex() == 0) {
 									try {
-										unlinkSync(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET));
+										unlinkSync(resolvePath(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)));
 									} catch (err) {}
 								}
 
@@ -184,7 +185,14 @@ function startServers() {
 						);
 						continue;
 					}
-
+					const thread_range = env.get(terms.CONFIG_PARAMS.HTTP_THREADRANGE);
+					if (thread_range) {
+						let thread_range_array = typeof thread_range === 'string' ? thread_range.split('-') : thread_range;
+						let thread_index = getWorkerIndex();
+						if (thread_index < thread_range_array[0] || thread_index > thread_range_array[1]) {
+							continue;
+						}
+					}
 					let fd;
 					try {
 						fd = createReuseportFd(+port, '::');
@@ -347,7 +355,10 @@ function getPorts(options) {
 	}
 
 	if (options?.isOperationsServer && env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)) {
-		ports.push({ port: env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET), secure: false });
+		ports.push({
+			port: resolvePath(env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)),
+			secure: false,
+		});
 	}
 	return ports;
 }
@@ -368,6 +379,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 	if (!http_servers[port]) {
 		let server_prefix = is_operations_server ? 'operationsApi_network' : 'http';
 		let options = {
+			noDelay: true,
 			keepAliveTimeout: env.get(server_prefix + '_keepAliveTimeout'),
 			headersTimeout: env.get(server_prefix + '_headersTimeout'),
 			requestTimeout: env.get(server_prefix + '_timeout'),
@@ -565,6 +577,7 @@ function onSocket(listener, options) {
 		const tls_config = Object.assign({}, env.get('tls'));
 		if (options.mtls?.certificateAuthority) tls_config.certificateAuthority = options.mtls.certificateAuthority;
 		let server_options = {
+			noDelay: true,
 			rejectUnauthorized: Boolean(options.mtls?.required),
 			requestCert: Boolean(options.mtls),
 			SNICallback: createSNICallback(tls_config),
@@ -581,7 +594,7 @@ function onSocket(listener, options) {
 		SERVERS[options.securePort] = socket_server;
 	}
 	if (options.port) {
-		socket_server = createSocketServer(listener);
+		socket_server = createSocketServer({ noDelay: true }, listener);
 		SERVERS[options.port] = socket_server;
 	}
 	return socket_server;
@@ -656,7 +669,7 @@ function defaultNotFound(request, response) {
 
 function readPEM(path) {
 	if (path.startsWith('-----BEGIN')) return path;
-	return readFileSync(path);
+	return readFileSync(resolvePath(path));
 }
 function createSNICallback(tls_config) {
 	let tls_contexts = [];
@@ -665,7 +678,7 @@ function createSNICallback(tls_config) {
 	}
 	if (!tls_contexts.length) tls_contexts.push(tls_config);
 	let secure_contexts = new Map();
-	let first_context;
+	let first_context, first_context_with_ip_address;
 	let has_wildcards = false;
 	for (let tls of tls_contexts) {
 		const private_key = readPEM(tls.privateKey);
@@ -693,6 +706,7 @@ function createSNICallback(tls_config) {
 		secure_context.certStart = certificate.slice(0, 100).toString();
 		if (!first_context) first_context = secure_context;
 		let cert_parsed = new X509Certificate(certificate);
+		secure_context.subject = cert_parsed.subject;
 		let hostnames =
 			tls.hostname ??
 			tls.host ??
@@ -715,6 +729,9 @@ function createSNICallback(tls_config) {
 					hostname = hostname.slice(1);
 				}
 				if (!secure_contexts.has(hostname)) secure_contexts.set(hostname, secure_context);
+				if (!first_context_with_ip_address && hostname.match(/\d+\.\d+\.\d+\.\d+/)) {
+					first_context_with_ip_address = secure_context;
+				}
 			} else {
 				harper_logger.error('No hostname found for certificate at', tls.certificate);
 			}
@@ -737,6 +754,8 @@ function createSNICallback(tls_config) {
 		}
 		harper_logger.debug('No certificate found to match', servername, 'using the first certificate');
 		// no matches, return the first one
-		cb(null, first_context);
+		if (servername) cb(null, first_context);
+		else cb(null, first_context_with_ip_address); // used to get the default context, which is only used for direct IP
+		// addresses
 	};
 }

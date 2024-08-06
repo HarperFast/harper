@@ -1,7 +1,7 @@
 'use strict';
 
 const minimist = require('minimist');
-const { isMainThread, parentPort } = require('worker_threads');
+const { isMainThread, parentPort, threadId } = require('worker_threads');
 const hdb_terms = require('../utility/hdbTerms');
 const { PROCESS_DESCRIPTORS_VALIDATE: SERVICES } = hdb_terms;
 const hdb_logger = require('../utility/logging/harper_logger');
@@ -36,9 +36,10 @@ module.exports = {
 
 // Add ITC event listener to main thread which will be called from child that receives restart request.
 if (isMainThread) {
-	onMessageByType(hdb_terms.ITC_EVENT_TYPES.RESTART, (message) => {
-		if (message.workerType) restartService({ service: message.workerType });
+	onMessageByType(hdb_terms.ITC_EVENT_TYPES.RESTART, async (message, port) => {
+		if (message.workerType) await restartService({ service: message.workerType });
 		else restart({ operation: 'restart' });
+		port.postMessage({ type: 'restart-complete' });
 	});
 }
 
@@ -115,8 +116,13 @@ async function restartService(req) {
 			type: hdb_terms.ITC_EVENT_TYPES.RESTART,
 			workerType: service,
 		});
-		if (service === 'custom_functions') service = 'Custom Functions';
-		return `Restarting ${service}`;
+		return new Promise((resolve) => {
+			parentPort.on('message', (msg) => {
+				if (msg.type === 'restart-complete') {
+					resolve();
+				}
+			});
+		});
 	}
 
 	let err_msg;
@@ -147,6 +153,7 @@ async function restartService(req) {
 		case 'custom functions':
 		case SERVICES.harperdb:
 		case SERVICES.http_workers:
+		case SERVICES.http:
 			if (called_from_cli && !pm2_mode) {
 				err_msg = `Restart ${service} is not available from the CLI when running in non-pm2 mode. Either call restart ${service} from the API or stop and start HarperDB.`;
 				break;
@@ -158,9 +165,7 @@ async function restartService(req) {
 			if (called_from_cli) {
 				await process_man.restart(hdb_terms.HDB_PROC_DESCRIPTOR);
 			} else {
-				setTimeout(() => {
-					restartWorkers('http');
-				}, 200); // can't await this because it would deadlock on waiting for itself to finish
+				await restartWorkers('http');
 			}
 			break;
 		default:

@@ -249,20 +249,38 @@ async function getTableSize() {
 async function getMetrics() {
 	let schema_stats = {};
 	for (let schema_name in databases) {
-		let table_stats = (schema_stats[schema_name] = {});
+		let db_stats = (schema_stats[schema_name] = {});
+		let table_stats = (db_stats.tables = {});
 		for (let table_name in databases[schema_name]) {
 			try {
-				let env = database({ database: schema_name, table: table_name });
-				const stats = env.getStats();
-				stats.readers = env
-					.readerList()
-					.split(/\n\s+/)
-					.slice(1)
-					.map((line) => {
-						const [pid, thread, txnid] = line.trim().split(' ');
-						return { pid, thread, txnid };
-					});
-				table_stats[table_name] = stats;
+				let table = databases[schema_name][table_name];
+				if (!db_stats.readers) {
+					Object.assign(db_stats, table.primaryStore.rootStore.getStats());
+					delete db_stats.root;
+					db_stats.readers = table.primaryStore.rootStore
+						.readerList()
+						.split(/\n\s+/)
+						.slice(1)
+						.map((line) => {
+							const [pid, thread, txnid] = line.trim().split(' ');
+							return { pid, thread, txnid };
+						});
+					if (table.primaryStore.auditStore) {
+						db_stats.audit = table.auditStore.getStats();
+					}
+				}
+				let table_full_stats = table.primaryStore.getStats();
+				let table_pruned_stats = {};
+				for (let store_key of [
+					'treeDepth',
+					'treeBranchPageCount',
+					'treeLeafPageCount',
+					'entryCount',
+					'overflowPages',
+				]) {
+					table_pruned_stats[store_key] = table_full_stats[store_key];
+				}
+				table_stats[table_name] = table_pruned_stats;
 			} catch (error) {
 				// if a schema no longer exists, don't want to throw an error
 				log.notify(`Error getting stats for table ${table_name}: ${error}`);

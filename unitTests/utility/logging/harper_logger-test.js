@@ -10,6 +10,7 @@ const rewire = require('rewire');
 const hook_std = require('intercept-stdout');
 const os = require('os');
 const YAML = require('yaml');
+const logger = require('../../../utility/logging/logger');
 
 const HARPER_LOGGER_MODULE = '../../../utility/logging/harper_logger';
 const LOG_DIR_TEST = 'testLogger';
@@ -621,7 +622,6 @@ describe('Test harper_logger module', () => {
 
 				expect(pass).to.be.true;
 				expect(logs.length).to.equal(6);
-
 				done();
 			}, 100);
 		});
@@ -745,6 +745,29 @@ describe('Test harper_logger module', () => {
 
 				done();
 			}, 100);
+		});
+		describe('Test setLogLevel function on conditional logger', () => {
+			it('Test the correct hierarchical logs are available when level set to debug', () => {
+				logger.setLogLevel(LOG_LEVEL.DEBUG);
+				let tagged_logger = logger.loggerWithTag('test');
+				let keys = [];
+				for (let key in tagged_logger) if (tagged_logger[key] != null) keys.push(key);
+				expect(keys).to.deep.equal(['notify', 'fatal', 'error', 'warn', 'info', 'debug']);
+			});
+			it('Test the correct hierarchical logs are available when level set to warn', () => {
+				logger.setLogLevel(LOG_LEVEL.WARN);
+				let tagged_logger = logger.loggerWithTag('test');
+				let keys = [];
+				for (let key in tagged_logger) if (tagged_logger[key] != null) keys.push(key);
+				expect(keys).to.deep.equal(['notify', 'fatal', 'error', 'warn']);
+			});
+			it('Test the correct hierarchical logs are available when level set to fatal', () => {
+				logger.setLogLevel(LOG_LEVEL.FATAL);
+				let tagged_logger = logger.loggerWithTag('test');
+				let keys = [];
+				for (let key in tagged_logger) if (tagged_logger[key] != null) keys.push(key);
+				expect(keys).to.deep.equal(['notify', 'fatal']);
+			});
 		});
 	});
 
