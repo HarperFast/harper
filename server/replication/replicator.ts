@@ -94,10 +94,9 @@ export function start(options) {
 					request.user = node;
 				} else {
 					logger.warn(
-						`No node found for certificate common name ${subject.CN}, available nodes are ${[
-							...hdb_nodes_store.getRange({}),
-							...route_by_hostname.keys(),
-						]}, connection will require credentials.`
+						`No node found for certificate common name ${subject.CN}, available nodes are ${Array.from(
+							new Set([...hdb_nodes_store.getKeys(), ...route_by_hostname.keys()])
+						).join(', ')}, connection will require credentials.`
 					);
 				}
 			} else {
@@ -107,10 +106,9 @@ export function start(options) {
 					request.user = node;
 				} else {
 					logger.warn(
-						`No node found for IP address ${request.ip}, available nodes are ${[
-							...hdb_nodes_store.getRange({}),
-							...route_by_hostname.keys(),
-						]}, connection will require credentials.`
+						`No node found for IP address ${request.ip}, available nodes are ${Array.from(
+							new Set([...hdb_nodes_store.getKeys(), ...route_by_hostname.keys()])
+						).join(', ')}, connection will require credentials.`
 					);
 				}
 			}
