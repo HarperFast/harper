@@ -88,7 +88,7 @@ export function start(options) {
 			}
 			if (request.authorized && request.peerCertificate.subject) {
 				const subject = request.peerCertificate.subject;
-				const node = subject && getHDBNodeTable().primaryStore.get(subject.CN);
+				const node = subject && (getHDBNodeTable().primaryStore.get(subject.CN) || route_by_hostname.get(subject.CN));
 				if (node) {
 					request.user = node;
 				}
