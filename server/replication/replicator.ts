@@ -86,17 +86,32 @@ export function start(options) {
 					request._nodeRequest.socket.authorizationError
 				);
 			}
+			let hdb_nodes_store = getHDBNodeTable().primaryStore;
 			if (request.authorized && request.peerCertificate.subject) {
 				const subject = request.peerCertificate.subject;
-				const node = subject && (getHDBNodeTable().primaryStore.get(subject.CN) || route_by_hostname.get(subject.CN));
+				const node = subject && (hdb_nodes_store.get(subject.CN) || route_by_hostname.get(subject.CN));
 				if (node) {
 					request.user = node;
+				} else {
+					logger.warn(
+						`No node found for certificate common name ${subject.CN}, available nodes are ${[
+							...hdb_nodes_store.getRange({}),
+							...route_by_hostname.keys(),
+						]}, connection will require credentials.`
+					);
 				}
 			} else {
 				// try by IP address
-				const node = getHDBNodeTable().primaryStore.get(request.ip) || route_by_hostname.get(request.ip);
+				const node = hdb_nodes_store.get(request.ip) || route_by_hostname.get(request.ip);
 				if (node) {
 					request.user = node;
+				} else {
+					logger.warn(
+						`No node found for IP address ${request.ip}, available nodes are ${[
+							...hdb_nodes_store.getRange({}),
+							...route_by_hostname.keys(),
+						]}, connection will require credentials.`
+					);
 				}
 			}
 		}
