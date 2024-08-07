@@ -6,7 +6,19 @@ import { getWorkerIndex } from '../server/threads/manageThreads';
 const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt'];
 
 if (server.knownGraphQLDirectives) {
-	server.knownGraphQLDirectives = ['table', 'sealed', 'export', 'primaryKey', 'indexed', 'computed', 'relationship', 'createdTime', 'updatedTime', 'expiresAt', 'allow'];
+	server.knownGraphQLDirectives = [
+		'table',
+		'sealed',
+		'export',
+		'primaryKey',
+		'indexed',
+		'computed',
+		'relationship',
+		'createdTime',
+		'updatedTime',
+		'expiresAt',
+		'allow',
+	];
 }
 /**
  * This is the entry point for handling GraphQL schemas (and server-side defined queries, eventually). This will be
@@ -83,10 +95,12 @@ export function start({ ensureTable }) {
 						Object.defineProperty(property, 'location', { value: type.loc.startToken });
 						return property;
 					}
+					const attributes_object = {};
 					for (const field of definition.fields) {
 						const property = getProperty(field.type);
 						property.name = field.name.value;
 						properties.push(property);
+						attributes_object[property.name] = property;
 						for (const directive of field.directives) {
 							let directive_name = directive.name.value;
 							if (directive_name === 'primaryKey') {
@@ -101,7 +115,7 @@ export function start({ ensureTable }) {
 								for (const arg of directive.arguments || []) {
 									if (arg.name.value === 'from') {
 										property.computed = {
-											from: createComputedFrom((arg.value as StringValueNode).value, arg),
+											from: createComputedFrom((arg.value as StringValueNode).value, arg, attributes_object),
 										};
 									}
 								}
@@ -125,7 +139,7 @@ export function start({ ensureTable }) {
 										authorized_roles.push((arg.value as StringValueNode).value);
 									}
 								}
-							} else if (server.knownGraphQLDirectives.includes(directive_name) {
+							} else if (server.knownGraphQLDirectives.includes(directive_name)) {
 								console.warn(`@${directive_name} is an unknown directive, at`, directive.loc);
 							}
 						}
@@ -169,22 +183,24 @@ export function start({ ensureTable }) {
 					);
 			}
 		}
-		function createComputedFrom(computed_from: string, arg) {
+		function createComputedFrom(computed_from: string, arg: any, attributes: any) {
 			// Create a function from a computed "from" directive. This can look like:
 			// @computed(from: "fieldOne + fieldTwo")
 			// We use Node's built-in Script class to compile the function and run it in the context of the record object, which allows us to specify the source
 			const script = new Script(
-				// we use the with statement to allow the computed function to access the record object's properties directly as top level names
-	`function computed(record) { with (record) { return ${computed_from}; } }computed;`, {
-				filename: file_path, // specify the file path and line position for better error messages/debugging
-				lineOffset: arg.loc.startToken.line - 2,
-				columnOffset: arg.loc.startToken.column,
-			});
-			return script.runInThisContext();// run the script in the context of the current context/global and return the function we defined
+				// we use the inner with statement to allow the computed function to access the record object's properties directly as top level names
+				// we use the outer with statement with attributes as a fallback so any access to an attribute that isn't defined on the record still returns undefined (instead of a ReferenceError)
+				`function computed(attributes) { return function(record) { with(attributes) { with (record) { return ${computed_from}; } } } } computed;`,
+				{
+					filename: file_path, // specify the file path and line position for better error messages/debugging
+					lineOffset: arg.loc.startToken.line - 1,
+					columnOffset: arg.loc.startToken.column,
+				}
+			);
+			return script.runInThisContext()(attributes); // run the script in the context of the current context/global and return the function we defined
 		}
 	}
 }
-
 
 export const startOnMainThread = start;
 // useful for testing

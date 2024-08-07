@@ -43,7 +43,6 @@ type SubObject @table(audit: false) {
 	relatedId: ID @indexed
 	related: Related @relationship(from: "relatedId")
 	manyToMany: [ManyToMany] @relationship(to: subObjectIds)
-	computed: String @computed @indexed
 }
 type SimpleCache @table {
 	id: ID @primaryKey

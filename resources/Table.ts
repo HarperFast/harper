@@ -2323,7 +2323,7 @@ export function makeTable(options) {
 						let user_resolver = this.userResolvers[attribute.name];
 						if (user_resolver) return user_resolver(value, context, entry);
 						else {
-							harper_logger.warn(
+							logger.warn(
 								`Computed attribute "${attribute.name}" does not have a function assigned to it. Please use setComputedAttribute('${attribute.name}', resolver) to assign a resolver function.`
 							);
 							// silence future warnings but just returning undefined
