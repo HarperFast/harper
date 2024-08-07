@@ -1154,7 +1154,6 @@ describe('test openApi module', () => {
 								in: 'query',
 								schema: { type: 'array', items: { $ref: '#/components/schemas/ManyToMany' } },
 							},
-							{ name: 'computed', in: 'query', schema: { type: 'string', format: 'String' } },
 						],
 						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
@@ -1182,7 +1181,6 @@ describe('test openApi module', () => {
 								in: 'query',
 								schema: { type: 'array', items: { $ref: '#/components/schemas/ManyToMany' } },
 							},
-							{ name: 'computed', in: 'query', schema: { type: 'string', format: 'String' } },
 						],
 						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
@@ -1252,9 +1250,7 @@ describe('test openApi module', () => {
 							{
 								name: 'property',
 								in: 'path',
-								schema: {
-									enum: ['id', 'subObject', 'subArray', 'any', 'relatedId', 'related', 'manyToMany', 'computed'],
-								},
+								schema: { enum: ['id', 'subObject', 'subArray', 'any', 'relatedId', 'related', 'manyToMany'] },
 								required: true,
 							},
 						],
@@ -1264,9 +1260,7 @@ describe('test openApi module', () => {
 								description: 'successful operation',
 								content: {
 									'application/json': {
-										schema: {
-											enum: ['id', 'subObject', 'subArray', 'any', 'relatedId', 'related', 'manyToMany', 'computed'],
-										},
+										schema: { enum: ['id', 'subObject', 'subArray', 'any', 'relatedId', 'related', 'manyToMany'] },
 									},
 								},
 							},
@@ -1350,7 +1344,6 @@ describe('test openApi module', () => {
 							relatedId: { format: 'ID' },
 							related: { $ref: '#/components/schemas/Related' },
 							manyToMany: { type: 'array', items: { $ref: '#/components/schemas/ManyToMany' } },
-							computed: { type: 'string', format: 'String' },
 						},
 					},
 				},

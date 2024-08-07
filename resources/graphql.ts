@@ -100,7 +100,7 @@ export function start({ ensureTable }) {
 						const property = getProperty(field.type);
 						property.name = field.name.value;
 						properties.push(property);
-						attributes_object[property.name] = property;
+						attributes_object[property.name] = undefined; // this is used as a backup scope for computed properties
 						for (const directive of field.directives) {
 							let directive_name = directive.name.value;
 							if (directive_name === 'primaryKey') {
