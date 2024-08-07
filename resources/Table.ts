@@ -2335,6 +2335,15 @@ export function makeTable(options) {
 			assignTrackedAccessors(this, this);
 		}
 		static setComputedAttribute(attribute_name, resolver) {
+			const attribute = findAttribute(attributes, attribute_name);
+			if (!attribute) {
+				console.error(`The attribute "${attribute_name}" does not exist in the table "${table_name}"`);
+				return;
+			}
+			if (!attribute.computed) {
+				console.error(`The attribute "${attribute_name}" is not defined as computed in the table "${table_name}"`);
+				return;
+			}
 			this.userResolvers[attribute_name] = resolver;
 		}
 		static async deleteHistory(end_time = 0) {
