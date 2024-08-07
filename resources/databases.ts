@@ -1,6 +1,6 @@
 import { initSync, getHdbBasePath, get as env_get } from '../utility/environment/environmentManager';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms';
-import { open } from 'lmdb';
+import { open, compareKeys } from 'lmdb';
 import { join, extname, basename } from 'path';
 import { existsSync, readdirSync } from 'fs';
 import {
@@ -643,6 +643,7 @@ export function table({
 				attribute_descriptor.type !== attribute.type ||
 				attribute_descriptor.indexed !== attribute.indexed ||
 				attribute_descriptor.nullable !== attribute.nullable ||
+				attribute_descriptor.version !== attribute.version ||
 				JSON.stringify(attribute_descriptor.attributes) !== JSON.stringify(attribute.attributes) ||
 				JSON.stringify(attribute_descriptor.elements) !== JSON.stringify(attribute.elements);
 			if (attribute.indexed) {
@@ -664,7 +665,7 @@ export function table({
 						has_changes = true;
 						if (attribute.indexNulls === undefined) attribute.indexNulls = true;
 						if (Table.primaryStore.getStats().entryCount > 0) {
-							attribute.lastIndexedKey = attribute_descriptor?.lastIndexedKey || false;
+							attribute.lastIndexedKey = attribute_descriptor?.lastIndexedKey ?? undefined;
 							attribute.indexingPID = process.pid;
 							dbi.isIndexing = true;
 							Object.defineProperty(attribute, 'dbi', { value: dbi });
@@ -741,10 +742,19 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 		const attributes_length = attributes.length;
 		await new Promise((resolve) => setImmediate(resolve)); // yield event turn, indexing should consistently take at least one event turn
 		if (attributes_length > 0) {
+			let start: any;
+			for (let attribute of attributes) {
+				// if we are resuming, we need to start from the last key we indexed by all attributes
+				if (compareKeys(attribute.lastIndexedKey, start) < 0) start = attribute.lastIndexedKey;
+				if (attribute.lastIndexedKey == undefined) {
+					// if we are starting from the beginning, clear out any previous index entries since we are rewriting
+					attribute.dbi.clearAsync(); // note that we don't need to wait for this to complete, just gets enqueued in front of the other writes
+				}
+			}
 			let outstanding = 0;
 			// this means that a new attribute has been introduced that needs to be indexed
 			for (const { key, value: record, version } of Table.primaryStore.getRange({
-				start: attributes[0].lastIndexedKey, // TODO: Choose the lowest key of the attributes
+				start,
 				lazy: attributes_length < 4,
 				versions: true,
 				snapshot: false, // don't hold a read transaction this whole time

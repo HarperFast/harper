@@ -114,9 +114,14 @@ export function start({ ensureTable }) {
 							} else if (directive_name === 'computed') {
 								for (const arg of directive.arguments || []) {
 									if (arg.name.value === 'from') {
+										let computed_from_expression = (arg.value as StringValueNode).value;
 										property.computed = {
-											from: createComputedFrom((arg.value as StringValueNode).value, arg, attributes_object),
+											from: createComputedFrom(computed_from_expression, arg, attributes_object),
 										};
+										// if the version is not defined, we use the computed from expression as the version, any changes to the computed from expression will trigger a version change and reindex
+										if (property.version == undefined) property.version = computed_from_expression;
+									} else if (arg.name.value === 'version') {
+										property.version = (arg.value as StringValueNode).value;
 									}
 								}
 								property.computed = property.computed || true;
