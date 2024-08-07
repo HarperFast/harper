@@ -16,6 +16,8 @@ env.initSync();
 const CF_ROUTES_DIR = env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
 const NPM_INSTALL_COMMAND = 'npm install --omit=dev --json';
 const NPM_INSTALL_DRY_RUN_COMMAND = `${NPM_INSTALL_COMMAND} --dry-run`;
+const root_dir = env.get(terms.CONFIG_PARAMS.ROOTPATH);
+const ssh_dir = path.join(root_dir, 'ssh');
 
 module.exports = {
 	installModules,
@@ -32,9 +34,27 @@ module.exports = {
  */
 async function installAllRootModules(ignore_scripts = false) {
 	await checkNPMInstalled();
+	let ssh_key_added = false;
+	let env_vars = process.env;
+	if (await fs.pathExists(ssh_dir)) {
+		(await fs.readdir(ssh_dir)).forEach((file) => {
+			if (file.includes('.key') && !ssh_key_added) {
+				env_vars = Object.assign(
+					{
+						GIT_SSH_COMMAND:
+							'ssh -F ' + path.join(ssh_dir, 'config') + ' -o UserKnownHostsFile=' + path.join(ssh_dir, 'known_hosts'),
+					},
+					process.env
+				);
+				ssh_key_added = true;
+			}
+		});
+	}
+
 	await runCommand(
 		ignore_scripts ? 'npm install --ignore-scripts' : 'npm install',
-		env.get(terms.CONFIG_PARAMS.ROOTPATH)
+		env.get(terms.CONFIG_PARAMS.ROOTPATH),
+		env_vars
 	);
 }
 
@@ -62,10 +82,10 @@ async function linkHarperdb() {
  * @param {String=} cwd - path to the current working directory
  * @returns {Promise<*>}
  */
-async function runCommand(command, cwd = undefined) {
+async function runCommand(command, cwd = undefined, env = process.env) {
 	let stdout, stderr;
 	try {
-		({ stdout, stderr } = await p_exec(command, { cwd }));
+		({ stdout, stderr } = await p_exec(command, { cwd, env }));
 	} catch (err) {
 		throw new Error(err.stderr.replace('\n', ''));
 	}

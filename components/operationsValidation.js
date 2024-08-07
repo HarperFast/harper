@@ -13,6 +13,9 @@ const { HDB_ERROR_MSGS } = hdb_errors;
 // File name can only be alphanumeric, dash and underscores
 const PROJECT_FILE_NAME_REGEX = /^[a-zA-Z0-9-_]+$/;
 
+// SSH key name can only be alphanumeric, dash and underscores
+const SSH_KEY_NAME_REGEX = /^[a-zA-Z0-9-_]+$/;
+
 module.exports = {
 	getDropCustomFunctionValidator,
 	setCustomFunctionValidator,
@@ -23,6 +26,10 @@ module.exports = {
 	setComponentFileValidator,
 	getComponentFileValidator,
 	dropComponentFileValidator,
+	addSSHKeyValidator,
+	updateSSHKeyValidator,
+	deleteSSHKeyValidator,
+	setSSHKnownHostsValidator,
 };
 
 /**
@@ -237,4 +244,64 @@ function deployComponentValidator(req) {
 	});
 
 	return validator.validateBySchema(req, deploy_proj_schema);
+}
+
+/**
+ * Validate addSSHKey requests.
+ * @param req
+ * @returns {*}
+ */
+function addSSHKeyValidator(req) {
+	const set_ssh_schema = Joi.object({
+		name: Joi.string()
+			.pattern(SSH_KEY_NAME_REGEX)
+			.required()
+			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_SSH_KEY_NAME }),
+		key: Joi.string().required(),
+		host: Joi.string().required(),
+		hostname: Joi.string().required(),
+		known_hosts: Joi.string().optional(),
+	});
+
+	return validator.validateBySchema(req, set_ssh_schema);
+}
+
+/**
+ * Validate updateSSHKey requests.
+ * @param req
+ * @returns {*}
+ */
+function updateSSHKeyValidator(req) {
+	const set_ssh_schema = Joi.object({
+		name: Joi.string().required(),
+		key: Joi.string().required(),
+	});
+
+	return validator.validateBySchema(req, set_ssh_schema);
+}
+
+/**
+ * Validate deleteSSHKey requests.
+ * @param req
+ * @returns {*}
+ */
+function deleteSSHKeyValidator(req) {
+	const set_ssh_schema = Joi.object({
+		name: Joi.string().required(),
+	});
+
+	return validator.validateBySchema(req, set_ssh_schema);
+}
+
+/**
+ * Validate setSSHKnownHosts requests.
+ * @param req
+ * @returns {*}
+ */
+function setSSHKnownHostsValidator(req) {
+	const set_ssh_schema = Joi.object({
+		known_hosts: Joi.string().required(),
+	});
+
+	return validator.validateBySchema(req, set_ssh_schema);
 }

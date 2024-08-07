@@ -60,6 +60,12 @@ const SUPPORTED_OPS = {
 	refresh_operation_token: true,
 	system_information: true,
 	sql: true,
+	add_ssh_key: true,
+	update_ssh_key: true,
+	delete_ssh_key: true,
+	list_ssh_keys: true,
+	set_ssh_known_hosts: true,
+	get_ssh_known_hosts: true,
 };
 
 module.exports = { cliOperations, buildRequest };
