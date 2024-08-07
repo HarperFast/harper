@@ -198,6 +198,18 @@ describe('Querying through Resource API', () => {
 		assert.equal(results.length, 1);
 		assert.equal(results[0].id, 'id-2');
 	});
+	it('Select with computed index', async function () {
+		let results = [];
+		for await (let record of QueryTable.search({
+			conditions: [{ attribute: 'name', comparator: 'equals', value: 'name-3' }],
+			select: ['id', 'computed'],
+		})) {
+			results.push(record);
+		}
+		assert.equal(results.length, 1);
+		assert.equal(results[0].id, 'id-3');
+		assert.equal(results[0].computed, 'name-3 computed');
+	});
 
 	describe('joins', function () {
 		it('Query data in a table with relationships', async function () {

@@ -17,120 +17,45 @@ describe('test openApi module', () => {
 		const result = generateJsonApi(resources);
 		expect(result).to.eql({
 			openapi: '3.0.3',
-			info: {
-				title: 'HarperDB HTTP REST interface',
-				version: version(),
-			},
+			info: { title: 'HarperDB HTTP REST interface', version: '4.3.20' },
 			paths: {
 				'/VariedProps/': {
 					post: {
 						description: 'create a new record auto-assigning a primary key',
-						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/VariedProps',
-									},
-								},
-							},
-						},
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/VariedProps' } } } },
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
 								headers: {
-									Location: {
-										description: 'primary key of new record',
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
+									Location: { description: 'primary key of new record', schema: { type: 'string', format: 'ID' } },
 								},
-								content: {
-									'application/json': {
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { type: 'string', format: 'ID' } } },
 							},
 						},
 					},
 					get: {
 						description: 'search for records by the specified property name and value pairs',
 						parameters: [
-							{
-								name: 'id',
-								in: 'query',
-								schema: {
-									format: 'ID',
-								},
-							},
-							{
-								name: 'name',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'String',
-								},
-							},
+							{ name: 'id', in: 'query', schema: { format: 'ID' } },
+							{ name: 'name', in: 'query', schema: { type: 'string', format: 'String' } },
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/VariedProps',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/VariedProps' } } },
 							},
 						},
 					},
 					delete: {
 						description: 'delete all the records that match the provided query',
 						parameters: [
-							{
-								name: 'id',
-								in: 'query',
-								schema: {
-									format: 'ID',
-								},
-							},
-							{
-								name: 'name',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'String',
-								},
-							},
+							{ name: 'id', in: 'query', schema: { format: 'ID' } },
+							{ name: 'name', in: 'query', schema: { type: 'string', format: 'String' } },
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
 					},
 				},
 				'/VariedProps/{id}': {
@@ -140,29 +65,16 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/VariedProps',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/VariedProps' } } },
 							},
 						},
 					},
@@ -172,33 +84,14 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/VariedProps',
-									},
-								},
-							},
-						},
-						responses: {
-							200: {
-								description: 'successful operation',
-							},
-						},
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/VariedProps' } } } },
+						responses: { 200: { description: 'successful operation' } },
 					},
 					delete: {
 						description: 'delete a record with the given primary key',
@@ -206,24 +99,13 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
 					},
 				},
 				'/VariedProps/{id}.{property}': {
@@ -233,1101 +115,17 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
-							{
-								name: 'property',
-								in: 'path',
-								schema: {
-									enum: ['id', 'name'],
-								},
-								required: true,
-							},
+							{ name: 'property', in: 'path', schema: { enum: ['id', 'name'] }, required: true },
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											enum: ['id', 'name'],
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-				'/Related/': {
-					post: {
-						description: 'create a new record auto-assigning a primary key',
-						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/Related',
-									},
-								},
-							},
-						},
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							200: {
-								description: 'successful operation',
-								headers: {
-									Location: {
-										description: 'primary key of new record',
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
-								},
-								content: {
-									'application/json': {
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
-								},
-							},
-						},
-					},
-					get: {
-						description: 'search for records by the specified property name and value pairs',
-						parameters: [
-							{
-								name: 'id',
-								in: 'query',
-								schema: {
-									format: 'ID',
-								},
-							},
-							{
-								name: 'name',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'String',
-								},
-							},
-							{
-								name: 'otherTable',
-								in: 'query',
-								schema: {
-									type: 'array',
-									items: {
-										$ref: '#/components/schemas/SubObject',
-									},
-								},
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							200: {
-								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/Related',
-										},
-									},
-								},
-							},
-						},
-					},
-					delete: {
-						description: 'delete all the records that match the provided query',
-						parameters: [
-							{
-								name: 'id',
-								in: 'query',
-								schema: {
-									format: 'ID',
-								},
-							},
-							{
-								name: 'name',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'String',
-								},
-							},
-							{
-								name: 'otherTable',
-								in: 'query',
-								schema: {
-									type: 'array',
-									items: {
-										$ref: '#/components/schemas/SubObject',
-									},
-								},
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
-					},
-				},
-				'/Related/{id}': {
-					get: {
-						description: 'retrieve a record by its primary key',
-						parameters: [
-							{
-								name: 'id',
-								in: 'path',
-								schema: {
-									format: 'ID',
-								},
-								required: true,
-								description: 'primary key of record',
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							200: {
-								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/Related',
-										},
-									},
-								},
-							},
-						},
-					},
-					put: {
-						description: "create or update the record with the URL path that maps to the record's primary key",
-						parameters: [
-							{
-								name: 'id',
-								in: 'path',
-								schema: {
-									format: 'ID',
-								},
-								required: true,
-								description: 'primary key of record',
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/Related',
-									},
-								},
-							},
-						},
-						responses: {
-							200: {
-								description: 'successful operation',
-							},
-						},
-					},
-					delete: {
-						description: 'delete a record with the given primary key',
-						parameters: [
-							{
-								name: 'id',
-								in: 'path',
-								schema: {
-									format: 'ID',
-								},
-								required: true,
-								description: 'primary key of record',
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
-					},
-				},
-				'/Related/{id}.{property}': {
-					get: {
-						description: 'used to retrieve the specified property of the specified record',
-						parameters: [
-							{
-								name: 'id',
-								in: 'path',
-								schema: {
-									format: 'ID',
-								},
-								required: true,
-								description: 'primary key of record',
-							},
-							{
-								name: 'property',
-								in: 'path',
-								schema: {
-									enum: ['id', 'name', 'otherTable'],
-								},
-								required: true,
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							200: {
-								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											enum: ['id', 'name', 'otherTable'],
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-				'/ManyToMany/': {
-					post: {
-						description: 'create a new record auto-assigning a primary key',
-						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/ManyToMany',
-									},
-								},
-							},
-						},
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							200: {
-								description: 'successful operation',
-								headers: {
-									Location: {
-										description: 'primary key of new record',
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
-								},
-								content: {
-									'application/json': {
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
-								},
-							},
-						},
-					},
-					get: {
-						description: 'search for records by the specified property name and value pairs',
-						parameters: [
-							{
-								name: 'id',
-								in: 'query',
-								schema: {
-									format: 'ID',
-								},
-							},
-							{
-								name: 'name',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'String',
-								},
-							},
-							{
-								name: 'subObjectIds',
-								in: 'query',
-								schema: {
-									type: 'array',
-									items: {
-										format: 'ID',
-									},
-								},
-							},
-							{
-								name: 'subObjects',
-								in: 'query',
-								schema: {
-									type: 'array',
-									items: {
-										$ref: '#/components/schemas/SubObject',
-									},
-								},
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							200: {
-								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/ManyToMany',
-										},
-									},
-								},
-							},
-						},
-					},
-					delete: {
-						description: 'delete all the records that match the provided query',
-						parameters: [
-							{
-								name: 'id',
-								in: 'query',
-								schema: {
-									format: 'ID',
-								},
-							},
-							{
-								name: 'name',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'String',
-								},
-							},
-							{
-								name: 'subObjectIds',
-								in: 'query',
-								schema: {
-									type: 'array',
-									items: {
-										format: 'ID',
-									},
-								},
-							},
-							{
-								name: 'subObjects',
-								in: 'query',
-								schema: {
-									type: 'array',
-									items: {
-										$ref: '#/components/schemas/SubObject',
-									},
-								},
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
-					},
-				},
-				'/ManyToMany/{id}': {
-					get: {
-						description: 'retrieve a record by its primary key',
-						parameters: [
-							{
-								name: 'id',
-								in: 'path',
-								schema: {
-									format: 'ID',
-								},
-								required: true,
-								description: 'primary key of record',
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							200: {
-								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/ManyToMany',
-										},
-									},
-								},
-							},
-						},
-					},
-					put: {
-						description: "create or update the record with the URL path that maps to the record's primary key",
-						parameters: [
-							{
-								name: 'id',
-								in: 'path',
-								schema: {
-									format: 'ID',
-								},
-								required: true,
-								description: 'primary key of record',
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/ManyToMany',
-									},
-								},
-							},
-						},
-						responses: {
-							200: {
-								description: 'successful operation',
-							},
-						},
-					},
-					delete: {
-						description: 'delete a record with the given primary key',
-						parameters: [
-							{
-								name: 'id',
-								in: 'path',
-								schema: {
-									format: 'ID',
-								},
-								required: true,
-								description: 'primary key of record',
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
-					},
-				},
-				'/ManyToMany/{id}.{property}': {
-					get: {
-						description: 'used to retrieve the specified property of the specified record',
-						parameters: [
-							{
-								name: 'id',
-								in: 'path',
-								schema: {
-									format: 'ID',
-								},
-								required: true,
-								description: 'primary key of record',
-							},
-							{
-								name: 'property',
-								in: 'path',
-								schema: {
-									enum: ['id', 'name', 'subObjectIds', 'subObjects'],
-								},
-								required: true,
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							200: {
-								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											enum: ['id', 'name', 'subObjectIds', 'subObjects'],
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-				'/HasTimeStampsNoPK/': {
-					post: {
-						description: 'create a new record auto-assigning a primary key',
-						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/HasTimeStampsNoPK',
-									},
-								},
-							},
-						},
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							200: {
-								description: 'successful operation',
-								headers: {
-									Location: {
-										description: 'primary key of new record',
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
-								},
-								content: {
-									'application/json': {
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
-								},
-							},
-						},
-					},
-					get: {
-						description: 'search for records by the specified property name and value pairs',
-						parameters: [
-							{
-								name: 'created',
-								in: 'query',
-								schema: {
-									type: 'number',
-									format: 'Float',
-								},
-							},
-							{
-								name: 'updated',
-								in: 'query',
-								schema: {
-									type: 'number',
-									format: 'Float',
-								},
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							200: {
-								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/HasTimeStampsNoPK',
-										},
-									},
-								},
-							},
-						},
-					},
-					delete: {
-						description: 'delete all the records that match the provided query',
-						parameters: [
-							{
-								name: 'created',
-								in: 'query',
-								schema: {
-									type: 'number',
-									format: 'Float',
-								},
-							},
-							{
-								name: 'updated',
-								in: 'query',
-								schema: {
-									type: 'number',
-									format: 'Float',
-								},
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
-					},
-				},
-				'/HasTimeStampsNoPK/{id}': {
-					get: {
-						description: 'retrieve a record by its primary key',
-						parameters: [
-							{
-								name: 'id',
-								in: 'path',
-								schema: {
-									format: 'ID',
-								},
-								required: true,
-								description: 'primary key of record',
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							200: {
-								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/HasTimeStampsNoPK',
-										},
-									},
-								},
-							},
-						},
-					},
-					put: {
-						description: "create or update the record with the URL path that maps to the record's primary key",
-						parameters: [
-							{
-								name: 'id',
-								in: 'path',
-								schema: {
-									format: 'ID',
-								},
-								required: true,
-								description: 'primary key of record',
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/HasTimeStampsNoPK',
-									},
-								},
-							},
-						},
-						responses: {
-							200: {
-								description: 'successful operation',
-							},
-						},
-					},
-					delete: {
-						description: 'delete a record with the given primary key',
-						parameters: [
-							{
-								name: 'id',
-								in: 'path',
-								schema: {
-									format: 'ID',
-								},
-								required: true,
-								description: 'primary key of record',
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
-					},
-				},
-				'/HasTimeStampsNoPK/{id}.{property}': {
-					get: {
-						description: 'used to retrieve the specified property of the specified record',
-						parameters: [
-							{
-								name: 'id',
-								in: 'path',
-								schema: {
-									format: 'ID',
-								},
-								required: true,
-								description: 'primary key of record',
-							},
-							{
-								name: 'property',
-								in: 'path',
-								schema: {
-									enum: ['created', 'updated'],
-								},
-								required: true,
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							200: {
-								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											enum: ['created', 'updated'],
-										},
-									},
-								},
-							},
-						},
-					},
-				},
-				'/HasBigInt/': {
-					post: {
-						description: 'create a new record auto-assigning a primary key',
-						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/HasBigInt',
-									},
-								},
-							},
-						},
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							200: {
-								description: 'successful operation',
-								headers: {
-									Location: {
-										description: 'primary key of new record',
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
-								},
-								content: {
-									'application/json': {
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
-								},
-							},
-						},
-					},
-					get: {
-						description: 'search for records by the specified property name and value pairs',
-						parameters: [
-							{
-								name: 'id',
-								in: 'query',
-								schema: {
-									type: 'integer',
-									format: 'BigInt',
-								},
-							},
-							{
-								name: 'name',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'String',
-								},
-							},
-							{
-								name: 'anotherBigint',
-								in: 'query',
-								schema: {
-									type: 'integer',
-									format: 'BigInt',
-								},
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							200: {
-								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/HasBigInt',
-										},
-									},
-								},
-							},
-						},
-					},
-					delete: {
-						description: 'delete all the records that match the provided query',
-						parameters: [
-							{
-								name: 'id',
-								in: 'query',
-								schema: {
-									type: 'integer',
-									format: 'BigInt',
-								},
-							},
-							{
-								name: 'name',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'String',
-								},
-							},
-							{
-								name: 'anotherBigint',
-								in: 'query',
-								schema: {
-									type: 'integer',
-									format: 'BigInt',
-								},
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
-					},
-				},
-				'/HasBigInt/{id}': {
-					get: {
-						description: 'retrieve a record by its primary key',
-						parameters: [
-							{
-								name: 'id',
-								in: 'path',
-								schema: {
-									format: 'ID',
-								},
-								required: true,
-								description: 'primary key of record',
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							200: {
-								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/HasBigInt',
-										},
-									},
-								},
-							},
-						},
-					},
-					put: {
-						description: "create or update the record with the URL path that maps to the record's primary key",
-						parameters: [
-							{
-								name: 'id',
-								in: 'path',
-								schema: {
-									format: 'ID',
-								},
-								required: true,
-								description: 'primary key of record',
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/HasBigInt',
-									},
-								},
-							},
-						},
-						responses: {
-							200: {
-								description: 'successful operation',
-							},
-						},
-					},
-					delete: {
-						description: 'delete a record with the given primary key',
-						parameters: [
-							{
-								name: 'id',
-								in: 'path',
-								schema: {
-									format: 'ID',
-								},
-								required: true,
-								description: 'primary key of record',
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
-					},
-				},
-				'/HasBigInt/{id}.{property}': {
-					get: {
-						description: 'used to retrieve the specified property of the specified record',
-						parameters: [
-							{
-								name: 'id',
-								in: 'path',
-								schema: {
-									format: 'ID',
-								},
-								required: true,
-								description: 'primary key of record',
-							},
-							{
-								name: 'property',
-								in: 'path',
-								schema: {
-									enum: ['id', 'name', 'anotherBigint'],
-								},
-								required: true,
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							200: {
-								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											enum: ['id', 'name', 'anotherBigint'],
-										},
-									},
-								},
+								content: { 'application/json': { schema: { enum: ['id', 'name'] } } },
 							},
 						},
 					},
@@ -1335,112 +133,40 @@ describe('test openApi module', () => {
 				'/SimpleRecord/': {
 					post: {
 						description: 'create a new record auto-assigning a primary key',
-						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/SimpleRecord',
-									},
-								},
-							},
-						},
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/SimpleRecord' } } } },
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
 								headers: {
-									Location: {
-										description: 'primary key of new record',
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
+									Location: { description: 'primary key of new record', schema: { type: 'string', format: 'ID' } },
 								},
-								content: {
-									'application/json': {
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { type: 'string', format: 'ID' } } },
 							},
 						},
 					},
 					get: {
 						description: 'search for records by the specified property name and value pairs',
 						parameters: [
-							{
-								name: 'id',
-								in: 'query',
-								schema: {
-									format: 'ID',
-								},
-							},
-							{
-								name: 'name',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'String',
-								},
-							},
+							{ name: 'id', in: 'query', schema: { format: 'ID' } },
+							{ name: 'name', in: 'query', schema: { type: 'string', format: 'String' } },
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/SimpleRecord',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/SimpleRecord' } } },
 							},
 						},
 					},
 					delete: {
 						description: 'delete all the records that match the provided query',
 						parameters: [
-							{
-								name: 'id',
-								in: 'query',
-								schema: {
-									format: 'ID',
-								},
-							},
-							{
-								name: 'name',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'String',
-								},
-							},
+							{ name: 'id', in: 'query', schema: { format: 'ID' } },
+							{ name: 'name', in: 'query', schema: { type: 'string', format: 'String' } },
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
 					},
 				},
 				'/SimpleRecord/{id}': {
@@ -1450,29 +176,16 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/SimpleRecord',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/SimpleRecord' } } },
 							},
 						},
 					},
@@ -1482,33 +195,14 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/SimpleRecord',
-									},
-								},
-							},
-						},
-						responses: {
-							200: {
-								description: 'successful operation',
-							},
-						},
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/SimpleRecord' } } } },
+						responses: { 200: { description: 'successful operation' } },
 					},
 					delete: {
 						description: 'delete a record with the given primary key',
@@ -1516,24 +210,13 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
 					},
 				},
 				'/SimpleRecord/{id}.{property}': {
@@ -1543,37 +226,17 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
-							{
-								name: 'property',
-								in: 'path',
-								schema: {
-									enum: ['id', 'name'],
-								},
-								required: true,
-							},
+							{ name: 'property', in: 'path', schema: { enum: ['id', 'name'] }, required: true },
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											enum: ['id', 'name'],
-										},
-									},
-								},
+								content: { 'application/json': { schema: { enum: ['id', 'name'] } } },
 							},
 						},
 					},
@@ -1581,160 +244,50 @@ describe('test openApi module', () => {
 				'/FourProp/': {
 					post: {
 						description: 'create a new record auto-assigning a primary key',
-						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/FourProp',
-									},
-								},
-							},
-						},
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/FourProp' } } } },
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
 								headers: {
-									Location: {
-										description: 'primary key of new record',
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
+									Location: { description: 'primary key of new record', schema: { type: 'string', format: 'ID' } },
 								},
-								content: {
-									'application/json': {
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { type: 'string', format: 'ID' } } },
 							},
 						},
 					},
 					get: {
 						description: 'search for records by the specified property name and value pairs',
 						parameters: [
-							{
-								name: 'id',
-								in: 'query',
-								schema: {
-									format: 'ID',
-								},
-							},
-							{
-								name: 'name',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'String',
-								},
-							},
-							{
-								name: 'age',
-								in: 'query',
-								schema: {
-									type: 'integer',
-									format: 'Int',
-								},
-							},
-							{
-								name: 'title',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'String',
-								},
-							},
-							{
-								name: 'birthday',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'Date',
-								},
-							},
+							{ name: 'id', in: 'query', schema: { format: 'ID' } },
+							{ name: 'name', in: 'query', schema: { type: 'string', format: 'String' } },
+							{ name: 'age', in: 'query', schema: { type: 'integer', format: 'Int' } },
+							{ name: 'title', in: 'query', schema: { type: 'string', format: 'String' } },
+							{ name: 'birthday', in: 'query', schema: { type: 'string', format: 'Date' } },
+							{ name: 'ageInMonths', in: 'query', schema: { type: 'integer', format: 'Int' } },
+							{ name: 'nameTitle', in: 'query', schema: { type: 'integer', format: 'Int' } },
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/FourProp',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/FourProp' } } },
 							},
 						},
 					},
 					delete: {
 						description: 'delete all the records that match the provided query',
 						parameters: [
-							{
-								name: 'id',
-								in: 'query',
-								schema: {
-									format: 'ID',
-								},
-							},
-							{
-								name: 'name',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'String',
-								},
-							},
-							{
-								name: 'age',
-								in: 'query',
-								schema: {
-									type: 'integer',
-									format: 'Int',
-								},
-							},
-							{
-								name: 'title',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'String',
-								},
-							},
-							{
-								name: 'birthday',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'Date',
-								},
-							},
+							{ name: 'id', in: 'query', schema: { format: 'ID' } },
+							{ name: 'name', in: 'query', schema: { type: 'string', format: 'String' } },
+							{ name: 'age', in: 'query', schema: { type: 'integer', format: 'Int' } },
+							{ name: 'title', in: 'query', schema: { type: 'string', format: 'String' } },
+							{ name: 'birthday', in: 'query', schema: { type: 'string', format: 'Date' } },
+							{ name: 'ageInMonths', in: 'query', schema: { type: 'integer', format: 'Int' } },
+							{ name: 'nameTitle', in: 'query', schema: { type: 'integer', format: 'Int' } },
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
 					},
 				},
 				'/FourProp/{id}': {
@@ -1744,29 +297,16 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/FourProp',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/FourProp' } } },
 							},
 						},
 					},
@@ -1776,33 +316,14 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/FourProp',
-									},
-								},
-							},
-						},
-						responses: {
-							200: {
-								description: 'successful operation',
-							},
-						},
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/FourProp' } } } },
+						responses: { 200: { description: 'successful operation' } },
 					},
 					delete: {
 						description: 'delete a record with the given primary key',
@@ -1810,24 +331,13 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
 					},
 				},
 				'/FourProp/{id}.{property}': {
@@ -1837,37 +347,503 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 							{
 								name: 'property',
 								in: 'path',
-								schema: {
-									enum: ['id', 'name', 'age', 'title', 'birthday'],
-								},
+								schema: { enum: ['id', 'name', 'age', 'title', 'birthday', 'ageInMonths', 'nameTitle'] },
 								required: true,
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
 								content: {
 									'application/json': {
-										schema: {
-											enum: ['id', 'name', 'age', 'title', 'birthday'],
-										},
+										schema: { enum: ['id', 'name', 'age', 'title', 'birthday', 'ageInMonths', 'nameTitle'] },
 									},
 								},
+							},
+						},
+					},
+				},
+				'/Related/': {
+					post: {
+						description: 'create a new record auto-assigning a primary key',
+						requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/Related' } } } },
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: {
+							200: {
+								description: 'successful operation',
+								headers: {
+									Location: { description: 'primary key of new record', schema: { type: 'string', format: 'ID' } },
+								},
+								content: { 'application/json': { schema: { type: 'string', format: 'ID' } } },
+							},
+						},
+					},
+					get: {
+						description: 'search for records by the specified property name and value pairs',
+						parameters: [
+							{ name: 'id', in: 'query', schema: { format: 'ID' } },
+							{ name: 'name', in: 'query', schema: { type: 'string', format: 'String' } },
+							{
+								name: 'otherTable',
+								in: 'query',
+								schema: { type: 'array', items: { $ref: '#/components/schemas/SubObject' } },
+							},
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: {
+							200: {
+								description: 'successful operation',
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/Related' } } },
+							},
+						},
+					},
+					delete: {
+						description: 'delete all the records that match the provided query',
+						parameters: [
+							{ name: 'id', in: 'query', schema: { format: 'ID' } },
+							{ name: 'name', in: 'query', schema: { type: 'string', format: 'String' } },
+							{
+								name: 'otherTable',
+								in: 'query',
+								schema: { type: 'array', items: { $ref: '#/components/schemas/SubObject' } },
+							},
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
+					},
+				},
+				'/Related/{id}': {
+					get: {
+						description: 'retrieve a record by its primary key',
+						parameters: [
+							{
+								name: 'id',
+								in: 'path',
+								schema: { format: 'ID' },
+								required: true,
+								description: 'primary key of record',
+							},
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: {
+							200: {
+								description: 'successful operation',
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/Related' } } },
+							},
+						},
+					},
+					put: {
+						description: "create or update the record with the URL path that maps to the record's primary key",
+						parameters: [
+							{
+								name: 'id',
+								in: 'path',
+								schema: { format: 'ID' },
+								required: true,
+								description: 'primary key of record',
+							},
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/Related' } } } },
+						responses: { 200: { description: 'successful operation' } },
+					},
+					delete: {
+						description: 'delete a record with the given primary key',
+						parameters: [
+							{
+								name: 'id',
+								in: 'path',
+								schema: { format: 'ID' },
+								required: true,
+								description: 'primary key of record',
+							},
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
+					},
+				},
+				'/Related/{id}.{property}': {
+					get: {
+						description: 'used to retrieve the specified property of the specified record',
+						parameters: [
+							{
+								name: 'id',
+								in: 'path',
+								schema: { format: 'ID' },
+								required: true,
+								description: 'primary key of record',
+							},
+							{ name: 'property', in: 'path', schema: { enum: ['id', 'name', 'otherTable'] }, required: true },
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: {
+							200: {
+								description: 'successful operation',
+								content: { 'application/json': { schema: { enum: ['id', 'name', 'otherTable'] } } },
+							},
+						},
+					},
+				},
+				'/ManyToMany/': {
+					post: {
+						description: 'create a new record auto-assigning a primary key',
+						requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/ManyToMany' } } } },
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: {
+							200: {
+								description: 'successful operation',
+								headers: {
+									Location: { description: 'primary key of new record', schema: { type: 'string', format: 'ID' } },
+								},
+								content: { 'application/json': { schema: { type: 'string', format: 'ID' } } },
+							},
+						},
+					},
+					get: {
+						description: 'search for records by the specified property name and value pairs',
+						parameters: [
+							{ name: 'id', in: 'query', schema: { format: 'ID' } },
+							{ name: 'name', in: 'query', schema: { type: 'string', format: 'String' } },
+							{ name: 'subObjectIds', in: 'query', schema: { type: 'array', items: { format: 'ID' } } },
+							{
+								name: 'subObjects',
+								in: 'query',
+								schema: { type: 'array', items: { $ref: '#/components/schemas/SubObject' } },
+							},
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: {
+							200: {
+								description: 'successful operation',
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/ManyToMany' } } },
+							},
+						},
+					},
+					delete: {
+						description: 'delete all the records that match the provided query',
+						parameters: [
+							{ name: 'id', in: 'query', schema: { format: 'ID' } },
+							{ name: 'name', in: 'query', schema: { type: 'string', format: 'String' } },
+							{ name: 'subObjectIds', in: 'query', schema: { type: 'array', items: { format: 'ID' } } },
+							{
+								name: 'subObjects',
+								in: 'query',
+								schema: { type: 'array', items: { $ref: '#/components/schemas/SubObject' } },
+							},
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
+					},
+				},
+				'/ManyToMany/{id}': {
+					get: {
+						description: 'retrieve a record by its primary key',
+						parameters: [
+							{
+								name: 'id',
+								in: 'path',
+								schema: { format: 'ID' },
+								required: true,
+								description: 'primary key of record',
+							},
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: {
+							200: {
+								description: 'successful operation',
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/ManyToMany' } } },
+							},
+						},
+					},
+					put: {
+						description: "create or update the record with the URL path that maps to the record's primary key",
+						parameters: [
+							{
+								name: 'id',
+								in: 'path',
+								schema: { format: 'ID' },
+								required: true,
+								description: 'primary key of record',
+							},
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/ManyToMany' } } } },
+						responses: { 200: { description: 'successful operation' } },
+					},
+					delete: {
+						description: 'delete a record with the given primary key',
+						parameters: [
+							{
+								name: 'id',
+								in: 'path',
+								schema: { format: 'ID' },
+								required: true,
+								description: 'primary key of record',
+							},
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
+					},
+				},
+				'/ManyToMany/{id}.{property}': {
+					get: {
+						description: 'used to retrieve the specified property of the specified record',
+						parameters: [
+							{
+								name: 'id',
+								in: 'path',
+								schema: { format: 'ID' },
+								required: true,
+								description: 'primary key of record',
+							},
+							{
+								name: 'property',
+								in: 'path',
+								schema: { enum: ['id', 'name', 'subObjectIds', 'subObjects'] },
+								required: true,
+							},
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: {
+							200: {
+								description: 'successful operation',
+								content: { 'application/json': { schema: { enum: ['id', 'name', 'subObjectIds', 'subObjects'] } } },
+							},
+						},
+					},
+				},
+				'/HasTimeStampsNoPK/': {
+					post: {
+						description: 'create a new record auto-assigning a primary key',
+						requestBody: {
+							content: { 'application/json': { schema: { $ref: '#/components/schemas/HasTimeStampsNoPK' } } },
+						},
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: {
+							200: {
+								description: 'successful operation',
+								headers: {
+									Location: { description: 'primary key of new record', schema: { type: 'string', format: 'ID' } },
+								},
+								content: { 'application/json': { schema: { type: 'string', format: 'ID' } } },
+							},
+						},
+					},
+					get: {
+						description: 'search for records by the specified property name and value pairs',
+						parameters: [
+							{ name: 'created', in: 'query', schema: { type: 'number', format: 'Float' } },
+							{ name: 'updated', in: 'query', schema: { type: 'number', format: 'Float' } },
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: {
+							200: {
+								description: 'successful operation',
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/HasTimeStampsNoPK' } } },
+							},
+						},
+					},
+					delete: {
+						description: 'delete all the records that match the provided query',
+						parameters: [
+							{ name: 'created', in: 'query', schema: { type: 'number', format: 'Float' } },
+							{ name: 'updated', in: 'query', schema: { type: 'number', format: 'Float' } },
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
+					},
+				},
+				'/HasTimeStampsNoPK/{id}': {
+					get: {
+						description: 'retrieve a record by its primary key',
+						parameters: [
+							{
+								name: 'id',
+								in: 'path',
+								schema: { format: 'ID' },
+								required: true,
+								description: 'primary key of record',
+							},
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: {
+							200: {
+								description: 'successful operation',
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/HasTimeStampsNoPK' } } },
+							},
+						},
+					},
+					put: {
+						description: "create or update the record with the URL path that maps to the record's primary key",
+						parameters: [
+							{
+								name: 'id',
+								in: 'path',
+								schema: { format: 'ID' },
+								required: true,
+								description: 'primary key of record',
+							},
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						requestBody: {
+							content: { 'application/json': { schema: { $ref: '#/components/schemas/HasTimeStampsNoPK' } } },
+						},
+						responses: { 200: { description: 'successful operation' } },
+					},
+					delete: {
+						description: 'delete a record with the given primary key',
+						parameters: [
+							{
+								name: 'id',
+								in: 'path',
+								schema: { format: 'ID' },
+								required: true,
+								description: 'primary key of record',
+							},
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
+					},
+				},
+				'/HasTimeStampsNoPK/{id}.{property}': {
+					get: {
+						description: 'used to retrieve the specified property of the specified record',
+						parameters: [
+							{
+								name: 'id',
+								in: 'path',
+								schema: { format: 'ID' },
+								required: true,
+								description: 'primary key of record',
+							},
+							{ name: 'property', in: 'path', schema: { enum: ['created', 'updated'] }, required: true },
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: {
+							200: {
+								description: 'successful operation',
+								content: { 'application/json': { schema: { enum: ['created', 'updated'] } } },
+							},
+						},
+					},
+				},
+				'/HasBigInt/': {
+					post: {
+						description: 'create a new record auto-assigning a primary key',
+						requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/HasBigInt' } } } },
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: {
+							200: {
+								description: 'successful operation',
+								headers: {
+									Location: { description: 'primary key of new record', schema: { type: 'string', format: 'ID' } },
+								},
+								content: { 'application/json': { schema: { type: 'string', format: 'ID' } } },
+							},
+						},
+					},
+					get: {
+						description: 'search for records by the specified property name and value pairs',
+						parameters: [
+							{ name: 'id', in: 'query', schema: { type: 'integer', format: 'BigInt' } },
+							{ name: 'name', in: 'query', schema: { type: 'string', format: 'String' } },
+							{ name: 'anotherBigint', in: 'query', schema: { type: 'integer', format: 'BigInt' } },
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: {
+							200: {
+								description: 'successful operation',
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/HasBigInt' } } },
+							},
+						},
+					},
+					delete: {
+						description: 'delete all the records that match the provided query',
+						parameters: [
+							{ name: 'id', in: 'query', schema: { type: 'integer', format: 'BigInt' } },
+							{ name: 'name', in: 'query', schema: { type: 'string', format: 'String' } },
+							{ name: 'anotherBigint', in: 'query', schema: { type: 'integer', format: 'BigInt' } },
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
+					},
+				},
+				'/HasBigInt/{id}': {
+					get: {
+						description: 'retrieve a record by its primary key',
+						parameters: [
+							{
+								name: 'id',
+								in: 'path',
+								schema: { format: 'ID' },
+								required: true,
+								description: 'primary key of record',
+							},
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: {
+							200: {
+								description: 'successful operation',
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/HasBigInt' } } },
+							},
+						},
+					},
+					put: {
+						description: "create or update the record with the URL path that maps to the record's primary key",
+						parameters: [
+							{
+								name: 'id',
+								in: 'path',
+								schema: { format: 'ID' },
+								required: true,
+								description: 'primary key of record',
+							},
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/HasBigInt' } } } },
+						responses: { 200: { description: 'successful operation' } },
+					},
+					delete: {
+						description: 'delete a record with the given primary key',
+						parameters: [
+							{
+								name: 'id',
+								in: 'path',
+								schema: { format: 'ID' },
+								required: true,
+								description: 'primary key of record',
+							},
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
+					},
+				},
+				'/HasBigInt/{id}.{property}': {
+					get: {
+						description: 'used to retrieve the specified property of the specified record',
+						parameters: [
+							{
+								name: 'id',
+								in: 'path',
+								schema: { format: 'ID' },
+								required: true,
+								description: 'primary key of record',
+							},
+							{ name: 'property', in: 'path', schema: { enum: ['id', 'name', 'anotherBigint'] }, required: true },
+						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: {
+							200: {
+								description: 'successful operation',
+								content: { 'application/json': { schema: { enum: ['id', 'name', 'anotherBigint'] } } },
 							},
 						},
 					},
@@ -1876,22 +852,11 @@ describe('test openApi module', () => {
 					get: {
 						description: 'search for records by the specified property name and value pairs',
 						parameters: [],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/Echo',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/Echo' } } },
 							},
 						},
 					},
@@ -1903,29 +868,16 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/Echo',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/Echo' } } },
 							},
 						},
 					},
@@ -1934,159 +886,51 @@ describe('test openApi module', () => {
 					post: {
 						description: 'create a new record auto-assigning a primary key',
 						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/FourPropWithHistory',
-									},
-								},
-							},
+							content: { 'application/json': { schema: { $ref: '#/components/schemas/FourPropWithHistory' } } },
 						},
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
 								headers: {
-									Location: {
-										description: 'primary key of new record',
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
+									Location: { description: 'primary key of new record', schema: { type: 'string', format: 'ID' } },
 								},
-								content: {
-									'application/json': {
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { type: 'string', format: 'ID' } } },
 							},
 						},
 					},
 					get: {
 						description: 'search for records by the specified property name and value pairs',
 						parameters: [
-							{
-								name: 'id',
-								in: 'query',
-								schema: {
-									format: 'ID',
-								},
-							},
-							{
-								name: 'name',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'String',
-								},
-							},
-							{
-								name: 'age',
-								in: 'query',
-								schema: {
-									type: 'integer',
-									format: 'Int',
-								},
-							},
-							{
-								name: 'title',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'String',
-								},
-							},
-							{
-								name: 'birthday',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'Date',
-								},
-							},
+							{ name: 'id', in: 'query', schema: { format: 'ID' } },
+							{ name: 'name', in: 'query', schema: { type: 'string', format: 'String' } },
+							{ name: 'age', in: 'query', schema: { type: 'integer', format: 'Int' } },
+							{ name: 'title', in: 'query', schema: { type: 'string', format: 'String' } },
+							{ name: 'birthday', in: 'query', schema: { type: 'string', format: 'Date' } },
+							{ name: 'ageInMonths', in: 'query', schema: { type: 'integer', format: 'Int' } },
+							{ name: 'nameTitle', in: 'query', schema: { type: 'integer', format: 'Int' } },
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/FourPropWithHistory',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/FourPropWithHistory' } } },
 							},
 						},
 					},
 					delete: {
 						description: 'delete all the records that match the provided query',
 						parameters: [
-							{
-								name: 'id',
-								in: 'query',
-								schema: {
-									format: 'ID',
-								},
-							},
-							{
-								name: 'name',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'String',
-								},
-							},
-							{
-								name: 'age',
-								in: 'query',
-								schema: {
-									type: 'integer',
-									format: 'Int',
-								},
-							},
-							{
-								name: 'title',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'String',
-								},
-							},
-							{
-								name: 'birthday',
-								in: 'query',
-								schema: {
-									type: 'string',
-									format: 'Date',
-								},
-							},
+							{ name: 'id', in: 'query', schema: { format: 'ID' } },
+							{ name: 'name', in: 'query', schema: { type: 'string', format: 'String' } },
+							{ name: 'age', in: 'query', schema: { type: 'integer', format: 'Int' } },
+							{ name: 'title', in: 'query', schema: { type: 'string', format: 'String' } },
+							{ name: 'birthday', in: 'query', schema: { type: 'string', format: 'Date' } },
+							{ name: 'ageInMonths', in: 'query', schema: { type: 'integer', format: 'Int' } },
+							{ name: 'nameTitle', in: 'query', schema: { type: 'integer', format: 'Int' } },
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
 					},
 				},
 				'/FourPropWithHistory/{id}': {
@@ -2096,29 +940,16 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/FourPropWithHistory',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/FourPropWithHistory' } } },
 							},
 						},
 					},
@@ -2128,33 +959,16 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/FourPropWithHistory',
-									},
-								},
-							},
+							content: { 'application/json': { schema: { $ref: '#/components/schemas/FourPropWithHistory' } } },
 						},
-						responses: {
-							200: {
-								description: 'successful operation',
-							},
-						},
+						responses: { 200: { description: 'successful operation' } },
 					},
 					delete: {
 						description: 'delete a record with the given primary key',
@@ -2162,24 +976,13 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
 					},
 				},
 				'/FourPropWithHistory/{id}.{property}': {
@@ -2189,35 +992,24 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 							{
 								name: 'property',
 								in: 'path',
-								schema: {
-									enum: ['id', 'name', 'age', 'title', 'birthday'],
-								},
+								schema: { enum: ['id', 'name', 'age', 'title', 'birthday', 'ageInMonths', 'nameTitle'] },
 								required: true,
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
 								content: {
 									'application/json': {
-										schema: {
-											enum: ['id', 'name', 'age', 'title', 'birthday'],
-										},
+										schema: { enum: ['id', 'name', 'age', 'title', 'birthday', 'ageInMonths', 'nameTitle'] },
 									},
 								},
 							},
@@ -2227,96 +1019,34 @@ describe('test openApi module', () => {
 				'/SimpleCache/': {
 					post: {
 						description: 'create a new record auto-assigning a primary key',
-						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/SimpleCache',
-									},
-								},
-							},
-						},
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/SimpleCache' } } } },
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
 								headers: {
-									Location: {
-										description: 'primary key of new record',
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
+									Location: { description: 'primary key of new record', schema: { type: 'string', format: 'ID' } },
 								},
-								content: {
-									'application/json': {
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { type: 'string', format: 'ID' } } },
 							},
 						},
 					},
 					get: {
 						description: 'search for records by the specified property name and value pairs',
-						parameters: [
-							{
-								name: 'id',
-								in: 'query',
-								schema: {
-									format: 'ID',
-								},
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						parameters: [{ name: 'id', in: 'query', schema: { format: 'ID' } }],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/SimpleCache',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/SimpleCache' } } },
 							},
 						},
 					},
 					delete: {
 						description: 'delete all the records that match the provided query',
-						parameters: [
-							{
-								name: 'id',
-								in: 'query',
-								schema: {
-									format: 'ID',
-								},
-							},
-						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
+						parameters: [{ name: 'id', in: 'query', schema: { format: 'ID' } }],
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
 					},
 				},
 				'/SimpleCache/{id}': {
@@ -2326,29 +1056,16 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/SimpleCache',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/SimpleCache' } } },
 							},
 						},
 					},
@@ -2358,33 +1075,14 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/SimpleCache',
-									},
-								},
-							},
-						},
-						responses: {
-							200: {
-								description: 'successful operation',
-							},
-						},
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/SimpleCache' } } } },
+						responses: { 200: { description: 'successful operation' } },
 					},
 					delete: {
 						description: 'delete a record with the given primary key',
@@ -2392,24 +1090,13 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
 					},
 				},
 				'/SimpleCache/{id}.{property}': {
@@ -2419,37 +1106,17 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
-							{
-								name: 'property',
-								in: 'path',
-								schema: {
-									enum: ['id'],
-								},
-								required: true,
-							},
+							{ name: 'property', in: 'path', schema: { enum: ['id'] }, required: true },
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											enum: ['id'],
-										},
-									},
-								},
+								content: { 'application/json': { schema: { enum: ['id'] } } },
 							},
 						},
 					},
@@ -2457,192 +1124,68 @@ describe('test openApi module', () => {
 				'/namespace/SubObject/': {
 					post: {
 						description: 'create a new record auto-assigning a primary key',
-						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/SubObject',
-									},
-								},
-							},
-						},
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/SubObject' } } } },
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
 								headers: {
-									Location: {
-										description: 'primary key of new record',
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
+									Location: { description: 'primary key of new record', schema: { type: 'string', format: 'ID' } },
 								},
-								content: {
-									'application/json': {
-										schema: {
-											type: 'string',
-											format: 'ID',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { type: 'string', format: 'ID' } } },
 							},
 						},
 					},
 					get: {
 						description: 'search for records by the specified property name and value pairs',
 						parameters: [
-							{
-								name: 'id',
-								in: 'query',
-								schema: {
-									format: 'ID',
-								},
-							},
-							{
-								name: 'subObject',
-								in: 'query',
-								schema: {
-									$ref: '#/components/schemas/SomeObject',
-								},
-							},
+							{ name: 'id', in: 'query', schema: { format: 'ID' } },
+							{ name: 'subObject', in: 'query', schema: { $ref: '#/components/schemas/SomeObject' } },
 							{
 								name: 'subArray',
 								in: 'query',
-								schema: {
-									type: 'array',
-									items: {
-										$ref: '#/components/schemas/SomeObject',
-									},
-								},
+								schema: { type: 'array', items: { $ref: '#/components/schemas/SomeObject' } },
 							},
-							{
-								name: 'any',
-								in: 'query',
-								schema: {
-									format: 'Any',
-								},
-							},
-							{
-								name: 'relatedId',
-								in: 'query',
-								schema: {
-									format: 'ID',
-								},
-							},
-							{
-								name: 'related',
-								in: 'query',
-								schema: {
-									$ref: '#/components/schemas/Related',
-								},
-							},
+							{ name: 'any', in: 'query', schema: { format: 'Any' } },
+							{ name: 'relatedId', in: 'query', schema: { format: 'ID' } },
+							{ name: 'related', in: 'query', schema: { $ref: '#/components/schemas/Related' } },
 							{
 								name: 'manyToMany',
 								in: 'query',
-								schema: {
-									type: 'array',
-									items: {
-										$ref: '#/components/schemas/ManyToMany',
-									},
-								},
+								schema: { type: 'array', items: { $ref: '#/components/schemas/ManyToMany' } },
 							},
+							{ name: 'computed', in: 'query', schema: { type: 'string', format: 'String' } },
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/SubObject',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/SubObject' } } },
 							},
 						},
 					},
 					delete: {
 						description: 'delete all the records that match the provided query',
 						parameters: [
-							{
-								name: 'id',
-								in: 'query',
-								schema: {
-									format: 'ID',
-								},
-							},
-							{
-								name: 'subObject',
-								in: 'query',
-								schema: {
-									$ref: '#/components/schemas/SomeObject',
-								},
-							},
+							{ name: 'id', in: 'query', schema: { format: 'ID' } },
+							{ name: 'subObject', in: 'query', schema: { $ref: '#/components/schemas/SomeObject' } },
 							{
 								name: 'subArray',
 								in: 'query',
-								schema: {
-									type: 'array',
-									items: {
-										$ref: '#/components/schemas/SomeObject',
-									},
-								},
+								schema: { type: 'array', items: { $ref: '#/components/schemas/SomeObject' } },
 							},
-							{
-								name: 'any',
-								in: 'query',
-								schema: {
-									format: 'Any',
-								},
-							},
-							{
-								name: 'relatedId',
-								in: 'query',
-								schema: {
-									format: 'ID',
-								},
-							},
-							{
-								name: 'related',
-								in: 'query',
-								schema: {
-									$ref: '#/components/schemas/Related',
-								},
-							},
+							{ name: 'any', in: 'query', schema: { format: 'Any' } },
+							{ name: 'relatedId', in: 'query', schema: { format: 'ID' } },
+							{ name: 'related', in: 'query', schema: { $ref: '#/components/schemas/Related' } },
 							{
 								name: 'manyToMany',
 								in: 'query',
-								schema: {
-									type: 'array',
-									items: {
-										$ref: '#/components/schemas/ManyToMany',
-									},
-								},
+								schema: { type: 'array', items: { $ref: '#/components/schemas/ManyToMany' } },
 							},
+							{ name: 'computed', in: 'query', schema: { type: 'string', format: 'String' } },
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
 					},
 				},
 				'/namespace/SubObject/{id}': {
@@ -2652,29 +1195,16 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
-								content: {
-									'application/json': {
-										schema: {
-											$ref: '#/components/schemas/SubObject',
-										},
-									},
-								},
+								content: { 'application/json': { schema: { $ref: '#/components/schemas/SubObject' } } },
 							},
 						},
 					},
@@ -2684,33 +1214,14 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						requestBody: {
-							content: {
-								'application/json': {
-									schema: {
-										$ref: '#/components/schemas/SubObject',
-									},
-								},
-							},
-						},
-						responses: {
-							200: {
-								description: 'successful operation',
-							},
-						},
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/SubObject' } } } },
+						responses: { 200: { description: 'successful operation' } },
 					},
 					delete: {
 						description: 'delete a record with the given primary key',
@@ -2718,24 +1229,13 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
-						responses: {
-							204: {
-								description: 'successfully processed request, no content returned to client',
-							},
-						},
+						security: [{ basicAuth: [], bearerAuth: [] }],
+						responses: { 204: { description: 'successfully processed request, no content returned to client' } },
 					},
 				},
 				'/namespace/SubObject/{id}.{property}': {
@@ -2745,9 +1245,7 @@ describe('test openApi module', () => {
 							{
 								name: 'id',
 								in: 'path',
-								schema: {
-									format: 'ID',
-								},
+								schema: { format: 'ID' },
 								required: true,
 								description: 'primary key of record',
 							},
@@ -2755,24 +1253,19 @@ describe('test openApi module', () => {
 								name: 'property',
 								in: 'path',
 								schema: {
-									enum: ['id', 'subObject', 'subArray', 'any', 'relatedId', 'related', 'manyToMany'],
+									enum: ['id', 'subObject', 'subArray', 'any', 'relatedId', 'related', 'manyToMany', 'computed'],
 								},
 								required: true,
 							},
 						],
-						security: [
-							{
-								basicAuth: [],
-								bearerAuth: [],
-							},
-						],
+						security: [{ basicAuth: [], bearerAuth: [] }],
 						responses: {
 							200: {
 								description: 'successful operation',
 								content: {
 									'application/json': {
 										schema: {
-											enum: ['id', 'subObject', 'subArray', 'any', 'relatedId', 'related', 'manyToMany'],
+											enum: ['id', 'subObject', 'subArray', 'any', 'relatedId', 'related', 'manyToMany', 'computed'],
 										},
 									},
 								},
@@ -2785,212 +1278,85 @@ describe('test openApi module', () => {
 				schemas: {
 					VariedProps: {
 						type: 'object',
+						properties: { id: { format: 'ID' }, name: { type: 'string', format: 'String' } },
+					},
+					SimpleRecord: {
+						type: 'object',
+						properties: { id: { format: 'ID' }, name: { type: 'string', format: 'String' } },
+					},
+					FourProp: {
+						type: 'object',
 						properties: {
-							id: {
-								format: 'ID',
-							},
-							name: {
-								type: 'string',
-								format: 'String',
-							},
+							id: { format: 'ID' },
+							name: { type: 'string', format: 'String' },
+							age: { type: 'integer', format: 'Int' },
+							title: { type: 'string', format: 'String' },
+							birthday: { type: 'string', format: 'Date' },
+							ageInMonths: { type: 'integer', format: 'Int' },
+							nameTitle: { type: 'integer', format: 'Int' },
 						},
 					},
 					Related: {
 						type: 'object',
 						properties: {
-							id: {
-								format: 'ID',
-							},
-							name: {
-								type: 'string',
-								format: 'String',
-							},
-							otherTable: {
-								type: 'array',
-								items: {
-									$ref: '#/components/schemas/SubObject',
-								},
-							},
+							id: { format: 'ID' },
+							name: { type: 'string', format: 'String' },
+							otherTable: { type: 'array', items: { $ref: '#/components/schemas/SubObject' } },
 						},
 					},
 					ManyToMany: {
 						type: 'object',
 						properties: {
-							id: {
-								format: 'ID',
-							},
-							name: {
-								type: 'string',
-								format: 'String',
-							},
-							subObjectIds: {
-								type: 'array',
-								items: {
-									format: 'ID',
-								},
-							},
-							subObjects: {
-								type: 'array',
-								items: {
-									$ref: '#/components/schemas/SubObject',
-								},
-							},
+							id: { format: 'ID' },
+							name: { type: 'string', format: 'String' },
+							subObjectIds: { type: 'array', items: { format: 'ID' } },
+							subObjects: { type: 'array', items: { $ref: '#/components/schemas/SubObject' } },
 						},
 					},
 					HasTimeStampsNoPK: {
 						type: 'object',
-						properties: {
-							created: {
-								type: 'number',
-								format: 'Float',
-							},
-							updated: {
-								type: 'number',
-								format: 'Float',
-							},
-						},
+						properties: { created: { type: 'number', format: 'Float' }, updated: { type: 'number', format: 'Float' } },
 					},
 					HasBigInt: {
 						type: 'object',
 						properties: {
-							id: {
-								type: 'integer',
-								format: 'BigInt',
-							},
-							name: {
-								type: 'string',
-								format: 'String',
-							},
-							anotherBigint: {
-								type: 'integer',
-								format: 'BigInt',
-							},
+							id: { type: 'integer', format: 'BigInt' },
+							name: { type: 'string', format: 'String' },
+							anotherBigint: { type: 'integer', format: 'BigInt' },
 						},
 					},
-					SimpleRecord: {
-						type: 'object',
-						properties: {
-							id: {
-								format: 'ID',
-							},
-							name: {
-								type: 'string',
-								format: 'String',
-							},
-						},
-					},
-					FourProp: {
-						type: 'object',
-						properties: {
-							id: {
-								format: 'ID',
-							},
-							name: {
-								type: 'string',
-								format: 'String',
-							},
-							age: {
-								type: 'integer',
-								format: 'Int',
-							},
-							title: {
-								type: 'string',
-								format: 'String',
-							},
-							birthday: {
-								type: 'string',
-								format: 'Date',
-							},
-						},
-					},
-					Echo: {
-						type: 'object',
-						properties: {},
-					},
+					Echo: { type: 'object', properties: {} },
 					FourPropWithHistory: {
 						type: 'object',
 						properties: {
-							id: {
-								format: 'ID',
-							},
-							name: {
-								type: 'string',
-								format: 'String',
-							},
-							age: {
-								type: 'integer',
-								format: 'Int',
-							},
-							title: {
-								type: 'string',
-								format: 'String',
-							},
-							birthday: {
-								type: 'string',
-								format: 'Date',
-							},
+							id: { format: 'ID' },
+							name: { type: 'string', format: 'String' },
+							age: { type: 'integer', format: 'Int' },
+							title: { type: 'string', format: 'String' },
+							birthday: { type: 'string', format: 'Date' },
+							ageInMonths: { type: 'integer', format: 'Int' },
+							nameTitle: { type: 'integer', format: 'Int' },
 						},
 					},
-					SimpleCache: {
-						type: 'object',
-						properties: {
-							id: {
-								format: 'ID',
-							},
-						},
-					},
-					SomeObject: {
-						type: 'object',
-						properties: {
-							name: {
-								type: 'string',
-								format: 'String',
-							},
-						},
-					},
+					SimpleCache: { type: 'object', properties: { id: { format: 'ID' } } },
+					SomeObject: { type: 'object', properties: { name: { type: 'string', format: 'String' } } },
 					SubObject: {
 						type: 'object',
 						properties: {
-							id: {
-								format: 'ID',
-							},
-							subObject: {
-								$ref: '#/components/schemas/SomeObject',
-							},
-							subArray: {
-								type: 'array',
-								items: {
-									$ref: '#/components/schemas/SomeObject',
-								},
-							},
-							any: {
-								format: 'Any',
-							},
-							relatedId: {
-								format: 'ID',
-							},
-							related: {
-								$ref: '#/components/schemas/Related',
-							},
-							manyToMany: {
-								type: 'array',
-								items: {
-									$ref: '#/components/schemas/ManyToMany',
-								},
-							},
+							id: { format: 'ID' },
+							subObject: { $ref: '#/components/schemas/SomeObject' },
+							subArray: { type: 'array', items: { $ref: '#/components/schemas/SomeObject' } },
+							any: { format: 'Any' },
+							relatedId: { format: 'ID' },
+							related: { $ref: '#/components/schemas/Related' },
+							manyToMany: { type: 'array', items: { $ref: '#/components/schemas/ManyToMany' } },
+							computed: { type: 'string', format: 'String' },
 						},
 					},
 				},
 				securitySchemes: {
-					basicAuth: {
-						type: 'http',
-						scheme: 'basic',
-					},
-					bearerAuth: {
-						type: 'http',
-						scheme: 'bearer',
-						bearerFormat: 'JWT',
-					},
+					basicAuth: { type: 'http', scheme: 'basic' },
+					bearerAuth: { type: 'http', scheme: 'bearer', bearerFormat: 'JWT' },
 				},
 			},
 		});

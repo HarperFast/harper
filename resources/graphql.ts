@@ -1,4 +1,5 @@
 import { dirname } from 'path';
+import { Script } from 'node:vm';
 import { table } from './databases';
 import { getWorkerIndex } from '../server/threads/manageThreads';
 
@@ -97,7 +98,14 @@ export function start({ ensureTable }) {
 							} else if (directive_name === 'indexed') {
 								property.indexed = true;
 							} else if (directive_name === 'computed') {
-								property.computed = true;
+								for (const arg of directive.arguments || []) {
+									if (arg.name.value === 'from') {
+										property.computed = {
+											from: createComputedFrom((arg.value as StringValueNode).value, arg),
+										};
+									}
+								}
+								property.computed = property.computed || true;
 							} else if (directive_name === 'relationship') {
 								const relationship_definition = {};
 								for (const arg of directive.arguments) {
@@ -161,8 +169,22 @@ export function start({ ensureTable }) {
 					);
 			}
 		}
+		function createComputedFrom(computed_from: string, arg) {
+			// Create a function from a computed "from" directive. This can look like:
+			// @computed(from: "fieldOne + fieldTwo")
+			// We use Node's built-in Script class to compile the function and run it in the context of the record object, which allows us to specify the source
+			const script = new Script(
+				// we use the with statement to allow the computed function to access the record object's properties directly as top level names
+	`function computed(record) { with (record) { return ${computed_from}; } }computed;`, {
+				filename: file_path, // specify the file path and line position for better error messages/debugging
+				lineOffset: arg.loc.startToken.line - 2,
+				columnOffset: arg.loc.startToken.column,
+			});
+			return script.runInThisContext();// run the script in the context of the current context/global and return the function we defined
+		}
 	}
 }
+
 
 export const startOnMainThread = start;
 // useful for testing

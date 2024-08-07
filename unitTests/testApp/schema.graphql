@@ -14,6 +14,7 @@ type FourProp @table(audit: "1d") @export {
 	title: String
 	birthday: Date @indexed
 	ageInMonths: Int @computed @indexed
+	nameTitle: Int @computed(from: "name + ' ' + title")
 }
 type Related @table @export(rest: true, mqtt: false) {
 	id: ID @primaryKey

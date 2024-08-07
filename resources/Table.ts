@@ -2315,8 +2315,11 @@ export function makeTable(options) {
 						);
 					}
 				} else if (computed) {
+					if (typeof computed.from === 'function') {
+						this.setComputedAttribute(attribute.name, computed.from);
+					}
 					property_resolvers[attribute.name] = attribute.resolve = (object, context, entry) => {
-						let value = computed.from ? object[computed.from] : object;
+						let value = typeof computed.from === 'string' ? object[computed.from] : object;
 						let user_resolver = this.userResolvers[attribute.name];
 						if (user_resolver) return user_resolver(value, context, entry);
 						else {
