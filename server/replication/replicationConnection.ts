@@ -16,6 +16,7 @@ import {
 	getThisNodeName,
 	urlToNodeName,
 	getThisNodeId,
+	enabled_databases,
 } from './replicator';
 import env from '../../utility/environment/environmentManager';
 import { getUpdateRecord, HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
@@ -363,7 +364,7 @@ export function replicateOverWS(ws, options, authorization) {
 									setDatabase((database_name = message[2]));
 									if (database_name === 'system') {
 										schema_update_listener = forEachReplicatedDatabase(options, (database, database_name) => {
-											sendDBSchema(database_name);
+											if (checkDatabaseAccess(database_name)) sendDBSchema(database_name);
 										});
 										ws.on('close', () => {
 											schema_update_listener?.remove();
@@ -392,16 +393,17 @@ export function replicateOverWS(ws, options, authorization) {
 							const database_name = message[2];
 							table_definition.database = database_name;
 							let table;
-							// TODO: We need to check the permissions for the table before we just allow creating new tables
-							if (database_name === 'system') {
-								// for system connection, we only update new tables
-								if (!databases[database_name]?.[table_definition.table])
+							if (checkDatabaseAccess(database_name)) {
+								if (database_name === 'system') {
+									// for system connection, we only update new tables
+									if (!databases[database_name]?.[table_definition.table])
+										table = ensureTableIfChanged(table_definition, databases[database_name]?.[table_definition.table]);
+								} else {
 									table = ensureTableIfChanged(table_definition, databases[database_name]?.[table_definition.table]);
-							} else {
-								table = ensureTableIfChanged(table_definition, databases[database_name]?.[table_definition.table]);
+								}
+								if (!audit_store) audit_store = table.auditStore;
+								if (!tables) tables = getDatabases()?.[database_name];
 							}
-							if (!audit_store) audit_store = table.auditStore;
-							if (!tables) tables = getDatabases()?.[database_name];
 						}
 						break;
 					}
@@ -1264,17 +1266,23 @@ export function replicateOverWS(ws, options, authorization) {
 		return residency;
 	}
 
+	function checkDatabaseAccess(database_name: string) {
+		if (
+			enabled_databases &&
+			enabled_databases != '*' &&
+			!enabled_databases[database_name] &&
+			!enabled_databases.includes?.(database_name) &&
+			!enabled_databases.some?.((db_config) => db_config.name === database_name)
+		) {
+			// TODO: Check the authorization as well
+			return false;
+		}
+		return true;
+	}
 	function setDatabase(database_name) {
 		table_subscription_to_replicator = table_subscription_to_replicator || db_subscriptions.get(database_name);
-		if (
-			options.databases &&
-			options.databases != '*' &&
-			!options.databases[database_name] &&
-			!options.databases.includes?.(database_name) &&
-			!options.databases.some?.((db_config) => db_config.name === database_name)
-		) {
-			// TODO: Check the node subscriptions
-			return logger.warn(`Access to database "${database_name}" is not permitted`);
+		if (!checkDatabaseAccess(database_name)) {
+			throw new Error(`Access to database "${database_name}" is not permitted`);
 		}
 		if (!table_subscription_to_replicator) {
 			logger.warn(`No database named "${database_name}" was declared and registered`);

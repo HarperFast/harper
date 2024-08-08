@@ -168,6 +168,7 @@ export function start(options) {
 export function disableReplication(disabled = true) {
 	replication_disabled = disabled;
 }
+export let enabled_databases;
 /**
  * Replication functions by acting as a "source" for tables. With replicated tables, the local tables are considered
  * a "cache" of the cluster's data. The tables don't resolve gets to the cluster, but they do propagate
@@ -178,6 +179,7 @@ export function disableReplication(disabled = true) {
 function assignReplicationSource(options) {
 	if (replication_disabled) return;
 	getDatabases();
+	enabled_databases = options.databases;
 	forEachReplicatedDatabase(options, (database, database_name) => {
 		if (!database) {
 			// the database was removed
