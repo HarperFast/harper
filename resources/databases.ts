@@ -738,6 +738,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			last_resolution = index.drop();
 		}
 		let interrupted;
+		const attribute_error_reported = {};
 		let indexed = 0;
 		const attributes_length = attributes.length;
 		await new Promise((resolve) => setImmediate(resolve)); // yield event turn, indexing should consistently take at least one event turn
@@ -771,17 +772,25 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					for (let i = 0; i < attributes_length; i++) {
 						const attribute = attributes[i];
 						const property = attribute.name;
-						const resolver = attribute.resolve;
-						const value = record && (resolver ? resolver(record) : record[property]);
-						const values = getIndexedValues(value);
-						if (values) {
-							/*					if (LMDB_PREFETCH_WRITES)
-													index.prefetch(
-														values.map((v) => ({ key: v, value: id })),
-														noop
-													);*/
-							for (let i = 0, l = values.length; i < l; i++) {
-								attribute.dbi.put(values[i], key);
+						try {
+							const resolver = attribute.resolve;
+							const value = record && (resolver ? resolver(record) : record[property]);
+							const values = getIndexedValues(value);
+							if (values) {
+								/*					if (LMDB_PREFETCH_WRITES)
+														index.prefetch(
+															values.map((v) => ({ key: v, value: id })),
+															noop
+														);*/
+								for (let i = 0, l = values.length; i < l; i++) {
+									attribute.dbi.put(values[i], key);
+								}
+							}
+						} catch (error) {
+							if (!attribute_error_reported[property]) {
+								// just report an indexing error once per attribute so we don't spam the logs
+								attribute_error_reported[property] = true;
+								harper_logger.error(`Error indexing attribute ${property}`, error);
 							}
 						}
 					}
