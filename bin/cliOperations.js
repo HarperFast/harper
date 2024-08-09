@@ -65,6 +65,12 @@ const SUPPORTED_OPS = {
 	list_certificates: true,
 	add_certificate: true,
 	remove_certificate: true,
+	add_ssh_key: true,
+	update_ssh_key: true,
+	delete_ssh_key: true,
+	list_ssh_keys: true,
+	set_ssh_known_hosts: true,
+	get_ssh_known_hosts: true,
 };
 
 module.exports = { cliOperations, buildRequest };

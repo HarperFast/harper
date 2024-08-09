@@ -12,11 +12,13 @@ const operations = rewire('../../../components/operations');
 const env = require('../../../utility/environment/environmentManager');
 const { TEST_DATA_BASE64_CF_PROJECT } = require('../../test_data');
 const { expect } = chai;
+const assert = require('assert');
 
 describe('Test custom functions operations', () => {
 	let sandbox = sinon.createSandbox();
 	let CF_DIR_ROOT = path.resolve(__dirname, 'custom_functions');
 	let TMP_DIR = path.resolve(__dirname, '../../envDir/tmp');
+	let SSH_DIR = path.resolve(__dirname, '../../envDir/ssh');
 
 	before(() => {
 		fs.removeSync(CF_DIR_ROOT);
@@ -28,6 +30,7 @@ describe('Test custom functions operations', () => {
 	after(() => {
 		fs.removeSync(CF_DIR_ROOT);
 		fs.removeSync(TMP_DIR);
+		fs.removeSync(SSH_DIR);
 		sandbox.restore();
 	});
 
@@ -154,6 +157,85 @@ describe('Test custom functions operations', () => {
 			const updated_file = await operations.getComponentFile({ project: 'my-other-component', file: 'config.yaml' });
 			expect(updated_file.message).to.eql('im the new payload');
 			expect(result).to.equal('Successfully set component: config.yaml');
+		});
+	});
+
+	describe('Test ssh key operations', () => {
+		it('Test ssh key operations happy path', async () => {
+			// Nothing should exist before keys are added
+			let result = await operations.listSSHKeys({});
+			expect(result).to.eql([]);
+			result = await operations.getSSHKnownHosts({});
+			expect(result).to.eql({ known_hosts: null });
+
+			// Add a non-github.com key
+			result = await operations.addSSHKey({
+				name: 'testkey1',
+				key: 'random\nstring',
+				host: 'testkey1.gitlab.com',
+				hostname: 'gitlab.com',
+				known_hosts: 'gitlab.com fake1\ngitlab.com fake2',
+			});
+			expect(result).to.eql(`Added ssh key: testkey1`);
+
+			// List SSH Keys and get the known hosts
+			result = await operations.listSSHKeys({});
+			expect(result).to.eql([{ name: 'testkey1' }]);
+			result = await operations.getSSHKnownHosts({});
+			expect(result).to.eql({ known_hosts: 'gitlab.com fake1\ngitlab.com fake2' });
+
+			// Add a github.com key
+			result = await operations.addSSHKey({
+				name: 'testkey2',
+				key: 'random\nstring',
+				host: 'testkey2.github.com',
+				hostname: 'github.com',
+			});
+			expect(result).to.eql('Added ssh key: testkey2');
+
+			// List SSH Keys and get the known_hosts
+			result = await operations.listSSHKeys({});
+			expect(result).to.eql([{ name: 'testkey1' }, { name: 'testkey2' }]);
+			result = await operations.getSSHKnownHosts({});
+			// It should have the 2 added from the first key + some more from github
+			expect(result.known_hosts.split('\n').length).is.greaterThan(2);
+
+			//update
+			result = await operations.updateSSHKey({ name: 'testkey2', key: 'different\nrandom\nstring' });
+			expect(result).to.eql('Updated ssh key: testkey2');
+
+			//delete
+			result = await operations.deleteSSHKey({ name: 'testkey2' });
+			expect(result).to.eql('Deleted ssh key: testkey2');
+
+			//list/get
+			result = await operations.listSSHKeys({});
+			expect(result).to.eql([{ name: 'testkey1' }]);
+		});
+
+		it('Test ssh key operations errors', async () => {
+			let error;
+			try {
+				await operations.updateSSHKey({ name: 'nonexistant', key: 'anything' });
+			} catch (err) {
+				error = err;
+			}
+			expect(error.message).to.eql('Key does not exist. Use add_ssh_key');
+
+			try {
+				await operations.deleteSSHKey({ name: 'nonexistant' });
+			} catch (err) {
+				error = err;
+			}
+			expect(error.message).to.eql('Key does not exist');
+
+			await operations.addSSHKey({ name: 'duplicate', key: 'key', host: 'test', hostname: 'github.com' });
+			try {
+				await operations.addSSHKey({ name: 'duplicate', key: 'key', host: 'test', hostname: 'github.com' });
+			} catch (err) {
+				error = err;
+			}
+			expect(error.message).to.eql('Key already exists. Use update_ssh_key or delete_ssh_key and then add_ssh_key');
 		});
 	});
 });

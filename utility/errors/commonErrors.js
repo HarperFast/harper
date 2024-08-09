@@ -231,6 +231,7 @@ const CUSTOM_FUNCTIONS_ERROR_MSGS = {
 	BAD_FILE_PATH: 'Filepath must be valid, and contain the name of the tarball you wish to write',
 	NOT_ENABLED:
 		'Custom functions is not enabled, to enable set fastifyRoutes enabled to true in hdb/harperdb-config.yaml file.',
+	BAD_SSH_KEY_NAME: 'SSH key name can only contain alphanumeric, dash and underscore characters',
 };
 
 const CLUSTERING_ERROR_MSGS = {

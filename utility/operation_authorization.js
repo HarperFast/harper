@@ -181,6 +181,12 @@ required_permissions.set(functions_operations.addComponent.name, new permission(
 required_permissions.set(functions_operations.dropCustomFunctionProject.name, new permission(true, []));
 required_permissions.set(functions_operations.packageComponent.name, new permission(true, []));
 required_permissions.set(functions_operations.deployComponent.name, new permission(true, []));
+required_permissions.set(functions_operations.addSSHKey.name, new permission(true, []));
+required_permissions.set(functions_operations.updateSSHKey.name, new permission(true, []));
+required_permissions.set(functions_operations.deleteSSHKey.name, new permission(true, []));
+required_permissions.set(functions_operations.listSSHKeys.name, new permission(true, []));
+required_permissions.set(functions_operations.setSSHKnownHosts.name, new permission(true, []));
+required_permissions.set(functions_operations.getSSHKnownHosts.name, new permission(true, []));
 
 //Below are functions that are currently open to all roles
 required_permissions.set(reg.getRegistrationInfo.name, new permission(false, []));

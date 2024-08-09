@@ -466,6 +466,26 @@ function initializeOperationFunctionMap() {
 	);
 	op_func_map.set(terms.OPERATIONS_ENUM.AUDIT_NODE_MODULES, new OperationFunctionObject(npm_utilities.auditModules));
 	op_func_map.set(terms.OPERATIONS_ENUM.GET_BACKUP, new OperationFunctionObject(schema.getBackup));
-
+	op_func_map.set(terms.OPERATIONS_ENUM.ADD_SSH_KEY, new OperationFunctionObject(custom_function_operations.addSSHKey));
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.UPDATE_SSH_KEY,
+		new OperationFunctionObject(custom_function_operations.updateSSHKey)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.DELETE_SSH_KEY,
+		new OperationFunctionObject(custom_function_operations.deleteSSHKey)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.LIST_SSH_KEYS,
+		new OperationFunctionObject(custom_function_operations.listSSHKeys)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.SET_SSH_KNOWN_HOSTS,
+		new OperationFunctionObject(custom_function_operations.setSSHKnownHosts)
+	);
+	op_func_map.set(
+		terms.OPERATIONS_ENUM.GET_SSH_KNOWN_HOSTS,
+		new OperationFunctionObject(custom_function_operations.getSSHKnownHosts)
+	);
 	return op_func_map;
 }

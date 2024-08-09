@@ -27,6 +27,9 @@ const manage_threads = require('../server/threads/manageThreads');
 
 const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
 const TMP_PATH = path.join(env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY), 'tmp');
+const root_dir = env.get(terms.CONFIG_PARAMS.ROOTPATH);
+const ssh_dir = path.join(root_dir, 'ssh');
+const known_hosts_file = path.join(ssh_dir, 'known_hosts');
 
 /**
  * Read the settings.js file and return the
@@ -594,6 +597,152 @@ async function dropComponent(req) {
 	return 'Successfully dropped: ' + project_path;
 }
 
+async function addSSHKey(req) {
+	const validation = validator.addSSHKeyValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+	let { name, key, host, hostname, known_hosts } = req;
+	log.trace(`adding ssh key`, name);
+
+	const file_path = path.join(ssh_dir, name + '.key');
+	const config_file = path.join(ssh_dir, 'config');
+
+	// Check if the key already exists
+	if (await fs.pathExists(file_path)) {
+		throw new Error('Key already exists. Use update_ssh_key or delete_ssh_key and then add_ssh_key');
+	}
+
+	// Create the key file
+	await fs.outputFile(file_path, key);
+	await fs.chmod(file_path, '0600');
+
+	// Build the config block string
+	const config_block = `#${name}
+Host ${host}
+	HostName ${hostname}
+	User git
+	IdentityFile ${file_path}
+	IdentitiesOnly yes`;
+
+	// If the file already exists, add a new config block, otherwise write the file for the first time
+	if (await fs.pathExists(config_file)) {
+		await fs.appendFile(config_file, '\n' + config_block);
+	} else {
+		await fs.outputFile(config_file, config_block);
+	}
+
+	let additional_message = '';
+
+	// Create the known_hosts file and set permissions if missing
+	if (!(await fs.pathExists(known_hosts_file))) {
+		await fs.writeFile(known_hosts_file, '');
+		await fs.chmod(known_hosts_file, '0600');
+	}
+
+	// If adding a github.com ssh key download it automatically
+	if (hostname == 'github.com') {
+		const file_contents = await fs.readFile(known_hosts_file, 'utf8');
+
+		// Check if there's already github.com entries
+		if (!file_contents.includes('github.com')) {
+			try {
+				const response = await fetch('https://api.github.com/meta');
+				const resp_json = await response.json();
+				const ssh_keys = resp_json['ssh_keys'];
+				for (var known_host of ssh_keys) {
+					fs.appendFile(known_hosts_file, 'github.com ' + known_host + '\n');
+				}
+			} catch (err) {
+				additional_message =
+					'. Unable to get known hosts from github.com. Set your known hosts manually using set_ssh_known_hosts.';
+			}
+		}
+	}
+
+	if (known_hosts) {
+		await fs.appendFile(known_hosts_file, known_hosts);
+	}
+
+	return `Added ssh key: ${name}${additional_message}`;
+}
+
+async function updateSSHKey(req) {
+	const validation = validator.updateSSHKeyValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+	let { name, key } = req;
+	log.trace(`updating ssh key`, name);
+
+	const file_path = path.join(ssh_dir, name + '.key');
+	if (!(await fs.pathExists(file_path))) {
+		throw new Error('Key does not exist. Use add_ssh_key');
+	}
+
+	await fs.outputFile(file_path, key);
+
+	return `Updated ssh key: ${name}`;
+}
+
+async function deleteSSHKey(req) {
+	const validation = validator.deleteSSHKeyValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+	let { name } = req;
+	log.trace(`deleting ssh key`, name);
+
+	const file_path = path.join(ssh_dir, name + '.key');
+	const config_file = path.join(ssh_dir, 'config');
+
+	if (!(await fs.pathExists(file_path))) {
+		throw new Error('Key does not exist');
+	}
+
+	let file_contents = await fs.readFile(config_file, 'utf8');
+
+	let config_block_regex = new RegExp(`#${name}[\\S\\s]*?IdentitiesOnly yes`, 'g');
+	file_contents = file_contents.replace(config_block_regex, '');
+
+	await fs.outputFile(config_file, file_contents);
+	fs.removeSync(file_path);
+
+	return `Deleted ssh key: ${name}`;
+}
+
+async function listSSHKeys(req) {
+	let results = [];
+	if (await fs.pathExists(ssh_dir)) {
+		(await fs.readdir(ssh_dir)).forEach((file) => {
+			if (file != 'known_hosts' && file != 'config') {
+				results.push({ name: file.split('.')[0] });
+			}
+		});
+	}
+
+	return results;
+}
+
+async function setSSHKnownHosts(req) {
+	const validation = validator.setSSHKnownHostsValidator(req);
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+	let { known_hosts } = req;
+
+	await fs.outputFile(known_hosts_file, known_hosts);
+
+	return `Known hosts successfully set`;
+}
+
+async function getSSHKnownHosts(req) {
+	if (!(await fs.pathExists(known_hosts_file))) {
+		return { known_hosts: null };
+	}
+	return { known_hosts: await fs.readFile(known_hosts_file, 'utf8') };
+}
+
 Object.assign(exports, {
 	customFunctionsStatus,
 	getCustomFunctions,
@@ -608,4 +757,10 @@ Object.assign(exports, {
 	getComponentFile,
 	setComponentFile,
 	dropComponent,
+	addSSHKey,
+	updateSSHKey,
+	deleteSSHKey,
+	listSSHKeys,
+	setSSHKnownHosts,
+	getSSHKnownHosts,
 });
