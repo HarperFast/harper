@@ -1,0 +1,94 @@
+on:
+  push:
+    branches:
+      - main
+      - "release_*"
+  pull_request:
+    types: [opened, synchronize, reopened]
+    paths:
+      - 'server/replication'
+      - 'utility/clustering'
+  schedule:
+    - cron: '6 13 * * 1-5'
+  workflow_dispatch:
+  workflow_call:
+name: Run Build Package Plexus Cluster Test C
+jobs:
+  build:
+    uses: ./.github/workflows/build.yaml
+  createInstances:
+    needs:
+      - build
+    uses: ./.github/workflows/create-instances.yaml
+    with:
+      instanceCount: "4"
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      callingWorkflow: ${{ github.workflow }}
+    secrets: inherit
+  registerInstances:
+    needs: 
+      - createInstances
+      - build
+    uses: ./.github/workflows/install-and-register.yaml
+    with:
+      publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      nodeVersion: ${{ needs.build.outputs.nodeVersion }}
+      httpsOn: true
+    secrets: inherit
+  runTests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 35
+    needs:
+      - createInstances
+      - registerInstances
+      - build
+    steps:
+    - name: Run Cluster Test C on Instances
+      env:
+        CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+      run: |
+        #!/bin/bash
+
+        cd ../
+        echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+
+        public_dns_names="${{ needs.createInstances.outputs.publicDnsNames }}"
+        private_ips="${{ needs.createInstances.outputs.privateIps }}"
+        public_dns_names=($public_dns_names)
+        # Run the cluster tests from the first test VM
+        public_dns_name="${public_dns_names[0]}"
+
+        echo "Starting work on: $public_dns_name"
+
+        ssh -i private_key -o ServerAliveInterval=180 -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
+          "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/plexus-cluster-test-c.sh && /home/ubuntu/harperdb/test/ci-tests/plexus-cluster-test-c.sh ${private_ips[@]} ${public_dns_names[@]}"
+        echo "Ending work on: $public_dns_name"
+  downloadLogs:
+    if: always()
+    needs: 
+      - runTests
+      - createInstances
+    uses: ./.github/workflows/download-logs.yaml
+    with:
+      publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
+    secrets: inherit
+  destroyInstances:
+    if: always()
+    needs: downloadLogs
+    uses: ./.github/workflows/destroy-instances.yaml
+    with:
+      instanceCount: "4"
+      callingWorkflow: ${{ github.workflow }}
+    secrets: inherit
+  sendSlackMessage:
+    uses: ./.github/workflows/post-to-slack-channel.yaml
+    if: ${{ failure() && (github.event_name == 'schedule' || github.event_name == 'push') }}
+    secrets: inherit
+    needs:
+      - destroyInstances
+      - downloadLogs
+      - runTests
+      - registerInstances
+      - createInstances
+      - build

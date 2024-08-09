@@ -734,7 +734,7 @@ export function replicateOverWS(ws, options, authorization) {
 							if (DEBUG_MODE)
 								logger.info?.(
 									connection_id,
-									'preparing replication update',
+									'sending replication update',
 									audit_record.recordId,
 									'to:',
 									remote_node_name,
@@ -905,6 +905,7 @@ export function replicateOverWS(ws, options, authorization) {
 								subscribed_node_ids = [];
 								for (let { name, startTime } of node_subscriptions) {
 									const local_id = getIdOfRemoteNode(name, audit_store);
+									logger.info('subscription to', name, 'using local id', local_id, 'starting', startTime);
 									subscribed_node_ids[local_id] = startTime;
 								}
 

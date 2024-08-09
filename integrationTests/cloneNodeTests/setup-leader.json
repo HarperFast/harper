@@ -588,7 +588,69 @@
 				"header": [],
 				"body": {
 					"mode": "raw",
-					"raw": "{\n    \"operation\": \"set_configuration\",\n    \"my-component-1_package\": \"HarperDB/application-template\",\n    \"my-component-2_package\": \"HarperDB/application-template\",\n    \"logging_rotation_compress\": true,\n    \"logging_rotation_interval\": \"1D\",\n    \"logging_rotation_maxSize\": \"100K\"\n}\n",
+					"raw": "{\n    \"operation\": \"set_configuration\",\n    \"my-component-1_package\": \"HarperDB/application-template\",\n    \"my-component-2_package\": \"HarperDB/application-template\",\n    \"logging_rotation_compress\": true,\n    \"logging_rotation_interval\": \"1D\",\n    \"logging_rotation_maxSize\": \"100K\",\n    \"logging_level\": \"info\",\n    \"replication_url\": null,\n    \"replication_hostname\": \"{{LEADER_HOST}}\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": [
+						"{{LEADER_HOST}}"
+					],
+					"port": "{{LEADER_HDB_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Restart",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"setTimeout(()=>{}, 40000)",
+							""
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"restart\"\n}\n",
 					"options": {
 						"raw": {
 							"language": "json"

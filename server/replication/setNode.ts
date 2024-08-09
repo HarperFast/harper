@@ -195,9 +195,6 @@ export async function setNode(req: object) {
  */
 export async function addNodeBack(req) {
 	hdb_logger.trace('addNodeBack received request:', req);
-	if (req.target_hostname && req.target_hostname !== getThisNodeName()) {
-		return { error: `hostname does not match configured node name ${getThisNodeName()}` };
-	}
 
 	const certs = await signCertificate(req);
 	// If the add_node req has a CSR attached, return the CA that was used to issue the CSR,

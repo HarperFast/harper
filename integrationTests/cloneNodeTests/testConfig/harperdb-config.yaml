@@ -1,4 +1,4 @@
 logging:
-  level: error
+  level: info
 mqtt:
   requireAuthentication: false

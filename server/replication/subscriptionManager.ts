@@ -246,6 +246,7 @@ export async function startOnMainThread(options) {
 			}
 			if (!has_moved_nodes) return;
 			existing_worker_entry.redirectingTo = failover_worker_entry;
+			logger.info(`Failing over ${connection.database} from ${connection.name} to ${next_node_name}`);
 			if (worker) {
 				worker.postMessage({
 					type: 'subscribe-to-node',

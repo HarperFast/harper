@@ -59,26 +59,34 @@ function harperDBService() {
 				process.env.DEV_MODE = true;
 			// fall through
 			case SERVICE_ACTIONS_ENUM.RUN:
-				// Run a specific application folder
-				let app_folder = process.argv[3];
-				if (app_folder && app_folder[0] !== '-') {
-					if (!fs.existsSync(app_folder)) {
-						console.error(`The folder ${app_folder} does not exist`);
-						process.exit(1);
+				if (run_clone) {
+					const clone_node = require('../utility/cloneNode/cloneNode');
+					clone_node(false, true).catch((err) => {
+						console.log(err);
+					});
+				} else {
+					// Run a specific application folder
+					let app_folder = process.argv[3];
+					if (app_folder && app_folder[0] !== '-') {
+						if (!fs.existsSync(app_folder)) {
+							console.error(`The folder ${app_folder} does not exist`);
+							process.exit(1);
+						}
+						if (!fs.statSync(app_folder).isDirectory()) {
+							console.error(`The path ${app_folder} is not a folder`);
+							process.exit(1);
+						}
+						app_folder = fs.realpathSync(app_folder);
+						if (fs.existsSync(path.join(app_folder, hdb_terms.HDB_CONFIG_FILE))) {
+							// This can be used to run HDB without a boot file
+							process.env.ROOTPATH = app_folder;
+						} else {
+							process.env.RUN_HDB_APP = app_folder;
+						}
 					}
-					if (!fs.statSync(app_folder).isDirectory()) {
-						console.error(`The path ${app_folder} is not a folder`);
-						process.exit(1);
-					}
-					app_folder = fs.realpathSync(app_folder);
-					if (fs.existsSync(path.join(app_folder, hdb_terms.HDB_CONFIG_FILE))) {
-						// This can be used to run HDB without a boot file
-						process.env.ROOTPATH = app_folder;
-					} else {
-						process.env.RUN_HDB_APP = app_folder;
-					}
+					require('./run').main();
 				}
-				require('./run').main();
+
 				break;
 			case SERVICE_ACTIONS_ENUM.START:
 				if (run_clone) {

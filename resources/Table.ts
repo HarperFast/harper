@@ -440,9 +440,10 @@ export function makeTable(options) {
 									}
 								});
 								if (txn_in_progress) txn_in_progress.committed = commit_resolution;
-								if (user_role_update) {
-									await commit_resolution;
-									signalling.signalUserChange(new UserEventMsg(process.pid));
+								if (user_role_update && commit_resolution && !commit_resolution?.waitingForUserChange) {
+									// if the user role changed, asynchronously signal the user change (but don't block this function)
+									commit_resolution.then(() => signalling.signalUserChange(new UserEventMsg(process.pid)));
+									commit_resolution.waitingForUserChange = true; // only need to send one signal per transaction
 								}
 
 								if (event.onCommit) {
