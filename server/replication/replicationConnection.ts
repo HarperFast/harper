@@ -32,10 +32,7 @@ import { createTLSSelector } from '../../security/keys';
 import * as https from 'node:https';
 import * as tls from 'node:tls';
 import { getHDBNodeTable } from './knownNodes';
-import { asBinary } from 'lmdb';
-import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility';
 import * as process from 'node:process';
-//import { operation } from '../../server/serverHelpers/serverUtilities';
 
 const SUBSCRIPTION_REQUEST = 129;
 const NODE_NAME = 140;

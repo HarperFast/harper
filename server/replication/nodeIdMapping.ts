@@ -1,5 +1,4 @@
-import { hostname } from 'os';
-import env from '../../utility/environment/environmentManager';
+import * as logger from '../../utility/logging/logger';
 import { getThisNodeName } from './replicator';
 import { pack, unpack } from 'msgpackr';
 
@@ -73,5 +72,6 @@ export function getIdOfRemoteNode(remote_node_name, audit_store) {
 		name_to_id[remote_node_name] = id;
 		audit_store.putSync(Symbol.for('remote-ids'), pack(id_mapping_record));
 	}
+	logger.info?.('The remote node name map', remote_node_name, name_to_id, id);
 	return id;
 }
