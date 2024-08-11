@@ -355,8 +355,8 @@ export async function ensureNode(name: string, node) {
 	const isTentative = !name;
 	name = name ?? urlToNodeName(node.url);
 	node.name = name;
-	logger.info(`Ensuring node ${name} at ${node.url}`);
 	const existing = table.primaryStore.get(name);
+	logger.info(`Ensuring node ${name} at ${node.url}, existing record:`, existing);
 	if (!existing) {
 		await table.put(node);
 	} else {
