@@ -1,3 +1,7 @@
+/**
+ * This module is responsible for managing the list of known nodes in the network. This also tracks replication confirmation
+ * when we want to ensure that a transaction has been replicated to multiple nodes before we confirm it.
+ */
 import { table } from '../../resources/databases';
 import { forEachReplicatedDatabase, getThisNodeName } from './replicator';
 import { replicationConfirmation } from '../../resources/DatabaseTransaction';
