@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "78340acf-5261-449f-aa58-2780e179775b",
+		"_postman_id": "ed0d8e9c-04fa-48ef-abcf-1ac4291b9a21",
 		"name": "Cluster Test C - Plexus",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
 		"_exporter_id": "7046690"
@@ -9,6 +9,79 @@
 		{
 			"name": "Routes",
 			"item": [
+				{
+					"name": "Add node 1 routes to node 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Routes set messaged returned', () => {",
+									"    const response = pm.response.json();",
+									"    const node1_host = pm.environment.get('NODE1_HOST');",
+									"    const clustering_port = parseInt(pm.environment.get('CLUSTERING_PORT'));",
+									"",
+									"    pm.expect(response.message).to.equal('cluster routes successfully set');",
+									"    pm.expect(response.set[0]).to.eql({",
+									"        'host': node1_host,",
+									"        'port': clustering_port",
+									"    });",
+									"    pm.expect(response.skipped).to.eql([]);",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"cluster_set_routes\",\n    \"routes\":[ {\"host\": \"{{NODE1_HOST}}\", \"port\": {{CLUSTERING_PORT}}} ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
 				{
 					"name": "Add node 2 routes to node 1",
 					"event": [
@@ -90,79 +163,6 @@
 					"response": []
 				},
 				{
-					"name": "Add node 1 routes to node 2",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test('Routes set messaged returned', () => {",
-									"    const response = pm.response.json();",
-									"    const node1_host = pm.environment.get('NODE1_HOST');",
-									"    const clustering_port = parseInt(pm.environment.get('CLUSTERING_PORT'));",
-									"",
-									"    pm.expect(response.message).to.equal('cluster routes successfully set');",
-									"    pm.expect(response.set[0]).to.eql({",
-									"        'host': node1_host,",
-									"        'port': clustering_port",
-									"    });",
-									"    pm.expect(response.skipped).to.eql([]);",
-									"});",
-									""
-								],
-								"type": "text/javascript",
-								"packages": {}
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"cluster_set_routes\",\n    \"routes\":[ {\"host\": \"{{NODE1_HOST}}\", \"port\": {{CLUSTERING_PORT}}} ]\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
-							"host": [
-								"{{NODE2_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
 					"name": "Restart node 2",
 					"event": [
 						{
@@ -177,8 +177,6 @@
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Restarting HarperDB. This may take up to 60 seconds.\")",
 									"});",
-									"",
-									"setTimeout(()=>{}, 20000)",
 									""
 								],
 								"type": "text/javascript",
@@ -219,10 +217,10 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
 							"protocol": "https",
 							"host": [
-								"{{NODE1_HOST}}"
+								"{{NODE2_HOST}}"
 							],
 							"port": "{{HDB_PORT}}"
 						}
@@ -245,7 +243,7 @@
 									"    pm.expect(response.message).to.equal(\"Restarting HarperDB. This may take up to 60 seconds.\")",
 									"});",
 									"",
-									"setTimeout(()=>{}, 20000)",
+									"setTimeout(()=>{}, 30000)",
 									""
 								],
 								"type": "text/javascript",
@@ -534,11 +532,11 @@
 									"    const node2_host = pm.environment.get('NODE2_HOST');",
 									"",
 									"    pm.expect(response.message).to.equal('cluster routes successfully deleted');",
-									"    pm.expect(response.deleted[0]).to.eql({",
+									"    pm.expect(response.deleted[1]).to.eql({",
 									"        'host': node2_host,",
 									"        'port': clustering_port",
 									"    });",
-									"    pm.expect(response.deleted[1]).to.eql({",
+									"    pm.expect(response.deleted[2]).to.eql({",
 									"        'hostname': node2_host,",
 									"        'port': clustering_port",
 									"    });",
@@ -575,7 +573,74 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"cluster_delete_routes\",\n    \"routes\":[ {\"host\": \"{{NODE2_HOST}}\", \"port\": {{CLUSTERING_PORT}}}, {\"hostname\": \"{{NODE2_HOST}}\", \"port\": {{CLUSTERING_PORT}}} ]\n}",
+							"raw": "{\n    \"operation\": \"cluster_delete_routes\",\n    \"routes\":[ \"wss://127.0.0.9:9925\", {\"host\": \"{{NODE2_HOST}}\", \"port\": {{CLUSTERING_PORT}}}, {\"hostname\": \"{{NODE2_HOST}}\", \"port\": {{CLUSTERING_PORT}}} ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restart node 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Restart message returned', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"Restarting HarperDB. This may take up to 60 seconds.\");",
+									"});",
+									"",
+									"// Wait for the restart complete",
+									"setTimeout(()=>{}, 30000);"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -669,77 +734,6 @@
 					"response": []
 				},
 				{
-					"name": "Delete all routes node 1",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test('Routes are deleted', () => {",
-									"    const response = pm.response.json();",
-									"    const clustering_port = parseInt(pm.environment.get('CLUSTERING_PORT'));",
-									"    const node2_host = pm.environment.get('NODE2_HOST');",
-									"",
-									"    pm.expect(response.message).to.equal('cluster routes successfully deleted');",
-									"    pm.expect(response.deleted[0]).to.eql({",
-									"        'host': node2_host,",
-									"        'port': clustering_port",
-									"    });",
-									"});",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"cluster_delete_routes\",\n    \"routes\":[ {\"host\": \"{{NODE2_HOST}}\", \"port\": {{CLUSTERING_PORT}}} ]\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
-							"host": [
-								"{{NODE1_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
 					"name": "Delete all routes node 2",
 					"event": [
 						{
@@ -793,6 +787,73 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n    \"operation\": \"cluster_delete_routes\",\n    \"routes\":[ {\"host\": \"{{NODE1_HOST}}\", \"port\": {{CLUSTERING_PORT}}} ]\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restart node 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test('Restart message returned', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.equal(\"Restarting HarperDB. This may take up to 60 seconds.\");",
+									"});",
+									"",
+									"// Wait for the restart complete",
+									"setTimeout(()=>{}, 30000);"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -1172,7 +1233,7 @@
 									"    const record_1 = insert_tx.records[0];",
 									"    const record_2 = insert_tx.records[1];",
 									"",
-									"    pm.expect(insert_tx.operation).to.equal('upsert');",
+									"    pm.expect(insert_tx.operation).to.equal('insert');",
 									"    pm.expect(insert_tx.user_name).to.equal(user);",
 									"    pm.expect(insert_tx).to.haveOwnProperty('timestamp');",
 									"    pm.expect(record_1.id).to.equal(1);",
@@ -1192,7 +1253,7 @@
 									"pm.test('Update transaction log is correct', () => {",
 									"    const update_tx = response[1];",
 									"",
-									"    pm.expect(update_tx.operation).to.equal('upsert');",
+									"    pm.expect(update_tx.operation).to.equal('update');",
 									"    pm.expect(update_tx.user_name).to.equal(user);",
 									"    pm.expect(update_tx).to.haveOwnProperty('timestamp');",
 									"    pm.expect(update_tx.records[0].id).to.equal(2);",
@@ -1285,7 +1346,7 @@
 									"pm.test('One record returned is correct', () => {",
 									"    const resp = response[0];",
 									"",
-									"    pm.expect(resp.operation).to.equal('upsert');",
+									"    pm.expect(resp.operation).to.equal('insert');",
 									"    pm.expect(resp.hash_values).to.eql([1, 2])",
 									"     pm.expect(resp.records.length).to.eql(2)",
 									"})"
@@ -1361,7 +1422,7 @@
 									"    const record_2 = insert_tx.records[1];",
 									"    const user = pm.environment.get('USERNAME')",
 									"",
-									"    pm.expect(insert_tx.operation).to.equal('upsert');",
+									"    pm.expect(insert_tx.operation).to.equal('insert');",
 									"    pm.expect(insert_tx.user_name).to.equal(user);",
 									"    pm.expect(insert_tx).to.haveOwnProperty('timestamp');",
 									"    pm.expect(record_1.id).to.equal(1);",
@@ -1450,7 +1511,7 @@
 									"pm.test('Update transaction log is correct', () => {",
 									"    const update_tx = response[0];",
 									"",
-									"    pm.expect(update_tx.operation).to.equal('upsert');",
+									"    pm.expect(update_tx.operation).to.equal('update');",
 									"    pm.expect(update_tx.user_name).to.equal(user);",
 									"    pm.expect(update_tx).to.haveOwnProperty('timestamp');",
 									"    pm.expect(update_tx.records[0].id).to.equal(2);",
@@ -1541,7 +1602,7 @@
 									"    const record_1 = insert_tx.records[0];",
 									"    const record_2 = insert_tx.records[1];",
 									"",
-									"    pm.expect(insert_tx.operation).to.equal('upsert');",
+									"    pm.expect(insert_tx.operation).to.equal('insert');",
 									"    pm.expect(insert_tx.user_name).to.equal(user);",
 									"    pm.expect(insert_tx).to.haveOwnProperty('timestamp');",
 									"    pm.expect(record_1.id).to.equal(1);",
@@ -1561,7 +1622,7 @@
 									"pm.test('Update transaction log is correct', () => {",
 									"    const update_tx = response[1];",
 									"",
-									"    pm.expect(update_tx.operation).to.equal('upsert');",
+									"    pm.expect(update_tx.operation).to.equal('update');",
 									"    pm.expect(update_tx.user_name).to.equal(user);",
 									"    pm.expect(update_tx).to.haveOwnProperty('timestamp');",
 									"    pm.expect(update_tx.records[0].id).to.equal(2);",
@@ -1641,7 +1702,7 @@
 									"    const record_1 = insert_tx.records[0];",
 									"    const record_2 = insert_tx.records[1];",
 									"",
-									"    pm.expect(insert_tx.operation).to.equal('upsert');",
+									"    pm.expect(insert_tx.operation).to.equal('insert');",
 									"    pm.expect(insert_tx.user_name).to.equal(user);",
 									"    pm.expect(insert_tx).to.haveOwnProperty('timestamp');",
 									"    pm.expect(record_1.id).to.equal(1);",
@@ -1956,14 +2017,15 @@
 									"pm.test('Log record was deleted', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.length).to.equal(2)",
-									"    pm.expect(response[0].operation).to.equal('upsert');",
+									"    pm.expect(response[0].operation).to.equal('update');",
 									"    pm.expect(response[0].timestamp).to.equal(pm.environment.get('TX_LOG_TIMESTAMP_1'));",
 									"    pm.expect(response[1].operation).to.equal('delete');",
 									"    pm.expect(response[1].timestamp).to.equal(pm.environment.get('TX_LOG_TIMESTAMP_2'));",
 									"})",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -2390,260 +2452,6 @@
 		{
 			"name": "Unidirectional",
 			"item": [
-				{
-					"name": "Add node 2 routes to node 1",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									""
-								],
-								"type": "text/javascript",
-								"packages": {}
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"cluster_set_routes\",\n    \"routes\":[ \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\" ]\n}\n",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
-							"host": [
-								"{{NODE1_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Add node 1 routes to node 2",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									""
-								],
-								"type": "text/javascript",
-								"packages": {}
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"cluster_set_routes\",\n    \"server\": \"hub\",\n    \"routes\":[ \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\" ]\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
-							"host": [
-								"{{NODE2_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Restart node 2",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test('Restart message returned', () => {",
-									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"Restarting HarperDB. This may take up to 60 seconds.\");",
-									"});",
-									"",
-									"// Wait for the restart complete",
-									"setTimeout(()=>{}, 30000);"
-								],
-								"type": "text/javascript",
-								"packages": {}
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
-							"host": [
-								"{{NODE2_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Restart node 1",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test('Restart message returned', () => {",
-									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"Restarting HarperDB. This may take up to 60 seconds.\");",
-									"});",
-									"",
-									"// Wait for the restart complete",
-									"setTimeout(()=>{}, 30000);"
-								],
-								"type": "text/javascript",
-								"packages": {}
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
-							"host": [
-								"{{NODE1_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
 				{
 					"name": "Create schema 'radio' node 1",
 					"event": [
@@ -3396,7 +3204,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"publish\": false,\n            \"subscribe\": true\n        },\n        {\n            \"schema\": \"listeners\",\n            \"table\": \"address\",\n            \"publish\": true,\n            \"subscribe\": false\n        },\n        {\n            \"schema\": \"radio\",\n            \"table\": \"head\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}",
+							"raw": "{\n    \"operation\": \"add_node\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"publish\": false,\n            \"subscribe\": true\n        },\n        {\n            \"schema\": \"listeners\",\n            \"table\": \"address\",\n            \"publish\": true,\n            \"subscribe\": false\n        },\n        {\n            \"schema\": \"radio\",\n            \"table\": \"head\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -3427,8 +3235,8 @@
 									"",
 									"pm.test('Correct cluster status node 1', () => {",
 									"    const response = pm.response.json();",
-									"    const node1_name = pm.environment.get(\"NODE1_NAME\");",
-									"    const node2_name = pm.environment.get(\"NODE2_NAME\");",
+									"    const node1_name = pm.environment.get(\"NODE1_HOST\");",
+									"    const node2_name = pm.environment.get(\"NODE2_HOST\");",
 									"    const connection = response.connections[0];",
 									"    const hdb_port = parseInt(pm.environment.get('HDB_PORT'));",
 									"    const clustering_port = parseInt(pm.environment.get('CLUSTERING_PORT'));",
@@ -3522,8 +3330,8 @@
 									"",
 									"pm.test('Correct cluster status node 2', () => {",
 									"    const response = pm.response.json();",
-									"    const node1_name = pm.environment.get(\"NODE1_NAME\");",
-									"    const node2_name = pm.environment.get(\"NODE2_NAME\");",
+									"    const node1_name = pm.environment.get(\"NODE1_HOST\");",
+									"    const node2_name = pm.environment.get(\"NODE2_HOST\");",
 									"    const connection = response.connections[0];",
 									"    const hdb_port = parseInt(pm.environment.get('HDB_PORT'));",
 									"    const clustering_port = parseInt(pm.environment.get('CLUSTERING_PORT'));",
@@ -3618,7 +3426,7 @@
 									"pm.test('Correct node record on node 1', () => {",
 									"    let response = pm.response.json()",
 									"    response = response[0]",
-									"    const node2_name = pm.environment.get(\"NODE2_NAME\");",
+									"    const node2_name = pm.environment.get(\"NODE2_HOST\");",
 									"",
 									"    pm.expect(response.name).to.equal(node2_name);",
 									"    pm.expect(response.subscriptions.length).to.equal(3);",
@@ -3708,7 +3516,7 @@
 									"pm.test('Correct node record on node 2', () => {",
 									"    let response = pm.response.json()",
 									"    response = response[0]",
-									"    const node1_name = pm.environment.get(\"NODE1_NAME\");",
+									"    const node1_name = pm.environment.get(\"NODE1_HOST\");",
 									"",
 									"    pm.expect(response.name).to.equal(node1_name);",
 									"    pm.expect(response.subscriptions.length).to.equal(3);",
@@ -5524,7 +5332,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"update_node\",\n    \"node_name\": \"{{NODE1_NAME}}\",\n    \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": false,\n            \"publish\": false\n        }\n    ]\n}",
+							"raw": "{\n    \"operation\": \"update_node\",\n    \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": false,\n            \"publish\": false\n        }\n    ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -5728,7 +5536,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"update_node\",\n    \"node_name\": \"{{NODE1_NAME}}\",\n    \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}",
+							"raw": "{\n    \"operation\": \"update_node\",\n    \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": true,\n            \"publish\": true\n        }\n    ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -5881,7 +5689,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"update_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}",
+							"raw": "{\n    \"operation\": \"update_node\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    },\n    \"subscriptions\": [\n        {\n            \"schema\": \"radio\",\n            \"table\": \"genre\",\n            \"subscribe\": false,\n            \"publish\": true\n        }\n    ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -5912,8 +5720,8 @@
 									"",
 									"pm.test('Correct cluster status node 1', () => {",
 									"    const response = pm.response.json();",
-									"    const node1_name = pm.environment.get(\"NODE1_NAME\");",
-									"    const node2_name = pm.environment.get(\"NODE2_NAME\");",
+									"    const node1_name = pm.environment.get(\"NODE1_HOST\");",
+									"    const node2_name = pm.environment.get(\"NODE2_HOST\");",
 									"    const connection = response.connections[0];",
 									"    const hdb_port = parseInt(pm.environment.get('HDB_PORT'));",
 									"    const clustering_port = parseInt(pm.environment.get('CLUSTERING_PORT'));",
@@ -5995,8 +5803,8 @@
 									"",
 									"pm.test('Correct cluster status node 2', () => {",
 									"    const response = pm.response.json();",
-									"    const node1_name = pm.environment.get(\"NODE1_NAME\");",
-									"    const node2_name = pm.environment.get(\"NODE2_NAME\");",
+									"    const node1_name = pm.environment.get(\"NODE1_HOST\");",
+									"    const node2_name = pm.environment.get(\"NODE2_HOST\");",
 									"    const connection = response.connections[0];",
 									"    const hdb_port = parseInt(pm.environment.get('HDB_PORT'));",
 									"    const clustering_port = parseInt(pm.environment.get('CLUSTERING_PORT'));",
@@ -6495,7 +6303,8 @@
 									"    pm.expect(response.message).to.equal(`Successfully removed '${node1_name}' from cluster`);",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -6524,7 +6333,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"node_name\":\"{{NODE1_NAME}}\"\n}",
+							"raw": "{\n\t\"operation\":\"remove_node\",\n\t\"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -6555,14 +6364,15 @@
 									"",
 									"pm.test('Correct cluster status node 1', () => {",
 									"    const response = pm.response.json();",
-									"    const node1_name = pm.environment.get('NODE1_NAME');",
+									"    const node1_name = pm.environment.get('NODE1_HOST');",
 									"    pm.expect(response.node_name).to.equal(node1_name);",
 									"    pm.expect(response.is_enabled).to.equal(true);",
 									"    pm.expect(response.connections).to.eql([]);",
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -6622,14 +6432,15 @@
 									"",
 									"pm.test('Correct cluster status node 2', () => {",
 									"    const response = pm.response.json();",
-									"    const node2_name = pm.environment.get('NODE2_NAME');",
+									"    const node2_name = pm.environment.get('NODE2_HOST');",
 									"    pm.expect(response.node_name).to.equal(node2_name);",
 									"    pm.expect(response.is_enabled).to.equal(true);",
 									"    pm.expect(response.connections).to.eql([]);",
 									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -7491,276 +7302,6 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n    \"operation\":\"describe_all\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
-							"host": [
-								"{{NODE2_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Set config delete all routes node 1",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test('Config set messaged returned', () => {",
-									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
-									"});"
-								],
-								"type": "text/javascript",
-								"packages": {}
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"replication_routes\":[]\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
-							"host": [
-								"{{NODE1_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Restart node 1",
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"exec": [
-									"setTimeout(() => {}, 4000);"
-								],
-								"type": "text/javascript"
-							}
-						},
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
-							"host": [
-								"{{NODE1_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Set config delete all routes node 2",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"pm.test('Config set messaged returned', () => {",
-									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
-									"});"
-								],
-								"type": "text/javascript",
-								"packages": {}
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"replication_routes\":[]\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
-							"host": [
-								"{{NODE2_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Restart node 2",
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"exec": [
-									"setTimeout(() => {}, 4000);"
-								],
-								"type": "text/javascript"
-							}
-						},
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
