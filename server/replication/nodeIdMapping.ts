@@ -1,3 +1,6 @@
+/**
+ * This module is responsible for managing the mapping of node names to node ids.
+ */
 import * as logger from '../../utility/logging/logger';
 import { getThisNodeName } from './replicator';
 import { pack, unpack } from 'msgpackr';

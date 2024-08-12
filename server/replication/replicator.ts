@@ -47,7 +47,14 @@ let replication_disabled;
 let next_id = 1; // for request ids
 
 export let servers = [];
+// This is the set of acceptable root certificates for replication, which includes the publicly trusted CAs
+// and any CAs that have been replicated across the cluster
 export let replication_certificate_authorities = new Set(tls.rootCertificates);
+
+/**
+ * Start the replication server. This will start a WebSocket server that will accept replication requests from other nodes.
+ * @param options
+ */
 export function start(options) {
 	if (!options.port) options.port = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
 	if (!options.securePort) options.securePort = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT);
@@ -77,7 +84,7 @@ export function start(options) {
 	}, options);
 	options.runFirst = true;
 	// now setup authentication for the replication server, authorizing by certificate
-	// or IP address and then falling back to standard authorization
+	// or IP address and then falling back to standard authorization, we set up an http middleware listener
 	server.http((request, next_handler) => {
 		if (request.isWebSocket && request.headers.get('Sec-WebSocket-Protocol') === 'harperdb-replication-v1') {
 			if (!request.authorized && request._nodeRequest.socket.authorizationError) {
@@ -87,12 +94,14 @@ export function start(options) {
 				);
 			}
 			let hdb_nodes_store = getHDBNodeTable().primaryStore;
+			// attempt to authorize by certificate common name, this is the most common means of auth
 			if (request.authorized && request.peerCertificate.subject) {
 				const subject = request.peerCertificate.subject;
 				const node = subject && (hdb_nodes_store.get(subject.CN) || route_by_hostname.get(subject.CN));
 				if (node) {
 					request.user = node;
 				} else {
+					// technically if there are credentials, we could still allow the connection, but give a warning, because we don't usually do that
 					logger.warn(
 						`No node found for certificate common name ${subject.CN}, available nodes are ${Array.from(
 							new Set([...hdb_nodes_store.getKeys(), ...route_by_hostname.keys()])
@@ -180,9 +189,10 @@ function assignReplicationSource(options) {
 	if (replication_disabled) return;
 	getDatabases();
 	enabled_databases = options.databases;
+	// we need to set up the replicator as a source for each database that is replicated
 	forEachReplicatedDatabase(options, (database, database_name) => {
 		if (!database) {
-			// the database was removed
+			// if no database, then the notification means the database was removed
 			const db_subscriptions = options.databaseSubscriptions || database_subscriptions;
 			for (let [url, db_connections] of connections) {
 				let db_connection = db_connections.get(database_name);
@@ -297,6 +307,13 @@ export function setReplicator(db_name, table, options) {
 	);
 }
 const connections = new Map();
+
+/**
+ * Get or create a connection to the specified node
+ * @param url
+ * @param subscription
+ * @param db_name
+ */
 function getConnection(url, subscription, db_name) {
 	let db_connections = connections.get(url);
 	if (!db_connections) {
@@ -329,6 +346,11 @@ export async function sendOperationToNode(node, operation, options) {
 		socket.close();
 	});
 }
+
+/**
+ * Subscribe to a node for a database, getting the necessary connection and subscription and signaling the start of the subscription
+ * @param request
+ */
 export function subscribeToNode(request) {
 	try {
 		if (isMainThread) {
@@ -385,6 +407,10 @@ function getCommonNameFromCert() {
 	}
 }
 let node_name;
+
+/** Attempt to figure out the host/node name, using direct or indirect settings
+ * @returns {string}
+ */
 export function getThisNodeName() {
 	return (
 		node_name ||
@@ -443,6 +469,13 @@ export function hostnameToUrl(hostname) {
 export function urlToNodeName(node_url) {
 	if (node_url) return new URL(node_url).hostname; // this the part of the URL that is the node name, as we want it to match common name in the certificate
 }
+
+/**
+ * Iterate through all the databases and tables that are replicated, both those that exist now, and future databases that
+ * are added or removed, calling the callback for each
+ * @param options
+ * @param callback
+ */
 export function forEachReplicatedDatabase(options, callback) {
 	for (const database_name of Object.getOwnPropertyNames(databases)) {
 		forDatabase(database_name);
