@@ -59,8 +59,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -119,8 +119,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -179,8 +179,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -239,8 +239,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -299,8 +299,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -359,8 +359,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -419,8 +419,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -480,8 +480,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -558,8 +558,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -638,8 +638,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -703,8 +703,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -770,8 +770,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -841,8 +841,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -914,8 +914,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -991,8 +991,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -1067,8 +1067,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -1134,8 +1134,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -1209,8 +1209,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -1280,8 +1280,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -1347,8 +1347,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -1415,8 +1415,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -1478,8 +1478,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -1548,8 +1548,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -1617,8 +1617,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -1686,8 +1686,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -1802,8 +1802,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -1875,8 +1875,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -1965,8 +1965,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -2054,8 +2054,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -2155,8 +2155,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -2244,8 +2244,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -2309,8 +2309,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -2414,8 +2414,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -2479,8 +2479,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -2548,8 +2548,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -2626,8 +2626,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -2731,8 +2731,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -2796,8 +2796,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -2860,8 +2860,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -2923,8 +2923,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -2992,8 +2992,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -3057,8 +3057,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -3121,8 +3121,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -3186,8 +3186,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -3250,8 +3250,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -3315,8 +3315,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -3378,8 +3378,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -3442,8 +3442,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -3505,8 +3505,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -3569,8 +3569,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -3632,8 +3632,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -3698,8 +3698,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -3793,8 +3793,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -3888,8 +3888,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -3978,8 +3978,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -4068,8 +4068,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -4136,8 +4136,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -4205,8 +4205,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -4323,8 +4323,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -4386,8 +4386,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -4449,8 +4449,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -4512,8 +4512,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -4575,8 +4575,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -4638,8 +4638,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -4723,8 +4723,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -4786,8 +4786,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -4871,8 +4871,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -4934,8 +4934,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -5019,8 +5019,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -5082,8 +5082,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -5167,8 +5167,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -5230,8 +5230,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -5323,8 +5323,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -5386,8 +5386,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -5475,8 +5475,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -5538,8 +5538,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -5611,8 +5611,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -5686,8 +5686,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -5759,8 +5759,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -5826,8 +5826,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -5889,8 +5889,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -5962,8 +5962,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -6030,8 +6030,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -6116,8 +6116,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -6183,8 +6183,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -6266,8 +6266,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -6349,8 +6349,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -6412,8 +6412,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -6522,8 +6522,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -6585,8 +6585,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -6660,8 +6660,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -6762,8 +6762,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -6826,8 +6826,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -6893,8 +6893,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -6960,8 +6960,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -7053,8 +7053,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -7116,8 +7116,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -7218,8 +7218,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -7281,8 +7281,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -7370,8 +7370,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -7444,8 +7444,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -7518,8 +7518,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -7592,8 +7592,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -7666,8 +7666,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -7729,8 +7729,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -7792,8 +7792,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -7857,8 +7857,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -7924,8 +7924,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -7988,8 +7988,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -8052,8 +8052,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -8118,8 +8118,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -8201,8 +8201,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -8283,8 +8283,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -8346,8 +8346,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -8419,8 +8419,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -8482,8 +8482,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -8563,8 +8563,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -8626,8 +8626,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -8711,8 +8711,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -8774,8 +8774,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -8880,8 +8880,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -8943,8 +8943,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -9028,8 +9028,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -9091,8 +9091,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -9176,8 +9176,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -9239,8 +9239,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -9316,8 +9316,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -9379,8 +9379,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -9452,8 +9452,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -9515,8 +9515,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -9588,8 +9588,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -9651,8 +9651,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -9727,8 +9727,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -9791,8 +9791,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -9854,8 +9854,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -9918,8 +9918,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -9981,8 +9981,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -10054,8 +10054,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -10127,8 +10127,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -10201,8 +10201,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -10274,8 +10274,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -10348,8 +10348,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -10413,8 +10413,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -10477,8 +10477,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -10548,8 +10548,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -10618,8 +10618,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -10685,8 +10685,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -10749,8 +10749,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -10813,8 +10813,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -10877,8 +10877,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -10942,8 +10942,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -11006,8 +11006,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -11070,8 +11070,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -11135,8 +11135,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -11240,8 +11240,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -11305,8 +11305,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -11410,8 +11410,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -11477,8 +11477,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -11552,8 +11552,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -11646,8 +11646,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -11710,8 +11710,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -11774,8 +11774,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -11838,8 +11838,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -11902,8 +11902,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -11966,8 +11966,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -12065,8 +12065,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -12176,8 +12176,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -12241,8 +12241,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -12346,8 +12346,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -12440,8 +12440,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -12505,8 +12505,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -12610,8 +12610,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -12703,8 +12703,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -12768,8 +12768,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -12873,8 +12873,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -12966,8 +12966,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -13031,8 +13031,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -13136,8 +13136,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -13229,8 +13229,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -13292,8 +13292,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -13357,8 +13357,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -13432,8 +13432,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -13507,8 +13507,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -13572,8 +13572,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -13635,8 +13635,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -13706,8 +13706,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -13776,8 +13776,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -13841,8 +13841,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -13906,8 +13906,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -13972,8 +13972,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -14037,8 +14037,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -14104,8 +14104,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -14169,8 +14169,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -14233,8 +14233,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -14298,8 +14298,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -14363,8 +14363,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -14428,8 +14428,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -14492,8 +14492,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -14557,8 +14557,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -14621,8 +14621,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -14714,8 +14714,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -14779,8 +14779,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -14902,8 +14902,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -14989,8 +14989,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -15070,8 +15070,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -15157,8 +15157,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -15220,8 +15220,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -15293,8 +15293,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -15357,8 +15357,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -15421,8 +15421,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -15484,8 +15484,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -15557,8 +15557,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -15621,8 +15621,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -15684,8 +15684,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -15747,8 +15747,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -15820,8 +15820,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -15884,8 +15884,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -15957,8 +15957,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -16020,8 +16020,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -16093,8 +16093,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -16166,8 +16166,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -16230,8 +16230,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -16293,8 +16293,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -16367,8 +16367,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -16444,8 +16444,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -16514,8 +16514,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -16577,8 +16577,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -16651,8 +16651,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -16729,8 +16729,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -16798,8 +16798,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -16873,8 +16873,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -16948,8 +16948,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -17023,8 +17023,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -17098,8 +17098,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -17163,8 +17163,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -17228,8 +17228,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -17293,8 +17293,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -17362,8 +17362,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -17426,8 +17426,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -17490,8 +17490,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -17554,8 +17554,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -17624,8 +17624,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -17691,8 +17691,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -17756,8 +17756,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -17823,8 +17823,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -17888,8 +17888,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -17953,8 +17953,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -18018,8 +18018,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -18082,8 +18082,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -18146,8 +18146,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -18210,8 +18210,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -18287,8 +18287,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -18364,8 +18364,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -18441,8 +18441,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -18508,8 +18508,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -18573,8 +18573,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -18638,8 +18638,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -18703,8 +18703,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -18768,8 +18768,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -18832,8 +18832,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -18896,8 +18896,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -18960,8 +18960,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -19024,8 +19024,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -19105,8 +19105,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -19186,8 +19186,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -19267,8 +19267,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -19348,8 +19348,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -19413,8 +19413,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -19477,8 +19477,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -19558,8 +19558,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -19639,8 +19639,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -19720,8 +19720,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -19784,8 +19784,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -19869,8 +19869,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -19934,8 +19934,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -19999,8 +19999,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -20059,8 +20059,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -20119,8 +20119,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -20179,8 +20179,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -20240,8 +20240,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -20300,8 +20300,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -20360,8 +20360,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -20420,8 +20420,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
@@ -20485,8 +20485,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE1_HOST}}"
 							],
@@ -20550,8 +20550,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE2_HOST}}"
 							],
@@ -20615,8 +20615,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE3_HOST}}"
 							],
@@ -20680,8 +20680,8 @@
 							}
 						},
 						"url": {
-							"raw": "https://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "https",
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
 							"host": [
 								"{{NODE4_HOST}}"
 							],
