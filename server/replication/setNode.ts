@@ -215,8 +215,10 @@ export async function addNodeBack(req) {
 
 	const node_record = { url: req.url, ca: origin_ca };
 	if (req.subscriptions) node_record.subscriptions = req.subscriptions;
-	if (req.start_time) node_record.start_time = req.start_time;
 	else node_record.replicates = true;
+
+	if (req.start_time) node_record.start_time = req.start_time;
+
 	const rep_ca = await getReplicationCertAuth();
 	if (node_record.replicates) {
 		const this_node = {
