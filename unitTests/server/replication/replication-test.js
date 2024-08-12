@@ -205,24 +205,26 @@ describe('Replication', () => {
 		let result = await node2NewTestTable.get('4').value;
 		assert.equal(result.name, name);
 	});
-	it.skip('Should handle high load', async function () {
+	it('Should handle high load', async function () {
 		this.timeout(10000);
 		let big_string = 'this will be expanded to a large string';
 		for (let i = 0; i < 7; i++) big_string += big_string;
 		let name;
-		for (let i = 0; i < 10000; i++) {
+		for (let i = 0; i < 500; i++) {
 			name = 'name ' + Math.random();
-			let result = TestTable.put({
+			let record = {
 				id: '14',
 				name,
-				bigString: big_string,
-			});
+				bigString: big_string.slice(0, Math.random() * big_string.length),
+			};
+			if (Math.random() < 0.1) record['extraProperty' + Math.floor(Math.random() * 20)] = true;
+			let result = TestTable.put(record);
 			if (i % 1000 === 0) {
 				await result;
 				console.log('wrote', i, 'records');
 			}
 		}
-		await new Promise((resolve) => setTimeout(resolve, 300));
+		await new Promise((resolve) => setTimeout(resolve, 500));
 		let result = await test_stores[1].get('14')?.value;
 		assert.equal(result.name, name);
 	});

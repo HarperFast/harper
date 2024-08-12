@@ -34,6 +34,7 @@ import * as tls from 'node:tls';
 import { getHDBNodeTable } from './knownNodes';
 import * as process from 'node:process';
 
+// these are the codes we use for the different commands
 const SUBSCRIPTION_REQUEST = 129;
 const NODE_NAME = 140;
 const NODE_NAME_TO_ID_MAP = 141;
@@ -49,11 +50,16 @@ const SEQUENCE_ID_UPDATE = 143;
 const COMMITTED_UPDATE = 144;
 const DB_SCHEMA = 145;
 export const table_update_listeners = new Map();
+// This a map of the database name to the subscription object, for the subscriptions from our tables to the replication module
+// when we receive messages from other nodes, we then forward them on to as a notification on these subscriptions
 export const database_subscriptions = new Map();
 const DEBUG_MODE = true;
+// when we skip messages (usually because we aren't the originating node), we still need to occassionally send a sequence update
+// so that catchup occurs more quickly
 const SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY = 300;
 // The amount time to await after a commit before sending out a committed update (and aggregating all updates).
 // We want it be fairly quick so we can let the sending node know that we have received and committed the update.
+// (but still allow for batching so we aren't sending out a message for every update under load)
 const COMMITTED_UPDATE_DELAY = 2;
 const PING_INTERVAL = 300000;
 let secure_contexts: Map<string, tls.SecureContext>;
@@ -124,7 +130,7 @@ export class NodeReplicationConnection extends EventEmitter {
 	isFinished = false;
 	nodeSubscriptions = [];
 	replicateTablesByDefault: boolean;
-	session: any;
+	session: any; // this is a promise that resolves to the session object, which is the object that handles the replication
 	sessionResolve: Function;
 	sessionReject: Function;
 	nodeName: string;
@@ -313,15 +319,8 @@ export function replicateOverWS(ws, options, authorization) {
 	let node_subscriptions;
 	let remote_short_id_to_local_id: Map<number, number>;
 	ws.on('message', (body) => {
-		// A replication header should consist of:
-		// transaction timestamp
-		// the record-transaction key (encoded using ordered-binary):
-		//   table id
-		//   record id
-		// predicate information? (alternately we may send stream synchronization messages)
-		// routing plan id (id for the route from source node to all receiving nodes)
-		//
-		// otherwise it a MessagePack encoded message
+		// A replication header should begin with either a transaction timestamp or messagepack message of
+		// of an array that begins with the command code
 		try {
 			const decoder = (body.dataView = new Decoder(body.buffer, body.byteOffset, body.byteLength));
 			if (body[0] > 127) {
@@ -461,6 +460,9 @@ export function replicateOverWS(ws, options, authorization) {
 							},
 							table
 						);
+						// replication messages come across in binary format of audit log entries from the source node,
+						// so we need to have the same structure and decoder configuration to decode them. We keep a map
+						// of the table id to the decoder so we can decode the binary data for each table.
 						table_decoders[table_id] = {
 							name: table_name,
 							decoder: new Packr({
@@ -477,7 +479,7 @@ export function replicateOverWS(ws, options, authorization) {
 						};
 						break;
 					case NODE_NAME_TO_ID_MAP:
-						// this is the mapping of node names to short ids. if there is audit_store (yet), just make an empty map, but not sure why that would happen.
+						// this is the mapping of node names to short local ids. if there is no audit_store (yet), just make an empty map, but not sure why that would happen.
 						remote_short_id_to_local_id = audit_store
 							? remoteToLocalNodeId(remote_node_name, data, audit_store)
 							: new Map();
@@ -488,6 +490,7 @@ export function replicateOverWS(ws, options, authorization) {
 						);
 						break;
 					case RESIDENCY_LIST:
+						// we need to keep track of the remote node's residency list by id
 						const residency_id = table_id;
 						received_residency_lists[residency_id] = data;
 						break;
@@ -512,6 +515,7 @@ export function replicateOverWS(ws, options, authorization) {
 						});
 						break;
 					case GET_RECORD: {
+						// this is a request for a record, we need to send it back
 						const request_id = data;
 						let response_data: Buffer;
 						try {
@@ -572,7 +576,7 @@ export function replicateOverWS(ws, options, authorization) {
 						break;
 					}
 					case GET_RECORD_RESPONSE: {
-						// TODO: Decode the data
+						// this is a response to a record request, we need to resolve the promise
 						const { resolve, reject, tableId: table_id, key } = awaiting_response.get(message[1]);
 						const entry = message[2];
 						if (entry?.error) reject(new Error(entry.error));
@@ -609,36 +613,40 @@ export function replicateOverWS(ws, options, authorization) {
 							// Wait for it to be created
 							let ready;
 							table_subscription_to_replicator = new Promise((resolve) => {
-								logger.info('Waiting for subscription to database ' + database_name);
+								logger.info?.('Waiting for subscription to database ' + database_name);
 								ready = resolve;
 							});
 							table_subscription_to_replicator.ready = ready;
 							database_subscriptions.set(database_name, table_subscription_to_replicator);
 						}
 						if (authorization.name) {
-							// TODO: Maybe await?
 							when_subscribed_to_hdb_nodes = getHDBNodeTable().subscribe(authorization.name);
-							when_subscribed_to_hdb_nodes.then(async (subscription) => {
-								subscription_to_hdb_nodes = subscription;
-								for await (let event of subscription_to_hdb_nodes) {
-									let node = event.value;
-									if (
-										!(
-											node?.replicates === true ||
-											node?.replicates?.receives ||
-											node?.subscriptions?.some(
-												// TODO: Verify the table permissions for each table listed in the subscriptions
-												(sub) => (sub.database || sub.schema) === database_name && sub.publish !== false
+							when_subscribed_to_hdb_nodes.then(
+								async (subscription) => {
+									subscription_to_hdb_nodes = subscription;
+									for await (let event of subscription_to_hdb_nodes) {
+										let node = event.value;
+										if (
+											!(
+												node?.replicates === true ||
+												node?.replicates?.receives ||
+												node?.subscriptions?.some(
+													// TODO: Verify the table permissions for each table listed in the subscriptions
+													(sub) => (sub.database || sub.schema) === database_name && sub.publish !== false
+												)
 											)
-										)
-									) {
-										closed = true;
-										ws.send(encode([DISCONNECT]));
-										close(1008, `Unauthorized database subscription to ${database_name}`);
-										return;
+										) {
+											closed = true;
+											ws.send(encode([DISCONNECT]));
+											close(1008, `Unauthorized database subscription to ${database_name}`);
+											return;
+										}
 									}
+								},
+								(error) => {
+									logger.error?.(connection_id, 'Error subscribing to HDB nodes', error);
 								}
-							});
+							);
 						} else {
 							if (!(authorization?.permissions?.super_user || authorization.replicates)) {
 								ws.send(encode([DISCONNECT]));
@@ -648,11 +656,12 @@ export function replicateOverWS(ws, options, authorization) {
 						}
 
 						if (audit_subscription) {
+							// any subscription will supersede the previous subscription, so end that one
 							logger.info?.(connection_id, 'stopping previous subscription', database_name);
 							audit_subscription.emit('close');
 						}
 						if (node_subscriptions.length === 0)
-							// use to unsubscribe
+							// this means we are unsubscribing
 							return;
 						let first_table;
 						let first_node = node_subscriptions[0];
@@ -667,18 +676,14 @@ export function replicateOverWS(ws, options, authorization) {
 								return { table };
 							}
 						};
-						const encoder = new Encoder();
 						const current_transaction = { txnTime: 0 };
 						let subscribed_node_ids, table_by_id;
-						let listening_for_overload = false;
 						let current_sequence_id = Infinity; // the last sequence number in the audit log that we have processed, set this with a finite number from the subscriptions
 						let sent_sequence_id; // the last sequence number we have sent
 						const sendAuditRecord = (audit_record, local_time) => {
 							current_sequence_id = local_time;
-							// TOOD: Use begin_txn instead to find transaction delimiting
 							if (audit_record.type === 'end_txn') {
 								if (current_transaction.txnTime) {
-									//if (DEBUG_MODE) logger.info?.(connection_id, 'sending replication message', encoding_start, position);
 									if (encoding_buffer[encoding_start] !== 66) {
 										logger.error?.('Invalid encoding of message');
 									}
@@ -836,7 +841,6 @@ export function replicateOverWS(ws, options, authorization) {
 									table_entry.structure_length
 								);
 								if (!table_entry.sentName) {
-									// TODO: only send the table name once
 									table_entry.sentName = true;
 								}
 								ws.send(
@@ -860,15 +864,6 @@ export function replicateOverWS(ws, options, authorization) {
 							/*
 							TODO: At some point we may want some fancier logic to elide the version (which is the same as txn_time)
 							and username from subsequent audit entries in multiple entry transactions*/
-							/*
-							writeInt(table_id);
-							const key_length = record_id_binary.length;
-							writeInt(key_length);
-							writeBytes(record_id_binary);
-							const encoded_record = audit_record.getBinaryValue();
-							writeInt(encoded_record.length);
-							writeBytes(encoded_record);
-							*/
 							if (invalidation_entry) {
 								// if we have an invalidation entry to send, do that now
 								writeInt(invalidation_entry.length);
@@ -890,10 +885,11 @@ export function replicateOverWS(ws, options, authorization) {
 							closed = true;
 							subscription_to_hdb_nodes?.end();
 						});
+						// find the earliest start time of the subscriptions
 						for (let { startTime } of node_subscriptions) {
 							if (startTime < current_sequence_id) current_sequence_id = startTime;
 						}
-
+						// wait for internal subscription, might be waiting for a table to be registered
 						(when_subscribed_to_hdb_nodes || Promise.resolve())
 							.then(async () => {
 								table_subscription_to_replicator = await table_subscription_to_replicator;
@@ -902,7 +898,7 @@ export function replicateOverWS(ws, options, authorization) {
 								subscribed_node_ids = [];
 								for (let { name, startTime } of node_subscriptions) {
 									const local_id = getIdOfRemoteNode(name, audit_store);
-									logger.info('subscription to', name, 'using local id', local_id, 'starting', startTime);
+									logger.info?.('subscription to', name, 'using local id', local_id, 'starting', startTime);
 									subscribed_node_ids[local_id] = startTime;
 								}
 
@@ -1136,6 +1132,7 @@ export function replicateOverWS(ws, options, authorization) {
 	ws.on('ping', resetPingTimer);
 	ws.on('pong', () => {
 		if (options.connection)
+			// every pong we can use to update our connection information (and latency)
 			connectedToNode({
 				name: remote_node_name,
 				database: database_name,
@@ -1145,6 +1142,7 @@ export function replicateOverWS(ws, options, authorization) {
 		last_ping_time = null;
 	});
 	ws.on('close', (code, reason_buffer) => {
+		// cleanup
 		clearInterval(send_ping_interval);
 		clearTimeout(receive_ping_timer);
 		if (audit_subscription) audit_subscription.emit('close');
@@ -1217,7 +1215,6 @@ export function replicateOverWS(ws, options, authorization) {
 				(typeof node.start_time === 'string' ? new Date(node.start_time).getTime() : node.start_time) ??
 				1;
 			// if we are connected directly to the node, we start from the last sequence number we received at the top level
-			// TODO: If we become disconnected, and received updates through a proxy, we may want to use that for an updating starting point once we reconnect to the original node
 			if (connected_node !== node) {
 				// indirect connection through a proxying node
 				if (start_time > 5000) start_time -= 5000; // first, decrement the start time to cover some clock drift between nodes (5 seconds)
@@ -1283,7 +1280,7 @@ export function replicateOverWS(ws, options, authorization) {
 			throw new Error(`Access to database "${database_name}" is not permitted`);
 		}
 		if (!table_subscription_to_replicator) {
-			logger.warn(`No database named "${database_name}" was declared and registered`);
+			logger.warn?.(`No database named "${database_name}" was declared and registered`);
 		}
 		audit_store = table_subscription_to_replicator?.auditStore;
 		if (!audit_store) {
@@ -1375,6 +1372,10 @@ export function replicateOverWS(ws, options, authorization) {
 				});
 			});
 		},
+		/**
+		 * Send an operation request to the remote node, returning a promise for the result
+		 * @param operation
+		 */
 		sendOperation(operation) {
 			const request_id = next_id++;
 			operation.requestId = request_id;
@@ -1385,6 +1386,7 @@ export function replicateOverWS(ws, options, authorization) {
 		},
 	};
 
+	// write an integer to the current buffer
 	function writeInt(number) {
 		checkRoom(5);
 		if (number < 128) {
@@ -1402,6 +1404,7 @@ export function replicateOverWS(ws, options, authorization) {
 		}
 	}
 
+	// write raw binary/bytes to the current buffer
 	function writeBytes(src, start = 0, end = src.length) {
 		const length = end - start;
 		checkRoom(length);
