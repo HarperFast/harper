@@ -2233,6 +2233,11 @@ export function makeTable(options) {
 							`A relationship property can not be directly indexed, (but you may want to index the foreign key attribute)`
 						);
 					}
+					if (computed) {
+						console.error(
+							`A relationship property is already computed and can not be combined with a computed function (the relationship will be given precedence)`
+						);
+					}
 					has_relationships = true;
 					if (relationship.to) {
 						if (attribute.elements?.definition) {
