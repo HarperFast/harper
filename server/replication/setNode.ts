@@ -51,7 +51,7 @@ export async function setNode(req: object) {
 		try {
 			// we delete record and req that other node also deletes record (or mark itself as non-replicating)
 			// we do not wait for the other node to respond, it may not even be online anymore
-			sendOperationToNode(
+			await sendOperationToNode(
 				{ url: record.url },
 				{
 					operation: OPERATIONS_ENUM.REMOVE_NODE_BACK,
