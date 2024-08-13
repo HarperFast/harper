@@ -601,7 +601,9 @@ function createTransformMap(schema, table) {
 	const attributes = databases[schema][table].attributes;
 	let map_of_transforms = new Map(); // I don't know if this should be a Map, but this just makes a map of attributes with type coercions that we want
 	for (let attribute of attributes) {
-		if (attribute.type) map_of_transforms.set(attribute.name, (value) => coerceType(value, attribute)); // here is the transform to use
+		if (attribute.type && !attribute.computed && !attribute.relationship)
+			map_of_transforms.set(attribute.name, (value) => coerceType(value, attribute)); // here is
+		// the transform to use
 	}
 	return map_of_transforms;
 }

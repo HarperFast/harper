@@ -30,8 +30,10 @@ describe('Types Validation', () => {
 					sealed: true,
 					properties: [{ name: 'name', type: 'String', nullable: false }],
 				},
+				{ name: 'computed', type: 'String', computed: true },
 			],
 		});
+		ValidationTest.setComputedAttribute('computed', (instance) => instance.str + ' computed');
 	});
 	it('Accepts correct types', async function () {
 		await ValidationTest.put(42, {
@@ -46,6 +48,8 @@ describe('Types Validation', () => {
 				name: 'inside',
 			},
 		});
+		let result = ValidationTest.get(42);
+		assert.equal(result.computed, 'hello computed');
 		await ValidationTest.put(42, {
 			str: null,
 			num: null,

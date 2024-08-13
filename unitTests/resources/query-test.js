@@ -39,8 +39,10 @@ describe('Querying through Resource API', () => {
 				{ name: 'manyToManyIds', elements: { type: 'ID' }, indexed: true },
 				relationship_attribute,
 				many_to_many_attribute,
+				{ name: 'computed', computed: true, indexed: true },
 			],
 		});
+		QueryTable.setComputedAttribute('computed', (instance) => instance.name + ' computed');
 		const children_of_self_attribute = {
 			name: 'childrenOfSelf',
 			relationship: { to: 'parentId' },
@@ -185,6 +187,28 @@ describe('Querying through Resource API', () => {
 		}
 		assert.equal(results.length, 23);
 		assert(QueryTable.primaryStore.readCount - start_count < 25);
+	});
+	it('Query on computed index', async function () {
+		let results = [];
+		for await (let record of QueryTable.search({
+			conditions: [{ attribute: 'computed', comparator: 'equals', value: 'name-2 computed' }],
+		})) {
+			results.push(record);
+		}
+		assert.equal(results.length, 1);
+		assert.equal(results[0].id, 'id-2');
+	});
+	it('Select with computed index', async function () {
+		let results = [];
+		for await (let record of QueryTable.search({
+			conditions: [{ attribute: 'name', comparator: 'equals', value: 'name-3' }],
+			select: ['id', 'computed'],
+		})) {
+			results.push(record);
+		}
+		assert.equal(results.length, 1);
+		assert.equal(results[0].id, 'id-3');
+		assert.equal(results[0].computed, 'name-3 computed');
 	});
 
 	describe('joins', function () {

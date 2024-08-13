@@ -1,9 +1,25 @@
 import { dirname } from 'path';
+import { Script } from 'node:vm';
 import { table } from './databases';
 import { getWorkerIndex } from '../server/threads/manageThreads';
 
 const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt'];
 
+if (server.knownGraphQLDirectives) {
+	server.knownGraphQLDirectives = [
+		'table',
+		'sealed',
+		'export',
+		'primaryKey',
+		'indexed',
+		'computed',
+		'relationship',
+		'createdTime',
+		'updatedTime',
+		'expiresAt',
+		'allow',
+	];
+}
 /**
  * This is the entry point for handling GraphQL schemas (and server-side defined queries, eventually). This will be
  * called for schemas, and this will parse the schema (into an AST), and use it to ensure all specified tables and their
@@ -39,7 +55,8 @@ export function start({ ensureTable }) {
 					const type_def = { table: null, database: null, properties };
 					types.set(type_name, type_def);
 					for (const directive of definition.directives) {
-						if (directive.name.value === 'table') {
+						const directive_name = directive.name.value;
+						if (directive_name === 'table') {
 							for (const arg of directive.arguments) {
 								type_def[arg.name.value] = (arg.value as StringValueNode).value;
 							}
@@ -49,10 +66,10 @@ export function start({ ensureTable }) {
 							type_def.attributes = type_def.properties;
 							tables.push(type_def);
 						}
-						if (directive.name.value === 'sealed') {
+						if (directive_name === 'sealed') {
 							type_def.sealed = true;
 						}
-						if (directive.name.value === 'export') {
+						if (directive_name === 'export') {
 							type_def.export = true;
 							for (const arg of directive.arguments) {
 								if (typeof type_def.export !== 'object') type_def.export = {};
@@ -78,38 +95,57 @@ export function start({ ensureTable }) {
 						Object.defineProperty(property, 'location', { value: type.loc.startToken });
 						return property;
 					}
+					const attributes_object = {};
 					for (const field of definition.fields) {
 						const property = getProperty(field.type);
 						property.name = field.name.value;
 						properties.push(property);
+						attributes_object[property.name] = undefined; // this is used as a backup scope for computed properties
 						for (const directive of field.directives) {
-							if (directive.name.value === 'primaryKey') {
-								if (has_primary_key) console.warn('Can not define two attributes as a primary key');
+							let directive_name = directive.name.value;
+							if (directive_name === 'primaryKey') {
+								if (has_primary_key) console.warn('Can not define two attributes as a primary key at', directive.loc);
 								else {
 									property.isPrimaryKey = true;
 									has_primary_key = true;
 								}
-							} else if (directive.name.value === 'indexed') {
+							} else if (directive_name === 'indexed') {
 								property.indexed = true;
-							} else if (directive.name.value === 'relationship') {
+							} else if (directive_name === 'computed') {
+								for (const arg of directive.arguments || []) {
+									if (arg.name.value === 'from') {
+										let computed_from_expression = (arg.value as StringValueNode).value;
+										property.computed = {
+											from: createComputedFrom(computed_from_expression, arg, attributes_object),
+										};
+										// if the version is not defined, we use the computed from expression as the version, any changes to the computed from expression will trigger a version change and reindex
+										if (property.version == undefined) property.version = computed_from_expression;
+									} else if (arg.name.value === 'version') {
+										property.version = (arg.value as StringValueNode).value;
+									}
+								}
+								property.computed = property.computed || true;
+							} else if (directive_name === 'relationship') {
 								const relationship_definition = {};
 								for (const arg of directive.arguments) {
 									relationship_definition[arg.name.value] = (arg.value as StringValueNode).value;
 								}
 								property.relationship = relationship_definition;
-							} else if (directive.name.value === 'createdTime') {
+							} else if (directive_name === 'createdTime') {
 								property.assignCreatedTime = true;
-							} else if (directive.name.value === 'updatedTime') {
+							} else if (directive_name === 'updatedTime') {
 								property.assignUpdatedTime = true;
-							} else if (directive.name.value === 'expiresAt') {
+							} else if (directive_name === 'expiresAt') {
 								property.expiresAt = true;
-							} else if (directive.name.value === 'allow') {
+							} else if (directive_name === 'allow') {
 								const authorized_roles = (property.authorizedRoles = []);
 								for (const arg of directive.arguments) {
 									if (arg.name.value === 'role') {
 										authorized_roles.push((arg.value as StringValueNode).value);
 									}
 								}
+							} else if (server.knownGraphQLDirectives.includes(directive_name)) {
+								console.warn(`@${directive_name} is an unknown directive, at`, directive.loc);
 							}
 						}
 					}
@@ -151,6 +187,22 @@ export function start({ ensureTable }) {
 						type_def.export
 					);
 			}
+		}
+		function createComputedFrom(computed_from: string, arg: any, attributes: any) {
+			// Create a function from a computed "from" directive. This can look like:
+			// @computed(from: "fieldOne + fieldTwo")
+			// We use Node's built-in Script class to compile the function and run it in the context of the record object, which allows us to specify the source
+			const script = new Script(
+				// we use the inner with statement to allow the computed function to access the record object's properties directly as top level names
+				// we use the outer with statement with attributes as a fallback so any access to an attribute that isn't defined on the record still returns undefined (instead of a ReferenceError)
+				`function computed(attributes) { return function(record) { with(attributes) { with (record) { return ${computed_from}; } } } } computed;`,
+				{
+					filename: file_path, // specify the file path and line position for better error messages/debugging
+					lineOffset: arg.loc.startToken.line - 1,
+					columnOffset: arg.loc.startToken.column,
+				}
+			);
+			return script.runInThisContext()(attributes); // run the script in the context of the current context/global and return the function we defined
 		}
 	}
 }

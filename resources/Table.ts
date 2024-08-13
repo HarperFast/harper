@@ -155,6 +155,7 @@ export function makeTable(options) {
 		static createdTimeProperty = created_time_property;
 		static updatedTimeProperty = updated_time_property;
 		static propertyResolvers;
+		static userResolvers = {};
 		static sources = [];
 		static get expirationMS() {
 			return expiration_ms;
@@ -1441,7 +1442,9 @@ export function makeTable(options) {
 					}
 					return columns;
 				}
-				return attributes.map((attribute) => attribute.name);
+				return attributes
+					.filter((attribute) => !attribute.computed && !attribute.relationship)
+					.map((attribute) => attribute.name);
 			};
 			return results;
 		}
@@ -2120,7 +2123,7 @@ export function makeTable(options) {
 			};
 			for (let i = 0, l = attributes.length; i < l; i++) {
 				const attribute = attributes[i];
-				if (attribute.relationship) continue;
+				if (attribute.relationship || attribute.computed) continue;
 				if (!patch || attribute.name in record) {
 					const updated = validateValue(record[attribute.name], attribute, attribute.name);
 					if (updated) record[attribute.name] = updated;
@@ -2223,10 +2226,16 @@ export function makeTable(options) {
 			for (const attribute of this.attributes) {
 				attribute.resolve = null; // reset this
 				const relationship = attribute.relationship;
+				const computed = attribute.computed;
 				if (relationship) {
 					if (attribute.indexed) {
 						console.error(
 							`A relationship property can not be directly indexed, (but you may want to index the foreign key attribute)`
+						);
+					}
+					if (computed) {
+						console.error(
+							`A relationship property is already computed and can not be combined with a computed function (the relationship will be given precedence)`
 						);
 					}
 					has_relationships = true;
@@ -2310,9 +2319,37 @@ export function makeTable(options) {
 							`The relationship directive on "${attribute.name}" in table "${table_name}" must use either "from" or "to" arguments`
 						);
 					}
+				} else if (computed) {
+					if (typeof computed.from === 'function') {
+						this.setComputedAttribute(attribute.name, computed.from);
+					}
+					property_resolvers[attribute.name] = attribute.resolve = (object, context, entry) => {
+						let value = typeof computed.from === 'string' ? object[computed.from] : object;
+						let user_resolver = this.userResolvers[attribute.name];
+						if (user_resolver) return user_resolver(value, context, entry);
+						else {
+							logger.warn(
+								`Computed attribute "${attribute.name}" does not have a function assigned to it. Please use setComputedAttribute('${attribute.name}', resolver) to assign a resolver function.`
+							);
+							// silence future warnings but just returning undefined
+							this.userResolvers[attribute.name] = () => {};
+						}
+					};
 				}
 			}
 			assignTrackedAccessors(this, this);
+		}
+		static setComputedAttribute(attribute_name, resolver) {
+			const attribute = findAttribute(attributes, attribute_name);
+			if (!attribute) {
+				console.error(`The attribute "${attribute_name}" does not exist in the table "${table_name}"`);
+				return;
+			}
+			if (!attribute.computed) {
+				console.error(`The attribute "${attribute_name}" is not defined as computed in the table "${table_name}"`);
+				return;
+			}
+			this.userResolvers[attribute_name] = resolver;
 		}
 		static async deleteHistory(end_time = 0) {
 			let completion;
@@ -2392,8 +2429,9 @@ export function makeTable(options) {
 		for (const key in indices) {
 			const index = indices[key];
 			const is_indexing = index.isIndexing;
-			const value = record?.[key];
-			const existing_value = existing_record?.[key];
+			const resolver = property_resolvers[key];
+			const value = record && (resolver ? resolver(record) : record[key]);
+			const existing_value = existing_record && (resolver ? resolver(existing_record) : existing_record[key]);
 			if (value === existing_value && !is_indexing) {
 				continue;
 			}
