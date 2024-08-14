@@ -94,6 +94,7 @@ export async function startOnMainThread(options) {
 					if (node.name == hostname) {
 						found_node = true;
 						for (let [database, { worker }] of db_replication_workers) {
+							db_replication_workers.delete(database);
 							worker?.postMessage({ type: 'unsubscribe-from-node', node: hostname, database, url });
 						}
 						break;
@@ -168,8 +169,11 @@ export async function startOnMainThread(options) {
 				});
 				worker?.on('exit', () => {
 					// when a worker exits, we need to remove the entry from the map, and then reassign the subscriptions
-					db_replication_workers.delete(database_name);
-					onDatabase(database_name, tables_replicate_by_default);
+					if (db_replication_workers.get(database_name)?.worker === worker) {
+						// first verify it is still the worker
+						db_replication_workers.delete(database_name);
+						onDatabase(database_name, tables_replicate_by_default);
+					}
 				});
 			}
 			if (should_subscribe) {
