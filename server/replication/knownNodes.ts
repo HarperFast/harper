@@ -50,6 +50,7 @@ export function getHDBNodeTable() {
 		}))
 	);
 }
+const NODE_UPDATE_DELAY = 200; // delay before sending node updates to other nodes, so operations can complete first
 export function subscribeToNodeUpdates(listener) {
 	getHDBNodeTable()
 		.subscribe({})
@@ -63,7 +64,7 @@ export function subscribeToNodeUpdates(listener) {
 					server.nodes.push(name);
 				}
 				if (event.type === 'put' || event.type === 'delete') {
-					listener(event.value, event.id);
+					setTimeout(() => listener(event.value, event.id), NODE_UPDATE_DELAY);
 				}
 			}
 		});
