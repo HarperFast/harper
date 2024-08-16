@@ -199,11 +199,11 @@ export async function addNodeBack(req) {
 	const certs = await signCertificate(req);
 	// If the add_node req has a CSR attached, return the CA that was used to issue the CSR,
 	// else return whatever CA this node is using for replication
-	let origin_ca;
+	let origin_ca: string;
 	if (!req.csr) {
 		// If there is no CSR in the request there should be a CA, use this CA in the hdb_nodes record for origin node
-		origin_ca = req?.cert_auth?.certificate;
-		hdb_logger.info('addNodeBack received CA name:', req.cert_auth?.name, 'from node:', req.url);
+		origin_ca = req?.cert_auth;
+		hdb_logger.info('addNodeBack received CA from node:', req.url);
 	} else {
 		origin_ca = certs.signingCA;
 		hdb_logger.info(
