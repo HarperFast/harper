@@ -172,7 +172,12 @@ export class NodeReplicationConnection extends EventEmitter {
 			this.sessionResolve(session);
 		});
 		this.socket.on('error', (error) => {
-			if (error.code !== 'ECONNREFUSED') {
+			if (error.code === 'SELF_SIGNED_CERT_IN_CHAIN') {
+				logger.warn?.(
+					`Can not connect to ${this.url}, this server does not have a certificate authority for the certificate provided by ${this.url}`
+				);
+				error.isHandled = true;
+			} else if (error.code !== 'ECONNREFUSED') {
 				if (error.code === 'UNABLE_TO_VERIFY_LEAF_SIGNATURE')
 					logger.error?.(
 						`Can not connect to ${this.url}, the certificate provided by ${this.url} is not trusted, this node needs to be added to the cluster, or a certificate authority needs to be added`
