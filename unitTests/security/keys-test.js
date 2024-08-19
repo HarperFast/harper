@@ -143,9 +143,9 @@ describe('Test keys module', () => {
 	it('Test signCertificate happy path', async () => {
 		const signed_cert = await keys.signCertificate({ csr: await keys.createCsr() });
 		const cert_obj = pki.certificateFromPem(signed_cert.certificate);
-		expect(cert_obj.issuer.getField('CN').value).to.include('HarperDB-Certificate-Authority');
+		expect(cert_obj.issuer.getField('CN').value).to.include('Unit Test CA');
 		expect(cert_obj.subject.getField('O').value).to.equal('HarperDB, Inc.');
-		expect(signed_cert.signingCA).to.equal(actual_ca.certificate);
+		expect(signed_cert.signingCA).to.equal(test_ca);
 	});
 
 	it('Test generateCertificates happy path', async () => {
