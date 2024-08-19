@@ -35,6 +35,7 @@ describe('Test keys module', () => {
 	let test_public_key;
 	let actual_cert;
 	let actual_ca;
+	let root_path;
 
 	before(async function () {
 		this.timeout(10000);
@@ -62,7 +63,8 @@ describe('Test keys module', () => {
 		await fs.writeFile(test_private_key_path, test_private_key);
 		await fs.writeFile(test_ca_path, test_ca);
 
-		env_mgr.setHdbBasePath(config_utils.getConfigFromFile('rootPath'));
+		root_path = config_utils.getConfigFromFile('rootPath');
+		env_mgr.setHdbBasePath(root_path);
 		env_mgr.setProperty('storage_path', path.join(config_utils.getConfigFromFile('rootPath'), 'database'));
 		get_config_from_file_stub = sandbox.stub(config_utils, 'getConfigFromFile').returns({
 			privateKey: test_private_key_path,
@@ -119,6 +121,7 @@ describe('Test keys module', () => {
 	});
 
 	it('Test getReplicationCert returns the correct cert', async () => {
+		env_mgr.setProperty('rootPath', root_path);
 		const rep_cert = await keys.getReplicationCert();
 		expect(rep_cert.name).to.equal(actual_cert.name);
 		expect(rep_cert.issuer.includes('HarperDB-Certificate-Authority')).to.be.true;
