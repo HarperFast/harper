@@ -54,6 +54,7 @@ const env = require('../utility/environment/environmentManager');
 const { getTicketKeys, onMessageFromWorkers } = require('../server/threads/manageThreads');
 const harper_logger = require('../utility/logging/harper_logger');
 const { isMainThread } = require('worker_threads');
+const { TLSSocket, createSecureContext } = require('node:tls');
 
 const CERT_VALIDITY_DAYS = 3650;
 const CERT_DOMAINS = ['127.0.0.1', 'localhost', '::1'];
@@ -207,9 +208,10 @@ function loadCertificates() {
 								// If cert file is newer, add it to table
 								const cert_record = certificate_table.primaryStore.get(cert_cn);
 								let file_timestamp = statSync(path).mtimeMs;
-								let record_timestamp = cert_record.is_self_signed
-									? 1
-									: cert_record.file_timestamp ?? cert_record.__updatedtime__;
+								let record_timestamp =
+									!cert_record || cert_record.is_self_signed
+										? 1
+										: cert_record.file_timestamp ?? cert_record.__updatedtime__;
 								if (cert_record && file_timestamp <= record_timestamp) {
 									if (file_timestamp < record_timestamp)
 										hdb_logger.info(
@@ -268,7 +270,7 @@ function loadAndWatch(path, loadCert, type) {
 				loadCert(readPEM(path));
 			}
 		} catch (error) {
-			hdb_logger.error(`Error loading ${type}:`, path);
+			hdb_logger.error(`Error loading ${type}:`, path, error);
 		}
 	};
 	if (fs.existsSync(path)) loadFile(statSync(path));
@@ -690,7 +692,7 @@ function readPEM(path) {
 	if (path.startsWith('-----BEGIN')) return path;
 	return readFileSync(path, 'utf8');
 }
-// this horifying hack is brought to you by https://github.com/nodejs/node/issues/36655
+// this horrifying hack is brought to you by https://github.com/nodejs/node/issues/36655
 const origCreateSecureContext = tls.createSecureContext;
 tls.createSecureContext = function (options) {
 	if (!options.cert || !options.key) {
@@ -715,6 +717,24 @@ tls.Server = function (options, secureConnectionListener) {
 };
 // restore the original prototype, as it is used internally by Node.js
 tls.Server.prototype = origTLSServer.prototype;
+// Node.js SNI callbacks _add_ the certificate and don't replace it, and so we can't have a default certificate,
+// so we have to assign the default certificate during the cert callback, because the default SNI callback isn't
+// consistently called for all TLS connections (isn't called if no SNI server name is provided).
+// first we have interrupt the socket initialization to add our own cert callback
+const originalInit = TLSSocket.prototype._init;
+TLSSocket.prototype._init = function (socket, wrap) {
+	originalInit.call(this, socket, wrap);
+	let tls_socket = this;
+	this._handle.oncertcb = function (info) {
+		const servername = info.servername;
+		tls_socket._SNICallback(servername, (err, context) => {
+			this.sni_context = context.context || context;
+			// note that this skips the checks for multiple callbacks and entirely skips OCSP, so if we ever need that, we
+			// need to call the original oncertcb
+			this.certCbDone();
+		});
+	};
+};
 
 let ca_certs = new Map();
 
@@ -833,7 +853,10 @@ function createTLSSelector(type, mtls_options) {
 								best_quality = quality;
 								if (server) {
 									server.defaultContext = secure_context;
-									server.setSecureContext?.(server, secure_options);
+									// note that we can not set the secure context on the server here, because this creates an
+									// indeterminate situation of whether openssl will use this certificate or the one from the SNI
+									// callback
+									//server.setSecureContext?.(server, secure_options);
 									harper_logger.trace(
 										'Applying default TLS',
 										secure_context.name,
@@ -883,7 +906,7 @@ function createTLSSelector(type, mtls_options) {
 			} else break;
 		}
 		harper_logger.debug('No certificate found to match', servername, 'using the first certificate');
-		// no matches, return the first one
+		// no matches, return the first/default one
 		cb(null, default_context);
 	}
 }
