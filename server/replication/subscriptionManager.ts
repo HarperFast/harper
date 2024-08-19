@@ -19,6 +19,7 @@ import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes, shouldReplicate
 import * as logger from '../../utility/logging/harper_logger';
 import { cloneDeep } from 'lodash';
 
+const NODE_SUBSCRIBE_DELAY = 200; // delay before sending node subscribe to other nodes, so operations can complete first
 let connection_replication_map = new Map();
 export let disconnectedFromNode; // this is set by thread to handle when a node is disconnected (or notify main thread so it can handle)
 export let connectedToNode; // this is set by thread to handle when a node is connected (or notify main thread so it can handle)
@@ -177,14 +178,16 @@ export async function startOnMainThread(options) {
 				});
 			}
 			if (should_subscribe) {
-				const request = {
-					type: 'subscribe-to-node',
-					database: database_name,
-					nodes,
-				};
-				if (worker) {
-					worker.postMessage(request);
-				} else subscribeToNode(request);
+				setTimeout(() => {
+					const request = {
+						type: 'subscribe-to-node',
+						database: database_name,
+						nodes,
+					};
+					if (worker) {
+						worker.postMessage(request);
+					} else subscribeToNode(request);
+				}, NODE_SUBSCRIBE_DELAY);
 			} else {
 				if (!getHDBNodeTable().primaryStore.get(getThisNodeName())?.replicates) {
 					// if we are not fully replicating because it is turned off, make sure we set this

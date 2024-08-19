@@ -98,8 +98,7 @@ describe('Replication', () => {
 			break;
 		} while (true);
 	});
-	// Not sure why this is stalling
-	/*	it('A write to one table with replicated confirmation', async function () {
+	it('A write to one table with replicated confirmation', async function () {
 		this.timeout(5000);
 		let name = 'name ' + Math.random();
 		let context = { replicatedConfirmation: 1 };
@@ -125,7 +124,7 @@ describe('Replication', () => {
 		result = await test_stores[1].get('2')?.value;
 		assert.equal(result.name, name);
 		assert.equal(result.extraProperty, true);
-	});*/
+	});
 
 	it('A write to second table should replicate back', async function () {
 		this.timeout(5000);
