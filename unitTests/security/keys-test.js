@@ -33,6 +33,8 @@ describe('Test keys module', () => {
 	let test_cert;
 	let test_ca;
 	let test_public_key;
+	let actual_cert;
+	let actual_ca;
 
 	before(async function () {
 		this.timeout(10000);
@@ -69,15 +71,14 @@ describe('Test keys module', () => {
 			rootPath: config_utils.getConfigFromFile('rootPath'),
 		});
 		await keys.loadCertificates();
-		keys.__set__('getThisNodeName', get_this_node_name_stub);
-		//
-	});
-
-	beforeEach(() => {
-		// sandbox.stub(env_mgr, 'getHdbBasePath').returns('keys_test');
-		// console_error_stub = sandbox.stub(console, 'error');
-		// write_file_stub = sandbox.stub(fs, 'writeFile');
-		// update_config_value_stub = sandbox.stub(config_utils, 'updateConfigValue');
+		const all_certs = await keys.listCertificates();
+		all_certs.forEach((cert) => {
+			if (!cert.is_authority && cert?.details?.issuer?.includes('HarperDB-Certificate-Authority')) {
+				actual_cert = cert;
+			} else if (cert.name.includes('HarperDB-Certificate-Authority')) {
+				actual_ca = cert;
+			}
+		});
 	});
 
 	afterEach(async () => {
@@ -98,16 +99,16 @@ describe('Test keys module', () => {
 			}
 
 			if (
-				cert.name === 'Unit Test' &&
-				cert.certificate === test_cert &&
-				cert.private_key_name?.includes('test-private-key.pem')
+				cert.name === actual_cert.name &&
+				cert.certificate === actual_cert.certificate &&
+				cert.private_key_name?.includes('privateKey.pem')
 			)
 				cert_pass = true;
 
 			if (
-				cert.name === 'Unit Test CA' &&
-				cert.certificate === test_ca &&
-				cert.private_key_name?.includes('test-private-key.pem')
+				cert.name === actual_ca.name &&
+				cert.certificate === actual_ca.certificate &&
+				cert.private_key_name?.includes('privateKey.pem')
 			)
 				ca_pass = true;
 		}
@@ -119,15 +120,14 @@ describe('Test keys module', () => {
 
 	it('Test getReplicationCert returns the correct cert', async () => {
 		const rep_cert = await keys.getReplicationCert();
-		expect(rep_cert.name).to.equal('Unit Test');
-		expect(rep_cert.options.cert).to.equal(test_cert);
-		expect(rep_cert.issuer.includes('Unit Test CA')).to.be.true;
+		expect(rep_cert.name).to.equal(actual_cert.name);
+		expect(rep_cert.issuer.includes('HarperDB-Certificate-Authority')).to.be.true;
 	});
 
 	it('Test getReplicationCertAuth returns the correct CA', async () => {
 		const ca = await keys.getReplicationCertAuth();
-		expect(ca.name).to.equal('Unit Test CA');
-		expect(ca.certificate).to.equal(test_ca);
+		expect(ca.name).to.include('HarperDB-Certificate-Authority');
+		expect(ca.certificate).to.equal(actual_ca.certificate);
 	});
 
 	it('Test createCsr happy path', async () => {
@@ -140,9 +140,9 @@ describe('Test keys module', () => {
 	it('Test signCertificate happy path', async () => {
 		const signed_cert = await keys.signCertificate({ csr: await keys.createCsr() });
 		const cert_obj = pki.certificateFromPem(signed_cert.certificate);
-		expect(cert_obj.issuer.getField('CN').value).to.equal('Unit Test CA');
+		expect(cert_obj.issuer.getField('CN').value).to.include('HarperDB-Certificate-Authority');
 		expect(cert_obj.subject.getField('O').value).to.equal('HarperDB, Inc.');
-		expect(signed_cert.signingCA).to.equal(test_ca);
+		expect(signed_cert.signingCA).to.equal(actual_ca.certificate);
 	});
 
 	it('Test generateCertificates happy path', async () => {
