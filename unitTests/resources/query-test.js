@@ -172,6 +172,16 @@ describe('Querying through Resource API', () => {
 		}
 		assert.equal(results.length, 17);
 	});
+	it('Query property in a table with limit', async function () {
+		let results = [];
+		for await (let record of QueryTable.search({
+			conditions: [{ attribute: 'relatedId', comparator: 'equals', value: 3 }],
+			limit: 1,
+		})) {
+			results.push(record);
+		}
+		assert.equal(results.length, 1);
+	});
 	it('Collapse into between query', async function () {
 		let query = parseQuery('id=ge=id-2&id=le=id-4');
 		query.explain = true;
