@@ -907,7 +907,10 @@ function createTLSSelector(type, mtls_options) {
 		}
 		harper_logger.debug('No certificate found to match', servername, 'using the first certificate');
 		// no matches, return the first/default one
-		cb(null, default_context);
+		let context = default_context;
+		if (context.replicationContext && (this.isReplicationConnection || broken_alpn_callback))
+			context = context.replicationContext;
+		cb(null, context);
 	}
 }
 function reverseSubscription(subscription) {

@@ -148,11 +148,6 @@ export function start(options) {
 								ca,
 							});
 						context.replicationContext = tls.createSecureContext(tls_options);
-						if (context === ws_server.defaultContext) {
-							// there is no SNI for ip addresses so we forced to replace the
-							// default context even though it is slower
-							ws_server.setSecureContext(tls_options);
-						}
 					} catch (error) {
 						logger.error('Error creating replication TLS config', error);
 					}
