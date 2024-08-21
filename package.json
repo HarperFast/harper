@@ -19,7 +19,9 @@
     "replication",
     "REST",
     "WebSockets",
-    "decentralized"
+    "decentralized",
+    "server-sent events",
+    "document store"
   ],
   "main": "harperdb.js",
   "bin": {
