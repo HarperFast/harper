@@ -66,12 +66,6 @@ describe('Test keys module', () => {
 		root_path = config_utils.getConfigFromFile('rootPath');
 		env_mgr.setHdbBasePath(root_path);
 		env_mgr.setProperty('storage_path', path.join(config_utils.getConfigFromFile('rootPath'), 'database'));
-		get_config_from_file_stub = sandbox.stub(config_utils, 'getConfigFromFile').returns({
-			privateKey: test_private_key_path,
-			certificate: test_cert_path,
-			certificateAuthority: test_ca_path,
-			rootPath: config_utils.getConfigFromFile('rootPath'),
-		});
 		await keys.loadCertificates();
 		const all_certs = await keys.listCertificates();
 		all_certs.forEach((cert) => {
@@ -143,9 +137,9 @@ describe('Test keys module', () => {
 	it('Test signCertificate happy path', async () => {
 		const signed_cert = await keys.signCertificate({ csr: await keys.createCsr() });
 		const cert_obj = pki.certificateFromPem(signed_cert.certificate);
-		expect(cert_obj.issuer.getField('CN').value).to.include('Unit Test CA');
+		expect(cert_obj.issuer.getField('CN').value).to.include('HarperDB-Certificate-Authority');
 		expect(cert_obj.subject.getField('O').value).to.equal('HarperDB, Inc.');
-		expect(signed_cert.signingCA).to.equal(test_ca);
+		expect(signed_cert.signingCA).to.equal(actual_ca.certificate);
 	});
 
 	it('Test generateCertificates happy path', async () => {
@@ -158,11 +152,11 @@ describe('Test keys module', () => {
 		expect(cert).to.include('BEGIN CERTIFICATE');
 	});
 
-	it('Test getHDBCertAuthority happy path', async () => {
-		const getHDBCertAuthority = keys.__get__('getHDBCertAuthority');
-		const ca = await getHDBCertAuthority();
-		expect(ca.name).to.include('HarperDB-Certificate-Authority');
-		expect(ca.private_key_name).to.equal('privateKey.pem');
+	it('Test getCertAuthority happy path', async () => {
+		const getCertAuthority = keys.__get__('getCertAuthority');
+		const key_and_cert = await getCertAuthority();
+		expect(key_and_cert?.ca?.name).to.include('HarperDB-Certificate-Authority');
+		expect(key_and_cert?.ca?.private_key_name).to.equal('privateKey.pem');
 	});
 
 	it('Test reviewSelfSignedCert create a new cert', async () => {
@@ -205,7 +199,7 @@ describe('Test keys module', () => {
 			if (
 				cert.name === test_cert_name &&
 				cert.certificate === test_cert &&
-				cert.private_key_name.includes('test-private-key.pem')
+				cert.private_key_name.includes('add-cert-test.pem')
 			)
 				cert_found = true;
 		}

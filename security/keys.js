@@ -397,10 +397,11 @@ async function signCertificate(req) {
 			}
 		}
 
-		// If the search above did not find a CA use the HDB self singed one that was created by this instance
+		// If the search above did not find a CA look for a CA with a matching private key
 		if (!private_key) {
-			cert_auth = await getHDBCertAuthority();
-			private_key = await fs.readFile(path.join(hdb_keys_dir, certificates_terms.PRIVATEKEY_PEM_NAME));
+			const cert_and_key = await getCertAuthority();
+			cert_auth = cert_and_key.ca;
+			private_key = cert_and_key.private_key;
 		}
 
 		private_key = pki.privateKeyFromPem(private_key);
@@ -534,25 +535,27 @@ async function generateCertificates(ca_private_key, public_key, ca_cert) {
 	return pki.certificateToPem(public_cert);
 }
 
-async function getHDBCertAuthority() {
-	const records = certificate_table.search({
-		conditions: [
-			{ attribute: 'is_self_signed', comparator: 'equals', value: true },
-			{ attribute: 'is_authority', comparator: 'equals', value: true },
-		],
-	});
-
-	let result = [];
-	for await (let record of records) {
-		result.push(record);
+async function getCertAuthority() {
+	const all_certs = await listCertificates();
+	let match;
+	for (let cert of all_certs) {
+		if (!cert.is_authority) continue;
+		const matching_private_key = private_keys.get(cert.private_key_name);
+		if (cert.private_key_name && matching_private_key) {
+			const key_check = new X509Certificate(cert.certificate).checkPrivateKey(createPrivateKey(matching_private_key));
+			hdb_logger.trace(`CA named: ${cert.name} found with matching private key`);
+			if (key_check) {
+				match = { ca: cert, private_key: matching_private_key };
+				break;
+			}
+		}
 	}
 
-	// There should only ever be one HDB CA created by this node
-	return result[0];
+	if (match) return match;
+	hdb_logger.trace('No CA found with matching private key');
 }
 
-async function generateCertAuthority() {
-	const { private_key, public_key } = await generateKeys();
+async function generateCertAuthority(private_key, public_key) {
 	const ca_cert = pki.createCertificate();
 
 	ca_cert.publicKey = public_key;
@@ -586,11 +589,12 @@ async function generateCertAuthority() {
 	const private_path = path.join(keys_path, certificates_terms.PRIVATEKEY_PEM_NAME);
 	await fs.writeFile(private_path, pki.privateKeyToPem(private_key));
 
-	return { private_key, public_key, ca_cert };
+	return ca_cert;
 }
 
 async function generateCertsKeys() {
-	const { private_key, public_key, ca_cert } = await generateCertAuthority();
+	const { private_key, public_key } = await generateKeys();
+	const ca_cert = await generateCertAuthority(private_key, public_key);
 	const public_cert = await generateCertificates(private_key, public_key, ca_cert);
 	await createCertificateTable(public_cert, ca_cert);
 	updateConfigCert();
@@ -615,26 +619,55 @@ async function createNatsCerts() {
 async function reviewSelfSignedCert() {
 	// Clear any cached node name var
 	clearThisNodeName();
-	loadCertificates();
+	await loadCertificates();
 	getCertTable();
+
+	let private_key;
+	const tls_private_key = env_manager.get(CONFIG_PARAMS.TLS_PRIVATEKEY);
+	const getPrivateKey = async () => {
+		if (private_key) return private_key;
+		private_key = pki.privateKeyFromPem(await fs.readFile(tls_private_key));
+		return private_key;
+	};
+
+	let ca_created;
+	let ca_and_key = await getCertAuthority();
+	if (!ca_and_key) {
+		ca_created = true;
+		hdb_logger.info('No self signed Cert Authority found, generating new self signed CA');
+		await getPrivateKey();
+		const hdb_ca = await generateCertAuthority(private_key, pki.setRsaPublicKey(private_key.n, private_key.e));
+		await setCertTable({
+			name: hdb_ca.subject.getField('CN').value,
+			uses: ['https', 'wss'],
+			certificate: pki.certificateToPem(hdb_ca),
+			private_key_name: path.basename(tls_private_key),
+			is_authority: true,
+			is_self_signed: true,
+		});
+	}
+
 	const existing_cert = await getReplicationCert();
-	if (!existing_cert) {
+	if (!existing_cert || ca_created) {
 		const cert_name = getThisNodeName();
 		hdb_logger.info(
-			`A suitable replication certificate was not found, creating new HarperDB self singed cert named: ${cert_name}`
+			`A suitable replication certificate was not found, creating new self singed cert named: ${cert_name}`
 		);
-		const hdb_ca = pki.certificateFromPem((await getHDBCertAuthority()).certificate);
+
+		ca_and_key = ca_and_key ?? (await getCertAuthority());
+		const hdb_ca = pki.certificateFromPem(ca_and_key.ca.certificate);
 		const public_key = hdb_ca.publicKey;
-		const private_key = await fs.readFile(
-			path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME, certificates_terms.PRIVATEKEY_PEM_NAME)
+		const new_public_cert = await generateCertificates(
+			pki.privateKeyFromPem(ca_and_key.private_key),
+			public_key,
+			hdb_ca
 		);
-		const new_public_cert = await generateCertificates(pki.privateKeyFromPem(private_key), public_key, hdb_ca);
 		await setCertTable({
 			name: cert_name,
 			uses: ['https', 'operations', 'wss'],
 			certificate: new_public_cert,
 			is_authority: false,
-			private_key_name: certificates_terms.PRIVATEKEY_PEM_NAME,
+			private_key_name: ca_and_key.ca.private_key_name,
 		});
 	}
 }
