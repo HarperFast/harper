@@ -1,6 +1,6 @@
 {
   "name": "harperdb",
-  "version": "4.3.20",
+  "version": "4.3.21",
   "description": "HarperDB is a distributed database, caching service, streaming broker, and application development platform focused on performance and ease of use.",
   "keywords": [
     "database",
@@ -10,10 +10,18 @@
     "broker",
     "mqtt",
     "real-time",
-    "cloud",
     "enterprise",
     "Fastify",
-    "NATS"
+    "NATS",
+    "HarperDB",
+    "Harper",
+    "clustering",
+    "replication",
+    "REST",
+    "WebSockets",
+    "decentralized",
+    "server-sent events",
+    "document store"
   ],
   "main": "harperdb.js",
   "bin": {
@@ -60,8 +68,8 @@
     "coverage": "nyc --reporter=lcov npm test"
   },
   "dependencies": {
-    "@aws-sdk/client-s3": "3.535.0",
-    "@aws-sdk/lib-storage": "3.535.0",
+    "@aws-sdk/client-s3": "3.635.0",
+    "@aws-sdk/lib-storage": "3.635.0",
     "@endo/static-module-record": "^1.0.4",
     "@fastify/autoload": "5.7.1",
     "@fastify/compress": "~6.5.0",
@@ -95,7 +103,7 @@
     "json2csv": "5.0.7",
     "jsonata": "1.8.7",
     "jsonwebtoken": "9.0.2",
-    "lmdb": "3.0.12",
+    "lmdb": "3.0.14",
     "lodash": "4.17.21",
     "mathjs": "11.12.0",
     "minimist": "1.2.8",
