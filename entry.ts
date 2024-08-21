@@ -1,5 +1,6 @@
 export { Resource } from './resources/Resource';
 import { Resource as Resource_import } from './resources/Resource';
+export { Query } from './resources/ResourceInterface';
 export { server } from './server/Server';
 import { server as server_import } from './server/Server';
 export { tables, databases } from './resources/databases';
