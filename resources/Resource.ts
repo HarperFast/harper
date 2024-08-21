@@ -34,7 +34,6 @@ const EXTENSION_TYPES = {
  */
 export class Resource implements ResourceInterface {
 	static transactions: Transaction[] & { timestamp: number };
-	[CONTEXT]: Context;
 	constructor(identifier: Id, source: any) {
 		this[ID_PROPERTY] = identifier;
 		const context = source?.[CONTEXT];
