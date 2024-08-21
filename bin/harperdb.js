@@ -7,8 +7,8 @@ if (run_clone) {
 	env_mgr.setCloneVar(true);
 }
 
-const fs = require('fs');
-const path = require('path');
+const fs = require('node:fs');
+const path = require('node:path');
 const logger = require('../utility/logging/harper_logger');
 const cli_operations = require('./cliOperations');
 const version = require('./version');
@@ -16,9 +16,29 @@ const check_node = require('../launchServiceScripts/utility/checkNodeVersion');
 const hdb_terms = require('../utility/hdbTerms');
 const { SERVICE_ACTIONS_ENUM, PACKAGE_ROOT } = hdb_terms;
 
-harperDBService();
+const HELP = `
+Usage: harperdb [command]
 
-function harperDBService() {
+With no command, harperdb will simply run HarperDB (in the foreground)
+
+Commands:
+copy-db <source> <target>       - Copies a database from source path to target path
+dev <path>                      - Run the application in dev mode with debugging, foreground logging, no auth
+install                         - Install harperdb
+operation <op> <param>=<value>  - Run an API operation and return result to the CLI, not all operations are supported
+register                        - Register harperdb
+renew-certs                     - Generate a new set of self-signed certificates
+restart                         - Restart the harperdb background process
+run <path>                      - Run the application in the specified path
+start                           - Starts a separate background process for harperdb and CLI will exit
+status                          - Print the status of HarperDB and clustering
+stop                            - Stop the harperdb background process
+help                            - Display this output
+upgrade                         - Upgrade harperdb
+version                         - Print the version
+`;
+
+async function harperdb() {
 	let node_results = check_node();
 
 	if (node_results) {
@@ -34,185 +54,103 @@ function harperDBService() {
 
 	let service;
 
-	fs.readdir(path.join(PACKAGE_ROOT, 'bin'), (err) => {
-		if (err) {
-			return logger.error(err);
-		}
+	if (!fs.existsSync(path.join(PACKAGE_ROOT, 'bin'))) {
+		logger.error(`Missing \`bin\` directory at ${PACKAGE_ROOT}`);
+		process.exit(0);
+	}
 
-		if (process.argv && process.argv[2] && !process.argv[2].startsWith('-')) {
-			service = process.argv[2].toLowerCase();
-		}
+	if (process.argv && process.argv[2] && !process.argv[2].startsWith('-')) {
+		service = process.argv[2].toLowerCase();
+	}
 
-		let cli_api_op;
-		if (!run_clone) {
-			cli_api_op = cli_operations.buildRequest();
-			if (cli_api_op.operation) service = SERVICE_ACTIONS_ENUM.OPERATION;
-		}
+	switch (service) {
+		case SERVICE_ACTIONS_ENUM.OPERATION:
+			let cli_api_op;
+			if (!run_clone) {
+				cli_api_op = cli_operations.buildRequest();
+				if (cli_api_op.operation) service = SERVICE_ACTIONS_ENUM.OPERATION;
+			}
 
-		let result = undefined;
-		switch (service) {
-			case SERVICE_ACTIONS_ENUM.OPERATION:
-				logger.trace('calling cli operations with:', cli_api_op);
-				cli_operations.cliOperations(cli_api_op).then();
-				break;
-			case SERVICE_ACTIONS_ENUM.DEV:
-				process.env.DEV_MODE = true;
-			// fall through
-			case SERVICE_ACTIONS_ENUM.RUN:
-				// Run a specific application folder
-				let app_folder = process.argv[3];
-				if (app_folder && app_folder[0] !== '-') {
-					if (!fs.existsSync(app_folder)) {
-						console.error(`The folder ${app_folder} does not exist`);
-						process.exit(1);
-					}
-					if (!fs.statSync(app_folder).isDirectory()) {
-						console.error(`The path ${app_folder} is not a folder`);
-						process.exit(1);
-					}
-					app_folder = fs.realpathSync(app_folder);
-					if (fs.existsSync(path.join(app_folder, hdb_terms.HDB_CONFIG_FILE))) {
-						// This can be used to run HDB without a boot file
-						process.env.ROOTPATH = app_folder;
-					} else {
-						process.env.RUN_HDB_APP = app_folder;
-					}
+			logger.trace('calling cli operations with:', cli_api_op);
+			return cli_operations.cliOperations(cli_api_op);
+		case SERVICE_ACTIONS_ENUM.DEV:
+			process.env.DEV_MODE = true;
+		// fall through
+		case SERVICE_ACTIONS_ENUM.RUN:
+			// Run a specific application folder
+			let app_folder = process.argv[3];
+			if (app_folder && app_folder[0] !== '-') {
+				if (!fs.existsSync(app_folder)) {
+					throw new Error(`The folder ${app_folder} does not exist`);
 				}
-				require('./run').main();
-				break;
-			case SERVICE_ACTIONS_ENUM.START:
-				if (run_clone) {
-					const clone_node = require('../utility/cloneNode/cloneNode');
-					clone_node(true).catch((err) => {
-						console.log(err);
-					});
+				if (!fs.statSync(app_folder).isDirectory()) {
+					throw new Error(`The path ${app_folder} is not a folder`);
+				}
+				app_folder = fs.realpathSync(app_folder);
+				if (fs.existsSync(path.join(app_folder, hdb_terms.HDB_CONFIG_FILE))) {
+					// This can be used to run HDB without a boot file
+					process.env.ROOTPATH = app_folder;
 				} else {
-					// The require is here to better control the flow of imports when this module is called.
-					const run = require('./run');
-					result = run.launch();
+					process.env.RUN_HDB_APP = app_folder;
 				}
-
-				break;
-			case SERVICE_ACTIONS_ENUM.INSTALL:
-				const install = require('./install');
-				install()
-					.then(() => {
-						// The require is here to better control the flow of imports when this module is called.
-						return require('./run').main(true);
-					})
-					.catch((install_err) => {
-						console.error(install_err);
-					});
-				break;
-			case SERVICE_ACTIONS_ENUM.REGISTER:
-				// register requires a lot of imports that could fail during install, so only bring it in when needed.
-				const register = require('./register');
-				register
-					.register()
-					.then((response) => {
-						console.log(response);
-					})
-					.catch((register_err) => {
-						console.error(register_err);
-					});
-				break;
-			case SERVICE_ACTIONS_ENUM.STOP:
-				// The require is here to better control the flow of imports when this module is called.
-				const stop = require('./stop');
-				stop()
-					.then(() => {
-						process.exit(0);
-					})
-					.catch((stop_err) => {
-						console.error(stop_err);
-					});
-				break;
-			case SERVICE_ACTIONS_ENUM.RESTART:
-				// The require is here to better control the flow of imports when this module is called.
-				const restart = require('./restart');
-				restart
-					.restart({})
-					.then()
-					.catch((restart_err) => {
-						logger.error(restart_err);
-						console.error(`There was an error restarting HarperDB. ${restart_err}`);
-						process.exit(1);
-					});
-				break;
-			case SERVICE_ACTIONS_ENUM.VERSION:
-				version.printVersion();
-				break;
-			case SERVICE_ACTIONS_ENUM.UPGRADE:
-				logger.setLogLevel(hdb_terms.LOG_LEVELS.INFO);
-				// The require is here to better control the flow of imports when this module is called.
-				const upgrade = require('./upgrade');
-				upgrade
-					.upgrade(null)
-					.then(() => {
-						// all done, no-op
-						console.log(`Your instance of HarperDB is up to date!`);
-					})
-					.catch((e) => {
-						logger.error(`Got an error during upgrade ${e}`);
-					});
-				break;
-			case SERVICE_ACTIONS_ENUM.STATUS:
-				const status = require('./status');
-				status()
-					.then()
-					.catch((err) => {
-						console.error(err);
-					});
-				break;
-			case SERVICE_ACTIONS_ENUM.RENEWCERTS:
-				const { generateKeys } = require('../security/keys');
-				generateKeys()
-					.then(() => {
-						console.log('Successfully renewed self-signed certificates');
-					})
-					.catch(() => {
-						console.error(err);
-					});
-				break;
-			case SERVICE_ACTIONS_ENUM.COPYDB:
-				let source_db = process.argv[3];
-				let target_db_path = process.argv[4];
-				require('./copyDb').copyDb(source_db, target_db_path);
-				break;
-			case undefined:
-				if (run_clone) {
-					const clone_node = require('../utility/cloneNode/cloneNode');
-					clone_node().catch((err) => {
-						console.log(err);
-					});
-				} else {
-					// The require is here to better control the flow of imports when this module is called.
-					require('./run').main();
-				}
-
-				break;
-			default:
-				console.warn(`The "${service}" command is not understood.`);
-			// fall through
-			case SERVICE_ACTIONS_ENUM.HELP:
-				console.log(`
-Usage: harperdb [command]
-
-With no command, harperdb will simply run HarperDB (in the foreground) 
-
-Commands:
-  run <path> - Run the application in the specified path
-  dev <path> - Run the application in dev mode with debugging, foreground logging, no auth
-  version - Print the version
-  start - Starts a separate background process for harperdb and CLI will exit
-  stop - Stop the harperdb background process
-  restart - Restart the harperdb background process
-  install - Install harperdb
-  register - Register harperdb
-  upgrade - Upgrade harperdb
-  renew-certs - Generate a new set of self-signed certificates
-  status - Print the status of HarperDB and clustering
-  <api-operation> <parameter>=<value> - Run an API operation and return result to the CLI, not all operations are supported`);
-		}
-	});
+			}
+			return require('./run').main();
+		case SERVICE_ACTIONS_ENUM.START:
+			return run_clone ? require('../utility/cloneNode/cloneNode')(true) : require('./run').launch();
+		case SERVICE_ACTIONS_ENUM.INSTALL:
+			return require('./install')().then(() => {
+				return require('./run').main(true);
+			});
+		case SERVICE_ACTIONS_ENUM.REGISTER:
+			return require('./register').register();
+		case SERVICE_ACTIONS_ENUM.STOP:
+			return require('./stop')().then(() => {
+				process.exit(0);
+			});
+		case SERVICE_ACTIONS_ENUM.RESTART:
+			return require('./restart').restart({});
+		case SERVICE_ACTIONS_ENUM.VERSION:
+			return version.version();
+		case SERVICE_ACTIONS_ENUM.UPGRADE:
+			logger.setLogLevel(hdb_terms.LOG_LEVELS.INFO);
+			// The require is here to better control the flow of imports when this module is called.
+			return require('./upgrade')
+				.upgrade(null)
+				.then(() => 'Your instance of HarperDB is up to date!');
+		case SERVICE_ACTIONS_ENUM.STATUS:
+			return require('./status')();
+		case SERVICE_ACTIONS_ENUM.RENEWCERTS:
+			return require('../security/keys')
+				.generateKeys()
+				.then(() => 'Successfully renewed self-signed certificates');
+		case SERVICE_ACTIONS_ENUM.COPYDB:
+			let source_db = process.argv[3];
+			let target_db_path = process.argv[4];
+			return require('./copyDb').copyDb(source_db, target_db_path);
+		case undefined:
+			return run_clone ? require('../utility/cloneNode/cloneNode')() : require('./run').main();
+		default:
+			console.warn(`The "${service}" command is not understood.`);
+		// fall through
+		case SERVICE_ACTIONS_ENUM.HELP:
+			return HELP;
+	}
 }
+
+harperdb()
+	.then((message) => {
+		if (message) {
+			console.log(message);
+			logger.log(message);
+		}
+		// Intentionally not calling `process.exit(0);` so if a CLI
+		// command resulted in a long running process (aka `run`),
+		// it continues to run.
+	})
+	.catch((error) => {
+		if (error) {
+			console.error(error);
+			logger.error(error);
+		}
+		process.exit(1);
+	});

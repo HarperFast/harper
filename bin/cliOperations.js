@@ -102,12 +102,12 @@ function buildRequest() {
  * @returns {Promise<void>}
  */
 async function cliOperations(req) {
-	if (!(await fs.exists(path.join(env_mgr.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE)))) {
+	if (!fs.existsSync(path.join(env_mgr.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE))) {
 		console.error('HarperDB must be running to perform this operation');
 		process.exit();
 	}
 
-	if (!(await fs.exists(env_mgr.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)))) {
+	if (!fs.existsSync(env_mgr.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET))) {
 		console.error('No domain socket found, unable to perform this operation');
 		process.exit();
 	}
