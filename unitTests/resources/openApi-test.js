@@ -17,7 +17,7 @@ describe('test openApi module', () => {
 		const result = generateJsonApi(resources);
 		expect(result).to.eql({
 			openapi: '3.0.3',
-			info: { title: 'HarperDB HTTP REST interface', version: '4.3.20' },
+			info: { title: 'HarperDB HTTP REST interface', version: version() },
 			paths: {
 				'/VariedProps/': {
 					post: {
