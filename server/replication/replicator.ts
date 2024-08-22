@@ -9,23 +9,13 @@
  * 5. Node B sends back the audit records
  */
 
-import {
-	database,
-	databases,
-	table as defineTable,
-	getDatabases,
-	onUpdatedTable,
-	table,
-	onRemovedDB,
-} from '../../resources/databases';
+import { databases, getDatabases, onUpdatedTable, onRemovedDB } from '../../resources/databases';
 import { ID_PROPERTY, Resource } from '../../resources/Resource';
 import { IterableEventQueue } from '../../resources/IterableEventQueue';
-import { onMessageByType } from '../threads/manageThreads';
 import {
 	NodeReplicationConnection,
 	createWebSocket,
 	OPERATION_REQUEST,
-	awaiting_response,
 	replicateOverWS,
 	database_subscriptions,
 	table_update_listeners,
@@ -37,7 +27,6 @@ import { X509Certificate } from 'crypto';
 import { readFileSync } from 'fs';
 export { startOnMainThread } from './subscriptionManager';
 import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes, shouldReplicateToNode } from './knownNodes';
-import { encode } from 'msgpackr';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 import { exportIdMapping } from './nodeIdMapping';
 import * as tls from 'node:tls';
