@@ -1,4 +1,11 @@
-import { startWorker, setMonitorListener, setMainIsWorker, shutdownWorkers, threadsHaveStarted } from './manageThreads';
+import {
+	startWorker,
+	setMonitorListener,
+	setMainIsWorker,
+	shutdownWorkers,
+	onMessageFromWorkers,
+	threadsHaveStarted,
+} from './manageThreads';
 import { createServer, Socket } from 'net';
 import * as hdb_terms from '../../utility/hdbTerms';
 import * as harper_logger from '../../utility/logging/harper_logger';
@@ -12,6 +19,7 @@ const handle_socket = [];
 let direct_thread_server;
 let current_thread_count = 0;
 const workers_ready = [];
+let license_warning_interval_id;
 
 if (isMainThread) {
 	process.on('uncaughtException', (error) => {
@@ -19,6 +27,13 @@ if (isMainThread) {
 		if (error.code === 'ECONNRESET') return; // that's what network connections do
 		if (error.message === 'write EIO') return; // that means the terminal is closed
 		console.error('uncaughtException', error);
+	});
+
+	onMessageFromWorkers((message) => {
+		if (message.type === hdb_terms.ITC_EVENT_TYPES.RESTART && license_warning_interval_id) {
+			clearInterval(license_warning_interval_id);
+			licenseWarning();
+		}
 	});
 }
 
@@ -36,13 +51,7 @@ export async function startHTTPThreads(thread_count = 2, dynamic_threads?: boole
 			}
 			await loadRootComponents();
 		}
-		const license_warning = checkMemoryLimit();
-		if (license_warning && !process.env.DEV_MODE) {
-			console.error(license_warning);
-			setInterval(() => {
-				harper_logger.notify(license_warning);
-			}, LICENSE_NAG_PERIOD).unref();
-		}
+		licenseWarning();
 		for (let i = 0; i < thread_count; i++) {
 			startHTTPWorker(i, thread_count);
 		}
@@ -51,6 +60,17 @@ export async function startHTTPThreads(thread_count = 2, dynamic_threads?: boole
 		threadsHaveStarted();
 	}
 }
+
+function licenseWarning() {
+	const license_warning = checkMemoryLimit();
+	if (license_warning && !process.env.DEV_MODE) {
+		console.error(license_warning);
+		license_warning_interval_id = setInterval(() => {
+			harper_logger.notify(license_warning);
+		}, LICENSE_NAG_PERIOD).unref();
+	}
+}
+
 function startHTTPWorker(index, thread_count = 1, shutdown_when_idle?) {
 	current_thread_count++;
 	startWorker('server/threads/threadServer.js', {

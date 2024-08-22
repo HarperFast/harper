@@ -36,8 +36,8 @@ async function installAllRootModules(ignore_scripts = false) {
 	await checkNPMInstalled();
 	let ssh_key_added = false;
 	let env_vars = process.env;
-	if (await fs.pathExists(ssh_dir)) {
-		(await fs.readdir(ssh_dir)).forEach((file) => {
+	if (fs.pathExistsSync(ssh_dir)) {
+		fs.readdirSync(ssh_dir).forEach((file) => {
 			if (file.includes('.key') && !ssh_key_added) {
 				env_vars = Object.assign(
 					{

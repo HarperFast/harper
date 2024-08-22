@@ -13,6 +13,9 @@ describe('test openApi module', () => {
 		({ resources } = require('../../resources/Resources'));
 	});
 
+	// TODO: this tests a zillion things that are irrelevant to the actual test, needs to be fixed to
+	// actually test the openApi module and not the shape of every single resource in unit tests and producing false
+	// positives
 	it('Test API spec is returned', () => {
 		const result = generateJsonApi(resources);
 		expect(result).to.eql({

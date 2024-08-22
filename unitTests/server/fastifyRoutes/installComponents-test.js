@@ -54,16 +54,18 @@ describe('Test installApps module', () => {
 	let write_file_stub;
 	let unlink_stub;
 	let ensure_sym_link;
+	let ensure_dir;
 
 	before(() => {
 		env_mgr.setProperty('rootPath', 'unit-test');
 		install_components.__set__('hdb_terms.PACKAGE_ROOT', 'comps/unit/tests');
-		read_json_stub = sandbox.stub(fs, 'readJson').resolves(fake_installed_package_json);
+		read_json_stub = sandbox.stub(fs, 'readJsonSync').returns(fake_installed_package_json);
 		get_config_stub = sandbox.stub(config_utils, 'getConfiguration').returns(fake_components);
 		install_root_mod_stub = sandbox.stub(npm_utils, 'installAllRootModules');
-		write_file_stub = sandbox.stub(fs, 'writeFile');
-		unlink_stub = sandbox.stub(fs, 'unlink');
+		write_file_stub = sandbox.stub(fs, 'writeFileSync');
+		unlink_stub = sandbox.stub(fs, 'unlinkSync');
 		ensure_sym_link = sandbox.stub(fs, 'ensureSymlink');
+		ensure_dir = sandbox.stub(fs, 'ensureDirSync');
 	});
 
 	beforeEach(() => {
@@ -87,7 +89,7 @@ describe('Test installApps module', () => {
 	});
 
 	it('Test more components added to existing dependencies', async () => {
-		read_json_stub.resolves({
+		read_json_stub.returns({
 			dependencies: {
 				unit_test_package2: 'github:HarperDB/unit_test_package2',
 				unit_test_package1: 'github:HarperDB/unit_test_package1',
@@ -111,7 +113,7 @@ describe('Test installApps module', () => {
 	});
 
 	it('Test install is not called is there is no change', async () => {
-		read_json_stub.resolves({
+		read_json_stub.returns({
 			dependencies: {
 				unit_test_package2: 'github:HarperDB/unit_test_package2',
 				unit_test_package1: 'github:HarperDB/unit_test_package1',

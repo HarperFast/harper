@@ -27,12 +27,12 @@ async function installComponents() {
 	};
 
 	const node_mods_path = path.join(root_path, 'node_modules');
-	await fs.ensureDir(node_mods_path);
+	fs.ensureDirSync(node_mods_path);
 	let install_pkg_json;
 	let pkg_json_exists = true;
 	let update_occurred = false;
 	try {
-		install_pkg_json = await fs.readJson(pkg_json_path);
+		install_pkg_json = fs.readJsonSync(pkg_json_path);
 	} catch (err) {
 		if (hdb_utils.isEmptyOrZeroLength(components)) return;
 		if (err.code !== hdb_terms.NODE_ERROR_CODES.ENOENT) throw err;
@@ -42,7 +42,7 @@ async function installComponents() {
 	if (!hdb_utils.isEmptyOrZeroLength(components)) {
 		// Build package.json from all component entries in harperdb-config
 		for (const { name, package: pkg } of components) {
-			const pkg_prefix = await getPkgPrefix(pkg);
+			const pkg_prefix = getPkgPrefix(pkg);
 			pkg_json.dependencies[name] = pkg_prefix + pkg;
 		}
 
@@ -56,7 +56,7 @@ async function installComponents() {
 		// Loop through apps in config and see if they are defined in package.json, if they are check that the pkg in app matches what's in package file.
 		for (const { name, package: pkg } of components) {
 			const installed_pkg = install_pkg_json.dependencies[name];
-			const pkg_prefix = await getPkgPrefix(pkg);
+			const pkg_prefix = getPkgPrefix(pkg);
 			if (installed_pkg === undefined || installed_pkg !== pkg_prefix + pkg) {
 				update_occurred = true;
 				break;
@@ -96,10 +96,10 @@ function getComponentsConfig() {
 	return comps;
 }
 
-async function getPkgPrefix(pkg) {
+function getPkgPrefix(pkg) {
 	if (pkg.includes(':')) return '';
 	if (pkg.startsWith('@') || (!pkg.startsWith('@') && !pkg.includes('/'))) return 'npm:';
-	if (path.extname(pkg) || (await fs.pathExists(pkg))) return 'file:';
+	if (path.extname(pkg) || fs.existsSync(pkg)) return 'file:';
 	return 'github:';
 }
 
@@ -112,14 +112,14 @@ async function getPkgPrefix(pkg) {
  */
 async function installPackages(pkg_json_path, pkg_json, install_pkg_json) {
 	hdb_log.trace('npm installing components package.json', pkg_json);
-	await fs.writeFile(pkg_json_path, JSON.stringify(pkg_json, null, '  '));
+	fs.writeFileSync(pkg_json_path, JSON.stringify(pkg_json, null, '  '));
 	try {
 		const npm_utils = require('../utility/npmUtilities');
 		await npm_utils.installAllRootModules(eng_mgr.get(hdb_terms.CONFIG_PARAMS.IGNORE_SCRIPTS) === true);
 	} catch (error) {
 		// revert back to previous package.json if we don't succeed
-		if (install_pkg_json) await fs.writeFile(pkg_json_path, JSON.stringify(install_pkg_json, null, '  '));
-		else await fs.unlink(pkg_json_path);
+		if (install_pkg_json) fs.writeFileSync(pkg_json_path, JSON.stringify(install_pkg_json, null, '  '));
+		else fs.unlinkSync(pkg_json_path);
 		throw error;
 	}
 }
