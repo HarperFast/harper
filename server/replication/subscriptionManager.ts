@@ -120,7 +120,17 @@ export async function startOnMainThread(options) {
 		if (!(node.replicates === true || node.replicates?.sends) && !node.subscriptions?.length && !db_replication_workers)
 			return; // we don't have any subscriptions and we haven't connected yet, so just return
 		logger.info(`Added node ${node.name} at ${node.url} for process ${getThisNodeName()}`);
-		node_map.set(node.name, node);
+		if (node.name) {
+			// don't add to a map if we don't have a name (yet)
+			// replace any node with same url
+			for (let [key, existing_node] of node_map) {
+				if (node.url === existing_node.url) {
+					node_map.delete(key);
+					break;
+				}
+			}
+			node_map.set(node.name, node);
+		}
 		const databases = getDatabases();
 		if (!db_replication_workers) {
 			db_replication_workers = new Map();
