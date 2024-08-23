@@ -12,7 +12,7 @@ import * as REST from '../server/REST';
 import * as fastify_routes_handler from '../server/fastifyRoutes';
 import * as staticFiles from '../server/static';
 import fg from 'fast-glob';
-import { watchDir, restartWorkers, getWorkerIndex } from '../server/threads/manageThreads';
+import { watchDir, getWorkerIndex } from '../server/threads/manageThreads';
 import harper_logger from '../utility/logging/harper_logger';
 import { secureImport } from '../security/jsLoader';
 import { server } from '../server/Server';
@@ -28,14 +28,15 @@ import * as natsReplicator from '../server/nats/natsReplicator';
 import * as mqtt from '../server/mqtt';
 import { getConfigObj, resolvePath } from '../config/configUtils';
 import { createReuseportFd } from '../server/serverHelpers/Request';
+import { Context } from '../resources/ResourceInterface';
 
 const { readFile } = promises;
 
-const CONFIG_FILENAME = 'config.yaml';
 const CF_ROUTES_DIR = resolvePath(env.get(CONFIG_PARAMS.COMPONENTSROOT));
 let loaded_components = new Map<any, any>();
 let watches_setup;
 let resources;
+// eslint-disable-next-line radar/no-unused-collection -- This is not used within this file, but is used within `./operations.js`
 export let component_errors = new Map();
 
 /**
@@ -59,7 +60,9 @@ export function loadComponentDirectories(loaded_plugin_modules?: Map<any, any>, 
 	}
 	const hdb_app_folder = process.env.RUN_HDB_APP;
 	if (hdb_app_folder) {
-		cfs_loaded.push(loadComponent(hdb_app_folder, resources, hdb_app_folder, false, null, process.env.DEV_MODE));
+		cfs_loaded.push(
+			loadComponent(hdb_app_folder, resources, hdb_app_folder, false, null, Boolean(process.env.DEV_MODE))
+		);
 	}
 	return Promise.all(cfs_loaded).then(() => {
 		watches_setup = true;
@@ -142,10 +145,10 @@ export async function loadComponent(
 	resources: Resources,
 	origin: string,
 	is_root?: boolean,
-	provided_loaded_components?: Map,
+	provided_loaded_components?: Map<any, any>,
 	auto_reload?: boolean
 ) {
-	let resolved_folder = realpathSync(folder);
+	const resolved_folder = realpathSync(folder);
 	if (loaded_paths.has(resolved_folder)) return;
 	loaded_paths.set(resolved_folder, true);
 	if (provided_loaded_components) loaded_components = provided_loaded_components;
@@ -154,9 +157,7 @@ export async function loadComponent(
 		if (is_root) component_errors = new Map();
 		const config_path = join(folder, is_root ? 'harperdb-config.yaml' : 'config.yaml');
 		if (existsSync(config_path)) {
-			config = is_root
-				? getConfigObj()
-				: parseDocument(readFileSync(config_path, 'utf8'), { simpleKeys: true }).toJSON();
+			config = is_root ? getConfigObj() : parseDocument(readFileSync(config_path, 'utf8')).toJSON();
 		} else {
 			config = DEFAULT_CONFIG;
 		}
@@ -176,7 +177,7 @@ export async function loadComponent(
 		} catch (error) {
 			harper_logger.error('Error symlinking harperdb module', error);
 		}
-		const handler_modules = [];
+
 		let has_functionality = is_root;
 		// iterate through the app handlers so they can each do their own loading process
 		for (const component_name in config) {
@@ -204,9 +205,7 @@ export async function loadComponent(
 					}
 				} else extension_module = TRUSTED_RESOURCE_LOADERS[component_name];
 				if (!extension_module) continue;
-				// our own trusted modules can be directly retrieved from our map, otherwise use the (configurable) secure
-				// module loader
-				handler_modules.push(extension_module);
+				// our own trusted modules can be directly retrieved from our map, otherwise use the (configurable) secure module loader
 				const ensureTable = (options) => {
 					options.origin = origin;
 					return table(options);
@@ -259,10 +258,17 @@ export async function loadComponent(
 							...component_config,
 						})) || extension_module;
 				loaded_components.set(extension_module, true);
+
 				// a loader is configured to specify a glob of files to be loaded, we pass each of those to the plugin
 				// handling files ourselves allows us to pass files to sandboxed modules that might not otherwise have
 				// access to the file system.
-				if ((extension_module.handleFile || extension_module.handleDirectory) && component_config.files) {
+				if (
+					(extension_module.handleFile ||
+						extension_module.handleDirectory ||
+						extension_module.setupFile ||
+						extension_module.setupDirectory) &&
+					component_config.files != undefined
+				) {
 					if (component_config.files.includes('..')) throw handleHDBError('Can not reference parent directories');
 					const files = join(folder, component_config.files).replace(/\\/g, '/'); // must normalize to slashes for fast-glob to work
 					const end_of_fixed_path = files.indexOf('/*');
@@ -374,33 +380,49 @@ export async function loadComponent(
 		resources.set('', new ErrorResource(error));
 	}
 }
-class ErrorResource extends Resource {
-	constructor(public error) {
-		super();
-	}
-	get() {
+class ErrorResource implements Resource {
+	constructor(public error) {}
+	allowRead(): never {
 		throw this.error;
 	}
-	post() {
+	allowUpdate(): never {
 		throw this.error;
 	}
-	put() {
+	allowCreate(): never {
 		throw this.error;
 	}
-	delete() {
+	allowDelete(): never {
 		throw this.error;
 	}
-	connect() {
+	getId(): never {
+		throw this.error;
+	}
+	getContext(): Context {
+		throw this.error;
+	}
+	get(): never {
+		throw this.error;
+	}
+	post(): never {
+		throw this.error;
+	}
+	put(): never {
+		throw this.error;
+	}
+	delete(): never {
+		throw this.error;
+	}
+	connect(): never {
 		throw this.error;
 	}
 	getResource() {
 		// all child paths resolve back to reporting this error
 		return this;
 	}
-	publish() {
+	publish(): never {
 		throw this.error;
 	}
-	subscribe() {
+	subscribe(): never {
 		throw this.error;
 	}
 }
