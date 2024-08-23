@@ -47,13 +47,13 @@ interface ConditionGroup {
 	conditions: Condition[];
 	operator?: string;
 }
-type Condition = DirectCondition | ConditionGroup;
-interface Sort {
+export type Condition = DirectCondition | ConditionGroup;
+export interface Sort {
 	attribute: string;
 	descending?: boolean;
 	next?: Sort;
 }
-interface SubSelect {
+export interface SubSelect {
 	name: string;
 	select: (string | SubSelect)[];
 }

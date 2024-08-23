@@ -8,7 +8,16 @@ import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME 
 import { Database, SKIP } from 'lmdb';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
-import { Query, ResourceInterface, Request, SubscriptionRequest, Id, Context } from './ResourceInterface';
+import {
+	Query,
+	ResourceInterface,
+	SubscriptionRequest,
+	Id,
+	Context,
+	Condition,
+	Sort,
+	SubSelect,
+} from './ResourceInterface';
 import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
 import { DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction';
 import * as env_mngr from '../utility/environment/environmentManager';
@@ -19,11 +28,9 @@ import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc';
 import { databases, table } from './databases';
 import {
 	searchByIndex,
-	filterByType,
 	findAttribute,
 	estimateCondition,
 	flattenKey,
-	intersectionEstimate,
 	COERCIBLE_OPERATORS,
 	executeConditions,
 } from './search';
@@ -38,6 +45,22 @@ import { getUpdateRecord, PENDING_LOCAL_TIME } from './RecordEncoder';
 import { recordAction, recordActionBinary } from './analytics';
 import { rebuildUpdateBefore } from './crdt';
 import { appendHeader } from '../server/serverHelpers/Headers';
+type Attribute = {
+	name: string;
+	type: string;
+	assignCreatedTime?: boolean;
+	assignUpdatedTime?: boolean;
+	expiresAt?: boolean;
+	isPrimaryKey?: boolean;
+};
+type Entry = {
+	key: any;
+	value: any;
+	version: number;
+	localTime: number;
+	expiresAt: number;
+	deref?: () => any;
+};
 
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
@@ -111,18 +134,18 @@ export function makeTable(options) {
 	let { attributes } = options;
 	if (!attributes) attributes = [];
 	const updateRecord = getUpdateRecord(primary_store, table_id, audit_store);
-	let source_load; // if a source has a load function (replicator), record it here
-	let has_source_get, has_source_available;
-	let primary_key_attribute = {};
+	let source_load: any; // if a source has a load function (replicator), record it here
+	let has_source_get: any;
+	let primary_key_attribute: Attribute = {};
 	let last_eviction_completion: Promise<void> = Promise.resolve();
-	let created_time_property, updated_time_property, expires_at_property;
+	let created_time_property: Attribute, updated_time_property: Attribute, expires_at_property: Attribute;
 	for (const attribute of attributes) {
 		if (attribute.assignCreatedTime || attribute.name === '__createdtime__') created_time_property = attribute;
 		if (attribute.assignUpdatedTime || attribute.name === '__updatedtime__') updated_time_property = attribute;
 		if (attribute.expiresAt) expires_at_property = attribute;
 		if (attribute.isPrimaryKey) primary_key_attribute = attribute;
 	}
-	let delete_callback_handle;
+	let delete_callback_handle: { remove: () => void };
 	let prefetch_ids = [];
 	let prefetch_callbacks = [];
 	let until_next_prefetch = 1;
@@ -130,19 +153,19 @@ export function makeTable(options) {
 	let apply_to_sources = {};
 	let apply_to_sources_intermediate = {};
 	let cleanup_interval = 86400000;
-	let last_cleanup_interval;
-	let cleanup_timer;
-	let property_resolvers;
+	let last_cleanup_interval: NodeJS.Timeout;
+	let cleanup_timer: NodeJS.Timeout;
+	let property_resolvers: any;
 	let has_relationships = false;
 	let last_entry;
-	let running_record_expiration;
-	let residency_list_to_id = new Map();
-	let residency_id_to_list = new Map();
-	let id_incrementer;
+	let running_record_expiration: boolean;
+	const residency_list_to_id = new Map();
+	const residency_id_to_list = new Map();
+	let id_incrementer: BigInt64Array;
 	let replicate_to_count;
-	let database_replications = env_mngr.get(CONFIG_PARAMS.REPLICATION_DATABASES);
+	const database_replications = env_mngr.get(CONFIG_PARAMS.REPLICATION_DATABASES);
 	if (Array.isArray(database_replications)) {
-		for (let db_replication of database_replications) {
+		for (const db_replication of database_replications) {
 			if (db_replication.name === database_name && db_replication.replicateTo >= 0) {
 				replicate_to_count = db_replication.replicateTo;
 				break;
@@ -167,7 +190,6 @@ export function makeTable(options) {
 		static attributes = attributes;
 		static replicate = replicate;
 		static sealed = sealed;
-		static expirationTimer;
 		static createdTimeProperty = created_time_property;
 		static updatedTimeProperty = updated_time_property;
 		static propertyResolvers;
@@ -352,7 +374,7 @@ export function makeTable(options) {
 										if (event.remoteNodeIds?.length > 0) {
 											// the key for tracking the sequence ids and txn times received from this node
 											const seq_key = [Symbol.for('seq'), event.remoteNodeIds[0]];
-											let existing_seq = dbis_db.get(seq_key);
+											const existing_seq = dbis_db.get(seq_key);
 											let node_states = existing_seq?.nodes;
 											if (!node_states) {
 												// if we don't have a list of nodes, we need to create one, with the main one using the existing seqId
@@ -361,7 +383,7 @@ export function makeTable(options) {
 											// if we are not the only node in the list, we are getting proxied subscriptions, and we need
 											// to track this separately
 											// track the other nodes in the list
-											for (let node_id of event.remoteNodeIds.slice(1)) {
+											for (const node_id of event.remoteNodeIds.slice(1)) {
 												let node_state = node_states.find((existing_node) => existing_node.name === node_id);
 												if (!node_state) {
 													node_state = { id: node_id, seqId: 0 };
@@ -370,7 +392,7 @@ export function makeTable(options) {
 												node_state.seqId = Math.max(existing_seq?.seqId ?? 1, event.localTime);
 												if (node_id === event.nodeId) node_state.lastTxnTime = event.timestamp;
 											}
-											let seq_id = Math.max(existing_seq?.seqId ?? 1, event.localTime);
+											const seq_id = Math.max(existing_seq?.seqId ?? 1, event.localTime);
 											dbis_db.put(seq_key, {
 												seqId: seq_id,
 												nodes: node_states,
@@ -407,7 +429,7 @@ export function makeTable(options) {
 									} else if (event.type === 'define_schema') {
 										// ensure table has the provided attributes
 										const updated_attributes = this.attributes.slice(0);
-										let has_changes;
+										let has_changes: boolean;
 										for (const attribute of event.attributes) {
 											if (!updated_attributes.find((existing) => existing.name === attribute.name)) {
 												updated_attributes.push(attribute);
@@ -470,7 +492,7 @@ export function makeTable(options) {
 		 * @param options An important option is ensureLoaded, which can be used to indicate that it is necessary for a caching table to load data from the source if there is not a local copy of the data in the table (usually not necessary for a delete, for example).
 		 * @returns
 		 */
-		static getResource(id: Id, request, resource_options?: any): Promise<TableResource> | TableResource {
+		static getResource(id: Id, request: Context, resource_options?: any): Promise<TableResource> | TableResource {
 			const resource: TableResource = super.getResource(id, request, resource_options) as any;
 			if (id != null) {
 				checkValidId(id);
@@ -542,7 +564,7 @@ export function makeTable(options) {
 			if (type === 'String' || type === 'ID') return super.getNewId();
 			if (!id_incrementer) {
 				// if there is no id incrementer yet, we get or create one
-				let id_allocation_entry = primary_store.getEntry(Symbol.for('id_allocation'));
+				const id_allocation_entry = primary_store.getEntry(Symbol.for('id_allocation'));
 				let id_allocation = id_allocation_entry?.value;
 				let last_key;
 				if (
@@ -574,16 +596,16 @@ export function makeTable(options) {
 			}
 			// this is where we actually do the atomic incrementation. All the threads should be pointing to the same
 			// memory location of this incrementer, so we can be sure that the id is unique and sequential.
-			let next_id = Number(Atomics.add(id_incrementer, 0, 1n));
+			const next_id = Number(Atomics.add(id_incrementer, 0, 1n));
 			const async_id_expansion_threshold = type === 'Int' ? 0x200 : 0x100000;
 			if (next_id + async_id_expansion_threshold >= id_incrementer.maxSafeId) {
 				const updateEnd = (in_txn) => {
 					// we update the end of the allocation range after verifying we don't have any conflicting ids in front of us
 					id_incrementer.maxSafeId = next_id + (type === 'Int' ? 0x3ff : 0x3fffff);
 					let id_after = (type === 'Int' ? Math.pow(2, 31) : Math.pow(2, 49)) - 1;
-					let read_txn = in_txn ? undefined : primary_store.useReadTransaction();
+					const read_txn = in_txn ? undefined : primary_store.useReadTransaction();
 					// get the latest id after the read transaction to make sure we aren't reading any new ids that we assigned from this node
-					let newest_id = Number(id_incrementer[0]);
+					const newest_id = Number(id_incrementer[0]);
 					for (const key of primary_store.getKeys({
 						start: newest_id + 1,
 						end: id_after,
@@ -593,7 +615,7 @@ export function makeTable(options) {
 						id_after = key;
 					}
 					read_txn?.done();
-					let { value: updated_id_allocation, version } = primary_store.getEntry(Symbol.for('id_allocation'));
+					const { value: updated_id_allocation, version } = primary_store.getEntry(Symbol.for('id_allocation'));
 					if (id_incrementer.maxSafeId < id_after) {
 						// note that this is just a noop/direct callback if we are inside the sync transaction
 						// first check to see if it actually got updated by another thread
@@ -689,7 +711,7 @@ export function makeTable(options) {
 				// we have to ensure that the id allocation is atomic and multiple threads don't set different ids, so we use a sync transaction
 				return primary_store.transactionSync(() => {
 					// first check to see if it actually got set by another thread
-					let updated_id_allocation = primary_store.getEntry(Symbol.for('id_allocation'));
+					const updated_id_allocation = primary_store.getEntry(Symbol.for('id_allocation'));
 					if ((updated_id_allocation?.version ?? null) == expected_version) {
 						logger.info?.('Allocated new id range', id_allocation);
 						primary_store.put(Symbol.for('id_allocation'), id_allocation, Date.now());
@@ -752,16 +774,16 @@ export function makeTable(options) {
 			}
 			if (count >= 0 && server.nodes) {
 				// if we are given a count, choose nodes and return them
-				let replicate_to = [server.hostname]; // start with ourselves, we should always be in the list
+				const replicate_to = [server.hostname]; // start with ourselves, we should always be in the list
 				if (previous_residency) {
 					// if we have a previous residency, we should preserve it
 					replicate_to.push(...previous_residency.slice(0, count));
 				} else {
 					// otherwise need to create a new list of nodes to replicate to, based on available nodes
 					// randomize this to ensure distribution of data
-					let starting_index = Math.floor(server.nodes.length * Math.random());
+					const starting_index = Math.floor(server.nodes.length * Math.random());
 					replicate_to.push(...server.nodes.slice(starting_index, starting_index + count));
-					let remaining_to_add = starting_index + count - server.nodes.length;
+					const remaining_to_add = starting_index + count - server.nodes.length;
 					if (remaining_to_add > 0) replicate_to.push(...server.nodes.slice(0, remaining_to_add));
 				}
 				return replicate_to;
@@ -1060,7 +1082,7 @@ export function makeTable(options) {
 				beforeIntermediate: apply_to_sources_intermediate.relocate?.bind(this, context, id),
 				commit: (txn_time, existing_entry) => {
 					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId)) return;
-					let residency = TableResource.getResidencyRecord(options.residencyId);
+					const residency = TableResource.getResidencyRecord(options.residencyId);
 					let metadata = 0;
 					let new_record = null;
 					const existing_record = existing_entry?.value;
@@ -1104,11 +1126,11 @@ export function makeTable(options) {
 		 * @param entry
 		 */
 		static _recordRelocate(existing_entry, entry) {
-			let context = {
+			const context = {
 				previousResidency: this.getResidencyRecord(existing_entry.residencyId),
 				isRelocation: true,
 			};
-			let residency = this.getResidency(entry.value, context);
+			const residency = this.getResidency(entry.value, context);
 			let residency_id: number;
 			if (residency) {
 				if (!Array.isArray(residency)) {
@@ -1117,7 +1139,7 @@ export function makeTable(options) {
 				if (!residency.includes(server.hostname)) return; // if we aren't in the residency, we don't need to do anything, we are not responsible for storing this record
 				residency_id = getResidencyId(residency);
 			}
-			let metadata = 0;
+			const metadata = 0;
 			const record = updateRecord(
 				existing_entry.key,
 				entry.value, // store the record we downloaded
@@ -1194,13 +1216,13 @@ export function makeTable(options) {
 		put(record): void {
 			this.update(record, true);
 		}
-		patch(record_update): void {
+		patch(record_update: any): void {
 			this.update(record_update, false);
 		}
 		// perform the actual write operation; this may come from a user request to write (put, post, etc.), or
 		// a notification that a write has already occurred in the canonical data source, we need to update our
 		// local copy
-		_writeUpdate(record_update, full_update: boolean, options?: any) {
+		_writeUpdate(record_update: any, full_update: boolean, options?: any) {
 			const context = this[CONTEXT];
 			const transaction = txnForContext(context);
 
@@ -1284,7 +1306,7 @@ export function makeTable(options) {
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
-					let precedes_existing_version = precedesExistingVersion(txn_time, existing_entry, options?.nodeId);
+					const precedes_existing_version = precedesExistingVersion(txn_time, existing_entry, options?.nodeId);
 					if (precedes_existing_version) {
 						// TODO: can the previous version be older, by a prior version be newer?
 						if (audit) {
@@ -1336,7 +1358,7 @@ export function makeTable(options) {
 					if (options?.residencyId != undefined) residency_id = options.residencyId;
 					else {
 						if (entry?.residencyId) context.previousResidency = TableResource.getResidencyRecord(entry.residencyId);
-						let residency = TableResource.getResidency(record_to_store, context);
+						const residency = TableResource.getResidency(record_to_store, context);
 						if (residency) {
 							if (!Array.isArray(residency)) {
 								throw new Error('Residency must be an array, got: ' + residency);
@@ -1463,9 +1485,9 @@ export function makeTable(options) {
 			let order_aligned_condition;
 			const filtered = {};
 
-			function prepareConditions(conditions, operator) {
+			function prepareConditions(conditions: Condition[], operator: string) {
 				// some validation:
-				let is_intersection;
+				let is_intersection: boolean;
 				switch (operator) {
 					case 'and':
 					case undefined:
@@ -1479,7 +1501,7 @@ export function makeTable(options) {
 						throw new Error('Invalid operator ' + operator);
 				}
 				const condition_by_name = is_intersection && {};
-				let has_multiple_for_name;
+				let has_multiple_for_name: boolean;
 				for (const condition of conditions) {
 					if (condition.conditions) {
 						condition.conditions = prepareConditions(condition.conditions, condition.operator);
@@ -1542,7 +1564,7 @@ export function makeTable(options) {
 				}
 				return conditions;
 			}
-			function orderConditions(conditions, operator) {
+			function orderConditions(conditions: Condition[], operator: string) {
 				if (request.enforceExecutionOrder) return conditions; // don't rearrange conditions
 				for (const condition of conditions) {
 					if (condition.conditions) condition.conditions = orderConditions(condition.conditions, condition.operator);
@@ -1553,7 +1575,7 @@ export function makeTable(options) {
 				if (conditions.length > 1 && operator !== 'or') return sortBy(conditions, estimateCondition(TableResource));
 				else return conditions;
 			}
-			function coerceTypedValues(value, attribute) {
+			function coerceTypedValues(value: any, attribute: Attribute) {
 				if (Array.isArray(value)) {
 					return value.map((value) => coerceType(value, attribute));
 				}
@@ -1642,7 +1664,7 @@ export function makeTable(options) {
 				read_txn,
 				request,
 				context,
-				(results, filters) => transformToEntries(results, select, context, read_txn, filters),
+				(results: any[], filters: Function[]) => transformToEntries(results, select, context, read_txn, filters),
 				filtered
 			);
 			const ensure_loaded = request.ensureLoaded !== false;
@@ -1663,7 +1685,7 @@ export function makeTable(options) {
 				context,
 				transformToRecord
 			);
-			function applyOffset(entries) {
+			function applyOffset(entries: any[]) {
 				if (request.offset || request.limit !== undefined)
 					return entries.slice(
 						request.offset,
@@ -1701,7 +1723,14 @@ export function makeTable(options) {
 		 * @param can_skip
 		 * @returns
 		 */
-		static transformToOrderedSelect(entries, select, sort, context, read_txn, transformToRecord) {
+		static transformToOrderedSelect(
+			entries: any[],
+			select: (string | SubSelect)[],
+			sort: Sort,
+			context: Context,
+			read_txn: any,
+			transformToRecord: Function
+		) {
 			let results = new RangeIterable();
 			if (sort) {
 				// there might be some situations where we don't need to transform to entries for sorting, not sure
@@ -1709,16 +1738,16 @@ export function makeTable(options) {
 				let ordered;
 				// if we are doing post-ordering, we need to get records first, then sort them
 				results.iterate = function () {
-					let sorted_array_iterator;
+					let sorted_array_iterator: IterableIterator<any>;
 					const db_iterator = entries[Symbol.asyncIterator]
 						? entries[Symbol.asyncIterator]()
 						: entries[Symbol.iterator]();
-					let db_done;
+					let db_done: boolean;
 					const db_ordered_attribute = sort.dbOrderedAttribute;
-					let enqueued_entry_for_next_group;
-					let last_grouping_value;
+					let enqueued_entry_for_next_group: any;
+					let last_grouping_value: any;
 					let first_entry = true;
-					function createComparator(order) {
+					function createComparator(order: Sort) {
 						const next_comparator = order.next && createComparator(order.next);
 						const descending = order.descending;
 						return (entry_a, entry_b) => {
@@ -1732,7 +1761,7 @@ export function makeTable(options) {
 					const comparator = createComparator(sort);
 					return {
 						async next() {
-							let iteration;
+							let iteration: IteratorResult<any>;
 							if (sorted_array_iterator) {
 								iteration = sorted_array_iterator.next();
 								if (iteration.done) {
@@ -1888,7 +1917,7 @@ export function makeTable(options) {
 								lazy: select?.length < 4,
 							},
 							this?.isSync,
-							(entry) => entry
+							(entry: Entry) => entry
 						);
 						if (entry?.then) return entry.then(transform.bind(this));
 						record = entry?.value;
@@ -1906,7 +1935,7 @@ export function makeTable(options) {
 				}
 				if (record == null) return can_skip ? SKIP : record;
 				if (select && !(select[0] === '*' && select.length === 1)) {
-					let promises;
+					let promises: Promise<any>[];
 					const selectAttribute = (attribute, callback) => {
 						let attribute_name;
 						if (typeof attribute === 'object') {
@@ -1927,7 +1956,7 @@ export function makeTable(options) {
 							} else {
 								value = resolver(record, context, entry);
 							}
-							const handleResolvedValue = (value) => {
+							const handleResolvedValue = (value: any) => {
 								if (value && typeof value === 'object') {
 									const target_table = resolver.definition?.tableClass || TableResource;
 									if (!transform_cache) transform_cache = {};
@@ -1956,7 +1985,7 @@ export function makeTable(options) {
 												transform
 											)
 											[this.isSync ? Symbol.iterator : Symbol.asyncIterator]();
-										const nextValue = (iteration) => {
+										const nextValue = (iteration: IteratorResult<any> & Promise<any>) => {
 											while (!iteration.done) {
 												if (iteration?.then) return iteration.then(nextValue);
 												results.push(iteration.value);
@@ -1974,7 +2003,7 @@ export function makeTable(options) {
 										value = transform.call(this, value);
 										if (value?.then) {
 											if (!promises) promises = [];
-											promises.push(value.then((value) => callback(value, attribute_name)));
+											promises.push(value.then((value: any) => callback(value, attribute_name)));
 											return;
 										}
 									}
@@ -1999,7 +2028,7 @@ export function makeTable(options) {
 						}
 						callback(value, attribute_name);
 					};
-					let selected;
+					let selected: any;
 					if (typeof select === 'string') {
 						selectAttribute(select, (value) => {
 							selected = value;
@@ -2577,8 +2606,8 @@ export function makeTable(options) {
 						this.setComputedAttribute(attribute.name, computed.from);
 					}
 					property_resolvers[attribute.name] = attribute.resolve = (object, context, entry) => {
-						let value = typeof computed.from === 'string' ? object[computed.from] : object;
-						let user_resolver = this.userResolvers[attribute.name];
+						const value = typeof computed.from === 'string' ? object[computed.from] : object;
+						const user_resolver = this.userResolvers[attribute.name];
 						if (user_resolver) return user_resolver(value, context, entry);
 						else {
 							logger.warn(
@@ -2990,7 +3019,7 @@ export function makeTable(options) {
 		// for filter operations, we intentionally use async and yield the event turn so that scanning queries
 		// do not hog resources and give more processing opportunity for more efficient index-driven queries.
 		// this also gives an opportunity to prefetch and ensure any page faults happen in a different thread
-		function processEntry(entry, id?) {
+		function processEntry(entry: Entry, id?) {
 			const record = entry?.value;
 			if (!record) return SKIP;
 			// apply the record-level filters
@@ -3033,14 +3062,14 @@ export function makeTable(options) {
 			if (existing_entry?.version === txn_time && node_id !== undefined) {
 				// if we have a timestamp tie, we break the tie by comparing the node name of the
 				// existing entry to the node name of the update
-				let node_name_to_id = server.replication?.exportIdMapping(audit_store);
-				let local_time = existing_entry.localTime;
+				const node_name_to_id = server.replication?.exportIdMapping(audit_store);
+				const local_time = existing_entry.localTime;
 				const audit_entry = audit_store.get(local_time);
 				if (audit_entry) {
 					// existing node id comes from the audit log
 					let updated_node_name, existing_node_name;
 					const audit_record = readAuditEntry(audit_entry);
-					for (let node_name in node_name_to_id) {
+					for (const node_name in node_name_to_id) {
 						if (node_name_to_id[node_name] === node_id) updated_node_name = node_name;
 						if (node_name_to_id[node_name] === audit_record.nodeId) existing_node_name = node_name;
 					}
@@ -3378,7 +3407,7 @@ export function makeTable(options) {
 	}
 	function getResidencyId(owner_node_names) {
 		if (owner_node_names) {
-			let set_key = owner_node_names.join(','); // TODO: Translate this to node ids to create key
+			const set_key = owner_node_names.join(','); // TODO: Translate this to node ids to create key
 			let residency_id = dbis_db.get([Symbol.for('residency_by_set'), set_key]);
 			if (residency_id) return residency_id;
 			dbis_db.put([Symbol.for('residency_by_set'), set_key], (residency_id = Math.floor(Math.random() * 0x7fffffff)));
