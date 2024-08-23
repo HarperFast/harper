@@ -35,10 +35,10 @@ import { isMainThread } from 'worker_threads';
 let replication_disabled;
 let next_id = 1; // for request ids
 
-export let servers = [];
+export const servers = [];
 // This is the set of acceptable root certificates for replication, which includes the publicly trusted CAs
 // and any CAs that have been replicated across the cluster
-export let replication_certificate_authorities = new Set(tls.rootCertificates);
+export const replication_certificate_authorities = new Set(tls.rootCertificates);
 
 /**
  * Start the replication server. This will start a WebSocket server that will accept replication requests from other nodes.
@@ -48,8 +48,8 @@ export function start(options) {
 	if (!options.port) options.port = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
 	if (!options.securePort) options.securePort = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT);
 	if (!getThisNodeName()) throw new Error('Can not load replication without a url (see replication.url in the config)');
-	let route_by_hostname = new Map();
-	for (let node of iterateRoutes(options)) {
+	const route_by_hostname = new Map();
+	for (const node of iterateRoutes(options)) {
 		route_by_hostname.set(urlToNodeName(node.url), node);
 	}
 	assignReplicationSource(options);
@@ -82,7 +82,7 @@ export function start(options) {
 					request._nodeRequest.socket.authorizationError
 				);
 			}
-			let hdb_nodes_store = getHDBNodeTable().primaryStore;
+			const hdb_nodes_store = getHDBNodeTable().primaryStore;
 			// attempt to authorize by certificate common name, this is the most common means of auth
 			if (request.authorized && request.peerCertificate.subject) {
 				const subject = request.peerCertificate.subject;
@@ -114,7 +114,7 @@ export function start(options) {
 		return next_handler(request);
 	}, options);
 
-	for (let ws_server of ws_servers) {
+	for (const ws_server of ws_servers) {
 		// we need to keep track of the servers so we can update the secure contexts
 		servers.push(ws_server);
 		if (ws_server.secureContexts) {
@@ -124,11 +124,11 @@ export function start(options) {
 				// on any change to the list of replication CAs or the certificates, we update the replication security contexts
 				// note that we do not do this for the main security contexts, because all the CAs
 				// add a big performance penalty on connection setup
-				let contexts_to_update = new Set(ws_server.secureContexts.values());
+				const contexts_to_update = new Set(ws_server.secureContexts.values());
 				if (ws_server.defaultContext) contexts_to_update.add(ws_server.defaultContext);
-				for (let context of contexts_to_update) {
+				for (const context of contexts_to_update) {
 					try {
-						let ca = Array.from(replication_certificate_authorities);
+						const ca = Array.from(replication_certificate_authorities);
 						// add the replication CAs (and root CAs) to any existing CAs for the context
 						if (context.options.ca) ca.push(...context.options.ca);
 						const tls_options = // make sure we use the overriden tls.createSecureContext
@@ -178,8 +178,8 @@ function assignReplicationSource(options) {
 		if (!database) {
 			// if no database, then the notification means the database was removed
 			const db_subscriptions = options.databaseSubscriptions || database_subscriptions;
-			for (let [url, db_connections] of connections) {
-				let db_connection = db_connections.get(database_name);
+			for (const [url, db_connections] of connections) {
+				const db_connection = db_connections.get(database_name);
 				if (db_connection) {
 					db_connection.subscribe([], false);
 					db_connections.delete(database_name);
@@ -259,15 +259,15 @@ export function setReplicator(db_name, table, options) {
 			static async load(entry) {
 				if (entry) {
 					const residency_id = entry.residencyId;
-					let residency = entry.residency || table.dbisDB.get([Symbol.for('residency_by_id'), residency_id]);
+					const residency = entry.residency || table.dbisDB.get([Symbol.for('residency_by_id'), residency_id]);
 					if (residency) {
 						let first_error;
-						for (let node_name of residency) {
+						for (const node_name of residency) {
 							try {
-								let node = getHDBNodeTable().primaryStore.get(node_name);
+								const node = getHDBNodeTable().primaryStore.get(node_name);
 								if (node) {
 									const connection = getConnection(node.url, Replicator.subscription, db_name);
-									let request = {
+									const request = {
 										requestId: next_id++,
 										table,
 										entry,
@@ -314,8 +314,10 @@ function getConnection(url, subscription, db_name) {
 }
 
 export async function sendOperationToNode(node, operation, options) {
+	if (!options) options = {};
+	options.serverName = node.name;
 	const socket = await createWebSocket(node.url, options);
-	let session = replicateOverWS(socket, {}, {});
+	const session = replicateOverWS(socket, {}, {});
 	return new Promise((resolve, reject) => {
 		socket.on('open', () => {
 			resolve(session.sendOperation(operation));
@@ -355,7 +357,7 @@ export function subscribeToNode(request) {
 			subscription_to_table.ready = ready;
 			database_subscriptions.set(request.database, subscription_to_table);
 		}
-		let connection = getConnection(request.nodes[0].url, subscription_to_table, request.database);
+		const connection = getConnection(request.nodes[0].url, subscription_to_table, request.database);
 		if (request.nodes[0].name === undefined) connection.tentativeNode = request.nodes[0]; // we don't have the node name yet
 		connection.subscribe(
 			request.nodes.filter((node) => {
@@ -368,9 +370,9 @@ export function subscribeToNode(request) {
 	}
 }
 export async function unsubscribeFromNode({ url, database }) {
-	let db_connections = connections.get(url);
+	const db_connections = connections.get(url);
 	if (db_connections) {
-		let connection = db_connections.get(database);
+		const connection = db_connections.get(database);
 		if (connection) {
 			connection.unsubscribe();
 			db_connections.delete(database);
@@ -385,8 +387,8 @@ function getCommonNameFromCert() {
 		env.get(CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE) || env.get(CONFIG_PARAMS.TLS_CERTIFICATE);
 	if (certificate_path) {
 		// we can use this to get the hostname if it isn't provided by config
-		let cert_parsed = new X509Certificate(readFileSync(certificate_path));
-		let subject = cert_parsed.subject;
+		const cert_parsed = new X509Certificate(readFileSync(certificate_path));
+		const subject = cert_parsed.subject;
 		return (common_name_from_cert = subject.match(/CN=(.*)/)?.[1] ?? null);
 	}
 }
@@ -418,12 +420,12 @@ Object.defineProperty(server, 'hostname', {
 	},
 });
 function getHostFromListeningPort(key) {
-	let port = env.get(key);
+	const port = env.get(key);
 	const last_colon = port?.lastIndexOf?.(':');
 	if (last_colon > 0) return port.slice(0, last_colon);
 }
 function getPortFromListeningPort(key) {
-	let port = env.get(key);
+	const port = env.get(key);
 	const last_colon = port?.lastIndexOf?.(':');
 	if (last_colon > 0) return +port.slice(last_colon + 1).replace(/[\[\]]/g, '');
 	return +port;
@@ -436,7 +438,7 @@ server.replication = {
 	exportIdMapping,
 };
 export function getThisNodeUrl() {
-	let url = env.get('replication_url');
+	const url = env.get('replication_url');
 	if (url) return url;
 	return hostnameToUrl(getThisNodeName());
 }
@@ -486,7 +488,7 @@ export function forEachReplicatedDatabase(options, callback) {
 }
 function hasExplicitlyReplicatedTable(database_name) {
 	const database = databases[database_name];
-	for (let table_name in database) {
+	for (const table_name in database) {
 		const table = database[table_name];
 		if (table.replicate) return true;
 	}

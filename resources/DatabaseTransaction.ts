@@ -2,7 +2,6 @@ import { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { ServerError } from '../utility/errors/hdbError';
 import * as harper_logger from '../utility/logging/harper_logger';
-import { onMessageByType } from '../server/threads/manageThreads';
 import { CONTEXT } from './Resource';
 import * as env_mngr from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
@@ -184,7 +183,7 @@ export class DatabaseTransaction implements Transaction {
 				}
 			}
 		};
-		let lmdb_db = this.lmdbDb;
+		const lmdb_db = this.lmdbDb;
 		// only commit if there are writes
 		if (this.writes.length > 0) {
 			// we also maintain a retry risk for the transaction, which is a measure of how likely it is that the transaction

@@ -33,6 +33,7 @@ import * as https from 'node:https';
 import * as tls from 'node:tls';
 import { getHDBNodeTable } from './knownNodes';
 import * as process from 'node:process';
+import { isIP } from 'node:net';
 
 // these are the codes we use for the different commands
 const SUBSCRIPTION_REQUEST = 129;
@@ -67,15 +68,18 @@ let secure_contexts: Map<string, tls.SecureContext>;
  * Handles reconnection, and requesting catch-up
  */
 
-export async function createWebSocket(url, options?) {
+export async function createWebSocket(
+	url,
+	options: { authorization?: string; rejectUnauthorized?: boolean; serverName?: string }
+) {
 	const { authorization, rejectUnauthorized } = options || {};
 
-	let node_name = getThisNodeName();
+	const node_name = getThisNodeName();
 	let secure_context;
 	if (url.includes('wss://')) {
 		if (!secure_contexts) {
-			let SNICallback = createTLSSelector('operations-api');
-			let secure_target = {
+			const SNICallback = createTLSSelector('operations-api');
+			const secure_target = {
 				secureContexts: null,
 			};
 			await SNICallback.initialize(secure_target);
@@ -93,28 +97,25 @@ export async function createWebSocket(url, options?) {
 	if (authorization) {
 		headers.Authorization = authorization;
 	}
-	if (rejectUnauthorized === false) {
-		return new WebSocket(url, 'harperdb-replication-v1', {
-			headers,
-			rejectUnauthorized: false,
-		});
-	}
-	return new WebSocket(url, 'harperdb-replication-v1', {
+	const ws_options = {
 		headers,
-		rejectUnauthorized: true,
-		localAddress: node_name?.startsWith('127.0') ? node_name : undefined,
-		noDelay: true,
-		secureContext:
-			secure_context &&
-			tls.createSecureContext(
-				Object.assign({}, secure_context.options, {
-					ca: Array.from(replication_certificate_authorities), // do we need to add CA if secure context had one?
-				})
-			),
-		ALPNProtocols: ['http/1.1', 'harperdb-replication'],
+		localAddress: node_name?.startsWith('127.0') ? node_name : undefined, // this is to make sure we use the correct network interface when doing our local loopback testing
+		servername: isIP(options?.serverName) ? undefined : options?.serverName, // use the node name for the SNI negotiation (as long as it is not an IP)
+		noDelay: true, // we want to send the data immediately
 		// we set this very high (2x times the v22 default) because it performs better
 		highWaterMark: 128 * 1024,
-	});
+		ALPNProtocols: ['http/1.1', 'harperdb-replication'],
+		rejectUnauthorized: rejectUnauthorized !== false,
+		secureContext: undefined,
+	};
+	if (rejectUnauthorized !== false && secure_context) {
+		ws_options.secureContext = tls.createSecureContext(
+			Object.assign({}, secure_context.options, {
+				ca: Array.from(replication_certificate_authorities), // do we need to add CA if secure context had one?
+			})
+		);
+	}
+	return new WebSocket(url, 'harperdb-replication-v1', ws_options);
 }
 
 /**
@@ -143,7 +144,7 @@ export class NodeReplicationConnection extends EventEmitter {
 		if (!this.session) this.resetSession();
 		const tables = [];
 		// TODO: Need to do this specifically for each node
-		this.socket = await createWebSocket(this.url);
+		this.socket = await createWebSocket(this.url, { serverName: this.nodeName });
 
 		let session;
 		logger.info?.(`Connecting to ${this.url}, db: ${this.databaseName}, process ${process.pid}`);
@@ -279,7 +280,7 @@ export function replicateOverWS(ws, options, authorization) {
 		close(1008, 'Unauthorized');
 		return;
 	}
-	let awaiting_response = new Map();
+	const awaiting_response = new Map();
 	let receiving_data_from_node_ids = [];
 	let remote_node_name = authorization.name;
 	if (remote_node_name && options.connection) options.connection.nodeName = remote_node_name;
@@ -390,7 +391,7 @@ export function replicateOverWS(ws, options, authorization) {
 							'Received table definitions for',
 							data.map((t) => t.table)
 						);
-						for (let table_definition of data) {
+						for (const table_definition of data) {
 							const database_name = message[2];
 							table_definition.database = database_name;
 							let table;
@@ -413,7 +414,7 @@ export function replicateOverWS(ws, options, authorization) {
 						break;
 					case OPERATION_REQUEST:
 						try {
-							let is_authorized_node = authorization?.replicates || authorization?.subscribers || authorization?.name;
+							const is_authorized_node = authorization?.replicates || authorization?.subscribers || authorization?.name;
 							server.operation(data, { user: authorization }, !is_authorized_node).then(
 								(response) => {
 									response.requestId = data.requestId;
@@ -525,18 +526,18 @@ export function replicateOverWS(ws, options, authorization) {
 						let response_data: Buffer;
 						try {
 							const record_id = message[3];
-							let table = remote_table_by_id[table_id] || (remote_table_by_id[table_id] = tables[message[4]]);
+							const table = remote_table_by_id[table_id] || (remote_table_by_id[table_id] = tables[message[4]]);
 							if (!table) {
 								return logger.warn?.('Unknown table id trying to handle record request', table_id);
 							}
 							// we are sending raw binary data back, so we have to send the typed structure information so the
 							// receiving side can properly decode it. We only need to send this once until it changes again, so we can check if the structure
 							// has changed. It will only grow, so we can just check the length.
-							let structures_binary = table.primaryStore.getBinaryFast(Symbol.for('structures'));
-							let structure_length = structures_binary.length;
+							const structures_binary = table.primaryStore.getBinaryFast(Symbol.for('structures'));
+							const structure_length = structures_binary.length;
 							if (structure_length !== last_structure_length) {
 								last_structure_length = structure_length;
-								let structure = decode(structures_binary);
+								const structure = decode(structures_binary);
 								ws.send(
 									encode([
 										TABLE_FIXED_STRUCTURE,
@@ -550,9 +551,9 @@ export function replicateOverWS(ws, options, authorization) {
 								);
 							}
 							// we might want to prefetch here
-							let binary_entry = table.primaryStore.getBinaryFast(record_id);
+							const binary_entry = table.primaryStore.getBinaryFast(record_id);
 							if (binary_entry) {
-								let entry = table.primaryStore.decoder.decode(binary_entry, { valueAsBuffer: true });
+								const entry = table.primaryStore.decoder.decode(binary_entry, { valueAsBuffer: true });
 								response_data = encode([
 									GET_RECORD_RESPONSE,
 									request_id,
@@ -629,8 +630,8 @@ export function replicateOverWS(ws, options, authorization) {
 							when_subscribed_to_hdb_nodes.then(
 								async (subscription) => {
 									subscription_to_hdb_nodes = subscription;
-									for await (let event of subscription_to_hdb_nodes) {
-										let node = event.value;
+									for await (const event of subscription_to_hdb_nodes) {
+										const node = event.value;
 										if (
 											!(
 												node?.replicates === true ||
@@ -669,7 +670,7 @@ export function replicateOverWS(ws, options, authorization) {
 							// this means we are unsubscribing
 							return;
 						let first_table;
-						let first_node = node_subscriptions[0];
+						const first_node = node_subscriptions[0];
 						const tableToTableEntry = (table) => {
 							if (
 								table &&
@@ -713,14 +714,14 @@ export function replicateOverWS(ws, options, authorization) {
 								}
 							}
 							const table = table_entry.table;
-							let primary_store = table.primaryStore;
-							let encoder = primary_store.encoder;
+							const primary_store = table.primaryStore;
+							const encoder = primary_store.encoder;
 							if (audit_record.extendedType & HAS_STRUCTURE_UPDATE || !encoder.typedStructs) {
 								// there is a structure update, fully load the entire record so it is all loaded into memory
 								const value = audit_record.getValue(primary_store, true);
 								JSON.stringify(value);
 							}
-							if (!(subscribed_node_ids[node_id] < local_time)) {
+							if (subscribed_node_ids[node_id] >= local_time) {
 								if (DEBUG_MODE)
 									logger.info?.(
 										connection_id,
@@ -891,7 +892,7 @@ export function replicateOverWS(ws, options, authorization) {
 							subscription_to_hdb_nodes?.end();
 						});
 						// find the earliest start time of the subscriptions
-						for (let { startTime } of node_subscriptions) {
+						for (const { startTime } of node_subscriptions) {
 							if (startTime < current_sequence_id) current_sequence_id = startTime;
 						}
 						// wait for internal subscription, might be waiting for a table to be registered
@@ -901,7 +902,7 @@ export function replicateOverWS(ws, options, authorization) {
 								audit_store = table_subscription_to_replicator.auditStore;
 								table_by_id = table_subscription_to_replicator.tableById.map(tableToTableEntry);
 								subscribed_node_ids = [];
-								for (let { name, startTime } of node_subscriptions) {
+								for (const { name, startTime } of node_subscriptions) {
 									const local_id = getIdOfRemoteNode(name, audit_store);
 									logger.info?.('subscription to', name, 'using local id', local_id, 'starting', startTime);
 									subscribed_node_ids[local_id] = startTime;
@@ -951,15 +952,15 @@ export function replicateOverWS(ws, options, authorization) {
 									let queued_entries;
 									if (is_first && !closed) {
 										is_first = false;
-										let last_removed = getLastRemoved(audit_store);
-										if (!(last_removed <= current_sequence_id)) {
+										const last_removed = getLastRemoved(audit_store);
+										if (last_removed > current_sequence_id) {
 											// This means the audit log doesn't extend far enough back, so we need to replicate all the tables
 											// This should only be done on a single node, we don't want full table replication from all the
 											// nodes that are connected to this one:
 											if (server.nodes[0] === remote_node_name) {
 												let last_sequence_id = current_sequence_id;
 												const node_id = getThisNodeId(audit_store);
-												for (let table_name in tables) {
+												for (const table_name in tables) {
 													const table = tables[table_name];
 													for (const entry of table.primaryStore.getRange({
 														snapshot: false,
@@ -1152,7 +1153,7 @@ export function replicateOverWS(ws, options, authorization) {
 		clearTimeout(receive_ping_timer);
 		if (audit_subscription) audit_subscription.emit('close');
 		if (subscription_request) subscription_request.end();
-		for (let [id, { reject }] of awaiting_response) {
+		for (const [id, { reject }] of awaiting_response) {
 			reject(new Error('Connection closed'));
 		}
 		logger.info?.(connection_id, 'closed', code, reason_buffer?.toString());
@@ -1173,14 +1174,14 @@ export function replicateOverWS(ws, options, authorization) {
 		}
 		if (options.connection?.isFinished)
 			throw new Error('Can not make a subscription request on a connection that is already closed');
-		let last_txn_times = new Map();
+		const last_txn_times = new Map();
 		// iterate through all the sequence entries and find the new txn time for each node
 		try {
-			for (let entry of table_subscription_to_replicator?.dbisDB?.getRange({
+			for (const entry of table_subscription_to_replicator?.dbisDB?.getRange({
 				start: Symbol.for('seq'),
 				end: [Symbol.for('seq'), Buffer.from([0xff])],
 			}) || []) {
-				for (let node of entry.value.nodes || []) {
+				for (const node of entry.value.nodes || []) {
 					if (node.seqId > (last_txn_times.get(node.id) ?? 0)) last_txn_times.set(node.id, node.seqId);
 				}
 			}
@@ -1188,14 +1189,14 @@ export function replicateOverWS(ws, options, authorization) {
 			// if the database is closed, just proceed (matches multiple error messages)
 			if (!error.message.includes('Can not re')) throw error;
 		}
-		let connected_node = options.connection?.nodeSubscriptions?.[0];
+		const connected_node = options.connection?.nodeSubscriptions?.[0];
 		receiving_data_from_node_ids = [];
 		const node_subscriptions = options.connection?.nodeSubscriptions.map((node: any, index: number) => {
-			let table_subs = [];
+			const table_subs = [];
 			let { replicateByDefault: replicate_by_default } = node;
 			if (node.subscriptions) {
 				// if the node has explicit subscriptions, we need to use that to determine subscriptions
-				for (let subscription of node.subscriptions) {
+				for (const subscription of node.subscriptions) {
 					// if there is an explicit subscription listed
 					if (subscription.subscribe && (subscription.schema || subscription.database) === database_name) {
 						const table_name = subscription.table;
@@ -1207,14 +1208,14 @@ export function replicateOverWS(ws, options, authorization) {
 				replicate_by_default = false; // now turn off the default replication because it was an explicit list of subscriptions
 			} else {
 				// note that if replicateByDefault is enabled, we are listing the *excluded* tables
-				for (let table_name in tables) {
+				for (const table_name in tables) {
 					if (replicate_by_default ? tables[table_name].replicate === false : tables[table_name].replicate)
 						table_subs.push(table_name);
 				}
 			}
 
 			const node_id = audit_store && getIdOfRemoteNode(node.name, audit_store);
-			let sequence_entry = table_subscription_to_replicator?.dbisDB?.get([Symbol.for('seq'), node_id]) ?? 1;
+			const sequence_entry = table_subscription_to_replicator?.dbisDB?.get([Symbol.for('seq'), node_id]) ?? 1;
 			let start_time =
 				sequence_entry?.seqId ??
 				(typeof node.start_time === 'string' ? new Date(node.start_time).getTime() : node.start_time) ??
@@ -1224,7 +1225,7 @@ export function replicateOverWS(ws, options, authorization) {
 				// indirect connection through a proxying node
 				if (start_time > 5000) start_time -= 5000; // first, decrement the start time to cover some clock drift between nodes (5 seconds)
 				// if there is last sequence id we received through the proxying node that is newer, we can start from there
-				for (let seq_node of sequence_entry?.nodes || []) {
+				for (const seq_node of sequence_entry?.nodes || []) {
 					if (seq_node.name === node.name) {
 						start_time = seq_node.seqId;
 					}
@@ -1302,10 +1303,10 @@ export function replicateOverWS(ws, options, authorization) {
 		return true;
 	}
 	function sendNodeDBName(this_node_name, database_name) {
-		let database = getDatabases()?.[database_name];
-		let tables = [];
-		for (let table_name in database) {
-			let table = database[table_name];
+		const database = getDatabases()?.[database_name];
+		const tables = [];
+		for (const table_name in database) {
+			const table = database[table_name];
 			tables.push({
 				table: table_name,
 				schemaDefined: table.schemaDefined,
@@ -1320,9 +1321,9 @@ export function replicateOverWS(ws, options, authorization) {
 		ws.send(encode([NODE_NAME, this_node_name, database_name, tables]));
 	}
 	function sendDBSchema(database_name) {
-		let database = getDatabases()?.[database_name];
-		let tables = [];
-		for (let table_name in database) {
+		const database = getDatabases()?.[database_name];
+		const tables = [];
+		for (const table_name in database) {
 			if (
 				node_subscriptions &&
 				!node_subscriptions.some((node) => {
@@ -1330,7 +1331,7 @@ export function replicateOverWS(ws, options, authorization) {
 				})
 			)
 				continue;
-			let table = database[table_name];
+			const table = database[table_name];
 			tables.push({
 				table: table_name,
 				schemaDefined: table.schemaDefined,
@@ -1345,7 +1346,7 @@ export function replicateOverWS(ws, options, authorization) {
 		ws.send(encode([DB_SCHEMA, tables, database_name]));
 	}
 	let next_id = 1;
-	let sent_table_names = [];
+	const sent_table_names = [];
 	return {
 		end() {
 			// cleanup
@@ -1354,7 +1355,7 @@ export function replicateOverWS(ws, options, authorization) {
 		},
 		getRecord(request) {
 			// send a request for a specific record
-			let request_id = next_id++;
+			const request_id = next_id++;
 			return new Promise((resolve, reject) => {
 				const message = [GET_RECORD, request_id, request.table.tableId, request.id];
 				if (!sent_table_names[request.table.tableId]) {
@@ -1441,11 +1442,11 @@ class Encoder {
 function ensureTableIfChanged(table_definition, existing_table) {
 	if (!existing_table) existing_table = {};
 	let has_changes = false;
-	let schema_defined = table_definition.schemaDefined;
-	let attributes = existing_table.attributes || [];
+	const schema_defined = table_definition.schemaDefined;
+	const attributes = existing_table.attributes || [];
 	for (let i = 0; i < table_definition.attributes?.length; i++) {
-		let ensure_attribute = table_definition.attributes[i];
-		let existing_attribute = attributes[i];
+		const ensure_attribute = table_definition.attributes[i];
+		const existing_attribute = attributes[i];
 		if (
 			!existing_attribute ||
 			existing_attribute.name !== ensure_attribute.name ||

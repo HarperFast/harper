@@ -938,7 +938,8 @@ function createTLSSelector(type, mtls_options) {
 				else matching_name = matching_name.slice(next_dot);
 			} else break;
 		}
-		harper_logger.debug('No certificate found to match', servername, 'using the first certificate');
+		if (servername) harper_logger.debug('No certificate found to match', servername, 'using the default certificate');
+		else harper_logger.debug('No SNI, using the default certificate');
 		// no matches, return the first/default one
 		let context = default_context;
 		if (context.replicationContext && (this.isReplicationConnection || broken_alpn_callback))
