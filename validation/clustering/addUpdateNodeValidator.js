@@ -20,7 +20,7 @@ const node_name_constraint = string
 
 const validation_schema = {
 	operation: string.valid('add_node', 'update_node', 'set_node_replication'),
-	node_name: node_name_constraint,
+	node_name: string.optional(),
 	subscriptions: Joi.array().items({
 		table: string.optional(),
 		schema: string.optional(),

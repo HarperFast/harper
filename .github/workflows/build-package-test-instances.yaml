@@ -36,6 +36,7 @@ jobs:
       nodeVersion: ${{ needs.build.outputs.nodeVersion }}
       httpsOn: true
       generatePassword: true
+      usePublicIpForReplication: true
     secrets: inherit
   destroyInstances:
     if: ${{ failure() }}

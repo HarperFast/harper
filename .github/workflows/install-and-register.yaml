@@ -21,6 +21,9 @@ on:
       generatePassword:
         type: boolean
         default: false
+      usePublicIpForReplication:
+        type: boolean
+        default: false
 
 jobs:
   installAndRegister:
@@ -50,6 +53,7 @@ jobs:
 
         public_dns_names="${{ inputs.publicDns }}"
         echo ${public_dns_names[@]}
+        export CURRENT_NODE=1
         for public_dns_name in ${public_dns_names[@]}
         do 
             echo "Starting work on: $public_dns_name"
@@ -69,6 +73,10 @@ jobs:
         nvm install ${{ inputs.nodeVersion }}     
              
         export SERVER_IP="\$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)"
+        if [ "${{ inputs.usePublicIpForReplication }}" == "true" ];
+        then
+          export SERVER_IP="\$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)"
+        fi
         
         export HTTP_VARS="--HTTP_PORT 9926 --OPERATIONSAPI_NETWORK_PORT 9925"
         if [ "${{ inputs.httpsOn }}" == "true" ];
@@ -77,8 +85,8 @@ jobs:
         export HTTP_VARS="--HTTP_SECUREPORT 9926 --OPERATIONSAPI_NETWORK_SECUREPORT 9925"
         fi
         
-        export CLI_ARGS="--TC_AGREEMENT yes --ROOTPATH /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --LOGGING_LEVEL trace --THREADS_COUNT 3 --REPLICATION_HOSTNAME "$public_dns_name" --REPLICATION_URL wss://\$SERVER_IP:9925 --CLUSTERING_ENABLED false --CLUSTERING true --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PORT 12345 --CLUSTERING_LOGLEVEL info --CLUSTERING_REPUBLISHMESSAGES true --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) \$HTTP_VARS"
-    
+        export CLI_ARGS="--TC_AGREEMENT yes --ROOTPATH /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --LOGGING_LEVEL trace --THREADS_COUNT 3 --REPLICATION_HOSTNAME "node-$CURRENT_NODE" --REPLICATION_URL wss://\$SERVER_IP:9925 --CLUSTERING_ENABLED false --CLUSTERING true --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PORT 12345 --CLUSTERING_LOGLEVEL info --CLUSTERING_REPUBLISHMESSAGES true --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) \$HTTP_VARS"
+        
         if [ "${{ inputs.installType }}" == "sourceCode" ];
         then
           echo "hdb_install_type parameter set to ${{inputs.installType }}. Installing HarperDB from source code..."
@@ -123,5 +131,6 @@ jobs:
         fi
         HERE
             echo "Ending work on: $public_dns_name"
+            CURRENT_NODE=$((CURRENT_NODE + 1))
         done
       shell: bash

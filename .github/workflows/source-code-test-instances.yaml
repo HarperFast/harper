@@ -53,6 +53,7 @@ jobs:
       installType: "sourceCode"
       httpsOn: true
       generatePassword: true
+      usePublicIpForReplication: true
     secrets: inherit
   destroyInstances:
     if: ${{ failure() }}
