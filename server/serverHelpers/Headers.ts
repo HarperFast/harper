@@ -2,6 +2,16 @@
  * Fast implementation of standard Headers
  */
 export class Headers extends Map<string, string | string[]> {
+	constructor(init?: Headers | HeadersInit) {
+		if (init) {
+			if (init[Symbol.iterator]) {
+				super(init);
+			} else {
+				super();
+				for (const name in init) this.set(name, init[name]);
+			}
+		} else super();
+	}
 	set(name, value) {
 		if (typeof name !== 'string') name = '' + name;
 		if (typeof value !== 'string') value = '' + value;
@@ -61,4 +71,20 @@ export function appendHeader(headers, name, value, comma_delimited) {
 	} else {
 		headers[name] = (headers[name] ? headers[name] + ', ' : '') + value;
 	}
+}
+
+/**
+ * Merge headers from source into target, ensuring that target is a Headers object, and avoiding any overwrite
+ * of existing headers in target.
+ * @param target
+ * @param source
+ */
+export function mergeHeaders(target: any, source: Headers) {
+	// ensure target is a Headers object, which could be this Headers class, the global.Headers, or even a Map, which is ok
+	if (typeof target.set !== 'function' || typeof target.has !== 'function') target = new Headers(target);
+	for (const [name, value] of source) {
+		if (!target.has(name)) target.set(name, value);
+		else if (name.toLowerCase() === 'set-cookie') target.append?.(name, value, true);
+	}
+	return target;
 }

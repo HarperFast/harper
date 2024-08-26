@@ -7,7 +7,7 @@ import { Resources } from '../resources/Resources';
 import { parseQuery } from '../resources/search';
 import { IterableEventQueue } from '../resources/IterableEventQueue';
 import { transaction } from '../resources/transaction';
-import { Headers } from '../server/serverHelpers/Headers';
+import { Headers, mergeHeaders } from '../server/serverHelpers/Headers';
 import { generateJsonApi } from '../resources/openApi';
 import { SimpleURLQuery } from '../resources/search';
 import { Context } from '../resources/ResourceInterface';
@@ -143,6 +143,13 @@ async function http(request: Context & Request, next_handler) {
 			// deleted entries can have a timestamp of when they were deleted
 			if (http_options.lastModified && request.lastModified)
 				headers.setIfNone('Last-Modified', new Date(request.lastModified).toUTCString());
+		} else if (response_data.status > 0 && response_data.headers) {
+			// if response is a Response object, use it as the response
+			// merge headers from response
+			response_data.headers = mergeHeaders(response_data.headers, headers);
+			// if data is provided, serialize it
+			if (response_data.data !== undefined) response_data.body = serialize(response_data.data, request, response_data);
+			return response_data;
 		} else if ((last_modification = request.lastModified)) {
 			etag_float[0] = last_modification;
 			// base64 encoding of the 64-bit float encoding of the date in ms (with quotes)

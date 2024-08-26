@@ -234,7 +234,9 @@ describe('test REST calls', () => {
 			assert.equal(response.data[4].nameTitle, undefined); // computed property shouldn't be returned by default
 		});
 		it('do query by numeric computed index and return computed property', async () => {
-			let response = await axios('http://localhost:9926/FourProp/?ageInMonths=288&select(id,age,ageInMonths,nameTitle)');
+			let response = await axios(
+				'http://localhost:9926/FourProp/?ageInMonths=288&select(id,age,ageInMonths,nameTitle)'
+			);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 1);
 			assert.equal(response.data[0].age, 24);
@@ -293,7 +295,9 @@ describe('test REST calls', () => {
 			assert.equal(response.data[1].birthday.slice(0, 4), '1994');
 		});
 		it('query by typed epoch date', async () => {
-			let response = await axios('http://localhost:9926/FourProp?birthday=gt=date:727660800000&birthday=lt=date:1994-11-22');
+			let response = await axios(
+				'http://localhost:9926/FourProp?birthday=gt=date:727660800000&birthday=lt=date:1994-11-22'
+			);
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 2);
 			assert.equal(response.data[0].birthday.slice(0, 4), '1993');
@@ -366,27 +370,38 @@ describe('test REST calls', () => {
 		// sending a body with a DELETE request
 		return new Promise((resolve, reject) => {
 			const body = JSON.stringify({
-				doesThisTransmit: true
+				doesThisTransmit: true,
 			});
-			const req = http.request({
-				method: 'DELETE',
-				hostname: 'localhost',
-				port: 9926,
-				path: '/SimpleCache/35555',
-				headers: {
-					'Content-Type': 'application/json',
-					'Content-Length': body.length,
+			const req = http.request(
+				{
+					method: 'DELETE',
+					hostname: 'localhost',
+					port: 9926,
+					path: '/SimpleCache/35555',
+					headers: {
+						'Content-Type': 'application/json',
+						'Content-Length': body.length,
+					},
+				},
+				(res) => {
+					try {
+						assert(tables.SimpleCache.lastDeleteData.doesThisTransmit);
+						resolve(res.statusCode === 200);
+					} catch (error) {
+						reject(error);
+					}
 				}
-			}, res => {
-				try {
-					assert(tables.SimpleCache.lastDeleteData.doesThisTransmit);
-					resolve(res.statusCode === 200);
-				} catch (error) {
-					reject(error);
-				}
-			});
+			);
 			req.end(body);
 		});
+	});
+	it('post with custom response', async () => {
+		const response = await axios.post('http://localhost:9926/SimpleCache/35555', {
+			customResponse: true,
+		});
+		assert.equal(response.status, 222);
+		assert.equal(response.headers['x-custom-header'], 'custom value');
+		assert.equal(response.data.property, 'custom response');
 	});
 	describe('BigInt', function () {
 		let bigint64BitAsString = '12345678901234567890';

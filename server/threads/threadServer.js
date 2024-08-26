@@ -443,7 +443,9 @@ function getHTTPServer(port, secure, is_operations_server) {
 						if (request._nodeResponse.statusCode) return;
 						response = unhandled(request);
 					}
-
+					if (!response.headers?.set) {
+						response.headers = new Headers(response.headers);
+					}
 					if (license_warning)
 						response.headers?.set?.(
 							'Server',
