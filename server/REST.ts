@@ -45,10 +45,10 @@ async function http(request: Context & Request, next_handler) {
 			resource = entry.Resource;
 		}
 
-		let cache_control = headers_object['cache-control'];
+		const cache_control = headers_object['cache-control'];
 		if (cache_control) {
-			let cache_control_parts = parseHeaderValue(cache_control);
-			for (let part of cache_control_parts) {
+			const cache_control_parts = parseHeaderValue(cache_control);
+			for (const part of cache_control_parts) {
 				switch (part.name) {
 					case 'max-age':
 						request.expiresAt = part.value * 1000 + Date.now();
@@ -71,9 +71,9 @@ async function http(request: Context & Request, next_handler) {
 				}
 			}
 		}
-		let replicate_to = headers_object['x-replicate-to'];
+		const replicate_to = headers_object['x-replicate-to'];
 		if (replicate_to) {
-			let parsed = parseHeaderValue(replicate_to).map((node: { name: string }) => {
+			const parsed = parseHeaderValue(replicate_to).map((node: { name: string }) => {
 				// we can use a component argument to indicate that number that should be confirmed
 				// for example, to replicate to three nodes and wait for confirmation from two: X-Replicate-To: 3;confirm=2
 				// or to specify nodes with confirm: X-Replicate-To: node-1, node-2, node-3;confirm=2
@@ -82,7 +82,8 @@ async function http(request: Context & Request, next_handler) {
 				}
 				return node.name;
 			});
-			request.replicateTo = parsed.length === 1 && +parsed[0] >= 0 ? +parsed[0] : parsed;
+			request.replicateTo =
+				parsed.length === 1 && +parsed[0] >= 0 ? +parsed[0] : parsed[0] === '*' ? undefined : parsed;
 		}
 		let response_data = await transaction(request, () => {
 			if (headers_object['content-length'] || headers_object['transfer-encoding']) {
