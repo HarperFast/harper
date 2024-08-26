@@ -1476,17 +1476,25 @@ describe('Querying through Resource API', () => {
 		this.timeout(10000);
 		let resolvers = [];
 		await assert.rejects(async () => {
-			for (let i = 0; i < 3000; i++) {
-				await QueryTable.put('test-txn', { name: 'do a txn' + i });
-				let context = {};
-				transaction(context, () => {
-					QueryTable.get('test-txn', context);
-					return new Promise((resolve) => {
-						resolvers.push(resolve);
+			QueryTable.primaryStore.useReadTransaction = function () {
+				// force the expected error so we don't have to wait for the timeout
+				throw new Error('MDB_READERS_FULL');
+			};
+			try {
+				for (let i = 0; i < 3000; i++) {
+					await QueryTable.put('test-txn', { name: 'do a txn' + i });
+					let context = {};
+					transaction(context, () => {
+						QueryTable.get('test-txn', context);
+						return new Promise((resolve) => {
+							resolvers.push(resolve);
+						});
 					});
-				});
+				}
+			} finally {
+				// restore the original
+				delete QueryTable.primaryStore.useReadTransaction;
 			}
-			console.log(QueryTable.primaryStore.readerList());
 		});
 		for (let resolve of resolvers) {
 			resolve();
