@@ -1,7 +1,7 @@
 'use strict';
 const assert = require('assert');
 
-const { Headers, appendHeader } = require('../../../ts-build/server/serverHelpers/Headers');
+const { Headers, appendHeader, mergeHeaders } = require('../../../ts-build/server/serverHelpers/Headers');
 describe('Test Headers', () => {
 	describe(`Create and modify headers`, function () {
 		it('should handle headers', async function () {
@@ -32,6 +32,23 @@ describe('Test Headers', () => {
 			appendHeader(headers, 'name-with-commas', 'value2', true);
 			appendHeader(headers, 'name-with-commas', 'value3', true);
 			assert.equal(headers.get('name-with-commas'), 'value, value2, value3');
+		});
+		it('construct headers from object', async function () {
+			const headers = new Headers({ name: 'value', name2: 'value2' });
+			assert.equal(headers.get('name'), 'value');
+			assert.equal(headers.get('name2'), 'value2');
+		});
+		it('construct headers from Map and merge', async function () {
+			let map = new Map();
+			map.set('name', 'value');
+			map.set('name2', 'value2');
+			let headers = new Headers(map);
+			assert.equal(headers.get('name'), 'value');
+			assert.equal(headers.get('name2'), 'value2');
+			headers = mergeHeaders(headers, new Headers({ name2: 'value3', name3: 'value4' }));
+			assert.equal(headers.get('name'), 'value');
+			assert.equal(headers.get('name2'), 'value2');
+			assert.equal(headers.get('name3'), 'value4');
 		});
 	});
 });

@@ -52,6 +52,15 @@ class SimpleCacheSource extends tables.FourProp {}
 export class SimpleCache extends tables.SimpleCache.sourcedFrom(SimpleCacheSource) {
 	post(data) {
 		if (data.invalidate) this.invalidate();
+		if (data.customResponse) {
+			return {
+				status: 222,
+				headers: {
+					'x-custom-header': 'custom value',
+				},
+				data: { property: 'custom response' },
+			};
+		}
 	}
 	async delete(query) {
 		tables.SimpleCache.lastDeleteData = await this.getContext()?.data;

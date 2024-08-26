@@ -2838,6 +2838,21 @@ export function makeTable(options) {
 						if (updated_record) {
 							if (typeof updated_record !== 'object')
 								throw new Error('Only objects can be cached and stored in tables');
+							if (updated_record.status > 0 && updated_record.headers) {
+								// if the source has a status code and headers, treat it as a response
+								if (updated_record.status >= 300) {
+									if (updated_record.status === 304) {
+										// revalidation of our current cached record
+										updated_record = existing_record;
+										version = existing_version;
+									} else {
+										// if the source has an error status, we need to throw an error
+										throw new ServerError(updated_record.body || 'Error from source', updated_record.status);
+									} // there are definitely more status codes to handle
+								} else {
+									updated_record = updated_record.body;
+								}
+							}
 							if (typeof updated_record.toJSON === 'function') updated_record = updated_record.toJSON();
 							if (primary_key && updated_record[primary_key] !== id) updated_record[primary_key] = id;
 						}
