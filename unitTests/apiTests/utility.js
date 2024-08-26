@@ -12,12 +12,12 @@ function getVariables() {
 	return config;
 }
 
-function callOperation(operation_object, headers) {
+function callOperation(operation_object) {
 	let { url, authorization } = getVariables();
-	headers = headers || {
+	let headers = {
 		'Content-Type': 'application/json',
 	};
-	if (authorization && !headers.authorization) headers.authorization = authorization;
+	if (authorization) headers[authorization] = authorization;
 	return fetch(url, {
 		method: 'POST',
 		headers,

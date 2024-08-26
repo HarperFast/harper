@@ -1,16 +1,16 @@
 {
 	"info": {
-		"_postman_id": "fba7aa46-1dd8-4714-b118-9fb38747c544",
+		"_postman_id": "b3b8fbc0-cb36-4876-a887-d0757e131430",
 		"name": "Five_Node_Cluster",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
-		"_exporter_id": "1907183"
+		"_exporter_id": "7046690"
 	},
 	"item": [
 		{
-			"name": "Add Routes",
+			"name": "Enable Clustering",
 			"item": [
 				{
-					"name": "Config Node1",
+					"name": "Set config enable clustering node 1",
 					"event": [
 						{
 							"listen": "test",
@@ -19,27 +19,10 @@
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
 									"});",
-									"",
-									"const node2_host = pm.environment.get('NODE2_HOST');",
-									"const node3_host = pm.environment.get('NODE3_HOST');",
-									"const node4_host = pm.environment.get('NODE4_HOST');",
-									"const node5_host = pm.environment.get('NODE5_HOST');",
-									"const clustering_port = pm.environment.get('CLUSTERING_PORT');",
-									"",
-									"pm.test(\"Node 1 is configured\", function () {",
-									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"cluster routes successfully set\");",
-									"",
-									"    for (const route of jsonData.set) {",
-									"        pm.expect(route.host).to.be.oneOf([node2_host, node3_host, node4_host, node5_host])",
-									"        pm.expect(route.port).to.equal(+clustering_port);",
-									"    }",
-									"    pm.expect(jsonData.skipped).to.eql([]);",
-									"});",
-									"",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -68,7 +51,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"cluster_set_routes\",\n    \"server\": \"hub\",\n    \"routes\":[\n            {\"host\": \"{{NODE2_HOST}}\", \"port\": {{CLUSTERING_PORT}}}, \n            {\"host\": \"{{NODE3_HOST}}\", \"port\": {{CLUSTERING_PORT}}}, \n            {\"host\": \"{{NODE4_HOST}}\", \"port\": {{CLUSTERING_PORT}}},\n            {\"host\": \"{{NODE5_HOST}}\", \"port\": {{CLUSTERING_PORT}}}\n        ]\n}",
+							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"clustering_enabled\": true,\n    \"replication_url\": null,\n    \"replication_hostname\": null,\n    \"clustering_hubServer_cluster_network_routes\": [\n            {\"host\": \"{{NODE2_HOST}}\", \"port\": {{CLUSTERING_PORT}}}, \n            {\"host\": \"{{NODE3_HOST}}\", \"port\": {{CLUSTERING_PORT}}}, \n            {\"host\": \"{{NODE4_HOST}}\", \"port\": {{CLUSTERING_PORT}}},\n            {\"host\": \"{{NODE5_HOST}}\", \"port\": {{CLUSTERING_PORT}}}\n        ]\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -87,7 +70,7 @@
 					"response": []
 				},
 				{
-					"name": "Restart Node1",
+					"name": "Set config enable clustering node 2",
 					"event": [
 						{
 							"listen": "test",
@@ -96,14 +79,10 @@
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
 									"});",
-									"",
-									"pm.test(\"Clustering service is restarted\", function () {",
-									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.message).to.eql(\"Restarting HarperDB. This may take up to 60 seconds.\")",
-									"    setTimeout(() => {}, 30000) // wait for the restart to complete",
-									"});"
+									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -132,7 +111,510 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart\"\n}",
+							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"clustering_enabled\": true,\n    \"replication_url\": null,\n    \"replication_hostname\": null\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Set config enable clustering node 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"clustering_enabled\": true,\n    \"replication_url\": null,\n    \"replication_hostname\": null\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{NODE3_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Set config enable clustering node 4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"clustering_enabled\": true,\n    \"replication_url\": null,\n    \"replication_hostname\": null\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{NODE4_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Set config enable clustering node 5",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"clustering_enabled\": true,\n    \"replication_url\": null,\n    \"replication_hostname\": null\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{NODE5_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{NODE5_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restart node 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"service is restarted\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"Restarting http_workers\")",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{NODE2_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restart node 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"service is restarted\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"Restarting http_workers\")",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{NODE3_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{NODE3_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restart node 4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"service is restarted\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"Restarting http_workers\")",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{NODE4_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{NODE4_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restart node 5",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"service is restarted\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"Restarting http_workers\")",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{NODE5_HOST}}:{{SERVER_HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{NODE5_HOST}}"
+							],
+							"port": "{{SERVER_HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restart node 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"service is restarted\", function () {",
+									"    const jsonData = pm.response.json();",
+									"    pm.expect(jsonData.message).to.eql(\"Restarting http_workers\")",
+									"});",
+									"",
+									"setTimeout(() => {}, 60000) // wait for the restart to complete"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -236,9 +718,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOjE0MDA=",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
+										"type": "text"
 									}
 								],
 								"body": {
@@ -372,9 +854,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOjE0MDA=",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
+										"type": "text"
 									}
 								],
 								"body": {
@@ -508,9 +990,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOjE0MDA=",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
+										"type": "text"
 									}
 								],
 								"body": {
@@ -644,9 +1126,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOjE0MDA=",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
+										"type": "text"
 									}
 								],
 								"body": {
@@ -780,9 +1262,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOjE0MDA=",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
+										"type": "text"
 									}
 								],
 								"body": {
@@ -925,9 +1407,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOjE0MDA=",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
+										"type": "text"
 									}
 								],
 								"body": {
@@ -1061,9 +1543,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOjE0MDA=",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
+										"type": "text"
 									}
 								],
 								"body": {
@@ -2574,9 +3056,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -2705,9 +3187,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -2835,9 +3317,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -2966,9 +3448,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -3097,9 +3579,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -3231,9 +3713,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOjE0MDA=",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
+										"type": "text"
 									}
 								],
 								"body": {
@@ -3377,9 +3859,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -3520,9 +4002,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -3655,9 +4137,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -3790,9 +4272,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -3925,9 +4407,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -4070,9 +4552,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOjE0MDA=",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
+										"type": "text"
 									}
 								],
 								"body": {
@@ -4203,9 +4685,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -4334,9 +4816,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -4465,9 +4947,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -4596,9 +5078,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -4742,9 +5224,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOjE0MDA=",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
+										"type": "text"
 									}
 								],
 								"body": {
@@ -4875,9 +5357,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -5006,9 +5488,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -5137,9 +5619,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -5268,9 +5750,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -5411,9 +5893,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOjE0MDA=",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
+										"type": "text"
 									}
 								],
 								"body": {
@@ -5547,9 +6029,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOjE0MDA=",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
+										"type": "text"
 									}
 								],
 								"body": {
@@ -5683,9 +6165,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOjE0MDA=",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
+										"type": "text"
 									}
 								],
 								"body": {
@@ -5819,9 +6301,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOjE0MDA=",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
+										"type": "text"
 									}
 								],
 								"body": {
@@ -5955,9 +6437,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOjE0MDA=",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
+										"type": "text"
 									}
 								],
 								"body": {
@@ -6096,9 +6578,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOjE0MDA=",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
+										"type": "text"
 									}
 								],
 								"body": {
@@ -6245,9 +6727,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -6392,9 +6874,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -6539,9 +7021,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -6670,9 +7152,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -6804,9 +7286,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOjE0MDA=",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
+										"type": "text"
 									}
 								],
 								"body": {
@@ -6948,9 +7430,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -7092,9 +7574,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -7237,9 +7719,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -7382,9 +7864,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -7514,9 +7996,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -7659,9 +8141,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -7807,9 +8289,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -7955,9 +8437,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -8087,9 +8569,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -8234,9 +8716,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -8380,9 +8862,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -8517,9 +8999,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -8651,9 +9133,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOjE0MDA=",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOjE0MDA="
+										"type": "text"
 									}
 								],
 								"body": {
@@ -8800,9 +9282,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -8947,9 +9429,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -9094,9 +9576,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -9354,9 +9836,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -9498,9 +9980,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -9643,9 +10125,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -10008,9 +10490,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -10459,9 +10941,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -10672,9 +11154,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -10875,9 +11357,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -11021,9 +11503,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -11167,9 +11649,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -11313,9 +11795,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -11524,9 +12006,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -11673,9 +12155,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -11822,9 +12304,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -12084,9 +12566,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -12229,9 +12711,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -12374,9 +12856,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -12835,9 +13317,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -12966,9 +13448,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -13259,9 +13741,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -13400,9 +13882,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -13692,9 +14174,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -13833,9 +14315,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -13990,9 +14472,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -14120,9 +14602,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -14250,9 +14732,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -14380,9 +14862,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -14512,9 +14994,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -14642,9 +15124,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -14772,9 +15254,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -14902,9 +15384,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -15032,9 +15514,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -15702,9 +16184,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -15831,9 +16313,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -15960,9 +16442,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -16089,9 +16571,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -16218,9 +16700,9 @@
 									},
 									{
 										"key": "Authorization",
-										"type": "text",
+										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk",
 										"name": "Authorization",
-										"value": "Basic SERCX0FETUlOOnBhc3N3b3Jk"
+										"type": "text"
 									}
 								],
 								"body": {
@@ -16329,9 +16811,8 @@
 						"header": [
 							{
 								"key": "Content-Type",
-								"name": "Content-Type",
-								"type": "text",
-								"value": "application/json"
+								"value": "application/json",
+								"type": "text"
 							}
 						],
 						"body": {
@@ -16398,9 +16879,8 @@
 						"header": [
 							{
 								"key": "Content-Type",
-								"name": "Content-Type",
-								"type": "text",
-								"value": "application/json"
+								"value": "application/json",
+								"type": "text"
 							}
 						],
 						"body": {
@@ -16467,9 +16947,8 @@
 						"header": [
 							{
 								"key": "Content-Type",
-								"name": "Content-Type",
-								"type": "text",
-								"value": "application/json"
+								"value": "application/json",
+								"type": "text"
 							}
 						],
 						"body": {
@@ -16536,9 +17015,8 @@
 						"header": [
 							{
 								"key": "Content-Type",
-								"name": "Content-Type",
-								"type": "text",
-								"value": "application/json"
+								"value": "application/json",
+								"type": "text"
 							}
 						],
 						"body": {
@@ -16605,9 +17083,8 @@
 						"header": [
 							{
 								"key": "Content-Type",
-								"name": "Content-Type",
-								"type": "text",
-								"value": "application/json"
+								"value": "application/json",
+								"type": "text"
 							}
 						],
 						"body": {

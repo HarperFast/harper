@@ -5,7 +5,6 @@ const https = require('https');
 let http = require('http');
 const fs = require('fs-extra');
 const YAML = require('yaml');
-const hri = require('human-readable-ids').hri;
 const { pipeline } = require('stream/promises');
 const { createWriteStream, ensureDir } = require('fs-extra');
 const { join } = require('path');
@@ -20,7 +19,6 @@ const config_utils = require('../../config/configUtils');
 const { restart } = require('../../bin/restart');
 const hdb_utils = require('../common_utils');
 const assignCMDENVVariables = require('../assignCmdEnvVariables');
-const nats_utils = require('../../server/nats/utility/natsUtils');
 const global_schema = require('../globalSchema');
 const { main, launch } = require('../../bin/run');
 const { install, updateConfigEnv, setIgnoreExisting } = require('../install/installer');
@@ -55,32 +53,25 @@ const CONFIG_TO_NOT_CLONE = {
 	tls_certificate: true,
 	tls_privatekey: true,
 	tls_certificateauthority: true,
+	replication_hostname: true,
+	replication_url: true,
 };
 
 const CLONE_VARS = {
 	HDB_LEADER_USERNAME: 'HDB_LEADER_USERNAME',
 	HDB_LEADER_PASSWORD: 'HDB_LEADER_PASSWORD',
 	HDB_LEADER_URL: 'HDB_LEADER_URL',
-	HDB_LEADER_CLUSTERING_HOST: 'HDB_LEADER_CLUSTERING_HOST',
-	HDB_LEADER_CLUSTERING_PORT: 'HDB_LEADER_CLUSTERING_PORT',
-	HDB_CLONE_CLUSTERING_HOST: 'HDB_CLONE_CLUSTERING_HOST',
-	HDB_FULLY_CONNECTED: 'HDB_FULLY_CONNECTED',
+	REPLICATION_HOSTNAME: 'REPLICATION_HOSTNAME',
 	HDB_CLONE_OVERTOP: 'HDB_CLONE_OVERTOP',
-	CLUSTERING_NODENAME: 'CLUSTERING_NODENAME',
 };
 
 const cli_args = minimist(process.argv);
 const username = cli_args[CLONE_VARS.HDB_LEADER_USERNAME] ?? process.env[CLONE_VARS.HDB_LEADER_USERNAME];
 const password = cli_args[CLONE_VARS.HDB_LEADER_PASSWORD] ?? process.env[CLONE_VARS.HDB_LEADER_PASSWORD];
 const leader_url = cli_args[CLONE_VARS.HDB_LEADER_URL] ?? process.env[CLONE_VARS.HDB_LEADER_URL];
-const clustering_host =
-	cli_args[CLONE_VARS.HDB_LEADER_CLUSTERING_HOST] ?? process.env[CLONE_VARS.HDB_LEADER_CLUSTERING_HOST];
-let clone_clustering_host =
-	cli_args[CLONE_VARS.HDB_CLONE_CLUSTERING_HOST] ?? process.env[CLONE_VARS.HDB_CLONE_CLUSTERING_HOST];
-let fully_connected =
-	(cli_args[CLONE_VARS.HDB_FULLY_CONNECTED] ?? process.env[CLONE_VARS.HDB_FULLY_CONNECTED]) === 'true'; // optional var - will connect the clone node to the leader AND all the nodes the leader is connected to
+const replication_hostname = cli_args[CLONE_VARS.REPLICATION_HOSTNAME] ?? process.env[CLONE_VARS.REPLICATION_HOSTNAME];
+
 const clone_overtop = (cli_args[CLONE_VARS.HDB_CLONE_OVERTOP] ?? process.env[CLONE_VARS.HDB_CLONE_OVERTOP]) === 'true'; // optional var - will allow clone to work overtop of an existing HDB install
-const nodename_arg = cli_args[CLONE_VARS.CLUSTERING_NODENAME] ?? process.env[CLONE_VARS.CLUSTERING_NODENAME];
 const cloned_var = cli_args[CONFIG_PARAMS.CLONED.toUpperCase()] ?? process.env[CONFIG_PARAMS.CLONED.toUpperCase()];
 
 let leader_clustering_enabled;
@@ -90,7 +81,6 @@ let hdb_config_json;
 let leader_config;
 let leader_config_flat = {};
 let leader_dbs;
-let clone_node_name;
 let root_path;
 let exclude_db;
 let excluded_table;
@@ -103,8 +93,8 @@ let sys_db_exist = false;
  * @param background
  * @returns {Promise<void>}
  */
-module.exports = async function cloneNode(background = false) {
-	console.info(`Starting clone node form leader node: ${leader_url}`);
+module.exports = async function cloneNode(background = false, run = false) {
+	console.info(`Starting clone node from leader node: ${leader_url}`);
 	delete process.env.HDB_LEADER_URL;
 
 	root_path = hdb_utils.getEnvCliRootPath();
@@ -164,13 +154,9 @@ module.exports = async function cloneNode(background = false) {
 		return main();
 	}
 
-	if (nodename_arg) {
-		clone_node_name = nodename_arg;
-	} else if (hdb_config[hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME.toLowerCase()]) {
-		clone_node_name = hdb_config[hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME.toLowerCase()];
-	} else {
-		clone_node_name = clone_node_config?.clustering?.nodeName ?? hri.random();
-	}
+	// Get all the non-system db/table from leader node
+	leader_dbs = await leaderHttpReq({ operation: OPERATIONS_ENUM.DESCRIBE_ALL });
+	leader_dbs = await JSON.parse(leader_dbs.body);
 
 	await cloneConfig();
 	env_mgr.setCloneVar(false);
@@ -183,11 +169,10 @@ module.exports = async function cloneNode(background = false) {
 
 	// Only call install if a fresh sys DB was added
 	if (!sys_db_exist) await installHDB();
-	await startHDB(background);
+	await startHDB(background, run);
 
-	// If clustering is not enabled on leader do not cluster tables.
-	if (leader_clustering_enabled && clustering_host) {
-		await clusterTables();
+	if (replication_hostname) {
+		await setupReplication();
 	}
 
 	console.info('\nSuccessfully cloned node: ' + leader_url);
@@ -204,13 +189,13 @@ async function cloneConfig() {
 	leader_config = await JSON.parse(leader_config.body);
 	leader_clustering_enabled = leader_config?.clustering?.enabled;
 	leader_config_flat = config_utils.flattenConfig(leader_config);
-	const leader_clustering_port = leader_config?.clustering?.hubServer?.cluster?.network?.port;
 	const exclude_comps = clone_node_config?.componentConfig?.exclude;
 	const config_update = {
 		cloned: true,
-		clustering_nodename: clone_node_name,
 		rootpath: root_path,
 	};
+
+	if (replication_hostname) config_update.replication_hostname = replication_hostname;
 
 	for (const name in leader_config_flat) {
 		if (
@@ -237,12 +222,7 @@ async function cloneConfig() {
 			}
 		}
 
-		// If there is no routes config on clone node, get leader routes, append leader host to them and add to clone config
 		if (!hdb_config[name]) {
-			if (name === 'clustering_hubserver_cluster_network_routes' && clustering_host && leader_clustering_port) {
-				if (!Array.isArray(leader_config_flat[name])) leader_config_flat[name] = [];
-				leader_config_flat[name].push({ host: clustering_host, port: leader_clustering_port });
-			}
 			config_update[name] = leader_config_flat[name];
 		}
 	}
@@ -252,25 +232,35 @@ async function cloneConfig() {
 		config_update[name] = hdb_config[name];
 	}
 
+	// If DB are excluded in clone config update replication.databases to not include the excluded DB
+	const excluded_db = {};
+	if (clone_node_config?.databaseConfig?.excludeDatabases) {
+		clone_node_config.databaseConfig.excludeDatabases.forEach((db) => {
+			excluded_db[db.database] = true;
+		});
+	}
+
+	if (clone_node_config?.clusteringConfig?.excludeDatabases) {
+		clone_node_config.clusteringConfig.excludeDatabases.forEach((db) => {
+			excluded_db[db.database] = true;
+		});
+	}
+
+	if (Object.keys(excluded_db).length > 0) {
+		config_update.replication_databases = [];
+		if (!excluded_db['system']) config_update.replication_databases.push('system');
+		for (const db in leader_dbs) {
+			if (!excluded_db[db]) {
+				config_update.replication_databases.push(db);
+			}
+		}
+	}
+
 	const args = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
 	Object.assign(config_update, args);
 
 	config_utils.createConfigFile(config_update, true);
 	env_mgr.initSync(true);
-
-	// Add this node's route to the leader node
-	if (leader_clustering_enabled && clustering_host && clone_clustering_host) {
-		const route = {
-			host: clone_clustering_host,
-			port: env_mgr.get(CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_PORT),
-		};
-		console.log('Setting clustering route on leader:', route);
-		await leaderHttpReq({
-			operation: 'cluster_set_routes',
-			server: 'hub',
-			routes: [route],
-		});
-	}
 }
 
 /**
@@ -318,19 +308,22 @@ async function cloneTablesHttp() {
 	// If this is a fresh clone or there is no system.mdb file clone users/roles system tables
 	const system_db_dir = getDBPath('system');
 	const sys_db_file_dir = join(system_db_dir, 'system.mdb');
+	await ensureDir(system_db_dir);
 	if (fresh_clone || !(await fs.exists(sys_db_file_dir)) || clone_overtop) {
-		console.info('Cloning system database');
-		await ensureDir(system_db_dir);
-		const file_stream = createWriteStream(sys_db_file_dir, { overwrite: true });
-		const req = {
-			operation: OPERATIONS_ENUM.GET_BACKUP,
-			database: 'system',
-			tables: SYSTEM_TABLES_TO_CLONE,
-		};
+		if (!replication_hostname) {
+			console.info('Cloning system database');
+			await ensureDir(system_db_dir);
+			const file_stream = createWriteStream(sys_db_file_dir, { overwrite: true });
+			const req = {
+				operation: OPERATIONS_ENUM.GET_BACKUP,
+				database: 'system',
+				tables: SYSTEM_TABLES_TO_CLONE,
+			};
 
-		const headers = await leaderHttpStream(req, file_stream);
-		// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
-		await fs.utimes(sys_db_file_dir, Date.now(), new Date(headers.date));
+			const headers = await leaderHttpStream(req, file_stream);
+			// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
+			await fs.utimes(sys_db_file_dir, Date.now(), new Date(headers.date));
+		}
 
 		if (!fresh_clone) {
 			await mount(root_path);
@@ -341,10 +334,6 @@ async function cloneTablesHttp() {
 		sys_db_exist = true;
 		console.log(`Not cloning system database due to it already existing on clone`);
 	}
-
-	// Get all the non-system db/table from leader node
-	leader_dbs = await leaderHttpReq({ operation: OPERATIONS_ENUM.DESCRIBE_ALL });
-	leader_dbs = await JSON.parse(leader_dbs.body);
 
 	// Create object where excluded db name is key
 	exclude_db = clone_node_config?.databaseConfig?.excludeDatabases;
@@ -414,21 +403,23 @@ async function cloneTablesFetch() {
 	const system_db_dir = getDBPath('system');
 	const sys_db_file_dir = join(system_db_dir, 'system.mdb');
 	if (fresh_clone || !(await fs.exists(sys_db_file_dir)) || clone_overtop) {
-		console.info('Cloning system database using fetch');
-		const req = {
-			operation: OPERATIONS_ENUM.GET_BACKUP,
-			database: 'system',
-			tables: SYSTEM_TABLES_TO_CLONE,
-		};
+		if (!replication_hostname) {
+			console.info('Cloning system database using fetch');
+			const req = {
+				operation: OPERATIONS_ENUM.GET_BACKUP,
+				database: 'system',
+				tables: SYSTEM_TABLES_TO_CLONE,
+			};
 
-		const sys_backup = await leaderHttpReqFetch(req, true);
-		const sys_db_dir = getDBPath('system');
-		await ensureDir(sys_db_dir);
-		const sys_db_file_dir = join(sys_db_dir, 'system.mdb');
-		await pipeline(sys_backup.body, createWriteStream(sys_db_file_dir, { overwrite: true }));
+			const sys_backup = await leaderHttpReqFetch(req, true);
+			const sys_db_dir = getDBPath('system');
+			await ensureDir(sys_db_dir);
+			const sys_db_file_dir = join(sys_db_dir, 'system.mdb');
+			await pipeline(sys_backup.body, createWriteStream(sys_db_file_dir, { overwrite: true }));
 
-		// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
-		await fs.utimes(sys_db_file_dir, Date.now(), new Date(sys_backup.headers.get('date')));
+			// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
+			await fs.utimes(sys_db_file_dir, Date.now(), new Date(sys_backup.headers.get('date')));
+		}
 
 		if (!fresh_clone) {
 			await mount(root_path);
@@ -439,10 +430,6 @@ async function cloneTablesFetch() {
 		sys_db_exist = true;
 		console.log(`Not cloning system database due to it already existing on clone`);
 	}
-
-	// Get all the non-system db/table from leader node
-	leader_dbs = await leaderHttpReqFetch({ operation: OPERATIONS_ENUM.DESCRIBE_ALL });
-	leader_dbs = await leader_dbs.json();
 
 	// Create object where excluded db name is key
 	exclude_db = clone_node_config?.databaseConfig?.excludeDatabases;
@@ -544,12 +531,13 @@ async function leaderHttpReqFetch(req, get_backup = false) {
 	throw new Error(await response.text());
 }
 
-async function startHDB(background) {
+async function startHDB(background, run = false) {
 	const hdb_proc = await sys_info.getHDBProcessInfo();
 	if (hdb_proc.clustering.length === 0 || hdb_proc.core.length === 0) {
 		if (background) {
 			await launch(false);
 		} else {
+			if (run) await setAppPath();
 			await main();
 		}
 	} else {
@@ -559,138 +547,50 @@ async function startHDB(background) {
 	if (background) await hdb_utils.async_set_timeout(2000);
 }
 
+async function setAppPath() {
+	// Run a specific application folder
+	let app_folder = process.argv[3];
+	if (app_folder && app_folder[0] !== '-') {
+		if (!(await fs.exists(app_folder))) {
+			console.error(`The folder ${app_folder} does not exist`);
+		}
+		if (!fs.statSync(app_folder).isDirectory()) {
+			console.error(`The path ${app_folder} is not a folder`);
+		}
+		app_folder = await fs.realpath(app_folder);
+		if (await fs.exists(path.join(app_folder, hdb_terms.HDB_CONFIG_FILE))) {
+			// This can be used to run HDB without a boot file
+			process.env.ROOTPATH = app_folder;
+		} else {
+			process.env.RUN_HDB_APP = app_folder;
+		}
+	}
+}
+
 /**
  * Setup replication between this node and the leader, or if fully connected cli/env passed
  * setup replication between this node, the leader and any nodes the leader is replicating to.
  * @returns {Promise<void>}
  */
-async function clusterTables() {
-	console.info('Clustering cloned tables');
-	const subscribe = clone_node_config?.clusteringConfig?.subscribeToLeaderNode !== false;
-	const publish = clone_node_config?.clusteringConfig?.publishToLeaderNode !== false;
+async function setupReplication() {
+	console.info('Setting up replication');
 
 	await global_schema.setSchemaDataToGlobalAsync();
 	const add_node = require('../clustering/addNode');
-	let leader_cluster_status = await leaderHttpReq({ operation: OPERATIONS_ENUM.CLUSTER_STATUS });
-	leader_cluster_status = await JSON.parse(leader_cluster_status.body);
-
-	const subscriptions = [];
-	if (!sys_db_exist) {
-		const sys_db_file_stat = await fs.stat(join(getDBPath('system'), 'system.mdb'));
-		// Setup cloning on some system tables
-		for (const sys_table of SYSTEM_TABLES_TO_CLONE) {
-			subscriptions.push({
-				schema: SYSTEM_SCHEMA_NAME,
-				table: sys_table,
-				subscribe,
-				publish,
-				start_time: sys_db_file_stat.mtime.toISOString(),
-			});
-		}
-	}
-
-	// Create object where excluded db name is key
-	let exclude_db_replication = clone_node_config?.clusteringConfig?.excludeDatabases;
-	exclude_db_replication = exclude_db_replication
-		? exclude_db_replication.reduce((obj, item) => {
-				return { ...obj, [item['database']]: true };
-		  }, {})
-		: {};
-
-	// Build excluded table object where key is db + table
-	let exclude_table_replication = clone_node_config?.clusteringConfig?.excludeTables;
-	exclude_table_replication = exclude_table_replication
-		? exclude_table_replication.reduce((obj, item) => {
-				return { ...obj, [item['database'] == null ? null : item['database'] + item['table']]: true };
-		  }, {})
-		: {};
-
-	for (const db in leader_dbs) {
-		if (leader_dbs[db] === 'excluded' || exclude_db_replication[db]) continue;
-		const db_file_stat = await fs.stat(join(getDBPath(db), db + '.mdb'));
-		db_file_stat.mtime.setSeconds(db_file_stat.mtime.getSeconds() - 10);
-		for (const table in leader_dbs[db]) {
-			if (leader_dbs[db][table] === 'excluded' || exclude_table_replication[db + table]) continue;
-			subscriptions.push({
-				schema: db,
-				table,
-				subscribe,
-				publish,
-				start_time: db_file_stat.mtime.toISOString(),
-			});
-		}
-	}
-
-	await nats_utils.createTableStreams(subscriptions);
-
-	hdb_log.info(
-		'Sending add_node request to node:',
-		leader_config?.clustering?.nodeName,
-		'with subscriptions:',
-		subscriptions
+	const add_node_response = await add_node(
+		{
+			operation: OPERATIONS_ENUM.ADD_NODE,
+			verify_tls: false, // TODO : if they have certs we shouldnt need to pass creds
+			url: `${leader_config.operationsApi.network.port ? 'ws' : 'wss'}://${new URL(leader_url).host}`,
+			authorization: {
+				username,
+				password,
+			},
+		},
+		true
 	);
-	let config_cluster_res;
-	if (fully_connected && leader_cluster_status.connections.length > 0) {
-		// Fully connected logic
-		const configure_cluster = require('../clustering/configureCluster');
-		const config_cluster_cons = [
-			{
-				node_name: leader_config?.clustering?.nodeName,
-				subscriptions,
-			},
-		];
-		let has_connections = false;
-		clone_node_name = env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
-		// For all the connections in the leader nodes cluster status create a connection to clone node
-		for (const node of leader_cluster_status.connections) {
-			// in case this node is already in the connections, we can skip ourself
-			if (node.node_name === clone_node_name) continue;
-			const node_con = {
-				node_name: node.node_name,
-				subscriptions: [],
-			};
 
-			// Build a connection object for all nodes getting connected to
-			for (const sub of node.subscriptions) {
-				// Honor any exclude config
-				if (
-					exclude_db[sub.schema] ||
-					excluded_table[sub.schema + sub.table] ||
-					exclude_db_replication[sub.schema] ||
-					exclude_table_replication[sub.schema + sub.table]
-				)
-					continue;
-				has_connections = true;
-				// Set a pub/sub start time 10s in the past of backup timestamp.
-				const db_file_stat = await fs.stat(join(getDBPath(sub.schema), sub.schema + '.mdb'));
-				db_file_stat.mtime.setSeconds(db_file_stat.mtime.getSeconds() - 10);
-				sub.start_time = db_file_stat.mtime.toISOString();
-				node_con.subscriptions.push(sub);
-			}
-			config_cluster_cons.push(node_con);
-		}
-
-		if (has_connections) {
-			//configure_cluster op is used because it can setup subs to multiple nodes in one request
-			config_cluster_res = await configure_cluster({
-				operation: OPERATIONS_ENUM.CONFIGURE_CLUSTER,
-				connections: config_cluster_cons,
-			});
-			console.info(JSON.stringify(config_cluster_res));
-		}
-	}
-	if (!config_cluster_res && subscriptions.length > 0) {
-		await add_node(
-			{
-				operation: OPERATIONS_ENUM.ADD_NODE,
-				node_name: leader_config?.clustering?.nodeName,
-				subscriptions,
-			},
-			true
-		);
-	}
-
-	await nats_utils.closeConnection();
+	console.log('Add node response: ', add_node_response);
 }
 
 async function leaderHttpReq(req) {

@@ -55,7 +55,7 @@ function dropRoleValidation(object) {
 	return validator.validateObject(object, constraints);
 }
 
-const ALLOWED_JSON_KEYS = ['operation', 'role', 'id', 'permission', 'hdb_user', 'hdb_auth_header', 'access'];
+const ALLOWED_JSON_KEYS = ['operation', 'role', 'id', 'permission', 'hdb_user', 'hdb_auth_header'];
 
 function customValidate(object, constraints) {
 	let validationErrors = {
@@ -157,10 +157,10 @@ function customValidate(object, constraints) {
 					});
 
 					//validate table ATTRIBUTE_PERMISSIONS perm
-					if (table.attribute_permissions === undefined) {
+					if (!validate.isDefined(table.attribute_permissions)) {
 						addPermError(HDB_ERROR_MSGS.ATTR_PERMS_ARRAY_MISSING, validationErrors, item, t);
 						continue;
-					} else if (!(Array.isArray(table.attribute_permissions) || table.attribute_permissions === null)) {
+					} else if (!validate.isArray(table.attribute_permissions)) {
 						addPermError(HDB_ERROR_MSGS.ATTR_PERMS_NOT_ARRAY, validationErrors, item, t);
 						continue;
 					}

@@ -1,11 +1,133 @@
 {
 	"info": {
-		"_postman_id": "571c8a17-9a6d-4de4-8549-946cf4bc9e85",
+		"_postman_id": "5b7972d1-9cb3-45d2-a26d-38a8a5fdd078",
 		"name": "Clone node tests - setup leader",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
 		"_exporter_id": "7046690"
 	},
 	"item": [
+		{
+			"name": "Set config",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							""
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"set_configuration\",\n    \"my-component-1_package\": \"HarperDB/application-template\",\n    \"my-component-2_package\": \"HarperDB/application-template\",\n    \"logging_rotation_compress\": true,\n    \"logging_rotation_interval\": \"1D\",\n    \"logging_rotation_maxSize\": \"100K\",\n    \"logging_level\": \"trace\",\n    \"replication_url\": null,\n    \"replication_hostname\": \"{{LEADER_HOST}}\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": [
+						"{{LEADER_HOST}}"
+					],
+					"port": "{{LEADER_HDB_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Restart",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"setTimeout(()=>{}, 40000)",
+							""
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"restart\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": [
+						"{{LEADER_HOST}}"
+					],
+					"port": "{{LEADER_HDB_PORT}}"
+				}
+			},
+			"response": []
+		},
 		{
 			"name": "Create table 'fish' db 'data'",
 			"event": [
@@ -529,66 +651,6 @@
 				"body": {
 					"mode": "raw",
 					"raw": "{\n    \"operation\": \"create_table\",\n    \"database\": \"exclude\",\n    \"table\": \"horse\",\n    \"primary_key\": \"id\"\n}\n",
-					"options": {
-						"raw": {
-							"language": "json"
-						}
-					}
-				},
-				"url": {
-					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
-					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{LEADER_HOST}}"
-					],
-					"port": "{{LEADER_HDB_PORT}}"
-				}
-			},
-			"response": []
-		},
-		{
-			"name": "Set config",
-			"event": [
-				{
-					"listen": "test",
-					"script": {
-						"exec": [
-							"pm.test('Status code is 200', () => {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							""
-						],
-						"type": "text/javascript",
-						"packages": {}
-					}
-				}
-			],
-			"request": {
-				"auth": {
-					"type": "basic",
-					"basic": [
-						{
-							"key": "password",
-							"value": "{{PASSWORD}}",
-							"type": "string"
-						},
-						{
-							"key": "username",
-							"value": "{{USERNAME}}",
-							"type": "string"
-						},
-						{
-							"key": "showPassword",
-							"value": false,
-							"type": "boolean"
-						}
-					]
-				},
-				"method": "POST",
-				"header": [],
-				"body": {
-					"mode": "raw",
-					"raw": "{\n    \"operation\": \"set_configuration\",\n    \"my-component-1_package\": \"HarperDB/application-template\",\n    \"my-component-2_package\": \"HarperDB/application-template\",\n    \"logging_rotation_compress\": true,\n    \"logging_rotation_interval\": \"1D\",\n    \"logging_rotation_maxSize\": \"100K\"\n}\n",
 					"options": {
 						"raw": {
 							"language": "json"

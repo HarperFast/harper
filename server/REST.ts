@@ -45,16 +45,45 @@ async function http(request: Context & Request, next_handler) {
 			resource = entry.Resource;
 		}
 
-		let cache_control = headers_object['cache-control'];
+		const cache_control = headers_object['cache-control'];
 		if (cache_control) {
-			cache_control = cache_control.toLowerCase();
-			const max_age = cache_control.match(/max-age=(\d+)/)?.[1];
-			if (max_age) request.expiresAt = max_age * 1000 + Date.now();
-			if (cache_control.includes('only-if-cached')) request.onlyIfCached = true;
-			if (cache_control.includes('no-cache')) request.noCache = true;
-			if (cache_control.includes('no-store')) request.noCacheStore = true;
-			if (cache_control.includes('stale-if-error')) request.staleIfError = true;
-			if (cache_control.includes('must-revalidate')) request.mustRevalidate = true;
+			const cache_control_parts = parseHeaderValue(cache_control);
+			for (const part of cache_control_parts) {
+				switch (part.name) {
+					case 'max-age':
+						request.expiresAt = part.value * 1000 + Date.now();
+						break;
+					case 'only-if-cached':
+						request.onlyIfCached = true;
+						break;
+					case 'no-cache':
+						request.noCache = true;
+						break;
+					case 'no-store':
+						request.noCacheStore = true;
+						break;
+					case 'stale-if-error':
+						request.staleIfError = true;
+						break;
+					case 'must-revalidate':
+						request.mustRevalidate = true;
+						break;
+				}
+			}
+		}
+		const replicate_to = headers_object['x-replicate-to'];
+		if (replicate_to) {
+			const parsed = parseHeaderValue(replicate_to).map((node: { name: string }) => {
+				// we can use a component argument to indicate that number that should be confirmed
+				// for example, to replicate to three nodes and wait for confirmation from two: X-Replicate-To: 3;confirm=2
+				// or to specify nodes with confirm: X-Replicate-To: node-1, node-2, node-3;confirm=2
+				if (node.next?.name === 'confirm' && node.next.value >= 0) {
+					request.replicatedConfirmation = +node.next.value;
+				}
+				return node.name;
+			});
+			request.replicateTo =
+				parsed.length === 1 && +parsed[0] >= 0 ? +parsed[0] : parsed[0] === '*' ? undefined : parsed;
 		}
 		let response_data = await transaction(request, () => {
 			if (headers_object['content-length'] || headers_object['transfer-encoding']) {
@@ -281,7 +310,6 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 					1011, // otherwise generic internal error
 				error.toString()
 			);
-			ws.close('login fialed');
 		}
 		ws.close();
 	}, options);
@@ -290,3 +318,32 @@ const HTTP_TO_WEBSOCKET_CLOSE_CODES = {
 	401: 3000,
 	403: 3003,
 };
+
+/**
+ * Parse a header value into a list of objects with name and value properties
+ * @param value
+ */
+function parseHeaderValue(value) {
+	const parts = value.split(/\s*,\s*/);
+	return parts.map((part) => {
+		let parsed;
+		const components = part.split(/\s*;\s*/);
+		let component;
+		while ((component = components.pop())) {
+			if (component.includes('=')) {
+				const [name, value] = component.split(/\s*=\s*/);
+				parsed = {
+					name: name.toLowerCase(),
+					value,
+					next: parsed,
+				};
+			} else {
+				parsed = {
+					name: component.toLowerCase(),
+					next: parsed,
+				};
+			}
+		}
+		return parsed;
+	});
+}

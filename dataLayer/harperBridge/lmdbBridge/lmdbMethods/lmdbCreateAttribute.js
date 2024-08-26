@@ -3,7 +3,7 @@
 const hdb_terms = require('../../../../utility/hdbTerms');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
 const write_utility = require('../../../../utility/lmdb/writeUtility');
-const { getSystemSchemaPath, getSchemaPath} = require('../lmdbUtility/initializePaths');
+const { getSystemSchemaPath, getSchemaPath } = require('../lmdbUtility/initializePaths');
 const system_schema = require('../../../../json/systemSchema');
 const schema_validator = require('../../../../validation/schema_validator');
 const LMDBCreateAttributeObject = require('../lmdbUtility/LMDBCreateAttributeObject');
@@ -11,12 +11,6 @@ const returnObject = require('../../bridgeUtility/insertUpdateReturnObj');
 const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
 const hdb_utils = require('../../../../utility/common_utils');
 const { HTTP_STATUS_CODES } = hdb_errors;
-
-const HDB_TABLE_INFO = system_schema.hdb_attribute;
-let hdb_attribute_attributes = [];
-for (let x = 0; x < HDB_TABLE_INFO.attributes.length; x++) {
-	hdb_attribute_attributes.push(HDB_TABLE_INFO.attributes[x].attribute);
-}
 
 const ACTION = 'inserted';
 
@@ -40,7 +34,8 @@ async function lmdbCreateAttribute(create_attribute_obj) {
 		);
 	}
 	//check if schema.table does not exist throw error
-	let check_schema_table = !create_attribute_obj.skip_table_check &&
+	let check_schema_table =
+		!create_attribute_obj.skip_table_check &&
 		hdb_utils.checkGlobalSchemaTable(create_attribute_obj.schema, create_attribute_obj.table);
 	if (check_schema_table) {
 		throw handleHDBError(new Error(), check_schema_table, HTTP_STATUS_CODES.NOT_FOUND);

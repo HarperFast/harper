@@ -55,6 +55,9 @@ connected_ports.sendToThread = function (thread_id, message) {
 		return true;
 	}
 };
+module.exports.whenThreadsStarted = new Promise((resolve) => {
+	module.exports.threadsHaveStarted = resolve;
+});
 
 let isMainWorker;
 function setTerminateTimeout(new_timeout) {
@@ -68,6 +71,7 @@ function getWorkerCount() {
 }
 function setMainIsWorker(isWorker) {
 	isMainWorker = isWorker;
+	module.exports.threadsHaveStarted();
 }
 let worker_count = 1; // should be assigned when workers are created
 let ticket_keys;
@@ -245,7 +249,10 @@ async function restartWorkers(
 			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
 			let when_done = new Promise((resolve) => {
 				// in case the exit inside the thread doesn't timeout, call terminate if necessary
-				let timeout = setTimeout(() => worker.terminate(), thread_termination_timeout * 2).unref();
+				let timeout = setTimeout(() => {
+					harper_logger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
+					worker.terminate();
+				}, thread_termination_timeout * 2).unref();
 				worker.on('exit', () => {
 					clearTimeout(timeout);
 					waiting_to_finish.splice(waiting_to_finish.indexOf(when_done));
@@ -317,7 +324,7 @@ function onMessageByType(type, listener) {
 }
 
 const MAX_SYNC_BROADCAST = 10;
-async function broadcast(message) {
+async function broadcast(message, include_self) {
 	let count = 0;
 	for (let port of connected_ports) {
 		try {
@@ -330,6 +337,9 @@ async function broadcast(message) {
 		} catch (error) {
 			harper_logger.error(`Unable to send message to worker`, error);
 		}
+	}
+	if (include_self) {
+		notifyMessageListeners(message, null);
 	}
 }
 
@@ -437,7 +447,7 @@ function startMonitoring() {
 }
 const REPORTING_INTERVAL = 1000;
 
-if (parentPort) {
+if (parentPort && workerData.addPorts) {
 	addPort(parentPort);
 	for (let i = 0, l = workerData.addPorts.length; i < l; i++) {
 		let port = workerData.addPorts[i];
@@ -485,19 +495,7 @@ function addPort(port, keep_ref) {
 					completion();
 				}
 			} else {
-				for (let listener of message_listeners) {
-					listener(message, port);
-				}
-				let listeners = listeners_by_type.get(message.type);
-				if (listeners) {
-					for (let listener of listeners) {
-						try {
-							listener(message, port);
-						} catch (error) {
-							harper_logger.error(error);
-						}
-					}
-				}
+				notifyMessageListeners(message, port);
 			}
 		})
 		.on('close', () => {
@@ -508,6 +506,21 @@ function addPort(port, keep_ref) {
 		});
 	if (keep_ref) port.refCount = 100;
 	else port.unref();
+}
+function notifyMessageListeners(message, port) {
+	for (let listener of message_listeners) {
+		listener(message, port);
+	}
+	let listeners = listeners_by_type.get(message.type);
+	if (listeners) {
+		for (let listener of listeners) {
+			try {
+				listener(message, port);
+			} catch (error) {
+				harper_logger.error(error);
+			}
+		}
+	}
 }
 if (isMainThread) {
 	let before_restart, queued_restart;

@@ -7,6 +7,7 @@ import { convertToMS } from '../utility/common_utils';
 import { PREVIOUS_TIMESTAMP_PLACEHOLDER, LAST_TIMESTAMP_PLACEHOLDER } from './RecordEncoder';
 import * as harper_logger from '../utility/logging/harper_logger';
 import { getRecordAtTime } from './crdt';
+import { isMainThread } from 'worker_threads';
 
 /**
  * This module is responsible for the binary representation of audit records in an efficient form.
@@ -61,9 +62,20 @@ export const AUDIT_STORE_OPTIONS = {
 
 let audit_retention = convertToMS(env_get(CONFIG_PARAMS.LOGGING_AUDITRETENTION)) || 86400 * 3;
 const MAX_DELETES_PER_CLEANUP = 1000;
+const FLOAT_TARGET = new Float64Array(1);
+const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
 let DEFAULT_AUDIT_CLEANUP_DELAY = 10000; // default delay of 10 seconds
+let timestamp_errored = false;
 export function openAuditStore(root_store) {
-	const audit_store = (root_store.auditStore = root_store.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS));
+	let audit_store = (root_store.auditStore = root_store.openDB(
+		AUDIT_STORE_NAME,
+		Object.assign({ create: false }, AUDIT_STORE_OPTIONS)
+	));
+	if (!audit_store) {
+		// this means we are creating a new audit store. Initialize with the last removed timestamp (we don't want to put this in legacy audit logs since we don't know if they have had deletions or not).
+		audit_store = root_store.auditStore = root_store.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
+		updateLastRemoved(audit_store, 1);
+	}
 	audit_store.rootStore = root_store;
 	const delete_callbacks = [];
 	audit_store.addDeleteRemovalCallback = function (table_id, callback) {
@@ -82,9 +94,10 @@ export function openAuditStore(root_store) {
 			if (audit_store.rootStore.status === 'closed' || audit_store.rootStore.status === 'closing') return;
 			let deleted = 0;
 			let committed;
+			let last_key;
 			try {
 				for (const { key, value } of audit_store.getRange({
-					start: 0,
+					start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
 					snapshot: false,
 					end: Date.now() - audit_retention,
 				})) {
@@ -96,6 +109,7 @@ export function openAuditStore(root_store) {
 						delete_callbacks[table_id]?.(audit_record.recordId);
 					}
 					committed = audit_store.remove(key);
+					last_key = key;
 					await new Promise(setImmediate);
 					if (++deleted >= MAX_DELETES_PER_CLEANUP) {
 						// limit the amount we cleanup per event turn so we don't use too much memory/CPU
@@ -108,6 +122,9 @@ export function openAuditStore(root_store) {
 				if (deleted === 0) {
 					// if we didn't delete anything, we can increase the delay (double until we get to one tenth of the retention time)
 					audit_cleanup_delay = Math.min(audit_cleanup_delay << 1, audit_retention / 10);
+				} else {
+					// if we did delete something, update our updates since timestamp
+					updateLastRemoved(audit_store, last_key);
 				}
 				scheduleAuditCleanup(audit_cleanup_delay);
 			}
@@ -118,10 +135,32 @@ export function openAuditStore(root_store) {
 	if (getWorkerIndex() === getWorkerCount() - 1) {
 		scheduleAuditCleanup(DEFAULT_AUDIT_CLEANUP_DELAY);
 	}
-
+	if (getWorkerIndex() === 0 && !timestamp_errored) {
+		// make sure the timestamp is valid
+		for (let time of audit_store.getKeys({ reverse: true, limit: 1 })) {
+			if (time > Date.now()) {
+				timestamp_errored = true;
+				harper_logger.error(
+					'The current time is before the last recorded entry in the audit log. Time reversal can undermine the integrity of data tracking and certificate validation and the time must be corrected.'
+				);
+			}
+		}
+	}
 	return audit_store;
 }
 
+function updateLastRemoved(audit_store, last_key) {
+	FLOAT_TARGET[0] = last_key;
+	audit_store.put(Symbol.for('last-removed'), FLOAT_BUFFER);
+}
+
+export function getLastRemoved(audit_store) {
+	const last_removed = audit_store.get(Symbol.for('last-removed'));
+	if (last_removed) {
+		FLOAT_BUFFER.set(last_removed);
+		return FLOAT_TARGET[0];
+	}
+}
 export function setAuditRetention(retention_time, default_delay = DEFAULT_AUDIT_CLEANUP_DELAY) {
 	audit_retention = retention_time;
 	DEFAULT_AUDIT_CLEANUP_DELAY = default_delay;
@@ -134,8 +173,15 @@ const DELETE = 2;
 const MESSAGE = 3;
 const INVALIDATE = 4;
 const PATCH = 5;
+const RELOCATE = 6;
+/** Used to indicate we have received a remote local time update */
+export const REMOTE_SEQUENCE_UPDATE = 11;
 const HAS_PREVIOUS_VERSION = 64;
-
+const HAS_EXTENDED_TYPE = 128;
+export const HAS_CURRENT_RESIDENCY_ID = 512;
+export const HAS_PREVIOUS_RESIDENCY_ID = 1024;
+export const HAS_ORIGINATING_OPERATION = 2048;
+export const HAS_EXPIRATION_EXTENDED_TYPE = 0x1000;
 const EVENT_TYPES = {
 	put: PUT | HAS_RECORD,
 	[PUT]: 'put',
@@ -143,30 +189,85 @@ const EVENT_TYPES = {
 	[DELETE]: 'delete',
 	message: MESSAGE | HAS_RECORD,
 	[MESSAGE]: 'message',
-	invalidate: INVALIDATE,
+	invalidate: INVALIDATE | HAS_PARTIAL_RECORD,
 	[INVALIDATE]: 'invalidate',
 	patch: PATCH | HAS_PARTIAL_RECORD,
 	[PATCH]: 'patch',
+	relocate: RELOCATE,
+	[RELOCATE]: 'relocate',
 };
-export function createAuditEntry(txn_time, table_id, record_id, previous_local_time, username, type, encoded_record) {
+const ORIGINATING_OPERATIONS = {
+	insert: 1,
+	update: 2,
+	upsert: 3,
+	1: 'insert',
+	2: 'update',
+	3: 'upsert',
+};
+
+/**
+ * Creates a binary audit entry
+ * @param txn_time
+ * @param table_id
+ * @param record_id
+ * @param previous_local_time
+ * @param node_id
+ * @param username
+ * @param type
+ * @param encoded_record
+ * @param extended_type
+ * @param residency_id
+ * @param previous_residency_id
+ */
+export function createAuditEntry(
+	txn_time,
+	table_id,
+	record_id,
+	previous_local_time,
+	node_id,
+	username,
+	type,
+	encoded_record,
+	extended_type,
+	residency_id,
+	previous_residency_id,
+	expires_at,
+	originating_operation?: string
+) {
 	const action = EVENT_TYPES[type];
-	if (!action) throw new Error(`Invalid audit entry type ${type}`);
+	if (!action) {
+		throw new Error(`Invalid audit entry type ${type}`);
+	}
 	let position = 1;
 	if (previous_local_time) {
 		if (previous_local_time > 1) ENTRY_DATAVIEW.setFloat64(0, previous_local_time);
 		else ENTRY_HEADER.set(PREVIOUS_TIMESTAMP_PLACEHOLDER);
 		position = 9;
 	}
+	if (extended_type) {
+		if (extended_type & 0xffc0ff) throw new Error('Illegal extended type');
+		position++;
+	}
 
-	const node_id = 0;
 	writeInt(node_id);
 	writeInt(table_id);
 	writeValue(record_id);
 	ENTRY_DATAVIEW.setFloat64(position, txn_time);
 	position += 8;
+	if (extended_type & HAS_CURRENT_RESIDENCY_ID) writeInt(residency_id);
+	if (extended_type & HAS_PREVIOUS_RESIDENCY_ID) writeInt(previous_residency_id);
+	if (extended_type & HAS_EXPIRATION_EXTENDED_TYPE) {
+		ENTRY_DATAVIEW.setFloat64(position, expires_at);
+		position += 8;
+	}
+	if (extended_type & HAS_ORIGINATING_OPERATION) {
+		writeInt(ORIGINATING_OPERATIONS[originating_operation]);
+	}
+
 	if (username) writeValue(username);
 	else ENTRY_HEADER[position++] = 0;
-	ENTRY_HEADER[previous_local_time ? 8 : 0] = action;
+	if (extended_type) ENTRY_DATAVIEW.setUint16(previous_local_time ? 8 : 0, action | extended_type | 0x8000);
+	else ENTRY_HEADER[previous_local_time ? 8 : 0] = action;
 	const header = ENTRY_HEADER.subarray(0, position);
 	if (encoded_record) {
 		return Buffer.concat([header, encoded_record]);
@@ -215,7 +316,7 @@ export function readAuditEntry(buffer) {
 		const decoder =
 			buffer.dataView || (buffer.dataView = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
 		let previous_local_time;
-		if (buffer[0] == 66) {
+		if (buffer[decoder.position] == 66) {
 			// 66 is the first byte in a date double.
 			previous_local_time = decoder.readFloat64();
 		}
@@ -226,20 +327,39 @@ export function readAuditEntry(buffer) {
 		const record_id_start = decoder.position;
 		const record_id_end = (decoder.position += length);
 		const version = decoder.readFloat64();
+		let residency_id, previous_residency_id, expires_at, originating_operation;
+		if (action & HAS_CURRENT_RESIDENCY_ID) {
+			residency_id = decoder.readInt();
+		}
+		if (action & HAS_PREVIOUS_RESIDENCY_ID) {
+			previous_residency_id = decoder.readInt();
+		}
+		if (action & HAS_EXPIRATION_EXTENDED_TYPE) {
+			expires_at = decoder.readFloat64();
+		}
+		if (action & HAS_ORIGINATING_OPERATION) {
+			let operation_id = decoder.readInt();
+			originating_operation = ORIGINATING_OPERATIONS[operation_id];
+		}
 		length = decoder.readInt();
 		const username_start = decoder.position;
 		const username_end = (decoder.position += length);
 		return {
 			type: EVENT_TYPES[action & 7],
 			tableId: table_id,
+			nodeId: node_id,
 			get recordId() {
 				return readKeySafely(buffer, record_id_start, record_id_end);
+			},
+			getBinaryRecordId() {
+				return buffer.subarray(record_id_start, record_id_end);
 			},
 			version,
 			previousLocalTime: previous_local_time,
 			get user() {
 				return username_end > username_start ? readKeySafely(buffer, username_start, username_end) : undefined;
 			},
+			encoded: buffer,
 			getValue(store, full_record?, audit_time?) {
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !full_record))
 					return store.decoder.decode(buffer.subarray(decoder.position));
@@ -247,6 +367,14 @@ export function readAuditEntry(buffer) {
 					return getRecordAtTime(store.getEntry(this.recordId), audit_time, store);
 				} // TODO: If we store a partial and full record, may need to read both sequentially
 			},
+			getBinaryValue() {
+				return action & (HAS_RECORD | HAS_PARTIAL_RECORD) ? buffer.subarray(decoder.position) : undefined;
+			},
+			extendedType: action,
+			residencyId: residency_id,
+			previousResidencyId: previous_residency_id,
+			expiresAt: expires_at,
+			originatingOperation: originating_operation,
 		};
 	} catch (error) {
 		harper_logger.error('Reading audit entry error', error, buffer);
@@ -254,10 +382,15 @@ export function readAuditEntry(buffer) {
 	}
 }
 
-class Decoder extends DataView {
+export class Decoder extends DataView {
 	position = 0;
 	readInt() {
-		let number = this.getUint8(this.position++);
+		let number;
+		try {
+			number = this.getUint8(this.position++);
+		} catch (error) {
+			throw error;
+		}
 		if (number >= 0x80) {
 			if (number >= 0xc0) {
 				if (number === 0xff) {

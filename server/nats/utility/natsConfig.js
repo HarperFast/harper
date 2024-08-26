@@ -16,6 +16,7 @@ const hdb_logger = require('../../../utility/logging/harper_logger');
 const env_manager = require('../../../utility/environment/environmentManager');
 const crypto_hash = require('../../../security/cryptoHash');
 const nats_utils = require('./natsUtils');
+const keys = require('../../../security/keys');
 
 const HDB_CLUSTERING_FOLDER = 'clustering';
 const ZERO_WRITE_COUNT = 10000;
@@ -41,15 +42,21 @@ function getHubConfigPath() {
  */
 async function generateNatsConfig(is_restart = false, process_name = undefined) {
 	env_manager.initSync();
+	const CA_FILE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH);
+	const KEY_FILE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY);
+	const CERT_FILE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE);
+
+	if (!(await fs.exists(CERT_FILE)) && !(await fs.exists(!CA_FILE))) {
+		await keys.createNatsCerts();
+	}
+
 	const HDB_ROOT = env_manager.get(CONFIG_PARAMS.ROOTPATH);
 	const HUB_PID_FILE_PATH = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, nats_terms.PID_FILES.HUB);
 	const LEAF_PID_FILE_PATH = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, nats_terms.PID_FILES.LEAF);
 	const LEAF_JS_STORE_DIR = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_PATH);
 	const HUB_CONFIG_PATH = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, nats_terms.NATS_CONFIG_FILES.HUB_SERVER);
 	const LEAF_CONFIG_PATH = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, nats_terms.NATS_CONFIG_FILES.LEAF_SERVER);
-	const CERT_FILE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE);
-	const KEY_FILE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY);
-	const CA_FILE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH);
+
 	const INSECURE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_INSECURE);
 	const VERIFY = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_VERIFY);
 	const CLUSTERING_NODENAME = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_NODENAME);

@@ -1,5 +1,5 @@
 const { isMainThread } = require('worker_threads');
-const { getTables } = require('../resources/databases');
+const { getTables, getDatabases, table } = require('../resources/databases');
 const { loadComponentDirectories, loadComponent } = require('../components/componentLoader');
 const { resetResources } = require('../resources/Resources');
 const install_components = require('../components/installComponents');
@@ -7,7 +7,8 @@ const config_utils = require('../config/configUtils');
 const { dirname } = require('path');
 const { getConnection } = require('./nats/utility/natsUtils');
 const env_mgr = require('../utility/environment/environmentManager');
-const hdb_terms = require('../utility/hdbTerms');
+const { CONFIG_PARAMS } = require('../utility/hdbTerms');
+const { loadCertificates } = require('../security/keys');
 
 let loaded_components = new Map();
 /**
@@ -16,7 +17,7 @@ let loaded_components = new Map();
  */
 async function loadRootComponents(is_worker_thread = false) {
 	// Create and cache the nats client connection
-	if (!isMainThread && env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+	if (!isMainThread && env_mgr.get(CONFIG_PARAMS.CLUSTERING_ENABLED)) {
 		// The await is purposely omitted here so that is doesnt slow down startup time
 		getConnection();
 	}
@@ -29,6 +30,8 @@ async function loadRootComponents(is_worker_thread = false) {
 	let resources = resetResources();
 	getTables();
 	resources.isWorker = is_worker_thread;
+
+	await loadCertificates();
 	// the HarperDB root component
 	await loadComponent(dirname(config_utils.getConfigFilePath()), resources, 'hdb', true, loaded_components);
 	// once the global plugins are loaded, we now load all the CF and run applications (and their components)

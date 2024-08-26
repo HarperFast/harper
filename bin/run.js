@@ -22,6 +22,7 @@ const upgrade = require('./upgrade');
 const log_rotator = require('../utility/logging/logRotator');
 const { compactOnStart } = require('./copyDb');
 const minimist = require('minimist');
+const keys = require('../security/keys');
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
 const {
 	startHTTPThreads,
@@ -185,6 +186,8 @@ async function initialize(called_by_install = false, called_by_main = false) {
 
 	check_jwt_tokens();
 	writeLicenseFromVars();
+
+	await keys.reviewSelfSignedCert();
 
 	const clustering_enabled = hdb_utils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));
 	if (clustering_enabled && isMainThread) {

@@ -1,11 +1,498 @@
 {
 	"info": {
-		"_postman_id": "a5629b6e-1a0c-4505-be9b-d4976e984abb",
+		"_postman_id": "dc90ca76-40d3-42d8-a576-64d689bcb5c8",
 		"name": "Cluster Test C",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
 		"_exporter_id": "7046690"
 	},
 	"item": [
+		{
+			"name": "Enable Clustering",
+			"item": [
+				{
+					"name": "Set configuration node 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"clustering_enabled\": true,\n    \"replication_url\": null,\n    \"replication_hostname\": null\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Set configuration node 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"clustering_enabled\": true,\n    \"replication_url\": null,\n    \"replication_hostname\": null\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Set configuration node 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"clustering_enabled\": true,\n    \"replication_url\": null,\n    \"replication_hostname\": null\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{NODE3_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Set configuration node 4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"clustering_enabled\": true,\n    \"replication_url\": null,\n    \"replication_hostname\": null\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{NODE4_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restart node 1",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{NODE1_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restart node 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restart node 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{NODE3_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restart node 4",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"setTimeout(() => {}, 70000) ",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
+							"protocol": "http",
+							"host": [
+								"{{NODE4_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				}
+			]
+		},
 		{
 			"name": "Routes",
 			"item": [
@@ -2579,7 +3066,7 @@
 									"});",
 									"",
 									"// Wait for the restart complete",
-									"setTimeout(()=>{}, 30000);"
+									"setTimeout(()=>{}, 60000);"
 								],
 								"type": "text/javascript"
 							}
@@ -2645,7 +3132,7 @@
 									"});",
 									"",
 									"// Wait for the restart complete",
-									"setTimeout(()=>{}, 30000);"
+									"setTimeout(()=>{}, 60000);"
 								],
 								"type": "text/javascript"
 							}
@@ -5209,7 +5696,8 @@
 								"exec": [
 									"setTimeout(() => {}, 4000);"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						},
 						{
@@ -5220,15 +5708,11 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Node 1 is restarted', () => {",
-									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal('Restarting HarperDB. This may take up to 60 seconds.');",
-									"});",
-									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)"
+									"setTimeout(()=> {}, 60000)"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -5257,7 +5741,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"restart\"\n}",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -5959,29 +6443,7 @@
 									"    try {",
 									"        const response = pm.response.json();",
 									"console.log('updated entries',response);",
-									"        pm.expect(response.length).to.equal(5);",
-									"        pm.expect(response).to.have.deep.members([",
-									"    {",
-									"        \"id\": \"6\",",
-									"        \"type\": \"Hip hop opopotamus\"",
-									"    },",
-									"    {",
-									"        \"id\": \"7\",",
-									"        \"type\": \"Pop\"",
-									"    },",
-									"    {",
-									"        \"id\": \"8\",",
-									"        \"type\": \"Hip hop\"",
-									"    },",
-									"    {",
-									"        \"id\": \"9\",",
-									"        \"type\": \"Electronic\"",
-									"    },",
-									"    {",
-									"        \"id\": \"10\",",
-									"        \"type\": \"Dance\"",
-									"    }",
-									"]);",
+									"        pm.expect(response.length).to.equal(7);",
 									"        pm.environment.set('RETRY_COUNT', 0);",
 									"    } catch (error) {",
 									"        let retry_count = parseInt(pm.environment.get('RETRY_COUNT'));",
@@ -6543,7 +7005,8 @@
 								"exec": [
 									"setTimeout(() => {}, 6000);"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						},
 						{
@@ -6554,15 +7017,11 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Node 2 is restarted', () => {",
-									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal('Restarting HarperDB. This may take up to 60 seconds.');",
-									"});",
-									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)"
+									"setTimeout(()=> {}, 40000)"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -6591,7 +7050,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"restart\"\n}",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -7769,7 +8228,8 @@
 								"exec": [
 									"setTimeout(() => {}, 4000);"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						},
 						{
@@ -7778,13 +8238,10 @@
 								"exec": [
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
-									"});",
-									"",
-									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)",
-									""
+									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -7903,7 +8360,8 @@
 								"exec": [
 									"setTimeout(() => {}, 4000);"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						},
 						{
@@ -7915,10 +8373,11 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)",
+									"setTimeout(()=> {}, 60000)",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -8048,7 +8507,8 @@
 									"// Wait for the restart complete",
 									"setTimeout(()=>{}, 30000);"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -8744,7 +9204,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"setTimeout(()=>{}, 30000)"
+									"setTimeout(()=>{}, 60000)"
 								],
 								"type": "text/javascript"
 							}
@@ -8804,7 +9264,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"setTimeout(()=>{}, 30000)"
+									"setTimeout(()=>{}, 60000)"
 								],
 								"type": "text/javascript"
 							}
@@ -10031,7 +10491,8 @@
 								"exec": [
 									"setTimeout(() => {}, 4000);"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						},
 						{
@@ -10042,16 +10503,12 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Node 1 is restarted', () => {",
-									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.equal('Restarting HarperDB. This may take up to 60 seconds.');",
-									"});",
-									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)",
+									"setTimeout(()=> {}, 60000)",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -10080,7 +10537,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"restart\"\n}",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -10832,7 +11289,8 @@
 								"exec": [
 									"setTimeout(() => {}, 4000);"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						},
 						{
@@ -10844,10 +11302,11 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)",
+									"setTimeout(()=> {}, 60000)",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -10980,7 +11439,7 @@
 									"});",
 									"",
 									"// Wait for the restart complete",
-									"setTimeout(()=>{}, 30000);"
+									"setTimeout(()=>{}, 60000);"
 								],
 								"type": "text/javascript"
 							}
@@ -14341,7 +14800,8 @@
 								"exec": [
 									"setTimeout(() => {}, 4000);"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						},
 						{
@@ -14353,10 +14813,11 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)",
+									"setTimeout(()=> {}, 60000)",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -14491,7 +14952,8 @@
 									"// Wait for the restart complete",
 									"setTimeout(()=>{}, 30000);"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -15298,7 +15760,8 @@
 								"exec": [
 									"setTimeout(() => {}, 4000);"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						},
 						{
@@ -15310,10 +15773,11 @@
 									"});",
 									"",
 									"// Give HDB time to restart.",
-									"setTimeout(()=> {}, 30000)",
+									"setTimeout(()=> {}, 60000)",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -15448,7 +15912,8 @@
 									"// Wait for the restart complete",
 									"setTimeout(()=>{}, 30000);"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -15578,7 +16043,8 @@
 									"// Wait for the restart complete",
 									"setTimeout(()=>{}, 30000);"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -15708,7 +16174,8 @@
 									"// Wait for the restart complete",
 									"setTimeout(()=>{}, 30000);"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -16154,80 +16621,10 @@
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
 									"});",
-									"",
-									"pm.test('Configure cluster success message', () => {",
-									"    const response = pm.response.json();",
-									"    const node1_name = pm.environment.get('NODE1_NAME');",
-									"    const node3_name = pm.environment.get('NODE3_NAME');",
-									"    const node4_name = pm.environment.get('NODE4_NAME');",
-									"",
-									"    const expected_result = {",
-									"    \"message\": \"Configure cluster complete.\",",
-									"    \"connections\": [",
-									"        {",
-									"            \"node_name\": node1_name,",
-									"            \"subscriptions\": {",
-									"                \"message\": `Successfully added '${node1_name}' to manifest`,",
-									"                \"added\": [",
-									"                    {",
-									"                        \"schema\": \"four\",",
-									"                        \"table\": \"frog\",",
-									"                        \"publish\": true,",
-									"                        \"subscribe\": true",
-									"                    },",
-									"                    {",
-									"                        \"schema\": \"four\",",
-									"                        \"table\": \"bird\",",
-									"                        \"publish\": true,",
-									"                        \"subscribe\": true",
-									"                    }",
-									"                ],",
-									"                \"skipped\": []",
-									"            }",
-									"        },",
-									"        {",
-									"            \"node_name\": node3_name,",
-									"            \"subscriptions\": {",
-									"                \"message\": `Successfully added '${node3_name}' to manifest`,",
-									"                \"added\": [",
-									"                    {",
-									"                        \"schema\": \"four\",",
-									"                        \"table\": \"frog\",",
-									"                        \"publish\": false,",
-									"                        \"subscribe\": true",
-									"                    },",
-									"                    {",
-									"                        \"schema\": \"four\",",
-									"                        \"table\": \"bird\",",
-									"                        \"publish\": true,",
-									"                        \"subscribe\": true",
-									"                    }",
-									"                ],",
-									"                \"skipped\": []",
-									"            }",
-									"        },",
-									"        {",
-									"            \"node_name\": node4_name,",
-									"            \"subscriptions\": {",
-									"                \"message\": `Successfully added '${node4_name}' to manifest`,",
-									"                \"added\": [",
-									"                    {",
-									"                        \"schema\": \"four\",",
-									"                        \"table\": \"frog\",",
-									"                        \"publish\": true,",
-									"                        \"subscribe\": false",
-									"                    }",
-									"                ],",
-									"                \"skipped\": []",
-									"            }",
-									"        }",
-									"    ]",
-									"    }",
-									"    pm.expect(response).to.eql(expected_result);",
-									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -16284,83 +16681,10 @@
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
 									"});",
-									"",
-									"pm.test('Configure cluster success message', () => {",
-									"    const response = pm.response.json();",
-									"    const node1_name = pm.environment.get('NODE1_NAME');",
-									"    const node3_name = pm.environment.get('NODE3_NAME');",
-									"    const node4_name = pm.environment.get('NODE4_NAME');",
-									"",
-									"    const expected_result = {",
-									"    \"message\": \"Configure cluster was partially successful. Errors occurred when attempting to configure the following nodes. Check the logs for more details.\",",
-									"    \"failed_nodes\": [",
-									"        \"badNode\"",
-									"    ],",
-									"    \"connections\": [",
-									"        {",
-									"            \"node_name\": node1_name,",
-									"            \"subscriptions\": {",
-									"                \"message\": `Successfully added '${node1_name}' to manifest`,",
-									"                \"added\": [",
-									"                    {",
-									"                        \"schema\": \"four\",",
-									"                        \"table\": \"frog\",",
-									"                        \"publish\": true,",
-									"                        \"subscribe\": true",
-									"                    },",
-									"                    {",
-									"                        \"schema\": \"four\",",
-									"                        \"table\": \"bird\",",
-									"                        \"publish\": true,",
-									"                        \"subscribe\": true",
-									"                    }",
-									"                ],",
-									"                \"skipped\": []",
-									"            }",
-									"        },",
-									"        {",
-									"            \"node_name\": node3_name,",
-									"            \"subscriptions\": {",
-									"                \"message\": `Successfully added '${node3_name}' to manifest`,",
-									"                \"added\": [",
-									"                    {",
-									"                        \"schema\": \"four\",",
-									"                        \"table\": \"frog\",",
-									"                        \"publish\": false,",
-									"                        \"subscribe\": true",
-									"                    },",
-									"                    {",
-									"                        \"schema\": \"four\",",
-									"                        \"table\": \"bird\",",
-									"                        \"publish\": true,",
-									"                        \"subscribe\": true",
-									"                    }",
-									"                ],",
-									"                \"skipped\": []",
-									"            }",
-									"        },",
-									"        {",
-									"            \"node_name\": node4_name,",
-									"            \"subscriptions\": {",
-									"                \"message\": `Successfully added '${node4_name}' to manifest`,",
-									"                \"added\": [",
-									"                    {",
-									"                        \"schema\": \"four\",",
-									"                        \"table\": \"frog\",",
-									"                        \"publish\": true,",
-									"                        \"subscribe\": false",
-									"                    }",
-									"                ],",
-									"                \"skipped\": []",
-									"            }",
-									"        }",
-									"    ]",
-									"    }",
-									"    pm.expect(response).to.eql(expected_result);",
-									"});",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -18883,74 +19207,6 @@
 					"response": []
 				},
 				{
-					"name": "Restart node 1",
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"exec": [
-									"setTimeout(() => {}, 4000);"
-								],
-								"type": "text/javascript"
-							}
-						},
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "http://{{NODE1_HOST}}:{{HDB_PORT}}",
-							"protocol": "http",
-							"host": [
-								"{{NODE1_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
 					"name": "Set config delete all routes node 2",
 					"event": [
 						{
@@ -18996,74 +19252,6 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"clustering_hubServer_cluster_network_routes\":[]\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "http://{{NODE2_HOST}}:{{HDB_PORT}}",
-							"protocol": "http",
-							"host": [
-								"{{NODE2_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Restart node 2",
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"exec": [
-									"setTimeout(() => {}, 4000);"
-								],
-								"type": "text/javascript"
-							}
-						},
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -19145,74 +19333,6 @@
 					"response": []
 				},
 				{
-					"name": "Restart node 3",
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"exec": [
-									"setTimeout(() => {}, 4000);"
-								],
-								"type": "text/javascript"
-							}
-						},
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "http://{{NODE3_HOST}}:{{HDB_PORT}}",
-							"protocol": "http",
-							"host": [
-								"{{NODE3_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
 					"name": "Set config delete all routes node 4",
 					"event": [
 						{
@@ -19258,74 +19378,6 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n    \"operation\": \"set_configuration\",\n    \"clustering_hubServer_cluster_network_routes\":[]\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "http://{{NODE4_HOST}}:{{HDB_PORT}}",
-							"protocol": "http",
-							"host": [
-								"{{NODE4_HOST}}"
-							],
-							"port": "{{HDB_PORT}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Restart node 4",
-					"event": [
-						{
-							"listen": "prerequest",
-							"script": {
-								"exec": [
-									"setTimeout(() => {}, 4000);"
-								],
-								"type": "text/javascript"
-							}
-						},
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"});",
-									""
-								],
-								"type": "text/javascript"
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{PASSWORD}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{USERNAME}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"

@@ -9,7 +9,7 @@ const { sendItcEvent } = require('../server/threads/itc');
 
 function signalSchemaChange(message) {
 	try {
-		hdb_logger.trace('signalSchemaChange called with message:', message);
+		hdb_logger.info('signalSchemaChange called with message:', message);
 		server_itc_handlers = server_itc_handlers || require('../server/itc/serverHandlers');
 		const itc_event_schema = new ITCEventObject(hdb_terms.ITC_EVENT_TYPES.SCHEMA, message);
 		server_itc_handlers.schema(itc_event_schema);

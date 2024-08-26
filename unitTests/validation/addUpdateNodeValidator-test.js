@@ -35,7 +35,7 @@ describe('Test addUpdateNodeValidator module', () => {
 
 		const result = addUpdateNodeValidator(test_req);
 		expect(result.message).to.equal(
-			"'operation' must be one of [add_node, update_node, set_node_replication]. 'node_name' invalid, must not contain ., * or >. 'subscriptions[0].subscribe' must be a boolean. 'subscriptions[0].publish' must be a boolean"
+			"'operation' must be one of [add_node, update_node, set_node_replication]. 'subscriptions[0].subscribe' must be a boolean. 'subscriptions[0].publish' must be a boolean"
 		);
 	});
 

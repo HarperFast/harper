@@ -24,13 +24,23 @@ const INVALID_INTERVAL_VALUE_MSG =
 const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
 const UNDEFINED_NATS_ENABLED = 'clustering.enabled config parameter is undefined';
 
-const port_constraints = number.min(0).required();
-const route_constraints = array
-	.items({
-		host: string.required(),
-		port: port_constraints,
-	})
-	.empty(null);
+const port_constraints = Joi.alternatives([number.min(0), string]).required();
+const route_constraints = Joi.alternatives([
+	array
+		.items(
+			string,
+			{
+				host: string.required(),
+				port: port_constraints,
+			},
+			{
+				hostname: string.required(),
+				port: port_constraints,
+			}
+		)
+		.empty(null),
+	array.items(string),
+]);
 
 let hdb_root;
 let skip_fs_val = false;
@@ -48,7 +58,7 @@ function configValidator(config_json, skip_fs_validation = false) {
 		throw UNDEFINED_OPS_API;
 	}
 
-	const enabled_constraints = boolean.required();
+	const enabled_constraints = boolean.optional();
 	const threads_constraints = number.min(0).max(1000).empty(null).default(setDefaultThreads);
 	const root_constraints = string
 		.pattern(/^[\\\/]$|([\\\/a-zA-Z_0-9\:-]+)+$/, 'directory path')
@@ -64,9 +74,6 @@ function configValidator(config_json, skip_fs_validation = false) {
 	const storage_path_constraints = Joi.custom(validatePath).empty(null).default(setDefaultRoot);
 
 	const clustering_enabled = config_json.clustering?.enabled;
-	if (hdb_utils.isEmpty(clustering_enabled)) {
-		throw UNDEFINED_NATS_ENABLED;
-	}
 	const tls_constraints = Joi.object({
 		certificate: pem_file_constraints,
 		certificateAuthority: pem_file_constraints,
@@ -120,7 +127,7 @@ function configValidator(config_json, skip_fs_validation = false) {
 				verify: boolean.optional(),
 			}),
 			user: string.optional().empty(null),
-		}).required();
+		}).optional();
 	} else {
 		clustering_validation_schema = Joi.object({
 			enabled: enabled_constraints,
@@ -129,9 +136,9 @@ function configValidator(config_json, skip_fs_validation = false) {
 				certificate: pem_file_constraints,
 				certificateAuthority: pem_file_constraints,
 				privateKey: pem_file_constraints,
-				insecure: boolean.required(),
+				insecure: boolean.optional(),
 			}),
-		}).required();
+		}).optional();
 	}
 
 	const config_schema = Joi.object({
@@ -172,9 +179,13 @@ function configValidator(config_json, skip_fs_validation = false) {
 				corsAccessList: array.optional(),
 				headersTimeout: number.min(1).optional(),
 				keepAliveTimeout: number.min(1).optional(),
-				port: number.optional().empty(null),
+				port: Joi.alternatives([number.min(0), string])
+					.optional()
+					.empty(null),
 				domainSocket: Joi.optional().empty('hdb/operations-server').default(setDefaultRoot),
-				securePort: number.optional().empty(null),
+				securePort: Joi.alternatives([number.min(0), string])
+					.optional()
+					.empty(null),
 				timeout: number.min(1).optional(),
 			}).optional(),
 			tls: Joi.alternatives([Joi.array().items(tls_constraints), tls_constraints]),
@@ -201,8 +212,12 @@ function configValidator(config_json, skip_fs_validation = false) {
 			cors: boolean.optional(),
 			corsAccessList: array.optional(),
 			headersTimeout: number.min(1).optional(),
-			port: number.min(0).optional().empty(null),
-			securePort: number.min(0).optional().empty(null),
+			port: Joi.alternatives([number.min(0), string])
+				.optional()
+				.empty(null),
+			securePort: Joi.alternatives([number.min(0), string])
+				.optional()
+				.empty(null),
 			maxHeaderSize: number.optional(),
 			mtls: Joi.alternatives([
 				boolean.optional(),

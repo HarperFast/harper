@@ -11,7 +11,7 @@ module.exports = {
 
 function setRoutesValidator(req) {
 	const schema = Joi.object({
-		server: Joi.valid('hub', 'leaf').required(),
+		server: Joi.valid('hub', 'leaf'),
 		routes: route_constraints.required(),
 	});
 

@@ -35,6 +35,8 @@ export interface Context {
 	staleIfError?: boolean;
 	/**	 Indicates any cached data must be revalidated	 */
 	mustRevalidate?: boolean;
+	/**	 An array of nodes to replicate to */
+	replicateTo?: string[];
 }
 interface DirectCondition {
 	attribute: string;
@@ -45,17 +47,19 @@ interface ConditionGroup {
 	conditions: Condition[];
 	operator?: string;
 }
-type Condition = DirectCondition | ConditionGroup;
-interface Sort {
+export type Condition = DirectCondition | ConditionGroup;
+export interface Sort {
 	attribute: string;
 	descending?: boolean;
 	next?: Sort;
 }
-interface SubSelect {
+export interface SubSelect {
 	name: string;
 	select: (string | SubSelect)[];
 }
 export interface Query {
+	/** Retrieve a specific record, but can be combined with select */
+	id?: Id;
 	/**	 The conditions to use in the query, that the returned records must satisfy	 */
 	conditions?: Condition[];
 	/**	 The number of records to return	 */

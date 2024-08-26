@@ -9,6 +9,10 @@ const hdb_utils = require('../common_utils');
 const hdb_logger = require('../logging/harper_logger');
 const { RemotePayloadObject } = require('./RemotePayloadObject');
 const { ErrorCode } = require('nats');
+const { parentPort } = require('worker_threads');
+const { onMessageByType } = require('../../server/threads/manageThreads');
+const { getThisNodeName } = require('../../server/replication/replicator');
+const { requestClusterStatus } = require('../../server/replication/subscriptionManager');
 
 const clustering_enabled = env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
 const this_node_name = env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
@@ -18,6 +22,10 @@ module.exports = {
 	buildNodeStatus,
 };
 
+let cluster_status_resolve;
+onMessageByType('cluster-status', async (message) => {
+	cluster_status_resolve(message);
+});
 /**
  * Function will msg all the remote nodes in the hdb_nodes table. From the replies
  * it gets back from each node and the details in the hdb_nodes table it will
@@ -25,6 +33,23 @@ module.exports = {
  * @returns {Promise<{is_enabled: *, node_name: *, connections: *[]}>}
  */
 async function clusterStatus() {
+	if (
+		env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_URL) ||
+		env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_HOSTNAME)
+	) {
+		let response;
+		if (parentPort) {
+			parentPort.postMessage({ type: 'request-cluster-status' });
+			response = await new Promise((resolve) => {
+				cluster_status_resolve = resolve;
+			});
+		} else {
+			response = await requestClusterStatus();
+		}
+		response.node_name = getThisNodeName();
+		response.is_enabled = true; // if we have replication, replication is enabled
+		return response;
+	}
 	const response = {
 		node_name: this_node_name,
 		is_enabled: clustering_enabled,

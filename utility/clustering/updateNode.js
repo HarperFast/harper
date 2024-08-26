@@ -14,6 +14,7 @@ const { cloneDeep } = require('lodash');
 const review_subscriptions = require('./reviewSubscriptions');
 const { Node, NodeSubscription } = require('./NodeObject');
 const { broadcast } = require('../../server/threads/manageThreads');
+const { setNode: plexus_set_node } = require('../../server/replication/setNode');
 
 const UNSUCCESSFUL_MSG =
 	'Unable to update subscriptions due to schema and/or tables not existing on the local or remote node';
@@ -31,6 +32,13 @@ module.exports = updateNode;
  */
 async function updateNode(req) {
 	hdb_logger.trace('updateNode called with:', req);
+	if (
+		env_manager.get(hdb_terms.CONFIG_PARAMS.REPLICATION_URL) ??
+		env_manager.get(hdb_terms.CONFIG_PARAMS.REPLICATION_HOSTNAME)
+	) {
+		return plexus_set_node(req);
+	}
+
 	clustering_utils.checkClusteringEnabled();
 	const validation = addUpdateNodeValidator(req);
 	if (validation) {

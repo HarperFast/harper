@@ -1,30 +1,23 @@
 'use strict';
-const { isMainThread, parentPort, threadId } = require('worker_threads');
+
+const { isMainThread, parentPort, threadId, workerData } = require('worker_threads');
 const { Socket, createServer: createSocketServer } = require('net');
 const { createServer, IncomingMessage } = require('http');
 const { createServer: createSecureServer } = require('https');
-const { readFileSync, unlinkSync, existsSync } = require('fs');
+const { unlinkSync, existsSync } = require('fs');
 const harper_logger = require('../../utility/logging/harper_logger');
 const env = require('../../utility/environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 const { server } = require('../Server');
 const { WebSocketServer } = require('ws');
-let { createSecureContext, createServer: createSecureSocketServer } = require('node:tls');
+let { createServer: createSecureSocketServer } = require('node:tls');
 const { getTicketKeys, restartNumber, getWorkerIndex } = require('./manageThreads');
 const { Headers, appendHeader } = require('../serverHelpers/Headers');
 const { recordAction, recordActionBinary } = require('../../resources/analytics');
 const { Request, createReuseportFd } = require('../serverHelpers/Request');
 const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
-const { X509Certificate } = require('crypto');
-const tls = require('tls');
+const { createTLSSelector } = require('../../security/keys');
 const { resolvePath } = require('../../config/configUtils');
-
-const origCreateSecureContext = tls.createSecureContext;
-let instantiated_context;
-tls.createSecureContext = function (options) {
-	if (instantiated_context) return instantiated_context;
-	return origCreateSecureContext(options);
-};
 const debug_threads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
 if (debug_threads) {
 	let port;
@@ -62,7 +55,8 @@ if (debug_threads) {
 }
 
 process.on('uncaughtException', (error) => {
-	if (error.code === 'ECONNRESET') return; // that's what network connections do
+	if (error.isHandled) return;
+	if (error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED') return; // that's what network connections do
 	if (error.message === 'write EIO') return; // that means the terminal is closed
 	console.error('uncaughtException', error);
 });
@@ -74,8 +68,8 @@ exports.registerServer = registerServer;
 exports.httpServer = httpServer;
 exports.deliverSocket = deliverSocket;
 exports.startServers = startServers;
+exports.listenOnPorts = listenOnPorts;
 exports.when_components_loaded = null;
-exports.createSNICallback = createSNICallback;
 server.http = httpServer;
 server.request = onRequest;
 server.socket = onSocket;
@@ -165,61 +159,78 @@ function startServers() {
 					}
 				})
 				.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
-			const listening = [];
+			let listening;
 			if (createReuseportFd && !session_affinity) {
-				for (let port in SERVERS) {
-					const server = SERVERS[port];
-
-					// If server is unix domain socket
-					if (isNaN(port) && getWorkerIndex() == 0) {
-						if (existsSync(port)) unlinkSync(port);
-						listening.push(
-							new Promise((resolve, reject) => {
-								server
-									.listen({ path: port }, () => {
-										resolve();
-										harper_logger.info('Domain socket listening on ' + port);
-									})
-									.on('error', reject);
-							})
-						);
-						continue;
-					}
-					const thread_range = env.get(terms.CONFIG_PARAMS.HTTP_THREADRANGE);
-					if (thread_range) {
-						let thread_range_array = typeof thread_range === 'string' ? thread_range.split('-') : thread_range;
-						let thread_index = getWorkerIndex();
-						if (thread_index < thread_range_array[0] || thread_index > thread_range_array[1]) {
-							continue;
-						}
-					}
-					let fd;
-					try {
-						fd = createReuseportFd(+port, '::');
-					} catch (error) {
-						console.error(`Unable to bind to port ${port}`, error);
-						continue;
-					}
-					listening.push(
-						new Promise((resolve, reject) => {
-							server
-								.listen({ fd }, () => {
-									resolve();
-									harper_logger.trace('Listening on port ' + port, threadId);
-								})
-								.on('error', reject);
-						})
-					);
-				}
+				listening = listenOnPorts();
 			}
 
 			// notify that we are now ready to start receiving requests
-			Promise.all(listening).then(() => {
+			Promise.resolve(listening).then(() => {
 				parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
 			});
 		}));
 }
-if (!isMainThread) {
+function listenOnPorts() {
+	const listening = [];
+	for (let port in SERVERS) {
+		const server = SERVERS[port];
+
+		// If server is unix domain socket
+		if (port.includes?.('/') && getWorkerIndex() == 0) {
+			if (existsSync(port)) unlinkSync(port);
+			listening.push(
+				new Promise((resolve, reject) => {
+					server
+						.listen({ path: port }, () => {
+							resolve();
+							harper_logger.info('Domain socket listening on ' + port);
+						})
+						.on('error', reject);
+				})
+			);
+			continue;
+		}
+		let listen_on;
+		const thread_range = env.get(terms.CONFIG_PARAMS.HTTP_THREADRANGE);
+		if (thread_range) {
+			let thread_range_array = typeof thread_range === 'string' ? thread_range.split('-') : thread_range;
+			let thread_index = getWorkerIndex();
+			if (thread_index < thread_range_array[0] || thread_index > thread_range_array[1]) {
+				continue;
+			}
+		}
+
+		let fd;
+		try {
+			const last_colon = port.lastIndexOf(':');
+			if (last_colon > 0)
+				if (createReuseportFd)
+					// if there is a colon, we assume it is a host:port pair, and then strip brackets as that is a common way to
+					// specify an IPv6 address
+					listen_on = {
+						fd: createReuseportFd(+port.slice(last_colon + 1).replace(/[\[\]]/g, ''), port.slice(0, last_colon)),
+					};
+				else listen_on = { host: +port.slice(last_colon + 1).replace(/[\[\]]/g, ''), port: port.slice(0, last_colon) };
+			else if (createReuseportFd) listen_on = { fd: createReuseportFd(+port, '::') };
+			else listen_on = { port };
+		} catch (error) {
+			console.error(`Unable to bind to port ${port}`, error);
+			continue;
+		}
+		listening.push(
+			new Promise((resolve, reject) => {
+				server
+					.listen(listen_on, () => {
+						resolve();
+						harper_logger.trace('Listening on port ' + port, threadId);
+					})
+					.on('error', reject);
+			})
+		);
+	}
+	return Promise.all(listening);
+}
+if (!isMainThread && !workerData.noServerStart) {
 	startServers();
 }
 
@@ -311,9 +322,9 @@ function proxyRequest(message) {
 }
 
 function registerServer(server, port, check_port = true) {
-	if (!+port && port !== env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)) {
+	if (!port) {
 		// if no port is provided, default to custom functions port
-		port = parseInt(env.get(terms.CONFIG_PARAMS.HTTP_PORT), 10);
+		port = env.get(terms.CONFIG_PARAMS.HTTP_PORT);
 	}
 	let existing_server = SERVERS[port];
 	if (existing_server) {
@@ -338,10 +349,10 @@ function registerServer(server, port, check_port = true) {
 }
 function getPorts(options) {
 	let ports = [];
-	let port_num = parseInt(options?.securePort);
-	if (port_num) ports.push({ port: port_num, secure: true });
-	port_num = parseInt(options?.port);
-	if (port_num) ports.push({ port: port_num, secure: false });
+	let port = options?.securePort;
+	if (port) ports.push({ port, secure: true });
+	port = options?.port;
+	if (port) ports.push({ port, secure: false });
 	if (ports.length === 0) {
 		// if no port is provided, default to http port
 		ports = [];
@@ -383,136 +394,151 @@ function getHTTPServer(port, secure, is_operations_server) {
 			keepAliveTimeout: env.get(server_prefix + '_keepAliveTimeout'),
 			headersTimeout: env.get(server_prefix + '_headersTimeout'),
 			requestTimeout: env.get(server_prefix + '_timeout'),
+			// we set this higher (2x times the default in v22, 8x times the default in v20) because it can help with
+			// performance
+			highWaterMark: 128 * 1024,
+			noDelay: true, // don't delay for Nagle's algorithm, it is a relic of the past that slows things down: https://brooker.co.za/blog/2024/05/09/nagle.html
+			keepAlive: true,
+			keepAliveInitialDelay: 600, // lower the initial delay to 10 minutes, we want to be proactive about closing unused connections
 		};
 		let mtls = env.get(server_prefix + '_mtls');
 		let mtls_required = env.get(server_prefix + '_mtls_required');
+
 		if (secure) {
-			server_prefix = is_operations_server ? 'operationsApi_' : '';
-			let tls_config = env.get(server_prefix + 'tls');
 			// If we are in secure mode, we use HTTP/2 (createSecureServer from http2), with back-compat support
 			// HTTP/1. We do not use HTTP/2 for insecure mode for a few reasons: browsers do not support insecure
 			// HTTP/2. We have seen slower performance with HTTP/2, when used for directly benchmarking. We have
 			// also seen problems with insecure HTTP/2 clients negotiating properly (Java HttpClient).
+			// TODO: Add an option to not accept the root certificates, and only use the CA
 			Object.assign(options, {
 				allowHTTP1: true,
 				rejectUnauthorized: Boolean(mtls_required),
-				requestCert: Boolean(mtls),
+				requestCert: Boolean(mtls || is_operations_server),
 				ticketKeys: getTicketKeys(),
 				maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
-				SNICallback: createSNICallback(tls_config),
+				SNICallback: createTLSSelector(is_operations_server ? 'operations-api' : 'server', mtls),
+				ALPNCallback: function (connection) {
+					// we use this as an indicator that the connection is a replication connection and that
+					// we should use the full set of replication CAs. Loading all of them for each connection
+					// is expensive
+					if (connection.protocols.includes('harperdb-replication')) this.isReplicationConnection = true;
+					return 'http/1.1';
+				},
+				ALPNProtocols: null,
 			});
 		}
 		let license_warning = checkMemoryLimit();
-		http_servers[port] = (secure ? createSecureServer : createServer)(options, async (node_request, node_response) => {
-			try {
-				let start_time = performance.now();
-				let request = new Request(node_request, node_response);
-				if (is_operations_server) request.isOperationsServer = true;
-				// assign a more WHATWG compliant headers object, this is our real standard interface
-				let response = await http_chain[port](request);
-				if (!response) {
-					// this means that the request was completely handled, presumably through the
-					// node_response and we are actually just done
-					if (request._nodeResponse.statusCode) return;
-					response = unhandled(request);
-				}
-				if (!response.headers?.set) {
-					response.headers = new Headers(response.headers);
-				}
+		let server = (http_servers[port] = (secure ? createSecureServer : createServer)(
+			options,
+			async (node_request, node_response) => {
+				try {
+					let start_time = performance.now();
+					let request = new Request(node_request, node_response);
+					if (is_operations_server) request.isOperationsServer = true;
+					// assign a more WHATWG compliant headers object, this is our real standard interface
+					let response = await http_chain[port](request);
+					if (!response) {
+						// this means that the request was completely handled, presumably through the
+						// node_response and we are actually just done
+						if (request._nodeResponse.statusCode) return;
+						response = unhandled(request);
+					}
+					if (!response.headers?.set) {
+						response.headers = new Headers(response.headers);
+					}
+					if (license_warning)
+						response.headers?.set?.(
+							'Server',
+							'Unlicensed HarperDB, this should only be used for educational and development purposes'
+						);
+					else response.headers?.set?.('Server', 'HarperDB');
 
-				if (license_warning)
-					response.headers?.set?.(
-						'Server',
-						'Unlicensed HarperDB, this should only be used for educational and development purposes'
+					if (response.status === -1) {
+						// This means the HDB stack didn't handle the request, and we can then cascade the request
+						// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
+						// to interact with a node HTTP server object.
+						for (let header_pair of response.headers || []) {
+							node_response.setHeader(header_pair[0], header_pair[1]);
+						}
+						node_request.baseRequest = request;
+						node_response.baseResponse = response;
+						return http_servers[port].emit('unhandled', node_request, node_response);
+					}
+					const status = response.status || 200;
+					const end_time = performance.now();
+					const execution_time = end_time - start_time;
+					let body = response.body;
+					let sent_body;
+					if (!response.handlesHeaders) {
+						const headers = response.headers || new Headers();
+						if (!body) {
+							headers.set('Content-Length', '0');
+							sent_body = true;
+						} else if (body.length >= 0) {
+							if (typeof body === 'string') headers.set('Content-Length', Buffer.byteLength(body));
+							else headers.set('Content-Length', body.length);
+							sent_body = true;
+						}
+						let server_timing = `hdb;dur=${execution_time.toFixed(2)}`;
+						if (response.wasCacheMiss) {
+							server_timing += ', miss';
+						}
+						appendHeader(headers, 'Server-Timing', server_timing, true);
+						node_response.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
+						if (sent_body) node_response.end(body);
+					}
+					const handler_path = request.handlerPath;
+					const method = request.method;
+					recordAction(
+						execution_time,
+						'duration',
+						handler_path,
+						method,
+						response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
 					);
-				else response.headers?.set?.('Server', 'HarperDB');
-
-				if (response.status === -1) {
-					// This means the HDB stack didn't handle the request, and we can then cascade the request
-					// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
-					// to interact with a node HTTP server object.
-					for (let header_pair of response.headers || []) {
-						node_response.setHeader(header_pair[0], header_pair[1]);
-					}
-					node_request.baseRequest = request;
-					node_response.baseResponse = response;
-					return http_servers[port].emit('unhandled', node_request, node_response);
-				}
-				const status = response.status || 200;
-				const end_time = performance.now();
-				const execution_time = end_time - start_time;
-				let body = response.body;
-				let sent_body;
-				if (!response.handlesHeaders) {
-					const headers = response.headers || new Headers();
-					if (!body) {
-						headers.set('Content-Length', '0');
-						sent_body = true;
-					} else if (body.length >= 0) {
-						if (typeof body === 'string') headers.set('Content-Length', Buffer.byteLength(body));
-						else headers.set('Content-Length', body.length);
-						sent_body = true;
-					}
-					let server_timing = `hdb;dur=${execution_time.toFixed(2)}`;
-					if (response.wasCacheMiss) {
-						server_timing += ', miss';
-					}
-					appendHeader(headers, 'Server-Timing', server_timing, true);
-					node_response.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
-					if (sent_body) node_response.end(body);
-				}
-				const handler_path = request.handlerPath;
-				const method = request.method;
-				recordAction(
-					execution_time,
-					'duration',
-					handler_path,
-					method,
-					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
-				);
-				recordActionBinary(status < 400, 'success', handler_path, method);
-				if (!sent_body) {
-					// if it is a stream, pipe it
-					if (body?.pipe) {
-						body.pipe(node_response);
-						if (body.destroy)
-							node_response.on('close', () => {
-								body.destroy();
+					recordActionBinary(status < 400, 'success', handler_path, method);
+					if (!sent_body) {
+						// if it is a stream, pipe it
+						if (body?.pipe) {
+							body.pipe(node_response);
+							if (body.destroy)
+								node_response.on('close', () => {
+									body.destroy();
+								});
+							let bytes_sent = 0;
+							body.on('data', (data) => {
+								bytes_sent += data.length;
 							});
-						let bytes_sent = 0;
-						body.on('data', (data) => {
-							bytes_sent += data.length;
-						});
-						body.on('end', () => {
-							recordAction(performance.now() - end_time, 'transfer', handler_path, method);
-							recordAction(bytes_sent, 'bytes-sent', handler_path, method);
-						});
+							body.on('end', () => {
+								recordAction(performance.now() - end_time, 'transfer', handler_path, method);
+								recordAction(bytes_sent, 'bytes-sent', handler_path, method);
+							});
+						}
+						// else just send the buffer/string
+						else if (body?.then)
+							body.then((body) => {
+								node_response.end(body);
+							}, onError);
+						else node_response.end(body);
 					}
-					// else just send the buffer/string
-					else if (body?.then)
-						body.then((body) => {
-							node_response.end(body);
-						}, onError);
-					else node_response.end(body);
+				} catch (error) {
+					onError(error);
 				}
-			} catch (error) {
-				onError(error);
+				function onError(error) {
+					const headers = error.headers;
+					node_response.writeHead(
+						error.statusCode || 500,
+						headers && (headers[Symbol.iterator] ? Array.from(headers) : headers)
+					);
+					node_response.end(error.toString());
+					// a status code is interpreted as an expected error, so just info or warn, otherwise log as error
+					if (error.statusCode) {
+						if (error.statusCode === 500) harper_logger.warn(error);
+						else harper_logger.info(error);
+					} else harper_logger.error(error);
+				}
 			}
-			function onError(error) {
-				const headers = error.headers;
-				node_response.writeHead(
-					error.statusCode || 500,
-					headers && (headers[Symbol.iterator] ? Array.from(headers) : headers)
-				);
-				node_response.end(error.toString());
-				// a status code is interpreted as an expected error, so just info or warn, otherwise log as error
-				if (error.statusCode) {
-					if (error.statusCode === 500) harper_logger.warn(error);
-					else harper_logger.info(error);
-				} else harper_logger.error(error);
-			}
-		});
-		if (mtls) http_servers[port].mtlsConfig = mtls;
+		));
 		/* Should we use HTTP2 on upgrade?:
 		http_servers[port].on('upgrade', function upgrade(request, socket, head) {
 			wss.handleUpgrade(request, socket, head, function done(ws) {
@@ -520,21 +546,17 @@ function getHTTPServer(port, secure, is_operations_server) {
 			});
 		});*/
 		if (secure) {
-			http_servers[port].on('secureConnection', (socket) => {
+			if (!server.ports) server.ports = [];
+			server.ports.push(port);
+			options.SNICallback.initialize(server);
+			if (mtls) server.mtlsConfig = mtls;
+			server.on('secureConnection', (socket) => {
 				if (socket._parent.startTime) recordAction(performance.now() - socket._parent.startTime, 'tls-handshake', port);
 				recordAction(socket.isSessionReused(), 'tls-reused', port);
 			});
-			http_servers[port].isSecure = true;
-			options.SNICallback(null, (err, context) => {
-				try {
-					instantiated_context = context;
-					if (context) http_servers[port].setSecureContext(context.options);
-				} finally {
-					instantiated_context = null;
-				}
-			});
+			server.isSecure = true;
 		}
-		registerServer(http_servers[port], port);
+		registerServer(server, port);
 	}
 	return http_servers[port];
 }
@@ -577,27 +599,27 @@ function onRequest(listener, options) {
 function onSocket(listener, options) {
 	let socket_server;
 	if (options.securePort) {
-		const tls_config = Object.assign({}, env.get('tls'));
-		if (options.mtls?.certificateAuthority) tls_config.certificateAuthority = options.mtls.certificateAuthority;
-		let server_options = {
-			noDelay: true,
-			rejectUnauthorized: Boolean(options.mtls?.required),
-			requestCert: Boolean(options.mtls),
-			SNICallback: createSNICallback(tls_config),
-		};
-		socket_server = createSecureSocketServer(server_options, listener);
-		server_options.SNICallback(null, (err, context) => {
-			try {
-				instantiated_context = context;
-				if (context) socket_server.setSecureContext(context.options);
-			} finally {
-				instantiated_context = null;
-			}
-		});
+		let SNICallback = createTLSSelector('server', options.mtls);
+		socket_server = createSecureSocketServer(
+			{
+				rejectUnauthorized: Boolean(options.mtls?.required),
+				requestCert: Boolean(options.mtls),
+				noDelay: true, // don't delay for Nagle's algorithm, it is a relic of the past that slows things down: https://brooker.co.za/blog/2024/05/09/nagle.html
+				keepAlive: true,
+				keepAliveInitialDelay: 600, // 10 minute keep-alive, want to be proactive about closing unused connections
+				SNICallback,
+			},
+			listener
+		);
+		SNICallback.initialize(socket_server);
 		SERVERS[options.securePort] = socket_server;
 	}
 	if (options.port) {
-		socket_server = createSocketServer({ noDelay: true }, listener);
+		socket_server = createSocketServer(listener, {
+			noDelay: true,
+			keepAlive: true,
+			keepAliveInitialDelay: 600,
+		});
 		SERVERS[options.port] = socket_server;
 	}
 	return socket_server;
@@ -615,30 +637,35 @@ Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
 	set(v) {},
 });
 function onWebSocket(listener, options) {
-	let http_server;
+	let servers = [];
 	for (let { port: port_num, secure } of getPorts(options)) {
 		if (!ws_servers[port_num]) {
-			ws_servers[port_num] = new WebSocketServer({ server: (http_server = getHTTPServer(port_num, secure)) });
+			let http_server;
+			ws_servers[port_num] = new WebSocketServer({
+				server: (http_server = getHTTPServer(port_num, secure, options?.isOperationsServer)),
+			});
+			http_server._ws = ws_servers[port_num];
+			servers.push(http_server);
 			ws_servers[port_num].on('connection', async (ws, node_request) => {
 				try {
 					let request = new Request(node_request);
 					request.isWebSocket = true;
 					let chain_completion = http_chain[port_num](request);
-					let protocol = node_request.headers['sec-websocket-protocol'] || '';
+					let protocol = node_request.headers['sec-websocket-protocol'];
 					let ws_listeners_for_port = ws_listeners[port_num];
+					let found_handler;
 					if (protocol) {
 						// first we try to match on WS handlers that match the specified protocol
-						let found_protocol_handler;
 						for (let i = 0; i < ws_listeners_for_port.length; i++) {
 							let handler = ws_listeners_for_port[i];
 							if (handler.protocol === protocol) {
 								// if we have a handler for a specific protocol, allow it to select on that protocol
 								// to the exclusion of other handlers
-								found_protocol_handler = true;
+								found_handler = true;
 								handler.listener(ws, request, chain_completion);
 							}
 						}
-						if (found_protocol_handler) return;
+						if (found_handler) return;
 					}
 					// now let generic WS handlers handle the connection
 					for (let i = 0; i < ws_listeners_for_port.length; i++) {
@@ -646,7 +673,12 @@ function onWebSocket(listener, options) {
 						if (!handler.protocol) {
 							// generic handlers don't have a protocol
 							handler.listener(ws, request, chain_completion);
+							found_handler = true;
 						}
+					}
+					if (!found_handler) {
+						// if we have no handlers, we close the connection
+						ws.close(1008, 'No handler for protocol');
 					}
 				} catch (error) {
 					harper_logger.warn('Error handling WebSocket connection', error);
@@ -663,102 +695,9 @@ function onWebSocket(listener, options) {
 		ws_listeners_for_port.push({ listener, protocol });
 		http_chain[port_num] = makeCallbackChain(http_responders, port_num);
 	}
-	return http_server;
+	return servers;
 }
 function defaultNotFound(request, response) {
 	response.writeHead(404);
 	response.end('Not found\n');
-}
-
-function readPEM(path) {
-	if (path.startsWith('-----BEGIN')) return path;
-	return readFileSync(resolvePath(path));
-}
-function createSNICallback(tls_config) {
-	let tls_contexts = [];
-	for (let i = 0; tls_config[i]; i++) {
-		tls_contexts.push(tls_config[i]);
-	}
-	if (!tls_contexts.length) tls_contexts.push(tls_config);
-	let secure_contexts = new Map();
-	let first_context, first_context_with_ip_address;
-	let has_wildcards = false;
-	for (let tls of tls_contexts) {
-		const private_key = readPEM(tls.privateKey);
-		const certificate = readPEM(tls.certificate);
-		const certificate_authority = tls.certificateAuthority && readPEM(tls.certificateAuthority);
-		if (!private_key || !certificate) {
-			throw new Error('Missing private key or certificate for secure server');
-		}
-		let options = {
-			ciphers: tls.ciphers,
-			ca: certificate_authority,
-			ticketKeys: getTicketKeys(),
-		};
-		let secure_context = createSecureContext(options);
-		secure_context.options = options;
-		options.instantiatedContext = secure_context;
-		// Due to https://github.com/nodejs/node/issues/36655, we need to ensure that we apply the key and cert
-		// *after* the context is created, so that the ciphers are set and allow for lower security ciphers if needed
-		secure_context.context.setCert(certificate);
-		secure_context.context.setKey(private_key, undefined);
-		options.cert = certificate;
-		options.key = private_key;
-
-		// we store the first 100 bytes of the certificate just for debug logging
-		secure_context.certStart = certificate.slice(0, 100).toString();
-		if (!first_context) first_context = secure_context;
-		let cert_parsed = new X509Certificate(certificate);
-		secure_context.subject = cert_parsed.subject;
-		let hostnames =
-			tls.hostname ??
-			tls.host ??
-			tls.hostnames ??
-			tls.hosts ??
-			(cert_parsed.subjectAltName
-				? cert_parsed.subjectAltName.split(',').map((part) => {
-						// the subject alt names looks like 'IP Address:127.0.0.1, DNS:localhost, IP Address:0:0:0:0:0:0:0:1'
-						// so we split on commas and then use the part after the colon as the host name
-						let colon_index = part.indexOf(':');
-						return part.slice(colon_index + 1);
-				  })
-				: // finally we fall back to the common name
-				  [cert_parsed.subject.match(/CN=(.*)/)?.[1]]);
-		if (!Array.isArray(hostnames)) hostnames = [hostnames];
-		for (let hostname of hostnames) {
-			if (hostname) {
-				if (hostname[0] === '*') {
-					has_wildcards = true;
-					hostname = hostname.slice(1);
-				}
-				if (!secure_contexts.has(hostname)) secure_contexts.set(hostname, secure_context);
-				if (!first_context_with_ip_address && hostname.match(/\d+\.\d+\.\d+\.\d+/)) {
-					first_context_with_ip_address = secure_context;
-				}
-			} else {
-				harper_logger.error('No hostname found for certificate at', tls.certificate);
-			}
-		}
-	}
-	return (servername, cb) => {
-		// find the matching server name, substituting wildcards for each part of the domain to find matches
-		let matching_name = servername;
-		while (true) {
-			let context = secure_contexts.get(matching_name);
-			if (context) {
-				harper_logger.debug('Found certificate for', servername, context.certStart);
-				return cb(null, context);
-			}
-			if (has_wildcards && matching_name) {
-				let next_dot = matching_name.indexOf('.', 1);
-				if (next_dot < 0) matching_name = '';
-				else matching_name = matching_name.slice(next_dot);
-			} else break;
-		}
-		harper_logger.debug('No certificate found to match', servername, 'using the first certificate');
-		// no matches, return the first one
-		if (servername) cb(null, first_context);
-		else cb(null, first_context_with_ip_address); // used to get the default context, which is only used for direct IP
-		// addresses
-	};
 }

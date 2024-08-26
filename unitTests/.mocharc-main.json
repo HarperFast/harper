@@ -19,6 +19,8 @@
         "../unitTests/apiTests/**/*.js",
         "../unitTests/dataLayer/**/*.js",
         "../unitTests/testApp/**/*.js",
-        "../unitTests/utility/logging/*.js"
+        "../unitTests/utility/logging/*.js",
+        "../unitTests/security/**/*.js",
+        "../unitTests/server/replication/**/*.js"
     ]
 }

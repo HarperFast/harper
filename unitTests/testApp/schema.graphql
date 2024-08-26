@@ -7,7 +7,7 @@ type SimpleRecord @table @export {
 	id: ID @primaryKey
 	name: String @indexed
 }
-type FourProp @table(audit: "1d") @export {
+type FourProp @table(audit: "1d", replicated: false) @export {
 	id: ID @primaryKey
 	name: String @indexed
 	age: Int @indexed

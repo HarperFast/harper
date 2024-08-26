@@ -1,4 +1,4 @@
-import { info, trace } from '../utility/logging/harper_logger';
+import { info, trace, warn } from '../utility/logging/harper_logger';
 import { threadId } from 'worker_threads';
 import { onMessageByType, broadcast, broadcastWithAcknowledgement } from '../server/threads/manageThreads';
 import { writeKey } from 'ordered-binary';
@@ -42,6 +42,9 @@ export function addSubscription(table, key, listener?: (key) => any, start_time:
 	if (database_subscriptions.lastTxnTime == null) {
 		database_subscriptions.lastTxnTime = Date.now();
 	}
+	if (options?.scope === 'full-database') {
+		return;
+	}
 	let table_subscriptions = database_subscriptions[table_id];
 	if (!table_subscriptions) {
 		table_subscriptions = database_subscriptions[table_id] = new Map();
@@ -84,13 +87,15 @@ class Subscription extends IterableEventQueue {
 		this.subscriptions.splice(this.subscriptions.indexOf(this), 1);
 		if (this.subscriptions.length === 0) {
 			const table_subscriptions = this.subscriptions.tables;
-			// TODO: Handle cleanup of wildcard
-			const key = this.subscriptions.key;
-			table_subscriptions.delete(key);
-			if (table_subscriptions.size === 0) {
-				const env_subscriptions = table_subscriptions.envs;
-				const dbi = table_subscriptions.dbi;
-				delete env_subscriptions[dbi];
+			if (table_subscriptions) {
+				// TODO: Handle cleanup of wildcard
+				const key = this.subscriptions.key;
+				table_subscriptions.delete(key);
+				if (table_subscriptions.size === 0) {
+					const env_subscriptions = table_subscriptions.envs;
+					const dbi = table_subscriptions.dbi;
+					delete env_subscriptions[dbi];
+				}
 			}
 		}
 		this.subscriptions = null;
@@ -99,16 +104,11 @@ class Subscription extends IterableEventQueue {
 		return { name: 'subscription' };
 	}
 }
-
 function notifyFromTransactionData(subscriptions) {
 	if (!subscriptions) return; // if no subscriptions to this env path, don't need to read anything
 	let audit_store = subscriptions.auditStore;
-	try {
-		audit_store.resetReadTxn();
-	} catch (error) {
-		error.message += ' in ' + path;
-		throw error;
-	}
+	audit_store.resetReadTxn();
+	nextTransaction(subscriptions.auditStore);
 	let subscribers_with_txns;
 	for (const { key: local_time, value: audit_entry_encoded } of audit_store.getRange({
 		start: subscriptions.lastTxnTime,
@@ -120,8 +120,7 @@ function notifyFromTransactionData(subscriptions) {
 		if (!table_subscriptions) continue;
 		const record_id = audit_entry.recordId;
 		// TODO: How to handle invalidation
-		let audit_record;
-		let matching_key = keyArrayToString(audit_entry.recordId);
+		let matching_key = keyArrayToString(record_id);
 		let ancestor_level = 0;
 		do {
 			const key_subscriptions = table_subscriptions.get(matching_key);
@@ -177,7 +176,7 @@ function notifyFromTransactionData(subscriptions) {
 	}
 }
 /**
- * Interface with lmdb-js to listen for commits and identify writes that occurred on this thread.
+ * Interface with lmdb-js to listen for commits and traverse the audit log.
  * @param primary_store
  */
 export function listenToCommits(primary_store, audit_store) {
@@ -198,13 +197,41 @@ export function listenToCommits(primary_store, audit_store) {
 						store.getUserSharedBuffer('last-thread-local-write', new ArrayBuffer(8))
 					);
 				subscriptions.txnTime = store.threadLocalWrites[0] || Date.now(); // start from last one
-				notifyFromTransactionData(subscriptions);
-				store.threadLocalWrites[0] = subscriptions.lastTxnTime; // update shared buffer
-				store.unlock('thread-local-writes'); // and release the lock
+				try {
+					notifyFromTransactionData(subscriptions);
+				} finally {
+					store.threadLocalWrites[0] = subscriptions.lastTxnTime; // update shared buffer
+					store.unlock('thread-local-writes'); // and release the lock
+				}
 			};
 			// try to get lock or wait for it
 			if (!store.attemptLock('thread-local-writes', acquiredLock)) return;
 			acquiredLock();
 		});
 	}
+}
+function nextTransaction(audit_store) {
+	audit_store.nextTransaction?.resolve();
+	let next_resolve;
+	audit_store.nextTransaction = new Promise((resolve) => {
+		next_resolve = resolve;
+	});
+	audit_store.nextTransaction.resolve = next_resolve;
+}
+
+export function whenNextTransaction(audit_store) {
+	if (!audit_store.nextTransaction) {
+		addSubscription(
+			{
+				primaryStore: audit_store,
+				auditStore: audit_store,
+			},
+			null,
+			null,
+			0,
+			{ scope: 'full-database' }
+		);
+		nextTransaction(audit_store);
+	}
+	return audit_store.nextTransaction;
 }

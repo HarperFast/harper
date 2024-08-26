@@ -74,7 +74,7 @@ describe('Test customFunctionsServer module', () => {
 				process.removeListener('uncaughtException', listener);
 			}
 		});
-		server.close();
+		//server.close();
 	});
 
 	after(() => {

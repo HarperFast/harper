@@ -1,0 +1,178 @@
+/**
+ * This module is responsible for managing the list of known nodes in the network. This also tracks replication confirmation
+ * when we want to ensure that a transaction has been replicated to multiple nodes before we confirm it.
+ */
+import { table } from '../../resources/databases';
+import { forEachReplicatedDatabase, getThisNodeName } from './replicator';
+import { replicationConfirmation } from '../../resources/DatabaseTransaction';
+import { isMainThread } from 'worker_threads';
+import env from '../../utility/environment/environmentManager';
+import { CONFIG_PARAMS } from '../../utility/hdbTerms';
+let hdb_node_table;
+server.nodes = [];
+
+export function getHDBNodeTable() {
+	return (
+		hdb_node_table ||
+		(hdb_node_table = table({
+			table: 'hdb_nodes',
+			database: 'system',
+			attributes: [
+				{
+					name: 'name',
+					isPrimaryKey: true,
+				},
+				{
+					attribute: 'subscriptions',
+				},
+				{
+					attribute: 'system_info',
+				},
+				{
+					attribute: 'url',
+				},
+				{
+					attribute: 'routes',
+				},
+				{
+					attribute: 'ca',
+				},
+				{
+					attribute: 'replicates',
+				},
+				{
+					attribute: '__createdtime__',
+				},
+				{
+					attribute: '__updatedtime__',
+				},
+			],
+		}))
+	);
+}
+export function subscribeToNodeUpdates(listener) {
+	getHDBNodeTable()
+		.subscribe({})
+		.then(async (events) => {
+			for await (let event of events) {
+				// remove any nodes that have been updated or deleted
+				let name = event?.value?.name;
+				server.nodes = server.nodes.filter((node) => node !== name);
+				if (event.type === 'put' && name !== getThisNodeName()) {
+					// add any new nodes
+					server.nodes.push(name);
+				}
+				if (event.type === 'put' || event.type === 'delete') {
+					listener(event.value, event.id);
+				}
+			}
+		});
+}
+
+export function shouldReplicateToNode(node, database_name) {
+	return (
+		((node.replicates === true || node.replicates?.sends) &&
+			databases[database_name] &&
+			getHDBNodeTable().primaryStore.get(getThisNodeName())?.replicates) ||
+		node.subscriptions?.some((sub) => (sub.database || sub.schema) === database_name && sub.subscribe)
+	);
+}
+
+const replication_confirmation_float64s = new Map<string, Map<string, Float64Array>>();
+/** Ensure that the shared user buffers are instantiated so we can communicate through them
+ */
+export let commits_awaiting_replication: Map<string, []>;
+
+replicationConfirmation((database_name, txnTime, confirmationCount) => {
+	if (!commits_awaiting_replication) {
+		commits_awaiting_replication = new Map();
+		startSubscriptionToReplications();
+	}
+	let awaiting = commits_awaiting_replication.get(database_name);
+	if (!awaiting) commits_awaiting_replication.set(database_name, (awaiting = []));
+	return new Promise((resolve) => {
+		let count = 0;
+		awaiting.push({
+			txnTime,
+			onConfirm: () => {
+				if (++count === confirmationCount) resolve();
+			},
+		});
+	});
+});
+function startSubscriptionToReplications() {
+	subscribeToNodeUpdates((node_record) => {
+		forEachReplicatedDatabase({}, (database, database_name) => {
+			let node_name = node_record.name;
+			let confirmations_for_node = replication_confirmation_float64s.get(node_name);
+			if (!confirmations_for_node) {
+				replication_confirmation_float64s.set(node_name, (confirmations_for_node = new Map()));
+			}
+			if (confirmations_for_node.has(database_name)) return;
+			let audit_store;
+			for (let table_name in database) {
+				const table = database[table_name];
+				audit_store = table.auditStore;
+				if (audit_store) break;
+			}
+			if (audit_store) {
+				let replicated_time = new Float64Array(
+					audit_store.getUserSharedBuffer(['replicated', database_name, node_name], new ArrayBuffer(8), {
+						callback: () => {
+							let updated_time = replicated_time[0];
+							let last_time = replicated_time.lastTime;
+							for (let { txnTime, onConfirm } of commits_awaiting_replication.get(database_name) || []) {
+								if (txnTime > last_time && txnTime <= updated_time) {
+									onConfirm();
+								}
+							}
+							replicated_time.lastTime = updated_time;
+						},
+					})
+				);
+				replicated_time.lastTime = 0;
+				confirmations_for_node.set(database_name, replicated_time);
+			}
+		});
+	});
+}
+
+export function* iterateRoutes(options) {
+	for (const route of options.routes || []) {
+		let url = route.url;
+		let host;
+		if (typeof route === 'string') {
+			// a plain route string can be a url or hostname (or host)
+			if (route.includes('://')) url = route;
+			else host = route;
+		} else host = route.hostname ?? route.host;
+		if (host && !url) {
+			// construct a url from the host and port
+			let secure_port =
+				env.get(CONFIG_PARAMS.REPLICATION_SECUREPORT) ??
+				(!env.get(CONFIG_PARAMS.REPLICATION_PORT) && env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT));
+			let port: number | string;
+			// if the host includes a port, use that port
+			if ((port = host.match(/:(\d+)$/)?.[1])) host = host.slice(0, -port[0].length - 1);
+			else if (route.port) port = route.port; // could be in the routes config
+			// otherwise use the default port for the service
+			else
+				port =
+					secure_port || env.get(CONFIG_PARAMS.REPLICATION_PORT) || env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
+			const last_colon = port?.lastIndexOf?.(':');
+			if (last_colon > 0) port = +port.slice(last_colon + 1).replace(/[\[\]]/g, '');
+
+			url = (secure_port ? 'wss://' : 'ws://') + host + ':' + port; // now construct the full url
+		}
+		if (!url) {
+			if (isMainThread) console.error('Invalid route, must specify a url or host (with port)');
+			continue;
+		}
+
+		yield {
+			url,
+			subscription: route.subscriptions,
+			routes: route.routes,
+		};
+	}
+}

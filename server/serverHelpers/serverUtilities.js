@@ -44,6 +44,8 @@ const { _assignPackageExport } = require('../../index');
 const { transformReq } = require('../../utility/common_utils');
 const { server } = require('../../server/Server');
 const operation_log = harper_logger.loggerWithTag('operation');
+const keys = require('../../security/keys');
+const set_node = require('../../server/replication/setNode');
 
 const operation_function_caller = require(`../../utility/OperationFunctionCaller`);
 
@@ -210,11 +212,12 @@ _assignPackageExport('operation', operation);
 /**
  * Standalone function to execute an operation
  * @param {*} operation
+ * @param {*} context
  * @param {*} authorize?: boolean
  * @returns
  */
-function operation(operation, authorize) {
-	operation.hdb_user = this[CONTEXT]?.user;
+function operation(operation, context, authorize) {
+	operation.hdb_user = context?.user;
 	operation.bypass_auth = !authorize;
 	const operation_function = chooseOperation(operation);
 	return processLocalTransaction({ body: operation }, operation_function);
@@ -333,6 +336,14 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_GET_ROUTES, new OperationFunctionObject(routes.getRoutes));
 	op_func_map.set(terms.OPERATIONS_ENUM.CLUSTER_DELETE_ROUTES, new OperationFunctionObject(routes.deleteRoutes));
 	op_func_map.set(terms.OPERATIONS_ENUM.EXPORT_TO_S3, new OperationFunctionObject(executeJob, export_.export_to_s3));
+	op_func_map.set(terms.OPERATIONS_ENUM.CREATE_CSR, new OperationFunctionObject(keys.createCsr));
+	op_func_map.set(terms.OPERATIONS_ENUM.SIGN_CERTIFICATE, new OperationFunctionObject(keys.signCertificate));
+	op_func_map.set(terms.OPERATIONS_ENUM.LIST_CERTIFICATES, new OperationFunctionObject(keys.listCertificates));
+	op_func_map.set(terms.OPERATIONS_ENUM.ADD_CERTIFICATES, new OperationFunctionObject(keys.addCertificate));
+	op_func_map.set(terms.OPERATIONS_ENUM.REMOVE_CERTIFICATE, new OperationFunctionObject(keys.removeCertificate));
+	op_func_map.set(terms.OPERATIONS_ENUM.ADD_NODE_BACK, new OperationFunctionObject(set_node.addNodeBack));
+	op_func_map.set(terms.OPERATIONS_ENUM.REMOVE_NODE_BACK, new OperationFunctionObject(set_node.removeNodeBack));
+
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE,
 		new OperationFunctionObject(executeJob, delete_.deleteFilesBefore)

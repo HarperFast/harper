@@ -110,7 +110,16 @@ export async function authentication(request, next_handler) {
 			if (status === AUTH_AUDIT_STATUS.SUCCESS) auth_event_log.notify(log);
 			else auth_event_log.error(log);
 		};
-		if (request.mtlsConfig && request.authorized) {
+
+		if (
+			!request.authorized &&
+			request.mtlsConfig &&
+			request.peerCertificate.subject &&
+			request?._nodeRequest?.socket?.authorizationError
+		)
+			auth_event_log.error('Authorization error:', request._nodeRequest.socket.authorizationError);
+
+		if (request.mtlsConfig && request.authorized && request.peerCertificate.subject) {
 			let username = request.mtlsConfig.user;
 			if (username !== null) {
 				// null means no user is defined from certificate, need regular authentication as well
@@ -187,7 +196,7 @@ export async function authentication(request, next_handler) {
 			// or should this be cached in the session?
 			request.user = await server.getUser(session.user, null, request);
 		} else if (
-			(AUTHORIZE_LOCAL && (request.ip?.includes('127.0.0.1') || request.ip == '::1')) ||
+			(AUTHORIZE_LOCAL && (request.ip?.includes('127.0.0.') || request.ip == '::1')) ||
 			(request?._nodeRequest?.socket?.server?._pipeName && request.ip === undefined) // allow socket domain
 		) {
 			request.user = await getSuperUser();

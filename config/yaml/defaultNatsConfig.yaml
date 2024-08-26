@@ -1,0 +1,36 @@
+---
+clustering:
+  enabled: true
+  hubServer:
+    cluster:
+      name: harperdb
+      network:
+        port: 9932
+        routes:
+    leafNodes:
+      network:
+        port: 9931
+    network:
+      port: 9930
+  leafServer:
+    network:
+      port: 9940
+      routes:
+    streams:
+      maxAge: null
+      maxBytes: null
+      maxMsgs: null
+      maxConsumeMsgs: 100
+      maxIngestThreads: 2
+      path: null
+  logLevel: info
+  nodeName: null
+  republishMessages: false
+  databaseLevel: false
+  tls:
+    certificate: null
+    certificateAuthority: null
+    privateKey: null
+    insecure: true
+    verify: true
+  user: null

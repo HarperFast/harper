@@ -66,10 +66,9 @@ export function start({ ensureTable }) {
 							type_def.attributes = type_def.properties;
 							tables.push(type_def);
 						}
-						if (directive_name === 'sealed') {
-							type_def.sealed = true;
-						}
-						if (directive_name === 'export') {
+						if (directive.name.value === 'sealed') type_def.sealed = true;
+						if (directive.name.value === 'replicate') type_def.replicate = true;
+						if (directive.name.value === 'export') {
 							type_def.export = true;
 							for (const arg of directive.arguments) {
 								if (typeof type_def.export !== 'object') type_def.export = {};

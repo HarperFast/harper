@@ -202,7 +202,7 @@ function createStructureUserPermissions(schema) {
  */
 function getTableAttrPerms(table_perms, table_schema) {
 	const { attribute_permissions } = table_perms;
-	const has_attr_permissions = attribute_permissions?.length > 0;
+	const has_attr_permissions = attribute_permissions.length > 0;
 
 	if (has_attr_permissions) {
 		//if table has attribute_permissions set, we need to loop through the table's schema and set attr-level perms

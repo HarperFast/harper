@@ -19,6 +19,7 @@ const CONFIG_INIT_MSG = 'Config successfully initialized';
 const BACKUP_ERR = 'Error backing up config file';
 const EMPTY_GET_VALUE = 'Empty parameter sent to getConfigValue';
 const DEFAULT_CONFIG_FILE_PATH = path.join(hdb_terms.PACKAGE_ROOT, 'config', 'yaml', hdb_terms.HDB_DEFAULT_CONFIG_FILE);
+const DEFAULT_NATS_CONFIG_FILE_PATH = path.join(hdb_terms.PACKAGE_ROOT, 'config', 'yaml', 'defaultNatsConfig.yaml');
 const CONFIGURE_SUCCESS_RESPONSE =
 	'Configuration successfully set. You must restart HarperDB for new config settings to take effect.';
 
@@ -70,6 +71,15 @@ function resolvePath(relative_path) {
  */
 function createConfigFile(args, skip_fs_validation = false) {
 	const config_doc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
+
+	// If nats clustering is enabled add the default nats config to harperdb-config
+	if (args.clustering_enabled || args.CLUSTERING_ENABLED || args.clustering) {
+		const nats_config_doc = YAML.parseDocument(fs.readFileSync(DEFAULT_NATS_CONFIG_FILE_PATH, 'utf8'), {
+			simpleKeys: true,
+		});
+		config_doc.addIn(['clustering'], nats_config_doc.toJSON().clustering);
+	}
+
 	flat_default_config_obj = flattenConfig(config_doc.toJSON());
 
 	// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
@@ -188,7 +198,7 @@ function getDefaultConfig(param) {
  */
 function getConfigValue(param) {
 	if (param == null) {
-		logger.error(EMPTY_GET_VALUE);
+		logger.info(EMPTY_GET_VALUE);
 		return undefined;
 	}
 
@@ -292,18 +302,8 @@ function checkForUpdatedConfig(config_doc, config_file_path) {
 		update_file = true;
 	}
 
-	if (!config_doc.hasIn(['clustering', 'leafServer', 'streams', 'path'])) {
-		config_doc.setIn(['clustering', 'leafServer', 'streams', 'path'], path.join(root_path, 'clustering', 'leaf'));
-		update_file = true;
-	}
-
 	if (!config_doc.hasIn(['logging', 'rotation', 'path'])) {
 		config_doc.setIn(['logging', 'rotation', 'path'], path.join(root_path, 'log'));
-		update_file = true;
-	}
-
-	if (!config_doc.hasIn(['clustering', 'tls', 'verify'])) {
-		config_doc.setIn(['clustering', 'tls', 'verify'], true);
 		update_file = true;
 	}
 
@@ -373,13 +373,16 @@ function validateConfig(config_doc, skip_fs_validation = false) {
 	config_doc.setIn(['storage', 'path'], validation.value.storage.path);
 	config_doc.setIn(['logging', 'rotation', 'path'], validation.value.logging.rotation.path);
 	config_doc.setIn(
-		['clustering', 'leafServer', 'streams', 'path'],
-		validation.value.clustering.leafServer.streams?.path
-	);
-	config_doc.setIn(
 		['operationsApi', 'network', 'domainSocket'],
 		validation.value?.operationsApi?.network?.domainSocket
 	);
+
+	if (config_json?.clustering?.enabled) {
+		config_doc.setIn(
+			['clustering', 'leafServer', 'streams', 'path'],
+			validation.value.clustering.leafServer.streams?.path
+		);
+	}
 }
 
 /**

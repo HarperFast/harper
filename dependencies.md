@@ -72,6 +72,13 @@ Unfortuneately this project has not been published for three years, although it 
 * Binary compilation: No
 * Eventual removal: This code could be maintained within our codebase, if necessary, as it is not very large.
 
+## segfault-handler
+* Need for usage: Provides a way to log segfaults in native code
+* Size/memory cost: 10KB
+* Security: No reported vulnerabilities
+* Binary compilation: Yes (but included as an optional dependency)
+* Eventual removal: This is a very small package, and it is not necessary, just adds debugging information
+
 ## tar-fs
 * Need for usage: Used by package component to pack component project into tarball and by deploy component to extract tarball into component directory.
 * Size/memory cost: Approximately 13KB

@@ -26,6 +26,6 @@ describe('Test transactionLogValidator', () => {
 			timestamp: 1598290200117000000,
 		};
 		const result = deleteTransactionLogsBeforeValidator(bad_req);
-		expect(result.message).to.equal("'schema' is required. 'table' must be a string. 'timestamp' must be a valid date");
+		expect(result.message).to.equal("'table' must be a string. 'timestamp' must be a valid date");
 	});
 });

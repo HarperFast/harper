@@ -309,8 +309,7 @@ describe('Test configValidator module', () => {
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'clustering.hubServer.cluster.name' is required. 'clustering.hubServer.cluster.network.port' must be a" +
-				" number. 'clustering.hubServer.cluster.network.routes[0].host' must be a string. 'clustering.hubServer.leafNodes.network.port' must be a number. 'clustering.hubServer.network.port' must be greater than or equal to 0";
+				"'clustering.hubServer.cluster.name' is required. 'clustering.hubServer.cluster.network.routes' does not match any of the allowed types. 'clustering.hubServer.leafNodes.network.port' must be one of [number, string]. 'clustering.hubServer.network.port' must be greater than or equal to 0";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
@@ -365,23 +364,6 @@ describe('Test configValidator module', () => {
 			const expected_schema_message = "'clustering.leafServer.network.port' is required";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
-		});
-
-		it('Test error thrown if clustering is undefined', () => {
-			const is_empty_stub = sandbox.stub(hdb_utils, 'isEmpty');
-			is_empty_stub.withArgs(HDB_ROOT).returns(false);
-			is_empty_stub.withArgs(null).returns(true);
-			let config_obj = test_utils.deepClone(FAKE_CONFIG);
-			config_obj.clustering.enabled = null;
-
-			let error;
-			try {
-				configValidator(config_obj);
-			} catch (err) {
-				error = err;
-			}
-
-			expect(error).to.eql('clustering.enabled config parameter is undefined');
 		});
 
 		it('Test error thrown if hdb root is undefined', () => {
@@ -461,7 +443,7 @@ describe('Test configValidator module', () => {
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'operationsApi.network.cors' must be a boolean. 'operationsApi.network.headersTimeout' must be greater than or equal to 1. 'operationsApi.network.keepAliveTimeout' must be a number. 'operationsApi.network.port' must be a number. 'operationsApi.network.timeout' must be a number. 'rootPath' with value '/@@@' fails to match the directory path pattern. 'storage.writeAsync' is required";
+				"'operationsApi.network.cors' must be a boolean. 'operationsApi.network.headersTimeout' must be greater than or equal to 1. 'operationsApi.network.keepAliveTimeout' must be a number. 'operationsApi.network.timeout' must be a number. 'rootPath' with value '/@@@' fails to match the directory path pattern. 'storage.writeAsync' is required";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
@@ -654,7 +636,7 @@ describe('Test configValidator module', () => {
 			},
 		];
 		const result = routesValidator(test_array);
-		expect(result.message).to.equal("'routes[0].host' must be a string. 'routes[1].port' must be a number");
+		expect(result.message).to.equal("'routes' does not match any of the allowed types");
 	});
 
 	it('Test routesValidator validation more bad values', () => {
@@ -667,7 +649,7 @@ describe('Test configValidator module', () => {
 			},
 		];
 		const result = routesValidator(test_array);
-		expect(result.message).to.equal("'routes[0].host' is required. 'routes[1].port' is required");
+		expect(result.message).to.equal("'routes' does not match any of the allowed types");
 	});
 
 	it('Test validateRotationInterval invalid unit', () => {

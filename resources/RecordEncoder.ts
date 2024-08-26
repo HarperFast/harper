@@ -6,7 +6,14 @@
  */
 
 import { Encoder } from 'msgpackr';
-import { createAuditEntry, readAuditEntry } from './auditStore';
+import {
+	createAuditEntry,
+	readAuditEntry,
+	HAS_PREVIOUS_RESIDENCY_ID,
+	HAS_CURRENT_RESIDENCY_ID,
+	HAS_EXPIRATION_EXTENDED_TYPE,
+	HAS_ORIGINATING_OPERATION,
+} from './auditStore';
 import * as harper_logger from '../utility/logging/harper_logger';
 
 // these are matched by lmdb-js for timestamp replacement. the first byte here is used to xor with the first byte of the date as a double so that it ends up less than 32 for easier identification (otherwise dates start with 66)
@@ -24,13 +31,16 @@ export const TIMESTAMP_ASSIGN_LAST = 1;
 export const TIMESTAMP_ASSIGN_PREVIOUS = 3;
 export const TIMESTAMP_RECORD_PREVIOUS = 4;
 export const HAS_EXPIRATION = 16;
+export const HAS_RESIDENCY_ID = 32;
 export const PENDING_LOCAL_TIME = 1;
+export const HAS_STRUCTURE_UPDATE = 0x100;
 
 let last_encoding,
 	last_value_encoding,
 	timestamp_next_encoding = 0,
 	metadata_in_next_encoding = -1,
-	expires_at_next_encoding = 0;
+	expires_at_next_encoding = 0,
+	residency_id_at_next_encoding = 0;
 export class RecordEncoder extends Encoder {
 	constructor(options) {
 		options.useBigIntExtension = true;
@@ -48,12 +58,17 @@ export class RecordEncoder extends Encoder {
 				}
 				const metadata = metadata_in_next_encoding;
 				const expires_at = expires_at_next_encoding;
+				const residency_id = residency_id_at_next_encoding;
 				if (metadata >= 0) {
 					value_start += 2; // make room for metadata bytes
-					metadata_in_next_encoding = -1;
+					metadata_in_next_encoding = -1; // reset indicator to mean no metadata
 					if (expires_at) {
 						value_start += 8; // make room for expiration timestamp
-						expires_at_next_encoding = 0;
+						expires_at_next_encoding = 0; // reset indicator to mean no expiration
+					}
+					if (residency_id) {
+						value_start += 4; // make room for residency id
+						residency_id_at_next_encoding = 0; // reset indicator to mean no residency id
 					}
 				}
 				const encoded = (last_encoding = super_encode.call(this, record, options | 2048 | value_start)); // encode with 8 bytes reserved space for txn_id
@@ -67,17 +82,30 @@ export class RecordEncoder extends Encoder {
 					position += 8;
 				}
 				if (metadata >= 0) {
-					encoded[position++] = metadata;
-					encoded[position++] = 0;
+					encoded[position++] = metadata & 0x1f;
+					encoded[position++] = metadata >> 5;
 					if (expires_at) {
 						const data_view =
 							encoded.dataView ||
 							(encoded.dataView = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength));
 						data_view.setFloat64(position, expires_at);
+						position += 8;
+					}
+					if (residency_id) {
+						const data_view =
+							encoded.dataView ||
+							(encoded.dataView = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength));
+						data_view.setUint32(position, residency_id);
 					}
 				}
 				return encoded;
 			} else return super_encode.call(this, record, options);
+		};
+		const super_saveStructures = this.saveStructures;
+		this.saveStructures = function (structures, isCompatible) {
+			let result = super_saveStructures.call(this, structures, isCompatible);
+			this.hasStructureUpdate = true;
+			return result;
 		};
 	}
 	decode(buffer, options) {
@@ -103,9 +131,9 @@ export class RecordEncoder extends Encoder {
 					local_time = getTimestamp();
 					next_byte = buffer[position];
 				}
-				let expires_at;
+				let expires_at, residency_id;
 				if (next_byte < 32) {
-					metadata_flags = next_byte;
+					metadata_flags = next_byte | (buffer[position + 1] << 5);
 					position += 2;
 					if (metadata_flags & HAS_EXPIRATION) {
 						const data_view =
@@ -113,16 +141,26 @@ export class RecordEncoder extends Encoder {
 						expires_at = data_view.getFloat64(position);
 						position += 8;
 					}
+					if (metadata_flags & HAS_RESIDENCY_ID) {
+						// we need to read the residency id
+						const data_view =
+							buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+						residency_id = data_view.getUint32(position);
+						position += 4;
+					}
 				}
-				const value = super.decode(buffer.subarray(position, end), end - position);
+				const value = options?.valueAsBuffer
+					? buffer.subarray(position, end)
+					: super.decode(buffer.subarray(position, end), end - position);
 				return {
 					localTime: local_time,
 					value,
 					[METADATA]: metadata_flags,
 					expiresAt: expires_at,
+					residencyId: residency_id,
 				};
 			} // else a normal entry
-			return super.decode(buffer, options);
+			return options?.valueAsBuffer ? buffer : super.decode(buffer, options);
 		} catch (error) {
 			error.message += ', data: ' + buffer.slice(0, 40).toString('hex');
 			throw error;
@@ -148,6 +186,7 @@ export function handleLocalTimeForGets(store) {
 			entry.metadataFlags = metadata;
 			entry.localTime = record_entry.localTime;
 			entry.value = record_entry.value;
+			entry.residencyId = record_entry.residencyId;
 			if (record_entry.expiresAt > 0) entry.expiresAt = record_entry.expiresAt;
 		}
 		if (entry) entry.key = id;
@@ -243,8 +282,7 @@ export function getUpdateRecord(store, table_id, audit_store) {
 		new_version,
 		assign_metadata = -1, // when positive, this has a set of metadata flags for the record
 		audit?: boolean, // true -> audit this record. false -> do not. null -> retain any audit timestamp
-		context?,
-		expires_at?: number,
+		options?,
 		type = 'put',
 		resolve_record?: boolean, // indicates that we are resolving (from source) record that was previously invalidated
 		audit_record?: any
@@ -261,20 +299,35 @@ export function getUpdateRecord(store, table_id, audit_store) {
 					? TIMESTAMP_RECORD_PREVIOUS | 0x4000
 					: TIMESTAMP_ASSIGN_NEW | 0x4000 // or just assign a new one
 				: NO_TIMESTAMP;
+		const expires_at = options?.expiresAt;
 		if (expires_at > 0) assign_metadata |= HAS_EXPIRATION;
 		metadata_in_next_encoding = assign_metadata;
 		expires_at_next_encoding = expires_at;
 		if (existing_entry?.version === new_version && audit === false)
 			throw new Error('Must retain local time if version is not changed');
-		const options = {
+		const put_options = {
 			version: new_version,
 			instructedWrite: timestamp_next_encoding > 0,
 		};
-		let ifVersion;
+		let if_version;
+		let extended_type = 0;
 		try {
+			let previous_residency_id = existing_entry?.residencyId;
+			const residency_id = options?.residencyId; //get_residency(record, previous_residency_id);
+			if (residency_id) {
+				residency_id_at_next_encoding = residency_id;
+				metadata_in_next_encoding |= HAS_RESIDENCY_ID;
+				extended_type |= HAS_CURRENT_RESIDENCY_ID;
+			} // else residency_id_at_next_encoding = 0;
+			if (previous_residency_id !== residency_id) {
+				extended_type |= HAS_PREVIOUS_RESIDENCY_ID;
+				if (!previous_residency_id) previous_residency_id = 0;
+			}
+			if (assign_metadata & HAS_EXPIRATION) extended_type |= HAS_EXPIRATION_EXTENDED_TYPE; // we need to record the expiration in the audit log
+			if (options?.originatingOperation) extended_type |= HAS_ORIGINATING_OPERATION;
 			// we use resolve_record outside of transaction, so must explicitly make it conditional
-			if (resolve_record) options.ifVersion = ifVersion = existing_entry?.version ?? null;
-			const result = store.put(id, record, options);
+			if (resolve_record) put_options.ifVersion = if_version = existing_entry?.version ?? null;
+			const result = store.put(id, record, put_options);
 
 			/**
 			 TODO: We will need to pass in the node id, whether that is locally generated from node name, or there is a global registory
@@ -284,8 +337,12 @@ export function getUpdateRecord(store, table_id, audit_store) {
 			}
 			*/
 			if (audit) {
-				const username = context?.user?.username;
+				const username = options?.user?.username;
 				if (audit_record) last_value_encoding = store.encoder.encode(audit_record);
+				if (store.encoder.hasStructureUpdate) {
+					extended_type |= HAS_STRUCTURE_UPDATE;
+					store.encoder.hasStructureUpdate = false;
+				}
 				if (resolve_record && existing_entry?.localTime) {
 					const replacing_id = existing_entry?.localTime;
 					const replacing_entry = audit_store.get(replacing_id);
@@ -293,8 +350,21 @@ export function getUpdateRecord(store, table_id, audit_store) {
 						const previous_local_time = readAuditEntry(replacing_entry).previousLocalTime;
 						audit_store.put(
 							replacing_id,
-							createAuditEntry(new_version, table_id, id, previous_local_time, username, type, last_value_encoding),
-							{ ifVersion }
+							createAuditEntry(
+								new_version,
+								table_id,
+								id,
+								previous_local_time,
+								options?.nodeId ?? server.replication.getThisNodeId(audit_store) ?? 0,
+								username,
+								type,
+								last_value_encoding,
+								extended_type,
+								residency_id,
+								previous_residency_id,
+								expires_at
+							),
+							{ ifVersion: if_version }
 						);
 						return result;
 					}
@@ -306,20 +376,26 @@ export function getUpdateRecord(store, table_id, audit_store) {
 						table_id,
 						id,
 						existing_entry?.localTime ? 1 : 0,
+						options?.nodeId ?? server.replication?.getThisNodeId(audit_store) ?? 0,
 						username,
 						type,
-						last_value_encoding
+						last_value_encoding,
+						extended_type,
+						residency_id,
+						previous_residency_id,
+						expires_at,
+						options?.originatingOperation
 					),
 					{
 						append: type !== 'invalidate', // for invalidation, we expect the record to be rewritten, so we don't want to necessarily expect pure sequential writes that create full pages
 						instructedWrite: true,
-						ifVersion,
+						ifVersion: if_version,
 					}
 				);
 			}
 			return result;
 		} catch (error) {
-			error.message += ' id: ' + id + ' options: ' + options;
+			error.message += ' id: ' + id + ' options: ' + put_options;
 			throw error;
 		}
 	};

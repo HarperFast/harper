@@ -1,7 +1,9 @@
 {
 	"info": {
+		"_postman_id": "55dc0e6d-fa71-4365-8594-5bf2e3c1aa87",
 		"name": "HarperDB Integration Tests",
-		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json"
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "7046690"
 	},
 	"item": [
 		{
@@ -48720,7 +48722,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"set_configuration\",\n    \"logging_auditLog\": true,\n    \"customFunctions_enabled\": true,\n    \"localStudio_enabled\": true\n}"
+							"raw": "{\n\t\"operation\": \"set_configuration\",\n    \"logging_auditLog\": true,\n    \"customFunctions_enabled\": true,\n    \"localStudio_enabled\": true,\n    \"clustering_enabled\": true,\n    \"replication_url\": null\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -48744,15 +48746,11 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test(\"Restart success message is returned\", function () {",
-									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.message).to.equal(\"Restarting HarperDB. This may take up to 60 seconds.\");",
-									"});",
-									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
-									"setTimeout(() => {}, 20000)"
+									"setTimeout(() => {}, 60000)"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -53105,7 +53103,7 @@
 													"    pm.expect(Object.keys(jsonResponse).length).to.eql(1);",
 													"    pm.expect(Object.keys(jsonResponse.northnwd).length).to.eql(1);",
 													"    pm.expect(Object.keys(jsonResponse.northnwd.employees).length).to.eql(10)",
-                                                    "    pm.expect(jsonResponse.northnwd.employees.db_size).to.be.a('number')",
+													"    pm.expect(jsonResponse.northnwd.employees.db_size).to.be.a('number')",
 													"    pm.expect(jsonResponse.northnwd.employees.attributes.length).to.eql(4)",
 													"});",
 													""
@@ -60386,7 +60384,7 @@
 									"",
 									"pm.test(\"Correct error message for setConfig with bad data\", function () {",
 									"    const jsonData = pm.response.json();",
-									"    pm.expect(jsonData.error).to.equal(\"HarperDB config file validation error: 'http.port' must be a number\");",
+									"    pm.expect(jsonData.error).to.equal(\"HarperDB config file validation error: 'http.cors' must be a boolean\");",
 									"});"
 								],
 								"type": "text/javascript"
@@ -60413,7 +60411,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"set_configuration\",\n    \"customFunctions_network_port\": \"spinach\"\n}",
+							"raw": "{\n\t\"operation\": \"set_configuration\",\n    \"http_cors\": \"spinach\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -62622,7 +62620,8 @@
 									"",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -62662,11 +62661,11 @@
 							}
 						},
 						"url": {
-							"raw": "{{host}}:{{cf_port}}/Greeting",
+							"raw": "{{host}}:9926/Greeting",
 							"host": [
 								"{{host}}"
 							],
-							"port": "{{cf_port}}",
+							"port": "9926",
 							"path": [
 								"Greeting"
 							]

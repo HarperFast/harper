@@ -40,6 +40,7 @@ _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 const NEXT_TABLE_ID = Symbol.for('next-table-id');
 const table_listeners = [];
+const db_removal_listeners = [];
 let loaded_databases; // indicates if we have loaded databases from the file system yet
 const database_envs = new Map<string, any>();
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
@@ -157,6 +158,23 @@ export function getDatabases(): Databases {
 			}
 		}
 	}
+	// I don't know if this is the best place for this, but somewhere we need to specify which tables
+	// replicate by default:
+	const NON_REPLICATING_SYSTEM_TABLES = [
+		'hdb_temp',
+		'hdb_certificate',
+		'hdb_analytics',
+		'hdb_raw_analytics',
+		'hdb_session_will',
+		'hdb_job',
+		'hdb_license',
+		'hdb_info',
+	];
+	if (databases.system) {
+		for (let table_name of NON_REPLICATING_SYSTEM_TABLES) {
+			if (databases.system[table_name]) databases.system[table_name].replicate = false;
+		}
+	}
 	defined_databases = null;
 	return databases;
 }
@@ -170,6 +188,8 @@ export function resetDatabases() {
 		if (store.needsDeletion && !path.endsWith('system.mdb')) {
 			store.close();
 			database_envs.delete(path);
+			delete databases[store.databaseName];
+			db_removal_listeners.forEach((listener) => listener(store.databaseName));
 		}
 	}
 	return databases;
@@ -271,6 +291,7 @@ export function readMetaDb(
 			const expiration = primary_attribute.expiration;
 			const eviction = primary_attribute.eviction;
 			const sealed = primary_attribute.sealed;
+			const replicate = primary_attribute.replicate;
 			if (table) {
 				indices = table.indices;
 				existing_attributes = table.attributes;
@@ -293,6 +314,7 @@ export function readMetaDb(
 					dbi_init.compression.threshold = compression_threshold;
 				}
 				primary_store = handleLocalTimeForGets(root_store.openDB(primary_attribute.key, dbi_init));
+				root_store.databaseName = database_name;
 				primary_store.rootStore = root_store;
 				primary_store.tableId = table_id;
 			}
@@ -326,6 +348,7 @@ export function readMetaDb(
 						auditStore: audit_store,
 						audit,
 						sealed,
+						replicate,
 						expirationMS: expiration && expiration * 1000,
 						evictionMS: eviction && eviction * 1000,
 						trackDeletes: track_deletes,
@@ -361,6 +384,7 @@ interface TableDefinition {
 	scanInterval?: number;
 	audit?: boolean;
 	sealed?: boolean;
+	replicate?: boolean;
 	trackDeletes?: boolean;
 	attributes: any[];
 	schemaDefined?: boolean;
@@ -426,11 +450,14 @@ export function database({ database: database_name, table: table_name }) {
 		(existsSync(database_path) ? database_path : join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME));
 	const path = join(database_path, (table_path ? table_name : database_name) + '.mdb');
 	let root_store = database_envs.get(path);
-	if (!root_store) {
+	if (!root_store || root_store.status === 'closed') {
 		// TODO: validate database name
 		const env_init = new OpenEnvironmentObject(path, false);
 		root_store = open(env_init);
 		database_envs.set(path, root_store);
+	}
+	if (!root_store.auditStore) {
+		root_store.auditStore = openAuditStore(root_store);
 	}
 	return root_store;
 }
@@ -465,6 +492,7 @@ export async function dropDatabase(database_name) {
 		delete tables[DEFINED_TABLES];
 	}
 	delete databases[database_name];
+	db_removal_listeners.forEach((listener) => listener(database_name));
 }
 
 /**
@@ -478,6 +506,7 @@ export async function dropDatabase(database_name) {
  * @param attributes
  * @param audit
  * @param sealed
+ * @param replicate
  */
 export function table({
 	table: table_name,
@@ -488,6 +517,7 @@ export function table({
 	attributes,
 	audit,
 	sealed,
+	replicate,
 	trackDeletes: track_deletes,
 	schemaDefined: schema_defined,
 	origin,
@@ -495,6 +525,7 @@ export function table({
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
 	const root_store = database({ database: database_name, table: table_name });
 	const tables = databases[database_name];
+	harper_logger.trace(`Defining ${table_name} in ${database_name}`);
 	let Table = tables?.[table_name];
 	if (root_store.status === 'closed') {
 		throw new Error(`Can not use a closed data store for ${table_name}`);
@@ -525,9 +556,6 @@ export function table({
 		Table.attributes.splice(0, Table.attributes.length, ...attributes);
 	} else {
 		let audit_store = root_store.auditStore;
-		if (!audit_store) {
-			audit_store = openAuditStore(root_store);
-		}
 		primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
 		primary_key = primary_key_attribute.name;
 		primary_key_attribute.is_hash_attribute = true;
@@ -539,6 +567,7 @@ export function table({
 		if (expiration) primary_key_attribute.expiration = expiration;
 		if (eviction) primary_key_attribute.eviction = eviction;
 		if (typeof sealed === 'boolean') primary_key_attribute.sealed = sealed;
+		if (typeof replicate === 'boolean') primary_key_attribute.replicate = replicate;
 		if (origin) {
 			if (!primary_key_attribute.origins) primary_key_attribute.origins = [origin];
 			else if (!primary_key_attribute.origins.includes(origin)) primary_key_attribute.origins.push(origin);
@@ -548,6 +577,7 @@ export function table({
 		dbi_init.compression = primary_key_attribute.compression;
 		const dbi_name = table_name + '/';
 		const primary_store = handleLocalTimeForGets(root_store.openDB(dbi_name, dbi_init));
+		root_store.databaseName = database_name;
 		primary_store.rootStore = root_store;
 		attributes_dbi = root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
 		primary_store.tableId = attributes_dbi.get(NEXT_TABLE_ID);
@@ -562,6 +592,7 @@ export function table({
 				auditStore: audit_store,
 				audit,
 				sealed,
+				replicate,
 				trackDeletes: track_deletes,
 				expirationMS: expiration && expiration * 1000,
 				evictionMS: eviction && eviction * 1000,
@@ -615,8 +646,9 @@ export function table({
 				attribute_descriptor = attribute_descriptor || attributes_dbi.get((dbi_key = table_name + '/')) || {};
 				// primary key can't change indexing, but settings can change
 				if (
-					audit !== Table.audit ||
-					sealed !== sealed ||
+					(audit !== undefined && audit !== Table.audit) ||
+					(sealed !== undefined && sealed !== Table.sealed) ||
+					(replicate !== undefined && replicate !== Table.replicate) ||
 					(+expiration || undefined) !== (+attribute_descriptor.expiration || undefined) ||
 					(+eviction || undefined) !== (+attribute_descriptor.eviction || undefined)
 				) {
@@ -628,6 +660,7 @@ export function table({
 					if (expiration) updated_primary_attribute.expiration = +expiration;
 					if (eviction) updated_primary_attribute.eviction = +eviction;
 					if (sealed !== undefined) updated_primary_attribute.sealed = sealed;
+					if (replicate !== undefined) updated_primary_attribute.replicate = replicate;
 					has_changes = true; // send out notification of the change
 					startTxn();
 					attributes_dbi.put(dbi_key, updated_primary_attribute);
@@ -688,6 +721,7 @@ export function table({
 		if (txn_commit) txn_commit();
 	}
 	if (has_changes) {
+		root_store.auditStore;
 		Table.schemaVersion++;
 		Table.updatedAttributes();
 	}
@@ -729,6 +763,7 @@ const MAX_OUTSTANDING_INDEXING = 1000;
 const MIN_OUTSTANDING_INDEXING = 10;
 async function runIndexing(Table, attributes, indicesToRemove) {
 	try {
+		harper_logger.info(`Indexing ${Table.tableName} attributes`, attributes);
 		const schema_version = Table.schemaVersion;
 		await signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
@@ -829,6 +864,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 		await signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'indexing-finished', Table.databaseName, Table.tableName)
 		);
+		harper_logger.info(`Finished indexing ${Table.tableName} attributes`, attributes);
 	} catch (error) {
 		harper_logger.error('Error in indexing', error);
 	}
@@ -851,6 +887,21 @@ export function dropTableMeta({ table: table_name, database: database_name }) {
 
 export function onUpdatedTable(listener) {
 	table_listeners.push(listener);
+	return {
+		remove() {
+			let index = table_listeners.indexOf(listener);
+			if (index > -1) table_listeners.splice(index, 1);
+		},
+	};
+}
+export function onRemovedDB(listener) {
+	db_removal_listeners.push(listener);
+	return {
+		remove() {
+			let index = db_removal_listeners.indexOf(listener);
+			if (index > -1) db_removal_listeners.splice(index, 1);
+		},
+	};
 }
 
 export function getDefaultCompression() {

@@ -16,6 +16,10 @@ export enum TRANSACTION_STATE {
 	LINGERING, // the transaction has completed a read, but can be used for immediate writes
 }
 let outstanding_commit, outstanding_commit_start;
+let confirmReplication;
+export function replicationConfirmation(callback) {
+	confirmReplication = callback;
+}
 
 export class DatabaseTransaction implements Transaction {
 	writes = []; // the set of writes to commit if the conditions are met
@@ -179,7 +183,7 @@ export class DatabaseTransaction implements Transaction {
 				}
 			}
 		};
-		let lmdb_db = this.lmdbDb;
+		const lmdb_db = this.lmdbDb;
 		// only commit if there are writes
 		if (this.writes.length > 0) {
 			// we also maintain a retry risk for the transaction, which is a measure of how likely it is that the transaction
@@ -217,6 +221,20 @@ export class DatabaseTransaction implements Transaction {
 					}
 					if (options?.flush) {
 						completions.push(this.writes[0].store.flushed);
+					}
+					if (this.replicatedConfirmation) {
+						// if we want to wait for replication confirmation, we need to track the transaction times
+						// and when replication notifications come in, we count the number of confirms until we reach the desired number
+						const database_name = this.writes[0].store.rootStore.databaseName;
+						const last_write = this.writes[this.writes.length - 1];
+						if (confirmReplication && last_write)
+							completions.push(
+								confirmReplication(
+									database_name,
+									last_write.store.getEntry(last_write.key).localTime,
+									this.replicatedConfirmation
+								)
+							);
 					}
 					// now reset transactions tracking; this transaction be reused and committed again
 					this.writes = [];

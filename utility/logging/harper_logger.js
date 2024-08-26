@@ -2,7 +2,7 @@
 
 // Note - do not import/use common_utils.js in this module, it will cause circular dependencies.
 const fs = require('fs-extra');
-const { workerData, threadId } = require('worker_threads');
+const { workerData, threadId, isMainThread } = require('worker_threads');
 const path = require('path');
 const YAML = require('yaml');
 const PropertiesReader = require('properties-reader');
@@ -121,6 +121,14 @@ function initLogSettings(force_init = false) {
 
 			log_name = hdb_terms.LOG_NAMES.HDB;
 			log_file_path = path.join(log_root, log_name);
+			if (isMainThread) {
+				try {
+					const SegfaultHandler = require('segfault-handler');
+					SegfaultHandler.registerHandler(path.join(log_root, 'crash.log'));
+				} catch (error) {
+					// optional dependency, ok if we can't run it
+				}
+			}
 		}
 	} catch (err) {
 		hdb_properties = undefined;

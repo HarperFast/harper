@@ -10,12 +10,6 @@ const LMDBCreateAttributeObject = require('../lmdbUtility/LMDBCreateAttributeObj
 const log = require('../../../../utility/logging/harper_logger');
 const create_txn_environments = require('../lmdbUtility/lmdbCreateTransactionsAuditEnvironment');
 
-const HDB_TABLE_INFO = system_schema.hdb_table;
-let hdb_table_attributes = [];
-for (let x = 0; x < HDB_TABLE_INFO.attributes.length; x++) {
-	hdb_table_attributes.push(HDB_TABLE_INFO.attributes[x].attribute);
-}
-
 module.exports = lmdbCreateTable;
 
 /**

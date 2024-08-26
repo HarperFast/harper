@@ -18,6 +18,6 @@ describe('Test routesValidator module', () => {
 				{ ip: '1.2.3.4', port: 12345 },
 			],
 		});
-		expect(result.message).to.equal("'routes[1].host' is required");
+		expect(result.message).to.equal("'routes' does not match any of the allowed types");
 	});
 });

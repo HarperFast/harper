@@ -71,6 +71,8 @@ describe('Test addNode module', () => {
 		update_remote_consumer_stub = sandbox.stub(nats_utils, 'updateRemoteConsumer');
 		update_consumer_iterator_stub = sandbox.stub(nats_utils, 'updateConsumerIterator');
 		env_mgr.setProperty('clustering_enabled', true);
+		env_mgr.setProperty('replication_url', undefined);
+		env_mgr.setProperty('replication_hostname', undefined);
 	});
 
 	after(() => {

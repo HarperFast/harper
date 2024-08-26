@@ -270,6 +270,7 @@ describe('Test natsUtils module', () => {
 		const test_cluster_user_pass = test_utils.NATS_TEST_SERVER_VALUES.CLUSTER_USER_PASS;
 
 		before(async () => {
+			env_manager.setProperty(hdb_terms.CONFIG_PARAMS.ROOTPATH, test_utils.ENV_DIR_PATH);
 			sandbox.stub(hdb_utils, 'getTableHashAttribute').returns('id');
 			await test_utils.launchTestLeafServer();
 			test_utils.setFakeClusterUser();

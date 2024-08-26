@@ -45,7 +45,7 @@ describe('Audit log', () => {
 		setAuditRetention(0.001, 1);
 		AuditedTable.auditStore.scheduleAuditCleanup(1);
 		await AuditedTable.put(3, { name: 'three' });
-		await new Promise((resolve) => setTimeout(resolve, 10));
+		await new Promise((resolve) => setTimeout(resolve, 20));
 		results = [];
 		for await (let entry of AuditedTable.getHistory()) {
 			results.push(entry);

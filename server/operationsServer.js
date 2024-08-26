@@ -49,8 +49,8 @@ module.exports = {
  */
 async function operationsServer(options) {
 	try {
-		harper_logger.info('In Fastify server' + process.cwd());
-		harper_logger.info(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
+		harper_logger.debug('In Fastify server' + process.cwd());
+		harper_logger.debug(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
 		harper_logger.debug(`HarperDB server process ${process.pid} starting up.`);
 
 		global.clustering_on = false;
