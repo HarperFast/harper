@@ -94,11 +94,12 @@ jobs:
             echo "dryrun=false" >> "${GITHUB_OUTPUT}"
           
           # this workflow needs a tag to function properly, in the case of being on a pushed tag, lets just check the tag
-          elif [[ "${GITHUB_EVENT_NAME}" == 'push' ]] && [[ "${tag}" =~ ^refs/tags/release_.*$ ]]; then
+          #elif [[ "${GITHUB_EVENT_NAME}" == 'push' ]] && [[ "${tag}" =~ ^refs/tags/release_.*$ ]]; then
+          elif [[ "${GITHUB_EVENT_NAME}" == 'push' ]] && [[ "${tag}" =~ ^refs/heads/HOTFIX-.*$ ]]; then
             dryrun='false'
             echo "dryrun=false" >> "${GITHUB_OUTPUT}"
           else
-            echo "Exiting as I have no idea what dryrun is supposed to be: ${dryrun}" >> "${GITHUB_STEP_SUMMARY}"
+            echo "Exiting as I have no idea what dryrun is supposed to be: tag=${tag}" >> "${GITHUB_STEP_SUMMARY}"
             exit 1
           fi
           
