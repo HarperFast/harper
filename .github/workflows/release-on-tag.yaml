@@ -83,7 +83,7 @@ jobs:
           #!/usr/bin/env bash
           
           set -x 
-          dryrun=''
+          dryrun='true'
           
           # make sure we know what the value of dryrun is 
           if [[ "${inputs_dryrun}" == "true" ]]; then
