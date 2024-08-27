@@ -17,43 +17,42 @@ jobs:
   ############################################
   #  Send Slack Message for start of Release
   ############################################
-  sendSlackMessageRealeaseStarted:
-    #if: ${{ inputs.dryrun == false || github.event_name == 'push' }}
-    if: ${{ inputs.dryrun == "b" }}
-    uses: ./.github/workflows/post-to-slack-channel.yaml
-    secrets: inherit
-    with:
-      channel_id: C05PLHLQFQA
-      payload: |
-        {
-          "text": "${{ github.run_id }} Release Initiated.",
-          "blocks": [
-            {
-              "type": "header",
-              "text": {
-                "type": "plain_text",
-                "text": "HarperDB Release"
-              }
-            },
-            {
-              "type": "context",
-              "elements": [
-                {
-                  "type": "mrkdwn",
-                  "text": "*Status*"
-                },
-                {
-                  "type": "mrkdwn",
-                  "text": "Initiated"
-                },
-                {
-                  "type": "mrkdwn",
-                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
-                }
-              ]
-            }
-          ]
-        }
+#  sendSlackMessageRealeaseStarted:
+#    if: ${{ inputs.dryrun == false || github.event_name == 'push' }}
+#    uses: ./.github/workflows/post-to-slack-channel.yaml
+#    secrets: inherit
+#    with:
+#      channel_id: C05PLHLQFQA
+#      payload: |
+#        {
+#          "text": "${{ github.run_id }} Release Initiated.",
+#          "blocks": [
+#            {
+#              "type": "header",
+#              "text": {
+#                "type": "plain_text",
+#                "text": "HarperDB Release"
+#              }
+#            },
+#            {
+#              "type": "context",
+#              "elements": [
+#                {
+#                  "type": "mrkdwn",
+#                  "text": "*Status*"
+#                },
+#                {
+#                  "type": "mrkdwn",
+#                  "text": "Initiated"
+#                },
+#                {
+#                  "type": "mrkdwn",
+#                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
+#                }
+#              ]
+#            }
+#          ]
+#        }
 
 
   ########
