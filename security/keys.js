@@ -623,11 +623,8 @@ async function createNatsCerts() {
  */
 async function renewSelfSigned() {
 	getCertTable();
-	const all_ss_certs = Array.from(await certificate_table.search([{ attribute: 'is_self_signed', value: true }]));
-	if (all_ss_certs.length > 0) {
-		for (let cert of all_ss_certs) {
-			await certificate_table.delete(cert.name);
-		}
+	for await (const cert of certificate_table.search([{ attribute: 'is_self_signed', value: true }])) {
+		await certificate_table.delete(cert.name);
 	}
 
 	await reviewSelfSignedCert();
