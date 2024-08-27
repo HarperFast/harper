@@ -3,7 +3,7 @@ name: "Release HarperDB"
 on:
   push:
     branches:
-      - HOTFIX-release-alpha
+      - HOTFIX-release-*
     tags:
       - release_*
   workflow_dispatch:
