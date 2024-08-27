@@ -41,6 +41,7 @@ Object.assign(exports, {
 	generateCertsKeys,
 	getReplicationCert,
 	getReplicationCertAuth,
+	renewSelfSigned,
 });
 
 const {
@@ -616,7 +617,23 @@ async function createNatsCerts() {
 	if (!(await fs.exists(ca_cert_path))) await fs.writeFile(ca_cert_path, certificates_terms.CERTIFICATE_VALUES.cert);
 }
 
-async function reviewSelfSignedCert() {
+/**
+ * Delete any existing self-signed certs (including CA) and create new ones
+ * @returns {Promise<void>}
+ */
+async function renewSelfSigned() {
+	getCertTable();
+	const all_ss_certs = Array.from(await certificate_table.search([{ attribute: 'is_self_signed', value: true }]));
+	if (all_ss_certs.length > 0) {
+		for (let cert of all_ss_certs) {
+			await certificate_table.delete(cert.name);
+		}
+	}
+
+	await reviewSelfSignedCert(true);
+}
+
+async function reviewSelfSignedCert(force = false) {
 	// Clear any cached node name var
 	clearThisNodeName();
 	await loadCertificates();
@@ -632,7 +649,7 @@ async function reviewSelfSignedCert() {
 
 	let ca_created;
 	let ca_and_key = await getCertAuthority();
-	if (!ca_and_key) {
+	if (!ca_and_key || force) {
 		ca_created = true;
 		hdb_logger.info('No self signed Cert Authority found, generating new self signed CA');
 		await getPrivateKey();
