@@ -4,8 +4,6 @@ on:
   push:
     tags:
       - release_*
-    branches:
-      - HOTFIX-*
   workflow_dispatch:
     inputs:
       dryrun:
@@ -94,8 +92,7 @@ jobs:
             echo "dryrun=false" >> "${GITHUB_OUTPUT}"
           
           # this workflow needs a tag to function properly, in the case of being on a pushed tag, lets just check the tag
-          #elif [[ "${GITHUB_EVENT_NAME}" == 'push' ]] && [[ "${tag}" =~ ^refs/tags/release_.*$ ]]; then
-          elif [[ "${GITHUB_EVENT_NAME}" == 'push' ]] && [[ "${tag}" =~ ^refs/heads/HOTFIX-.*$ ]]; then
+          elif [[ "${GITHUB_EVENT_NAME}" == 'push' ]] && [[ "${tag}" =~ ^refs/tags/release_.*$ ]]; then
             dryrun='false'
             echo "dryrun=false" >> "${GITHUB_OUTPUT}"
           else
