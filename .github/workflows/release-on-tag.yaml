@@ -18,7 +18,8 @@ jobs:
   #  Send Slack Message for start of Release
   ############################################
   sendSlackMessageRealeaseStarted:
-    if: ${{ inputs.dryrun == false || github.event_name == 'push' }}
+    #if: ${{ inputs.dryrun == false || github.event_name == 'push' }}
+    if: ${{ "a" == "b" }}
     uses: ./.github/workflows/post-to-slack-channel.yaml
     secrets: inherit
     with:
@@ -77,7 +78,7 @@ jobs:
       - name: 'Get values'
         id: get-values
         env:
-          dryrun: ${{ inputs.dryrun }}
+          inputs_dryrun: ${{ inputs.dryrun }}
           tag: ${{ github.ref }}
         run: |
           #!/usr/bin/env bash
@@ -85,9 +86,9 @@ jobs:
           set -x 
           
           # make sure we know what the value of dryrun is 
-          if [[ "${dryrun}" == "true" ]]; then
+          if [[ "${inputs_dryrun}" == "true" ]]; then
             echo "dryrun=true" >> "${GITHUB_OUTPUT}"
-          elif [[ "${dryrun}" == "false" ]]; then
+          elif [[ "${inputs_dryrun}" == "false" ]]; then
             echo "dryrun=false" >> "${GITHUB_OUTPUT}"
           
           # if this workflow is triggered on push, inputs.dryrun will be empty, and we default dryrun=false
