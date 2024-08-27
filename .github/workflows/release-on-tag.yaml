@@ -181,6 +181,23 @@ jobs:
             exit 1
           fi
 
+      - name: 'show values'
+        id: show-values
+        env:
+          push: ${{ needs.meta.outputs.dryrun == 'false' && 'true' || 'false' }}
+        run: |
+          #!/usr/bin/env bash
+          
+          echo "${GITHUB_OUTPUT}"
+          echo "${push}"
+          
+          echo "${GITHUB_OUTPUT}" >> "${GITHUB_STEP_SUMMARY}"
+          echo "${push}" >> "${GITHUB_STEP_SUMMARY}"
+          
+          
+          
+          
+
   ##############################################
   #  Send Slack Message: add version to message
   ##############################################
