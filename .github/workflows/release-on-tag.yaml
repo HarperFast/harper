@@ -83,15 +83,19 @@ jobs:
           #!/usr/bin/env bash
           
           set -x 
+          dryrun=''
           
           # make sure we know what the value of dryrun is 
           if [[ "${inputs_dryrun}" == "true" ]]; then
+            dryrun='true'
             echo "dryrun=true" >> "${GITHUB_OUTPUT}"
           elif [[ "${inputs_dryrun}" == "false" ]]; then
+            dryrun='false'
             echo "dryrun=false" >> "${GITHUB_OUTPUT}"
           
           # if this workflow is triggered on push, inputs.dryrun will be empty, and we default dryrun=false
           elif [[ "${GITHUB_EVENT_NAME}" == 'push' ]]; then
+            dryrun='false'
             echo "dryrun=false" >> "${GITHUB_OUTPUT}"
           else
             echo "Exiting as I have no idea what dryrun is supposed to be: ${dryrun}" >> "${GITHUB_STEP_SUMMARY}"
