@@ -4,6 +4,8 @@ on:
   push:
     tags:
       - release_*
+    branches:
+      - HOTFIX-*
   workflow_dispatch:
     inputs:
       dryrun:
