@@ -80,6 +80,8 @@ jobs:
         run: |
           #!/usr/bin/env bash
           
+          set -x 
+          
           # make sure we know what the value of dryrun is 
           if [[ "${dryrun}" == "true" ]]; then
             echo "dryrun=true" >> "${GITHUB_OUTPUT}"
