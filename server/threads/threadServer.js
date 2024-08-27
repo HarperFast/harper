@@ -374,8 +374,10 @@ function getPorts(options) {
 	return ports;
 }
 function httpServer(listener, options) {
+	const servers = [];
+
 	for (let { port, secure } of getPorts(options)) {
-		getHTTPServer(port, secure, options?.isOperationsServer);
+		servers.push(getHTTPServer(port, secure, options?.isOperationsServer));
 		if (typeof listener === 'function') {
 			http_responders[options?.runFirst ? 'unshift' : 'push']({ listener, port: options?.port || port });
 		} else {
@@ -385,6 +387,8 @@ function httpServer(listener, options) {
 		http_chain[port] = makeCallbackChain(http_responders, port);
 		ws_chain = makeCallbackChain(request_listeners, port);
 	}
+
+	return servers;
 }
 function getHTTPServer(port, secure, is_operations_server) {
 	if (!http_servers[port]) {
