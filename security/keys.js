@@ -630,10 +630,10 @@ async function renewSelfSigned() {
 		}
 	}
 
-	await reviewSelfSignedCert(true);
+	await reviewSelfSignedCert();
 }
 
-async function reviewSelfSignedCert(force = false) {
+async function reviewSelfSignedCert() {
 	// Clear any cached node name var
 	clearThisNodeName();
 	await loadCertificates();
@@ -649,7 +649,7 @@ async function reviewSelfSignedCert(force = false) {
 
 	let ca_created;
 	let ca_and_key = await getCertAuthority();
-	if (!ca_and_key || force) {
+	if (!ca_and_key) {
 		ca_created = true;
 		hdb_logger.info('No self signed Cert Authority found, generating new self signed CA');
 		await getPrivateKey();
@@ -685,6 +685,7 @@ async function reviewSelfSignedCert(force = false) {
 			certificate: new_public_cert,
 			is_authority: false,
 			private_key_name: ca_and_key.ca.private_key_name,
+			is_self_signed: true,
 		});
 	}
 }
