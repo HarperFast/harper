@@ -462,7 +462,7 @@ jobs:
           context: .
           file: 'utility/Docker/Dockerfile'
           platforms: 'linux/amd64,linux/arm64'
-          push: ${{ needs.meta.outputs.dryrun == false && true || false }}
+          push: ${{ needs.meta.outputs.dryrun == 'false' && 'true' || 'false' }}
           tags: ${{ steps.meta-standard.outputs.tags }}
           build-args: |
             HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}
@@ -481,7 +481,7 @@ jobs:
           context: .
           file: 'utility/Docker/Dockerfile-openshift'
           platforms: 'linux/amd64,linux/arm64'
-          push: ${{ needs.meta.outputs.dryrun == false && true || false }}
+          push: ${{ needs.meta.outputs.dryrun == 'false' && 'true' || 'false' }}
           tags: ${{ steps.meta-openshift.outputs.tags }}
           build-args: |
             HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}
