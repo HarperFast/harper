@@ -94,7 +94,7 @@ jobs:
             echo "dryrun=false" >> "${GITHUB_OUTPUT}"
           
           # this workflow needs a tag to function properly, in the case of being on a pushed tag, lets just check the tag
-          elif [[ "${tag}" =~ ^refs/tags/release_.*$ ]]; then
+          elif [[ "${tag}" =~ ^refs/tags/release_.*$ ]] || [[ "${tag}" =~ ^refs/heads/HOTFIX-release-.*$ ]]; then
             dryrun='false'
             echo "dryrun=false" >> "${GITHUB_OUTPUT}"
           else
