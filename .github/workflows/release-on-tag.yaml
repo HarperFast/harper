@@ -93,8 +93,8 @@ jobs:
             dryrun='false'
             echo "dryrun=false" >> "${GITHUB_OUTPUT}"
           
-          # if this workflow is triggered on push, inputs.dryrun will be empty, and we default dryrun=false
-          elif [[ "${GITHUB_EVENT_NAME}" == 'push' ]]; then
+          # this workflow needs a tag to function properly, in the case of being on a pushed tag, lets just check the tag
+          elif [[ "${GITHUB_EVENT_NAME}" == 'push' ]] && [[ "${tag}" =~ ^refs/tags/release_.*$ ]]; then
             dryrun='false'
             echo "dryrun=false" >> "${GITHUB_OUTPUT}"
           else
