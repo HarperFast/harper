@@ -12,7 +12,7 @@ import OpenDBIObject from '../utility/lmdb/OpenDBIObject';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
 import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms';
 import * as fs from 'fs-extra';
-import { _assignPackageExport } from '../index';
+import { _assignPackageExport } from '../globals';
 import { getIndexedValues } from '../utility/lmdb/commonUtility';
 import * as signalling from '../utility/signalling';
 import { SchemaEventMsg } from '../server/threads/itc';
@@ -171,7 +171,7 @@ export function getDatabases(): Databases {
 		'hdb_info',
 	];
 	if (databases.system) {
-		for (let table_name of NON_REPLICATING_SYSTEM_TABLES) {
+		for (const table_name of NON_REPLICATING_SYSTEM_TABLES) {
 			if (databases.system[table_name]) databases.system[table_name].replicate = false;
 		}
 	}
@@ -555,7 +555,7 @@ export function table({
 
 		Table.attributes.splice(0, Table.attributes.length, ...attributes);
 	} else {
-		let audit_store = root_store.auditStore;
+		const audit_store = root_store.auditStore;
 		primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
 		primary_key = primary_key_attribute.name;
 		primary_key_attribute.is_hash_attribute = true;
@@ -779,7 +779,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 		await new Promise((resolve) => setImmediate(resolve)); // yield event turn, indexing should consistently take at least one event turn
 		if (attributes_length > 0) {
 			let start: any;
-			for (let attribute of attributes) {
+			for (const attribute of attributes) {
 				// if we are resuming, we need to start from the last key we indexed by all attributes
 				if (compareKeys(attribute.lastIndexedKey, start) < 0) start = attribute.lastIndexedKey;
 				if (attribute.lastIndexedKey == undefined) {
@@ -889,7 +889,7 @@ export function onUpdatedTable(listener) {
 	table_listeners.push(listener);
 	return {
 		remove() {
-			let index = table_listeners.indexOf(listener);
+			const index = table_listeners.indexOf(listener);
 			if (index > -1) table_listeners.splice(index, 1);
 		},
 	};
@@ -898,7 +898,7 @@ export function onRemovedDB(listener) {
 	db_removal_listeners.push(listener);
 	return {
 		remove() {
-			let index = db_removal_listeners.indexOf(listener);
+			const index = db_removal_listeners.indexOf(listener);
 			if (index > -1) db_removal_listeners.splice(index, 1);
 		},
 	};

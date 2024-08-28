@@ -1,5 +1,5 @@
 import { Socket } from 'net';
-import { _assignPackageExport } from '../index';
+import { _assignPackageExport } from '../globals';
 
 /**
  * This is the central interface by which we define entry points for different server protocol plugins to listen for

@@ -2,7 +2,7 @@ import { ResourceInterface, SubscriptionRequest, Id, Context, Query } from './Re
 import { randomUUID } from 'crypto';
 import { Transaction } from './DatabaseTransaction';
 import { IterableEventQueue } from './IterableEventQueue';
-import { _assignPackageExport } from '../index';
+import { _assignPackageExport } from '../globals';
 import { ClientError } from '../utility/errors/hdbError';
 import { OWN_DATA } from './tracked';
 import { transaction } from './transaction';
