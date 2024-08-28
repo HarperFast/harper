@@ -3,6 +3,7 @@ const assert = require('assert');
 const { getMockLMDBPath } = require('../test_utils');
 const { parseQuery } = require('../../resources/search');
 const { table } = require('../../resources/databases');
+const { transaction } = require('../../resources/transaction');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
 let x = 532532;
 function random(max) {
@@ -1470,6 +1471,36 @@ describe('Querying through Resource API', () => {
 			put_error = error;
 		}
 		assert(put_error.message.includes('key size is too large'));
+	});
+	it('Too many read transactions should fail, but work afterwards', async function () {
+		this.timeout(10000);
+		let resolvers = [];
+		await assert.rejects(async () => {
+			QueryTable.primaryStore.useReadTransaction = function () {
+				// force the expected error so we don't have to wait for the timeout
+				throw new Error('MDB_READERS_FULL');
+			};
+			try {
+				for (let i = 0; i < 3000; i++) {
+					await QueryTable.put('test-txn', { name: 'do a txn' + i });
+					let context = {};
+					transaction(context, () => {
+						QueryTable.get('test-txn', context);
+						return new Promise((resolve) => {
+							resolvers.push(resolve);
+						});
+					});
+				}
+			} finally {
+				// restore the original
+				delete QueryTable.primaryStore.useReadTransaction;
+			}
+		});
+		for (let resolve of resolvers) {
+			resolve();
+		}
+		await new Promise((resolve) => setTimeout(resolve, 100));
+		await QueryTable.delete('test-txn');
 	});
 	after(() => {});
 });

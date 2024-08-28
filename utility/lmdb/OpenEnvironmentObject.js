@@ -4,7 +4,7 @@
 const MAP_SIZE = 1024 * 1024 * 1024;
 //allow up to 1,000 named data bases in an environment
 const MAX_DBS = 10000;
-const MAX_READERS = 1000;
+const MAX_READERS = 2048;
 const env_mngr = require('../environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 env_mngr.initSync();
