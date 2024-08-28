@@ -99,7 +99,7 @@ async function harperdb() {
 			return require('./status')();
 		case SERVICE_ACTIONS_ENUM.RENEWCERTS:
 			return require('../security/keys')
-				.generateKeys()
+				.renewSelfSigned()
 				.then(() => 'Successfully renewed self-signed certificates');
 		case SERVICE_ACTIONS_ENUM.COPYDB:
 			let source_db = process.argv[3];
@@ -141,7 +141,7 @@ harperdb()
 	.then((message) => {
 		if (message) {
 			console.log(message);
-			logger.log(message);
+			logger.notify(message);
 		}
 		// Intentionally not calling `process.exit(0);` so if a CLI
 		// command resulted in a long running process (aka `run`),

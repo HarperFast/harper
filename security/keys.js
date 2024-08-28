@@ -41,6 +41,7 @@ Object.assign(exports, {
 	generateCertsKeys,
 	getReplicationCert,
 	getReplicationCertAuth,
+	renewSelfSigned,
 });
 
 const {
@@ -616,6 +617,19 @@ async function createNatsCerts() {
 	if (!(await fs.exists(ca_cert_path))) await fs.writeFile(ca_cert_path, certificates_terms.CERTIFICATE_VALUES.cert);
 }
 
+/**
+ * Delete any existing self-signed certs (including CA) and create new ones
+ * @returns {Promise<void>}
+ */
+async function renewSelfSigned() {
+	getCertTable();
+	for await (const cert of certificate_table.search([{ attribute: 'is_self_signed', value: true }])) {
+		await certificate_table.delete(cert.name);
+	}
+
+	await reviewSelfSignedCert();
+}
+
 async function reviewSelfSignedCert() {
 	// Clear any cached node name var
 	clearThisNodeName();
@@ -668,6 +682,7 @@ async function reviewSelfSignedCert() {
 			certificate: new_public_cert,
 			is_authority: false,
 			private_key_name: ca_and_key.ca.private_key_name,
+			is_self_signed: true,
 		});
 	}
 }
