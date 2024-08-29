@@ -168,7 +168,9 @@ jobs:
           [[ "${release_type}" != "stable" ]] && echo "pre-release version: ${release_type}.${prerelease_version:-}" >> "${GITHUB_STEP_SUMMARY}"
           
           # debug
-          cat "${GITHUB_OUTPUT}"
+          echo "| var name | value |"
+          echo "| -------- | ----- |"
+          echo "${GITHUB_OUTPUT}" | sed -e 's/$/ |/g' -e 's/^/| /g' -e 's/=/ | /g'
           
           if [[ "${dryrun}" != "false" ]]; then
             cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
