@@ -174,13 +174,15 @@ jobs:
             cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
           > [!WARNING]
           > dryrun == "${dryrun}"
+          
           EOF
           fi 
           
           if [[ "${full_version}" != "${harperdbVersion}" ]]; then
             cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
-          > [!IMPORTANT]
+          > [!CAUTION]
           > Terminating job as the version from the tag (${tag}, derived version ${full_version}) does not match harperdbVersion (${harperdbVersion})
+          
           EOF
             exit 1
           fi
