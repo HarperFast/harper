@@ -79,6 +79,7 @@ jobs:
         env:
           inputs_dryrun: ${{ inputs.dryrun }}
           tag: ${{ github.ref }}
+        continue-on-error: true
         run: |
           #!/usr/bin/env bash
           
@@ -86,17 +87,13 @@ jobs:
           dryrun='true'
           
           # make sure we know what the value of dryrun is 
-          if [[ "${inputs_dryrun}" == "true" ]]; then
-            dryrun='true'
-            echo "dryrun=true" >> "${GITHUB_OUTPUT}"
-          elif [[ "${inputs_dryrun}" == "false" ]]; then
+          if [[ "${inputs_dryrun}" == "false" ]]; then
             dryrun='false'
-            echo "dryrun=false" >> "${GITHUB_OUTPUT}"
           
           # this workflow needs a tag to function properly, in the case of being on a pushed tag, lets just check the tag
           elif [[ "${tag}" =~ ^refs/tags/release_.*$ ]] || [[ "${tag}" =~ ^refs/heads/HOTFIX-release-.*$ ]]; then
             dryrun="${inputs_dryrun:-false}"
-            echo "dryrun=${dryrun}" >> "${GITHUB_OUTPUT}"
+          
           else
             cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
           > [!CAUTION]
@@ -108,6 +105,8 @@ jobs:
            Exiting as I have no idea what dryrun is supposed to be: tag=${tag}
             exit 1
           fi
+          
+          echo "dryrun=${dryrun}" >> "${GITHUB_OUTPUT}"
           
           harperdbVersion=$(jq -r '.version' package.json)
           echo "harperdbVersion=${harperdbVersion}" >> "${GITHUB_OUTPUT}"
