@@ -170,7 +170,7 @@ jobs:
           # debug
           echo "| var name | value |" >> "${GITHUB_STEP_SUMMARY}"
           echo "| -------- | ----- |" >> "${GITHUB_STEP_SUMMARY}"
-          echo "${GITHUB_OUTPUT}" | sed -e 's/$/ |/g' -e 's/^/| /g' -e 's/=/ | /g' >> "${GITHUB_STEP_SUMMARY}"
+          cat "${GITHUB_OUTPUT}" | sed -e 's/$/ |/g' -e 's/^/| /g' -e 's/=/ | /g' >> "${GITHUB_STEP_SUMMARY}"
           
           if [[ "${dryrun}" != "false" ]]; then
             cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
