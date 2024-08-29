@@ -2,8 +2,6 @@ name: "Release HarperDB"
 
 on:
   push:
-    branches:
-      - HOTFIX-release-*
     tags:
       - release_*
   workflow_dispatch:
@@ -17,42 +15,42 @@ jobs:
   ############################################
   #  Send Slack Message for start of Release
   ############################################
-#  sendSlackMessageRealeaseStarted:
-#    if: ${{ inputs.dryrun == false || github.event_name == 'push' }}
-#    uses: ./.github/workflows/post-to-slack-channel.yaml
-#    secrets: inherit
-#    with:
-#      channel_id: C05PLHLQFQA
-#      payload: |
-#        {
-#          "text": "${{ github.run_id }} Release Initiated.",
-#          "blocks": [
-#            {
-#              "type": "header",
-#              "text": {
-#                "type": "plain_text",
-#                "text": "HarperDB Release"
-#              }
-#            },
-#            {
-#              "type": "context",
-#              "elements": [
-#                {
-#                  "type": "mrkdwn",
-#                  "text": "*Status*"
-#                },
-#                {
-#                  "type": "mrkdwn",
-#                  "text": "Initiated"
-#                },
-#                {
-#                  "type": "mrkdwn",
-#                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
-#                }
-#              ]
-#            }
-#          ]
-#        }
+  sendSlackMessageRealeaseStarted:
+    if: ${{ inputs.dryrun == false || github.event_name == 'push' }}
+    uses: ./.github/workflows/post-to-slack-channel.yaml
+    secrets: inherit
+    with:
+      channel_id: C05PLHLQFQA
+      payload: |
+        {
+          "text": "${{ github.run_id }} Release Initiated.",
+          "blocks": [
+            {
+              "type": "header",
+              "text": {
+                "type": "plain_text",
+                "text": "HarperDB Release"
+              }
+            },
+            {
+              "type": "context",
+              "elements": [
+                {
+                  "type": "mrkdwn",
+                  "text": "*Status*"
+                },
+                {
+                  "type": "mrkdwn",
+                  "text": "Initiated"
+                },
+                {
+                  "type": "mrkdwn",
+                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
+                }
+              ]
+            }
+          ]
+        }
 
 
   ########
@@ -91,7 +89,7 @@ jobs:
             dryrun='false'
           
           # this workflow needs a tag to function properly, in the case of being on a pushed tag, lets just check the tag
-          elif [[ "${tag}" =~ ^refs/tags/release_.*$ ]] || [[ "${tag}" =~ ^refs/heads/HOTFIX-release-.*$ ]]; then
+          elif [[ "${tag}" =~ ^refs/tags/release_.*$ ]]; then
             dryrun="${inputs_dryrun:-false}"
           
           else
@@ -185,528 +183,511 @@ jobs:
             exit 1
           fi
 
-      - name: 'show values'
-        id: show-values
-        env:
-          push: ${{ needs.meta.outputs.dryrun == 'false' && 'true' || 'false' }}
-        run: |
-          #!/usr/bin/env bash
-          
-          echo "${GITHUB_OUTPUT}"
-          echo "${push}"
-          
-          echo "${GITHUB_OUTPUT}" >> "${GITHUB_STEP_SUMMARY}"
-          echo "${push}" >> "${GITHUB_STEP_SUMMARY}"
-          
-          
-          
-          
-
   ##############################################
   #  Send Slack Message: add version to message
   ##############################################
-#  sendSlackMessageRealeaseVersion:
-#    if: ${{ needs.meta.outputs.dryrun == false }}
-#    uses: ./.github/workflows/post-to-slack-channel.yaml
-#    secrets: inherit
-#    needs:
-#      - sendSlackMessageRealeaseStarted
-#      - meta
-#    with:
-#      channel_id: C05PLHLQFQA
-#      update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
-#      payload: |
-#        {
-#          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.full_version }} In Progress.",
-#          "blocks": [
-#            {
-#              "type": "header",
-#              "text": {
-#                "type": "plain_text",
-#                "text": "HarperDB Release ${{ needs.meta.outputs.full_version }}"
-#              }
-#            },
-#            {
-#              "type": "context",
-#              "elements": [
-#                {
-#                  "type": "mrkdwn",
-#                  "text": "*Status*"
-#                },
-#                {
-#                  "type": "mrkdwn",
-#                  "text": "In Progress"
-#                },
-#                {
-#                  "type": "mrkdwn",
-#                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
-#                }
-#              ]
-#            }
-#          ]
-#        }
-#
-#  ####################
-#  #  Build HarperDB
-#  ####################
-#  build:
-#    needs:
-#      - meta
-#    uses: ./.github/workflows/build.yaml
-#
-#  #############################################################
-#  #  Build offline installer to
-#  #  https://products-harperdb-io.s3.us-east-2.amazonaws.com/
-#  #############################################################
-#  build-offline-installer:
-#    runs-on: ubuntu-latest
-#    needs:
-#      - meta
-#    steps:
-#      - uses: actions/checkout@v4
-#      - uses: actions/setup-node@v4
-#      - name: Build artifact
-#        run: |
-#          #!/bin/bash
-#          ./utility/devops/build/all-in-one-build.sh
-#
-#      - name: 'Upload Artifact'
-#        uses: actions/upload-artifact@v4
-#        with:
-#          name: offline-harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
-#          path: harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
-#          retention-days: 1
-#
-#  ##############################################
-#  #  Release to Private NPM harperdb/@harperdb
-#  ##############################################
-#  npmPrivateRelease:
-#    needs:
-#      - meta
-#      - build
-#    runs-on: ubuntu-latest
-#    timeout-minutes: 8
-#    steps:
-#      - uses: actions/checkout@v4
-#      - uses: actions/download-artifact@v4
-#        with:
-#          name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
-#      - uses: actions/setup-node@v4
-#        with:
-#          node-version: '${{needs.build.outputs.nodeVersion}}'
-#          registry-url: 'https://registry.npmjs.org'
-#      - name: "npm Publish"
-#        env:
-#          NODE_AUTH_TOKEN: "${{ secrets.NPM_ACCESS_KEY }}"
-#          HARPERDB_VERSION:  "${{ needs.build.outputs.harperdbVersion }}"
-#          PUBLISH_DESTINATION: 'private'
-#          EXTRA_TAGS: "${{ needs.meta.outputs.npm_extra_tags }}"
-#          DRYRUN: ${{ needs.meta.outputs.dryrun }}
-#        run: ./.github/scripts/npm-publish.sh
-#
-#  #########################################
-#  #  Release to dockerhub harperdb/private
-#  #########################################
-#  dockerhubPrivateRelease:
-#    needs:
-#      - meta
-#      - build
-#    uses: ./.github/workflows/docker-build.yaml
-#    with:
-#      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-#      container: 'harperdb/private'
-#      latest: ${{ needs.meta.outputs.dockerhub_tag_latest == 'true' && true || false }}
-#      platforms: 'linux/amd64,linux/arm64'
-#      push: ${{ needs.meta.outputs.dryrun == false && true || false }}
-#    secrets:
-#      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-#      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
-#
-#  ############################################
-#  #  Send Slack Message on 'Ready to Deploy'
-#  ############################################
-#  sendSlackMessageReadyToDeploy:
-#    if: ${{ needs.meta.outputs.release_type == 'stable' && needs.meta.outputs.dryrun == false }}
-#    uses: ./.github/workflows/post-to-slack-channel.yaml
-#    secrets: inherit
-#    needs:
-#      - meta
-#      - npmPrivateRelease
-#      - dockerhubPrivateRelease
-#      - sendSlackMessageRealeaseStarted
-#      - sendSlackMessageRealeaseVersion
-#    with:
-#      channel_id: C05PLHLQFQA
-#      update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
-#      payload: |
-#        {
-#          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.full_version }} requires review.",
-#          "blocks": [
-#            {
-#              "type": "header",
-#              "text": {
-#                "type": "plain_text",
-#                "text": "HarperDB Release ${{ needs.meta.outputs.full_version }}"
-#              }
-#            },
-#            {
-#              "type": "section",
-#              "text": {
-#                "type": "mrkdwn",
-#                "text": "*Review(s) Required*"
-#              },
-#              "accessory": {
-#                "type": "button",
-#                "text": {
-#                  "type": "plain_text",
-#                  "text": "Review Release"
-#                },
-#                "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
-#                "style": "primary"
-#              }
-#            },
-#            {
-#              "type": "context",
-#              "elements": [
-#                {
-#                  "type": "mrkdwn",
-#                  "text": "*Status*"
-#                },
-#                {
-#                  "type": "mrkdwn",
-#                  "text": "In progress"
-#                },
-#                {
-#                  "type": "mrkdwn",
-#                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
-#                }
-#              ]
-#            }
-#          ]
-#        }
-#
-#  ##############################################################
-#  #
-#  #  ██████  ██    ██ ██████  ██      ██  ██████
-#  #  ██   ██ ██    ██ ██   ██ ██      ██ ██
-#  #  ██████  ██    ██ ██████  ██      ██ ██
-#  #  ██      ██    ██ ██   ██ ██      ██ ██
-#  #  ██       ██████  ██████  ███████ ██  ██████
-#  #
-#  #
-#  #  ██████  ███████ ██      ███████  █████  ███████ ███████
-#  #  ██   ██ ██      ██      ██      ██   ██ ██      ██
-#  #  ██████  █████   ██      █████   ███████ ███████ █████
-#  #  ██   ██ ██      ██      ██      ██   ██      ██ ██
-#  #  ██   ██ ███████ ███████ ███████ ██   ██ ███████ ███████
-#  #
-#  ##############################################################
-#
-#  ###################################
-#  #  Release to Public NPM harperdb
-#  ###################################
-#  publicReleaseNPM:
-#    environment: ${{ needs.meta.outputs.release_type == 'stable' && 'release-npm' || 'pre-release-npm' }}
-#    needs:
-#      - build
-#      - meta
-#      - npmPrivateRelease
-#    runs-on: ubuntu-latest
-#    timeout-minutes: 30
-#    steps:
-#      # setup for publishing to npm
-#      - uses: actions/checkout@v4
-#      - uses: actions/download-artifact@v4
-#        with:
-#          name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
-#
-#      # setup and publishing to npm
-#      - uses: actions/setup-node@v4
-#        with:
-#          node-version: '${{needs.build.outputs.nodeVersion}}'
-#          registry-url: 'https://registry.npmjs.org'
-#
-#      - name: "npm Publish"
-#        env:
-#          NODE_AUTH_TOKEN: "${{ secrets.NPM_ACCESS_KEY }}"
-#          HARPERDB_VERSION:  "${{ needs.build.outputs.harperdbVersion }}"
-#          PUBLISH_DESTINATION: 'public'
-#          EXTRA_TAGS: "${{ needs.meta.outputs.npm_extra_tags }}"
-#          DRYRUN: ${{ needs.meta.outputs.dryrun }}
-#        run: ./.github/scripts/npm-publish.sh
-#
-#
-#  ###################################
-#  #  Release to Public Dockerhub
-#  #    harperdb/harperdb
-#  #    harperdb/harperdb-openshift
-#  #  Publish to Redhat Connect
-#  ###################################
-#  publicReleaseDocker:
-#    environment: ${{ needs.meta.outputs.release_type == 'stable' && 'release-docker' || 'pre-release-docker' }}
-#    needs:
-#      - build
-#      - meta
-#      - dockerhubPrivateRelease
-#    runs-on: ubuntu-latest
-#    timeout-minutes: 30
-#    steps:
-#      # start docker setup and build
-#      - uses: actions/checkout@v4
-#      - uses: actions/download-artifact@v4
-#        with:
-#          name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
-#      - name: Set up QEMU
-#        uses: docker/setup-qemu-action@v3
-#      - name: "Setup Docker buildx"
-#        uses: docker/setup-buildx-action@v3
-#      - name: Log in to Docker Hub
-#        uses: docker/login-action@v3
-#        with:
-#          username: ${{ secrets.DOCKER_USERNAME }}
-#          password: ${{ secrets.DOCKER_PASSWORD }}
-#      - uses: actions/download-artifact@v4
-#        with:
-#          name: "licenses"
-#          path: "utility/Docker/licenses/"
-#
-#      # generate tags for containers
-#      - name: Docker Meta Standard
-#        id: meta-standard
-#        uses: docker/metadata-action@v5
-#        with:
-#          # list of Docker images to use as base name for tags
-#          images: 'harperdb/harperdb'
-#          # generate Docker tags based on the following events/attributes
-#          tags: |
-#            type=raw,value=${{ needs.build.outputs.harperdbVersion }}
-#            type=raw,value=latest,enable=${{ needs.meta.outputs.dockerhub_tag_latest }}
-#
-#      - name: Docker Meta Openshift
-#        id: meta-openshift
-#        uses: docker/metadata-action@v5
-#        with:
-#          # list of Docker images to use as base name for tags
-#          images: 'harperdb/harperdb-openshift'
-#          # generate Docker tags based on the following events/attributes
-#          tags: |
-#            type=raw,value=${{ needs.build.outputs.harperdbVersion }}
-#            type=raw,value=latest,enable=${{ needs.meta.outputs.dockerhub_tag_latest }}
-#
-#      # standard container
-#      - name: "Publish harperdb:${{ needs.build.outputs.harperdbVersion }}"
-#        id: build-image-standard
-#        timeout-minutes: 30
-#        uses: docker/build-push-action@v5
-#        with:
-#          context: .
-#          file: 'utility/Docker/Dockerfile'
-#          platforms: 'linux/amd64,linux/arm64'
-#          push: ${{ needs.meta.outputs.dryrun == 'false' && 'true' || 'false' }}
-#          tags: ${{ steps.meta-standard.outputs.tags }}
-#          build-args: |
-#            HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}
-#            HARPERDB_TARBALL=harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
-#            VCS_REF=`git rev-parse HEAD`
-#            BUILD_DATE=`date -u +%FT%T`
-#          cache-from: type=gha
-#          cache-to: type=gha,mode=max
-#
-#      # openshift container
-#      - name: "Publish harperdb-openshift:${{ needs.build.outputs.harperdbVersion }}"
-#        id: build-image-openshift
-#        timeout-minutes: 30
-#        uses: docker/build-push-action@v5
-#        with:
-#          context: .
-#          file: 'utility/Docker/Dockerfile-openshift'
-#          platforms: 'linux/amd64,linux/arm64'
-#          push: ${{ needs.meta.outputs.dryrun == 'false' && 'true' || 'false' }}
-#          tags: ${{ steps.meta-openshift.outputs.tags }}
-#          build-args: |
-#            HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}
-#            HARPERDB_TARBALL=harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
-#            VCS_REF=`git rev-parse HEAD`
-#            BUILD_DATE=`date -u +%FT%T`
-#          cache-from: type=gha
-#          cache-to: type=gha,mode=max
-#
-#      # publish to redhat connect
-#      - name: Install Openshift CLI tools
-#        uses: redhat-actions/openshift-tools-installer@v1
-#        with:
-#          source: "github"
-#          preflight: "latest"
-#
-#      - name: Publish to Redhat Connect harperdb-openshift:${{ needs.build.outputs.harperdbVersion }}
-#        env:
-#          CERTIFICATION_PROJECT_ID: ${{ secrets.REDHAT_CERTIFICATION_PROJECT_ID }}
-#          REDHAT_DOCKERCONFIG: ${{ secrets.REDHAT_CONNECT_DOCKERCONFIG_JSON }}
-#          PYXIS_API_TOKEN: ${{ secrets.REDHAT_PYXIS_KEY }}
-#          container_registry: 'registry.hub.docker.com'
-#          container_image: 'harperdb/harperdb-openshift'
-#          container_tag: ${{ needs.build.outputs.harperdbVersion }}
-#          dryrun: ${{ needs.meta.outputs.dryrun }}
-#        run: |
-#          #!/usr/bin/env bash
-#          set -euo pipefail
-#
-#          echo "writing docker-config.json for submission"
-#          echo "${REDHAT_DOCKERCONFIG}" | jq '.' > docker-config.json
-#
-#          # dryrun is handled by managing the '--submit' flag
-#          submit=''
-#          [ "${dryrun}" == "false" ] && submit='--submit'
-#
-#          preflight check container "${container_registry}/${container_image}:${container_tag}" \
-#            --pyxis-api-token="${PYXIS_API_TOKEN}" \
-#            --certification-project-id="${CERTIFICATION_PROJECT_ID}" \
-#            --docker-config ./docker-config.json \
-#            ${submit} >> "${GITHUB_STEP_SUMMARY}"
-#
-#  #############################################################
-#  #  Release offline installer to
-#  #  https://products-harperdb-io.s3.us-east-2.amazonaws.com/
-#  #############################################################
-#  publicReleaseOfflineInstaller:
-#    environment: ${{ needs.meta.outputs.release_type == 'stable' && 'release-offline-installer' || 'pre-release-offline-installer' }}
-#    runs-on: ubuntu-latest
-#    needs:
-#      - meta
-#      - build-offline-installer
-#    steps:
-#      - name: 'Download Artifact'
-#        uses: actions/download-artifact@v4
-#        with:
-#          name: offline-harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
-#      - name: Publish to s3
-#        env:
-#          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-#          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-#          AWS_DEFAULT_REGION: us-east-1
-#          updateLatest: ${{ needs.meta.outputs.dockerhub_tag_latest }}
-#          dryrun: ${{ needs.meta.outputs.dryrun }}
-#        run: |
-#          #!/bin/bash
-#          set -e
-#
-#          # if dryrun, just echo out the commands
-#          aws_cmd='echo aws'
-#          [ "${dryrun}" == "false" ] && aws_cmd='aws'
-#
-#          ${aws_cmd} s3 cp ./harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz s3://products-harperdb-io
-#
-#          if [[ ${updateLatest} == "true" ]]
-#          then
-#            ${aws_cmd} s3 rm --recursive s3://products-harperdb-io/latest
-#            ${aws_cmd} s3 cp ./harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz s3://products-harperdb-io/latest/
-#          fi
-#
-#  #################################
-#  #  Send Slack Message on success
-#  #################################
-#  sendSlackMessageParty:
-#    uses: ./.github/workflows/post-to-slack-channel.yaml
-#    if: ${{ !cancelled() && !failure() && needs.publicReleaseNPM.result == 'success' && needs.publicReleaseDocker.result == 'success' && needs.publicReleaseOfflineInstaller.result == 'success' && needs.meta.outputs.dryrun == false }}
-#    secrets: inherit
-#    needs:
-#      - meta
-#      - publicReleaseNPM
-#      - publicReleaseDocker
-#      - publicReleaseOfflineInstaller
-#      - sendSlackMessageRealeaseStarted
-#      - sendSlackMessageRealeaseVersion
-#      - sendSlackMessageReadyToDeploy
-#    with:
-#      channel_id: C05PLHLQFQA
-#      update_ts: ${{ needs.meta.outputs.release_type == 'stable' && needs.sendSlackMessageReadyToDeploy.outputs.ts || needs.sendSlackMessageRealeaseVersion.outputs.ts }}
-#      payload: |
-#        {
-#          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.full_version }} Complete.",
-#          "blocks": [
-#            {
-#              "type": "header",
-#              "text": {
-#                "type": "plain_text",
-#                "text": "HarperDB Release ${{ needs.meta.outputs.full_version }}"
-#              }
-#            },
-#            {
-#              "type": "context",
-#              "elements": [
-#                {
-#                  "type": "mrkdwn",
-#                  "text": "*Status*"
-#                },
-#                {
-#                  "type": "mrkdwn",
-#                  "text": ":white_check_mark:"
-#                },
-#                {
-#                  "type": "mrkdwn",
-#                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
-#                },
-#                {
-#                  "type": "mrkdwn",
-#                  "text": "Completed"
-#                }
-#              ]
-#            }
-#          ]
-#        }
-#
-#  #################################
-#  #  Send Slack Message on failure
-#  #################################
-#  sendSlackMessageFailure:
-#    if: ${{ failure() && !cancelled() && needs.meta.outputs.dryrun == false }}
-#    uses: ./.github/workflows/post-to-slack-channel.yaml
-#    secrets: inherit
-#    needs:
-#      - meta
-#      - build
-#      - npmPrivateRelease
-#      - dockerhubPrivateRelease
-#      - publicReleaseNPM
-#      - publicReleaseDocker
-#      - publicReleaseOfflineInstaller
-#      - sendSlackMessageRealeaseStarted
-#      - sendSlackMessageReadyToDeploy
-#      - sendSlackMessageParty
-#    with:
-#      channel_id: C05PLHLQFQA
-#      update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
-#      payload: |
-#        {
-#          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.full_version }} Failed.",
-#          "blocks": [
-#            {
-#              "type": "header",
-#              "text": {
-#                "type": "plain_text",
-#                "text": "HarperDB Release ${{ needs.meta.outputs.full_version }} Failed"
-#              }
-#            },
-#            {
-#              "type": "context",
-#              "elements": [
-#                {
-#                  "type": "mrkdwn",
-#                  "text": "*Status*"
-#                },
-#                {
-#                  "type": "mrkdwn",
-#                  "text": "Failed"
-#                },
-#                {
-#                  "type": "mrkdwn",
-#                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
-#                },
-#                {
-#                  "type": "mrkdwn",
-#                  "text": ":x:"
-#                }
-#              ]
-#            }
-#          ]
-#        }
+  sendSlackMessageRealeaseVersion:
+    if: ${{ needs.meta.outputs.dryrun == false }}
+    uses: ./.github/workflows/post-to-slack-channel.yaml
+    secrets: inherit
+    needs:
+      - sendSlackMessageRealeaseStarted
+      - meta
+    with:
+      channel_id: C05PLHLQFQA
+      update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
+      payload: |
+        {
+          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.full_version }} In Progress.",
+          "blocks": [
+            {
+              "type": "header",
+              "text": {
+                "type": "plain_text",
+                "text": "HarperDB Release ${{ needs.meta.outputs.full_version }}"
+              }
+            },
+            {
+              "type": "context",
+              "elements": [
+                {
+                  "type": "mrkdwn",
+                  "text": "*Status*"
+                },
+                {
+                  "type": "mrkdwn",
+                  "text": "In Progress"
+                },
+                {
+                  "type": "mrkdwn",
+                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
+                }
+              ]
+            }
+          ]
+        }
+
+  ####################
+  #  Build HarperDB
+  ####################
+  build:
+    needs:
+      - meta
+    uses: ./.github/workflows/build.yaml
+
+  #############################################################
+  #  Build offline installer to
+  #  https://products-harperdb-io.s3.us-east-2.amazonaws.com/
+  #############################################################
+  build-offline-installer:
+    runs-on: ubuntu-latest
+    needs:
+      - meta
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - name: Build artifact
+        run: |
+          #!/bin/bash
+          ./utility/devops/build/all-in-one-build.sh
+
+      - name: 'Upload Artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: offline-harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
+          path: harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
+          retention-days: 1
+
+  ##############################################
+  #  Release to Private NPM harperdb/@harperdb
+  ##############################################
+  npmPrivateRelease:
+    needs:
+      - meta
+      - build
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '${{needs.build.outputs.nodeVersion}}'
+          registry-url: 'https://registry.npmjs.org'
+      - name: "npm Publish"
+        env:
+          NODE_AUTH_TOKEN: "${{ secrets.NPM_ACCESS_KEY }}"
+          HARPERDB_VERSION:  "${{ needs.build.outputs.harperdbVersion }}"
+          PUBLISH_DESTINATION: 'private'
+          EXTRA_TAGS: "${{ needs.meta.outputs.npm_extra_tags }}"
+          DRYRUN: ${{ needs.meta.outputs.dryrun }}
+        run: ./.github/scripts/npm-publish.sh
+
+  #########################################
+  #  Release to dockerhub harperdb/private
+  #########################################
+  dockerhubPrivateRelease:
+    needs:
+      - meta
+      - build
+    uses: ./.github/workflows/docker-build.yaml
+    with:
+      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      container: 'harperdb/private'
+      latest: ${{ needs.meta.outputs.dockerhub_tag_latest == 'true' && true || false }}
+      platforms: 'linux/amd64,linux/arm64'
+      push: ${{ needs.meta.outputs.dryrun == false && true || false }}
+    secrets:
+      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
+      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+
+  ############################################
+  #  Send Slack Message on 'Ready to Deploy'
+  ############################################
+  sendSlackMessageReadyToDeploy:
+    if: ${{ needs.meta.outputs.release_type == 'stable' && needs.meta.outputs.dryrun == false }}
+    uses: ./.github/workflows/post-to-slack-channel.yaml
+    secrets: inherit
+    needs:
+      - meta
+      - npmPrivateRelease
+      - dockerhubPrivateRelease
+      - sendSlackMessageRealeaseStarted
+      - sendSlackMessageRealeaseVersion
+    with:
+      channel_id: C05PLHLQFQA
+      update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
+      payload: |
+        {
+          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.full_version }} requires review.",
+          "blocks": [
+            {
+              "type": "header",
+              "text": {
+                "type": "plain_text",
+                "text": "HarperDB Release ${{ needs.meta.outputs.full_version }}"
+              }
+            },
+            {
+              "type": "section",
+              "text": {
+                "type": "mrkdwn",
+                "text": "*Review(s) Required*"
+              },
+              "accessory": {
+                "type": "button",
+                "text": {
+                  "type": "plain_text",
+                  "text": "Review Release"
+                },
+                "url": "${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}",
+                "style": "primary"
+              }
+            },
+            {
+              "type": "context",
+              "elements": [
+                {
+                  "type": "mrkdwn",
+                  "text": "*Status*"
+                },
+                {
+                  "type": "mrkdwn",
+                  "text": "In progress"
+                },
+                {
+                  "type": "mrkdwn",
+                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
+                }
+              ]
+            }
+          ]
+        }
+
+  ##############################################################
+  #
+  #  ██████  ██    ██ ██████  ██      ██  ██████
+  #  ██   ██ ██    ██ ██   ██ ██      ██ ██
+  #  ██████  ██    ██ ██████  ██      ██ ██
+  #  ██      ██    ██ ██   ██ ██      ██ ██
+  #  ██       ██████  ██████  ███████ ██  ██████
+  #
+  #
+  #  ██████  ███████ ██      ███████  █████  ███████ ███████
+  #  ██   ██ ██      ██      ██      ██   ██ ██      ██
+  #  ██████  █████   ██      █████   ███████ ███████ █████
+  #  ██   ██ ██      ██      ██      ██   ██      ██ ██
+  #  ██   ██ ███████ ███████ ███████ ██   ██ ███████ ███████
+  #
+  ##############################################################
+
+  ###################################
+  #  Release to Public NPM harperdb
+  ###################################
+  publicReleaseNPM:
+    environment: ${{ needs.meta.outputs.release_type == 'stable' && 'release-npm' || 'pre-release-npm' }}
+    needs:
+      - build
+      - meta
+      - npmPrivateRelease
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # setup for publishing to npm
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
+
+      # setup and publishing to npm
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '${{needs.build.outputs.nodeVersion}}'
+          registry-url: 'https://registry.npmjs.org'
+
+      - name: "npm Publish"
+        env:
+          NODE_AUTH_TOKEN: "${{ secrets.NPM_ACCESS_KEY }}"
+          HARPERDB_VERSION:  "${{ needs.build.outputs.harperdbVersion }}"
+          PUBLISH_DESTINATION: 'public'
+          EXTRA_TAGS: "${{ needs.meta.outputs.npm_extra_tags }}"
+          DRYRUN: ${{ needs.meta.outputs.dryrun }}
+        run: ./.github/scripts/npm-publish.sh
+
+
+  ###################################
+  #  Release to Public Dockerhub
+  #    harperdb/harperdb
+  #    harperdb/harperdb-openshift
+  #  Publish to Redhat Connect
+  ###################################
+  publicReleaseDocker:
+    environment: ${{ needs.meta.outputs.release_type == 'stable' && 'release-docker' || 'pre-release-docker' }}
+    needs:
+      - build
+      - meta
+      - dockerhubPrivateRelease
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      # start docker setup and build
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
+      - name: Set up QEMU
+        uses: docker/setup-qemu-action@v3
+      - name: "Setup Docker buildx"
+        uses: docker/setup-buildx-action@v3
+      - name: Log in to Docker Hub
+        uses: docker/login-action@v3
+        with:
+          username: ${{ secrets.DOCKER_USERNAME }}
+          password: ${{ secrets.DOCKER_PASSWORD }}
+      - uses: actions/download-artifact@v4
+        with:
+          name: "licenses"
+          path: "utility/Docker/licenses/"
+
+      # generate tags for containers
+      - name: Docker Meta Standard
+        id: meta-standard
+        uses: docker/metadata-action@v5
+        with:
+          # list of Docker images to use as base name for tags
+          images: 'harperdb/harperdb'
+          # generate Docker tags based on the following events/attributes
+          tags: |
+            type=raw,value=${{ needs.build.outputs.harperdbVersion }}
+            type=raw,value=latest,enable=${{ needs.meta.outputs.dockerhub_tag_latest }}
+
+      - name: Docker Meta Openshift
+        id: meta-openshift
+        uses: docker/metadata-action@v5
+        with:
+          # list of Docker images to use as base name for tags
+          images: 'harperdb/harperdb-openshift'
+          # generate Docker tags based on the following events/attributes
+          tags: |
+            type=raw,value=${{ needs.build.outputs.harperdbVersion }}
+            type=raw,value=latest,enable=${{ needs.meta.outputs.dockerhub_tag_latest }}
+
+      # standard container
+      - name: "Publish harperdb:${{ needs.build.outputs.harperdbVersion }}"
+        id: build-image-standard
+        timeout-minutes: 30
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: 'utility/Docker/Dockerfile'
+          platforms: 'linux/amd64,linux/arm64'
+          push: ${{ needs.meta.outputs.dryrun == 'false' && 'true' || 'false' }}
+          tags: ${{ steps.meta-standard.outputs.tags }}
+          build-args: |
+            HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}
+            HARPERDB_TARBALL=harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
+            VCS_REF=`git rev-parse HEAD`
+            BUILD_DATE=`date -u +%FT%T`
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # openshift container
+      - name: "Publish harperdb-openshift:${{ needs.build.outputs.harperdbVersion }}"
+        id: build-image-openshift
+        timeout-minutes: 30
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          file: 'utility/Docker/Dockerfile-openshift'
+          platforms: 'linux/amd64,linux/arm64'
+          push: ${{ needs.meta.outputs.dryrun == 'false' && 'true' || 'false' }}
+          tags: ${{ steps.meta-openshift.outputs.tags }}
+          build-args: |
+            HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}
+            HARPERDB_TARBALL=harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
+            VCS_REF=`git rev-parse HEAD`
+            BUILD_DATE=`date -u +%FT%T`
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+      # publish to redhat connect
+      - name: Install Openshift CLI tools
+        uses: redhat-actions/openshift-tools-installer@v1
+        with:
+          source: "github"
+          preflight: "latest"
+
+      - name: Publish to Redhat Connect harperdb-openshift:${{ needs.build.outputs.harperdbVersion }}
+        env:
+          CERTIFICATION_PROJECT_ID: ${{ secrets.REDHAT_CERTIFICATION_PROJECT_ID }}
+          REDHAT_DOCKERCONFIG: ${{ secrets.REDHAT_CONNECT_DOCKERCONFIG_JSON }}
+          PYXIS_API_TOKEN: ${{ secrets.REDHAT_PYXIS_KEY }}
+          container_registry: 'registry.hub.docker.com'
+          container_image: 'harperdb/harperdb-openshift'
+          container_tag: ${{ needs.build.outputs.harperdbVersion }}
+          dryrun: ${{ needs.meta.outputs.dryrun }}
+        run: |
+          #!/usr/bin/env bash
+          set -euo pipefail
+
+          echo "writing docker-config.json for submission"
+          echo "${REDHAT_DOCKERCONFIG}" | jq '.' > docker-config.json
+
+          # dryrun is handled by managing the '--submit' flag
+          submit=''
+          [ "${dryrun}" == "false" ] && submit='--submit'
+
+          preflight check container "${container_registry}/${container_image}:${container_tag}" \
+            --pyxis-api-token="${PYXIS_API_TOKEN}" \
+            --certification-project-id="${CERTIFICATION_PROJECT_ID}" \
+            --docker-config ./docker-config.json \
+            ${submit} >> "${GITHUB_STEP_SUMMARY}"
+
+  #############################################################
+  #  Release offline installer to
+  #  https://products-harperdb-io.s3.us-east-2.amazonaws.com/
+  #############################################################
+  publicReleaseOfflineInstaller:
+    environment: ${{ needs.meta.outputs.release_type == 'stable' && 'release-offline-installer' || 'pre-release-offline-installer' }}
+    runs-on: ubuntu-latest
+    needs:
+      - meta
+      - build-offline-installer
+    steps:
+      - name: 'Download Artifact'
+        uses: actions/download-artifact@v4
+        with:
+          name: offline-harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
+      - name: Publish to s3
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          AWS_DEFAULT_REGION: us-east-1
+          updateLatest: ${{ needs.meta.outputs.dockerhub_tag_latest }}
+          dryrun: ${{ needs.meta.outputs.dryrun }}
+        run: |
+          #!/bin/bash
+          set -e
+
+          # if dryrun, just echo out the commands
+          aws_cmd='echo aws'
+          [ "${dryrun}" == "false" ] && aws_cmd='aws'
+
+          ${aws_cmd} s3 cp ./harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz s3://products-harperdb-io
+
+          if [[ ${updateLatest} == "true" ]]
+          then
+            ${aws_cmd} s3 rm --recursive s3://products-harperdb-io/latest
+            ${aws_cmd} s3 cp ./harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz s3://products-harperdb-io/latest/
+          fi
+
+  #################################
+  #  Send Slack Message on success
+  #################################
+  sendSlackMessageParty:
+    uses: ./.github/workflows/post-to-slack-channel.yaml
+    if: ${{ !cancelled() && !failure() && needs.publicReleaseNPM.result == 'success' && needs.publicReleaseDocker.result == 'success' && needs.publicReleaseOfflineInstaller.result == 'success' && needs.meta.outputs.dryrun == false }}
+    secrets: inherit
+    needs:
+      - meta
+      - publicReleaseNPM
+      - publicReleaseDocker
+      - publicReleaseOfflineInstaller
+      - sendSlackMessageRealeaseStarted
+      - sendSlackMessageRealeaseVersion
+      - sendSlackMessageReadyToDeploy
+    with:
+      channel_id: C05PLHLQFQA
+      update_ts: ${{ needs.meta.outputs.release_type == 'stable' && needs.sendSlackMessageReadyToDeploy.outputs.ts || needs.sendSlackMessageRealeaseVersion.outputs.ts }}
+      payload: |
+        {
+          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.full_version }} Complete.",
+          "blocks": [
+            {
+              "type": "header",
+              "text": {
+                "type": "plain_text",
+                "text": "HarperDB Release ${{ needs.meta.outputs.full_version }}"
+              }
+            },
+            {
+              "type": "context",
+              "elements": [
+                {
+                  "type": "mrkdwn",
+                  "text": "*Status*"
+                },
+                {
+                  "type": "mrkdwn",
+                  "text": ":white_check_mark:"
+                },
+                {
+                  "type": "mrkdwn",
+                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
+                },
+                {
+                  "type": "mrkdwn",
+                  "text": "Completed"
+                }
+              ]
+            }
+          ]
+        }
+
+  #################################
+  #  Send Slack Message on failure
+  #################################
+  sendSlackMessageFailure:
+    if: ${{ failure() && !cancelled() && needs.meta.outputs.dryrun == false }}
+    uses: ./.github/workflows/post-to-slack-channel.yaml
+    secrets: inherit
+    needs:
+      - meta
+      - build
+      - npmPrivateRelease
+      - dockerhubPrivateRelease
+      - publicReleaseNPM
+      - publicReleaseDocker
+      - publicReleaseOfflineInstaller
+      - sendSlackMessageRealeaseStarted
+      - sendSlackMessageReadyToDeploy
+      - sendSlackMessageParty
+    with:
+      channel_id: C05PLHLQFQA
+      update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
+      payload: |
+        {
+          "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.full_version }} Failed.",
+          "blocks": [
+            {
+              "type": "header",
+              "text": {
+                "type": "plain_text",
+                "text": "HarperDB Release ${{ needs.meta.outputs.full_version }} Failed"
+              }
+            },
+            {
+              "type": "context",
+              "elements": [
+                {
+                  "type": "mrkdwn",
+                  "text": "*Status*"
+                },
+                {
+                  "type": "mrkdwn",
+                  "text": "Failed"
+                },
+                {
+                  "type": "mrkdwn",
+                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
+                },
+                {
+                  "type": "mrkdwn",
+                  "text": ":x:"
+                }
+              ]
+            }
+          ]
+        }
