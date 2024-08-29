@@ -98,7 +98,12 @@ jobs:
             dryrun='false'
             echo "dryrun=false" >> "${GITHUB_OUTPUT}"
           else
-            echo "Exiting as I have no idea what dryrun is supposed to be: tag=${tag}" >> "${GITHUB_STEP_SUMMARY}"
+            cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
+          > [!ERROR]
+          > Exiting as I have no idea what dryrun is supposed to be: tag=${tag}
+          > dryrun == "${dryrun}"
+          EOF
+           Exiting as I have no idea what dryrun is supposed to be: tag=${tag}
             exit 1
           fi
           
@@ -170,12 +175,11 @@ jobs:
           > [!WARNING]
           > dryrun == "${dryrun}"
           EOF
-            exit 1
           fi 
           
           if [[ "${full_version}" != "${harperdbVersion}" ]]; then
             cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
-          > [!WARNING]
+          > [!ERROR]
           > Terminating job as the version from the tag (${tag}, derived version ${full_version}) does not match harperdbVersion (${harperdbVersion})
           EOF
             exit 1
