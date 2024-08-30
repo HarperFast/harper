@@ -6,7 +6,7 @@ import { createBrotliCompress, brotliCompress, constants } from 'zlib';
 import { ClientError } from '../../utility/errors/hdbError';
 import { Readable } from 'stream';
 import { server } from '../Server';
-import { _assignPackageExport } from '../../index';
+import { _assignPackageExport } from '../../globals';
 import env_mgr from '../../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 import * as YAML from 'yaml';

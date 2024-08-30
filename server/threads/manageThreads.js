@@ -10,7 +10,7 @@ const hdb_terms = require('../../utility/hdbTerms');
 const env_mgr = require('../../utility/environment/environmentManager');
 const harper_logger = require('../../utility/logging/harper_logger');
 const { randomBytes } = require('crypto');
-const { _assignPackageExport } = require('../../index');
+const { _assignPackageExport } = require('../../globals');
 const terms = require('../../utility/hdbTerms');
 const MB = 1024 * 1024;
 const workers = []; // these are our child workers that we are managing
@@ -447,7 +447,7 @@ function startMonitoring() {
 }
 const REPORTING_INTERVAL = 1000;
 
-if (parentPort && workerData.addPorts) {
+if (parentPort && workerData?.addPorts) {
 	addPort(parentPort);
 	for (let i = 0, l = workerData.addPorts.length; i < l; i++) {
 		let port = workerData.addPorts[i];
