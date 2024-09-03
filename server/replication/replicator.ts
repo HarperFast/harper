@@ -36,10 +36,10 @@ let replication_disabled;
 let next_id = 1; // for request ids
 
 export const servers = [];
-// This is the set of acceptable root certificates for replication, which includes the publicly trusted CAs
+// This is the set of acceptable root certificates for replication, which includes the publicly trusted CAs if enabled
 // and any CAs that have been replicated across the cluster
-export const replication_certificate_authorities = new Set(tls.rootCertificates);
-
+export const replication_certificate_authorities =
+	env.get(CONFIG_PARAMS.REPLICATION_ENABLEROOTCAS) === true ? new Set(tls.rootCertificates) : new Set();
 /**
  * Start the replication server. This will start a WebSocket server that will accept replication requests from other nodes.
  * @param options
@@ -130,7 +130,7 @@ export function start(options) {
 					try {
 						const ca = Array.from(replication_certificate_authorities);
 						// add the replication CAs (and root CAs) to any existing CAs for the context
-						if (context.options.ca) ca.push(...context.options.ca);
+						if (context.options.availableCAs) ca.push(...context.options.availableCAs.values());
 						const tls_options = // make sure we use the overriden tls.createSecureContext
 							// create a new security context with the extra CAs
 							Object.assign({}, context.options, {
@@ -153,6 +153,9 @@ export function start(options) {
 						last_ca_count = replication_certificate_authorities.size;
 						updateContexts();
 					}
+				} else if (env.get(CONFIG_PARAMS.REPLICATION_ENABLEROOTCAS) !== false) {
+					// if there is no CA for the node, then we default to using the root CAs, unless it is explicitly disabled
+					for (const cert of tls.rootCertificates) replication_certificate_authorities.add(cert);
 				}
 			});
 		}

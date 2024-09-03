@@ -44,7 +44,7 @@ async function clusterStatus() {
 				cluster_status_resolve = resolve;
 			});
 		} else {
-			response = await requestClusterStatus();
+			response = requestClusterStatus();
 		}
 		response.node_name = getThisNodeName();
 		response.is_enabled = true; // if we have replication, replication is enabled

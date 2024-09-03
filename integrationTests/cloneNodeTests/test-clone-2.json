@@ -165,6 +165,7 @@
 							"",
 							"pm.test('Test cluster status is correct node-2', () => {",
 							"    const response = pm.response.json();",
+							"console.log('cluster status', response);",
 							"    pm.expect(response.connections.length).to.equal(2)",
 							"})",
 							""

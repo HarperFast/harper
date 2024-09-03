@@ -850,6 +850,7 @@ function createTLSSelector(type, mtls_options) {
 							const secure_options = {
 								ciphers: cert.ciphers,
 								ticketKeys: getTicketKeys(),
+								availableCAs: ca_certs, // preserve the record of ca_certs even if not used for mTLS here
 								ca: mtls_options && Array.from(ca_certs.values()),
 								cert: certificate,
 								key: private_key,

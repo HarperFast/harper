@@ -649,6 +649,7 @@ const CONFIG_PARAMS = {
 	REPLICATION_SECUREPORT: 'replication_securePort',
 	REPLICATION_ROUTES: 'replication_routes',
 	REPLICATION_DATABASES: 'replication_databases',
+	REPLICATION_ENABLEROOTCAS: 'replication_enableRootCAs',
 	ROOTPATH: 'rootPath',
 	SERIALIZATION_BIGINT: 'serialization_bigInt',
 	STORAGE_WRITEASYNC: 'storage_writeAsync',

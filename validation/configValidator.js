@@ -150,6 +150,15 @@ function configValidator(config_json, skip_fs_validation = false) {
 		analytics: Joi.object({
 			aggregatePeriod: number,
 		}),
+		replication: Joi.object({
+			hostname: Joi.alternatives(string, number).optional().empty(null),
+			url: string.optional().empty(null),
+			port: number.optional().empty(null),
+			securePort: number.optional().empty(null),
+			routes: array.optional().empty(null),
+			databases: Joi.alternatives(string, array),
+			enableRootCAs: boolean.optional(),
+		}),
 		componentsRoot: root_constraints.optional(),
 		clustering: clustering_validation_schema,
 		localStudio: Joi.object({
