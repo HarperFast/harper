@@ -721,7 +721,7 @@ export function replicateOverWS(ws, options, authorization) {
 								const value = audit_record.getValue(primary_store, true);
 								JSON.stringify(value);
 							}
-							if (subscribed_node_ids[node_id] >= local_time) {
+							if (!(subscribed_node_ids[node_id] < local_time)) {
 								if (DEBUG_MODE)
 									logger.info?.(
 										connection_id,
@@ -953,7 +953,7 @@ export function replicateOverWS(ws, options, authorization) {
 									if (is_first && !closed) {
 										is_first = false;
 										const last_removed = getLastRemoved(audit_store);
-										if (last_removed > current_sequence_id) {
+										if (!(last_removed <= current_sequence_id)) {
 											// This means the audit log doesn't extend far enough back, so we need to replicate all the tables
 											// This should only be done on a single node, we don't want full table replication from all the
 											// nodes that are connected to this one:

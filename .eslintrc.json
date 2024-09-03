@@ -20,6 +20,7 @@
     "radar/cognitive-complexity": ["error", 250],
     "radar/no-useless-catch": "off",
     "radar/no-identical-functions": "off",
+    "radar/no-inverted-boolean-check": "off",
     "radar/no-duplicated-branches": "off",
     "radar/no-redundant-jump": "off",
     "@typescript-eslint/no-explicit-any": "off",
