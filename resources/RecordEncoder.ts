@@ -39,7 +39,7 @@ let last_encoding,
 	last_value_encoding,
 	timestamp_next_encoding = 0,
 	metadata_in_next_encoding = -1,
-	expires_at_next_encoding = 0,
+	expires_at_next_encoding = -1,
 	residency_id_at_next_encoding = 0;
 export class RecordEncoder extends Encoder {
 	constructor(options) {
@@ -62,9 +62,9 @@ export class RecordEncoder extends Encoder {
 				if (metadata >= 0) {
 					value_start += 2; // make room for metadata bytes
 					metadata_in_next_encoding = -1; // reset indicator to mean no metadata
-					if (expires_at) {
+					if (expires_at >= 0) {
 						value_start += 8; // make room for expiration timestamp
-						expires_at_next_encoding = 0; // reset indicator to mean no expiration
+						expires_at_next_encoding = -1; // reset indicator to mean no expiration
 					}
 					if (residency_id) {
 						value_start += 4; // make room for residency id
@@ -84,7 +84,7 @@ export class RecordEncoder extends Encoder {
 				if (metadata >= 0) {
 					encoded[position++] = metadata & 0x1f;
 					encoded[position++] = metadata >> 5;
-					if (expires_at) {
+					if (expires_at >= 0) {
 						const data_view =
 							encoded.dataView ||
 							(encoded.dataView = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength));
@@ -103,7 +103,7 @@ export class RecordEncoder extends Encoder {
 		};
 		const super_saveStructures = this.saveStructures;
 		this.saveStructures = function (structures, isCompatible) {
-			let result = super_saveStructures.call(this, structures, isCompatible);
+			const result = super_saveStructures.call(this, structures, isCompatible);
 			this.hasStructureUpdate = true;
 			return result;
 		};
@@ -187,7 +187,7 @@ export function handleLocalTimeForGets(store) {
 			entry.localTime = record_entry.localTime;
 			entry.value = record_entry.value;
 			entry.residencyId = record_entry.residencyId;
-			if (record_entry.expiresAt > 0) entry.expiresAt = record_entry.expiresAt;
+			if (record_entry.expiresAt >= 0) entry.expiresAt = record_entry.expiresAt;
 		}
 		if (entry) entry.key = id;
 		return entry;
@@ -214,7 +214,7 @@ export function handleLocalTimeForGets(store) {
 				entry.metadataFlags = metadata;
 				entry.localTime = record_entry.localTime;
 				entry.value = record_entry.value;
-				if (record_entry.expiresAt > 0) entry.expiresAt = record_entry.expiresAt;
+				if (record_entry.expiresAt >= 0) entry.expiresAt = record_entry.expiresAt;
 			}
 			return entry;
 		});
@@ -300,7 +300,7 @@ export function getUpdateRecord(store, table_id, audit_store) {
 					: TIMESTAMP_ASSIGN_NEW | 0x4000 // or just assign a new one
 				: NO_TIMESTAMP;
 		const expires_at = options?.expiresAt;
-		if (expires_at > 0) assign_metadata |= HAS_EXPIRATION;
+		if (expires_at >= 0) assign_metadata |= HAS_EXPIRATION;
 		metadata_in_next_encoding = assign_metadata;
 		expires_at_next_encoding = expires_at;
 		if (existing_entry?.version === new_version && audit === false)

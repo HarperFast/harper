@@ -130,6 +130,10 @@ describe('Caching', () => {
 		assert(published_messages[1].records[0].name, 'name 23');
 		if (events.length > 0) console.log(events);
 		//assert.equal(events.length, 0);
+		await CachingTable.put(23, { name: 'expires in past' }, { expiresAt: 0 });
+		result = await CachingTable.get(23);
+		assert.equal(source_requests, 3);
+		assert.equal(result.wasLoadedFromSource(), true);
 	});
 
 	it('Cache stampede is handled', async function () {

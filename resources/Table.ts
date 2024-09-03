@@ -1375,7 +1375,7 @@ export function makeTable(options) {
 						// that is a CRDT, we use our own data as the basis for the audit record, which will include information about the incremental updates
 						audit_record = record_update;
 					}
-					const expires_at = context?.expiresAt || (expiration_ms ? expiration_ms + Date.now() : 0);
+					const expires_at = context?.expiresAt ?? (expiration_ms ? expiration_ms + Date.now() : -1);
 					logger.trace?.(
 						`Saving record with id: ${id}, timestamp: ${new Date(txn_time).toISOString()}${
 							expires_at ? ', expires at: ' + new Date(expires_at).toISOString() : ''
@@ -1924,7 +1924,7 @@ export function makeTable(options) {
 					}
 					if (
 						(check_loaded && entry?.metadataFlags & (INVALIDATED | EVICTED)) || // invalidated or evicted should go to load from source
-						(entry?.expiresAt && entry?.expiresAt < Date.now())
+						(entry?.expiresAt != undefined && entry?.expiresAt < Date.now())
 					) {
 						// should expiration really apply?
 						const loading_from_source = ensureLoadedFromSource(entry.key ?? entry, entry, context);
@@ -2924,7 +2924,7 @@ export function makeTable(options) {
 					if (
 						!entry.value ||
 						entry.metadataFlags & (INVALIDATED | EVICTED) || // invalidated or evicted should go to load from source
-						(entry.expiresAt && entry.expiresAt < Date.now())
+						(entry.expiresAt != undefined && entry.expiresAt < Date.now())
 					)
 						needs_source_data = true;
 				} else needs_source_data = true;
@@ -2949,7 +2949,7 @@ export function makeTable(options) {
 			}
 		} else if (entry?.value) {
 			// if we don't have a source, but we have an entry, we check the expiration
-			if (entry.expiresAt && entry.expiresAt < Date.now()) {
+			if (entry.expiresAt != undefined && entry.expiresAt < Date.now()) {
 				// if it has expired and there is no source, we evict it and then return null, using a fake promise to indicate that this is providing the response
 				TableResource.evict(entry.key, entry.value, entry.version);
 				entry.value = null;
@@ -3164,7 +3164,8 @@ export function makeTable(options) {
 						if (response_headers)
 							appendHeader(response_headers, 'Server-Timing', `cache-resolve;dur=${resolve_duration.toFixed(2)}`, true);
 						txn.timestamp = version;
-						if (expiration_ms && !source_context.expiresAt) source_context.expiresAt = Date.now() + expiration_ms;
+						if (expiration_ms && source_context.expiresAt == undefined)
+							source_context.expiresAt = Date.now() + expiration_ms;
 						if (updated_record) {
 							if (typeof updated_record !== 'object')
 								throw new Error('Only objects can be cached and stored in tables');
@@ -3347,7 +3348,7 @@ export function makeTable(options) {
 									if (record === null && !audit && version + DELETED_RECORD_EXPIRATION < Date.now()) {
 										// make sure it is still deleted when we do the removal
 										resolution = primary_store.remove(key, version);
-									} else if (expiresAt && expiresAt + eviction_ms < Date.now()) {
+									} else if (expiresAt != undefined && expiresAt + eviction_ms < Date.now()) {
 										// evict!
 										resolution = TableResource.evict(key, record, version);
 										count++;
