@@ -75,24 +75,36 @@ jobs:
       - name: 'Get values'
         id: get-values
         env:
-          dryrun: ${{ inputs.dryrun }}
+          inputs_dryrun: ${{ inputs.dryrun }}
           tag: ${{ github.ref }}
+        continue-on-error: true
         run: |
           #!/usr/bin/env bash
           
-          # make sure we know what the value of dryrun is 
-          if [[ "${dryrun}" == "true" ]]; then
-            echo "dryrun=true" >> "${GITHUB_OUTPUT}"
-          elif [[ "${dryrun}" == "false" ]]; then
-            echo "dryrun=false" >> "${GITHUB_OUTPUT}"
+          # set default
+          dryrun='true'
           
-          # if this workflow is triggered on push, inputs.dryrun will be empty, and we default dryrun=false
-          elif [[ "${GITHUB_EVENT_NAME}" == 'push' ]]; then
-            echo "dryrun=false" >> "${GITHUB_OUTPUT}"
+          # make sure we know what the value of dryrun is 
+          if [[ "${inputs_dryrun}" == "false" ]]; then
+            dryrun='false'
+          
+          # this workflow needs a tag to function properly, in the case of being on a pushed tag, lets just check the tag
+          elif [[ "${tag}" =~ ^refs/tags/release_.*$ ]]; then
+            dryrun="${inputs_dryrun:-false}"
+          
           else
-            echo "Exiting as I have no idea what dryrun is supposed to be: ${dryrun}" >> "${GITHUB_STEP_SUMMARY}"
+            cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
+          > [!CAUTION]
+          > Exiting as I have no idea what dryrun is supposed to be: 
+          > tag    == ${tag}
+          > dryrun == "${dryrun}"
+          
+          EOF
+           Exiting as I have no idea what dryrun is supposed to be: tag=${tag}
             exit 1
           fi
+          
+          echo "dryrun=${dryrun}" >> "${GITHUB_OUTPUT}"
           
           harperdbVersion=$(jq -r '.version' package.json)
           echo "harperdbVersion=${harperdbVersion}" >> "${GITHUB_OUTPUT}"
@@ -154,10 +166,19 @@ jobs:
           
           [[ "${release_type}" != "stable" ]] && echo "pre-release version: ${release_type}.${prerelease_version:-}" >> "${GITHUB_STEP_SUMMARY}"
           
-          if [[ "${full_version}" != "${harperdbVersion}" ]]; then
+          if [[ "${dryrun}" != "false" ]]; then
             cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
           > [!WARNING]
+          > dryrun == "${dryrun}"
+          
+          EOF
+          fi 
+          
+          if [[ "${full_version}" != "${harperdbVersion}" ]]; then
+            cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
+          > [!CAUTION]
           > Terminating job as the version from the tag (${tag}, derived version ${full_version}) does not match harperdbVersion (${harperdbVersion})
+          
           EOF
             exit 1
           fi
@@ -228,7 +249,7 @@ jobs:
       - name: Build artifact
         run: |
           #!/bin/bash
-          ./utility/devops/build/all-in-one-build.sh 
+          ./utility/devops/build/all-in-one-build.sh
 
       - name: 'Upload Artifact'
         uses: actions/upload-artifact@v4
@@ -462,7 +483,7 @@ jobs:
           context: .
           file: 'utility/Docker/Dockerfile'
           platforms: 'linux/amd64,linux/arm64'
-          push: ${{ needs.meta.outputs.dryrun == false && true || false }}
+          push: ${{ needs.meta.outputs.dryrun == 'false' && 'true' || 'false' }}
           tags: ${{ steps.meta-standard.outputs.tags }}
           build-args: |
             HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}
@@ -481,7 +502,7 @@ jobs:
           context: .
           file: 'utility/Docker/Dockerfile-openshift'
           platforms: 'linux/amd64,linux/arm64'
-          push: ${{ needs.meta.outputs.dryrun == false && true || false }}
+          push: ${{ needs.meta.outputs.dryrun == 'false' && 'true' || 'false' }}
           tags: ${{ steps.meta-openshift.outputs.tags }}
           build-args: |
             HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}
@@ -513,7 +534,7 @@ jobs:
 
           echo "writing docker-config.json for submission"
           echo "${REDHAT_DOCKERCONFIG}" | jq '.' > docker-config.json
-          
+
           # dryrun is handled by managing the '--submit' flag
           submit=''
           [ "${dryrun}" == "false" ] && submit='--submit'
@@ -549,11 +570,11 @@ jobs:
         run: |
           #!/bin/bash
           set -e
-          
+
           # if dryrun, just echo out the commands
           aws_cmd='echo aws'
           [ "${dryrun}" == "false" ] && aws_cmd='aws'
-          
+
           ${aws_cmd} s3 cp ./harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz s3://products-harperdb-io
 
           if [[ ${updateLatest} == "true" ]]
