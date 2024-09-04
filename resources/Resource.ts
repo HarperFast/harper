@@ -394,7 +394,7 @@ function pathToId(path, Resource) {
 		return Resource.coerceId(decodeURIComponent(path));
 	}
 	const string_ids = path.split('/');
-	const ids = new MulitPartId();
+	const ids = new MultiPartId();
 	for (let i = 0; i < string_ids.length; i++) {
 		const id_part = string_ids[i];
 		if (!id_part && i === string_ids.length - 1) {
@@ -408,7 +408,7 @@ function pathToId(path, Resource) {
 /**
  * An array for ids that toString's back to slash-delimited string
  */
-class MulitPartId extends Array {
+export class MultiPartId extends Array {
 	toString() {
 		return this.join('/');
 	}

@@ -2861,31 +2861,40 @@ const ENDS_WITH_TIMEZONE = /[+-][0-9]{2}:[0-9]{2}|[a-zA-Z]$/;
  * @param attribute
  * @returns
  */
-export function coerceType(value, attribute) {
+export function coerceType(value: any, attribute: any): any {
 	const type = attribute?.type;
 	//if a type is String is it safe to execute a .toString() on the value and return? Does not work for Array/Object so we would need to detect if is either of those first
 	if (value === null) {
 		return value;
 	} else if (value === '' && type && type !== 'String' && type !== 'Any') {
 		return null;
-	} else if (type === 'Int' || type === 'Long') return value === 'null' ? null : parseInt(value);
-	else if (type === 'Float') return value === 'null' ? null : parseFloat(value);
-	else if (type === 'BigInt') return value === 'null' ? null : BigInt(value);
-	else if (type === 'Boolean') return value === 'true' ? true : value === 'false' ? false : value;
-	else if (type === 'Date') {
-		if (isNaN(value)) {
-			if (value === 'null') return null;
-			//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
-			if (!ENDS_WITH_TIMEZONE.test(value)) {
-				value += 'Z';
-			}
-			return new Date(value);
-		}
-		return new Date(+value); // epoch ms number
-	} else if (!type || type === 'Any') {
-		return autoCast(value);
 	}
-	return value;
+	switch (type) {
+		case 'Int':
+		case 'Long':
+			return value === 'null' ? null : parseInt(value);
+		case 'Float':
+			return value === 'null' ? null : parseFloat(value);
+		case 'BigInt':
+			return value === 'null' ? null : BigInt(value);
+		case 'Boolean':
+			return value === 'true' ? true : value === 'false' ? false : value;
+		case 'Date':
+			if (isNaN(value)) {
+				if (value === 'null') return null;
+				//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
+				if (!ENDS_WITH_TIMEZONE.test(value)) {
+					value += 'Z';
+				}
+				return new Date(value);
+			}
+			return new Date(+value); // epoch ms number
+		case undefined:
+		case 'Any':
+			return autoCast(value);
+		default:
+			return value;
+	}
 }
 function isDescendantId(ancestor_id, descendant_id): boolean {
 	if (ancestor_id == null) return true; // ancestor of all ids

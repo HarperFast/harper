@@ -197,6 +197,19 @@ describe('Querying through Resource API', () => {
 		assert.equal(results.length, 23);
 		assert(QueryTable.primaryStore.readCount - start_count < 25);
 	});
+	it('Search for multi-part id', async function () {
+		let query = parseQuery('id=ge=begin/3&id=le=parent/child/number:5');
+		assert.equal(query.conditions[0].value.length, 2);
+		assert.equal(query.conditions[0].value[0], 'begin');
+		assert.equal(query.conditions[1].value.length, 3);
+		assert.equal(query.conditions[1].value[2], 5);
+
+		let results = [];
+		for await (let record of QueryTable.search(query)) {
+			results.push(record);
+		}
+		assert.equal(results.length, 100);
+	});
 
 	describe('joins', function () {
 		it('Query data in a table with relationships', async function () {
