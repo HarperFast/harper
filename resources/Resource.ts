@@ -231,10 +231,9 @@ export class Resource implements ResourceInterface {
 		if (dot_index > -1) {
 			const property = path.slice(dot_index + 1);
 			path = path.slice(0, dot_index);
-			const accept = context?.headers && EXTENSION_TYPES[property];
-			if (accept) {
-				// TODO: Might be preferable to pass this into getDeserializer instead of modifying the request itself
-				context.headers.set('accept', accept);
+			const requested_content_type = context?.headers && EXTENSION_TYPES[property];
+			if (requested_content_type) {
+				context.requestedContentType = requested_content_type;
 			} else if (query) query.property = property;
 			else {
 				return {
