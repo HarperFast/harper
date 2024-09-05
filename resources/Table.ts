@@ -2006,13 +2006,21 @@ export function makeTable(options) {
 		static getRecordCount(options) {
 			// iterate through the metadata entries to exclude their count and exclude the deletion counts
 			const entry_count = primary_store.getStats().entryCount;
-			const MAX_EXACT_COUNT = 5000;
-			const SAMPLE_END_SIZE = 1000;
-			let limit;
-			if (entry_count > MAX_EXACT_COUNT && !options?.exactCount) limit = SAMPLE_END_SIZE;
+			const TIME_LIMIT = 1000 / 2; // one second time limit, enforced by seeing if we are halfway through at 500ms
+			const start = performance.now();
+			const halfway = Math.floor(entry_count / 2);
+			const exact_count = options?.exactCount;
 			let record_count = 0;
-			for (const { value } of primary_store.getRange({ start: true, lazy: true, limit })) {
+			let entries_scanned = 0;
+			let limit: number;
+			for (const { value } of primary_store.getRange({ start: true, lazy: true })) {
 				if (value != null) record_count++;
+				entries_scanned++;
+				if (!exact_count && entries_scanned < halfway && performance.now() - start > TIME_LIMIT) {
+					// it is taking too long, so we will just take this sample and a sample from the end to estimate
+					limit = entries_scanned;
+					break;
+				}
 			}
 			if (limit) {
 				// in this case we are going to make an estimate of the table count using the first thousand
@@ -2029,7 +2037,9 @@ export function makeTable(options) {
 					(record_rate * (1 - record_rate)) / sample_size;
 				const sd = Math.max(Math.sqrt(variance) * entry_count, 1);
 				const estimated_record_count = Math.round(record_rate * entry_count);
-				const lower_ci_limit = Math.max(estimated_record_count - 1.96 * sd, 0);
+				// TODO: This uses a normal/Wald interval, but a binomial confidence interval is probably better calculated using
+				// Wilson score interval or Agresti-Coull interval (I think the latter is a little easier to calculate/implement).
+				const lower_ci_limit = Math.max(estimated_record_count - 1.96 * sd, record_count + first_record_count);
 				const upper_ci_limit = Math.min(estimated_record_count + 1.96 * sd, entry_count);
 				let significant_unit = Math.pow(10, Math.round(Math.log10(sd)));
 				if (significant_unit > estimated_record_count) significant_unit = significant_unit / 10;
