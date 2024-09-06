@@ -263,7 +263,7 @@ class SubscriptionsSession {
 						let path = update.id;
 						if (Array.isArray(path)) path = keyArrayToString(path);
 						if (path == null) path = '';
-						this.listener(resource_path + '/' + path, update.value, message_id, subscription_request);
+						await this.listener(resource_path + '/' + path, update.value, message_id, subscription_request);
 					} catch (error) {
 						warn(error);
 					}
@@ -456,7 +456,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	}
 	removeSubscription(topic) {
 		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
-		let result = super.removeSubscription(topic);
+		const result = super.removeSubscription(topic);
 		if (existing_subscription.qos > 0) this.saveSubscriptions();
 		return result;
 	}

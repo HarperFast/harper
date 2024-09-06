@@ -39,13 +39,8 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 				mqtt_log.debug('Received WebSocket connection for MQTT from', ws._socket.remoteAddress);
 				const { onMessage, onClose } = onSocket(
 					ws,
-					(message, allow_backpressure) => {
+					(message) => {
 						ws.send(message);
-						// This can be used for back-pressure. Most of the time with real-time data, it is probably more
-						// efficient to immediately deliver and let the buffers queue the data, but when iterating through
-						// a database/audit log, we could employ back-pressure to do this with less memory pressure
-						if (allow_backpressure && ws._socket.writableNeedDrain)
-							return new Promise((resolve) => this._socket.once('drain', resolve));
 					},
 					request,
 					Promise.resolve(chain_completion).then(() => request?.user),
@@ -279,6 +274,11 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 								},
 								general_topic
 							);
+							// wait if there is back-pressure
+							const raw_socket = socket._socket ?? socket;
+							if (raw_socket.writableNeedDrain) {
+								return new Promise((resolve) => raw_socket.once('drain', resolve));
+							}
 						} catch (error) {
 							mqtt_log.error(error);
 							session?.disconnect();
