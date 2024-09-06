@@ -4,6 +4,8 @@ export class IterableEventQueue extends EventEmitter {
 	resolveNext: Function;
 	queue: any[];
 	hasDataListeners: boolean;
+	drainCloseListener: boolean;
+	currentDrainResolver: Function;
 	[Symbol.asyncIterator]() {
 		const iterator = new EventQueueIterator();
 		iterator.queue = this;
@@ -24,7 +26,28 @@ export class IterableEventQueue extends EventEmitter {
 		}
 	}
 	getNextMessage() {
-		return this.queue?.shift();
+		const message = this.queue?.shift();
+		if (!message) this.emit('drained');
+		return message;
+	}
+
+	/**
+	 * Wait for the queue to be drained, resolving to true to continue or false if the queue was closed before draining.
+	 */
+	waitForDrain(): Promise<boolean> {
+		return new Promise((resolve) => {
+			if (!this.queue || this.queue.length === 0) resolve(true);
+			else {
+				this.once('drained', () => resolve(true));
+				this.currentDrainResolver = resolve;
+				if (!this.drainCloseListener) {
+					this.drainCloseListener = true;
+					this.on('close', () => {
+						this.currentDrainResolver?.(false);
+					});
+				}
+			}
+		});
 	}
 	on(event_name, listener) {
 		if (event_name === 'data' && !this.hasDataListeners) {

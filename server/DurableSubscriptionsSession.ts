@@ -7,6 +7,7 @@ import { getWorkerIndex } from '../server/threads/manageThreads';
 import { when_components_loaded } from '../server/threads/threadServer';
 import { server } from '../server/Server';
 
+const AWAITING_ACKS_HIGH_WATER_MARK = 100;
 const DurableSession = table({
 	database: 'system',
 	table: 'hdb_durable_session',
@@ -238,7 +239,7 @@ class SubscriptionsSession {
 			}
 			if (!subscription[Symbol.asyncIterator])
 				throw new Error(`Subscription is not (async) iterable for topic ${topic}`);
-			(async () => {
+			const result = (async () => {
 				for await (const update of subscription) {
 					try {
 						let message_id;
@@ -263,7 +264,19 @@ class SubscriptionsSession {
 						let path = update.id;
 						if (Array.isArray(path)) path = keyArrayToString(path);
 						if (path == null) path = '';
-						await this.listener(resource_path + '/' + path, update.value, message_id, subscription_request);
+						const result = await this.listener(
+							resource_path + '/' + path,
+							update.value,
+							message_id,
+							subscription_request
+						);
+						if (result === false) break;
+						if (this.awaitingAcks?.size > AWAITING_ACKS_HIGH_WATER_MARK) {
+							// slow it down if we are getting too far ahead in acks
+							await new Promise((resolve) =>
+								setTimeout(resolve, this.awaitingAcks.size - AWAITING_ACKS_HIGH_WATER_MARK)
+							);
+						} else await new Promise(setImmediate); // yield event turn
 					} catch (error) {
 						warn(error);
 					}
@@ -416,8 +429,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		return message_id;
 	}
 	acknowledge(message_id) {
-		const update = this.awaitingAcks.get(message_id);
-		this.awaitingAcks.delete(message_id);
+		const update = this.awaitingAcks?.get(message_id);
+		if (!update) return;
+		this.awaitingAcks?.delete(message_id);
 		update.acknowledge?.();
 		const topic = update.topic;
 		for (const [, remaining_update] of this.awaitingAcks) {

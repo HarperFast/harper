@@ -59,6 +59,7 @@ const INVALIDATED = 1;
 const EVICTED = 8; // note that 2 is reserved for timestamps
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;
+const EVENT_HIGH_WATER_MARK = 100;
 const FULL_PERMISSIONS = {
 	read: true,
 	insert: true,
@@ -1626,6 +1627,7 @@ export function makeTable(options) {
 			}
 			if (!request) request = {};
 			const get_full_record = !request.rawEvents;
+			let pending_real_time_queue = []; // while we are servicing a loop for older messages, we have to queue up real-time messages and deliver them in order
 			const subscription = addSubscription(
 				TableResource,
 				this[ID_PROPERTY] ?? null, // treat undefined and null as the root
@@ -1644,14 +1646,16 @@ export function makeTable(options) {
 							}
 							audit_record.type = 'put';
 						}
-						this.send({
+						const event = {
 							id,
 							timestamp,
 							value,
 							version: audit_record.version,
 							type: audit_record.type,
 							beginTxn: begin_txn,
-						});
+						};
+						if (pending_real_time_queue) pending_real_time_queue.push(event);
+						else this.send(event);
 					} catch (error) {
 						harper_logger.error(error);
 					}
@@ -1659,115 +1663,136 @@ export function makeTable(options) {
 				request.startTime || 0,
 				request
 			);
-			if (this[IS_COLLECTION]) {
-				subscription.includeDescendants = true;
-				if (request.onlyChildren) subscription.onlyChildren = true;
-			}
-			if (request.supportsTransactions) subscription.supportsTransactions = true;
-			const this_id = this[ID_PROPERTY];
-			let count = request.previousCount;
-			if (count > 1000) count = 1000; // don't allow too many, we have to hold these in memory
-			let start_time = request.startTime;
-			if (this[IS_COLLECTION]) {
-				// a collection should retrieve all descendant ids
-				if (start_time) {
-					if (count)
-						throw new ClientError('startTime and previousCount can not be combined for a table level subscription');
-					// start time specified, get the audit history for this time range
-					for (const { key, value: audit_entry } of audit_store.getRange({
-						start: start_time,
-						exclusiveStart: true,
-					})) {
-						const audit_record = readAuditEntry(audit_entry);
-						if (audit_record.tableId !== table_id) continue;
-						const id = audit_record.recordId;
-						if (this_id == null || isDescendantId(this_id, id)) {
-							const value = audit_record.getValue(primary_store, get_full_record, key);
-							subscription.send({ id, timestamp: key, value, version: audit_record.version, type: audit_record.type });
-						}
-						// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
-						//await rest(); // yield for fairness
-						subscription.startTime = key; // update so don't double send
-					}
-				} else if (count) {
-					const history = [];
-					// we are collecting the history in reverse order to get the right count, then reversing to send
-					for (const { key, value: audit_entry } of audit_store.getRange({ start: 'z', end: false, reverse: true })) {
-						try {
+			const result = (async () => {
+				if (this[IS_COLLECTION]) {
+					subscription.includeDescendants = true;
+					if (request.onlyChildren) subscription.onlyChildren = true;
+				}
+				if (request.supportsTransactions) subscription.supportsTransactions = true;
+				const this_id = this[ID_PROPERTY];
+				let count = request.previousCount;
+				if (count > 1000) count = 1000; // don't allow too many, we have to hold these in memory
+				let start_time = request.startTime;
+				if (this[IS_COLLECTION]) {
+					// a collection should retrieve all descendant ids
+					if (start_time) {
+						if (count)
+							throw new ClientError('startTime and previousCount can not be combined for a table level subscription');
+						// start time specified, get the audit history for this time range
+						for (const { key, value: audit_entry } of audit_store.getRange({
+							start: start_time,
+							exclusiveStart: true,
+						})) {
 							const audit_record = readAuditEntry(audit_entry);
 							if (audit_record.tableId !== table_id) continue;
 							const id = audit_record.recordId;
 							if (this_id == null || isDescendantId(this_id, id)) {
 								const value = audit_record.getValue(primary_store, get_full_record, key);
-								history.push({ id, timestamp: key, value, version: audit_record.version, type: audit_record.type });
-								if (--count <= 0) break;
+								subscription.send({
+									id,
+									timestamp: key,
+									value,
+									version: audit_record.version,
+									type: audit_record.type,
+								});
+								if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+									// if we have too many messages, we need to pause and let the client catch up
+									if ((await subscription.waitForDrain()) === false) return;
+								}
 							}
-						} catch (error) {
-							harper_logger.error('Error getting history entry', key, error);
+							// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
+							//await rest(); // yield for fairness
+							subscription.startTime = key; // update so don't double send
 						}
-						// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
-						//await rest(); // yield for fairness
+					} else if (count) {
+						const history = [];
+						// we are collecting the history in reverse order to get the right count, then reversing to send
+						for (const { key, value: audit_entry } of audit_store.getRange({ start: 'z', end: false, reverse: true })) {
+							try {
+								const audit_record = readAuditEntry(audit_entry);
+								if (audit_record.tableId !== table_id) continue;
+								const id = audit_record.recordId;
+								if (this_id == null || isDescendantId(this_id, id)) {
+									const value = audit_record.getValue(primary_store, get_full_record, key);
+									history.push({ id, timestamp: key, value, version: audit_record.version, type: audit_record.type });
+									if (--count <= 0) break;
+								}
+							} catch (error) {
+								harper_logger.error('Error getting history entry', key, error);
+							}
+							// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
+							//await rest(); // yield for fairness
+						}
+						for (let i = history.length; i > 0; ) {
+							subscription.send(history[--i]);
+						}
+						if (history[0]) subscription.startTime = history[0].timestamp; // update so don't double send
+					} else if (!request.omitCurrent) {
+						for (const { key: id, value, version, localTime } of primary_store.getRange({
+							start: this_id ?? false,
+							end: this_id == null ? undefined : [this_id, MAXIMUM_KEY],
+							versions: true,
+						})) {
+							if (!value) continue;
+							subscription.send({ id, timestamp: localTime, value, version, type: 'put' });
+							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+								// if we have too many messages, we need to pause and let the client catch up
+								if ((await subscription.waitForDrain()) === false) return;
+							}
+						}
 					}
-					for (let i = history.length; i > 0; ) {
-						subscription.send(history[--i]);
+				} else {
+					if (count && !start_time) start_time = 0;
+					let local_time = this[ENTRY_PROPERTY]?.localTime;
+					if (local_time === PENDING_LOCAL_TIME) {
+						// we can't use the pending commit because it doesn't have the local audit time yet,
+						// so try to retrieve the previous/committed record
+						primary_store.cache?.delete(this_id);
+						this[ENTRY_PROPERTY] = primary_store.getEntry(this_id);
+						harper_logger.trace('re-retrieved record', local_time, this[ENTRY_PROPERTY]?.localTime);
+						local_time = this[ENTRY_PROPERTY]?.localTime;
 					}
-					if (history[0]) subscription.startTime = history[0].timestamp; // update so don't double send
-				} else if (!request.omitCurrent) {
-					for (const { key: id, value, version, localTime } of primary_store.getRange({
-						start: this_id ?? false,
-						end: this_id == null ? undefined : [this_id, MAXIMUM_KEY],
-						versions: true,
-					})) {
-						if (!value) continue;
-						subscription.send({ id, timestamp: localTime, value, version, type: 'put' });
+					harper_logger.trace('Subscription from', start_time, 'from', this_id, local_time);
+					if (start_time < local_time) {
+						// start time specified, get the audit history for this record
+						const history = [];
+						let next_time = local_time;
+						do {
+							//TODO: Would like to do this asynchronously, but we will need to run catch after this to ensure we didn't miss anything
+							//await audit_store.prefetch([key]); // do it asynchronously for better fairness/concurrency and avoid page faults
+							const audit_entry = audit_store.get(next_time);
+							if (audit_entry) {
+								request.omitCurrent = true; // we are sending the current version from history, so don't double send
+								const audit_record = readAuditEntry(audit_entry);
+								const value = audit_record.getValue(primary_store, get_full_record, next_time);
+								if (get_full_record) audit_record.type = 'put';
+								history.push({ id: this_id, value, timestamp: next_time, ...audit_record });
+								next_time = audit_record.previousLocalTime;
+							} else break;
+							if (count) count--;
+						} while (next_time > start_time && count !== 0);
+						for (let i = history.length; i > 0; ) {
+							subscription.send(history[--i]);
+						}
+						subscription.startTime = local_time; // make sure we don't re-broadcast the current version that we already sent
+					}
+					if (!request.omitCurrent && this.doesExist()) {
+						// if retain and it exists, send the current value first
+						subscription.send({
+							id: this_id,
+							timestamp: local_time,
+							value: this[RECORD_PROPERTY],
+							version: this[VERSION_PROPERTY],
+							type: 'put',
+						});
 					}
 				}
-			} else {
-				if (count && !start_time) start_time = 0;
-				let local_time = this[ENTRY_PROPERTY]?.localTime;
-				if (local_time === PENDING_LOCAL_TIME) {
-					// we can't use the pending commit because it doesn't have the local audit time yet,
-					// so try to retrieve the previous/committed record
-					primary_store.cache?.delete(this_id);
-					this[ENTRY_PROPERTY] = primary_store.getEntry(this_id);
-					harper_logger.trace('re-retrieved record', local_time, this[ENTRY_PROPERTY]?.localTime);
-					local_time = this[ENTRY_PROPERTY]?.localTime;
+				// now send any queued messages
+				for (const event of pending_real_time_queue) {
+					subscription.send(event);
 				}
-				harper_logger.trace('Subscription from', start_time, 'from', this_id, local_time);
-				if (start_time < local_time) {
-					// start time specified, get the audit history for this record
-					const history = [];
-					let next_time = local_time;
-					do {
-						//TODO: Would like to do this asynchronously, but we will need to run catch after this to ensure we didn't miss anything
-						//await audit_store.prefetch([key]); // do it asynchronously for better fairness/concurrency and avoid page faults
-						const audit_entry = audit_store.get(next_time);
-						if (audit_entry) {
-							request.omitCurrent = true; // we are sending the current version from history, so don't double send
-							const audit_record = readAuditEntry(audit_entry);
-							const value = audit_record.getValue(primary_store, get_full_record, next_time);
-							if (get_full_record) audit_record.type = 'put';
-							history.push({ id: this_id, value, timestamp: next_time, ...audit_record });
-							next_time = audit_record.previousLocalTime;
-						} else break;
-						if (count) count--;
-					} while (next_time > start_time && count !== 0);
-					for (let i = history.length; i > 0; ) {
-						subscription.send(history[--i]);
-					}
-					subscription.startTime = local_time; // make sure we don't re-broadcast the current version that we already sent
-				}
-				if (!request.omitCurrent && this.doesExist()) {
-					// if retain and it exists, send the current value first
-					subscription.send({
-						id: this_id,
-						timestamp: local_time,
-						value: this[RECORD_PROPERTY],
-						version: this[VERSION_PROPERTY],
-						type: 'put',
-					});
-				}
-			}
+				pending_real_time_queue = null;
+			})();
 			if (request.listener) subscription.on('data', request.listener);
 			return subscription;
 		}

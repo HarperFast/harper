@@ -262,6 +262,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					});
 					session.setListener((topic, message, message_id, subscription) => {
 						try {
+							if (disconnected) throw new Error('Session disconnected while trying to send message to', topic);
 							const slash_index = topic.indexOf('/', 1);
 							const general_topic = slash_index > 0 ? topic.slice(0, slash_index) : topic;
 							sendPacket(
@@ -279,10 +280,12 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 							if (raw_socket.writableNeedDrain) {
 								return new Promise((resolve) => raw_socket.once('drain', resolve));
 							}
+							return !raw_socket.closed;
 						} catch (error) {
 							mqtt_log.error(error);
 							session?.disconnect();
 							mqtt_settings.sessions.delete(session);
+							return false;
 						}
 					});
 					if (session.sessionWasPresent) await session.resume();
