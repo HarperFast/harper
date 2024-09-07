@@ -42,14 +42,12 @@ if (getWorkerIndex() === 0) {
 			const data = will.data;
 			const message = Object.assign({}, will);
 			if (message.user?.username) message.user = await server.getUser(message.user.username);
-			transaction(message, () => {
-				try {
-					publish(message, data, message);
-				} catch (error) {
-					warn('Failed to publish will', data);
-				}
-				LastWill.delete(will.id, message);
-			});
+			try {
+				await publish(message, data, message);
+			} catch (error) {
+				warn('Failed to publish will', data);
+			}
+			LastWill.delete(will.id);
 		}
 	})();
 }
