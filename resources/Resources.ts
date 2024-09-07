@@ -52,7 +52,12 @@ export class Resources extends Map<string, typeof Resource> {
 		let found_entry;
 		while ((slash_index = url.indexOf('/', slash_index)) > -1) {
 			const resource_path = url.slice(0, slash_index);
-			const entry = this.get(resource_path);
+			let entry = this.get(resource_path);
+			if (!entry && resource_path.indexOf('.') > -1) {
+				// try to match the first part of the path if the .extension
+				const parts = resource_path.split('.');
+				entry = this.get(parts[0]);
+			}
 			if (entry && (!export_type || entry.exportTypes?.[export_type] !== false)) {
 				entry.relativeURL = url.slice(slash_index);
 				if (!entry.hasSubPaths) {
@@ -67,6 +72,9 @@ export class Resources extends Map<string, typeof Resource> {
 		const search_index = url.indexOf('?');
 		const path = search_index > -1 ? url.slice(0, search_index) : url;
 		found_entry = this.get(path);
+		if (!found_entry && path.indexOf('.') > -1) {
+			found_entry = this.get(path.split('.')[0]);
+		}
 		if (found_entry && (!export_type || found_entry.exportTypes?.[export_type] !== false)) {
 			found_entry.relativeURL = search_index > -1 ? url.slice(search_index) : '';
 		} else if (!found_entry) {

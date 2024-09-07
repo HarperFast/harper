@@ -83,6 +83,7 @@ const INVALIDATED = 1;
 const EVICTED = 8; // note that 2 is reserved for timestamps
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;
+const EVENT_HIGH_WATER_MARK = 100;
 const FULL_PERMISSIONS = {
 	read: true,
 	insert: true,
@@ -2073,6 +2074,7 @@ export function makeTable(options) {
 			}
 			if (!request) request = {};
 			const get_full_record = !request.rawEvents;
+			let pending_real_time_queue = []; // while we are servicing a loop for older messages, we have to queue up real-time messages and deliver them in order
 			const subscription = addSubscription(
 				TableResource,
 				this[ID_PROPERTY] ?? null, // treat undefined and null as the root
@@ -2092,14 +2094,16 @@ export function makeTable(options) {
 							}
 							type = 'put';
 						}
-						this.send({
+						const event = {
 							id,
 							timestamp,
 							value,
 							version: audit_record.version,
 							type,
 							beginTxn: begin_txn,
-						});
+						};
+						if (pending_real_time_queue) pending_real_time_queue.push(event);
+						else this.send(event);
 					} catch (error) {
 						logger.error?.(error);
 					}
@@ -2107,115 +2111,136 @@ export function makeTable(options) {
 				request.startTime || 0,
 				request
 			);
-			if (this[IS_COLLECTION]) {
-				subscription.includeDescendants = true;
-				if (request.onlyChildren) subscription.onlyChildren = true;
-			}
-			if (request.supportsTransactions) subscription.supportsTransactions = true;
-			const this_id = this[ID_PROPERTY];
-			let count = request.previousCount;
-			if (count > 1000) count = 1000; // don't allow too many, we have to hold these in memory
-			let start_time = request.startTime;
-			if (this[IS_COLLECTION]) {
-				// a collection should retrieve all descendant ids
-				if (start_time) {
-					if (count)
-						throw new ClientError('startTime and previousCount can not be combined for a table level subscription');
-					// start time specified, get the audit history for this time range
-					for (const { key, value: audit_entry } of audit_store.getRange({
-						start: start_time,
-						exclusiveStart: true,
-					})) {
-						const audit_record = readAuditEntry(audit_entry);
-						if (audit_record.tableId !== table_id) continue;
-						const id = audit_record.recordId;
-						if (this_id == null || isDescendantId(this_id, id)) {
-							const value = audit_record.getValue(primary_store, get_full_record, key);
-							subscription.send({ id, timestamp: key, value, version: audit_record.version, type: audit_record.type });
-						}
-						// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
-						//await rest(); // yield for fairness
-						subscription.startTime = key; // update so don't double send
-					}
-				} else if (count) {
-					const history = [];
-					// we are collecting the history in reverse order to get the right count, then reversing to send
-					for (const { key, value: audit_entry } of audit_store.getRange({ start: 'z', end: false, reverse: true })) {
-						try {
+			const result = (async () => {
+				if (this[IS_COLLECTION]) {
+					subscription.includeDescendants = true;
+					if (request.onlyChildren) subscription.onlyChildren = true;
+				}
+				if (request.supportsTransactions) subscription.supportsTransactions = true;
+				const this_id = this[ID_PROPERTY];
+				let count = request.previousCount;
+				if (count > 1000) count = 1000; // don't allow too many, we have to hold these in memory
+				let start_time = request.startTime;
+				if (this[IS_COLLECTION]) {
+					// a collection should retrieve all descendant ids
+					if (start_time) {
+						if (count)
+							throw new ClientError('startTime and previousCount can not be combined for a table level subscription');
+						// start time specified, get the audit history for this time range
+						for (const { key, value: audit_entry } of audit_store.getRange({
+							start: start_time,
+							exclusiveStart: true,
+						})) {
 							const audit_record = readAuditEntry(audit_entry);
 							if (audit_record.tableId !== table_id) continue;
 							const id = audit_record.recordId;
 							if (this_id == null || isDescendantId(this_id, id)) {
 								const value = audit_record.getValue(primary_store, get_full_record, key);
-								history.push({ id, timestamp: key, value, version: audit_record.version, type: audit_record.type });
-								if (--count <= 0) break;
+								subscription.send({
+									id,
+									timestamp: key,
+									value,
+									version: audit_record.version,
+									type: audit_record.type,
+								});
+								if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+									// if we have too many messages, we need to pause and let the client catch up
+									if ((await subscription.waitForDrain()) === false) return;
+								}
 							}
-						} catch (error) {
-							logger.error?.('Error getting history entry', key, error);
+							// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
+							//await rest(); // yield for fairness
+							subscription.startTime = key; // update so don't double send
 						}
-						// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
-						//await rest(); // yield for fairness
+					} else if (count) {
+						const history = [];
+						// we are collecting the history in reverse order to get the right count, then reversing to send
+						for (const { key, value: audit_entry } of audit_store.getRange({ start: 'z', end: false, reverse: true })) {
+							try {
+								const audit_record = readAuditEntry(audit_entry);
+								if (audit_record.tableId !== table_id) continue;
+								const id = audit_record.recordId;
+								if (this_id == null || isDescendantId(this_id, id)) {
+									const value = audit_record.getValue(primary_store, get_full_record, key);
+									history.push({ id, timestamp: key, value, version: audit_record.version, type: audit_record.type });
+									if (--count <= 0) break;
+								}
+							} catch (error) {
+								logger.error('Error getting history entry', key, error);
+							}
+							// TODO: Would like to do this asynchronously, but would need to catch up on anything published during iteration
+							//await rest(); // yield for fairness
+						}
+						for (let i = history.length; i > 0; ) {
+							subscription.send(history[--i]);
+						}
+						if (history[0]) subscription.startTime = history[0].timestamp; // update so don't double send
+					} else if (!request.omitCurrent) {
+						for (const { key: id, value, version, localTime } of primary_store.getRange({
+							start: this_id ?? false,
+							end: this_id == null ? undefined : [this_id, MAXIMUM_KEY],
+							versions: true,
+						})) {
+							if (!value) continue;
+							subscription.send({ id, timestamp: localTime, value, version, type: 'put' });
+							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
+								// if we have too many messages, we need to pause and let the client catch up
+								if ((await subscription.waitForDrain()) === false) return;
+							}
+						}
 					}
-					for (let i = history.length; i > 0; ) {
-						subscription.send(history[--i]);
+				} else {
+					if (count && !start_time) start_time = 0;
+					let local_time = this[ENTRY_PROPERTY]?.localTime;
+					if (local_time === PENDING_LOCAL_TIME) {
+						// we can't use the pending commit because it doesn't have the local audit time yet,
+						// so try to retrieve the previous/committed record
+						primary_store.cache?.delete(this_id);
+						this[ENTRY_PROPERTY] = primary_store.getEntry(this_id);
+						logger.trace?.('re-retrieved record', local_time, this[ENTRY_PROPERTY]?.localTime);
+						local_time = this[ENTRY_PROPERTY]?.localTime;
 					}
-					if (history[0]) subscription.startTime = history[0].timestamp; // update so don't double send
-				} else if (!request.omitCurrent) {
-					for (const { key: id, value, version, localTime } of primary_store.getRange({
-						start: this_id ?? false,
-						end: this_id == null ? undefined : [this_id, MAXIMUM_KEY],
-						versions: true,
-					})) {
-						if (!value) continue;
-						subscription.send({ id, timestamp: localTime, value, version, type: 'put' });
+					logger.trace?.('Subscription from', start_time, 'from', this_id, local_time);
+					if (start_time < local_time) {
+						// start time specified, get the audit history for this record
+						const history = [];
+						let next_time = local_time;
+						do {
+							//TODO: Would like to do this asynchronously, but we will need to run catch after this to ensure we didn't miss anything
+							//await audit_store.prefetch([key]); // do it asynchronously for better fairness/concurrency and avoid page faults
+							const audit_entry = audit_store.get(next_time);
+							if (audit_entry) {
+								request.omitCurrent = true; // we are sending the current version from history, so don't double send
+								const audit_record = readAuditEntry(audit_entry);
+								const value = audit_record.getValue(primary_store, get_full_record, next_time);
+								if (get_full_record) audit_record.type = 'put';
+								history.push({ id: this_id, value, timestamp: next_time, ...audit_record });
+								next_time = audit_record.previousLocalTime;
+							} else break;
+							if (count) count--;
+						} while (next_time > start_time && count !== 0);
+						for (let i = history.length; i > 0; ) {
+							subscription.send(history[--i]);
+						}
+						subscription.startTime = local_time; // make sure we don't re-broadcast the current version that we already sent
+					}
+					if (!request.omitCurrent && this.doesExist()) {
+						// if retain and it exists, send the current value first
+						subscription.send({
+							id: this_id,
+							timestamp: local_time,
+							value: this[RECORD_PROPERTY],
+							version: this[VERSION_PROPERTY],
+							type: 'put',
+						});
 					}
 				}
-			} else {
-				if (count && !start_time) start_time = 0;
-				let local_time = this[ENTRY_PROPERTY]?.localTime;
-				if (local_time === PENDING_LOCAL_TIME) {
-					// we can't use the pending commit because it doesn't have the local audit time yet,
-					// so try to retrieve the previous/committed record
-					primary_store.cache?.delete(this_id);
-					this[ENTRY_PROPERTY] = primary_store.getEntry(this_id);
-					logger.trace?.('re-retrieved record', local_time, this[ENTRY_PROPERTY]?.localTime);
-					local_time = this[ENTRY_PROPERTY]?.localTime;
+				// now send any queued messages
+				for (const event of pending_real_time_queue) {
+					subscription.send(event);
 				}
-				logger.trace?.('Subscription from', start_time, 'from', this_id, local_time);
-				if (start_time < local_time) {
-					// start time specified, get the audit history for this record
-					const history = [];
-					let next_time = local_time;
-					do {
-						//TODO: Would like to do this asynchronously, but we will need to run catch after this to ensure we didn't miss anything
-						//await audit_store.prefetch([key]); // do it asynchronously for better fairness/concurrency and avoid page faults
-						const audit_entry = audit_store.get(next_time);
-						if (audit_entry) {
-							request.omitCurrent = true; // we are sending the current version from history, so don't double send
-							const audit_record = readAuditEntry(audit_entry);
-							const value = audit_record.getValue(primary_store, get_full_record, next_time);
-							if (get_full_record) audit_record.type = 'put';
-							history.push({ id: this_id, value, timestamp: next_time, ...audit_record });
-							next_time = audit_record.previousLocalTime;
-						} else break;
-						if (count) count--;
-					} while (next_time > start_time && count !== 0);
-					for (let i = history.length; i > 0; ) {
-						subscription.send(history[--i]);
-					}
-					subscription.startTime = local_time; // make sure we don't re-broadcast the current version that we already sent
-				}
-				if (!request.omitCurrent && this.doesExist()) {
-					// if retain and it exists, send the current value first
-					subscription.send({
-						id: this_id,
-						timestamp: local_time,
-						value: this[RECORD_PROPERTY],
-						version: this[VERSION_PROPERTY],
-						type: 'put',
-					});
-				}
-			}
+				pending_real_time_queue = null;
+			})();
 			if (request.listener) subscription.on('data', request.listener);
 			return subscription;
 		}
@@ -2459,13 +2484,21 @@ export function makeTable(options) {
 		static getRecordCount(options) {
 			// iterate through the metadata entries to exclude their count and exclude the deletion counts
 			const entry_count = primary_store.getStats().entryCount;
-			const MAX_EXACT_COUNT = 5000;
-			const SAMPLE_END_SIZE = 1000;
-			let limit;
-			if (entry_count > MAX_EXACT_COUNT && !options?.exactCount) limit = SAMPLE_END_SIZE;
+			const TIME_LIMIT = 1000 / 2; // one second time limit, enforced by seeing if we are halfway through at 500ms
+			const start = performance.now();
+			const halfway = Math.floor(entry_count / 2);
+			const exact_count = options?.exactCount;
 			let record_count = 0;
-			for (const { value } of primary_store.getRange({ start: true, lazy: true, limit })) {
+			let entries_scanned = 0;
+			let limit: number;
+			for (const { value } of primary_store.getRange({ start: true, lazy: true })) {
 				if (value != null) record_count++;
+				entries_scanned++;
+				if (!exact_count && entries_scanned < halfway && performance.now() - start > TIME_LIMIT) {
+					// it is taking too long, so we will just take this sample and a sample from the end to estimate
+					limit = entries_scanned;
+					break;
+				}
 			}
 			if (limit) {
 				// in this case we are going to make an estimate of the table count using the first thousand
@@ -2482,7 +2515,9 @@ export function makeTable(options) {
 					(record_rate * (1 - record_rate)) / sample_size;
 				const sd = Math.max(Math.sqrt(variance) * entry_count, 1);
 				const estimated_record_count = Math.round(record_rate * entry_count);
-				const lower_ci_limit = Math.max(estimated_record_count - 1.96 * sd, 0);
+				// TODO: This uses a normal/Wald interval, but a binomial confidence interval is probably better calculated using
+				// Wilson score interval or Agresti-Coull interval (I think the latter is a little easier to calculate/implement).
+				const lower_ci_limit = Math.max(estimated_record_count - 1.96 * sd, record_count + first_record_count);
 				const upper_ci_limit = Math.min(estimated_record_count + 1.96 * sd, entry_count);
 				let significant_unit = Math.pow(10, Math.round(Math.log10(sd)));
 				if (significant_unit > estimated_record_count) significant_unit = significant_unit / 10;
@@ -3456,33 +3491,41 @@ const ENDS_WITH_TIMEZONE = /[+-][0-9]{2}:[0-9]{2}|[a-zA-Z]$/;
  * @param attribute
  * @returns
  */
-export function coerceType(value, attribute) {
+export function coerceType(value: any, attribute: any): any {
 	const type = attribute?.type;
 	//if a type is String is it safe to execute a .toString() on the value and return? Does not work for Array/Object so we would need to detect if is either of those first
 	if (value === null) {
 		return value;
 	} else if (value === '' && type && type !== 'String' && type !== 'Any') {
 		return null;
-	} else if (type === 'Int' || type === 'Long')
-		// allow $ prefix as special syntax for more compact numeric representations and then use parseInt to force being an integer (might consider Math.floor, which is a little faster, but rounds in a different way with negative numbers).
-		return value[0] === '$' ? parseInt(value.slice(1), 36) : value === 'null' ? null : parseInt(value);
-	else if (type === 'Float') return value === 'null' ? null : +value;
-	else if (type === 'BigInt') return value === 'null' ? null : BigInt(value);
-	else if (type === 'Boolean') return value === 'true' ? true : value === 'false' ? false : value;
-	else if (type === 'Date') {
-		if (isNaN(value)) {
-			if (value === 'null') return null;
-			//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
-			if (!ENDS_WITH_TIMEZONE.test(value)) {
-				value += 'Z';
-			}
-			return new Date(value);
-		}
-		return new Date(+value); // epoch ms number
-	} else if (!type || type === 'Any') {
-		return autoCast(value);
 	}
-	return value;
+	switch (type) {
+		case 'Int':
+		case 'Long':
+			// allow $ prefix as special syntax for more compact numeric representations and then use parseInt to force being an integer (might consider Math.floor, which is a little faster, but rounds in a different way with negative numbers).
+			return value[0] === '$' ? parseInt(value.slice(1), 36) : value === 'null' ? null : parseInt(value);
+		case 'Float':
+			return value === 'null' ? null : parseFloat(value);
+		case 'BigInt':
+			return value === 'null' ? null : BigInt(value);
+		case 'Boolean':
+			return value === 'true' ? true : value === 'false' ? false : value;
+		case 'Date':
+			if (isNaN(value)) {
+				if (value === 'null') return null;
+				//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
+				if (!ENDS_WITH_TIMEZONE.test(value)) {
+					value += 'Z';
+				}
+				return new Date(value);
+			}
+			return new Date(+value); // epoch ms number
+		case undefined:
+		case 'Any':
+			return autoCast(value);
+		default:
+			return value;
+	}
 }
 function isDescendantId(ancestor_id, descendant_id): boolean {
 	if (ancestor_id == null) return true; // ancestor of all ids

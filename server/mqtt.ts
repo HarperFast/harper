@@ -6,7 +6,7 @@ import { getSuperUser } from '../security/user';
 import { serializeMessage, getDeserializer } from './serverHelpers/contentTypes';
 import { recordAction, addAnalyticsListener, recordActionBinary } from '../resources/analytics';
 import { server } from '../server/Server';
-import { get } from '../utility/environment/environmentManager.js';
+import { get } from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms';
 import { loggerWithTag } from '../utility/logging/logger.js';
 import { EventEmitter } from 'events';
@@ -39,13 +39,8 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 				mqtt_log.debug?.('Received WebSocket connection for MQTT from', ws._socket.remoteAddress);
 				const { onMessage, onClose } = onSocket(
 					ws,
-					(message, allow_backpressure) => {
+					(message) => {
 						ws.send(message);
-						// This can be used for back-pressure. Most of the time with real-time data, it is probably more
-						// efficient to immediately deliver and let the buffers queue the data, but when iterating through
-						// a database/audit log, we could employ back-pressure to do this with less memory pressure
-						if (allow_backpressure && ws._socket.writableNeedDrain)
-							return new Promise((resolve) => this._socket.once('drain', resolve));
 					},
 					request,
 					Promise.resolve(chain_completion).then(() => request?.user),
@@ -79,7 +74,7 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 									try {
 										user = await server.getUser(username, null, null);
 										if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
-											auth_event_log.notify({
+											auth_event_log.notify?.({
 												username: user?.username,
 												status: AUTH_AUDIT_STATUS.SUCCESS,
 												type: AUTH_AUDIT_TYPES.AUTHENTICATION,
@@ -192,7 +187,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						try {
 							user = await server.getUser(packet.username, packet.password.toString(), request);
 							if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
-								auth_event_log.notify({
+								auth_event_log.notify?.({
 									username: user?.username,
 									status: AUTH_AUDIT_STATUS.SUCCESS,
 									type: AUTH_AUDIT_TYPES.AUTHENTICATION,
@@ -275,6 +270,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					});
 					session.setListener((topic, message, message_id, subscription) => {
 						try {
+							if (disconnected) throw new Error('Session disconnected while trying to send message to', topic);
 							const slash_index = topic.indexOf('/', 1);
 							const general_topic = slash_index > 0 ? topic.slice(0, slash_index) : topic;
 							sendPacket(
@@ -287,10 +283,17 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 								},
 								general_topic
 							);
+							// wait if there is back-pressure
+							const raw_socket = socket._socket ?? socket;
+							if (raw_socket.writableNeedDrain) {
+								return new Promise((resolve) => raw_socket.once('drain', resolve));
+							}
+							return !raw_socket.closed;
 						} catch (error) {
 							mqtt_log.error?.(error);
 							session?.disconnect();
 							mqtt_settings.sessions.delete(session);
+							return false;
 						}
 					});
 					if (session.sessionWasPresent) await session.resume();

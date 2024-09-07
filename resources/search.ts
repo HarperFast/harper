@@ -3,6 +3,7 @@ import * as lmdb_terms from '../utility/lmdb/terms';
 import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
 import { RangeIterable, SKIP } from 'lmdb';
 import { join } from 'path';
+import { MultiPartId } from './Resource';
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;
 const BETWEEN_ESTIMATE = 0.1;
@@ -1035,6 +1036,12 @@ function decodeProperty(name) {
 function typedDecoding(value) {
 	// for non-strict operators, we allow for coercion of types
 	if (value === 'null') return null;
+	if (value.indexOf('/') > -1) {
+		const parts = value.split('/');
+		const multi_part = new MultiPartId(parts.length);
+		for (let i = 0, l = parts.length; i < l; i++) multi_part[i] = typedDecoding(parts[i]);
+		return multi_part;
+	}
 	if (value.indexOf(':') > -1) {
 		const [type, value_to_coerce] = value.split(':');
 		if (type === 'number') {

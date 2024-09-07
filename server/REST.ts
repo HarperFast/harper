@@ -258,7 +258,8 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 		});
 		let deserializer;
 		ws.on('message', function message(body) {
-			if (!deserializer) deserializer = getDeserializer(request.headers.asObject['content-type']);
+			if (!deserializer)
+				deserializer = getDeserializer(request.requestedContentType ?? request.headers.asObject['content-type'], false);
 			const data = deserializer(body);
 			incoming_messages.push(data);
 		});

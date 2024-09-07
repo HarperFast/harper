@@ -42,8 +42,9 @@ export class DatabaseTransaction implements Transaction {
 			return this.readTxn;
 		}
 		if (this.open !== TRANSACTION_STATE.OPEN) return; // can not start a new read transaction as there is no future commit that will take place, just have to allow the read to latest database state
-		this.readTxnsUsed = 1;
+		// Get a read transaction from lmdb-js; make sure we do this first, as it can fail, we don't want to leave the transaction in a bad state with readTxnsUsed > 0
 		this.readTxn = this.lmdbDb.useReadTransaction();
+		this.readTxnsUsed = 1;
 		if (this.readTxn.openTimer) this.readTxn.openTimer = 0;
 		tracked_txns.add(this);
 		return this.readTxn;

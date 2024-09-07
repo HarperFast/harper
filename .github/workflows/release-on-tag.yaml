@@ -284,6 +284,7 @@ jobs:
           EXTRA_TAGS: "${{ needs.meta.outputs.npm_extra_tags }}"
           DRYRUN: ${{ needs.meta.outputs.dryrun }}
         run: ./.github/scripts/npm-publish.sh
+        continue-on-error: true
 
   #########################################
   #  Release to dockerhub harperdb/private

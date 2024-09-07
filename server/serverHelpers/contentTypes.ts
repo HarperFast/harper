@@ -240,12 +240,12 @@ const registerFastifySerializers = fp(
  */
 export function findBestSerializer(incoming_message) {
 	const headers_object = incoming_message.headers.asObject || incoming_message.headers;
-	const accept_header = headers_object.accept;
+	const accept_type = incoming_message.requestedContentType ?? headers_object.accept;
 	let best_serializer;
 	let best_quality = 0;
 	let best_type;
 	let best_parameters;
-	const accept_types = accept_header ? accept_header.toLowerCase().split(/\s*,\s*/) : [];
+	const accept_types = accept_type ? accept_type.toLowerCase().split(/\s*,\s*/) : [];
 	for (const accept_type of accept_types) {
 		const [type, ...parameter_parts] = accept_type.split(/\s*;\s*/);
 		let client_quality = 1;
@@ -267,7 +267,7 @@ export function findBestSerializer(incoming_message) {
 		}
 	}
 	if (!best_serializer) {
-		if (accept_header) {
+		if (accept_type) {
 			throw new ClientError(
 				'No supported content types found in Accept header, supported types include: ' +
 					Array.from(media_types.keys()).join(', '),
@@ -379,7 +379,7 @@ function streamToBuffer(stream) {
 		stream.on('error', reject);
 	});
 }
-export function getDeserializer(content_type, streaming) {
+export function getDeserializer(content_type: string, streaming: boolean) {
 	if (!content_type) content_type = '';
 	const parameters_start = content_type.indexOf(';');
 	let parameters;
