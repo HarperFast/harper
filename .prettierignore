@@ -1,30 +1,5 @@
-# Ignore artifacts:
-.idea/*
-.github/
-.nyc_output/
-coverage
-custom_function_template
-application-template
+# This file extends the .gitignore file to include files that should not be formatted by Prettier
+# Only list additional files and directories that aren't already in `.gitignore`
+
+application-template/
 studio/
-integrationTests/
-node_modules/
-npm_pack/
-test/
-.babelrc
-.eslintbuild
-.eslintignore
-.eslintrc.json
-.gitignore
-.gitmodules
-LICENSE
-package.json
-package-lock.json
-README.md
-sonar-project.properties
-hdb/*
-*.log
-.vs_code/*
-/bin/coverage/*
-hdb_boot_properties.file
-*test_export.json.json
-/unitTests/envDir/*

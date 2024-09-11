@@ -44,8 +44,6 @@
   "license": "SEE LICENSE IN LICENSE",
   "scripts": {
     "submodules": "git submodule update --init --recursive",
-    "build": "eslint -c ./.eslintbuild bin/ dataLayer/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
-    "pretty": "eslint --fix bin/ dataLayer/ security/ server/ sqlTranslator/ upgrade/ utility/ validation/",
     "cover:test": "pm2 kill && rimraf ./.nyc_output/* && node utility/devops/register.js --reset_license && nyc --no-clean --reporter=lcovonly npm run test:replication && nyc --no-clean --reporter=lcovonly npm run test:apitests && nyc --no-clean --reporter=lcovonly npm run test:resources && nyc --no-clean --reporter=lcovonly npm run test:logging && nyc --no-clean --reporter=lcovonly npm run test:upgrade && nyc --no-clean --reporter=lcovonly npm run test:nats && nyc --no-clean --reporter=lcovonly npm run test:cfserver && nyc --no-clean --reporter=lcovonly npm run test:hdbserver && nyc --no-clean --reporter=lcovonly npm run test:bin && nyc --no-clean --reporter=lcovonly npm run test:main && nyc --no-clean --reporter=lcovonly npm run test:security && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license",
     "test": "pm2 kill && rimraf ./.nyc_output/* && node utility/devops/register.js --reset_license && npm run test:replication && npm run test:apitests && npm run test:resources && npm run test:logging && npm run test:upgrade && npm run test:nats && npm run test:cfserver && npm run test:hdbserver && npm run test:bin && npm run test:main && npm run test:security && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license",
     "test:resources": "cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/resources/**/*.js' --config '../unitTests/.mocharc.json'",
@@ -146,16 +144,15 @@
   "devDependencies": {
     "@tsconfig/node16": "^1.0.3",
     "@types/node": "20.14.8",
-    "@typescript-eslint/eslint-plugin": "^5.55.0",
-    "@typescript-eslint/parser": "^5.55.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
     "axios": "1.7.5",
     "chai": "4.4.1",
     "chai-integer": "0.1.0",
     "esbuild": "^0.20.2",
-    "eslint": "8.22.0",
+    "eslint": "^8.57.0",
     "eslint-config-prettier": "8.3.0",
-    "eslint-plugin-prettier": "3.4.1",
-    "eslint-plugin-radar": "0.2.1",
+    "eslint-plugin-sonarjs": "^2.0.2",
     "eventsource": "^2.0.2",
     "hook-std": "3.0.0",
     "intercept-stdout": "0.1.2",
@@ -178,9 +175,6 @@
     "why-is-node-still-running": "^1.0.0"
   },
   "overrides": {
-    "eslint-plugin-radar": {
-      "eslint": "8.22.0"
-    },
     "alasql": {
       "xlsx": "0.18.5"
     }

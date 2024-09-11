@@ -1,28 +1,24 @@
 {
   "env": {
-    "es6": true,
     "node": true,
     "mocha": true
   },
-  "extends": ["eslint:recommended", "plugin:prettier/recommended", "plugin:radar/recommended", "plugin:@typescript-eslint/recommended"],
-  "plugins": ["radar", "@typescript-eslint"],
+  "extends": ["eslint:recommended", "plugin:@typescript-eslint/recommended", "plugin:sonarjs/recommended-legacy", "prettier"],
+  "plugins": ["@typescript-eslint", "sonarjs"],
   "parser": "@typescript-eslint/parser",
   "parserOptions": {
-    "sourceType": "module",
-    "project": true,
-    "ecmaVersion": 2019
+    "projectService": true
   },
+  "root": true,
   "rules": {
-    "no-unused-vars": "off",
     "no-console": "off",
-    "no-control-regex": "off",
-    "no-case-declarations": "off",
-    "radar/cognitive-complexity": ["error", 250],
-    "radar/no-useless-catch": "off",
-    "radar/no-identical-functions": "off",
-    "radar/no-inverted-boolean-check": "off",
-    "radar/no-duplicated-branches": "off",
-    "radar/no-redundant-jump": "off",
+    "sonarjs/cognitive-complexity": ["error", 250],
+    "sonarjs/no-useless-catch": "off",
+    "sonarjs/no-identical-functions": "off",
+    "sonarjs/no-inverted-boolean-check": "off",
+    "sonarjs/no-duplicated-branches": "off",
+    "sonarjs/no-redundant-jump": "off",
+    "sonarjs/new-cap": "off",
     "@typescript-eslint/no-explicit-any": "off",
     "@typescript-eslint/no-var-requires": "off"
   }

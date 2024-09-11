@@ -2,8 +2,8 @@
 #Excludes from obfuscation
 EXCLUDE="docs,json,integrationTests,node_modules,unitTests,./test,./utility/devops"
 #ADD directories and files required for running and downstream tests
-ADD="node_modules/ integrationTests/ json/ package.json .eslintbuild .eslintrc.json"
-ADD_PROD="json/ .eslintbuild .eslintrc.json"
+ADD="node_modules/ integrationTests/ json/ package.json .eslintrc.json"
+ADD_PROD="json/ .eslintrc.json"
 
 #ADD2_DIR is path for ADD2 misc files for running harperdb.
 ADD2_DIR="utility/install"
