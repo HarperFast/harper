@@ -18,6 +18,8 @@ const { restartWorkers, onMessageByType } = require('../server/threads/manageThr
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 const env_mgr = require('../utility/environment/environmentManager');
+const { sendOperationToNode, getThisNodeName, monitorNodeCAs } = require('../server/replication/replicator');
+const { getHDBNodeTable } = require('../server/replication/knownNodes');
 env_mgr.initSync();
 
 const RESTART_RESPONSE = `Restarting HarperDB. This may take up to ${hdb_terms.RESTART_TIMEOUT_MS / 1000} seconds.`;
@@ -112,12 +114,15 @@ async function restartService(req) {
 
 	pm2_mode = await process_man.isServiceRegistered(hdb_terms.HDB_PROC_DESCRIPTOR);
 	if (!isMainThread) {
+		if (req.replicated) {
+			monitorNodeCAs(); // get all the CAs from the nodes we know about
+		}
 		parentPort.postMessage({
 			type: hdb_terms.ITC_EVENT_TYPES.RESTART,
 			workerType: service,
 		});
 		parentPort.ref(); // don't let the parent thread exit until we're done
-		return new Promise((resolve) => {
+		await new Promise((resolve) => {
 			parentPort.on('message', (msg) => {
 				if (msg.type === 'restart-complete') {
 					resolve();
@@ -125,6 +130,48 @@ async function restartService(req) {
 				}
 			});
 		});
+		let replicated_responses;
+		if (req.replicated) {
+			req.replicated = false; // don't send a replicated flag to the nodes we are sending to
+			replicated_responses = [];
+			for (let node of server.nodes) {
+				if (node.name === getThisNodeName()) continue;
+				// for now, only one at a time
+				let { job_id } = await sendOperationToNode(node, req);
+				// wait for the job to finish by polling for the completion of the job
+				replicated_responses.push(
+					await new Promise((resolve, reject) => {
+						const RETRY_INTERVAL = 250;
+						let retries_left = 2400; // 10 minutes
+						let interval = setInterval(async () => {
+							if (retries_left-- <= 0) {
+								clearInterval(interval);
+								let error = new Error('Timed out waiting for restart job to complete');
+								error.replicated = replicated_responses; // report the finished restarts
+								reject(error);
+							}
+							let response = await sendOperationToNode(node, {
+								operation: 'get_job',
+								id: job_id,
+							});
+							const job_result = response.results[0];
+							if (job_result.status === 'COMPLETE') {
+								clearInterval(interval);
+								resolve({ node: node.name, message: job_result.message });
+							}
+							if (job_result.status === 'ERROR') {
+								clearInterval(interval);
+								let error = new Error(job_result.message);
+								error.replicated = replicated_responses; // report the finished restarts
+								reject(error);
+							}
+						}, RETRY_INTERVAL);
+					})
+				);
+			}
+			return { replicated: replicated_responses };
+		}
+		return;
 	}
 
 	let err_msg;

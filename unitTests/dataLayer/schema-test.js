@@ -412,7 +412,7 @@ describe('Test schema module', function () {
 			expect(bridge_drop_schema_stub).to.have.been.calledWith(DROP_SCHEMA_OBJECT_TEST);
 			expect(signal_schema_change_stub.args[0][0].operation).to.equal('drop_schema');
 			expect(signal_schema_change_stub.args[0][0].schema).to.equal('dogsrule');
-			expect(result).to.equal(`successfully deleted '${DROP_SCHEMA_OBJECT_TEST.schema}'`);
+			expect(result.message).to.equal(`successfully deleted '${DROP_SCHEMA_OBJECT_TEST.schema}'`);
 			expect(purge_schema_table_stub.called).to.be.true;
 
 			schema_describe_rw();
@@ -495,7 +495,7 @@ describe('Test schema module', function () {
 
 			expect(purge_table_stream_stub.called).to.be.true;
 			expect(bridge_drop_table_stub).to.have.been.calledWith(DROP_TABLE_OBJECT_TEST);
-			expect(result).to.equal(
+			expect(result.message).to.equal(
 				`successfully deleted table '${DROP_TABLE_OBJECT_TEST.schema}.${DROP_TABLE_OBJECT_TEST.table}'`
 			);
 		});

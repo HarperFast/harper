@@ -221,57 +221,67 @@ export async function startOnMainThread(options) {
 		// we try to do this in a deterministic way so that we don't end up with a cycle that short circuits
 		// a node that may have more recent updates, so we try to go to the next node in the list, using
 		// a sorted list of node names that all nodes should have and use.
-		const node_names = Array.from(node_map.keys()).sort();
-		const existing_index = node_names.indexOf(connection.name || urlToNodeName(connection.url));
-		if (existing_index === -1) {
-			logger.warn('Disconnected node not found in node map', connection.name, node_map.keys());
-			return;
-		}
-		let db_replication_workers = connection_replication_map.get(connection.url);
-		const existing_worker_entry = db_replication_workers?.get(connection.database);
-		if (!existing_worker_entry) {
-			logger.warn('Disconnected node not found in replication map', connection.database, db_replication_workers);
-			return;
-		}
-		existing_worker_entry.connected = false;
-		if (connection.finished) return; // intentionally closed connection
-		const main_node = existing_worker_entry.nodes[0];
-		if (!(main_node.replicates === true || main_node.replicates?.sends || main_node.subscriptions?.length)) {
-			// no replication, so just return
-			return;
-		}
-		let next_index = (existing_index + 1) % node_names.length;
-		while (existing_index !== next_index) {
-			const next_node_name = node_names[next_index];
-			const next_node = node_map.get(next_node_name);
-			db_replication_workers = connection_replication_map.get(next_node.url);
-			const failover_worker_entry = db_replication_workers?.get(connection.database);
-			if (!failover_worker_entry) {
-				next_index = (next_index + 1) % node_names.length;
-				continue;
+		try {
+			logger.info('Disconnected from node', connection.name, connection.url, 'finished', !!connection.finished);
+			const node_map_keys = Array.from(node_map.keys());
+			const node_names = node_map_keys.sort();
+			const existing_index = node_names.indexOf(connection.name || urlToNodeName(connection.url));
+			if (existing_index === -1) {
+				logger.warn('Disconnected node not found in node map', connection.name, node_map_keys);
+				return;
 			}
-			const { worker, nodes } = failover_worker_entry;
-			// record which node we are now redirecting to
-			let has_moved_nodes = false;
-			for (const node of existing_worker_entry.nodes) {
-				if (nodes.some((n) => n.name === node.name)) {
-					logger.info(`Disconnected node is already failing over to ${next_node_name} for ${connection.database}`);
+			let db_replication_workers = connection_replication_map.get(connection.url);
+			const existing_worker_entry = db_replication_workers?.get(connection.database);
+			if (!existing_worker_entry) {
+				logger.warn('Disconnected node not found in replication map', connection.database, db_replication_workers);
+				return;
+			}
+			existing_worker_entry.connected = false;
+			if (connection.finished) return; // intentionally closed connection
+			const main_node = existing_worker_entry.nodes[0];
+			if (!(main_node.replicates === true || main_node.replicates?.sends || main_node.subscriptions?.length)) {
+				// no replication, so just return
+				return;
+			}
+			let next_index = (existing_index + 1) % node_names.length;
+			while (existing_index !== next_index) {
+				const next_node_name = node_names[next_index];
+				const next_node = node_map.get(next_node_name);
+				db_replication_workers = connection_replication_map.get(next_node.url);
+				const failover_worker_entry = db_replication_workers?.get(connection.database);
+				if (!failover_worker_entry) {
+					next_index = (next_index + 1) % node_names.length;
 					continue;
 				}
-				nodes.push(node);
-				has_moved_nodes = true;
+				const { worker, nodes } = failover_worker_entry;
+				// record which node we are now redirecting to
+				let has_moved_nodes = false;
+				for (const node of existing_worker_entry.nodes) {
+					if (nodes.some((n) => n.name === node.name)) {
+						logger.info(`Disconnected node is already failing over to ${next_node_name} for ${connection.database}`);
+						continue;
+					}
+					nodes.push(node);
+					has_moved_nodes = true;
+				}
+				if (!has_moved_nodes) {
+					logger.info(`Disconnected node ${connection.name} has no nodes to fail over to ${next_node_name}`);
+					return;
+				}
+				existing_worker_entry.redirectingTo = failover_worker_entry;
+				logger.info(`Failing over ${connection.database} from ${connection.name} to ${next_node_name}`);
+				if (worker) {
+					worker.postMessage({
+						type: 'subscribe-to-node',
+						database: connection.database,
+						nodes,
+					});
+				} else subscribeToNode({ database: connection.database, nodes });
+				return;
 			}
-			if (!has_moved_nodes) return;
-			existing_worker_entry.redirectingTo = failover_worker_entry;
-			logger.info(`Failing over ${connection.database} from ${connection.name} to ${next_node_name}`);
-			if (worker) {
-				worker.postMessage({
-					type: 'subscribe-to-node',
-					database: connection.database,
-					nodes,
-				});
-			} else subscribeToNode({ database: connection.database, nodes });
-			break;
+			logger.warn('Unable to find any other node to fail over to', connection.name, connection.url);
+		} catch (error) {
+			logger.error('Error failing over node', error);
 		}
 	};
 

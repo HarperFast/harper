@@ -50,7 +50,11 @@ const JOB_ID = JOB_NAME.substring(4);
 		harper_logger.trace('Result from job:', JOB_ID, results);
 
 		job_obj.status = hdb_terms.JOB_STATUS_ENUM.COMPLETE;
-		job_obj.message = results;
+		if (typeof results === 'string') job_obj.message = results;
+		else {
+			job_obj.result = results;
+			job_obj.message = 'Successfully completed job: ' + JOB_ID;
+		}
 		job_obj.end_datetime = moment().valueOf();
 		harper_logger.notify('Successfully completed job:', JOB_ID);
 	} catch (err) {

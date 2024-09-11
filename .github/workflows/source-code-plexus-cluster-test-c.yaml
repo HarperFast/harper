@@ -1,4 +1,8 @@
 on:
+  pull_request:
+    paths:
+      - 'server/replication/**'
+    types: [opened, synchronize, reopened]
   workflow_dispatch:
   workflow_call:
 name: Run Source Code Plexus Cluster Test C

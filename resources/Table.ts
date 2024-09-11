@@ -394,6 +394,7 @@ export function makeTable(options) {
 												if (node_id === event.nodeId) node_state.lastTxnTime = event.timestamp;
 											}
 											const seq_id = Math.max(existing_seq?.seqId ?? 1, event.localTime);
+											logger.trace?.('Received txn', database_name, seq_id, event.localTime, event.remoteNodeIds);
 											dbis_db.put(seq_key, {
 												seqId: seq_id,
 												nodes: node_states,
@@ -782,10 +783,11 @@ export function makeTable(options) {
 				} else {
 					// otherwise need to create a new list of nodes to replicate to, based on available nodes
 					// randomize this to ensure distribution of data
-					const starting_index = Math.floor(server.nodes.length * Math.random());
-					replicate_to.push(...server.nodes.slice(starting_index, starting_index + count));
-					const remaining_to_add = starting_index + count - server.nodes.length;
-					if (remaining_to_add > 0) replicate_to.push(...server.nodes.slice(0, remaining_to_add));
+					const nodes = server.nodes.map((node) => node.name);
+					const starting_index = Math.floor(nodes.length * Math.random());
+					replicate_to.push(...nodes.slice(starting_index, starting_index + count));
+					const remaining_to_add = starting_index + count - nodes.length;
+					if (remaining_to_add > 0) replicate_to.push(...nodes.slice(0, remaining_to_add));
 				}
 				return replicate_to;
 			}

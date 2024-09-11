@@ -234,7 +234,7 @@ describe('Replication', () => {
 		before(async function () {
 			this.timeout(100000);
 			await addWorkerNode(2);
-			await new Promise((resolve) => setTimeout(resolve, 500));
+			await new Promise((resolve) => setTimeout(resolve, 1200));
 			console.log('added child_process');
 		});
 		it('A write to the table should replicate to both nodes', async function () {
@@ -312,11 +312,13 @@ describe('Replication', () => {
 
 			for (let server of servers) {
 				for (let client of server._ws.clients) {
+					console.log('breaking connection', client._socket.remoteAddress);
 					client._socket.destroy();
 					break; // only the first one
 				}
 			}
-
+			console.log('broke connection');
+			await new Promise((resolve) => setTimeout(resolve, 100));
 			TestTable.put({
 				id: '6',
 				name,

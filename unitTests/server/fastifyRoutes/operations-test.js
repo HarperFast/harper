@@ -44,7 +44,7 @@ describe('Test custom functions operations', () => {
 	it('Test addComponent creates the project folder with the correct name', async () => {
 		const response = await operations.addComponent({ project: 'unit_test' });
 
-		expect(response).to.equal('Successfully added project: unit_test');
+		expect(response.message).to.equal('Successfully added project: unit_test');
 	});
 
 	it('Test getCustomFunctions returns object with proper length and content', async () => {
@@ -86,7 +86,7 @@ describe('Test custom functions operations', () => {
 			function_content: 'example2',
 		});
 
-		expect(response).to.equal('Successfully updated custom function: example2.js');
+		expect(response.message).to.equal('Successfully updated custom function: example2.js');
 
 		const endpoints = await operations.getCustomFunction({ project: 'unit_test', type: 'routes', file: 'example2' });
 
@@ -101,7 +101,7 @@ describe('Test custom functions operations', () => {
 			function_content: 'example3',
 		});
 
-		expect(response).to.equal('Successfully updated custom function: example2.js');
+		expect(response.message).to.equal('Successfully updated custom function: example2.js');
 
 		const endpoints = await operations.getCustomFunction({ project: 'unit_test', type: 'routes', file: 'example2' });
 
@@ -111,7 +111,7 @@ describe('Test custom functions operations', () => {
 	it('Test dropCustomFunctionProject drops project as expected', async () => {
 		const response = await operations.dropCustomFunctionProject({ project: 'unit_test' });
 
-		expect(response).to.equal('Successfully deleted project: unit_test');
+		expect(response.message).to.equal('Successfully deleted project: unit_test');
 
 		const endpoints = await operations.getCustomFunctions();
 
@@ -156,7 +156,7 @@ describe('Test custom functions operations', () => {
 			});
 			const updated_file = await operations.getComponentFile({ project: 'my-other-component', file: 'config.yaml' });
 			expect(updated_file.message).to.eql('im the new payload');
-			expect(result).to.equal('Successfully set component: config.yaml');
+			expect(result.message).to.equal('Successfully set component: config.yaml');
 		});
 	});
 
@@ -176,7 +176,7 @@ describe('Test custom functions operations', () => {
 				hostname: 'gitlab.com',
 				known_hosts: 'gitlab.com fake1\ngitlab.com fake2',
 			});
-			expect(result).to.eql(`Added ssh key: testkey1`);
+			expect(result.message).to.eql(`Added ssh key: testkey1`);
 
 			// List SSH Keys and get the known hosts
 			result = await operations.listSSHKeys({});
@@ -191,7 +191,7 @@ describe('Test custom functions operations', () => {
 				host: 'testkey2.github.com',
 				hostname: 'github.com',
 			});
-			expect(result).to.eql('Added ssh key: testkey2');
+			expect(result.message).to.eql('Added ssh key: testkey2');
 
 			// List SSH Keys and get the known_hosts
 			result = await operations.listSSHKeys({});
@@ -202,11 +202,11 @@ describe('Test custom functions operations', () => {
 
 			//update
 			result = await operations.updateSSHKey({ name: 'testkey2', key: 'different\nrandom\nstring' });
-			expect(result).to.eql('Updated ssh key: testkey2');
+			expect(result.message).to.eql('Updated ssh key: testkey2');
 
 			//delete
 			result = await operations.deleteSSHKey({ name: 'testkey2' });
-			expect(result).to.eql('Deleted ssh key: testkey2');
+			expect(result.message).to.eql('Deleted ssh key: testkey2');
 
 			//list/get
 			result = await operations.listSSHKeys({});

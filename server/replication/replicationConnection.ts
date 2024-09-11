@@ -118,6 +118,7 @@ export async function createWebSocket(
 	return new WebSocket(url, 'harperdb-replication-v1', ws_options);
 }
 
+const INITIAL_RETRY_TIME = 1000;
 /**
  * This represents a persistent connection to a node for replication, which handles
  * sockets that may be disconnected and reconnected
@@ -125,7 +126,7 @@ export async function createWebSocket(
 export class NodeReplicationConnection extends EventEmitter {
 	socket: WebSocket;
 	startTime: number;
-	retryTime = 2000;
+	retryTime = INITIAL_RETRY_TIME;
 	retries = 0;
 	isConnected = true; // we start out assuming we will be connected
 	isFinished = false;
@@ -152,7 +153,7 @@ export class NodeReplicationConnection extends EventEmitter {
 			this.socket._socket.unref();
 			logger.info?.(`Connected to ${this.url}, db: ${this.databaseName}`);
 			this.retries = 0;
-			this.retryTime = 2000;
+			this.retryTime = INITIAL_RETRY_TIME;
 			// if we have already connected, we need to send a reconnected event
 			connectedToNode({
 				name: this.nodeName,
@@ -403,7 +404,7 @@ export function replicateOverWS(ws, options, authorization) {
 								} else {
 									table = ensureTableIfChanged(table_definition, databases[database_name]?.[table_definition.table]);
 								}
-								if (!audit_store) audit_store = table.auditStore;
+								if (!audit_store) audit_store = table?.auditStore;
 								if (!tables) tables = getDatabases()?.[database_name];
 							}
 						}
@@ -417,6 +418,10 @@ export function replicateOverWS(ws, options, authorization) {
 							const is_authorized_node = authorization?.replicates || authorization?.subscribers || authorization?.name;
 							server.operation(data, { user: authorization }, !is_authorized_node).then(
 								(response) => {
+									if (Array.isArray(response)) {
+										// convert an array to an object so we can have a top-level requestId properly serialized
+										response = { results: response };
+									}
 									response.requestId = data.requestId;
 									ws.send(encode([OPERATION_RESPONSE, response]));
 								},
@@ -721,7 +726,8 @@ export function replicateOverWS(ws, options, authorization) {
 								const value = audit_record.getValue(primary_store, true);
 								JSON.stringify(value);
 							}
-							if (!(subscribed_node_ids[node_id] < local_time)) {
+							const is_within_subscription_range = subscribed_node_ids[node_id] < local_time;
+							if (!is_within_subscription_range) {
 								if (DEBUG_MODE)
 									logger.info?.(
 										connection_id,
@@ -957,7 +963,8 @@ export function replicateOverWS(ws, options, authorization) {
 											// This means the audit log doesn't extend far enough back, so we need to replicate all the tables
 											// This should only be done on a single node, we don't want full table replication from all the
 											// nodes that are connected to this one:
-											if (server.nodes[0] === remote_node_name) {
+											if (server.nodes[0]?.name === remote_node_name) {
+												logger.info?.('Replicating all tables to', remote_node_name);
 												let last_sequence_id = current_sequence_id;
 												const node_id = getThisNodeId(audit_store);
 												for (const table_name in tables) {
@@ -1175,7 +1182,7 @@ export function replicateOverWS(ws, options, authorization) {
 		if (options.connection?.isFinished)
 			throw new Error('Can not make a subscription request on a connection that is already closed');
 		const last_txn_times = new Map();
-		// iterate through all the sequence entries and find the new txn time for each node
+		// iterate through all the sequence entries and find the newest txn time for each node
 		try {
 			for (const entry of table_subscription_to_replicator?.dbisDB?.getRange({
 				start: Symbol.for('seq'),
@@ -1216,25 +1223,41 @@ export function replicateOverWS(ws, options, authorization) {
 
 			const node_id = audit_store && getIdOfRemoteNode(node.name, audit_store);
 			const sequence_entry = table_subscription_to_replicator?.dbisDB?.get([Symbol.for('seq'), node_id]) ?? 1;
+			// if we are connected directly to the node, we start from the last sequence number we received at the top level
 			let start_time =
 				sequence_entry?.seqId ??
 				(typeof node.start_time === 'string' ? new Date(node.start_time).getTime() : node.start_time) ??
 				1;
-			// if we are connected directly to the node, we start from the last sequence number we received at the top level
+			logger.info?.(
+				'Starting time recorded in db',
+				node.name,
+				node_id,
+				database_name,
+				sequence_entry?.seqId,
+				'start time:',
+				start_time
+			);
 			if (connected_node !== node) {
 				// indirect connection through a proxying node
 				if (start_time > 5000) start_time -= 5000; // first, decrement the start time to cover some clock drift between nodes (5 seconds)
-				// if there is last sequence id we received through the proxying node that is newer, we can start from there
+				// if there is a last sequence id we received through the proxying node that is newer, we can start from there
+				const connected_node_id = audit_store && getIdOfRemoteNode(connected_node.name, audit_store);
+				const sequence_entry =
+					table_subscription_to_replicator?.dbisDB?.get([Symbol.for('seq'), connected_node_id]) ?? 1;
 				for (const seq_node of sequence_entry?.nodes || []) {
 					if (seq_node.name === node.name) {
 						start_time = seq_node.seqId;
+						logger.info?.('Using sequence id from proxy node', connected_node.name, start_time);
 					}
 				}
 			}
 			receiving_data_from_node_ids.push(node_id);
 			// if another node had previously acted as a proxy, it may not have the same sequence ids, but we can use the last
 			// originating txn time, and sequence ids should always be higher than their originating txn time, and starting from them should overlap
-			if (last_txn_times.get(node_id) > start_time) start_time = last_txn_times.get(node_id);
+			if (last_txn_times.get(node_id) > start_time) {
+				start_time = last_txn_times.get(node_id);
+				logger.info?.('Updating start time from more recent txn recorded', connected_node.name, start_time);
+			}
 			return {
 				name: node.name,
 				replicateByDefault: replicate_by_default,
@@ -1289,9 +1312,6 @@ export function replicateOverWS(ws, options, authorization) {
 			logger.warn?.(`No database named "${database_name}" was declared and registered`);
 		}
 		audit_store = table_subscription_to_replicator?.auditStore;
-		if (!audit_store) {
-			logger.warn?.('No audit store found in ' + database_name + ' creating it');
-		}
 		if (!tables) tables = getDatabases()?.[database_name];
 
 		const this_node_name = getThisNodeName();
@@ -1440,6 +1460,11 @@ class Encoder {
 }
 // Check the attributes in the msg vs the table and if they dont match call ensureTable to create them
 function ensureTableIfChanged(table_definition, existing_table) {
+	const db_name = table_definition.database ?? 'data';
+	if (db_name !== 'data' && !databases[db_name]) {
+		logger.warn?.('Database not found', table_definition.database);
+		return;
+	}
 	if (!existing_table) existing_table = {};
 	let has_changes = false;
 	const schema_defined = table_definition.schemaDefined;

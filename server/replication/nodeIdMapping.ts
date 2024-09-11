@@ -5,21 +5,21 @@ import * as logger from '../../utility/logging/logger';
 import { getThisNodeName } from './replicator';
 import { pack, unpack } from 'msgpackr';
 
+const REMOTE_NODE_IDS = Symbol.for('remote-ids');
 function getIdMappingRecord(audit_store) {
-	let id_mapping_record = audit_store.idMapping;
+	const id_mapping_record_buffer = audit_store.get(REMOTE_NODE_IDS);
+	let id_mapping_record = id_mapping_record_buffer ? unpack(id_mapping_record_buffer) : null;
 	if (!id_mapping_record) {
-		const id_mapping_record_buffer = audit_store.get(Symbol.for('remote-ids'));
-		audit_store.idMapping = id_mapping_record = id_mapping_record_buffer ? unpack(id_mapping_record_buffer) : null;
+		id_mapping_record = { remoteNameToId: {} };
 	}
-	if (!id_mapping_record) {
-		// this is the default mapping for the local node (id of 0 is used for the first node name assigned to the local node,
-		// although if the node name is changed, which should take place in a clone node operation, we will get a new node name
-		// and node id)
-		id_mapping_record = {
-			nodeName: getThisNodeName(),
-			remoteNameToId: { [getThisNodeName()]: 0 },
-		};
-		audit_store.putSync(Symbol.for('remote-ids'), pack(id_mapping_record));
+	// this is the default mapping for the local node (id of 0 is used for local)
+	// TODO: We should add an option so the if the node name is changed, which should take place in a clone node operation, we will get a new node name and node id)
+	const node_name = getThisNodeName();
+	const has_changes = false;
+	id_mapping_record.nodeName = getThisNodeName();
+	if (id_mapping_record.remoteNameToId[node_name] !== 0) {
+		id_mapping_record.remoteNameToId[node_name] = 0;
+		audit_store.putSync(REMOTE_NODE_IDS, pack(id_mapping_record));
 	}
 	return id_mapping_record;
 }
@@ -35,7 +35,6 @@ export function remoteToLocalNodeId(remote_node_name, remote_mapping, audit_stor
 	const name_to_id = id_mapping_record.remoteNameToId;
 	const remote_to_local_id = new Map();
 	let has_changes = false;
-	remote_mapping[remote_node_name] = 0; // Self-originating writes are always 0
 	for (const remote_node_name in remote_mapping) {
 		const remote_id = remote_mapping[remote_node_name];
 		let local_id = name_to_id[remote_node_name];
@@ -54,7 +53,7 @@ export function remoteToLocalNodeId(remote_node_name, remote_mapping, audit_stor
 		remote_to_local_id.set(remote_id, local_id);
 	}
 	if (has_changes) {
-		audit_store.putSync(Symbol.for('remote-ids'), pack(id_mapping_record));
+		audit_store.putSync(REMOTE_NODE_IDS, pack(id_mapping_record));
 	}
 	return remote_to_local_id;
 }
@@ -73,7 +72,7 @@ export function getIdOfRemoteNode(remote_node_name, audit_store) {
 		}
 		id = last_id + 1;
 		name_to_id[remote_node_name] = id;
-		audit_store.putSync(Symbol.for('remote-ids'), pack(id_mapping_record));
+		audit_store.putSync(REMOTE_NODE_IDS, pack(id_mapping_record));
 	}
 	logger.info?.('The remote node name map', remote_node_name, name_to_id, id);
 	return id;

@@ -15,6 +15,7 @@ const { SchemaEventMsg } = require('../server/threads/itc');
 const nats_utils = require('../server/nats/utility/natsUtils');
 const { getDatabases } = require('../resources/databases');
 const { transformReq } = require('../utility/common_utils');
+const { replicateOperation } = require('../server/replication/replicator');
 
 module.exports = {
 	createSchema: createSchema,
@@ -175,8 +176,9 @@ async function dropSchema(drop_schema_object) {
 	// Purge the streams for all tables that were part of schema.
 	// Streams are part of Nats and are used by clustering, they are 'message stores' that track transactions on a table.
 	await nats_utils.purgeSchemaTableStreams(drop_schema_object.schema, tables);
-
-	return `successfully deleted '${drop_schema_object.schema}'`;
+	let response = await replicateOperation(drop_schema_object);
+	response.message = `successfully deleted '${drop_schema_object.schema}'`;
+	return response;
 }
 
 async function dropTable(drop_table_object) {
@@ -214,7 +216,9 @@ async function dropTable(drop_table_object) {
 	// Purge tables local stream. Streams are part of Nats and are used by clustering, they are 'message stores' that track transactions on a table.
 	await nats_utils.purgeTableStream(drop_table_object.schema, drop_table_object.table);
 
-	return `successfully deleted table '${drop_table_object.schema}.${drop_table_object.table}'`;
+	let response = await replicateOperation(drop_table_object);
+	response.message = `successfully deleted table '${drop_table_object.schema}.${drop_table_object.table}'`;
+	return response;
 }
 
 /**

@@ -54,13 +54,14 @@ export function subscribeToNodeUpdates(listener) {
 	getHDBNodeTable()
 		.subscribe({})
 		.then(async (events) => {
-			for await (let event of events) {
+			for await (const event of events) {
 				// remove any nodes that have been updated or deleted
-				let name = event?.value?.name;
-				server.nodes = server.nodes.filter((node) => node !== name);
-				if (event.type === 'put' && name !== getThisNodeName()) {
+				const node_name = event?.value?.name;
+				server.nodes = server.nodes.filter((node) => node.name !== node_name);
+				if (event.type === 'put' && node_name !== getThisNodeName()) {
 					// add any new nodes
-					server.nodes.push(name);
+					if (event.value) server.nodes.push(event.value);
+					else console.error('Invalid node update event', event);
 				}
 				if (event.type === 'put' || event.type === 'delete') {
 					listener(event.value, event.id);
@@ -103,25 +104,25 @@ replicationConfirmation((database_name, txnTime, confirmationCount) => {
 function startSubscriptionToReplications() {
 	subscribeToNodeUpdates((node_record) => {
 		forEachReplicatedDatabase({}, (database, database_name) => {
-			let node_name = node_record.name;
+			const node_name = node_record.name;
 			let confirmations_for_node = replication_confirmation_float64s.get(node_name);
 			if (!confirmations_for_node) {
 				replication_confirmation_float64s.set(node_name, (confirmations_for_node = new Map()));
 			}
 			if (confirmations_for_node.has(database_name)) return;
 			let audit_store;
-			for (let table_name in database) {
+			for (const table_name in database) {
 				const table = database[table_name];
 				audit_store = table.auditStore;
 				if (audit_store) break;
 			}
 			if (audit_store) {
-				let replicated_time = new Float64Array(
+				const replicated_time = new Float64Array(
 					audit_store.getUserSharedBuffer(['replicated', database_name, node_name], new ArrayBuffer(8), {
 						callback: () => {
-							let updated_time = replicated_time[0];
-							let last_time = replicated_time.lastTime;
-							for (let { txnTime, onConfirm } of commits_awaiting_replication.get(database_name) || []) {
+							const updated_time = replicated_time[0];
+							const last_time = replicated_time.lastTime;
+							for (const { txnTime, onConfirm } of commits_awaiting_replication.get(database_name) || []) {
 								if (txnTime > last_time && txnTime <= updated_time) {
 									onConfirm();
 								}
@@ -148,7 +149,7 @@ export function* iterateRoutes(options) {
 		} else host = route.hostname ?? route.host;
 		if (host && !url) {
 			// construct a url from the host and port
-			let secure_port =
+			const secure_port =
 				env.get(CONFIG_PARAMS.REPLICATION_SECUREPORT) ??
 				(!env.get(CONFIG_PARAMS.REPLICATION_PORT) && env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT));
 			let port: number | string;

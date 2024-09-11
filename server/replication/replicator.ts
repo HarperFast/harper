@@ -93,8 +93,13 @@ export function start(options) {
 					// technically if there are credentials, we could still allow the connection, but give a warning, because we don't usually do that
 					logger.warn(
 						`No node found for certificate common name ${subject.CN}, available nodes are ${Array.from(
-							new Set([...hdb_nodes_store.getKeys(), ...route_by_hostname.keys()])
-						).join(', ')}, connection will require credentials.`
+							hdb_nodes_store
+								.getRange({})
+								.filter(({ value }) => value)
+								.map(({ key }) => key)
+						).join(', ')} and routes ${Array.from(route_by_hostname.keys()).join(
+							', '
+						)}, connection will require credentials.`
 					);
 				}
 			} else {
@@ -119,7 +124,6 @@ export function start(options) {
 		servers.push(ws_server);
 		if (ws_server.secureContexts) {
 			// we have secure contexts, so we can update the replication variants with the replication CAs
-			let last_ca_count = 0;
 			const updateContexts = () => {
 				// on any change to the list of replication CAs or the certificates, we update the replication security contexts
 				// note that we do not do this for the main security contexts, because all the CAs
@@ -144,22 +148,26 @@ export function start(options) {
 			};
 			ws_server.secureContextsListeners.push(updateContexts);
 			// we need to stay up-to-date with any CAs that have been replicated across the cluster
-			subscribeToNodeUpdates((node) => {
-				if (node?.ca) {
-					// we only care about nodes that have a CA
-					replication_certificate_authorities.add(node.ca);
-					// created a set of all the CAs that have been replicated, if changed, update the secure context
-					if (replication_certificate_authorities.size !== last_ca_count) {
-						last_ca_count = replication_certificate_authorities.size;
-						updateContexts();
-					}
-				} else if (env.get(CONFIG_PARAMS.REPLICATION_ENABLEROOTCAS) !== false) {
-					// if there is no CA for the node, then we default to using the root CAs, unless it is explicitly disabled
-					for (const cert of tls.rootCertificates) replication_certificate_authorities.add(cert);
-				}
-			});
+			monitorNodeCAs(updateContexts);
 		}
 	}
+}
+export function monitorNodeCAs(listener) {
+	let last_ca_count = 0;
+	subscribeToNodeUpdates((node) => {
+		if (node?.ca) {
+			// we only care about nodes that have a CA
+			replication_certificate_authorities.add(node.ca);
+			// created a set of all the CAs that have been replicated, if changed, update the secure context
+			if (replication_certificate_authorities.size !== last_ca_count) {
+				last_ca_count = replication_certificate_authorities.size;
+				listener?.();
+			} else if (env.get(CONFIG_PARAMS.REPLICATION_ENABLEROOTCAS) !== false) {
+				// if there is no CA for the node, then we default to using the root CAs, unless it is explicitly disabled
+				for (const cert of tls.rootCertificates) replication_certificate_authorities.add(cert);
+			}
+		}
+	});
 }
 export function disableReplication(disabled = true) {
 	replication_disabled = disabled;
@@ -495,4 +503,33 @@ function hasExplicitlyReplicatedTable(database_name) {
 		const table = database[table_name];
 		if (table.replicate) return true;
 	}
+}
+
+export async function replicateOperation(req) {
+	const response = { message: '' };
+	if (req.replicated) {
+		req.replicated = false; // don't send a replicated flag to the nodes we are sending to
+		logger.trace?.(
+			'Replicating operation',
+			req,
+			'to nodes',
+			server.nodes.map((node) => node.name)
+		);
+		const replicated_results = await Promise.allSettled(
+			server.nodes.map((node) => {
+				// do all the nodes in parallel
+				return sendOperationToNode(node, req);
+			})
+		);
+		// map the settled results to the response
+		response.replicated = replicated_results.map((settled_result, index) => {
+			const result =
+				settled_result.status === 'rejected'
+					? { status: 'failed', reason: settled_result.reason.toString() }
+					: settled_result.value;
+			result.node = server.nodes[index]?.name; // add the node to the result so we know which node succeeded/failed
+			return result;
+		});
+	}
+	return response;
 }

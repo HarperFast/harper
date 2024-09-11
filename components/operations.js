@@ -24,6 +24,7 @@ const { Readable } = require('stream');
 const { isMainThread } = require('worker_threads');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const manage_threads = require('../server/threads/manageThreads');
+const { replicateOperation } = require('../server/replication/replicator');
 
 const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
 const TMP_PATH = path.join(env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY), 'tmp');
@@ -136,9 +137,9 @@ function getCustomFunction(req) {
  * Write the supplied function_content to the provided function_name file in the custom_functions/routes directory
  *
  * @param {NodeObject} req
- * @returns {string}
+ * @returns {{message:string}}
  */
-function setCustomFunction(req) {
+async function setCustomFunction(req) {
 	if (req.project) {
 		req.project = path.parse(req.project).name;
 	}
@@ -158,7 +159,9 @@ function setCustomFunction(req) {
 
 	try {
 		fs.outputFileSync(path.join(cf_dir, project, type, file + '.js'), function_content);
-		return `Successfully updated custom function: ${file}.js`;
+		let response = await replicateOperation(req);
+		response.message = `Successfully updated custom function: ${file}.js`;
+		return response;
 	} catch (err) {
 		throw handleHDBError(
 			new Error(),
@@ -174,9 +177,9 @@ function setCustomFunction(req) {
  * Delete the provided function_name file from the custom_functions/routes directory
  *
  * @param {NodeObject} req
- * @returns {string}
+ * @returns {{message:string}}
  */
-function dropCustomFunction(req) {
+async function dropCustomFunction(req) {
 	if (req.project) {
 		req.project = path.parse(req.project).name;
 	}
@@ -196,7 +199,9 @@ function dropCustomFunction(req) {
 
 	try {
 		fs.unlinkSync(path.join(cf_dir, project, type, file + '.js'));
-		return `Successfully deleted custom function: ${file}.js`;
+		let response = await replicateOperation(req);
+		response.message = `Successfully deleted custom function: ${file}.js`;
+		return response;
 	} catch (err) {
 		throw handleHDBError(
 			new Error(),
@@ -211,9 +216,9 @@ function dropCustomFunction(req) {
 /**
  * Create a new project folder in the components folder and copy the template into it
  * @param {NodeObject} req
- * @returns {string}
+ * @returns {{message:string}}
  */
-function addComponent(req) {
+async function addComponent(req) {
 	if (req.project) {
 		req.project = path.parse(req.project).name;
 	}
@@ -231,7 +236,9 @@ function addComponent(req) {
 		const project_dir = path.join(cf_dir, project);
 		fs.mkdirSync(project_dir, { recursive: true });
 		fs.copySync(APPLICATION_TEMPLATE, project_dir);
-		return `Successfully added project: ${project}`;
+		let response = await replicateOperation(req);
+		response.message = `Successfully added project: ${project}`;
+		return response;
 	} catch (err) {
 		throw handleHDBError(
 			new Error(),
@@ -249,7 +256,7 @@ function addComponent(req) {
  * @param {NodeObject} req
  * @returns {string}
  */
-function dropCustomFunctionProject(req) {
+async function dropCustomFunctionProject(req) {
 	if (req.project) {
 		req.project = path.parse(req.project).name;
 	}
@@ -284,7 +291,9 @@ function dropCustomFunctionProject(req) {
 	try {
 		const project_dir = path.join(cf_dir, project);
 		fs.rmSync(project_dir, { recursive: true });
-		return `Successfully deleted project: ${project}`;
+		let response = await replicateOperation(req);
+		response.message = `Successfully deleted project: ${project}`;
+		return response;
 	} catch (err) {
 		throw handleHDBError(
 			new Error(),
@@ -432,14 +441,14 @@ async function deployComponent(req) {
 	}
 	if (last_error) throw last_error;
 	log.info('Installed component');
-
+	let response = await replicateOperation(req);
 	if (req.restart === true) {
 		manage_threads.restartWorkers('http');
-		return `Successfully deployed: ${project}, restarting HarperDB`;
-	}
-
-	return `Successfully deployed: ${project}`;
+		response.message = `Successfully deployed: ${project}, restarting HarperDB`;
+	} else response.message = `Successfully deployed: ${project}`;
+	return response;
 }
+
 /**
  * Gets a JSON directory tree of the components dir and all nested files/folders
  * @returns {Promise<*>}
@@ -554,7 +563,7 @@ async function getComponentFile(req) {
 /**
  * Used to update or create a component file
  * @param req
- * @returns {Promise<string>}
+ * @returns {Promise<{message:string}>}
  */
 async function setComponentFile(req) {
 	const validation = validator.setComponentFileValidator(req);
@@ -570,14 +579,15 @@ async function setComponentFile(req) {
 	} else {
 		await fs.ensureDir(path_to_comp);
 	}
-
-	return `Successfully set component: ` + req.file;
+	let response = await replicateOperation(req);
+	response.message = `Successfully set component: ` + req.file;
+	return response;
 }
 
 /**
  * Deletes a component dir/file
  * @param req
- * @returns {Promise<string>}
+ * @returns {Promise<{message:string}>}
  */
 async function dropComponent(req) {
 	const validation = validator.dropComponentFileValidator(req);
@@ -593,8 +603,9 @@ async function dropComponent(req) {
 	}
 
 	config_utils.deleteConfigFromFile([req.project]);
-
-	return 'Successfully dropped: ' + project_path;
+	let response = await replicateOperation(req);
+	response.message = 'Successfully dropped: ' + project_path;
+	return response;
 }
 
 async function addSSHKey(req) {
@@ -663,8 +674,9 @@ Host ${host}
 	if (known_hosts) {
 		await fs.appendFile(known_hosts_file, known_hosts);
 	}
-
-	return `Added ssh key: ${name}${additional_message}`;
+	let response = await replicateOperation(req);
+	response.message = `Added ssh key: ${name}${additional_message}`;
+	return response;
 }
 
 async function updateSSHKey(req) {
@@ -681,8 +693,9 @@ async function updateSSHKey(req) {
 	}
 
 	await fs.outputFile(file_path, key);
-
-	return `Updated ssh key: ${name}`;
+	let response = await replicateOperation(req);
+	response.message = `Updated ssh key: ${name}`;
+	return response;
 }
 
 async function deleteSSHKey(req) {
@@ -707,8 +720,9 @@ async function deleteSSHKey(req) {
 
 	await fs.outputFile(config_file, file_contents);
 	fs.removeSync(file_path);
-
-	return `Deleted ssh key: ${name}`;
+	let response = await replicateOperation(req);
+	response.message = `Deleted ssh key: ${name}`;
+	return response;
 }
 
 async function listSSHKeys(req) {
@@ -732,8 +746,9 @@ async function setSSHKnownHosts(req) {
 	let { known_hosts } = req;
 
 	await fs.outputFile(known_hosts_file, known_hosts);
-
-	return `Known hosts successfully set`;
+	let response = await replicateOperation(req);
+	response.message = `Known hosts successfully set`;
+	return response;
 }
 
 async function getSSHKnownHosts(req) {
