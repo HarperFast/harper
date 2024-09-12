@@ -1,5 +1,5 @@
 import { ClientError, ServerError } from '../utility/errors/hdbError';
-import * as lmdb_terms from '../utility/lmdb/terms';
+import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms';
 import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
 import { RangeIterable, SKIP } from 'lmdb';
 import { join } from 'path';
@@ -233,6 +233,20 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 		default:
 			throw new ClientError(`Unknown query comparator "${comparator}"`);
 	}
+	let filter;
+	const is_primary_key = attribute_name === Table.primaryKey || attribute_name == null;
+	if (typeof start === 'string' && start.length > MAX_SEARCH_KEY_LENGTH) {
+		// if the key is too long, we need to truncate it and filter the results
+		start = start.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER;
+		exclusiveStart = false;
+		filter = filterByType(search_condition, Table, null, filtered, is_primary_key);
+	}
+	if (typeof end === 'string' && end.length > MAX_SEARCH_KEY_LENGTH) {
+		// if the key is too long, we need to truncate it and filter the results
+		end = end.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER;
+		inclusiveEnd = true;
+		filter = filter ?? filterByType(search_condition, Table, null, filtered, is_primary_key);
+	}
 	if (reverse) {
 		let new_end = start;
 		start = end;
@@ -241,9 +255,7 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 		exclusiveStart = !inclusiveEnd;
 		inclusiveEnd = new_end;
 	}
-	const is_primary_key = attribute_name === Table.primaryKey || attribute_name == null;
 	const index = is_primary_key ? Table.primaryStore : Table.indices[attribute_name];
-	let filter;
 	if (!index || index.isIndexing || need_full_scan || (value === null && !index.indexNulls)) {
 		// no indexed searching available, need a full scan
 		if (allow_full_scan === false && !index)
@@ -262,7 +274,7 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 				`"${attribute_name}" is not indexed for nulls, index needs to be rebuilt to search for nulls, can not search for this attribute`,
 				400
 			);
-		filter = filterByType(search_condition);
+		filter = filter ?? filterByType(search_condition, Table, null, filtered, is_primary_key);
 		if (!filter) {
 			throw new ClientError(`Unknown search operator ${search_condition.comparator}`);
 		}
@@ -305,13 +317,18 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 		return index.getRange(range_options).map(
 			filter
 				? function ({ key, value }) {
-						if (this.isSync) return filter({ [attribute_name]: key }) ? value : SKIP;
+						let record_matcher: any;
+						if (typeof key === 'string' && key.length > MAX_SEARCH_KEY_LENGTH) {
+							// if it is an overflow string, need to get the actual value from the database
+							record_matcher = Table.primaryStore.get(value);
+						} else record_matcher = { [attribute_name]: key };
+						if (this.isSync) return filter(record_matcher) ? value : SKIP;
 						// for filter operations, we intentionally yield the event turn so that scanning queries
 						// do not hog resources
 						return new Promise((resolve, reject) =>
 							setImmediate(() => {
 								try {
-									resolve(filter({ [attribute_name]: key }) ? value : SKIP);
+									resolve(filter(record_matcher) ? value : SKIP);
 								} catch (error) {
 									reject(error);
 								}
@@ -607,7 +624,7 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 	if (value instanceof Date) value = value.getTime();
 
 	switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
-		case lmdb_terms.SEARCH_TYPES.EQUALS:
+		case SEARCH_TYPES.EQUALS:
 		case undefined:
 			return attributeComparator(attribute, (record_value) => record_value === value, true);
 		case 'contains':
@@ -742,7 +759,7 @@ export function estimateCondition(table) {
 			// skip if it is cached
 			let search_type = condition.comparator || condition.search_type;
 			search_type = ALTERNATE_COMPARATOR_NAMES[search_type] || search_type;
-			if (search_type === lmdb_terms.SEARCH_TYPES.EQUALS || !search_type) {
+			if (search_type === SEARCH_TYPES.EQUALS || !search_type) {
 				const attribute_name = condition[0] ?? condition.attribute;
 				if (attribute_name == null || attribute_name === table.primaryKey) condition.estimated_count = 1;
 				else {
