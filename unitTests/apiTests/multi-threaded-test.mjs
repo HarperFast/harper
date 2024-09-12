@@ -19,7 +19,7 @@ describe('Multi-threaded cache updates', () => {
 		await addThreads();
 	});
 
-	after(async function() {
+	after(async function () {
 		setTerminateTimeout(100);
 		await shutdownWorkers('http');
 	});
@@ -40,17 +40,17 @@ describe('Multi-threaded cache updates', () => {
 					prop4: random(),
 				},
 			];
-			responses.push(
-				axios.put('http://localhost:9926/SimpleCache/', put_values)
-			);
+			responses.push(axios.put('http://localhost:9926/SimpleCache/', put_values));
 			responses.push(
 				axios.post('http://localhost:9926/SimpleCache/' + Math.floor(random() * 10 + 20), {
 					invalidate: true,
 				})
 			);
-			responses.push(axios.get('http://localhost:9926/SimpleCache/' + Math.floor(random() * 10 + 20), {
-				validateStatus: false
-			}));
+			responses.push(
+				axios.get('http://localhost:9926/SimpleCache/' + Math.floor(random() * 10 + 20), {
+					validateStatus: false,
+				})
+			);
 
 			while (responses.length > 10) {
 				let response = await responses.shift();
@@ -71,7 +71,7 @@ describe('Multi-threaded cache updates', () => {
 			last_local_time = entry.localTime;
 		}
 		const history_of_cached_25 = await tables.SimpleCache.getHistoryOfRecord('25');
-		assert(history_of_cached_25.filter(entry => entry.type === 'put').length > 100);
-		assert(history_of_cached_25.filter(entry => entry.type === 'invalidate').length > 50);
+		assert(history_of_cached_25.filter((entry) => entry.type === 'put').length > 100);
+		assert(history_of_cached_25.filter((entry) => entry.type === 'invalidate').length > 50);
 	});
 });

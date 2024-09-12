@@ -189,7 +189,7 @@ describe('Test customFunctionsServer module', () => {
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			server = customFunctionsServer_rw.__get__('fastify_server');
 
-			const test_headers = Object.assign({ origin: 'https://google.com' }, test_req_options.headers);
+			const test_headers = { origin: 'https://google.com', ...test_req_options.headers };
 			const test_response = await server.inject({
 				method: 'POST',
 				url: '/',
@@ -210,7 +210,7 @@ describe('Test customFunctionsServer module', () => {
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			server = customFunctionsServer_rw.__get__('fastify_server');
 
-			const test_headers = Object.assign({ origin: 'https://harperdb.io' }, test_req_options.headers);
+			const test_headers = { origin: 'https://harperdb.io', ...test_req_options.headers };
 			const test_response = await server.inject({
 				method: 'POST',
 				url: '/',

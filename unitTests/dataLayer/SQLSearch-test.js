@@ -638,7 +638,7 @@ describe('Test SQL Engine', function () {
 				let expected_results = sortDesc(test_data, 'unitprice');
 				expected_results.splice(test_limit);
 				expected_results = expected_results.map((row) => {
-					return Object.assign({}, row, { u_price: Math.round(row.unitprice) });
+					return { ...row, u_price: Math.round(row.unitprice) };
 				});
 				const test_sql_statement = `SELECT categoryid, productname, quantityperunit, ROUND(unitprice) as u_price, * from ${TEST_SCHEMA_NORTHWND}.products ORDER BY u_price DESC LIMIT ${test_limit}`;
 				setupTestInstance(test_sql_statement);

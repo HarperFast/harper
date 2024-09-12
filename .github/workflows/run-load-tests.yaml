@@ -9,12 +9,12 @@ jobs:
       - build
     uses: ./.github/workflows/create-load-test-instance.yaml
     with:
-      instanceCount: "1"
+      instanceCount: '1'
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       callingWorkflow: ${{ github.workflow }}
     secrets: inherit
   registerInstances:
-    needs: 
+    needs:
       - createInstances
       - build
     uses: ./.github/workflows/install-and-register.yaml
@@ -24,54 +24,54 @@ jobs:
       nodeVersion: ${{ needs.build.outputs.nodeVersion }}
     secrets: inherit
   runLoadTests:
-    needs: 
+    needs:
       - createInstances
       - registerInstances
       - build
     runs-on: ubuntu-latest
     timeout-minutes: 20
     steps:
-    - name: Run Load Tests
-      env:
-        HDB_ADMIN_USERNAME: ${{ secrets.HDB_ADMIN_USERNAME }}
-        HDB_ADMIN_PASSWORD: ${{ secrets.HDB_ADMIN_PASSWORD }}
-        CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
-      run: |
-        #!/bin/bash
-        cd ../
-        mkdir k6-logs
-        echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
-        public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
-        for public_dns_name in ${public_dns_names[@]}
-        do 
-          echo "Starting work on: $public_dns_name"
-          ssh -i private_key -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name << HERE
-        set -x
-        . /home/ubuntu/.nvm/nvm.sh
-        . /home/ubuntu/.nvm/bash_completion
-        cd /home/ubuntu/k6-loadtests
-        npm install
-        touch input.log
-        touch read.log
-        k6 run -e HDB_URL=http://localhost:9925 -e HDB_USERNAME=$HDB_ADMIN_USERNAME -e HDB_PASSWORD=$HDB_ADMIN_PASSWORD --vus 200 --duration 30s ./src/insert.js 2>&1 | tee insert.log
-        k6 run -e HDB_URL=http://localhost:9925 -e HDB_USERNAME=$HDB_ADMIN_USERNAME -e HDB_PASSWORD=$HDB_ADMIN_PASSWORD -e NUMBER_WRITE_VUS=200 -e MAX_VU_INDEX=5000 --vus 200 --duration 30s ./src/read.js 2>&1 | tee read.log
-        HERE
+      - name: Run Load Tests
+        env:
+          HDB_ADMIN_USERNAME: ${{ secrets.HDB_ADMIN_USERNAME }}
+          HDB_ADMIN_PASSWORD: ${{ secrets.HDB_ADMIN_PASSWORD }}
+          CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+        run: |
+          #!/bin/bash
+          cd ../
+          mkdir k6-logs
+          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+          public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
+          for public_dns_name in ${public_dns_names[@]}
+          do 
+            echo "Starting work on: $public_dns_name"
+            ssh -i private_key -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name << HERE
+          set -x
+          . /home/ubuntu/.nvm/nvm.sh
+          . /home/ubuntu/.nvm/bash_completion
+          cd /home/ubuntu/k6-loadtests
+          npm install
+          touch input.log
+          touch read.log
+          k6 run -e HDB_URL=http://localhost:9925 -e HDB_USERNAME=$HDB_ADMIN_USERNAME -e HDB_PASSWORD=$HDB_ADMIN_PASSWORD --vus 200 --duration 30s ./src/insert.js 2>&1 | tee insert.log
+          k6 run -e HDB_URL=http://localhost:9925 -e HDB_USERNAME=$HDB_ADMIN_USERNAME -e HDB_PASSWORD=$HDB_ADMIN_PASSWORD -e NUMBER_WRITE_VUS=200 -e MAX_VU_INDEX=5000 --vus 200 --duration 30s ./src/read.js 2>&1 | tee read.log
+          HERE
 
-        scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/k6-loadtests/insert.log" "k6-logs/insert.log"
-        scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/k6-loadtests/read.log" "k6-logs/read.log"
-        done
+          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/k6-loadtests/insert.log" "k6-logs/insert.log"
+          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/k6-loadtests/read.log" "k6-logs/read.log"
+          done
 
-        mv k6-logs harperdb
-      shell: bash
-    - name: 'Upload Log Artifact'
-      uses: actions/upload-artifact@v4
-      with:
-        name: k6-logs
-        path: k6-logs/
-        retention-days: 1
+          mv k6-logs harperdb
+        shell: bash
+      - name: 'Upload Log Artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: k6-logs
+          path: k6-logs/
+          retention-days: 1
   downloadLogs:
     if: always()
-    needs: 
+    needs:
       - runLoadTests
       - createInstances
     uses: ./.github/workflows/download-logs.yaml
@@ -83,6 +83,6 @@ jobs:
     needs: downloadLogs
     uses: ./.github/workflows/destroy-instances.yaml
     with:
-      instanceCount: "1"
+      instanceCount: '1'
       callingWorkflow: ${{ github.workflow }}
     secrets: inherit

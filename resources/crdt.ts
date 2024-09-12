@@ -1,7 +1,7 @@
 import { readAuditEntry } from './auditStore';
 
 export function add(record, property, action) {
-	let previous_value = record[property];
+	const previous_value = record[property];
 	if (typeof previous_value === 'bigint') {
 		record[property] = previous_value + BigInt(action.value);
 	} else if (isNaN(record[property])) record[property] = action.value;
@@ -10,7 +10,7 @@ export function add(record, property, action) {
 	}
 }
 add.reverse = function (record, property, action) {
-	let previous_value = record[property];
+	const previous_value = record[property];
 	if (typeof previous_value === 'bigint') {
 		record[property] = previous_value - BigInt(action.value);
 	} else if (!isNaN(record[property])) {
@@ -76,7 +76,7 @@ const UNKNOWN = {};
  */
 export function getRecordAtTime(current_entry, timestamp, store) {
 	const audit_store = store.rootStore.auditStore;
-	let record = Object.assign({}, current_entry.value);
+	let record = { ...current_entry.value };
 	let audit_time = current_entry.localTime;
 	// Iterate in reverse through the record history, trying to reverse all changes
 	while (audit_time > timestamp) {

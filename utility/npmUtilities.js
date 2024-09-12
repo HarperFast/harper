@@ -39,13 +39,11 @@ async function installAllRootModules(ignore_scripts = false) {
 	if (fs.pathExistsSync(ssh_dir)) {
 		fs.readdirSync(ssh_dir).forEach((file) => {
 			if (file.includes('.key') && !ssh_key_added) {
-				env_vars = Object.assign(
-					{
-						GIT_SSH_COMMAND:
-							'ssh -F ' + path.join(ssh_dir, 'config') + ' -o UserKnownHostsFile=' + path.join(ssh_dir, 'known_hosts'),
-					},
-					process.env
-				);
+				env_vars = {
+					GIT_SSH_COMMAND:
+						'ssh -F ' + path.join(ssh_dir, 'config') + ' -o UserKnownHostsFile=' + path.join(ssh_dir, 'known_hosts'),
+					...process.env,
+				};
 				ssh_key_added = true;
 			}
 		});

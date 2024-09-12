@@ -1,4 +1,4 @@
-name: "Destroy Instances"
+name: 'Destroy Instances'
 
 on:
   workflow_call:
@@ -8,10 +8,10 @@ on:
         type: string
       instanceType:
         type: string
-        default: "c5.2xlarge"
+        default: 'c5.2xlarge'
       volumeSize:
         type: string
-        default: "32"
+        default: '32'
       callingWorkflow:
         required: true
         type: string
@@ -24,30 +24,30 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-    - uses: actions/download-artifact@v4
-      if: always()
-      with:
-        name: ${{ inputs.tfstateArtifactName }}
-        path: ../tfstate/
-    - name: Setup Terraform
-      if: always()
-      with:
-        terraform_wrapper: false
-      uses: hashicorp/setup-terraform@v3
-    - name: Destroy Instances
-      if: always()
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
-      run: |
-        #!/bin/bash
-        cd ../tfstate
-        terraform init
-        echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+      - uses: actions/download-artifact@v4
+        if: always()
+        with:
+          name: ${{ inputs.tfstateArtifactName }}
+          path: ../tfstate/
+      - name: Setup Terraform
+        if: always()
+        with:
+          terraform_wrapper: false
+        uses: hashicorp/setup-terraform@v3
+      - name: Destroy Instances
+        if: always()
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+        run: |
+          #!/bin/bash
+          cd ../tfstate
+          terraform init
+          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
 
-        # Terraform needs to validate this but doesn't need them to have real data to destroy
-        mkdir upload
-        touch user_data.sh
-        
-        terraform destroy -var='private_key=./private_key' -var='region=us-east-2' -var='instance_count=${{inputs.instanceCount}}' -var='instance_name_prefix=GitHub-'"${workflow_name}"'-${{github.run_number}}' -var='instance_type=${{inputs.instanceType}}' -var='github_workflow_name='"${workflow_name}"'' -var='github_run_number=${{github.run_number}}' -var='volume_size=${{inputs.volumeSize}}' -auto-approve
+          # Terraform needs to validate this but doesn't need them to have real data to destroy
+          mkdir upload
+          touch user_data.sh
+
+          terraform destroy -var='private_key=./private_key' -var='region=us-east-2' -var='instance_count=${{inputs.instanceCount}}' -var='instance_name_prefix=GitHub-'"${workflow_name}"'-${{github.run_number}}' -var='instance_type=${{inputs.instanceType}}' -var='github_workflow_name='"${workflow_name}"'' -var='github_run_number=${{github.run_number}}' -var='volume_size=${{inputs.volumeSize}}' -auto-approve

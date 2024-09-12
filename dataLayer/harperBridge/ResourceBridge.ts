@@ -128,7 +128,7 @@ export class ResourceBridge extends LMDBBridge {
 			const property = drop_attribute_obj.attribute;
 			let resolution;
 			const deleteRecord = (key, record, version): Promise<void> => {
-				record = Object.assign({}, record);
+				record = { ...record };
 				delete record[property];
 				return Table.primaryStore
 					.ifVersion(key, version, () => Table.primaryStore.put(key, record, version))

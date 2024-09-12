@@ -1,4 +1,4 @@
-name: "Docker Build"
+name: 'Docker Build'
 
 #################################################################################################################################
 # Prerequisites
@@ -39,7 +39,7 @@ on:
         type: boolean
       platforms:
         description: 'Which platform(s) to build for: linux/amd64 and/or linux/arm64'
-        default: "linux/amd64"
+        default: 'linux/amd64'
         required: false
         type: string
       push:
@@ -77,7 +77,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Set up QEMU
         uses: docker/setup-qemu-action@v3
-      - name: "Setup Docker buildx"
+      - name: 'Setup Docker buildx'
         uses: docker/setup-buildx-action@v3
       - name: Log in to Docker Hub
         if: inputs.container != 'tar' || inputs.push == true
@@ -92,8 +92,8 @@ jobs:
 
       - uses: actions/download-artifact@v4
         with:
-          name: "licenses"
-          path: "utility/Docker/licenses/"
+          name: 'licenses'
+          path: 'utility/Docker/licenses/'
 
       # generate tags for containers
       - name: Docker meta
@@ -114,7 +114,7 @@ jobs:
 
       # this build process loads the container locally when done, should only be done if not multi-platform build
       # this is done for security scanning
-      - name: "Build and load ${{ inputs.container }}:${{ inputs.harperdbVersion }}"
+      - name: 'Build and load ${{ inputs.container }}:${{ inputs.harperdbVersion }}'
         if: inputs.container != 'tar' && ! contains(inputs.platforms, ',')
         id: build-image
         timeout-minutes: 30
@@ -147,7 +147,7 @@ jobs:
           severity: ${{ env.TRIVY_SEVERITY }}
 
       # publish containers
-      - name: "Build ${{ inputs.container }}:${{ inputs.harperdbVersion }}"
+      - name: 'Build ${{ inputs.container }}:${{ inputs.harperdbVersion }}'
         if: inputs.container != 'tar'
         id: publish-image
         timeout-minutes: 30
@@ -186,7 +186,7 @@ jobs:
             echo "tarName=${containerTarball}" >> "${GITHUB_OUTPUT}"
           fi
 
-      - name: "Create container tarball"
+      - name: 'Create container tarball'
         id: build-image-tar
         if: inputs.container == 'tar'
         timeout-minutes: 30
@@ -237,17 +237,17 @@ jobs:
           # set imageName 
           [[ "${file##*/}" == "Dockerfile" ]] && echo "imageName=harperdb" >> "${GITHUB_OUTPUT}"
           [[ "${file##*/}" == "Dockerfile-"* ]] && echo "imageName=harperdb-${file##*-}" >> "${GITHUB_OUTPUT}"
-          
+
           trivy_results=$(cat trivy.txt)
           delimiter="$(openssl rand -hex 8)"
           cat <<EOF >> "${GITHUB_OUTPUT}"
           summary<<${delimiter}
           ### Security Output
-          
+
           \`\`\`terraform
           ${trivy_results}
           \`\`\`
-          
+
           ${delimiter}
           EOF
 
@@ -262,7 +262,7 @@ jobs:
           summary<<${delimiter}
           ### Security Output
           <details><summary>Click to expand</summary>
-          
+
           \`\`\`terraform
           ${trivy_results}
           \`\`\`
@@ -276,9 +276,9 @@ jobs:
         if: ${{ ! contains(inputs.platforms, ',') }}
         uses: actions/github-script@v7
         env:
-          SUMMARY: "${{ steps.trivy_summary.outputs.summary }}"
-          CONTAINER: "${{ inputs.container }}"
-          PLATFORMS: "${{ inputs.platforms }}"
+          SUMMARY: '${{ steps.trivy_summary.outputs.summary }}'
+          CONTAINER: '${{ inputs.container }}'
+          PLATFORMS: '${{ inputs.platforms }}'
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           result-encoding: string
@@ -286,7 +286,7 @@ jobs:
             const body = `${process.env.SUMMARY}`;
             const title = '${{ steps.trivy_summary.outputs.imageName }} ${{ inputs.platforms }} Security Scan';
             const creator = 'github-actions[bot]'
-            
+
             // Look to see if there is an existing drift issue
             const issues = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
@@ -295,16 +295,16 @@ jobs:
               creator: creator,
               title: title
             })
-            
+
             // the search sucks, or maybe titles are too similar. Either way, we grab whatever is first and matches the title
             const issue = issues.data.find( o => o.title === title)
-            
+
             if( issue !== undefined ) {
               if ( issue.body == body ) {
                 console.log('Security Scan: Found matching issue with duplicate content')
                 core.setOutput('issue_url', issue.html_url.toString());
                 core.setOutput('issue_status', 'Issue Exists');
-            
+
               } else {
                 console.log('Security Scan: Found matching issue, updating body')
                 const result = await github.rest.issues.update({
@@ -316,7 +316,7 @@ jobs:
                 core.setOutput('issue_url', result.data.html_url.toString());
                 core.setOutput('issue_status', 'Updating Issue');
               } 
-            
+
             } else {
               console.log('Drift Detected: Creating new issue')
               const result = await github.rest.issues.create({

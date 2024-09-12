@@ -508,7 +508,7 @@ describe('Test configUtils module', () => {
 			const test_flat_config_obj = config_utils_rw.flattenConfig(config_json);
 
 			expect(config_json).to.eql(expected_config);
-			const non_object_flat_test_config_obj = Object.assign({}, test_flat_config_obj);
+			const non_object_flat_test_config_obj = { ...test_flat_config_obj };
 			for (let key in non_object_flat_test_config_obj) {
 				if (
 					typeof non_object_flat_test_config_obj[key] === 'object' &&
@@ -593,7 +593,7 @@ describe('Test configUtils module', () => {
 
 			config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED);
 			const flat_default_config_obj = config_utils_rw.__get__('flat_default_config_obj');
-			const non_object_flat_default_config_obj = Object.assign({}, flat_default_config_obj);
+			const non_object_flat_default_config_obj = { ...flat_default_config_obj };
 			for (let key in non_object_flat_default_config_obj) {
 				if (
 					typeof non_object_flat_default_config_obj[key] === 'object' &&

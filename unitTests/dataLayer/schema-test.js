@@ -385,8 +385,8 @@ describe('Test schema module', function () {
 		beforeEach(() => {
 			schema_describe_rw = schema.__set__('schema_metadata_validator', {
 				schema_describe: {
-					describeSchema: async (describe_schema_object) => Object.assign({}, GLOBAL_SCHEMA_FAKE.dogsrule),
-					describeTable: async (describe_table_object) => Object.assign({}, GLOBAL_SCHEMA_FAKE.dogsrule.catsdrool),
+					describeSchema: async (describe_schema_object) => ({ ...GLOBAL_SCHEMA_FAKE.dogsrule }),
+					describeTable: async (describe_table_object) => ({ ...GLOBAL_SCHEMA_FAKE.dogsrule.catsdrool }),
 				},
 				checkSchemaExists: check_exists_stub,
 			});
@@ -399,11 +399,11 @@ describe('Test schema module', function () {
 		it('Test that bridge stub is called as expected and success msg is returned', async () => {
 			let schema_describe_rw = schema.__set__('schema_metadata_validator', {
 				schema_describe: {
-					describeSchema: async (describe_schema_object) => Object.assign({}, GLOBAL_SCHEMA_FAKE),
-					describeTable: async (describe_table_object) => Object.assign({}, GLOBAL_SCHEMA_FAKE.dogsrule),
+					describeSchema: async (describe_schema_object) => ({ ...GLOBAL_SCHEMA_FAKE }),
+					describeTable: async (describe_table_object) => ({ ...GLOBAL_SCHEMA_FAKE.dogsrule }),
 				},
 				checkSchemaExists: async (schema_name) => {
-					global.hdb_schema[schema_name] = Object.assign({}, GLOBAL_SCHEMA_FAKE[schema_name]);
+					global.hdb_schema[schema_name] = { ...GLOBAL_SCHEMA_FAKE[schema_name] };
 				},
 			});
 
@@ -465,14 +465,14 @@ describe('Test schema module', function () {
 		beforeEach(() => {
 			schema_describe_rw = schema.__set__('schema_metadata_validator', {
 				schema_describe: {
-					describeSchema: async (describe_schema_object) => Object.assign({}, GLOBAL_SCHEMA_FAKE.dogsrule),
-					describeTable: async (describe_table_object) => Object.assign({}, GLOBAL_SCHEMA_FAKE.dogsrule.catsdrool),
+					describeSchema: async (describe_schema_object) => ({ ...GLOBAL_SCHEMA_FAKE.dogsrule }),
+					describeTable: async (describe_table_object) => ({ ...GLOBAL_SCHEMA_FAKE.dogsrule.catsdrool }),
 				},
 				checkSchemaExists: async (schema_name) => {
-					global.hdb_schema[schema_name] = Object.assign({}, GLOBAL_SCHEMA_FAKE[schema_name]);
+					global.hdb_schema[schema_name] = { ...GLOBAL_SCHEMA_FAKE[schema_name] };
 				},
 				checkSchemaTableExists: async (schema_name, table_name) => {
-					global.hdb_schema[schema_name] = Object.assign({}, GLOBAL_SCHEMA_FAKE[schema_name]);
+					global.hdb_schema[schema_name] = { ...GLOBAL_SCHEMA_FAKE[schema_name] };
 				},
 			});
 		});
@@ -541,12 +541,12 @@ describe('Test schema module', function () {
 			schema_describe_rw = schema.__set__('schema_metadata_validator', {
 				schema_describe: {
 					describeSchema: async (describe_schema_object) => {
-						Object.assign({}, GLOBAL_SCHEMA_FAKE.dogsrule);
+						({ ...GLOBAL_SCHEMA_FAKE.dogsrule });
 					},
-					describeTable: async (describe_table_object) => Object.assign({}, GLOBAL_SCHEMA_FAKE.dogsrule.catsdrool),
+					describeTable: async (describe_table_object) => ({ ...GLOBAL_SCHEMA_FAKE.dogsrule.catsdrool }),
 				},
 				checkSchemaExists: async (schema_name) => {
-					global.hdb_schema[schema_name] = Object.assign({}, GLOBAL_SCHEMA_FAKE[schema_name]);
+					global.hdb_schema[schema_name] = { ...GLOBAL_SCHEMA_FAKE[schema_name] };
 				},
 				checkSchemaTableExists: async (schema_name, table_name) => {
 					if (!global.hdb_schema[schema_name] || !global.hdb_schema[schema_name][table_name]) {

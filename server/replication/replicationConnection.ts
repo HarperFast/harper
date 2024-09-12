@@ -109,11 +109,10 @@ export async function createWebSocket(
 		secureContext: undefined,
 	};
 	if (rejectUnauthorized !== false && secure_context) {
-		ws_options.secureContext = tls.createSecureContext(
-			Object.assign({}, secure_context.options, {
-				ca: Array.from(replication_certificate_authorities), // do we need to add CA if secure context had one?
-			})
-		);
+		ws_options.secureContext = tls.createSecureContext({
+			...secure_context.options,
+			ca: Array.from(replication_certificate_authorities), // do we need to add CA if secure context had one?
+		});
 	}
 	return new WebSocket(url, 'harperdb-replication-v1', ws_options);
 }
@@ -658,12 +657,10 @@ export function replicateOverWS(ws, options, authorization) {
 									logger.error?.(connection_id, 'Error subscribing to HDB nodes', error);
 								}
 							);
-						} else {
-							if (!(authorization?.permissions?.super_user || authorization.replicates)) {
-								ws.send(encode([DISCONNECT]));
-								close(1008, `Unauthorized database subscription to ${database_name}`);
-								return;
-							}
+						} else if (!(authorization?.permissions?.super_user || authorization.replicates)) {
+							ws.send(encode([DISCONNECT]));
+							close(1008, `Unauthorized database subscription to ${database_name}`);
+							return;
 						}
 
 						if (audit_subscription) {

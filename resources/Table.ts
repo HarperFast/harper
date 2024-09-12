@@ -104,7 +104,7 @@ export interface Table {
 	subscriptions: Map<any, Function[]>;
 	expirationMS: number;
 	indexingOperations?: Promise<void>;
-	sources: { new (): ResourceInterface }[];
+	sources: (new () => ResourceInterface)[];
 	Transaction: ReturnType<typeof makeTable>;
 }
 // we default to the max age of the streams because this is the limit on the number of old transactions
@@ -720,7 +720,7 @@ export function makeTable(options) {
 						return id_allocation;
 					} else {
 						logger.debug?.('Looks like ids were already allocated');
-						return Object.assign({ alreadyUpdated: true }, updated_id_allocation.value);
+						return { alreadyUpdated: true, ...updated_id_allocation.value };
 					}
 				});
 			}
@@ -997,7 +997,7 @@ export function makeTable(options) {
 			let own_data;
 			if (typeof updates === 'object' && updates) {
 				if (full_update) {
-					if (Object.isFrozen(updates)) updates = Object.assign({}, updates);
+					if (Object.isFrozen(updates)) updates = { ...updates };
 					this[RECORD_PROPERTY] = {}; // clear out the existing record
 					this[OWN_DATA] = updates;
 				} else {

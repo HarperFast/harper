@@ -53,7 +53,6 @@ async function convertDelete({ statement, hdb_user }) {
 		//});
 		//await write.flush({ schema: table_info.schema, table: table_info.name });
 
-
 		if (hdb_utils.isEmptyOrZeroLength(result.message)) {
 			result.message = generateReturnMessage(result);
 		}

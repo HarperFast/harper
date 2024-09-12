@@ -1,72 +1,65 @@
 {
-  "variables": {
-    "do_token": "{{env `DIGITALOCEAN_TOKEN`}}",
-    "image_name": "HarperDB-22-04-snapshot-{{timestamp}}",
-    "application_name": "HarperDB",
-    "application_version": "{{env `HARPERDB_VERSION`}}",
-    "application_node_version": "{{env `NODE_VERSION`}}"
-  },
-  "sensitive-variables": ["do_token"],
-  "builders": [
-    {
-      "type": "digitalocean",
-      "api_token": "{{user `do_token`}}",
-      "image": "ubuntu-22-04-x64",
-      "region": "nyc3",
-      "size": "s-1vcpu-1gb",
-      "ssh_username": "root",
-      "snapshot_name": "{{user `image_name`}}"
-    }
-  ],
-  "provisioners": [
-    {
-      "type": "shell",
-      "inline": [
-        "cloud-init status --wait"
-      ]
-    },
-    {
-      "type": "file",
-      "source": "files/etc/",
-      "destination": "/etc/"
-    },
-    {
-      "type": "file",
-      "source": "files/var/",
-      "destination": "/var/"
-    },
-    {
-      "type": "shell",
-      "environment_vars": [
-        "DEBIAN_FRONTEND=noninteractive",
-        "LC_ALL=C",
-        "LANG=en_US.UTF-8",
-        "LC_CTYPE=en_US.UTF-8"
-      ],
-      "inline": [
-        "apt-get -qqy update",
-        "apt-get -qqy -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' full-upgrade",
-        "apt-get -qqy clean"
-      ]
-    },
-    {
-      "type": "shell",
-      "environment_vars": [
-        "application_name={{user `application_name`}}",
-        "HARPERDB_VERSION={{user `application_version`}}",
-        "NODE_VERSION={{user `application_node_version`}}",
-        "DEBIAN_FRONTEND=noninteractive",
-        "LC_ALL=C",
-        "LANG=en_US.UTF-8",
-        "LC_CTYPE=en_US.UTF-8"
-      ],
-      "scripts": [
-        "scripts/01-ufw.sh",
-        "scripts/02-force-ssh-logout.sh",
-        "scripts/03-harperdb-install.sh",
-        "scripts/90-cleanup.sh",
-        "scripts/99-img-check.sh"
-      ]
-    }
-  ]
+	"variables": {
+		"do_token": "{{env `DIGITALOCEAN_TOKEN`}}",
+		"image_name": "HarperDB-22-04-snapshot-{{timestamp}}",
+		"application_name": "HarperDB",
+		"application_version": "{{env `HARPERDB_VERSION`}}",
+		"application_node_version": "{{env `NODE_VERSION`}}"
+	},
+	"sensitive-variables": ["do_token"],
+	"builders": [
+		{
+			"type": "digitalocean",
+			"api_token": "{{user `do_token`}}",
+			"image": "ubuntu-22-04-x64",
+			"region": "nyc3",
+			"size": "s-1vcpu-1gb",
+			"ssh_username": "root",
+			"snapshot_name": "{{user `image_name`}}"
+		}
+	],
+	"provisioners": [
+		{
+			"type": "shell",
+			"inline": ["cloud-init status --wait"]
+		},
+		{
+			"type": "file",
+			"source": "files/etc/",
+			"destination": "/etc/"
+		},
+		{
+			"type": "file",
+			"source": "files/var/",
+			"destination": "/var/"
+		},
+		{
+			"type": "shell",
+			"environment_vars": ["DEBIAN_FRONTEND=noninteractive", "LC_ALL=C", "LANG=en_US.UTF-8", "LC_CTYPE=en_US.UTF-8"],
+			"inline": [
+				"apt-get -qqy update",
+				"apt-get -qqy -o Dpkg::Options::='--force-confdef' -o Dpkg::Options::='--force-confold' full-upgrade",
+				"apt-get -qqy clean"
+			]
+		},
+		{
+			"type": "shell",
+			"environment_vars": [
+				"application_name={{user `application_name`}}",
+				"HARPERDB_VERSION={{user `application_version`}}",
+				"NODE_VERSION={{user `application_node_version`}}",
+				"DEBIAN_FRONTEND=noninteractive",
+				"LC_ALL=C",
+				"LANG=en_US.UTF-8",
+				"LC_CTYPE=en_US.UTF-8"
+			],
+			"scripts": [
+				"scripts/01-ufw.sh",
+				"scripts/02-force-ssh-logout.sh",
+				"scripts/03-harperdb-install.sh",
+				"scripts/90-cleanup.sh",
+				"scripts/99-img-check.sh"
+			]
+		}
+	]
 }

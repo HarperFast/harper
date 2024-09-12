@@ -1,20 +1,20 @@
-name: "DigitalOcean Create Snapshot"
+name: 'DigitalOcean Create Snapshot'
 
 on:
   workflow_dispatch:
     inputs:
       harperdbVersion:
-        description: "Version of HarperDB to install via NPM"
+        description: 'Version of HarperDB to install via NPM'
         required: true
         type: string
       nodeVersion:
-        description: "Version of node to install via NVM"
+        description: 'Version of node to install via NVM'
         required: true
         type: string
 
 defaults:
   run:
-    working-directory: "./utility/marketplaces/digitalocean"
+    working-directory: './utility/marketplaces/digitalocean'
 
 jobs:
   Build:
@@ -28,15 +28,15 @@ jobs:
 
       - name: Run `packer init`
         id: init
-        run: "packer init ."
+        run: 'packer init .'
 
       - name: Run `packer validate`
         id: validate
         env:
           DIGITALOCEAN_TOKEN: ${{ secrets.DIGITALOCEAN_ACCESS_TOKEN }}
-        run: "packer validate ./marketplace-image.json"
+        run: 'packer validate ./marketplace-image.json'
 
-      - name: "Build and Upload Snapshot"
+      - name: 'Build and Upload Snapshot'
         env:
           HARPERDB_VERSION: ${{ inputs.harperdbVersion }}
           NODE_VERSION: ${{ inputs.nodeVersion }}

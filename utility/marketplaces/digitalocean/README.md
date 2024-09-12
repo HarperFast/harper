@@ -11,4 +11,3 @@ HarperDB DO Marketplace Listing
 The main files that probably need to be updated with each upgrade
 
 #### marketplace-image.json
-

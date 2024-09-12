@@ -73,7 +73,7 @@ function getRolePermissions(role) {
 		}
 
 		//permissions only need to be translated for non-system schema items - system specific ops are handled outside of this process
-		const non_sys_schema = Object.assign({}, global.hdb_schema);
+		const non_sys_schema = { ...global.hdb_schema };
 		delete non_sys_schema[terms.SYSTEM_SCHEMA_NAME];
 		role_name = role.role;
 		//creates the unique memoization key for the role's permission based on the role updatedtime and non-system
@@ -207,7 +207,7 @@ function getTableAttrPerms(table_perms, table_schema) {
 	if (has_attr_permissions) {
 		//if table has attribute_permissions set, we need to loop through the table's schema and set attr-level perms
 		// based on the attr perms provided OR, if no perms provided for an attr, set attr perms to false
-		const final_table_perms = Object.assign({}, table_perms);
+		const final_table_perms = { ...table_perms };
 		final_table_perms.attribute_permissions = [];
 		const attr_r_map = attribute_permissions.reduce((acc, item) => {
 			const { attribute_name } = item;

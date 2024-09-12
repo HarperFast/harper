@@ -16,7 +16,7 @@ function streamToJSON(stream) {
 		stream.on('end', function () {
 			try {
 				resolve(JSON.parse(Buffer.concat(buffers)));
-			} catch(error) {
+			} catch (error) {
 				reject(error);
 			}
 		});
@@ -26,17 +26,17 @@ function streamToJSON(stream) {
 describe('Test JSONStream module ', () => {
 	describe(`Streaming`, function () {
 		it('Streams object', async function () {
-			let input = {foo: 'bar'};
+			let input = { foo: 'bar' };
 			let stream = streamAsJSON(input);
 			assert.deepStrictEqual(await streamToJSON(stream), input);
 		});
 		it('Streams array', async function () {
-			let input = [{foo: 'bar'}, {foo: 'bar2'}];
+			let input = [{ foo: 'bar' }, { foo: 'bar2' }];
 			let stream = streamAsJSON(input);
 			assert.deepStrictEqual(await streamToJSON(stream), input);
 		});
 		it('Streams generator', async function () {
-			let expected = [{foo: 'bar'}, {foo: 'bar2'}];
+			let expected = [{ foo: 'bar' }, { foo: 'bar2' }];
 			function* generateObjects() {
 				yield { foo: 'bar' };
 				yield { foo: 'bar2' };
@@ -45,7 +45,7 @@ describe('Test JSONStream module ', () => {
 			assert.deepStrictEqual(await streamToJSON(stream), expected);
 		});
 		it('Streams async generator', async function () {
-			let expected = [{foo: 'bar'}, {foo: 'bar2'}];
+			let expected = [{ foo: 'bar' }, { foo: 'bar2' }];
 			async function* generateObjects() {
 				await delay(1);
 				yield { foo: 'bar' };
@@ -60,5 +60,5 @@ describe('Test JSONStream module ', () => {
 });
 
 function delay(ms) {
-	return new Promise(resolve => setTimeout(resolve, ms));
+	return new Promise((resolve) => setTimeout(resolve, ms));
 }

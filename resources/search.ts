@@ -748,28 +748,26 @@ export function estimateCondition(table) {
 			if (search_type === lmdb_terms.SEARCH_TYPES.EQUALS || !search_type) {
 				const attribute_name = condition[0] ?? condition.attribute;
 				if (attribute_name == null || attribute_name === table.primaryKey) condition.estimated_count = 1;
-				else {
-					if (Array.isArray(attribute_name) && attribute_name.length > 1) {
-						const attribute = findAttribute(table.attributes, attribute_name[0]);
-						const related_table = attribute.definition?.tableClass || attribute.elements.definition?.tableClass;
-						const estimate = estimateCondition(related_table)({
-							value: condition.value,
-							attribute: attribute_name.length > 2 ? attribute_name.slice(1) : attribute_name[1],
-							comparator: 'equals',
-						});
-						const from_index = table.indices[attribute.relationship.from];
-						// the estimated count is sum of the estimate of the related table and the estimate of the index
-						condition.estimated_count =
-							estimate +
-							(from_index
-								? (estimate * estimatedEntryCount(table.indices[attribute.relationship.from])) /
-								  (estimatedEntryCount(related_table.primaryStore) || 1)
-								: estimate);
-					} else {
-						// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
-						const index = table.indices[attribute_name];
-						condition.estimated_count = index ? index.getValuesCount(condition[1] ?? condition.value) : Infinity;
-					}
+				else if (Array.isArray(attribute_name) && attribute_name.length > 1) {
+					const attribute = findAttribute(table.attributes, attribute_name[0]);
+					const related_table = attribute.definition?.tableClass || attribute.elements.definition?.tableClass;
+					const estimate = estimateCondition(related_table)({
+						value: condition.value,
+						attribute: attribute_name.length > 2 ? attribute_name.slice(1) : attribute_name[1],
+						comparator: 'equals',
+					});
+					const from_index = table.indices[attribute.relationship.from];
+					// the estimated count is sum of the estimate of the related table and the estimate of the index
+					condition.estimated_count =
+						estimate +
+						(from_index
+							? (estimate * estimatedEntryCount(table.indices[attribute.relationship.from])) /
+							  (estimatedEntryCount(related_table.primaryStore) || 1)
+							: estimate);
+				} else {
+					// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
+					const index = table.indices[attribute_name];
+					condition.estimated_count = index ? index.getValuesCount(condition[1] ?? condition.value) : Infinity;
 				}
 			} else if (search_type === 'contains' || search_type === 'ends_with' || search_type === 'ne') {
 				const attribute_name = condition[0] ?? condition.attribute;

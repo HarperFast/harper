@@ -1,9 +1,7 @@
 {
-    "timeout": 0,
-    "ui": "bdd",
-    "extension": [
-        "js"
-    ],
-    "recursive": true,
-    "exit": true
+	"timeout": 0,
+	"ui": "bdd",
+	"extension": ["js"],
+	"recursive": true,
+	"exit": true
 }

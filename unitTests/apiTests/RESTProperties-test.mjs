@@ -266,10 +266,13 @@ describe('test REST with property updates', () => {
 					operator: 'or',
 					conditions: [
 						{ search_attribute: ['relatedId'], value: '6' },
-						{ operator: 'and', conditions: [
+						{
+							operator: 'and',
+							conditions: [
 								{ search_attribute: ['relatedId'], value: '7' },
 								{ search_attribute: 'id', value: 'non-existent' },
-								]},
+							],
+						},
 					],
 					sort: {
 						attribute: 'id',

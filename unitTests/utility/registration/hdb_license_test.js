@@ -450,7 +450,7 @@ describe('test licenseSearch', () => {
 		});
 
 		let validate_license_rw = hdb_license.__set__('validateLicense', (license_key, company) => {
-			return Object.assign({}, license_key, VALID_LICENSE_FLAGS);
+			return { ...license_key, ...VALID_LICENSE_FLAGS };
 		});
 
 		let err = undefined;
@@ -477,7 +477,7 @@ describe('test licenseSearch', () => {
 		});
 
 		let validate_license_rw = hdb_license.__set__('validateLicense', (license_key, company) => {
-			return Object.assign({}, license_key, INVALID_LICENSE_FLAGS);
+			return { ...license_key, ...INVALID_LICENSE_FLAGS };
 		});
 
 		let err = undefined;
@@ -504,7 +504,7 @@ describe('test licenseSearch', () => {
 		});
 
 		let validate_license_rw = hdb_license.__set__('validateLicense', (license_key, company) => {
-			return Object.assign({}, license_key, VALID_LICENSE_FLAGS);
+			return { ...license_key, ...VALID_LICENSE_FLAGS };
 		});
 
 		let err = undefined;

@@ -151,7 +151,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.state === 'CO') {
-					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
+					expected.push({ ...data, ...TIMESTAMP_OBJECT });
 				}
 			});
 
@@ -172,7 +172,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (parseInt(data.temperature) === 10) {
-					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
+					expected.push({ ...data, ...TIMESTAMP_OBJECT });
 				}
 			});
 
@@ -193,7 +193,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (parseInt(data.id) === 10) {
-					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
+					expected.push({ ...data, ...TIMESTAMP_OBJECT });
 				}
 			});
 
@@ -1962,7 +1962,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.city.includes('bert') === true) {
-					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
+					expected.push({ ...data, ...TIMESTAMP_OBJECT });
 				}
 			});
 
@@ -1983,7 +1983,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature.toString().includes(0)) {
-					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
+					expected.push({ ...data, ...TIMESTAMP_OBJECT });
 				}
 			});
 
@@ -2004,7 +2004,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.city.endsWith('land')) {
-					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
+					expected.push({ ...data, ...TIMESTAMP_OBJECT });
 				}
 			});
 
@@ -2025,7 +2025,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature.toString().endsWith(2)) {
-					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
+					expected.push({ ...data, ...TIMESTAMP_OBJECT });
 				}
 			});
 
@@ -2046,7 +2046,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.city.startsWith('South')) {
-					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
+					expected.push({ ...data, ...TIMESTAMP_OBJECT });
 				}
 			});
 
@@ -2066,7 +2066,7 @@ describe('test lmdbSearchByValue module', () => {
 		it('test searchall', async () => {
 			let expected = [];
 			test_data.forEach((data) => {
-				expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
+				expected.push({ ...data, ...TIMESTAMP_OBJECT });
 			});
 
 			let search_object = new SearchObject('dev', 'test', 'temperature', '*', 'id', ['*']);
@@ -2086,7 +2086,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature > 25) {
-					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
+					expected.push({ ...data, ...TIMESTAMP_OBJECT });
 				}
 			});
 
@@ -2113,7 +2113,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature >= 40) {
-					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
+					expected.push({ ...data, ...TIMESTAMP_OBJECT });
 				}
 			});
 
@@ -2140,7 +2140,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature < 25) {
-					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
+					expected.push({ ...data, ...TIMESTAMP_OBJECT });
 				}
 			});
 
@@ -2167,7 +2167,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature <= 40) {
-					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
+					expected.push({ ...data, ...TIMESTAMP_OBJECT });
 				}
 			});
 
@@ -2194,7 +2194,7 @@ describe('test lmdbSearchByValue module', () => {
 			let expected = [];
 			test_data.forEach((data) => {
 				if (data.temperature >= 40 && data.temperature <= 66) {
-					expected.push(Object.assign({}, data, TIMESTAMP_OBJECT));
+					expected.push({ ...data, ...TIMESTAMP_OBJECT });
 				}
 			});
 

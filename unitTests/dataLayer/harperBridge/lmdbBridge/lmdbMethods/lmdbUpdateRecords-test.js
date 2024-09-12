@@ -272,7 +272,7 @@ describe('Test lmdbUpdateRecords module', () => {
 			//verify inserted txn
 			let copy_expected_timestamp_txn = Object.create(null);
 			for (let [key, value] of Object.entries(expected_timestamp_txn)) {
-				copy_expected_timestamp_txn[key] = [Object.assign({}, value[0])];
+				copy_expected_timestamp_txn[key] = [{ ...value[0] }];
 			}
 			let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
 			await verify_txn(
@@ -322,10 +322,9 @@ describe('Test lmdbUpdateRecords module', () => {
 				name: 'Rob',
 			};
 
-			let update_txn = Object.assign(
-				{},
-				new LMDBUpdateTransactionObject(update_obj.records, [orig_rec], undefined, m_time, [10])
-			);
+			let update_txn = {
+				...new LMDBUpdateTransactionObject(update_obj.records, [orig_rec], undefined, m_time, [10]),
+			};
 			copy_expected_timestamp_txn[m_time] = [update_txn];
 
 			copy_expected_hashes_txn[10].push(m_time);
@@ -376,7 +375,7 @@ describe('Test lmdbUpdateRecords module', () => {
 			//verify inserted txn
 			let copy_expected_timestamp_txn = Object.create(null);
 			for (let [key, value] of Object.entries(expected_timestamp_txn)) {
-				copy_expected_timestamp_txn[key] = [Object.assign({}, value[0])];
+				copy_expected_timestamp_txn[key] = [{ ...value[0] }];
 			}
 			let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
 			await verify_txn(
@@ -426,10 +425,9 @@ describe('Test lmdbUpdateRecords module', () => {
 				name: 'Rob',
 			};
 
-			let update_txn = Object.assign(
-				{},
-				new LMDBUpdateTransactionObject(update_obj.records, [orig_rec], undefined, m_time, [10])
-			);
+			let update_txn = {
+				...new LMDBUpdateTransactionObject(update_obj.records, [orig_rec], undefined, m_time, [10]),
+			};
 			copy_expected_timestamp_txn[m_time] = [update_txn];
 
 			copy_expected_hashes_txn[10].push(m_time);
@@ -463,7 +461,7 @@ describe('Test lmdbUpdateRecords module', () => {
 			//verify inserted txn
 			let copy_expected_timestamp_txn = Object.create(null);
 			for (let [key, value] of Object.entries(expected_timestamp_txn)) {
-				copy_expected_timestamp_txn[key] = [Object.assign({}, value[0])];
+				copy_expected_timestamp_txn[key] = [{ ...value[0] }];
 			}
 			let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
 			await verify_txn(
@@ -528,7 +526,7 @@ describe('Test lmdbUpdateRecords module', () => {
 			//verify inserted txn
 			let copy_expected_timestamp_txn = Object.create(null);
 			for (let [key, value] of Object.entries(expected_timestamp_txn)) {
-				copy_expected_timestamp_txn[key] = [Object.assign({}, value[0])];
+				copy_expected_timestamp_txn[key] = [{ ...value[0] }];
 			}
 			let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
 			await verify_txn(

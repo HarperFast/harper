@@ -63,7 +63,7 @@ export async function setupTestApp() {
 	// exit if it is already setup or we are running in the browser
 	if (created_records || typeof process === 'undefined') return created_records;
 	let path = getMockLMDBPath();
-	setProperty(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET, join(path, 'operations-server'))
+	setProperty(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET, join(path, 'operations-server'));
 	setProperty(terms.CONFIG_PARAMS.HTTP_SECUREPORT, null);
 	setProperty(terms.CONFIG_PARAMS.HTTP_PORT, 9926);
 	setProperty(terms.CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL, true);

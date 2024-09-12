@@ -2,12 +2,12 @@ on:
   workflow_dispatch:
     inputs:
       instanceType:
-        default: "c5.large"
+        default: 'c5.large'
       instanceCount:
-        default: "1"
+        default: '1'
       instanceNamePrefix:
-        default: ""
-        description: "Instance name in AWS will be GitHub-<workflow-name>-<run number>-<THIS VALUE>-<incrementing number>"
+        default: ''
+        description: 'Instance name in AWS will be GitHub-<workflow-name>-<run number>-<THIS VALUE>-<incrementing number>'
         type: string
 name: Create Test Instances from Source Code
 jobs:
@@ -17,17 +17,17 @@ jobs:
       nodeVersion: ${{ steps.getNode.outputs.NODE_VERSION }}
       harperdbVersion: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-node@v4
-    - id: getNode
-      name: Get node version
-      run: |
-        pwd
-        NODE_VERSION="$(node --version)"
-        NODE_VERSION="${NODE_VERSION:1}"
-        HARPERDB_VERSION=$(cat package.json | jq -r '.version')
-        echo "NODE_VERSION=$NODE_VERSION" >> $GITHUB_OUTPUT
-        echo "HARPERDB_VERSION=$HARPERDB_VERSION" >> $GITHUB_OUTPUT
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - id: getNode
+        name: Get node version
+        run: |
+          pwd
+          NODE_VERSION="$(node --version)"
+          NODE_VERSION="${NODE_VERSION:1}"
+          HARPERDB_VERSION=$(cat package.json | jq -r '.version')
+          echo "NODE_VERSION=$NODE_VERSION" >> $GITHUB_OUTPUT
+          echo "HARPERDB_VERSION=$HARPERDB_VERSION" >> $GITHUB_OUTPUT
   createInstances:
     needs:
       - getNodeVersion
@@ -36,13 +36,13 @@ jobs:
       instanceCount: ${{ inputs.instanceCount }}
       instanceType: ${{ inputs.instanceType }}
       harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
-      installType: "sourceCode"
+      installType: 'sourceCode'
       callingWorkflow: ${{ github.workflow }}
       instanceNamePrefix: ${{ inputs.instanceNamePrefix }}
-      securityGroupId: "sg-00d03df84388398fd"
+      securityGroupId: 'sg-00d03df84388398fd'
     secrets: inherit
   registerInstances:
-    needs: 
+    needs:
       - createInstances
       - getNodeVersion
     uses: ./.github/workflows/install-and-register.yaml
@@ -50,7 +50,7 @@ jobs:
       publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
       harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
       nodeVersion: ${{ needs.getNodeVersion.outputs.nodeVersion }}
-      installType: "sourceCode"
+      installType: 'sourceCode'
       httpsOn: true
       generatePassword: true
       usePublicIpForReplication: true
@@ -60,7 +60,7 @@ jobs:
     needs: createInstances
     uses: ./.github/workflows/destroy-instances.yaml
     with:
-      instanceCount: "${{ inputs.instanceCount }}"
+      instanceCount: '${{ inputs.instanceCount }}'
       instanceType: ${{ inputs.instanceType }}
       callingWorkflow: ${{ github.workflow }}
     secrets: inherit

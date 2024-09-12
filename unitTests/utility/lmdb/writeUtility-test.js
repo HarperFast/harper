@@ -957,21 +957,21 @@ describe('Test writeUtility module', () => {
 
 			let results = iterateIndex(env, 'timestamp');
 			let time_stamp_dbi = { [record.timestamp]: [record.id] };
-			assert.deepStrictEqual(results, Object.assign({}, time_stamp_dbi));
+			assert.deepStrictEqual(results, { ...time_stamp_dbi });
 
 			results = iterateIndex(env, 'rando');
 			let rando_dbi = { [record.rando]: [record.id] };
-			assert.deepStrictEqual(results, Object.assign({}, rando_dbi));
+			assert.deepStrictEqual(results, { ...rando_dbi });
 
 			let records = env.dbis[HASH_ATTRIBUTE_NAME].get(record.id);
 			assert.deepStrictEqual(records, record);
 
-			let orig_records = [Object.assign({}, records)];
+			let orig_records = [{ ...records }];
 			let expected_update_response = new UpdateRecordsResponseObject([record.id], [], TXN_TIMESTAMP, orig_records);
 
 			rando_func = alasql.compile(`SELECT rando + 1 AS [${hdb_terms.FUNC_VAL}] FROM ?`);
 
-			record = Object.assign({}, record); // copy, so we don't modify the record in the cache
+			record = { ...record }; // copy, so we don't modify the record in the cache
 			record.rando = rando_func;
 			result = await test_utils.assertErrorAsync(
 				write_utility.updateRecords,
@@ -982,7 +982,7 @@ describe('Test writeUtility module', () => {
 
 			results = iterateIndex(env, 'rando');
 			rando_dbi = { [record.rando]: [record.id] };
-			assert.deepStrictEqual(results, Object.assign({}, rando_dbi));
+			assert.deepStrictEqual(results, { ...rando_dbi });
 
 			record.__createdtime__ = TIMESTAMP;
 			records = env.dbis[HASH_ATTRIBUTE_NAME].get(record.id);
@@ -1131,7 +1131,7 @@ describe('Test writeUtility module', () => {
 
 			let orig_records = [];
 			records.forEach((rec) => {
-				let record = Object.assign({}, rec);
+				let record = { ...rec };
 				orig_records.push(record);
 			});
 			let expected_upsert_response = new UpsertRecordsResponseObject([1], TXN_TIMESTAMP, orig_records);
@@ -1173,7 +1173,7 @@ describe('Test writeUtility module', () => {
 
 			let orig_records = [];
 			records.forEach((rec) => {
-				let record = Object.assign({}, rec);
+				let record = { ...rec };
 				orig_records.push(record);
 			});
 			let expected_upsert_response = new UpsertRecordsResponseObject([1, 111], TXN_TIMESTAMP, orig_records);
@@ -1207,7 +1207,7 @@ describe('Test writeUtility module', () => {
 
 			let orig_records = [];
 			records.forEach((rec) => {
-				let record = Object.assign({}, rec);
+				let record = { ...rec };
 				orig_records.push(record);
 			});
 			let expected_upsert_response = new UpsertRecordsResponseObject([1], TXN_TIMESTAMP, orig_records);
@@ -1253,7 +1253,7 @@ describe('Test writeUtility module', () => {
 
 			let orig_records = [];
 			records.forEach((rec) => {
-				let record = Object.assign({}, rec);
+				let record = { ...rec };
 				orig_records.push(record);
 			});
 			let expected_upsert_response = new UpsertRecordsResponseObject([1], TXN_TIMESTAMP, orig_records);
@@ -1348,7 +1348,7 @@ describe('Test writeUtility module', () => {
 			//set json to undefined & verify it's gone
 
 			orig_records = [];
-			orig_records.push(Object.assign({}, records[0]));
+			orig_records.push({ ...records[0] });
 			expected_upsert_response = new UpsertRecordsResponseObject([1], TXN_TIMESTAMP, orig_records);
 
 			results = await test_utils.assertErrorAsync(
@@ -1388,16 +1388,16 @@ describe('Test writeUtility module', () => {
 
 			let results = iterateIndex(env, 'timestamp');
 			let time_stamp_dbi = { [record.timestamp]: [record.id] };
-			assert.deepStrictEqual(results, Object.assign({}, time_stamp_dbi));
+			assert.deepStrictEqual(results, { ...time_stamp_dbi });
 
 			results = iterateIndex(env, 'rando');
 			let rando_dbi = { [record.rando]: [record.id] };
-			assert.deepStrictEqual(results, Object.assign({}, rando_dbi));
+			assert.deepStrictEqual(results, { ...rando_dbi });
 
 			let records = env.dbis[HASH_ATTRIBUTE_NAME].get(record.id);
 			assert.deepStrictEqual(records, record);
 
-			let orig_records = [Object.assign({}, records)];
+			let orig_records = [{ ...records }];
 			let expected_upsert_response = new UpsertRecordsResponseObject([record.id], TXN_TIMESTAMP, orig_records);
 
 			rando_func = alasql.compile(`SELECT rando + 1 AS [${hdb_terms.FUNC_VAL}] FROM ?`);
@@ -1412,7 +1412,7 @@ describe('Test writeUtility module', () => {
 
 			results = iterateIndex(env, 'rando');
 			rando_dbi = { [record.rando]: [record.id] };
-			assert.deepStrictEqual(results, Object.assign({}, rando_dbi));
+			assert.deepStrictEqual(results, { ...rando_dbi });
 			record.__createdtime__ = TIMESTAMP;
 			records = env.dbis[HASH_ATTRIBUTE_NAME].get(record.id);
 			assert.deepStrictEqual(records, record);

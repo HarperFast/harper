@@ -4,13 +4,13 @@ on:
   workflow_call:
     inputs:
       channel_id:
-        description: "Channel ID"
+        description: 'Channel ID'
         # development-ci -> 'C05PLHLQFQA'
-        default:  'C05PLHLQFQA'
+        default: 'C05PLHLQFQA'
         required: false
         type: string
       payload:
-        description: "JSON message payload: https://api.slack.com/reference/messaging/payload"
+        description: 'JSON message payload: https://api.slack.com/reference/messaging/payload'
         default: |
           {
             "text": "${{ github.run_id }} Failed.",
@@ -44,13 +44,13 @@ on:
         required: false
         type: string
       update_ts:
-        description: "ts from previous message if we are updating it. leave/set blank send new message."
+        description: 'ts from previous message if we are updating it. leave/set blank send new message.'
         default: ''
         required: false
         type: string
     outputs:
       ts:
-        description: "timestamp from post, used to update messages"
+        description: 'timestamp from post, used to update messages'
         value: ${{ jobs.sendSlackMessage.outputs.ts }}
 
 jobs:
@@ -60,16 +60,15 @@ jobs:
     outputs:
       ts: ${{ inputs.update_ts == '' && steps.send-slack.outputs.ts || steps.update-slack.outputs.ts }}
     steps:
-
       # use this step if we want update a message (update_ts != '')
       - name: Update a Slack Message
         if: ${{ inputs.update_ts != '' }}
         id: update-slack
         uses: slackapi/slack-github-action@v1.25.0
         with:
-          channel-id: "${{ inputs.channel_id }}"
-          payload: "${{ inputs.payload }}"
-          update-ts: "${{ inputs.update_ts }}"
+          channel-id: '${{ inputs.channel_id }}'
+          payload: '${{ inputs.payload }}'
+          update-ts: '${{ inputs.update_ts }}'
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}
         continue-on-error: true
@@ -80,7 +79,7 @@ jobs:
         id: send-slack
         uses: slackapi/slack-github-action@v1.25.0
         with:
-          channel-id: "${{ inputs.channel_id }}"
-          payload: "${{ inputs.payload }}"
+          channel-id: '${{ inputs.channel_id }}'
+          payload: '${{ inputs.payload }}'
         env:
           SLACK_BOT_TOKEN: ${{ secrets.SLACK_BOT_KEY }}

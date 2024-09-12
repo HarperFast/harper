@@ -1,4 +1,4 @@
-"use strict";
+'use strict';
 
 const path = require('path');
 const fs = require('fs-extra');
@@ -16,7 +16,7 @@ module.exports = {
 	setupCSVSqlData,
 	cleanupCSVData,
 	generateMockAST,
-	sqlIntegrationData: sql_integration_data
+	sqlIntegrationData: sql_integration_data,
 };
 /**
  * Converts a sql statement into an AST object for an alasql operation
@@ -24,14 +24,14 @@ module.exports = {
  * @returns {SelectValidator}
  */
 function generateMockAST(sql_statement) {
-    try {
-        const test_ast = sql.convertSQLToAST(sql_statement);
-        const validated_ast = new SelectValidator(test_ast.ast.statements[0]);
-        validated_ast.validate();
-        return validated_ast;
-    } catch(e) {
-        console.log(e);
-    }
+	try {
+		const test_ast = sql.convertSQLToAST(sql_statement);
+		const validated_ast = new SelectValidator(test_ast.ast.statements[0]);
+		validated_ast.validate();
+		return validated_ast;
+	} catch (e) {
+		console.log(e);
+	}
 }
 
 async function setupCSVSqlData() {
@@ -95,7 +95,6 @@ function parseCsvFilesToObjArr(file_paths) {
 async function cleanupCSVData() {
 	await tearDownMockDB(test_env);
 	test_env = [];
-
 }
 // Methods for parsing and organizing data from SQL csv test data for tests above
 const integration_test_data_hash_values = {

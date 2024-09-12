@@ -196,7 +196,7 @@ async function processTable(schema, table, the_schema_path, is_transaction_reind
 	let entries = [];
 	try {
 		for (let entry of primary_dbi.getRange({ start: false })) {
-			entry.value = Object.assign({}, entry.value); // copy if it is frozen
+			entry.value = { ...entry.value }; // copy if it is frozen
 			entries.push(entry);
 			if (!is_transaction_reindex) {
 				if (schema === 'system') {

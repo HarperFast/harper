@@ -1,13 +1,13 @@
 {
-  "include": ["**/*"],
-  "compilerOptions": {
-    "declaration": true,
-    "outDir": "ts-build",
-    "esModuleInterop": true,
-    "noImplicitAny": false,
-    "target": "ES2022",
-    "moduleResolution": "NodeNext",
-    "module": "NodeNext",
-    "sourceMap": true
-  }
+	"include": ["**/*"],
+	"compilerOptions": {
+		"declaration": true,
+		"outDir": "ts-build",
+		"esModuleInterop": true,
+		"noImplicitAny": false,
+		"target": "ES2022",
+		"moduleResolution": "NodeNext",
+		"module": "NodeNext",
+		"sourceMap": true
+	}
 }

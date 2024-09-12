@@ -48,7 +48,7 @@ describe('test REST calls with cache table', () => {
 		response = await axios.put('http://localhost:9926/FourProp/3', data, {
 			headers: {
 				'Cache-Control': 'max-age=0',
-			}
+			},
 		});
 		assert.equal(response.status, 204);
 		response = await axios('http://localhost:9926/FourProp/3', {
@@ -65,11 +65,10 @@ describe('test REST calls with cache table', () => {
 		let response = await axios.put('http://localhost:9926/FourProp/3', data, {
 			headers: {
 				'Cache-Control': 'max-age=0',
-			}
+			},
 		});
 		assert.equal(response.status, 204);
 		response = await axios('http://localhost:9926/FourProp/?id=3');
 		assert.equal(response.data.length, 0);
 	});
-
 });

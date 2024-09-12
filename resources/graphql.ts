@@ -101,7 +101,7 @@ export function start({ ensureTable }) {
 						properties.push(property);
 						attributes_object[property.name] = undefined; // this is used as a backup scope for computed properties
 						for (const directive of field.directives) {
-							let directive_name = directive.name.value;
+							const directive_name = directive.name.value;
 							if (directive_name === 'primaryKey') {
 								if (has_primary_key) console.warn('Can not define two attributes as a primary key at', directive.loc);
 								else {
@@ -113,7 +113,7 @@ export function start({ ensureTable }) {
 							} else if (directive_name === 'computed') {
 								for (const arg of directive.arguments || []) {
 									if (arg.name.value === 'from') {
-										let computed_from_expression = (arg.value as StringValueNode).value;
+										const computed_from_expression = (arg.value as StringValueNode).value;
 										property.computed = {
 											from: createComputedFrom(computed_from_expression, arg, attributes_object),
 										};

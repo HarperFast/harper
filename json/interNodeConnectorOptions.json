@@ -1,16 +1,16 @@
 {
-  "rejectUnauthorized": false,
-  "autoConnect":true,
-  "autoReconnect":true,
-  "secure": true,
-  "connectTimeout": 10000,
-  "ackTimeout": 60000,
-  "autoReconnectOptions": {
-    "initialDelay": 1000,
-    "maxDelay": 2000
-  },
-  "query": {
-    "node_client_name": null,
-    "node_server_name": null
-  }
+	"rejectUnauthorized": false,
+	"autoConnect": true,
+	"autoReconnect": true,
+	"secure": true,
+	"connectTimeout": 10000,
+	"ackTimeout": 60000,
+	"autoReconnectOptions": {
+		"initialDelay": 1000,
+		"maxDelay": 2000
+	},
+	"query": {
+		"node_client_name": null,
+		"node_server_name": null
+	}
 }

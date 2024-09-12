@@ -1,8 +1,5 @@
 require('../utility/devops/tsBuild');
-const {
-	startHTTPThreads,
-	startSocketServer,
-} = require('../server/threads/socketRouter');
+const { startHTTPThreads, startSocketServer } = require('../server/threads/socketRouter');
 
 startHTTPThreads(0, true);
 startSocketServer(9925);

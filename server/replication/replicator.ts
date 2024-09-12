@@ -53,15 +53,14 @@ export function start(options) {
 		route_by_hostname.set(urlToNodeName(node.url), node);
 	}
 	assignReplicationSource(options);
-	options = Object.assign(
+	options = {
 		// We generally expect this to use the operations API ports (9925)
-		{
-			subProtocol: 'harperdb-replication-v1',
-			mtls: true, // make sure that we request a certificate from the client
-			isOperationsServer: true, // we default to using the operations server ports
-		},
-		options
-	);
+		subProtocol: 'harperdb-replication-v1',
+		mtls: true, // make sure that we request a certificate from the client
+		isOperationsServer: true, // we default to using the operations server ports
+
+		...options,
+	};
 	// noinspection JSVoidFunctionReturnValueUsed
 	const ws_servers = server.ws(async (ws, request, chain_completion) => {
 		await chain_completion;
@@ -135,11 +134,10 @@ export function start(options) {
 						const ca = Array.from(replication_certificate_authorities);
 						// add the replication CAs (and root CAs) to any existing CAs for the context
 						if (context.options.availableCAs) ca.push(...context.options.availableCAs.values());
-						const tls_options = // make sure we use the overriden tls.createSecureContext
+						const tls_options =
+							// make sure we use the overriden tls.createSecureContext
 							// create a new security context with the extra CAs
-							Object.assign({}, context.options, {
-								ca,
-							});
+							{ ...context.options, ca };
 						context.replicationContext = tls.createSecureContext(tls_options);
 					} catch (error) {
 						logger.error('Error creating replication TLS config', error);

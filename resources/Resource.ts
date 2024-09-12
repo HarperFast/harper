@@ -530,7 +530,7 @@ function transactional(action, options) {
 		if (!context) context = {};
 		let resource_options;
 		if (query?.ensureLoaded != null || query?.async || is_collection) {
-			resource_options = Object.assign({}, options);
+			resource_options = { ...options };
 			if (query?.ensureLoaded != null) resource_options.ensureLoaded = query.ensureLoaded;
 			if (query?.async) resource_options.async = query.async;
 			if (is_collection) resource_options.isCollection = true;

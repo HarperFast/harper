@@ -40,7 +40,7 @@ if (getWorkerIndex() === 0) {
 		await new Promise((resolve) => setTimeout(resolve, 2000));
 		for await (const will of LastWill.search({})) {
 			const data = will.data;
-			const message = Object.assign({}, will);
+			const message = { ...will };
 			if (message.user?.username) message.user = await server.getUser(message.user.username);
 			try {
 				await publish(message, data, message);

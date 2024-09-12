@@ -424,26 +424,24 @@ function setGlobalSchema(hash_attribute, schema, table, attributes_keys) {
 				},
 			},
 		};
-	} else {
-		if (!global.hdb_schema[schema]) {
-			global.hdb_schema[schema] = {
-				[table]: {
-					hash_attribute: `${hash_attribute}`,
-					id: `${table_id}`,
-					name: `${table}`,
-					schema: `${schema}`,
-					attributes: attributes,
-				},
-			};
-		} else {
-			global.hdb_schema[schema][table] = {
+	} else if (!global.hdb_schema[schema]) {
+		global.hdb_schema[schema] = {
+			[table]: {
 				hash_attribute: `${hash_attribute}`,
 				id: `${table_id}`,
 				name: `${table}`,
 				schema: `${schema}`,
 				attributes: attributes,
-			};
-		}
+			},
+		};
+	} else {
+		global.hdb_schema[schema][table] = {
+			hash_attribute: `${hash_attribute}`,
+			id: `${table_id}`,
+			name: `${table}`,
+			schema: `${schema}`,
+			attributes: attributes,
+		};
 	}
 }
 

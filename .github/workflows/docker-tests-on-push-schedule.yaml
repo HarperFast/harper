@@ -1,11 +1,11 @@
-name: "Run All Docker Cluster Tests"
+name: 'Run All Docker Cluster Tests'
 
 on:
   push:
     branches:
       - main
     tags:
-      - "release_*"
+      - 'release_*'
   schedule:
     - cron: '8 13 * * 1-5'
   workflow_dispatch:
@@ -42,7 +42,7 @@ jobs:
       container: 'tar'
       containerTarball: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ matrix.flavor }}-${{ matrix.platform }}-${{ github.run_number }}.tar
       file: ${{ matrix.file }}
-      platforms: "linux/${{ matrix.platform }}"
+      platforms: 'linux/${{ matrix.platform }}'
 
   ##############################
   #  Call Docker Test template
@@ -64,7 +64,7 @@ jobs:
           - 'arm64'
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      dockerArtifactSuffix: "${{ matrix.flavor }}-${{ matrix.platform}}-${{ github.run_number }}"
+      dockerArtifactSuffix: '${{ matrix.flavor }}-${{ matrix.platform}}-${{ github.run_number }}'
       clusterTest: 'test/ci-tests/docker-cluster-test-a.sh'
       tfArtifactSuffix: '-test-a'
     secrets: inherit
@@ -89,7 +89,7 @@ jobs:
           - 'arm64'
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      dockerArtifactSuffix: "${{ matrix.flavor }}-${{ matrix.platform}}-${{ github.run_number }}"
+      dockerArtifactSuffix: '${{ matrix.flavor }}-${{ matrix.platform}}-${{ github.run_number }}'
       clusterTest: 'test/ci-tests/docker-cluster-test-b.sh'
       tfArtifactSuffix: '-test-b'
     secrets: inherit
@@ -114,7 +114,7 @@ jobs:
           - 'arm64'
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      dockerArtifactSuffix: "${{ matrix.flavor }}-${{ matrix.platform}}-${{ github.run_number }}"
+      dockerArtifactSuffix: '${{ matrix.flavor }}-${{ matrix.platform}}-${{ github.run_number }}'
       clusterTest: 'test/ci-tests/docker-cluster-test-c.sh'
       tfArtifactSuffix: '-test-c'
     secrets: inherit

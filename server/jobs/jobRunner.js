@@ -131,7 +131,7 @@ async function launchJobThread(job_id) {
 		threads_start.startWorker('server/jobs/jobProcess.js', {
 			autoRestart: false,
 			name: 'job',
-			env: Object.assign({}, process.env, { [hdb_terms.PROCESS_NAME_ENV_PROP]: `JOB-${job_id}` }),
+			env: { ...process.env, [hdb_terms.PROCESS_NAME_ENV_PROP]: `JOB-${job_id}` },
 		});
 	else
 		parentPort.postMessage({
@@ -145,7 +145,7 @@ if (isMainThread) {
 			threads_start.startWorker('server/jobs/jobProcess.js', {
 				autoRestart: false,
 				name: 'job',
-				env: Object.assign({}, process.env, { [hdb_terms.PROCESS_NAME_ENV_PROP]: `JOB-${message.jobId}` }),
+				env: { ...process.env, [hdb_terms.PROCESS_NAME_ENV_PROP]: `JOB-${message.jobId}` },
 			});
 		} catch (e) {
 			log.error(e);

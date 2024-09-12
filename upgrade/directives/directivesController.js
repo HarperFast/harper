@@ -9,7 +9,7 @@
 const hdb_utils = require('../../utility/common_utils');
 const hdb_terms = require('../../utility/hdbTerms');
 const hdb_log = require('../../utility/logging/harper_logger');
-const {DATA_VERSION, UPGRADE_VERSION} = hdb_terms.UPGRADE_JSON_FIELD_NAMES_ENUM;
+const { DATA_VERSION, UPGRADE_VERSION } = hdb_terms.UPGRADE_JSON_FIELD_NAMES_ENUM;
 
 // IMPORT VERSION UPGRADE DIRECTIVES HERE
 const version_3_1_0 = require('./3-1-0');
@@ -65,14 +65,16 @@ function getVersionsForUpgrade(upgrade_obj) {
 		);
 		hdb_log.error(
 			'There was an error when trying to evaluate the version information for your instance.  Trying to ' +
-			'start the server anyways but it may fail. If you continue to have this problem, please contact support@harperdb.io.'
+				'start the server anyways but it may fail. If you continue to have this problem, please contact support@harperdb.io.'
 		);
 		return [];
 	}
 
 	return [...versions.keys()].sort(hdb_utils.compareVersions).filter(function (this_version) {
-		return hdb_utils.compareVersions(this_version, curr_version) > 0 &&
-			hdb_utils.compareVersions(this_version, new_version) <= 0;
+		return (
+			hdb_utils.compareVersions(this_version, curr_version) > 0 &&
+			hdb_utils.compareVersions(this_version, new_version) <= 0
+		);
 	});
 }
 

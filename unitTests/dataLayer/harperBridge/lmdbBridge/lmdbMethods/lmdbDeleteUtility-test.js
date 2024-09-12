@@ -232,7 +232,7 @@ describe('Test lmdbDeleteRecords module', () => {
 			//verify inserted txn
 			let copy_expected_timestamp_txn = Object.create(null);
 			for (let [key, value] of Object.entries(expected_timestamp_txn)) {
-				copy_expected_timestamp_txn[key] = [Object.assign({}, value[0])];
+				copy_expected_timestamp_txn[key] = [{ ...value[0] }];
 			}
 			let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
 
@@ -277,7 +277,7 @@ describe('Test lmdbDeleteRecords module', () => {
 				__createdtime__: INSERT_TIMESTAMP,
 			};
 
-			let delete_txn = Object.assign({}, new LMDBDeleteTransactionObject([8], [orig_rec], undefined, m_time));
+			let delete_txn = { ...new LMDBDeleteTransactionObject([8], [orig_rec], undefined, m_time) };
 			copy_expected_timestamp_txn[m_time] = [delete_txn];
 
 			copy_expected_hashes_txn[8].push(m_time);
@@ -306,7 +306,7 @@ describe('Test lmdbDeleteRecords module', () => {
 			//verify inserted txn
 			let copy_expected_timestamp_txn = Object.create(null);
 			for (let [key, value] of Object.entries(expected_timestamp_txn)) {
-				copy_expected_timestamp_txn[key] = [Object.assign({}, value[0])];
+				copy_expected_timestamp_txn[key] = [{ ...value[0] }];
 			}
 			let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
 			await verify_txn(
@@ -350,7 +350,7 @@ describe('Test lmdbDeleteRecords module', () => {
 				__createdtime__: INSERT_TIMESTAMP,
 			};
 
-			let delete_txn = Object.assign({}, new LMDBDeleteTransactionObject([8], [orig_rec], undefined, m_time));
+			let delete_txn = { ...new LMDBDeleteTransactionObject([8], [orig_rec], undefined, m_time) };
 			copy_expected_timestamp_txn[m_time] = [delete_txn];
 
 			copy_expected_hashes_txn[8].push(m_time);
@@ -379,7 +379,7 @@ describe('Test lmdbDeleteRecords module', () => {
 			//verify inserted txn
 			let copy_expected_timestamp_txn = Object.create(null);
 			for (let [key, value] of Object.entries(expected_timestamp_txn)) {
-				copy_expected_timestamp_txn[key] = [Object.assign({}, value[0])];
+				copy_expected_timestamp_txn[key] = [{ ...value[0] }];
 			}
 			let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
 			await verify_txn(
@@ -418,7 +418,7 @@ describe('Test lmdbDeleteRecords module', () => {
 			//verify inserted txn
 			let copy_expected_timestamp_txn = Object.create(null);
 			for (let [key, value] of Object.entries(expected_timestamp_txn)) {
-				copy_expected_timestamp_txn[key] = [Object.assign({}, value[0])];
+				copy_expected_timestamp_txn[key] = [{ ...value[0] }];
 			}
 			let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
 			await verify_txn(
@@ -472,7 +472,7 @@ describe('Test lmdbDeleteRecords module', () => {
 				},
 			];
 
-			let delete_txn = Object.assign({}, new LMDBDeleteTransactionObject([10, 12], orig_recs, undefined, m_time));
+			let delete_txn = { ...new LMDBDeleteTransactionObject([10, 12], orig_recs, undefined, m_time) };
 			copy_expected_timestamp_txn[m_time] = [delete_txn];
 
 			copy_expected_hashes_txn[10].push(m_time);
@@ -537,7 +537,7 @@ describe('Test lmdbDeleteRecords module', () => {
 			//verify inserted txn
 			let copy_expected_timestamp_txn = Object.create(null);
 			for (let [key, value] of Object.entries(expected_timestamp_txn)) {
-				copy_expected_timestamp_txn[key] = [Object.assign({}, value[0])];
+				copy_expected_timestamp_txn[key] = [{ ...value[0] }];
 			}
 			let copy_expected_hashes_txn = test_utils.assignObjecttoNullObject(test_utils.deepClone(expected_hashes_txn));
 			await verify_txn(
@@ -564,7 +564,7 @@ describe('Test lmdbDeleteRecords module', () => {
 				},
 			];
 
-			let delete_txn = Object.assign({}, new LMDBDeleteTransactionObject([10], orig_recs, undefined, m_time));
+			let delete_txn = { ...new LMDBDeleteTransactionObject([10], orig_recs, undefined, m_time) };
 			copy_expected_timestamp_txn[m_time] = [delete_txn];
 
 			copy_expected_hashes_txn[10].push(m_time);

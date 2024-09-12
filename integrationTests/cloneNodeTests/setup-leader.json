@@ -12,12 +12,7 @@
 				{
 					"listen": "test",
 					"script": {
-						"exec": [
-							"pm.test('Status code is 200', () => {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							""
-						],
+						"exec": ["pm.test('Status code is 200', () => {", "    pm.response.to.have.status(200);", "});", ""],
 						"type": "text/javascript",
 						"packages": {}
 					}
@@ -58,9 +53,7 @@
 				"url": {
 					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
 					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{LEADER_HOST}}"
-					],
+					"host": ["{{LEADER_HOST}}"],
 					"port": "{{LEADER_HDB_PORT}}"
 				}
 			},
@@ -120,9 +113,7 @@
 				"url": {
 					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
 					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{LEADER_HOST}}"
-					],
+					"host": ["{{LEADER_HOST}}"],
 					"port": "{{LEADER_HDB_PORT}}"
 				}
 			},
@@ -134,12 +125,7 @@
 				{
 					"listen": "test",
 					"script": {
-						"exec": [
-							"pm.test('Status code is 200', () => {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							""
-						],
+						"exec": ["pm.test('Status code is 200', () => {", "    pm.response.to.have.status(200);", "});", ""],
 						"type": "text/javascript",
 						"packages": {}
 					}
@@ -180,9 +166,7 @@
 				"url": {
 					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
 					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{LEADER_HOST}}"
-					],
+					"host": ["{{LEADER_HOST}}"],
 					"port": "{{LEADER_HDB_PORT}}"
 				}
 			},
@@ -194,12 +178,7 @@
 				{
 					"listen": "test",
 					"script": {
-						"exec": [
-							"pm.test('Status code is 200', () => {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							""
-						],
+						"exec": ["pm.test('Status code is 200', () => {", "    pm.response.to.have.status(200);", "});", ""],
 						"type": "text/javascript",
 						"packages": {}
 					}
@@ -240,9 +219,7 @@
 				"url": {
 					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
 					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{LEADER_HOST}}"
-					],
+					"host": ["{{LEADER_HOST}}"],
 					"port": "{{LEADER_HDB_PORT}}"
 				}
 			},
@@ -254,12 +231,7 @@
 				{
 					"listen": "test",
 					"script": {
-						"exec": [
-							"pm.test('Status code is 200', () => {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							""
-						],
+						"exec": ["pm.test('Status code is 200', () => {", "    pm.response.to.have.status(200);", "});", ""],
 						"type": "text/javascript",
 						"packages": {}
 					}
@@ -300,9 +272,7 @@
 				"url": {
 					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
 					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{LEADER_HOST}}"
-					],
+					"host": ["{{LEADER_HOST}}"],
 					"port": "{{LEADER_HDB_PORT}}"
 				}
 			},
@@ -314,12 +284,7 @@
 				{
 					"listen": "test",
 					"script": {
-						"exec": [
-							"pm.test('Status code is 200', () => {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							""
-						],
+						"exec": ["pm.test('Status code is 200', () => {", "    pm.response.to.have.status(200);", "});", ""],
 						"type": "text/javascript",
 						"packages": {}
 					}
@@ -360,9 +325,7 @@
 				"url": {
 					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
 					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{LEADER_HOST}}"
-					],
+					"host": ["{{LEADER_HOST}}"],
 					"port": "{{LEADER_HDB_PORT}}"
 				}
 			},
@@ -374,12 +337,7 @@
 				{
 					"listen": "test",
 					"script": {
-						"exec": [
-							"pm.test('Status code is 200', () => {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							""
-						],
+						"exec": ["pm.test('Status code is 200', () => {", "    pm.response.to.have.status(200);", "});", ""],
 						"type": "text/javascript",
 						"packages": {}
 					}
@@ -420,9 +378,7 @@
 				"url": {
 					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
 					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{LEADER_HOST}}"
-					],
+					"host": ["{{LEADER_HOST}}"],
 					"port": "{{LEADER_HDB_PORT}}"
 				}
 			},
@@ -434,12 +390,7 @@
 				{
 					"listen": "test",
 					"script": {
-						"exec": [
-							"pm.test('Status code is 200', () => {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							""
-						],
+						"exec": ["pm.test('Status code is 200', () => {", "    pm.response.to.have.status(200);", "});", ""],
 						"type": "text/javascript",
 						"packages": {}
 					}
@@ -480,9 +431,7 @@
 				"url": {
 					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
 					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{LEADER_HOST}}"
-					],
+					"host": ["{{LEADER_HOST}}"],
 					"port": "{{LEADER_HDB_PORT}}"
 				}
 			},
@@ -494,12 +443,7 @@
 				{
 					"listen": "test",
 					"script": {
-						"exec": [
-							"pm.test('Status code is 200', () => {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							""
-						],
+						"exec": ["pm.test('Status code is 200', () => {", "    pm.response.to.have.status(200);", "});", ""],
 						"type": "text/javascript",
 						"packages": {}
 					}
@@ -540,9 +484,7 @@
 				"url": {
 					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
 					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{LEADER_HOST}}"
-					],
+					"host": ["{{LEADER_HOST}}"],
 					"port": "{{LEADER_HDB_PORT}}"
 				}
 			},
@@ -554,12 +496,7 @@
 				{
 					"listen": "test",
 					"script": {
-						"exec": [
-							"pm.test('Status code is 200', () => {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							""
-						],
+						"exec": ["pm.test('Status code is 200', () => {", "    pm.response.to.have.status(200);", "});", ""],
 						"type": "text/javascript",
 						"packages": {}
 					}
@@ -600,9 +537,7 @@
 				"url": {
 					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
 					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{LEADER_HOST}}"
-					],
+					"host": ["{{LEADER_HOST}}"],
 					"port": "{{LEADER_HDB_PORT}}"
 				}
 			},
@@ -614,12 +549,7 @@
 				{
 					"listen": "test",
 					"script": {
-						"exec": [
-							"pm.test('Status code is 200', () => {",
-							"    pm.response.to.have.status(200);",
-							"});",
-							""
-						],
+						"exec": ["pm.test('Status code is 200', () => {", "    pm.response.to.have.status(200);", "});", ""],
 						"type": "text/javascript",
 						"packages": {}
 					}
@@ -660,9 +590,7 @@
 				"url": {
 					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
 					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{LEADER_HOST}}"
-					],
+					"host": ["{{LEADER_HOST}}"],
 					"port": "{{LEADER_HDB_PORT}}"
 				}
 			},

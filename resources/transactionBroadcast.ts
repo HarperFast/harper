@@ -106,7 +106,7 @@ class Subscription extends IterableEventQueue {
 }
 function notifyFromTransactionData(subscriptions) {
 	if (!subscriptions) return; // if no subscriptions to this env path, don't need to read anything
-	let audit_store = subscriptions.auditStore;
+	const audit_store = subscriptions.auditStore;
 	audit_store.resetReadTxn();
 	nextTransaction(subscriptions.auditStore);
 	let subscribers_with_txns;

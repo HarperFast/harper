@@ -1,15 +1,15 @@
 {
-  "rejectUnauthorized": false,
-  "autoConnect":true,
-  "autoReconnect":true,
-  "secure": true,
-  "connectTimeout": 10000,
-  "ackTimeout": 60000,
-  "autoReconnectOptions": {
-    "initialDelay": 100,
-    "maxDelay": 200
-  },
-  "query": {
-    "hdb_worker":1
-  }
+	"rejectUnauthorized": false,
+	"autoConnect": true,
+	"autoReconnect": true,
+	"secure": true,
+	"connectTimeout": 10000,
+	"ackTimeout": 60000,
+	"autoReconnectOptions": {
+		"initialDelay": 100,
+		"maxDelay": 200
+	},
+	"query": {
+		"hdb_worker": 1
+	}
 }

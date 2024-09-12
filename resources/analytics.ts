@@ -223,7 +223,7 @@ async function aggregation(from_period, to_period = 60000) {
 					const action_for_thread = action.threads[threadId];
 					if (action_for_thread) action = action_for_thread;
 					else {
-						action.threads[threadId] = Object.assign({}, measures);
+						action.threads[threadId] = { ...measures };
 						continue;
 					}
 				}
@@ -241,12 +241,12 @@ async function aggregation(from_period, to_period = 60000) {
 					action.ratio = action.total / action.count;
 				}
 			} else {
-				action = Object.assign({ period: to_period }, entry);
+				action = { period: to_period, ...entry };
 				delete action.distribution;
 				aggregate_actions.set(key, action);
 				if (action.byThread) {
 					action.threads = [];
-					action.threads[threadId] = Object.assign({}, measures);
+					action.threads[threadId] = { ...measures };
 					threads_to_average.push(action);
 				}
 			}

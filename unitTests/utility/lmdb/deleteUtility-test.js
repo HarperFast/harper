@@ -103,9 +103,7 @@ describe('Test deleteUtility', () => {
 		it('delete all records', async () => {
 			let expected_compare = [];
 			MULTI_RECORD_ARRAY_COMPARE.forEach((compare) => {
-				expected_compare.push(
-					Object.assign({ __updatedtime__: TXN_TIMESTAMP, __createdtime__: TXN_TIMESTAMP }, compare)
-				);
+				expected_compare.push({ __updatedtime__: TXN_TIMESTAMP, __createdtime__: TXN_TIMESTAMP, ...compare });
 			});
 
 			let records = [];

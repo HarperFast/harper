@@ -22,13 +22,13 @@ on:
         type: string
       platforms:
         description: 'Which platform(s) to build for'
-        default: "linux/arm64,linux/amd64"
+        default: 'linux/arm64,linux/amd64'
         required: false
         type: choice
         options:
-          - "linux/arm64,linux/amd64"
-          - "linux/amd64"
-          - "linux/arm64"
+          - 'linux/arm64,linux/amd64'
+          - 'linux/amd64'
+          - 'linux/arm64'
       push:
         description: 'push the created image to dockerhub. ignored when tar'
         default: false

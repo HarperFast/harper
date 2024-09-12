@@ -462,7 +462,7 @@ async function getComponents() {
 			if (all_config[element].package.startsWith('file:')) {
 				continue;
 			}
-			comps.push(Object.assign({}, all_config[element], { name: element }));
+			comps.push({ ...all_config[element], name: element });
 		}
 	}
 
@@ -661,7 +661,7 @@ Host ${host}
 				const response = await fetch('https://api.github.com/meta');
 				const resp_json = await response.json();
 				const ssh_keys = resp_json['ssh_keys'];
-				for (var known_host of ssh_keys) {
+				for (let known_host of ssh_keys) {
 					fs.appendFile(known_hosts_file, 'github.com ' + known_host + '\n');
 				}
 			} catch (err) {

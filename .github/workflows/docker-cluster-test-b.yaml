@@ -1,4 +1,4 @@
-name: "Run Docker Cluster Tests B"
+name: 'Run Docker Cluster Tests B'
 
 on:
   workflow_dispatch:
@@ -58,7 +58,7 @@ jobs:
       container: 'tar'
       containerTarball: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ matrix.flavor }}-${{ matrix.platform }}-${{ github.run_number }}.tar
       file: ${{ matrix.file }}
-      platforms: "linux/${{ matrix.platform }}"
+      platforms: 'linux/${{ matrix.platform }}'
 
   ##############################
   #  Call Docker Test template
@@ -77,5 +77,5 @@ jobs:
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       clusterTest: 'test/ci-tests/docker-cluster-test-b.sh'
-      dockerArtifactSuffix: "${{ matrix.flavor }}-${{ matrix.platform }}-${{ github.run_number }}"
+      dockerArtifactSuffix: '${{ matrix.flavor }}-${{ matrix.platform }}-${{ github.run_number }}'
     secrets: inherit

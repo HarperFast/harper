@@ -144,7 +144,7 @@ describe('test lmdbCreateAttribute module', () => {
 	});
 
 	it('Test that a datastore is created and system schema updated with new attribute', async () => {
-		const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
+		const test_create_attr_obj = { ...CREATE_ATTR_OBJ_TEST };
 		let expected_result = {
 			message: 'inserted 1 of 1 records',
 			skipped_hashes: [],
@@ -179,7 +179,7 @@ describe('test lmdbCreateAttribute module', () => {
 	});
 
 	it('Test that a datastore is created with dup_sort set to true when undefined in create_attribute_obj', async () => {
-		const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
+		const test_create_attr_obj = { ...CREATE_ATTR_OBJ_TEST };
 		test_create_attr_obj.attribute = 'attr1';
 		delete test_create_attr_obj.id;
 		assert.equal(test_create_attr_obj.dup_sort, undefined);
@@ -192,7 +192,7 @@ describe('test lmdbCreateAttribute module', () => {
 	});
 
 	it('Test that a datastore is created with dup_sort set to true when null in create_attribute_obj', async () => {
-		const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
+		const test_create_attr_obj = { ...CREATE_ATTR_OBJ_TEST };
 		test_create_attr_obj.dup_sort = null;
 		test_create_attr_obj.attribute = 'attr2';
 		delete test_create_attr_obj.id;
@@ -204,7 +204,7 @@ describe('test lmdbCreateAttribute module', () => {
 	});
 
 	it('Test that a datastore is created with dup_sort set to true when true boolean used in create_attribute_obj', async () => {
-		const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
+		const test_create_attr_obj = { ...CREATE_ATTR_OBJ_TEST };
 		test_create_attr_obj.dup_sort = true;
 		test_create_attr_obj.attribute = 'attr3';
 		delete test_create_attr_obj.id;
@@ -216,7 +216,7 @@ describe('test lmdbCreateAttribute module', () => {
 	});
 
 	it('Test that a datastore is created with dup_sort set to false when false boolean used in create_attribute_obj', async () => {
-		const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
+		const test_create_attr_obj = { ...CREATE_ATTR_OBJ_TEST };
 		test_create_attr_obj.dup_sort = false;
 		test_create_attr_obj.attribute = 'attr4';
 		delete test_create_attr_obj.id;
@@ -228,7 +228,7 @@ describe('test lmdbCreateAttribute module', () => {
 	});
 
 	it('Test that datastore is not created because it already exists', async () => {
-		const test_create_attr_obj = Object.assign({}, CREATE_ATTR_OBJ_TEST);
+		const test_create_attr_obj = { ...CREATE_ATTR_OBJ_TEST };
 		await test_utils.assertErrorAsync(
 			lmdb_create_attribute,
 			[test_create_attr_obj],

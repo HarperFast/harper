@@ -163,7 +163,7 @@ export async function startOnMainThread(options) {
 			logger.trace('Setting up replication for database', database_name, 'on node', node.name);
 			const existing_entry = db_replication_workers.get(database_name);
 			let worker;
-			const nodes = [Object.assign({ replicateByDefault: tables_replicate_by_default }, node)];
+			const nodes = [{ replicateByDefault: tables_replicate_by_default, ...node }];
 			const should_subscribe = shouldReplicateToNode(node, database_name);
 			const http_workers = workers.filter((worker) => worker.name === 'http');
 			if (existing_entry) {
@@ -365,10 +365,10 @@ export function requestClusterStatus(message, port) {
 
 if (parentPort) {
 	disconnectedFromNode = (connection) => {
-		parentPort.postMessage(Object.assign({ type: 'disconnected-from-node' }, connection));
+		parentPort.postMessage({ type: 'disconnected-from-node', ...connection });
 	};
 	connectedToNode = (connection) => {
-		parentPort.postMessage(Object.assign({ type: 'connected-to-node' }, connection));
+		parentPort.postMessage({ type: 'connected-to-node', ...connection });
 	};
 	onMessageByType('subscribe-to-node', (message) => {
 		subscribeToNode(message);

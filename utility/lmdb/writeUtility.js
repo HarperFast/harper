@@ -358,7 +358,7 @@ function updateUpsertRecord(env, hash_attribute, record, hash_value, result, mus
 			}
 		}
 		// there is no point in prefetching the main record since it was already retrieved for the merge
-		let merged_record = Object.assign({}, existing_record, record);
+		let merged_record = { ...existing_record, ...record };
 		primary_dbi.put(hash_value, merged_record, merged_record[UPDATED_TIME_ATTRIBUTE_NAME]);
 	};
 	// use optimistic locking to only commit if the existing record state still holds true.

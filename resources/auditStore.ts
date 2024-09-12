@@ -67,10 +67,10 @@ const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
 let DEFAULT_AUDIT_CLEANUP_DELAY = 10000; // default delay of 10 seconds
 let timestamp_errored = false;
 export function openAuditStore(root_store) {
-	let audit_store = (root_store.auditStore = root_store.openDB(
-		AUDIT_STORE_NAME,
-		Object.assign({ create: false }, AUDIT_STORE_OPTIONS)
-	));
+	let audit_store = (root_store.auditStore = root_store.openDB(AUDIT_STORE_NAME, {
+		create: false,
+		...AUDIT_STORE_OPTIONS,
+	}));
 	if (!audit_store) {
 		// this means we are creating a new audit store. Initialize with the last removed timestamp (we don't want to put this in legacy audit logs since we don't know if they have had deletions or not).
 		audit_store = root_store.auditStore = root_store.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
@@ -137,7 +137,7 @@ export function openAuditStore(root_store) {
 	}
 	if (getWorkerIndex() === 0 && !timestamp_errored) {
 		// make sure the timestamp is valid
-		for (let time of audit_store.getKeys({ reverse: true, limit: 1 })) {
+		for (const time of audit_store.getKeys({ reverse: true, limit: 1 })) {
 			if (time > Date.now()) {
 				timestamp_errored = true;
 				harper_logger.error(
@@ -338,7 +338,7 @@ export function readAuditEntry(buffer) {
 			expires_at = decoder.readFloat64();
 		}
 		if (action & HAS_ORIGINATING_OPERATION) {
-			let operation_id = decoder.readInt();
+			const operation_id = decoder.readInt();
 			originating_operation = ORIGINATING_OPERATIONS[operation_id];
 		}
 		length = decoder.readInt();

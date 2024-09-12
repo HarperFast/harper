@@ -102,18 +102,16 @@ const validateAttrPerms = (final_perms, initial_perms, hash_key = 'id') => {
 				if (attr_name === hash_key) {
 					expected_hash_perms = perm_obj;
 					has_hash_perms = true;
-				} else {
-					if (isSystemTimestampAttr(attr_name)) {
-						if (perm_obj[TEST_PERMS_ENUM.READ] === true) {
-							expected_hash_perms[TEST_PERMS_ENUM.READ] = true;
-						}
-					} else {
-						test_attr_perm_keys.forEach((perm_key) => {
-							if (perm_obj[perm_key] === true) {
-								expected_hash_perms[perm_key] = true;
-							}
-						});
+				} else if (isSystemTimestampAttr(attr_name)) {
+					if (perm_obj[TEST_PERMS_ENUM.READ] === true) {
+						expected_hash_perms[TEST_PERMS_ENUM.READ] = true;
 					}
+				} else {
+					test_attr_perm_keys.forEach((perm_key) => {
+						if (perm_obj[perm_key] === true) {
+							expected_hash_perms[perm_key] = true;
+						}
+					});
 				}
 			}
 			return acc;

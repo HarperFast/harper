@@ -18,7 +18,7 @@ on:
           - 'latest+stable'
         default: next
       dryrun:
-        description: "Add the --dry-run flag to npm publish"
+        description: 'Add the --dry-run flag to npm publish'
         type: choice
         options:
           - 'true'
@@ -34,19 +34,19 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 8
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/download-artifact@v4
-      with:
-        name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
-    - uses: actions/setup-node@v4
-      with:
-        node-version: '${{needs.build.outputs.nodeVersion}}'
-        registry-url: 'https://registry.npmjs.org'
-    - name: "npm Publish"
-      env:
-          NODE_AUTH_TOKEN: "${{ secrets.NPM_ACCESS_KEY }}"
-          HARPERDB_VERSION:  "${{ needs.build.outputs.harperdbVersion }}"
-          PUBLISH_DESTINATION: "${{ inputs.publish_destination }}"
-          EXTRA_TAGS: "${{ inputs.extra_tags }}"
-          DRYRUN: "${{ inputs.dryrun }}"
-      run: ./.github/scripts/npm-publish.sh
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '${{needs.build.outputs.nodeVersion}}'
+          registry-url: 'https://registry.npmjs.org'
+      - name: 'npm Publish'
+        env:
+          NODE_AUTH_TOKEN: '${{ secrets.NPM_ACCESS_KEY }}'
+          HARPERDB_VERSION: '${{ needs.build.outputs.harperdbVersion }}'
+          PUBLISH_DESTINATION: '${{ inputs.publish_destination }}'
+          EXTRA_TAGS: '${{ inputs.extra_tags }}'
+          DRYRUN: '${{ inputs.dryrun }}'
+        run: ./.github/scripts/npm-publish.sh

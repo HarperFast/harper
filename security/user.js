@@ -163,7 +163,7 @@ async function addUser(user) {
 		);
 	}
 
-	const new_user = Object.assign({}, clean_user);
+	const new_user = { ...clean_user };
 	new_user.role = search_role[0];
 
 	signalling.signalUserChange(new UserEventMsg(process.pid));

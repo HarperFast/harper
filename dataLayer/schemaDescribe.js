@@ -145,26 +145,21 @@ async function descTable(describe_table_object, attr_perms) {
 		);
 
 	function pushAtt(att) {
-		attributes.push(
-			Object.assign(
-				{},
-				{
-					attribute: att.attribute,
-					type: att.type,
-					elements: att.elements?.type,
-					indexed: att.indexed,
-					is_primary_key: att.isPrimaryKey,
-					assigned_created_time: att.assignCreatedTime,
-					assigned_updated_time: att.assignUpdatedTime,
-					nullable: att.nullable,
-					properties: att.properties
-						? att.properties.map((prop) => {
-								return { type: prop.type, name: prop.name };
-						  })
-						: undefined,
-				}
-			)
-		);
+		attributes.push({
+			attribute: att.attribute,
+			type: att.type,
+			elements: att.elements?.type,
+			indexed: att.indexed,
+			is_primary_key: att.isPrimaryKey,
+			assigned_created_time: att.assignCreatedTime,
+			assigned_updated_time: att.assignUpdatedTime,
+			nullable: att.nullable,
+			properties: att.properties
+				? att.properties.map((prop) => {
+						return { type: prop.type, name: prop.name };
+				  })
+				: undefined,
+		});
 	}
 
 	let attributes = [];

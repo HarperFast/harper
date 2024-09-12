@@ -133,31 +133,26 @@ function startWorker(path, options = {}) {
 
 	if (!extname(path)) path += '.js';
 
-	const worker = new Worker(
-		isAbsolute(path) ? path : join(PACKAGE_ROOT, path),
-		Object.assign(
-			{
-				resourceLimits: {
-					maxOldGenerationSizeMb: max_old_memory,
-					maxYoungGenerationSizeMb: max_young_memory,
-				},
-				execArgv: ['--enable-source-maps'],
-				argv: process.argv.slice(2),
-				// pass these in synchronously to the worker so it has them on startup:
-				workerData: {
-					addPorts: ports_to_send,
-					addThreadIds: channels_to_connect.map((channel) => channel.existingPort.threadId),
-					workerIndex: options.workerIndex,
-					workerCount: (worker_count = options.threadCount),
-					name: options.name,
-					restartNumber: module.exports.restartNumber,
-					ticketKeys: getTicketKeys(),
-				},
-				transferList: ports_to_send,
-			},
-			options
-		)
-	);
+	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
+		resourceLimits: {
+			maxOldGenerationSizeMb: max_old_memory,
+			maxYoungGenerationSizeMb: max_young_memory,
+		},
+		execArgv: ['--enable-source-maps'],
+		argv: process.argv.slice(2),
+		// pass these in synchronously to the worker so it has them on startup:
+		workerData: {
+			addPorts: ports_to_send,
+			addThreadIds: channels_to_connect.map((channel) => channel.existingPort.threadId),
+			workerIndex: options.workerIndex,
+			workerCount: (worker_count = options.threadCount),
+			name: options.name,
+			restartNumber: module.exports.restartNumber,
+			ticketKeys: getTicketKeys(),
+		},
+		transferList: ports_to_send,
+		...options,
+	});
 	// now that we have the new thread ids, we can finishing connecting the channel and notify the existing
 	// worker of the new port with thread id.
 	for (let { port1, existingPort: existing_port } of channels_to_connect) {

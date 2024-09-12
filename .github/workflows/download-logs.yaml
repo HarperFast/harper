@@ -1,4 +1,4 @@
-name: "Download logs from instances"
+name: 'Download logs from instances'
 
 on:
   workflow_call:
@@ -12,7 +12,6 @@ on:
         default: logs
 
 jobs:
-
   ################
   # Download Logs
   ################
@@ -20,46 +19,46 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 5
     steps:
-    - name: Download Logs
-      env:
+      - name: Download Logs
+        env:
           CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
-      run: |
-        #!/bin/bash
-        cd ..
-        echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
-        mkdir logs-artifact
-        public_dns_names="${{ inputs.publicDns }}"
-        for public_dns_name in ${public_dns_names[@]}
-        do 
-          echo "Starting work on: $public_dns_name"
-          log_folder_name=$(ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name "sudo curl http://169.254.169.254/latest/meta-data/local-ipv4")
-          mkdir logs-artifact/$log_folder_name
-          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/integrationTests/newman/report.html" "logs-artifact/$log_folder_name/newman_report.html" || (true && echo "Newman report not found")
-          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/integrationTests/newman/extra_report.html" "logs-artifact/$log_folder_name/newman_extra_report.html" || (true && echo "Newman report not found")
-          scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/hdb/log/" "logs-artifact/$log_folder_name/"
-          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/hdb/harperdb-config.yaml" "logs-artifact/$log_folder_name/harperdb-config.yaml"
-          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/.pm2/pm2.log" "logs-artifact/$log_folder_name/pm2.log" || (true && echo "pm2.log not found")
-          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/.pm2/dump.pm2" "logs-artifact/$log_folder_name/dump.pm2" || (true && echo "dump.pm2 not found")
-        
-          # This is an attempt to find and download core dump files
-          scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/var/lib/systemd/coredump/" "logs-artifact/$log_folder_name/coredump/" || (true && echo "/var/lib/systemd/coredump/ not found")
-          scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/var/crash/*" "logs-artifact/$log_folder_name/coredump/." || (true && echo "/var/crash/ not found")
-          scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/var/lib/apport/coredump/*" "logs-artifact/$log_folder_name/coredump/." || (true && echo "/var/lib/apport/coredump/ not found")
-          for file in $(ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name" find /home/ubuntu -regex '.*core\.[0-9]+' -type f); do
-            scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:${file}" "logs-artifact/$log_folder_name/${file//\//_}"
+        run: |
+          #!/bin/bash
+          cd ..
+          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+          mkdir logs-artifact
+          public_dns_names="${{ inputs.publicDns }}"
+          for public_dns_name in ${public_dns_names[@]}
+          do 
+            echo "Starting work on: $public_dns_name"
+            log_folder_name=$(ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name "sudo curl http://169.254.169.254/latest/meta-data/local-ipv4")
+            mkdir logs-artifact/$log_folder_name
+            scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/integrationTests/newman/report.html" "logs-artifact/$log_folder_name/newman_report.html" || (true && echo "Newman report not found")
+            scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/integrationTests/newman/extra_report.html" "logs-artifact/$log_folder_name/newman_extra_report.html" || (true && echo "Newman report not found")
+            scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/hdb/log/" "logs-artifact/$log_folder_name/"
+            scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/hdb/harperdb-config.yaml" "logs-artifact/$log_folder_name/harperdb-config.yaml"
+            scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/.pm2/pm2.log" "logs-artifact/$log_folder_name/pm2.log" || (true && echo "pm2.log not found")
+            scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/.pm2/dump.pm2" "logs-artifact/$log_folder_name/dump.pm2" || (true && echo "dump.pm2 not found")
+
+            # This is an attempt to find and download core dump files
+            scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/var/lib/systemd/coredump/" "logs-artifact/$log_folder_name/coredump/" || (true && echo "/var/lib/systemd/coredump/ not found")
+            scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/var/crash/*" "logs-artifact/$log_folder_name/coredump/." || (true && echo "/var/crash/ not found")
+            scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/var/lib/apport/coredump/*" "logs-artifact/$log_folder_name/coredump/." || (true && echo "/var/lib/apport/coredump/ not found")
+            for file in $(ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name" find /home/ubuntu -regex '.*core\.[0-9]+' -type f); do
+              scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:${file}" "logs-artifact/$log_folder_name/${file//\//_}"
+            done
+
+            echo "Ending work on: $public_dns_name"
           done
+          mv logs-artifact harperdb
 
-          echo "Ending work on: $public_dns_name"
-        done
-        mv logs-artifact harperdb
-
-      ######################
-      # Upload Log Artifact
-      ######################
-    - name: 'Upload Log Artifact'
-      if: always()
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ inputs.artifactName }}
-        path: logs-artifact/
-        retention-days: 1
+        ######################
+        # Upload Log Artifact
+        ######################
+      - name: 'Upload Log Artifact'
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.artifactName }}
+          path: logs-artifact/
+          retention-days: 1

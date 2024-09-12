@@ -1,5 +1,5 @@
 {
-  "protocol": "http",
-  "host": "localhost",
-  "port": "9925"
+	"protocol": "http",
+	"host": "localhost",
+	"port": "9925"
 }

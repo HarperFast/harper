@@ -82,7 +82,7 @@ export async function authentication(request, next_handler) {
 			const cookie_prefix =
 				(origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
 			const cookies = cookie?.split(/;\s+/) || [];
-			for (let cookie of cookies) {
+			for (const cookie of cookies) {
 				if (cookie.startsWith(cookie_prefix)) {
 					const end = cookie.indexOf(';');
 					session_id = cookie.slice(cookie_prefix.length, end === -1 ? cookie.length : end);

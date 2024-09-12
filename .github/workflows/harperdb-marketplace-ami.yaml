@@ -9,165 +9,165 @@ jobs:
       - build
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/download-artifact@v4
-      with:
-        name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
-    - name: Setup packer
-      run: |
-        #!/bin/bash
-        mkdir packer
-        cd packer
-        mkdir upload
-        mv ../harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz upload/
-        printf '{
-          "builders": [
-          {
-            "region": "us-east-2",
-            "type": "amazon-ebs",
-            "source_ami_filter": {
-              "filters": {
-                "virtualization-type": "hvm",
-                "name": "ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-*",
-                "root-device-type": "ebs"
+      - uses: actions/download-artifact@v4
+        with:
+          name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
+      - name: Setup packer
+        run: |
+          #!/bin/bash
+          mkdir packer
+          cd packer
+          mkdir upload
+          mv ../harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz upload/
+          printf '{
+            "builders": [
+            {
+              "region": "us-east-2",
+              "type": "amazon-ebs",
+              "source_ami_filter": {
+                "filters": {
+                  "virtualization-type": "hvm",
+                  "name": "ubuntu/images/hvm-ssd/ubuntu-focal-20.04-amd64-server-*",
+                  "root-device-type": "ebs"
+                },
+              "owners": ["099720109477"],
+              "most_recent": true
               },
-            "owners": ["099720109477"],
-            "most_recent": true
+              "instance_type": "t3.medium",
+              "ssh_username": "ubuntu",
+              "ami_name": "HarperDBMarketplaceAMI-${{github.run_number}}",
+              "ebs_optimized":true,
+              "launch_block_device_mappings": [
+                {
+                  "device_name": "/dev/sdf",
+                  "volume_size": 10,
+                  "volume_type": "gp3",
+                  "delete_on_termination": true
+                }
+              ]
+            }
+          ],
+          "provisioners": [
+            {
+              "type": "file",
+              "source": "./upload/",
+              "destination": "/home/ubuntu"
             },
-            "instance_type": "t3.medium",
-            "ssh_username": "ubuntu",
-            "ami_name": "HarperDBMarketplaceAMI-${{github.run_number}}",
-            "ebs_optimized":true,
-            "launch_block_device_mappings": [
+            {
+              "type": "file",
+              "source": "./install.sh",
+              "destination": "/tmp/install.sh"
+            },
+            {
+              "type": "shell",
+              "script": "./ami_prep.sh"
+            }
+          ],
+          "post-processors": [
+            [
               {
-                "device_name": "/dev/sdf",
-                "volume_size": 10,
-                "volume_type": "gp3",
-                "delete_on_termination": true
+                "output": "packer-manifest.json",
+                "strip_path": true,
+                "type": "manifest"
               }
             ]
-          }
-        ],
-        "provisioners": [
-          {
-            "type": "file",
-            "source": "./upload/",
-            "destination": "/home/ubuntu"
-          },
-          {
-            "type": "file",
-            "source": "./install.sh",
-            "destination": "/tmp/install.sh"
-          },
-          {
-            "type": "shell",
-            "script": "./ami_prep.sh"
-          }
-        ],
-        "post-processors": [
-          [
-            {
-              "output": "packer-manifest.json",
-              "strip_path": true,
-              "type": "manifest"
-            }
           ]
-        ]
-        }' > ami.json
-    - name: Setup install.sh
-      run: |
-        #!/bin/bash
-        cd packer
-        # DO NOT USE SINGLE QUOTES WITHIN PRINTF ARGUMENT
-        # Can use \x27 within printf to create single quote
-        # %b required due to "%" in install.sh
-        printf %b '#!/bin/bash
-        # Append unattended-upgrades config
-        printf \x27Unattended-Upgrade::Remove-Unused-Dependencies "true";\n\x27 > /etc/apt/apt.conf.d/52unattended-upgrades-local
-        # Create and enable a 2GB swap file
-        dd if=/dev/zero of=/swapfile bs=128M count=16
-        chmod 600 /swapfile
-        mkswap /swapfile
-        swapon /swapfile
-        echo "/swapfile swap swap defaults 0 0" | tee -a /etc/fstab
-        # Find disk that already has a partition
-        used_disk=$(lsblk -P -I 259 | grep  "nvme.*n1.*part" | grep -o "nvme.*n1")
-        # Create array of free disks
-        declare -a free_disks
-        mapfile -t free_disks < <(lsblk -P -I 259 | grep  "nvme.*n1.*disk"  | grep -o "nvme.*n1" | grep -v "$used_disk")
-        # Get quantity of free disks
-        free_disks_qty=${#free_disks[@]}
-        # Construct pvcreate command
-        cmd_string=""
-        for i in "${free_disks[@]}"
-        do
-          cmd_string="$cmd_string /dev/$i"
-        done
-        # Initialize disks for use by LVM
-        pvcreate_cmd="pvcreate $cmd_string"
-        $pvcreate_cmd
-        # Create volume group
-        vgcreate_cmd="vgcreate hdb_vg $cmd_string"
-        $vgcreate_cmd
-        # Create logical volume
-        lvcreate -n hdb_lv -i $free_disks_qty -l 100%FREE hdb_vg
-        # Create filesystem on logical volume
-        mkfs.ext4 -L hdb_data /dev/hdb_vg/hdb_lv
-        # Mount the file system
-        mkdir /home/ubuntu/hdb
-        mount -t ext4 /dev/hdb_vg/hdb_lv /home/ubuntu/hdb  
-        chown -R ubuntu:ubuntu /home/ubuntu/hdb
-        chmod 775 /home/ubuntu/hdb
-        # Create fstab entry to mount filesystem on boot
-        echo "LABEL=hdb_data /home/ubuntu/hdb ext4 defaults,noatime 0 1" | tee -a /etc/fstab
-        # Adjust the per-user open file limits
-        echo "ubuntu soft nofile 1000000" | tee -a /etc/security/limits.conf
-        echo "ubuntu hard nofile 1000000" | tee -a /etc/security/limits.conf
-        # Install HarperDB
-        /bin/su -l ubuntu -c \x27PATH="/home/ubuntu/.nvm/versions/node/v${{ needs.build.outputs.nodeVersion }}/bin:$PATH"; npm config set nodedir /home/ubuntu/.nvm/versions/node/v${{ needs.build.outputs.nodeVersion }}/\x27
-        /bin/su -l ubuntu -c \x27PATH="/home/ubuntu/.nvm/versions/node/v${{ needs.build.outputs.nodeVersion }}/bin:$PATH"; npm install -g harperdb-*.tgz\x27
-        /bin/su -l ubuntu -c \x27PATH="/home/ubuntu/.nvm/versions/node/v${{ needs.build.outputs.nodeVersion }}/bin:$PATH"; harperdb --TC_AGREEMENT yes --HDB_ROOT /home/ubuntu/hdb --SERVER_PORT 9925 --HDB_ADMIN_USERNAME $(wget -q -O - http://169.254.169.254/latest/meta-data/instance-id) --HDB_ADMIN_PASSWORD $(wget -q -O - http://169.254.169.254/latest/meta-data/instance-id) --LOCAL_STUDIO_ON true\x27
-        # Add cron job to start HarperDB on startup
-        /bin/su -l ubuntu -c \x27(crontab -l 2>/dev/null; echo "@reboot PATH=\"/home/ubuntu/.nvm/versions/node/v${{ needs.build.outputs.nodeVersion }}/bin:$PATH\" && harperdb") | crontab -\x27
-        # Cleanup
-        rm /home/ubuntu/harperdb-*.tgz
-        rm /var/lib/cloud/scripts/per-instance/install.sh
-        ' > install.sh
-        chmod +x install.sh
-    - name: Setup ami_prep.sh
-      run: |
-        #!/bin/bash
-        cd packer
-        printf '#!/bin/bash
-        # Update installed packages
-        sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade --with-new-pkgs
-        sleep 30s
-        sudo apt-get update && sudo apt-get -y upgrade
-        sleep 30s
-        
-        # Install Node Version Manager
-        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.38.0/install.sh | bash
-        export NVM_DIR="$HOME/.nvm"
-        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-        [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
-        
-        # Install Node.js using Node Version Manager
-        nvm install ${{ needs.build.outputs.nodeVersion }}
-        
-        # Move script from where Packer placed it, to the cloud-init scripts directory
-        sudo mv /tmp/install.sh /var/lib/cloud/scripts/per-instance/install.sh
-        rm -rf /home/ubuntu/.ssh/*
-        sudo rm -rf /root/.ssh/*
-        sudo rm -rf /root/.ssh/authorized_keys
-        sudo rm -rf /etc/machine-id
-        sudo touch /etc/machine-id
-        sudo rm -rf /var/lib/cloud/instances/*
-        sudo rm -rf /var/log/*' > ami_prep.sh
-    - name: Build AMI with packer
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      run: |
-        #!/bin/bash
-        cd packer
-        packer build ami.json
-        sleep 10
+          }' > ami.json
+      - name: Setup install.sh
+        run: |
+          #!/bin/bash
+          cd packer
+          # DO NOT USE SINGLE QUOTES WITHIN PRINTF ARGUMENT
+          # Can use \x27 within printf to create single quote
+          # %b required due to "%" in install.sh
+          printf %b '#!/bin/bash
+          # Append unattended-upgrades config
+          printf \x27Unattended-Upgrade::Remove-Unused-Dependencies "true";\n\x27 > /etc/apt/apt.conf.d/52unattended-upgrades-local
+          # Create and enable a 2GB swap file
+          dd if=/dev/zero of=/swapfile bs=128M count=16
+          chmod 600 /swapfile
+          mkswap /swapfile
+          swapon /swapfile
+          echo "/swapfile swap swap defaults 0 0" | tee -a /etc/fstab
+          # Find disk that already has a partition
+          used_disk=$(lsblk -P -I 259 | grep  "nvme.*n1.*part" | grep -o "nvme.*n1")
+          # Create array of free disks
+          declare -a free_disks
+          mapfile -t free_disks < <(lsblk -P -I 259 | grep  "nvme.*n1.*disk"  | grep -o "nvme.*n1" | grep -v "$used_disk")
+          # Get quantity of free disks
+          free_disks_qty=${#free_disks[@]}
+          # Construct pvcreate command
+          cmd_string=""
+          for i in "${free_disks[@]}"
+          do
+            cmd_string="$cmd_string /dev/$i"
+          done
+          # Initialize disks for use by LVM
+          pvcreate_cmd="pvcreate $cmd_string"
+          $pvcreate_cmd
+          # Create volume group
+          vgcreate_cmd="vgcreate hdb_vg $cmd_string"
+          $vgcreate_cmd
+          # Create logical volume
+          lvcreate -n hdb_lv -i $free_disks_qty -l 100%FREE hdb_vg
+          # Create filesystem on logical volume
+          mkfs.ext4 -L hdb_data /dev/hdb_vg/hdb_lv
+          # Mount the file system
+          mkdir /home/ubuntu/hdb
+          mount -t ext4 /dev/hdb_vg/hdb_lv /home/ubuntu/hdb  
+          chown -R ubuntu:ubuntu /home/ubuntu/hdb
+          chmod 775 /home/ubuntu/hdb
+          # Create fstab entry to mount filesystem on boot
+          echo "LABEL=hdb_data /home/ubuntu/hdb ext4 defaults,noatime 0 1" | tee -a /etc/fstab
+          # Adjust the per-user open file limits
+          echo "ubuntu soft nofile 1000000" | tee -a /etc/security/limits.conf
+          echo "ubuntu hard nofile 1000000" | tee -a /etc/security/limits.conf
+          # Install HarperDB
+          /bin/su -l ubuntu -c \x27PATH="/home/ubuntu/.nvm/versions/node/v${{ needs.build.outputs.nodeVersion }}/bin:$PATH"; npm config set nodedir /home/ubuntu/.nvm/versions/node/v${{ needs.build.outputs.nodeVersion }}/\x27
+          /bin/su -l ubuntu -c \x27PATH="/home/ubuntu/.nvm/versions/node/v${{ needs.build.outputs.nodeVersion }}/bin:$PATH"; npm install -g harperdb-*.tgz\x27
+          /bin/su -l ubuntu -c \x27PATH="/home/ubuntu/.nvm/versions/node/v${{ needs.build.outputs.nodeVersion }}/bin:$PATH"; harperdb --TC_AGREEMENT yes --HDB_ROOT /home/ubuntu/hdb --SERVER_PORT 9925 --HDB_ADMIN_USERNAME $(wget -q -O - http://169.254.169.254/latest/meta-data/instance-id) --HDB_ADMIN_PASSWORD $(wget -q -O - http://169.254.169.254/latest/meta-data/instance-id) --LOCAL_STUDIO_ON true\x27
+          # Add cron job to start HarperDB on startup
+          /bin/su -l ubuntu -c \x27(crontab -l 2>/dev/null; echo "@reboot PATH=\"/home/ubuntu/.nvm/versions/node/v${{ needs.build.outputs.nodeVersion }}/bin:$PATH\" && harperdb") | crontab -\x27
+          # Cleanup
+          rm /home/ubuntu/harperdb-*.tgz
+          rm /var/lib/cloud/scripts/per-instance/install.sh
+          ' > install.sh
+          chmod +x install.sh
+      - name: Setup ami_prep.sh
+        run: |
+          #!/bin/bash
+          cd packer
+          printf '#!/bin/bash
+          # Update installed packages
+          sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade --with-new-pkgs
+          sleep 30s
+          sudo apt-get update && sudo apt-get -y upgrade
+          sleep 30s
+
+          # Install Node Version Manager
+          curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.38.0/install.sh | bash
+          export NVM_DIR="$HOME/.nvm"
+          [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+          [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+
+          # Install Node.js using Node Version Manager
+          nvm install ${{ needs.build.outputs.nodeVersion }}
+
+          # Move script from where Packer placed it, to the cloud-init scripts directory
+          sudo mv /tmp/install.sh /var/lib/cloud/scripts/per-instance/install.sh
+          rm -rf /home/ubuntu/.ssh/*
+          sudo rm -rf /root/.ssh/*
+          sudo rm -rf /root/.ssh/authorized_keys
+          sudo rm -rf /etc/machine-id
+          sudo touch /etc/machine-id
+          sudo rm -rf /var/lib/cloud/instances/*
+          sudo rm -rf /var/log/*' > ami_prep.sh
+      - name: Build AMI with packer
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          #!/bin/bash
+          cd packer
+          packer build ami.json
+          sleep 10

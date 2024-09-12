@@ -1,4 +1,4 @@
-name: "Publish HarperDB Redhat Connect Container"
+name: 'Publish HarperDB Redhat Connect Container'
 
 on:
   workflow_dispatch:
@@ -21,8 +21,8 @@ jobs:
       - name: Install Openshift CLI tools
         uses: redhat-actions/openshift-tools-installer@v1
         with:
-          source: "github"
-          preflight: "latest"
+          source: 'github'
+          preflight: 'latest'
 
       - name: Publish ${{ inputs.container_image }}:${{ inputs.container_tag }}
         env:
@@ -35,10 +35,10 @@ jobs:
         run: |
           #!/usr/bin/env bash
           set -euo pipefail
-          
+
           echo "writing docker-config.json for submission"
           echo "${REDHAT_DOCKERCONFIG}" | jq '.' > docker-config.json
-          
+
           preflight check container "${container_registry}/${container_image}:${container_tag}" \
             --pyxis-api-token="${PYXIS_API_TOKEN}" \
             --certification-project-id="${CERTIFICATION_PROJECT_ID}" \

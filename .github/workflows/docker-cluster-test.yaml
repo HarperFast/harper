@@ -1,4 +1,4 @@
-name: "Docker Cluster Test Template"
+name: 'Docker Cluster Test Template'
 
 on:
   workflow_call:
@@ -50,12 +50,12 @@ jobs:
       - getValues
     uses: ./.github/workflows/create-instances.yaml
     with:
-      instanceCount: "1"
+      instanceCount: '1'
       harperdbVersion: ${{ inputs.harperdbVersion }}
-      installType: "docker"
+      installType: 'docker'
       callingWorkflow: ${{ github.workflow }}
       instanceType: ${{ needs.getValues.outputs.instanceType }}
-      tfstateArtifactName: "tfstate-${{ inputs.dockerArtifactSuffix }}${{ inputs.tfArtifactSuffix }}"
+      tfstateArtifactName: 'tfstate-${{ inputs.dockerArtifactSuffix }}${{ inputs.tfArtifactSuffix }}'
       containerTarball: docker-harperdb_${{ inputs.harperdbVersion }}-${{ inputs.dockerArtifactSuffix }}.tar
     secrets: inherit
 
@@ -69,41 +69,41 @@ jobs:
       - getValues
     timeout-minutes: 40
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/download-artifact@v4
-      with:
-        name: docker-harperdb_${{ inputs.harperdbVersion }}-${{ inputs.dockerArtifactSuffix }}.tar
-        path: utility/Docker
-    - name: Run Tests
-      env:
-        CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
-        CONTAINER_TARBALL: docker-harperdb_${{ inputs.harperdbVersion }}-${{ inputs.dockerArtifactSuffix }}.tar
-      run: |
-        #!/bin/bash
-        echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
-        public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
-        public_dns_names=($public_dns_names)
-        public_dns_name="${public_dns_names[0]}"
-        
-        mkdir logs-artifact
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: docker-harperdb_${{ inputs.harperdbVersion }}-${{ inputs.dockerArtifactSuffix }}.tar
+          path: utility/Docker
+      - name: Run Tests
+        env:
+          CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+          CONTAINER_TARBALL: docker-harperdb_${{ inputs.harperdbVersion }}-${{ inputs.dockerArtifactSuffix }}.tar
+        run: |
+          #!/bin/bash
+          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+          public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
+          public_dns_names=($public_dns_names)
+          public_dns_name="${public_dns_names[0]}"
 
-        ssh -i private_key -o ServerAliveInterval=60 -o TCPKeepAlive=no -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
-          "sudo chmod +x /home/ubuntu/harperdb/${{ inputs.clusterTest }} && CONTAINER_TARBALL="${CONTAINER_TARBALL}" /home/ubuntu/harperdb/${{ inputs.clusterTest }} ${{ inputs.harperdbVersion }}"
-    - name: 'Download Logs'
-      if: always()
-      run: |
-        #!/bin/bash
-        public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
-        public_dns_names=($public_dns_names)
-        public_dns_name="${public_dns_names[0]}"
-        scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/artifact" "logs-artifact/"
-    - name: 'Upload Artifact'
-      uses: actions/upload-artifact@v4
-      if: always()
-      with:
-        name: logs-artifact-${{ inputs.dockerArtifactSuffix }}${{ inputs.tfArtifactSuffix }}
-        path: logs-artifact
-        retention-days: 1
+          mkdir logs-artifact
+
+          ssh -i private_key -o ServerAliveInterval=60 -o TCPKeepAlive=no -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
+            "sudo chmod +x /home/ubuntu/harperdb/${{ inputs.clusterTest }} && CONTAINER_TARBALL="${CONTAINER_TARBALL}" /home/ubuntu/harperdb/${{ inputs.clusterTest }} ${{ inputs.harperdbVersion }}"
+      - name: 'Download Logs'
+        if: always()
+        run: |
+          #!/bin/bash
+          public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
+          public_dns_names=($public_dns_names)
+          public_dns_name="${public_dns_names[0]}"
+          scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/artifact" "logs-artifact/"
+      - name: 'Upload Artifact'
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: logs-artifact-${{ inputs.dockerArtifactSuffix }}${{ inputs.tfArtifactSuffix }}
+          path: logs-artifact
+          retention-days: 1
 
   ###############################
   #  Cleanup (destroy instances)
@@ -115,7 +115,7 @@ jobs:
       - getValues
     uses: ./.github/workflows/destroy-instances.yaml
     with:
-      instanceCount: "1"
+      instanceCount: '1'
       callingWorkflow: ${{ github.workflow }}
       instanceType: ${{ needs.getValues.outputs.instanceType }}
       tfstateArtifactName: tfstate-${{ inputs.dockerArtifactSuffix }}${{ inputs.tfArtifactSuffix }}

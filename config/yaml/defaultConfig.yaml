@@ -23,7 +23,7 @@ analytics:
   aggregatePeriod: 60
 replication:
   hostname: null
-  databases: "*" # Database name or list of database names to replicate, * defaults to all databases
+  databases: '*' # Database name or list of database names to replicate, * defaults to all databases
   routes: null
 componentsRoot: null
 localStudio:
@@ -55,7 +55,7 @@ operationsApi:
   network:
     cors: true
     corsAccessList:
-      - "*"
+      - '*'
     domainSocket: hdb/operations-server
     port: null
     securePort: 9925

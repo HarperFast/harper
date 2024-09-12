@@ -3,7 +3,7 @@
 const hdb_utils = require('../../../../utility/common_utils');
 const delete_utility = require('../../../../utility/lmdb/deleteUtility');
 const environment_utility = require('../../../../utility/lmdb/environmentUtility');
-const { getSchemaPath} = require('../lmdbUtility/initializePaths');
+const { getSchemaPath } = require('../lmdbUtility/initializePaths');
 const write_transaction = require('../lmdbUtility/lmdbWriteTransaction');
 const logger = require('../../../../utility/logging/harper_logger');
 
@@ -52,7 +52,12 @@ async function lmdbDeleteRecords(delete_obj, write_to_txn_log = true) {
 		let env_base_path = getSchemaPath(delete_obj.schema, delete_obj.table);
 		let environment = await environment_utility.openEnvironment(env_base_path, delete_obj.table);
 
-		let response = await delete_utility.deleteRecords(environment, hash_attribute, delete_obj.hash_values, delete_obj.__origin?.timestamp);
+		let response = await delete_utility.deleteRecords(
+			environment,
+			hash_attribute,
+			delete_obj.hash_values,
+			delete_obj.__origin?.timestamp
+		);
 
 		try {
 			if (write_to_txn_log === true) {

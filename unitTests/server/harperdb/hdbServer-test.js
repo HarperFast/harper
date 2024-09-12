@@ -395,9 +395,7 @@ describe('Test hdbServer module', () => {
 			const test_response = await server.inject({
 				method: 'POST',
 				url: '/',
-				headers: Object.assign({}, test_req_options.headers, {
-					Accept: 'application/x-msgpack',
-				}),
+				headers: { ...test_req_options.headers, Accept: 'application/x-msgpack' },
 				body: test_req_options.body,
 			});
 
@@ -422,11 +420,12 @@ describe('Test hdbServer module', () => {
 			const test_response = await server.inject({
 				method: 'POST',
 				url: '/',
-				headers: Object.assign({}, test_req_options.headers, {
+				headers: {
+					...test_req_options.headers,
 					'Accept': 'application/json',
 					'Content-Type': 'application/x-msgpack',
 					'Content-Length': body.length,
-				}),
+				},
 				body,
 			});
 
@@ -450,10 +449,11 @@ describe('Test hdbServer module', () => {
 			const test_response = await server.inject({
 				method: 'POST',
 				url: '/',
-				headers: Object.assign({}, test_req_options.headers, {
+				headers: {
+					...test_req_options.headers,
 					'Content-Type': 'application/x-msgpack',
 					'Content-Length': body.length,
-				}),
+				},
 				body,
 			});
 
@@ -473,9 +473,7 @@ describe('Test hdbServer module', () => {
 			const test_response = await server.inject({
 				method: 'POST',
 				url: '/',
-				headers: Object.assign({}, test_req_options.headers, {
-					Accept: 'application/cbor',
-				}),
+				headers: { ...test_req_options.headers, Accept: 'application/cbor' },
 				body: test_req_options.body,
 			});
 
@@ -500,11 +498,12 @@ describe('Test hdbServer module', () => {
 			const test_response = await server.inject({
 				method: 'POST',
 				url: '/',
-				headers: Object.assign({}, test_req_options.headers, {
+				headers: {
+					...test_req_options.headers,
 					'Accept': 'application/json',
 					'Content-Type': 'application/cbor',
 					'Content-Length': body.length,
-				}),
+				},
 				body,
 			});
 
@@ -528,10 +527,7 @@ describe('Test hdbServer module', () => {
 			const test_response = await server.inject({
 				method: 'POST',
 				url: '/',
-				headers: Object.assign({}, test_req_options.headers, {
-					'Content-Type': 'application/cbor',
-					'Content-Length': body.length,
-				}),
+				headers: { ...test_req_options.headers, 'Content-Type': 'application/cbor', 'Content-Length': body.length },
 				body,
 			});
 
@@ -551,9 +547,7 @@ describe('Test hdbServer module', () => {
 			const test_response = await server.inject({
 				method: 'POST',
 				url: '/',
-				headers: Object.assign({}, test_req_options.headers, {
-					Accept: 'text/csv',
-				}),
+				headers: { ...test_req_options.headers, Accept: 'text/csv' },
 				body: test_req_options.body,
 			});
 
@@ -715,7 +709,7 @@ describe('Test hdbServer module', () => {
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
-			const test_headers = Object.assign({ origin: 'https://google.com' }, test_req_options.headers);
+			const test_headers = { origin: 'https://google.com', ...test_req_options.headers };
 			const test_response = await server.inject({
 				method: 'POST',
 				url: '/',
@@ -737,7 +731,7 @@ describe('Test hdbServer module', () => {
 			await new Promise((resolve) => setTimeout(resolve, 100));
 			const server = hdbServer_rw.__get__('server');
 
-			const test_headers = Object.assign({ origin: 'https://harperdb.io' }, test_req_options.headers);
+			const test_headers = { origin: 'https://harperdb.io', ...test_req_options.headers };
 			const test_response = await server.inject({
 				method: 'POST',
 				url: '/',

@@ -53,8 +53,6 @@ async function setLicense(json_message) {
 	throw new Error('Invalid key or company specified for license file.');
 }
 
-
-
 /**
  * Returns the fingerprint of this install which is used in the registration process.
  * @returns {Promise<*>}

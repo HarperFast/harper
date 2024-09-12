@@ -213,7 +213,7 @@ export function assignTrackedAccessors(Target, type_def) {
 		let copied_source;
 		for (const key in changes) {
 			// copy the source first so we have properties in the right order and can override them
-			if (!copied_source) copied_source = Object.assign({}, this[RECORD_PROPERTY]);
+			if (!copied_source) copied_source = { ...this[RECORD_PROPERTY] };
 			let value = changes[key];
 			if (value?.__op__) {
 				const source_value = copied_source[key];
@@ -223,7 +223,7 @@ export function assignTrackedAccessors(Target, type_def) {
 		}
 		const keys = Object.keys(this); // we use Object.keys because it is expected that the many inherited enumerables would slow a for-in loop down
 		if (keys.length > 0) {
-			if (!copied_source) copied_source = Object.assign({}, this[RECORD_PROPERTY]);
+			if (!copied_source) copied_source = { ...this[RECORD_PROPERTY] };
 			Object.assign(copied_source, this);
 		}
 		return copied_source || this[RECORD_PROPERTY];
@@ -290,7 +290,7 @@ export function collapseData(target) {
 	let copied_source;
 	for (const key in changes) {
 		// copy the source first so we have properties in the right order and can override them
-		if (!copied_source) copied_source = Object.assign({}, target[RECORD_PROPERTY]);
+		if (!copied_source) copied_source = { ...target[RECORD_PROPERTY] };
 		let value = changes[key];
 		if (value && typeof value === 'object') {
 			if (value.__op__) {
@@ -302,7 +302,7 @@ export function collapseData(target) {
 	}
 	const keys = Object.keys(target); // we use Object.keys because it is expected that the many inherited enumerables would slow a for-in loop down
 	if (keys.length > 0) {
-		if (!copied_source) copied_source = Object.assign({}, target[RECORD_PROPERTY]);
+		if (!copied_source) copied_source = { ...target[RECORD_PROPERTY] };
 		Object.assign(copied_source, target);
 	}
 	return copied_source || target[RECORD_PROPERTY];
@@ -336,7 +336,7 @@ export function deepFreeze(target, changes = target[OWN_DATA]) {
 	}
 	for (const key in changes) {
 		// copy the source first so we have properties in the right order and can override them
-		if (!copied_source) copied_source = Object.assign({}, target[RECORD_PROPERTY]);
+		if (!copied_source) copied_source = { ...target[RECORD_PROPERTY] };
 		let value = changes[key];
 		if (value && typeof value === 'object') {
 			if (value.__op__) {

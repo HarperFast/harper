@@ -9,6 +9,7 @@ HarperDB is a globally-distributed edge application platform. It reduces complex
 ## HarperDB Studio
 
 Every Installation of HarperDB can be administered online using HarperDB Studio. This web-based interface provides you the ability to set up new schemas and tables, configure users and roles, manage data replication, and purchase and deploy enterprise licenses.
+
 - Simplify Administration – handle all HarperDB administration tasks from one simple interface
 
 [HarperDB Studio](https://studio.harperdb.io/sign-up)
@@ -28,9 +29,11 @@ The complete [HarperDB Operations API documentation](https://docs.harperdb.io/do
 ## How to Use This Image
 
 ### Configuring HarperDB
+
 [HarperDB configuration settings](https://harperdb.io/docs/reference/configuration-file/) can be passed as `docker run` environment variables.
 
 If no environment variables are passed to `docker run`, HarperDB will run with default configuration settings, except for the following:
+
 - `ROOTPATH=/home/harperdb/hdb`
 - `OPERATIONSAPI_NETWORK_PORT=9925`
 - `HDB_ADMIN_USERNAME=HDB_ADMIN`
@@ -38,11 +41,13 @@ If no environment variables are passed to `docker run`, HarperDB will run with d
 - `LOGGING_STDSTREAMS=true`
 
 ### Persisting Data
+
 Containers created from this image will store all data and HarperDB configuration at `/home/harperdb/hdb`. To persist this data beyond the lifecycle of a container, use a Docker volume to mount this directory to the container host.
 
 ### Examples
 
 Run a HarperDB container in the background, with the ROOTPATH directory mounted to the container host, and expose the HarperDB Operations API and HTTP ports on the container host:
+
 ```
 docker run -d \
   -v <host directory>:/home/harperdb/hdb \
@@ -55,6 +60,7 @@ docker run -d \
 ```
 
 Enable HTTPS, enable HarperDB clustering, and expose the HarperDB clustering port on the container host:
+
 ```
 docker run -d \
   -v <host directory>:/home/harperdb/hdb \
@@ -75,6 +81,7 @@ docker run -d \
 ```
 
 Execute the `harperdb version` command, and remove the container when finished:
+
 ```
 docker run --rm harperdb/harperdb /bin/bash -c "harperdb version"
 ```

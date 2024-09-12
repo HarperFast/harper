@@ -258,7 +258,7 @@ describe('test lmdbWriteTransaction module', () => {
 			await env.close();
 			try {
 				await fs.remove(BASE_PATH);
-			} catch(error) {}
+			} catch (error) {}
 			global.lmdb_map = undefined;
 		});
 
@@ -286,10 +286,9 @@ describe('test lmdbWriteTransaction module', () => {
 			assert.deepStrictEqual(error, undefined);
 			assert.notStrictEqual(txn_env, undefined);
 
-			let insert_txn_obj = Object.assign(
-				{},
-				new LMDBInsertTransactionObject(INSERT_RECORDS, undefined, insert_response.txn_time, INSERT_HASHES)
-			);
+			let insert_txn_obj = {
+				...new LMDBInsertTransactionObject(INSERT_RECORDS, undefined, insert_response.txn_time, INSERT_HASHES),
+			};
 			let expected_timestamp_results = test_utils.assignObjecttoNullObject({
 				[insert_response.txn_time]: [insert_txn_obj],
 			});
@@ -369,10 +368,9 @@ describe('test lmdbWriteTransaction module', () => {
 			assert.deepStrictEqual(error, undefined);
 			assert.notStrictEqual(txn_env, undefined);
 
-			let insert_txn_obj = Object.assign(
-				{},
-				new LMDBInsertTransactionObject(INSERT_RECORDS, HDB_USER.username, insert_response.txn_time, INSERT_HASHES)
-			);
+			let insert_txn_obj = {
+				...new LMDBInsertTransactionObject(INSERT_RECORDS, HDB_USER.username, insert_response.txn_time, INSERT_HASHES),
+			};
 			let expected_timestamp_results = test_utils.assignObjecttoNullObject({
 				[insert_response.txn_time]: [insert_txn_obj],
 			});
@@ -424,16 +422,15 @@ describe('test lmdbWriteTransaction module', () => {
 			assert.deepStrictEqual(error, undefined);
 			assert.notStrictEqual(txn_env, undefined);
 
-			let update_txn_obj = Object.assign(
-				{},
-				new LMDBUpdateTransactionObject(
+			let update_txn_obj = {
+				...new LMDBUpdateTransactionObject(
 					UPDATE_RECORDS,
 					INSERT_RECORDS,
 					HDB_USER.username,
 					update_response.txn_time,
 					INSERT_HASHES
-				)
-			);
+				),
+			};
 			let expected_timestamp_results = test_utils.assignObjecttoNullObject({
 				[update_response.txn_time]: [update_txn_obj],
 			});
@@ -484,16 +481,15 @@ describe('test lmdbWriteTransaction module', () => {
 			assert.deepStrictEqual(error, undefined);
 			assert.notStrictEqual(txn_env, undefined);
 
-			let upsert_txn_obj = Object.assign(
-				{},
-				new LMDBUpsertTransactionObject(
+			let upsert_txn_obj = {
+				...new LMDBUpsertTransactionObject(
 					UPSERT_RECORDS,
 					UPDATE_RECORDS,
 					HDB_USER.username,
 					upsert_response.txn_time,
 					INSERT_HASHES
-				)
-			);
+				),
+			};
 			let expected_timestamp_results = test_utils.assignObjecttoNullObject({
 				[upsert_response.txn_time]: [upsert_txn_obj],
 			});
@@ -545,10 +541,9 @@ describe('test lmdbWriteTransaction module', () => {
 			assert.deepStrictEqual(error, undefined);
 			assert.notStrictEqual(txn_env, undefined);
 
-			let delete_txn_obj = Object.assign(
-				{},
-				new LMDBDeleteTransactionObject(INSERT_HASHES, UPDATE_RECORDS, HDB_USER.username, delete_response.txn_time)
-			);
+			let delete_txn_obj = {
+				...new LMDBDeleteTransactionObject(INSERT_HASHES, UPDATE_RECORDS, HDB_USER.username, delete_response.txn_time),
+			};
 			let expected_timestamp_results = test_utils.assignObjecttoNullObject({
 				[delete_response.txn_time]: [delete_txn_obj],
 			});

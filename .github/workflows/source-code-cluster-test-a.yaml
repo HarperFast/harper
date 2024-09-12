@@ -9,29 +9,29 @@ jobs:
       nodeVersion: ${{ steps.getNode.outputs.NODE_VERSION }}
       harperdbVersion: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-node@v4
-    - id: getNode
-      name: Get node version
-      run: |
-        pwd
-        NODE_VERSION="$(node --version)"
-        NODE_VERSION="${NODE_VERSION:1}"
-        HARPERDB_VERSION=$(cat package.json | jq -r '.version')
-        echo "NODE_VERSION=$NODE_VERSION" >> $GITHUB_OUTPUT
-        echo "HARPERDB_VERSION=$HARPERDB_VERSION" >> $GITHUB_OUTPUT
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - id: getNode
+        name: Get node version
+        run: |
+          pwd
+          NODE_VERSION="$(node --version)"
+          NODE_VERSION="${NODE_VERSION:1}"
+          HARPERDB_VERSION=$(cat package.json | jq -r '.version')
+          echo "NODE_VERSION=$NODE_VERSION" >> $GITHUB_OUTPUT
+          echo "HARPERDB_VERSION=$HARPERDB_VERSION" >> $GITHUB_OUTPUT
   createInstances:
     needs:
       - getNodeVersion
     uses: ./.github/workflows/create-instances.yaml
     with:
-      instanceCount: "5"
+      instanceCount: '5'
       harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
-      installType: "sourceCode"
+      installType: 'sourceCode'
       callingWorkflow: ${{ github.workflow }}
     secrets: inherit
   registerInstances:
-    needs: 
+    needs:
       - createInstances
       - getNodeVersion
     uses: ./.github/workflows/install-and-register.yaml
@@ -39,7 +39,7 @@ jobs:
       publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
       harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
       nodeVersion: ${{ needs.getNodeVersion.outputs.nodeVersion }}
-      installType: "sourceCode"
+      installType: 'sourceCode'
     secrets: inherit
   runTests:
     runs-on: ubuntu-latest
@@ -47,30 +47,30 @@ jobs:
       - createInstances
       - registerInstances
     steps:
-    - name: Run Cluster Test A on Instances
-      env:
-        CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
-      run: |
-        #!/bin/bash
+      - name: Run Cluster Test A on Instances
+        env:
+          CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+        run: |
+          #!/bin/bash
 
-        cd ../
-        echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+          cd ../
+          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
 
-        public_dns_names="${{ needs.createInstances.outputs.publicDnsNames }}"
-        private_ips="${{ needs.createInstances.outputs.privateIps }}"
-        public_dns_names=($public_dns_names)
-        private_ips=($private_ips)
-        # Run the cluster tests from the first test VM
-        public_dns_name="${public_dns_names[0]}"
+          public_dns_names="${{ needs.createInstances.outputs.publicDnsNames }}"
+          private_ips="${{ needs.createInstances.outputs.privateIps }}"
+          public_dns_names=($public_dns_names)
+          private_ips=($private_ips)
+          # Run the cluster tests from the first test VM
+          public_dns_name="${public_dns_names[0]}"
 
-        echo "Starting work on: $public_dns_name"
+          echo "Starting work on: $public_dns_name"
 
-        ssh -i private_key -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
-          "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/cluster-test-a.sh && /home/ubuntu/harperdb/test/ci-tests/cluster-test-a.sh ${private_ips[@]} ${public_dns_names[@]}"
-        echo "Ending work on: $public_dns_name"
+          ssh -i private_key -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
+            "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/cluster-test-a.sh && /home/ubuntu/harperdb/test/ci-tests/cluster-test-a.sh ${private_ips[@]} ${public_dns_names[@]}"
+          echo "Ending work on: $public_dns_name"
   downloadLogs:
     if: always()
-    needs: 
+    needs:
       - runTests
       - createInstances
     uses: ./.github/workflows/download-logs.yaml
@@ -82,6 +82,6 @@ jobs:
     needs: downloadLogs
     uses: ./.github/workflows/destroy-instances.yaml
     with:
-      instanceCount: "5"
+      instanceCount: '5'
       callingWorkflow: ${{ github.workflow }}
-    secrets: inherit   
+    secrets: inherit

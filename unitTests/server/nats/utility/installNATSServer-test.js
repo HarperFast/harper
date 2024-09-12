@@ -225,7 +225,7 @@ describe('test cleanUp function', () => {
 
 		expect(fs_move_stub.callCount).to.equal(1);
 		let args = fs_move_stub.firstCall.args;
-		if (args[0].endsWith('.exe')) args[0] = args[0].slice(0,-4); // normalize windows
+		if (args[0].endsWith('.exe')) args[0] = args[0].slice(0, -4); // normalize windows
 		expect(fs_move_stub.firstCall.args).to.eql([
 			`${path.sep}tmp${path.sep}nats-server-src${path.sep}nats-server`,
 			'/tmp/nats-server',
@@ -627,8 +627,7 @@ describe('test downloadNATSServer function', () => {
 		// spy fs.ensureFile, fs.remove, fs.chmod
 		let og_platform = process.platform;
 		let og_arch = process.arch;
-		if (og_platform == 'win32')
-			return;
+		if (og_platform == 'win32') return;
 		Object.defineProperty(process, 'platform', { value: 'linux' });
 		Object.defineProperty(process, 'arch', { value: 'x64' });
 

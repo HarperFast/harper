@@ -28,7 +28,14 @@ const LAZY_PROPERTY_ACCESS = { lazy: true };
  * @param {number} offset - defines the entries to skip
  * @returns {[]}
  */
-function iterateFullIndex(transactionOrEnv, hash_attribute, attribute, reverse = false, limit = undefined, offset = undefined) {
+function iterateFullIndex(
+	transactionOrEnv,
+	hash_attribute,
+	attribute,
+	reverse = false,
+	limit = undefined,
+	offset = undefined
+) {
 	return setupTransaction(transactionOrEnv, hash_attribute, attribute, (transaction, dbi) => {
 		return dbi.getRange({
 			transaction,
@@ -70,13 +77,13 @@ function iterateRangeNext(
 		let start_value = reverse === true ? undefined : search_value === undefined ? false : search_value;
 		let end_value = reverse === true ? search_value : undefined;
 
-		for (let {key, value} of dbi.getRange({
+		for (let { key, value } of dbi.getRange({
 			transaction,
 			start: start_value,
 			end: end_value,
 			reverse,
 			limit,
-			offset
+			offset,
 		})) {
 			eval_function(search_value, overflow_check(key, value), value, results, hash_attribute, attribute);
 		}
@@ -132,7 +139,7 @@ function iterateRangeBetween(
 		};
 		if (hash_attribute === attribute) {
 			options.values = false;
-			return attr_dbi.getRange(options).map((value) => ({value}));
+			return attr_dbi.getRange(options).map((value) => ({ value }));
 		} else return attr_dbi.getRange(options);
 	});
 }
@@ -153,8 +160,7 @@ function setupTransaction(transactionOrEnv, hash_attribute, attribute, callback)
 		environment_utility.openDBI(env, hash_attribute);
 	}
 	let transaction;
-	if (transactionOrEnv.database)
-		transaction = transactionOrEnv;
+	if (transactionOrEnv.database) transaction = transactionOrEnv;
 	else {
 		transaction = transactionOrEnv.useReadTransaction();
 		transaction.database = transactionOrEnv;
@@ -208,7 +214,14 @@ function getOverflowCheck(env, transaction, hash_attribute, attribute) {
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
  */
-function searchAll(transactionOrEnv, hash_attribute, fetch_attributes, reverse = false, limit = undefined, offset = undefined) {
+function searchAll(
+	transactionOrEnv,
+	hash_attribute,
+	fetch_attributes,
+	reverse = false,
+	limit = undefined,
+	offset = undefined
+) {
 	common.validateEnv(transactionOrEnv);
 	if (hash_attribute === undefined) {
 		throw new Error(LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED);
@@ -216,16 +229,18 @@ function searchAll(transactionOrEnv, hash_attribute, fetch_attributes, reverse =
 	return setupTransaction(transactionOrEnv, hash_attribute, hash_attribute, (transaction, dbi, env) => {
 		validateFetchAttributes(fetch_attributes);
 		fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
-		return dbi.getRange({
-			transaction,
-			start: reverse ? undefined : false,
-			end: !reverse ? undefined : false,
-			limit: limit,
-			offset: offset,
-			reverse: reverse,
-		}).map(entry => {
-			return parseRow(entry.value, fetch_attributes);
-		});
+		return dbi
+			.getRange({
+				transaction,
+				start: reverse ? undefined : false,
+				end: !reverse ? undefined : false,
+				limit: limit,
+				offset: offset,
+				reverse: reverse,
+			})
+			.map((entry) => {
+				return parseRow(entry.value, fetch_attributes);
+			});
 	});
 }
 
@@ -240,7 +255,14 @@ function searchAll(transactionOrEnv, hash_attribute, fetch_attributes, reverse =
 * @returns {{String|Number, Object}} - object array of fetched records
 
 */
-function searchAllToMap(transactionOrEnv, hash_attribute, fetch_attributes, reverse = false, limit = undefined, offset = undefined) {
+function searchAllToMap(
+	transactionOrEnv,
+	hash_attribute,
+	fetch_attributes,
+	reverse = false,
+	limit = undefined,
+	offset = undefined
+) {
 	common.validateEnv(transactionOrEnv);
 
 	if (hash_attribute === undefined) {
@@ -250,7 +272,14 @@ function searchAllToMap(transactionOrEnv, hash_attribute, fetch_attributes, reve
 	validateFetchAttributes(fetch_attributes);
 	fetch_attributes = setGetWholeRowAttributes(transactionOrEnv.database || transactionOrEnv, fetch_attributes);
 	let map = new Map();
-	for (let { key, value } of iterateFullIndex(transactionOrEnv, hash_attribute, hash_attribute, reverse, limit, offset)) {
+	for (let { key, value } of iterateFullIndex(
+		transactionOrEnv,
+		hash_attribute,
+		hash_attribute,
+		reverse,
+		limit,
+		offset
+	)) {
 		map.set(key, cursor_functions.parseRow(value, fetch_attributes));
 	}
 	return map;
@@ -313,20 +342,30 @@ function countAll(env, hash_attribute) {
  * @param {number} offset - defines the entries to skip
  * @returns {[[],[]]} - ids matching the search
  */
-function equals(transactionOrEnv, hash_attribute, attribute, search_value, reverse = false, limit = undefined, offset = undefined) {
+function equals(
+	transactionOrEnv,
+	hash_attribute,
+	attribute,
+	search_value,
+	reverse = false,
+	limit = undefined,
+	offset = undefined
+) {
 	validateComparisonFunctions(transactionOrEnv, attribute, search_value);
 	return setupTransaction(transactionOrEnv, hash_attribute, attribute, (transaction, dbi, env, hash_attribute) => {
 		search_value = common.convertKeyValueToWrite(search_value);
 		if (hash_attribute === attribute) {
-			let value = dbi.get(search_value, {transaction, lazy: true});
-			return value === undefined ? [] : [{key: search_value, value: search_value}];
+			let value = dbi.get(search_value, { transaction, lazy: true });
+			return value === undefined ? [] : [{ key: search_value, value: search_value }];
 		} else {
-			return dbi.getValues(search_value, {
-				transaction,
-				reverse,
-				limit,
-				offset
-			}).map((value) => ({key: search_value, value}));
+			return dbi
+				.getValues(search_value, {
+					transaction,
+					reverse,
+					limit,
+					offset,
+				})
+				.map((value) => ({ key: search_value, value }));
 		}
 	});
 }
@@ -377,7 +416,7 @@ function startsWith(
 		if (reverse === true) {
 			let next_key;
 			//iterate based on the search_value until the key no longer starts with the search_value, this is the key we need to start with in the search
-			for (let key of dbi.getKeys({transaction, start: search_value})) {
+			for (let key of dbi.getKeys({ transaction, start: search_value })) {
 				if (!key.startsWith(search_value)) {
 					next_key = key;
 					break;
@@ -393,8 +432,8 @@ function startsWith(
 				}
 			}
 
-			iterator = dbi.getRange({transaction, start: next_key, end: undefined, reverse, limit, offset}).map(entry => {
-				let {key} = entry;
+			iterator = dbi.getRange({ transaction, start: next_key, end: undefined, reverse, limit, offset }).map((entry) => {
+				let { key } = entry;
 				if (key === next_key) {
 					return;
 				}
@@ -405,16 +444,16 @@ function startsWith(
 					return iterator.DONE;
 				}
 			});
-			return iterator.filter(entry => entry);
+			return iterator.filter((entry) => entry);
 		} else {
-			iterator = dbi.getRange({transaction, start: search_value, reverse, limit, offset}).map(entry => {
+			iterator = dbi.getRange({ transaction, start: search_value, reverse, limit, offset }).map((entry) => {
 				if (entry.key.toString().startsWith(search_value)) {
 					return entry;
 				} else if (string_search === true) {
 					return iterator.DONE;
 				}
 			});
-			return string_search ? iterator : iterator.filter(entry => entry); // filter out non-matching if we are not
+			return string_search ? iterator : iterator.filter((entry) => entry); // filter out non-matching if we are not
 			// a string and have to do a full scan
 		}
 	});
@@ -470,28 +509,34 @@ function contains(
 	return setupTransaction(transactionOrEnv, null, attribute, (transaction, attr_dbi, env, hash_attribute) => {
 		const overflow_check = getOverflowCheck(env, transaction, hash_attribute, attribute);
 		offset = Number.isInteger(offset) ? offset : 0;
-		return attr_dbi.getKeys({transaction, end: reverse ? false : undefined, reverse}).flatMap(key => {
-			let found_str = key.toString();
-			if (found_str.endsWith(OVERFLOW_MARKER)) {
-				// the entire value couldn't be encoded because it was too long, so need to search the attributes from
-				// the original record
-				return attr_dbi.getValues(key, {transaction}).map(primary_key => {
-					// this will get the full value from each entire record so we can check it
-					let full_key = overflow_check(key, primary_key);
-					if (ends_with ? full_key.endsWith(search_value) : full_key.includes(search_value)) {
-						return {key: full_key, value: primary_key};
+		return attr_dbi
+			.getKeys({ transaction, end: reverse ? false : undefined, reverse })
+			.flatMap((key) => {
+				let found_str = key.toString();
+				if (found_str.endsWith(OVERFLOW_MARKER)) {
+					// the entire value couldn't be encoded because it was too long, so need to search the attributes from
+					// the original record
+					return attr_dbi
+						.getValues(key, { transaction })
+						.map((primary_key) => {
+							// this will get the full value from each entire record so we can check it
+							let full_key = overflow_check(key, primary_key);
+							if (ends_with ? full_key.endsWith(search_value) : full_key.includes(search_value)) {
+								return { key: full_key, value: primary_key };
+							}
+						})
+						.filter((v) => v);
+				} else if (ends_with ? found_str.endsWith(search_value) : found_str.includes(search_value)) {
+					if (attr_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) return { key, value: key };
+					else {
+						return attr_dbi.getValues(key, { transaction }).map((primary_key) => {
+							return { key, value: primary_key };
+						});
 					}
-				}).filter(v => v);
-			} else if (ends_with ? found_str.endsWith(search_value) : found_str.includes(search_value)) {
-				if (attr_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) return {key, value: key};
-				else {
-					return attr_dbi.getValues(key, {transaction}).map(primary_key => {
-						return {key, value: primary_key};
-					});
 				}
-			}
-			return [];
-		}).slice(offset, limit === undefined ? undefined : (limit + (offset || 0)));
+				return [];
+			})
+			.slice(offset, limit === undefined ? undefined : limit + (offset || 0));
 	});
 }
 
@@ -701,7 +746,16 @@ function between(
 		throw new Error(LMDB_ERRORS.END_VALUE_MUST_BE_GREATER_THAN_START_VALUE);
 	}
 
-	return iterateRangeBetween(transactionOrEnv, hash_attribute, attribute, start_value, end_value, reverse, limit, offset);
+	return iterateRangeBetween(
+		transactionOrEnv,
+		hash_attribute,
+		attribute,
+		start_value,
+		end_value,
+		reverse,
+		limit,
+		offset
+	);
 }
 
 /**
@@ -814,7 +868,7 @@ function batchHashSearch(transactionOrEnv, hash_attribute, fetch_attributes, ids
 
 		return ids
 			.map((id) => {
-				let object = env.dbis[hash_attribute].get(id, {transaction, lazy});
+				let object = env.dbis[hash_attribute].get(id, { transaction, lazy });
 				if (object) {
 					return [id, cursor_functions.parseRow(object, fetch_attributes)];
 				} else {

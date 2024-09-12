@@ -4,11 +4,11 @@ on:
       createNonWavelengthAMIs:
         type: boolean
         default: true
-        description: "Create AMIs for regular (Non Wavelength) instances"
+        description: 'Create AMIs for regular (Non Wavelength) instances'
       createWavelengthAMIs:
         type: boolean
         default: true
-        description: "Create AMIs for Wavelength instances"
+        description: 'Create AMIs for Wavelength instances'
 name: HarperDB Cloud AMI Create
 jobs:
   build:
@@ -19,232 +19,232 @@ jobs:
       - build
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/download-artifact@v4
-      with:
-        name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
-    - name: Setup packer
-      run: |
-        #!/bin/bash
-        mkdir packer
-        cd packer
-        mkdir upload
+      - uses: actions/download-artifact@v4
+        with:
+          name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
+      - name: Setup packer
+        run: |
+          #!/bin/bash
+          mkdir packer
+          cd packer
+          mkdir upload
 
-        mv ../harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz upload/
+          mv ../harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz upload/
 
-        printf '{
-          "builders": [
-            {
-              "region": "us-west-2",
-              "type": "amazon-ebs",
-              "source_ami_filter": {
-                "filters": {
-                  "virtualization-type": "hvm",
-                  "name": "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*",
-                  "root-device-type": "ebs"
-                },
-              "owners": ["099720109477"],
-              "most_recent": true
-              },
-              "instance_type": "t3.medium",
-              "ssh_username": "ubuntu",
-              "ami_name": "HarperDBCloudAMI-${{github.run_number}}",
-              "ebs_optimized":true,
-              "ami_regions": [
-                "us-west-2",
-                "us-west-1",
-                "us-east-2",
-                "us-east-1",
-                "ca-central-1"
-              ]
-            }
-          ],
-          "provisioners": [
-            {
-              "type": "file",
-              "source": "./upload/",
-              "destination": "/home/ubuntu"
-            },
-            {
-              "type": "shell",
-              "script": "./ami_prep.sh"
-            }
-          ],
-          "post-processors": [
-            [
+          printf '{
+            "builders": [
               {
-                "output": "packer-manifest.json",
-                "strip_path": true,
-                "type": "manifest"
+                "region": "us-west-2",
+                "type": "amazon-ebs",
+                "source_ami_filter": {
+                  "filters": {
+                    "virtualization-type": "hvm",
+                    "name": "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*",
+                    "root-device-type": "ebs"
+                  },
+                "owners": ["099720109477"],
+                "most_recent": true
+                },
+                "instance_type": "t3.medium",
+                "ssh_username": "ubuntu",
+                "ami_name": "HarperDBCloudAMI-${{github.run_number}}",
+                "ebs_optimized":true,
+                "ami_regions": [
+                  "us-west-2",
+                  "us-west-1",
+                  "us-east-2",
+                  "us-east-1",
+                  "ca-central-1"
+                ]
               }
+            ],
+            "provisioners": [
+              {
+                "type": "file",
+                "source": "./upload/",
+                "destination": "/home/ubuntu"
+              },
+              {
+                "type": "shell",
+                "script": "./ami_prep.sh"
+              }
+            ],
+            "post-processors": [
+              [
+                {
+                  "output": "packer-manifest.json",
+                  "strip_path": true,
+                  "type": "manifest"
+                }
+              ]
             ]
-          ]
-        }' > ami.json
-    - name: Setup ami_prep.sh
-      run: |
-        #!/bin/bash
-        cd packer
+          }' > ami.json
+      - name: Setup ami_prep.sh
+        run: |
+          #!/bin/bash
+          cd packer
 
-        printf '#!/bin/bash
- 
-        # Update installed packages
-        sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade --with-new-pkgs
-        sleep 30s
-        sudo apt-get update && sudo apt-get -y upgrade
-        sleep 30s
-        
-        # Install Node Version Manager
-        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.38.0/install.sh | bash
-        export NVM_DIR="$HOME/.nvm"
-        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-        [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
-        
-        # Install Node.js using Node Version Manager
-        nvm install ${{ needs.build.outputs.nodeVersion }}
-        
-        # Download AWS CloudWatch Agent
-        wget -nv https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb -O /home/ubuntu/amazon-cloudwatch-agent.deb
-        
-        # Download AWS CloudFormation helper scripts
-        wget -nv https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz -O /home/ubuntu/aws-cfn-bootstrap-py3-latest.tar.gz
-        
-        # Install build-essential for LMDB, and python3-distutils for AWS CloudFormation helper scripts
-        sudo apt-get update && sudo apt-get install -y build-essential python3-distutils
-        
-        sudo rm -rf /home/ubuntu/.ssh/*
-        sudo rm -rf /root/.ssh/*
-        sudo rm -rf /root/.ssh/authorized_keys
-        sudo rm -rf /etc/machine-id
-        sudo touch /etc/machine-id
-        sudo rm -rf /var/lib/cloud/instances/*
-        sudo rm -rf /var/log/*
-        sudo useradd -m harperdbadmin
-        sudo rm -rf /home/harperdbadmin/.ssh/*
-        sudo sed -i "s/sudo, //" /etc/cloud/cloud.cfg
-        sudo sed -i "s/sudo:/#sudo:/" /etc/cloud/cloud.cfg
-        sudo deluser ubuntu sudo
-        sudo sed -i "s/ubuntu/harperdbadmin/" /etc/sudoers.d/90-cloud-init-users' > ami_prep.sh
-    - name: Build AMI with packer
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      run: |
-        #!/bin/bash
-        cd packer
-        packer build ami.json
-        sleep 10
+          printf '#!/bin/bash
+
+          # Update installed packages
+          sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade --with-new-pkgs
+          sleep 30s
+          sudo apt-get update && sudo apt-get -y upgrade
+          sleep 30s
+
+          # Install Node Version Manager
+          curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.38.0/install.sh | bash
+          export NVM_DIR="$HOME/.nvm"
+          [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+          [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+
+          # Install Node.js using Node Version Manager
+          nvm install ${{ needs.build.outputs.nodeVersion }}
+
+          # Download AWS CloudWatch Agent
+          wget -nv https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb -O /home/ubuntu/amazon-cloudwatch-agent.deb
+
+          # Download AWS CloudFormation helper scripts
+          wget -nv https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz -O /home/ubuntu/aws-cfn-bootstrap-py3-latest.tar.gz
+
+          # Install build-essential for LMDB, and python3-distutils for AWS CloudFormation helper scripts
+          sudo apt-get update && sudo apt-get install -y build-essential python3-distutils
+
+          sudo rm -rf /home/ubuntu/.ssh/*
+          sudo rm -rf /root/.ssh/*
+          sudo rm -rf /root/.ssh/authorized_keys
+          sudo rm -rf /etc/machine-id
+          sudo touch /etc/machine-id
+          sudo rm -rf /var/lib/cloud/instances/*
+          sudo rm -rf /var/log/*
+          sudo useradd -m harperdbadmin
+          sudo rm -rf /home/harperdbadmin/.ssh/*
+          sudo sed -i "s/sudo, //" /etc/cloud/cloud.cfg
+          sudo sed -i "s/sudo:/#sudo:/" /etc/cloud/cloud.cfg
+          sudo deluser ubuntu sudo
+          sudo sed -i "s/ubuntu/harperdbadmin/" /etc/sudoers.d/90-cloud-init-users' > ami_prep.sh
+      - name: Build AMI with packer
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          #!/bin/bash
+          cd packer
+          packer build ami.json
+          sleep 10
   createWavelengthAMI:
     if: ${{ inputs.createWavelengthAMIs }}
     needs:
       - build
     runs-on: ubuntu-latest
     steps:
-    - uses: actions/download-artifact@v4
-      with:
-        name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
-    - name: Setup packer
-      run: |
-        #!/bin/bash
-        mkdir packer
-        cd packer
-        mkdir upload
+      - uses: actions/download-artifact@v4
+        with:
+          name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
+      - name: Setup packer
+        run: |
+          #!/bin/bash
+          mkdir packer
+          cd packer
+          mkdir upload
 
-        mv ../harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz upload/
+          mv ../harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz upload/
 
-        printf '{
-          "builders": [
-            {
-              "region": "us-west-2",
-              "type": "amazon-ebs",
-              "source_ami_filter": {
-                "filters": {
-                  "virtualization-type": "hvm",
-                  "name": "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*",
-                  "root-device-type": "ebs"
-                },
-              "owners": ["099720109477"],
-              "most_recent": true
-              },
-              "instance_type": "t3.medium",
-              "ssh_username": "ubuntu",
-              "ami_name": "HarperDBCloudAMI-Wavelength-${{github.run_number}}",
-              "ebs_optimized":true,
-              "ami_regions": [
-                "us-west-2",
-                "us-east-1"
-              ]
-            }
-          ],
-          "provisioners": [
-            {
-              "type": "file",
-              "source": "./upload/",
-              "destination": "/home/ubuntu"
-            },
-            {
-              "type": "shell",
-              "script": "./ami_prep.sh"
-            }
-          ],
-          "post-processors": [
-            [
+          printf '{
+            "builders": [
               {
-                "output": "packer-manifest.json",
-                "strip_path": true,
-                "type": "manifest"
+                "region": "us-west-2",
+                "type": "amazon-ebs",
+                "source_ami_filter": {
+                  "filters": {
+                    "virtualization-type": "hvm",
+                    "name": "ubuntu/images/hvm-ssd/ubuntu-jammy-22.04-amd64-server-*",
+                    "root-device-type": "ebs"
+                  },
+                "owners": ["099720109477"],
+                "most_recent": true
+                },
+                "instance_type": "t3.medium",
+                "ssh_username": "ubuntu",
+                "ami_name": "HarperDBCloudAMI-Wavelength-${{github.run_number}}",
+                "ebs_optimized":true,
+                "ami_regions": [
+                  "us-west-2",
+                  "us-east-1"
+                ]
               }
+            ],
+            "provisioners": [
+              {
+                "type": "file",
+                "source": "./upload/",
+                "destination": "/home/ubuntu"
+              },
+              {
+                "type": "shell",
+                "script": "./ami_prep.sh"
+              }
+            ],
+            "post-processors": [
+              [
+                {
+                  "output": "packer-manifest.json",
+                  "strip_path": true,
+                  "type": "manifest"
+                }
+              ]
             ]
-          ]
-        }' > ami.json
-    - name: Setup ami_prep.sh
-      run: |
-        #!/bin/bash
-        cd packer
+          }' > ami.json
+      - name: Setup ami_prep.sh
+        run: |
+          #!/bin/bash
+          cd packer
 
-        printf '#!/bin/bash
- 
-        # Update installed packages
-        sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade --with-new-pkgs
-        sleep 30s
-        sudo apt-get update && sudo apt-get -y upgrade
-        sleep 30s
-        
-        # Install Node Version Manager
-        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.38.0/install.sh | bash
-        export NVM_DIR="$HOME/.nvm"
-        [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-        [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
-        
-        # Install Node.js using Node Version Manager
-        nvm install ${{ needs.build.outputs.nodeVersion }}
-        
-        # Download AWS CloudWatch Agent
-        wget -nv https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb -O /home/ubuntu/amazon-cloudwatch-agent.deb
-        
-        # Download AWS CloudFormation helper scripts
-        wget -nv https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz -O /home/ubuntu/aws-cfn-bootstrap-py3-latest.tar.gz
-        
-        # Install build-essential for LMDB, and python3-distutils for AWS CloudFormation helper scripts
-        sudo apt-get update && sudo apt-get install -y build-essential python3-distutils nginx
-        
-        sudo rm -rf /home/ubuntu/.ssh/*
-        sudo rm -rf /root/.ssh/*
-        sudo rm -rf /root/.ssh/authorized_keys
-        sudo rm -rf /etc/machine-id
-        sudo touch /etc/machine-id
-        sudo rm -rf /var/lib/cloud/instances/*
-        sudo rm -rf /var/log/*
-        sudo useradd -m harperdbadmin
-        sudo rm -rf /home/harperdbadmin/.ssh/*
-        sudo sed -i "s/sudo, //" /etc/cloud/cloud.cfg
-        sudo sed -i "s/sudo:/#sudo:/" /etc/cloud/cloud.cfg
-        sudo deluser ubuntu sudo
-        sudo sed -i "s/ubuntu/harperdbadmin/" /etc/sudoers.d/90-cloud-init-users' > ami_prep.sh
-    - name: Build AMI with packer
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-      run: |
-        #!/bin/bash
-        cd packer
-        packer build ami.json
-        sleep 10
+          printf '#!/bin/bash
+
+          # Update installed packages
+          sudo apt-get update && sudo DEBIAN_FRONTEND=noninteractive apt-get -y -o Dpkg::Options::="--force-confdef" -o Dpkg::Options::="--force-confold" upgrade --with-new-pkgs
+          sleep 30s
+          sudo apt-get update && sudo apt-get -y upgrade
+          sleep 30s
+
+          # Install Node Version Manager
+          curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.38.0/install.sh | bash
+          export NVM_DIR="$HOME/.nvm"
+          [ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+          [ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+
+          # Install Node.js using Node Version Manager
+          nvm install ${{ needs.build.outputs.nodeVersion }}
+
+          # Download AWS CloudWatch Agent
+          wget -nv https://s3.amazonaws.com/amazoncloudwatch-agent/ubuntu/amd64/latest/amazon-cloudwatch-agent.deb -O /home/ubuntu/amazon-cloudwatch-agent.deb
+
+          # Download AWS CloudFormation helper scripts
+          wget -nv https://s3.amazonaws.com/cloudformation-examples/aws-cfn-bootstrap-py3-latest.tar.gz -O /home/ubuntu/aws-cfn-bootstrap-py3-latest.tar.gz
+
+          # Install build-essential for LMDB, and python3-distutils for AWS CloudFormation helper scripts
+          sudo apt-get update && sudo apt-get install -y build-essential python3-distutils nginx
+
+          sudo rm -rf /home/ubuntu/.ssh/*
+          sudo rm -rf /root/.ssh/*
+          sudo rm -rf /root/.ssh/authorized_keys
+          sudo rm -rf /etc/machine-id
+          sudo touch /etc/machine-id
+          sudo rm -rf /var/lib/cloud/instances/*
+          sudo rm -rf /var/log/*
+          sudo useradd -m harperdbadmin
+          sudo rm -rf /home/harperdbadmin/.ssh/*
+          sudo sed -i "s/sudo, //" /etc/cloud/cloud.cfg
+          sudo sed -i "s/sudo:/#sudo:/" /etc/cloud/cloud.cfg
+          sudo deluser ubuntu sudo
+          sudo sed -i "s/ubuntu/harperdbadmin/" /etc/sudoers.d/90-cloud-init-users' > ami_prep.sh
+      - name: Build AMI with packer
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+        run: |
+          #!/bin/bash
+          cd packer
+          packer build ami.json
+          sleep 10

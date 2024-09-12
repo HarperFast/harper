@@ -8,30 +8,30 @@ on:
         type: string
       instanceType:
         type: string
-        default: "c7i.2xlarge"
+        default: 'c7i.2xlarge'
       volumeSize:
         type: string
-        default: "32"
+        default: '32'
       harperdbVersion:
         required: true
         type: string
       installType:
         type: string
-        default: "buildPackage"
+        default: 'buildPackage'
       callingWorkflow:
         required: true
         type: string
       instanceNamePrefix:
-        default: ""
+        default: ''
         type: string
       securityGroupId:
-        default: "sg-01b1c378328f897d1"
+        default: 'sg-01b1c378328f897d1'
         type: string
       tfstateArtifactName:
         default: 'tfstate'
         type: string
       containerTarball:
-        description: 'name of conatiner tarball to use. default '' uses old docker-harperdb_<harperdbVersion>.tar'
+        description: "name of conatiner tarball to use. default ' uses old docker-harperdb_<harperdbVersion>.tar"
         default: ''
         type: string
     outputs:
@@ -57,95 +57,95 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-    - uses: actions/checkout@v4
-    - name: Setup Terraform
-      with:
-        terraform_wrapper: false
-      uses: hashicorp/setup-terraform@v3
-    - uses: actions/download-artifact@v4
-      if: inputs.installType == 'buildPackage'
-      with:
-        name: harperdb-${{ inputs.harperdbVersion }}.tgz
-        path: ../artifact/
-    - uses: actions/download-artifact@v4
-      if: inputs.installType == 'docker'
-      with:
-        name: ${{ inputs.containerTarball == '' && 'docker-harperdb_${{ inputs.harperdbVersion }}.tar' || inputs.containerTarball }}
-        path: ../artifact/
-    - name: Create Instances
-      id: createInstances
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
-        containerTarball: ${{ inputs.containerTarball == '' && 'docker-harperdb_${{ inputs.harperdbVersion }}.tar' || inputs.containerTarball }}
-      run: |
-        #!/bin/bash
-        set -x
-        cd ../
-        mkdir terraform
-        cd terraform
-        echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
-        mkdir upload
-        cp ../harperdb/utility/devops/terraform/instance.tf .
-        mv ../harperdb/utility/devops/scripts/user_data.sh .
+      - uses: actions/checkout@v4
+      - name: Setup Terraform
+        with:
+          terraform_wrapper: false
+        uses: hashicorp/setup-terraform@v3
+      - uses: actions/download-artifact@v4
+        if: inputs.installType == 'buildPackage'
+        with:
+          name: harperdb-${{ inputs.harperdbVersion }}.tgz
+          path: ../artifact/
+      - uses: actions/download-artifact@v4
+        if: inputs.installType == 'docker'
+        with:
+          name: ${{ inputs.containerTarball == '' && 'docker-harperdb_${{ inputs.harperdbVersion }}.tar' || inputs.containerTarball }}
+          path: ../artifact/
+      - name: Create Instances
+        id: createInstances
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+          containerTarball: ${{ inputs.containerTarball == '' && 'docker-harperdb_${{ inputs.harperdbVersion }}.tar' || inputs.containerTarball }}
+        run: |
+          #!/bin/bash
+          set -x
+          cd ../
+          mkdir terraform
+          cd terraform
+          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+          mkdir upload
+          cp ../harperdb/utility/devops/terraform/instance.tf .
+          mv ../harperdb/utility/devops/scripts/user_data.sh .
 
-        if [ "${{ inputs.installType }}" == "buildPackage" ];
-        then
-          mv ../artifact/harperdb-${{ inputs.harperdbVersion }}.tgz ./upload/
-        fi
+          if [ "${{ inputs.installType }}" == "buildPackage" ];
+          then
+            mv ../artifact/harperdb-${{ inputs.harperdbVersion }}.tgz ./upload/
+          fi
 
-        if [ "${{ inputs.installType }}" == "docker" ];
-        then
-          mv ../artifact/${containerTarball} ./upload/
-        fi
-        
-        cp -r ../harperdb/ ./upload/
+          if [ "${{ inputs.installType }}" == "docker" ];
+          then
+            mv ../artifact/${containerTarball} ./upload/
+          fi
 
-        workflow_name="${{ inputs.callingWorkflow }}"
-        # Replace spaces with dashes
-        workflow_name="${workflow_name// /-}"
+          cp -r ../harperdb/ ./upload/
 
-        bonus_name_prefix="${{ inputs.instanceNamePrefix }}"
-        # Replace spaces with dashes
-        bonus_name_prefix="${bonus_name_prefix// /-}"
+          workflow_name="${{ inputs.callingWorkflow }}"
+          # Replace spaces with dashes
+          workflow_name="${workflow_name// /-}"
 
-        # Add a - to the end if it's not empty so we can have proper dashes between values in name
-        if [ "$bonus_name_prefix" != "" ];
-        then
-          bonus_name_prefix="$bonus_name_prefix"-
-        fi
+          bonus_name_prefix="${{ inputs.instanceNamePrefix }}"
+          # Replace spaces with dashes
+          bonus_name_prefix="${bonus_name_prefix// /-}"
 
-        terraform init
-        terraform apply -var='private_key=./private_key' -var='region=us-east-2' -var='instance_count=${{ inputs.instanceCount }}' -var='instance_name_prefix=GitHub-'"${workflow_name}"'-'"$bonus_name_prefix"'${{github.run_number}}' -var='instance_type=${{ inputs.instanceType }}' -var='github_workflow_name='"${workflow_name}"'' -var='github_run_number=${{github.run_number}}' -var='volume_size=${{ inputs.volumeSize }}' -var='security_group_id=${{ inputs.securityGroupId }}' -auto-approve
-        mapfile -t public_dns_names <<< $(terraform output -json | jq -r '.public_dns_names.value[]')
-        mapfile -t public_ips <<< $(terraform output -json | jq -r '.public_ips.value[]')
-        mapfile -t private_dns_names <<< $(terraform output -json | jq -r '.private_dns_names.value[]')
-        mapfile -t private_ips <<< $(terraform output -json | jq -r '.private_ips.value[]')
+          # Add a - to the end if it's not empty so we can have proper dashes between values in name
+          if [ "$bonus_name_prefix" != "" ];
+          then
+            bonus_name_prefix="$bonus_name_prefix"-
+          fi
 
-        echo "PUBLIC_DNS_NAMES=${public_dns_names[@]}" >> $GITHUB_OUTPUT
-        echo "PUBLIC_IPS=${public_ips[@]}" >> $GITHUB_OUTPUT
-        echo "PRIVATE_DNS_NAMES=${private_dns_names[@]}" >> $GITHUB_OUTPUT
-        echo "PRIVATE_IPS=${private_ips[@]}" >> $GITHUB_OUTPUT
+          terraform init
+          terraform apply -var='private_key=./private_key' -var='region=us-east-2' -var='instance_count=${{ inputs.instanceCount }}' -var='instance_name_prefix=GitHub-'"${workflow_name}"'-'"$bonus_name_prefix"'${{github.run_number}}' -var='instance_type=${{ inputs.instanceType }}' -var='github_workflow_name='"${workflow_name}"'' -var='github_run_number=${{github.run_number}}' -var='volume_size=${{ inputs.volumeSize }}' -var='security_group_id=${{ inputs.securityGroupId }}' -auto-approve
+          mapfile -t public_dns_names <<< $(terraform output -json | jq -r '.public_dns_names.value[]')
+          mapfile -t public_ips <<< $(terraform output -json | jq -r '.public_ips.value[]')
+          mapfile -t private_dns_names <<< $(terraform output -json | jq -r '.private_dns_names.value[]')
+          mapfile -t private_ips <<< $(terraform output -json | jq -r '.private_ips.value[]')
 
-        mkdir ../harperdb/tfstate/
-        mv terraform.tfstate ../harperdb/tfstate/
-        mv .terraform.lock.hcl ../harperdb/tfstate/
-        mv instance.tf ../harperdb/tfstate/
-    - name: 'Upload TFState'
-      uses: actions/upload-artifact@v4
-      with:
-        name: ${{ inputs.tfstateArtifactName }}
-        path: tfstate/
-        retention-days: 1
-    - name: 'Destroy Instances'
-      if: ${{ failure() }}
-      env:
-        AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
-        AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
-        CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
-      run: |
-        #!/bin/bash
-        cd ../terraform
-        
-        terraform destroy -var='private_key=./private_key' -var='region=us-east-2' -var='instance_count=${{inputs.instanceCount}}' -var='instance_name_prefix=GitHub-'"${workflow_name}"'-${{github.run_number}}' -var='instance_type=${{inputs.instanceType}}' -var='github_workflow_name='"${workflow_name}"'' -var='github_run_number=${{github.run_number}}' -var='volume_size=${{inputs.volumeSize}}' -auto-approve
+          echo "PUBLIC_DNS_NAMES=${public_dns_names[@]}" >> $GITHUB_OUTPUT
+          echo "PUBLIC_IPS=${public_ips[@]}" >> $GITHUB_OUTPUT
+          echo "PRIVATE_DNS_NAMES=${private_dns_names[@]}" >> $GITHUB_OUTPUT
+          echo "PRIVATE_IPS=${private_ips[@]}" >> $GITHUB_OUTPUT
+
+          mkdir ../harperdb/tfstate/
+          mv terraform.tfstate ../harperdb/tfstate/
+          mv .terraform.lock.hcl ../harperdb/tfstate/
+          mv instance.tf ../harperdb/tfstate/
+      - name: 'Upload TFState'
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ inputs.tfstateArtifactName }}
+          path: tfstate/
+          retention-days: 1
+      - name: 'Destroy Instances'
+        if: ${{ failure() }}
+        env:
+          AWS_ACCESS_KEY_ID: ${{ secrets.AWS_ACCESS_KEY_ID }}
+          AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
+          CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+        run: |
+          #!/bin/bash
+          cd ../terraform
+
+          terraform destroy -var='private_key=./private_key' -var='region=us-east-2' -var='instance_count=${{inputs.instanceCount}}' -var='instance_name_prefix=GitHub-'"${workflow_name}"'-${{github.run_number}}' -var='instance_type=${{inputs.instanceType}}' -var='github_workflow_name='"${workflow_name}"'' -var='github_run_number=${{github.run_number}}' -var='volume_size=${{inputs.volumeSize}}' -auto-approve

@@ -1,10 +1,10 @@
-name: "Run Build Package CI Tests"
+name: 'Run Build Package CI Tests'
 
 on:
   push:
     branches:
       - main
-      - "release_*"
+      - 'release_*'
   pull_request:
     types: [opened, synchronize, reopened]
   schedule:
@@ -27,11 +27,11 @@ jobs:
       - build
     uses: ./.github/workflows/create-instances.yaml
     with:
-      instanceCount: "1"
+      instanceCount: '1'
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       callingWorkflow: ${{ github.workflow }}
       instanceType: c7i.2xlarge
-      tfstateArtifactName: "tfstate-amd"
+      tfstateArtifactName: 'tfstate-amd'
     secrets: inherit
 
   createInstances-arm:
@@ -39,11 +39,11 @@ jobs:
       - build
     uses: ./.github/workflows/create-instances.yaml
     with:
-      instanceCount: "1"
+      instanceCount: '1'
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       callingWorkflow: ${{ github.workflow }}
       instanceType: c7gn.2xlarge
-      tfstateArtifactName: "tfstate-arm"
+      tfstateArtifactName: 'tfstate-arm'
     secrets: inherit
 
   ######################
@@ -82,30 +82,30 @@ jobs:
           - arm
     timeout-minutes: 20
     steps:
-    - name: Run Integration Tests on Instances
-      env:
-        CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
-        public_dns_names: ${{ matrix.arch == 'amd' && needs.createInstances-amd.outputs.publicDnsNames || needs.createInstances-arm.outputs.publicDnsNames }}
-      run: |
-        #!/bin/bash
-        cd ../
-        echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
-        # this is an env now: public_dns_names=${{ needs.createInstances-amd.outputs.publicDnsNames }}
-        for public_dns_name in "${public_dns_names[@]}"
-        do 
-          echo "Starting work on: $public_dns_name"
-          ssh -i private_key -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@"$public_dns_name" \
-                "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh && /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh"
-          echo "Ending work on: $public_dns_name"
-        done
-      shell: bash
+      - name: Run Integration Tests on Instances
+        env:
+          CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+          public_dns_names: ${{ matrix.arch == 'amd' && needs.createInstances-amd.outputs.publicDnsNames || needs.createInstances-arm.outputs.publicDnsNames }}
+        run: |
+          #!/bin/bash
+          cd ../
+          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+          # this is an env now: public_dns_names=${{ needs.createInstances-amd.outputs.publicDnsNames }}
+          for public_dns_name in "${public_dns_names[@]}"
+          do 
+            echo "Starting work on: $public_dns_name"
+            ssh -i private_key -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@"$public_dns_name" \
+                  "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh && /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh"
+            echo "Ending work on: $public_dns_name"
+          done
+        shell: bash
 
   ##################
   #  Download Logs
   ##################
   downloadLogs:
     if: always()
-    needs: 
+    needs:
       - runIntegrationTests
       - createInstances-amd
       - createInstances-arm
@@ -135,10 +135,10 @@ jobs:
           - arch: arm
             instanceType: c7gn.2xlarge
     with:
-      instanceCount: "1"
+      instanceCount: '1'
       callingWorkflow: ${{ github.workflow }}
       instanceType: ${{ matrix.instanceType }}
-      tfstateArtifactName: "tfstate-${{ matrix.arch }}"
+      tfstateArtifactName: 'tfstate-${{ matrix.arch }}'
     secrets: inherit
 
   #######################

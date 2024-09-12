@@ -40,7 +40,7 @@ if (is_source_code) {
 							(compiled_time
 								? ` (TS source file was modified at ${new Date(source_time)} and compiled file at ${new Date(
 										compiled_time
-								)})`
+								  )})`
 								: '') +
 							`, consider enabling auto-compilation of TypeScript in your IDE), compiling now.`
 					);

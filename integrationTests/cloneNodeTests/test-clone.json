@@ -72,9 +72,7 @@
 				"url": {
 					"raw": "{{PROTOCOL}}://{{CLONE_HOST}}:{{CLONE_HDB_PORT}}",
 					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{CLONE_HOST}}"
-					],
+					"host": ["{{CLONE_HOST}}"],
 					"port": "{{CLONE_HDB_PORT}}"
 				}
 			},
@@ -143,9 +141,7 @@
 				"url": {
 					"raw": "{{PROTOCOL}}://{{CLONE_HOST}}:{{CLONE_HDB_PORT}}",
 					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{CLONE_HOST}}"
-					],
+					"host": ["{{CLONE_HOST}}"],
 					"port": "{{CLONE_HDB_PORT}}"
 				}
 			},
@@ -212,9 +208,7 @@
 				"url": {
 					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
 					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{LEADER_HOST}}"
-					],
+					"host": ["{{LEADER_HOST}}"],
 					"port": "{{LEADER_HDB_PORT}}"
 				}
 			},
@@ -274,9 +268,7 @@
 				"url": {
 					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
 					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{LEADER_HOST}}"
-					],
+					"host": ["{{LEADER_HOST}}"],
 					"port": "{{LEADER_HDB_PORT}}"
 				}
 			},
@@ -363,9 +355,7 @@
 				"url": {
 					"raw": "{{PROTOCOL}}://{{CLONE_HOST}}:{{CLONE_HDB_PORT}}",
 					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{CLONE_HOST}}"
-					],
+					"host": ["{{CLONE_HOST}}"],
 					"port": "{{CLONE_HDB_PORT}}"
 				}
 			},
@@ -424,9 +414,7 @@
 				"url": {
 					"raw": "{{PROTOCOL}}://{{CLONE_HOST}}:{{CLONE_HDB_PORT}}",
 					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{CLONE_HOST}}"
-					],
+					"host": ["{{CLONE_HOST}}"],
 					"port": "{{CLONE_HDB_PORT}}"
 				}
 			},
@@ -513,9 +501,7 @@
 				"url": {
 					"raw": "{{PROTOCOL}}://{{LEADER_HOST}}:{{LEADER_HDB_PORT}}",
 					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{LEADER_HOST}}"
-					],
+					"host": ["{{LEADER_HOST}}"],
 					"port": "{{LEADER_HDB_PORT}}"
 				}
 			},
@@ -527,9 +513,7 @@
 				{
 					"listen": "test",
 					"script": {
-						"exec": [
-							""
-						],
+						"exec": [""],
 						"type": "text/javascript",
 						"packages": {}
 					}
@@ -570,9 +554,7 @@
 				"url": {
 					"raw": "{{PROTOCOL}}://{{CLONE_HOST}}:{{CLONE_HDB_PORT}}",
 					"protocol": "{{PROTOCOL}}",
-					"host": [
-						"{{CLONE_HOST}}"
-					],
+					"host": ["{{CLONE_HOST}}"],
 					"port": "{{CLONE_HDB_PORT}}"
 				}
 			},

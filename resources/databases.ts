@@ -652,7 +652,7 @@ export function table({
 					(+expiration || undefined) !== (+attribute_descriptor.expiration || undefined) ||
 					(+eviction || undefined) !== (+attribute_descriptor.eviction || undefined)
 				) {
-					const updated_primary_attribute = Object.assign({}, attribute_descriptor);
+					const updated_primary_attribute = { ...attribute_descriptor };
 					if (typeof audit === 'boolean') {
 						if (audit) Table.enableAuditing(audit);
 						updated_primary_attribute.audit = audit;

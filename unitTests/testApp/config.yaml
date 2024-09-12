@@ -13,4 +13,4 @@ static:
   root: web
   files: web/**
 # login
-  #path: /
+#path: /

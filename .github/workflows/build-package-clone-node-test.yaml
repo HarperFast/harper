@@ -4,12 +4,12 @@ on:
   push:
     branches:
       - main
-      - "release_*"
+      - 'release_*'
   pull_request:
-#    types: [opened, synchronize, reopened]
-#    paths:
-#      - 'utility/clustering/**'
-#      - 'server/nats/**'
+  #    types: [opened, synchronize, reopened]
+  #    paths:
+  #      - 'utility/clustering/**'
+  #      - 'server/nats/**'
   schedule:
     - cron: '8 13 * * 1-5'
   workflow_dispatch:
@@ -30,7 +30,7 @@ jobs:
       - build
     uses: ./.github/workflows/create-instances.yaml
     with:
-      instanceCount: "3"
+      instanceCount: '3'
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       callingWorkflow: ${{ github.workflow }}
     secrets: inherit
@@ -39,7 +39,7 @@ jobs:
   # Register Instances
   ######################
   registerInstances:
-    needs: 
+    needs:
       - createInstances
       - build
     uses: ./.github/workflows/install-and-register.yaml
@@ -61,161 +61,160 @@ jobs:
       - registerInstances
       - build
     steps:
-    - name: Run Clone Node Test
-      env:
-        CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
-        HDB_ADMIN_USERNAME: ${{ secrets.HDB_ADMIN_USERNAME }}
-        HDB_ADMIN_PASSWORD: ${{ secrets.HDB_ADMIN_PASSWORD }}
-      run: |
-        #!/usr/bin/env bash
+      - name: Run Clone Node Test
+        env:
+          CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+          HDB_ADMIN_USERNAME: ${{ secrets.HDB_ADMIN_USERNAME }}
+          HDB_ADMIN_PASSWORD: ${{ secrets.HDB_ADMIN_PASSWORD }}
+        run: |
+          #!/usr/bin/env bash
 
-        cd ../
-        echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+          cd ../
+          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
 
-        public_dns_names=(${{ needs.createInstances.outputs.publicDnsNames }})
-        
-        # define roles for hosts
-        leader_hostname="${public_dns_names[0]}"
-        clone_hostname="${public_dns_names[1]}"
-        partial_clone_hostname="${public_dns_names[2]}"
-        
-        echo "#############################################################"
-        echo "# Configure all hosts"
-        echo "#############################################################"
-        for host in "${public_dns_names[@]}"; do
-          ssh -T -i private_key -o ServerAliveInterval=60 -o TCPKeepAlive=no -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@"${host}" <<EOF
-        . /home/ubuntu/.nvm/nvm.sh
-        
-        echo "installing newman on ${host}"
-        npm --silent --loglevel=error install -g newman
-        npm --silent --loglevel=error install -g newman-reporter-html
-        npm --silent --loglevel=error install -g newman-reporter-htmlextra
-        EOF
-        done
-        
-        echo "#############################################################"
-        echo "# Configure all hosts Complete"
-        echo "#############################################################"
-        
-        echo "#############################################################"
-        echo "# Starting work on leader node: ${leader_hostname}"
-        echo "#############################################################"
-        
-        ssh -T -i private_key -o ServerAliveInterval=60 -o TCPKeepAlive=no -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@"${leader_hostname}" <<EOF
-        . /home/ubuntu/.nvm/nvm.sh
-        
-        newman run harperdb/integrationTests/cloneNodeTests/setup-leader.json \
-          -e harperdb/integrationTests/cloneNodeTests/clone-test-env.json \
-          --insecure \
-          --env-var LEADER_HOST="${leader_hostname}" \
-          --env-var USERNAME="${HDB_ADMIN_USERNAME}" \
-          --env-var PASSWORD="${HDB_ADMIN_PASSWORD}"
-        EOF
-        
-        echo "#############################################################"
-        echo "# Leader Node configured: ${leader_hostname}"
-        echo "#############################################################"
-        
-        echo "#############################################################"
-        echo "# Starting work on clone host: ${clone_hostname}"
-        echo "#############################################################"
-        ssh -T -i private_key -o ServerAliveInterval=60 -o TCPKeepAlive=no -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@"${clone_hostname}" <<EOF
-        
-        export SERVER_IP_1="\$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)"
-        echo "SERVER_IP_1: \${SERVER_IP_1}"
-        
-        # load nvm
-        . /home/ubuntu/.nvm/nvm.sh
-        
-        # stop running harperdb
-        echo "stopping harperdb" 
-        which harperdb
-        harperdb stop
-        echo "removing contents of hdb/* and .harperdb"
-        rm -rf hdb/* .harperdb
-        
-        # start clone process
-        echo "starting clone process"
-        REPLICATION_HOSTNAME="${clone_hostname}" HDB_LEADER_PASSWORD="${HDB_ADMIN_PASSWORD}" HDB_LEADER_URL="https://${leader_hostname}:9925" HDB_LEADER_USERNAME="${HDB_ADMIN_USERNAME}" harperdb start
-        
-        sleep 4
-        
-        echo "run newman tests to verify clone"
-        newman run harperdb/integrationTests/cloneNodeTests/test-clone.json \
-          -e harperdb/integrationTests/cloneNodeTests/clone-test-env.json \
-          --insecure \
-          --delay-request 1000 \
-          --env-var USERNAME="${HDB_ADMIN_USERNAME}" \
-          --env-var PASSWORD="${HDB_ADMIN_PASSWORD}" \
-          --env-var CLONE_HOST="${clone_hostname}" \
-          --env-var LEADER_HOST="${leader_hostname}" 
-        EOF
-        
-        echo "#############################################################"
-        echo "# Clone host test complete: ${clone_hostname}"
-        echo "#############################################################"
-        
-        echo "#############################################################"
-        echo "# Starting work on partial clone host: ${partial_clone_hostname}"
-        echo "#############################################################"
-        ssh -T -i private_key -o ServerAliveInterval=60 -o TCPKeepAlive=no -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@"${partial_clone_hostname}" <<EOF
-        
-        export SERVER_IP_2="\$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)"
-        echo "SERVER_IP_2: \${SERVER_IP_2}"
-        
-        # load nvm
-        . /home/ubuntu/.nvm/nvm.sh
-        
-        # stop running harperdb
-        echo "stopping harperdb" 
-        which harperdb
-        harperdb stop
-        echo "removing contents of hdb/* and .harperdb"
-        rm -rf hdb/* .harperdb
-        
-        # copying harperdb and clone configs for the partial clone test
-        cp harperdb/integrationTests/cloneNodeTests/testConfig/clone-node-config.yaml hdb/clone-node-config.yaml
-        cp harperdb/integrationTests/cloneNodeTests/testConfig/harperdb-config.yaml hdb/harperdb-config.yaml
-        
-        
-        
-        # start clone process
-        echo "starting partial clone process"
-        REPLICATION_HOSTNAME="${partial_clone_hostname}" HDB_LEADER_PASSWORD="${HDB_ADMIN_PASSWORD}" HDB_LEADER_URL="https://${leader_hostname}:9925" HDB_LEADER_USERNAME="${HDB_ADMIN_USERNAME}" LOCALSTUDIO_ENABLED=true harperdb start
-        
-        echo "waiting for harperdb to accept requests"
-        until curl --output /dev/null --silent --fail --insecure --data-raw '{"operation":"system_information"}' --request POST --header 'Content-Type: application/json' "https://${HDB_ADMIN_USERNAME}:${HDB_ADMIN_PASSWORD}@localhost:9925"; do
-          printf '.'
+          public_dns_names=(${{ needs.createInstances.outputs.publicDnsNames }})
+
+          # define roles for hosts
+          leader_hostname="${public_dns_names[0]}"
+          clone_hostname="${public_dns_names[1]}"
+          partial_clone_hostname="${public_dns_names[2]}"
+
+          echo "#############################################################"
+          echo "# Configure all hosts"
+          echo "#############################################################"
+          for host in "${public_dns_names[@]}"; do
+            ssh -T -i private_key -o ServerAliveInterval=60 -o TCPKeepAlive=no -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@"${host}" <<EOF
+          . /home/ubuntu/.nvm/nvm.sh
+
+          echo "installing newman on ${host}"
+          npm --silent --loglevel=error install -g newman
+          npm --silent --loglevel=error install -g newman-reporter-html
+          npm --silent --loglevel=error install -g newman-reporter-htmlextra
+          EOF
+          done
+
+          echo "#############################################################"
+          echo "# Configure all hosts Complete"
+          echo "#############################################################"
+
+          echo "#############################################################"
+          echo "# Starting work on leader node: ${leader_hostname}"
+          echo "#############################################################"
+
+          ssh -T -i private_key -o ServerAliveInterval=60 -o TCPKeepAlive=no -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@"${leader_hostname}" <<EOF
+          . /home/ubuntu/.nvm/nvm.sh
+
+          newman run harperdb/integrationTests/cloneNodeTests/setup-leader.json \
+            -e harperdb/integrationTests/cloneNodeTests/clone-test-env.json \
+            --insecure \
+            --env-var LEADER_HOST="${leader_hostname}" \
+            --env-var USERNAME="${HDB_ADMIN_USERNAME}" \
+            --env-var PASSWORD="${HDB_ADMIN_PASSWORD}"
+          EOF
+
+          echo "#############################################################"
+          echo "# Leader Node configured: ${leader_hostname}"
+          echo "#############################################################"
+
+          echo "#############################################################"
+          echo "# Starting work on clone host: ${clone_hostname}"
+          echo "#############################################################"
+          ssh -T -i private_key -o ServerAliveInterval=60 -o TCPKeepAlive=no -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@"${clone_hostname}" <<EOF
+
+          export SERVER_IP_1="\$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)"
+          echo "SERVER_IP_1: \${SERVER_IP_1}"
+
+          # load nvm
+          . /home/ubuntu/.nvm/nvm.sh
+
+          # stop running harperdb
+          echo "stopping harperdb" 
+          which harperdb
+          harperdb stop
+          echo "removing contents of hdb/* and .harperdb"
+          rm -rf hdb/* .harperdb
+
+          # start clone process
+          echo "starting clone process"
+          REPLICATION_HOSTNAME="${clone_hostname}" HDB_LEADER_PASSWORD="${HDB_ADMIN_PASSWORD}" HDB_LEADER_URL="https://${leader_hostname}:9925" HDB_LEADER_USERNAME="${HDB_ADMIN_USERNAME}" harperdb start
+
           sleep 4
-        done
-        
-        echo "run newman tests to verify clone"
-        newman run harperdb/integrationTests/cloneNodeTests/test-clone-2.json \
-          -e harperdb/integrationTests/cloneNodeTests/clone-test-env.json \
-          --insecure \
-          --delay-request 1000 \
-          --env-var USERNAME="${HDB_ADMIN_USERNAME}" \
-          --env-var PASSWORD="${HDB_ADMIN_PASSWORD}" \
-          --env-var CLONE_HOST="${clone_hostname}"\
-          --env-var CLONE2_HOST="${partial_clone_hostname}" \
-          --env-var LEADER_HOST="${leader_hostname}"
-        EOF
-        
-        echo "#############################################################"
-        echo "# Partial clone host test complete: ${partial_clone_hostname}"
-        echo "#############################################################"
-        
-        echo "############################"
-        echo "# Clone Node Test finished"
-        echo "############################"
-        
+
+          echo "run newman tests to verify clone"
+          newman run harperdb/integrationTests/cloneNodeTests/test-clone.json \
+            -e harperdb/integrationTests/cloneNodeTests/clone-test-env.json \
+            --insecure \
+            --delay-request 1000 \
+            --env-var USERNAME="${HDB_ADMIN_USERNAME}" \
+            --env-var PASSWORD="${HDB_ADMIN_PASSWORD}" \
+            --env-var CLONE_HOST="${clone_hostname}" \
+            --env-var LEADER_HOST="${leader_hostname}" 
+          EOF
+
+          echo "#############################################################"
+          echo "# Clone host test complete: ${clone_hostname}"
+          echo "#############################################################"
+
+          echo "#############################################################"
+          echo "# Starting work on partial clone host: ${partial_clone_hostname}"
+          echo "#############################################################"
+          ssh -T -i private_key -o ServerAliveInterval=60 -o TCPKeepAlive=no -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@"${partial_clone_hostname}" <<EOF
+
+          export SERVER_IP_2="\$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)"
+          echo "SERVER_IP_2: \${SERVER_IP_2}"
+
+          # load nvm
+          . /home/ubuntu/.nvm/nvm.sh
+
+          # stop running harperdb
+          echo "stopping harperdb" 
+          which harperdb
+          harperdb stop
+          echo "removing contents of hdb/* and .harperdb"
+          rm -rf hdb/* .harperdb
+
+          # copying harperdb and clone configs for the partial clone test
+          cp harperdb/integrationTests/cloneNodeTests/testConfig/clone-node-config.yaml hdb/clone-node-config.yaml
+          cp harperdb/integrationTests/cloneNodeTests/testConfig/harperdb-config.yaml hdb/harperdb-config.yaml
+
+
+
+          # start clone process
+          echo "starting partial clone process"
+          REPLICATION_HOSTNAME="${partial_clone_hostname}" HDB_LEADER_PASSWORD="${HDB_ADMIN_PASSWORD}" HDB_LEADER_URL="https://${leader_hostname}:9925" HDB_LEADER_USERNAME="${HDB_ADMIN_USERNAME}" LOCALSTUDIO_ENABLED=true harperdb start
+
+          echo "waiting for harperdb to accept requests"
+          until curl --output /dev/null --silent --fail --insecure --data-raw '{"operation":"system_information"}' --request POST --header 'Content-Type: application/json' "https://${HDB_ADMIN_USERNAME}:${HDB_ADMIN_PASSWORD}@localhost:9925"; do
+            printf '.'
+            sleep 4
+          done
+
+          echo "run newman tests to verify clone"
+          newman run harperdb/integrationTests/cloneNodeTests/test-clone-2.json \
+            -e harperdb/integrationTests/cloneNodeTests/clone-test-env.json \
+            --insecure \
+            --delay-request 1000 \
+            --env-var USERNAME="${HDB_ADMIN_USERNAME}" \
+            --env-var PASSWORD="${HDB_ADMIN_PASSWORD}" \
+            --env-var CLONE_HOST="${clone_hostname}"\
+            --env-var CLONE2_HOST="${partial_clone_hostname}" \
+            --env-var LEADER_HOST="${leader_hostname}"
+          EOF
+
+          echo "#############################################################"
+          echo "# Partial clone host test complete: ${partial_clone_hostname}"
+          echo "#############################################################"
+
+          echo "############################"
+          echo "# Clone Node Test finished"
+          echo "############################"
 
   #################
   # Download Logs
   #################
   downloadLogs:
     if: always()
-    needs: 
+    needs:
       - runTests
       - createInstances
     uses: ./.github/workflows/download-logs.yaml
@@ -231,7 +230,7 @@ jobs:
     needs: downloadLogs
     uses: ./.github/workflows/destroy-instances.yaml
     with:
-      instanceCount: "4"
+      instanceCount: '4'
       callingWorkflow: ${{ github.workflow }}
     secrets: inherit
 

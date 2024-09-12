@@ -1,25 +1,30 @@
 {
-  "env": {
-    "node": true,
-    "mocha": true
-  },
-  "extends": ["eslint:recommended", "plugin:@typescript-eslint/recommended", "plugin:sonarjs/recommended-legacy", "prettier"],
-  "plugins": ["@typescript-eslint", "sonarjs"],
-  "parser": "@typescript-eslint/parser",
-  "parserOptions": {
-    "projectService": true
-  },
-  "root": true,
-  "rules": {
-    "no-console": "off",
-    "sonarjs/cognitive-complexity": ["error", 250],
-    "sonarjs/no-useless-catch": "off",
-    "sonarjs/no-identical-functions": "off",
-    "sonarjs/no-inverted-boolean-check": "off",
-    "sonarjs/no-duplicated-branches": "off",
-    "sonarjs/no-redundant-jump": "off",
-    "sonarjs/new-cap": "off",
-    "@typescript-eslint/no-explicit-any": "off",
-    "@typescript-eslint/no-var-requires": "off"
-  }
+	"env": {
+		"node": true,
+		"mocha": true
+	},
+	"extends": [
+		"eslint:recommended",
+		"plugin:@typescript-eslint/recommended",
+		"plugin:sonarjs/recommended-legacy",
+		"prettier"
+	],
+	"plugins": ["@typescript-eslint", "sonarjs"],
+	"parser": "@typescript-eslint/parser",
+	"parserOptions": {
+		"projectService": true
+	},
+	"root": true,
+	"rules": {
+		"no-console": "off",
+		"sonarjs/cognitive-complexity": ["error", 250],
+		"sonarjs/no-useless-catch": "off",
+		"sonarjs/no-identical-functions": "off",
+		"sonarjs/no-inverted-boolean-check": "off",
+		"sonarjs/no-duplicated-branches": "off",
+		"sonarjs/no-redundant-jump": "off",
+		"sonarjs/new-cap": "off",
+		"@typescript-eslint/no-explicit-any": "off",
+		"@typescript-eslint/no-var-requires": "off"
+	}
 }

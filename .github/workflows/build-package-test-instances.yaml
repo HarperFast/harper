@@ -2,12 +2,12 @@ on:
   workflow_dispatch:
     inputs:
       instanceType:
-        default: "c5.large"
+        default: 'c5.large'
       instanceCount:
-        default: "1"
+        default: '1'
       instanceNamePrefix:
-        default: ""
-        description: "Instance name in AWS will be GitHub-<workflow-name>-<run number>-<THIS VALUE>-<incrementing number>"
+        default: ''
+        description: 'Instance name in AWS will be GitHub-<workflow-name>-<run number>-<THIS VALUE>-<incrementing number>'
         type: string
 name: Create Test Instances from Build Package
 jobs:
@@ -23,10 +23,10 @@ jobs:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       callingWorkflow: ${{ github.workflow }}
       instanceNamePrefix: ${{ inputs.instanceNamePrefix }}
-      securityGroupId: "sg-00d03df84388398fd"
+      securityGroupId: 'sg-00d03df84388398fd'
     secrets: inherit
   registerInstances:
-    needs: 
+    needs:
       - createInstances
       - build
     uses: ./.github/workflows/install-and-register.yaml
@@ -43,7 +43,7 @@ jobs:
     needs: createInstances
     uses: ./.github/workflows/destroy-instances.yaml
     with:
-      instanceCount: "${{ inputs.instanceCount }}"
+      instanceCount: '${{ inputs.instanceCount }}'
       instanceType: ${{ inputs.instanceType }}
       callingWorkflow: ${{ github.workflow }}
     secrets: inherit

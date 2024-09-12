@@ -14,7 +14,7 @@ on:
         type: string
       installType:
         type: string
-        default: "buildPackage"
+        default: 'buildPackage'
       httpsOn:
         type: boolean
         default: false
@@ -30,107 +30,107 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-    - name: Install and Register
-      env:
-        HDB_ADMIN_USERNAME: ${{ secrets.HDB_ADMIN_USERNAME }}
-        HDB_ADMIN_PASSWORD: ${{ secrets.HDB_ADMIN_PASSWORD }}
-        CLUSTERING_USERNAME: ${{ secrets.CLUSTERING_USERNAME }}
-        CLUSTERING_PASSWORD: ${{ secrets.CLUSTERING_PASSWORD }}
-        CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
-      run: |
-        #!/bin/bash
-        pwd
-        cd ../
-        echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+      - name: Install and Register
+        env:
+          HDB_ADMIN_USERNAME: ${{ secrets.HDB_ADMIN_USERNAME }}
+          HDB_ADMIN_PASSWORD: ${{ secrets.HDB_ADMIN_PASSWORD }}
+          CLUSTERING_USERNAME: ${{ secrets.CLUSTERING_USERNAME }}
+          CLUSTERING_PASSWORD: ${{ secrets.CLUSTERING_PASSWORD }}
+          CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+        run: |
+          #!/bin/bash
+          pwd
+          cd ../
+          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
 
-        if [[ ${{ inputs.generatePassword }} == "true" ]]
-        then
-          export HDB_ADMIN_PASSWORD="$(openssl rand -base64 24)"
-          export CLUSTERING_PASSWORD="$(openssl rand -base64 24)"
-          echo "!!!HDB_ADMIN_PASSWORD: $HDB_ADMIN_PASSWORD"
-          echo "!!!CLUSTERING_PASSWORD: $CLUSTERING_PASSWORD"
-        fi
+          if [[ ${{ inputs.generatePassword }} == "true" ]]
+          then
+            export HDB_ADMIN_PASSWORD="$(openssl rand -base64 24)"
+            export CLUSTERING_PASSWORD="$(openssl rand -base64 24)"
+            echo "!!!HDB_ADMIN_PASSWORD: $HDB_ADMIN_PASSWORD"
+            echo "!!!CLUSTERING_PASSWORD: $CLUSTERING_PASSWORD"
+          fi
 
-        public_dns_names="${{ inputs.publicDns }}"
-        echo ${public_dns_names[@]}
-        export CURRENT_NODE=1
-        for public_dns_name in ${public_dns_names[@]}
-        do 
-            echo "Starting work on: $public_dns_name"
-            ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name << HERE
+          public_dns_names="${{ inputs.publicDns }}"
+          echo ${public_dns_names[@]}
+          export CURRENT_NODE=1
+          for public_dns_name in ${public_dns_names[@]}
+          do 
+              echo "Starting work on: $public_dns_name"
+              ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name << HERE
 
-        # Install Node Version Manager
-        echo "Install nvm..."
-        curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
-        #export NVM_DIR="$HOME/.nvm"
-        #[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
-        #[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
-        . /home/ubuntu/.nvm/nvm.sh
-        . /home/ubuntu/.nvm/bash_completion
+          # Install Node Version Manager
+          echo "Install nvm..."
+          curl -o- https://raw.githubusercontent.com/nvm-sh/nvm/v0.39.7/install.sh | bash
+          #export NVM_DIR="$HOME/.nvm"
+          #[ -s "$NVM_DIR/nvm.sh" ] && \. "$NVM_DIR/nvm.sh"
+          #[ -s "$NVM_DIR/bash_completion" ] && \. "$NVM_DIR/bash_completion"
+          . /home/ubuntu/.nvm/nvm.sh
+          . /home/ubuntu/.nvm/bash_completion
 
-        # Install Node.js using Node Version Manager
-        echo "Install Node..."
-        nvm install ${{ inputs.nodeVersion }}     
-             
-        export SERVER_IP="\$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)"
-        if [ "${{ inputs.usePublicIpForReplication }}" == "true" ];
-        then
-          export SERVER_IP="\$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)"
-        fi
-        
-        export HTTP_VARS="--HTTP_PORT 9926 --OPERATIONSAPI_NETWORK_PORT 9925"
-        if [ "${{ inputs.httpsOn }}" == "true" ];
-        then
-        echo "Using secure ports"
-        export HTTP_VARS="--HTTP_SECUREPORT 9926 --OPERATIONSAPI_NETWORK_SECUREPORT 9925"
-        fi
-        
-        export CLI_ARGS="--TC_AGREEMENT yes --ROOTPATH /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --LOGGING_LEVEL trace --THREADS_COUNT 3 --REPLICATION_HOSTNAME "node-$CURRENT_NODE" --REPLICATION_URL wss://\$SERVER_IP:9925 --CLUSTERING_ENABLED false --CLUSTERING true --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PORT 12345 --CLUSTERING_LOGLEVEL info --CLUSTERING_REPUBLISHMESSAGES true --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) \$HTTP_VARS"
-        
-        if [ "${{ inputs.installType }}" == "sourceCode" ];
-        then
-          echo "hdb_install_type parameter set to ${{inputs.installType }}. Installing HarperDB from source code..."
-    
-          echo "npm install..."
-          cd /home/ubuntu/harperdb
-          npm --loglevel=error install --legacy-peer-deps
+          # Install Node.js using Node Version Manager
+          echo "Install Node..."
+          nvm install ${{ inputs.nodeVersion }}     
+               
+          export SERVER_IP="\$(curl -s http://169.254.169.254/latest/meta-data/local-ipv4)"
+          if [ "${{ inputs.usePublicIpForReplication }}" == "true" ];
+          then
+            export SERVER_IP="\$(curl -s http://169.254.169.254/latest/meta-data/public-ipv4)"
+          fi
 
-          # Pull in application-template repo
-          echo "git submodule update..."
-          git submodule update --init --recursive
+          export HTTP_VARS="--HTTP_PORT 9926 --OPERATIONSAPI_NETWORK_PORT 9925"
+          if [ "${{ inputs.httpsOn }}" == "true" ];
+          then
+          echo "Using secure ports"
+          export HTTP_VARS="--HTTP_SECUREPORT 9926 --OPERATIONSAPI_NETWORK_SECUREPORT 9925"
+          fi
 
-          echo "HarperDB install..."
-          cd /home/ubuntu/harperdb/bin
-          node harperdb.js start \$CLI_ARGS
-          
-          echo "Register HarperDB..."
-          cd /home/ubuntu/harperdb/utility/devops
-          node register.js --reset_license --ram_allocation=16384
-          cd /home/ubuntu/harperdb/bin/
-          sleep 2
-          node harperdb.js stop
-          sleep 2
-          node harperdb.js start
-        elif [ "${{ inputs.installType }}" == "buildPackage" ];
-        then
-          echo "hdb_install_type paramater set to ${{ inputs.installType }}. Installing HarperDB from build package..."
-          echo "npm install..."
-          npm --loglevel=error install -g harperdb-${{ inputs.harperdbVersion }}.tgz --legacy-peer-deps
+          export CLI_ARGS="--TC_AGREEMENT yes --ROOTPATH /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --LOGGING_LEVEL trace --THREADS_COUNT 3 --REPLICATION_HOSTNAME "node-$CURRENT_NODE" --REPLICATION_URL wss://\$SERVER_IP:9925 --CLUSTERING_ENABLED false --CLUSTERING true --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PORT 12345 --CLUSTERING_LOGLEVEL info --CLUSTERING_REPUBLISHMESSAGES true --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) \$HTTP_VARS"
 
-          echo "HarperDB install..."
-          harperdb start \$CLI_ARGS
-          sleep 2
-          harperdb stop
-          sleep 2
-          harperdb start
-        elif [ "${{ inputs.installType }}" == 'none' ];
-        then
-            echo "hdb_install_type paramater set to ${{ inputs.installType }}. Skipping HarperDB install."
-        else
-          echo "hdb_install_type paramater set to an invalid value of: ${{ inputs.installType }}."
-        fi
-        HERE
-            echo "Ending work on: $public_dns_name"
-            CURRENT_NODE=$((CURRENT_NODE + 1))
-        done
-      shell: bash
+          if [ "${{ inputs.installType }}" == "sourceCode" ];
+          then
+            echo "hdb_install_type parameter set to ${{inputs.installType }}. Installing HarperDB from source code..."
+
+            echo "npm install..."
+            cd /home/ubuntu/harperdb
+            npm --loglevel=error install --legacy-peer-deps
+
+            # Pull in application-template repo
+            echo "git submodule update..."
+            git submodule update --init --recursive
+
+            echo "HarperDB install..."
+            cd /home/ubuntu/harperdb/bin
+            node harperdb.js start \$CLI_ARGS
+            
+            echo "Register HarperDB..."
+            cd /home/ubuntu/harperdb/utility/devops
+            node register.js --reset_license --ram_allocation=16384
+            cd /home/ubuntu/harperdb/bin/
+            sleep 2
+            node harperdb.js stop
+            sleep 2
+            node harperdb.js start
+          elif [ "${{ inputs.installType }}" == "buildPackage" ];
+          then
+            echo "hdb_install_type paramater set to ${{ inputs.installType }}. Installing HarperDB from build package..."
+            echo "npm install..."
+            npm --loglevel=error install -g harperdb-${{ inputs.harperdbVersion }}.tgz --legacy-peer-deps
+
+            echo "HarperDB install..."
+            harperdb start \$CLI_ARGS
+            sleep 2
+            harperdb stop
+            sleep 2
+            harperdb start
+          elif [ "${{ inputs.installType }}" == 'none' ];
+          then
+              echo "hdb_install_type paramater set to ${{ inputs.installType }}. Skipping HarperDB install."
+          else
+            echo "hdb_install_type paramater set to an invalid value of: ${{ inputs.installType }}."
+          fi
+          HERE
+              echo "Ending work on: $public_dns_name"
+              CURRENT_NODE=$((CURRENT_NODE + 1))
+          done
+        shell: bash

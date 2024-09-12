@@ -634,7 +634,7 @@ class SQLSearch {
 						search_object.search_attribute = attribute.attribute;
 						await Promise.all(
 							Array.from(this.exact_search_values[object_path].values).map(async (value) => {
-								let exact_search_object = Object.assign({}, search_object);
+								let exact_search_object = { ...search_object };
 								exact_search_object.search_value = value;
 								const attribute_values = await harperBridge.getDataByValue(exact_search_object);
 
@@ -667,61 +667,18 @@ class SQLSearch {
 						throw new Error(SEARCH_ERROR_MSG);
 					}
 				}
-			} else {
-				if (
-					!common_utils.isEmpty(this.comparator_search_values[object_path]) &&
-					!this.comparator_search_values[object_path].ignore &&
-					!common_utils.isEmptyOrZeroLength(this.comparator_search_values[object_path].comparators)
-				) {
-					try {
-						const search_value_comparators = this.comparator_search_values[object_path].comparators;
-						for (let i = 0, len = search_value_comparators.length; i < len; i++) {
-							const comp = search_value_comparators[i];
-							search_object.search_attribute = comp.attribute;
-							search_object.search_value = comp.search_value;
-							const matching_data = await harperBridge.getDataByValue(search_object, comp.operation);
-
-							if (is_hash) {
-								for (const [hash_val] of matching_data) {
-									if (!this.data[schema_table].__merged_data[hash_val]) {
-										this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
-										this._setMergedHashAttribute(schema_table, hash_val);
-									}
-								}
-							} else {
-								for (const [hash_val, record] of matching_data) {
-									if (!this.data[schema_table].__merged_data[hash_val]) {
-										this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
-										this._updateMergedAttribute(
-											schema_table,
-											hash_val,
-											attribute.attribute,
-											record[attribute.attribute]
-										);
-										this._setMergedHashAttribute(schema_table, hash_val);
-									} else {
-										this._updateMergedAttribute(
-											schema_table,
-											hash_val,
-											attribute.attribute,
-											record[attribute.attribute]
-										);
-									}
-								}
-							}
-						}
-					} catch (err) {
-						log.error(
-							'Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues comparator search values.'
-						);
-						log.error(err);
-						throw new Error(SEARCH_ERROR_MSG);
-					}
-				} else {
-					try {
-						search_object.search_attribute = attribute.attribute;
-						search_object.search_value = '*';
-						const matching_data = await harperBridge.getDataByValue(search_object);
+			} else if (
+				!common_utils.isEmpty(this.comparator_search_values[object_path]) &&
+				!this.comparator_search_values[object_path].ignore &&
+				!common_utils.isEmptyOrZeroLength(this.comparator_search_values[object_path].comparators)
+			) {
+				try {
+					const search_value_comparators = this.comparator_search_values[object_path].comparators;
+					for (let i = 0, len = search_value_comparators.length; i < len; i++) {
+						const comp = search_value_comparators[i];
+						search_object.search_attribute = comp.attribute;
+						search_object.search_value = comp.search_value;
+						const matching_data = await harperBridge.getDataByValue(search_object, comp.operation);
 
 						if (is_hash) {
 							for (const [hash_val] of matching_data) {
@@ -741,13 +698,44 @@ class SQLSearch {
 								}
 							}
 						}
-					} catch (err) {
-						log.error(
-							'Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues no comparator search values.'
-						);
-						log.error(err);
-						throw new Error(SEARCH_ERROR_MSG);
 					}
+				} catch (err) {
+					log.error(
+						'Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues comparator search values.'
+					);
+					log.error(err);
+					throw new Error(SEARCH_ERROR_MSG);
+				}
+			} else {
+				try {
+					search_object.search_attribute = attribute.attribute;
+					search_object.search_value = '*';
+					const matching_data = await harperBridge.getDataByValue(search_object);
+
+					if (is_hash) {
+						for (const [hash_val] of matching_data) {
+							if (!this.data[schema_table].__merged_data[hash_val]) {
+								this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
+								this._setMergedHashAttribute(schema_table, hash_val);
+							}
+						}
+					} else {
+						for (const [hash_val, record] of matching_data) {
+							if (!this.data[schema_table].__merged_data[hash_val]) {
+								this.data[schema_table].__merged_data[hash_val] = [...fetch_attr_row_templates[schema_table]];
+								this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, record[attribute.attribute]);
+								this._setMergedHashAttribute(schema_table, hash_val);
+							} else {
+								this._updateMergedAttribute(schema_table, hash_val, attribute.attribute, record[attribute.attribute]);
+							}
+						}
+					}
+				} catch (err) {
+					log.error(
+						'Error thrown from getDataByValue function in SQLSearch class method getFetchAttributeValues no comparator search values.'
+					);
+					log.error(err);
+					throw new Error(SEARCH_ERROR_MSG);
 				}
 			}
 		}
@@ -954,14 +942,12 @@ class SQLSearch {
 			this.statement.order.forEach((ob) => {
 				if (ob.is_func) {
 					select.push(ob.initial_select_column.toString());
+				} else if (ob.initial_select_column.tableid) {
+					select.push(
+						`${ob.initial_select_column.tableid}.${ob.initial_select_column.columnid} AS ${ob.expression.columnid}`
+					);
 				} else {
-					if (ob.initial_select_column.tableid) {
-						select.push(
-							`${ob.initial_select_column.tableid}.${ob.initial_select_column.columnid} AS ${ob.expression.columnid}`
-						);
-					} else {
-						select.push(`${ob.initial_select_column.columnid} AS ${ob.expression.columnid}`);
-					}
+					select.push(`${ob.initial_select_column.columnid} AS ${ob.expression.columnid}`);
 				}
 			});
 		}
@@ -1347,7 +1333,7 @@ class SQLSearch {
 				for (const [hash_val, record] of matching_data) {
 					if (!this.data[schema_table].__merged_data[hash_val]) {
 						if (record[attribute.attribute] === undefined) record[attribute.attribute] = null;
-						this.data[schema_table].__merged_data[hash_val] = Object.assign({}, fetch_attributes_objs[schema_table]);
+						this.data[schema_table].__merged_data[hash_val] = { ...fetch_attributes_objs[schema_table] };
 					}
 					this.data[schema_table].__merged_data[hash_val][alias_map[attribute.attribute]] =
 						record[attribute.attribute] ?? null;

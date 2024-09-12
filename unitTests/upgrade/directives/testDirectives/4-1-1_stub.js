@@ -1,23 +1,23 @@
-"use strict";
+'use strict';
 const upgrade_directive = require('../../../../upgrade/UpgradeDirective');
 
 let this_ver = '4.1.1';
 let directive = new upgrade_directive(this_ver);
 
 function updateSettingsFunc() {
-    const msg = `processing settings func for ${this_ver} upgrade`;
-    console.log(msg);
-    return msg;
+	const msg = `processing settings func for ${this_ver} upgrade`;
+	console.log(msg);
+	return msg;
 }
 directive.sync_functions.push(updateSettingsFunc);
 
 async function doSomething() {
-    const msg = `processing other func for ${this_ver} upgrade`;
-    await new Promise((resolve) => {
-        console.log(msg)
-        resolve();
-    });
-    return msg;
+	const msg = `processing other func for ${this_ver} upgrade`;
+	await new Promise((resolve) => {
+		console.log(msg);
+		resolve();
+	});
+	return msg;
 }
 directive.async_functions.push(doSomething);
 

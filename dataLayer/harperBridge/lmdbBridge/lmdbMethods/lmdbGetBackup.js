@@ -63,7 +63,7 @@ async function getBackup(get_backup_obj) {
 			}
 		}
 		if (get_backup_obj.include_audit) {
-			await copyDatabase(AUDIT_STORE_NAME, Object.assign({}, AUDIT_STORE_OPTIONS));
+			await copyDatabase(AUDIT_STORE_NAME, { ...AUDIT_STORE_OPTIONS });
 		}
 		await resolution;
 		let stream = createReadStream(backup_root.path);

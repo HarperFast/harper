@@ -553,8 +553,8 @@ const PRESERVED_PROPERTIES = ['databases'];
  */
 function flattenConfig(obj) {
 	if (obj.http) Object.assign(obj.http, obj?.customFunctions?.network);
-	if (obj?.operationsApi?.network) obj.operationsApi.network = Object.assign({}, obj.http, obj.operationsApi.network);
-	if (obj?.operationsApi) obj.operationsApi.tls = Object.assign({}, obj.tls, obj.operationsApi.tls);
+	if (obj?.operationsApi?.network) obj.operationsApi.network = { ...obj.http, ...obj.operationsApi.network };
+	if (obj?.operationsApi) obj.operationsApi.tls = { ...obj.tls, ...obj.operationsApi.tls };
 
 	config_obj = obj;
 	const flat_obj = squashObj(obj);
