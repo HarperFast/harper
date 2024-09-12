@@ -26,6 +26,10 @@ export class Resources extends Map<string, typeof Resource> {
 				existing_entry.Resource.tableName !== resource.tableName) &&
 			!force
 		) {
+			// there was a conflict in endpoint paths. We don't want this to be ignored, so we log it
+			// and create an error resource to make sure it is reported in any attempt to access this path.
+			// it was be a 500 error; clearly a server error (not client error), unfortunate that the 5xx errors
+			// don't provide anything more descriptive.
 			const error = new ServerError(`Conflicting paths for ${path}`);
 			logger.error(error);
 			entry.Resource = new ErrorResource(error);
