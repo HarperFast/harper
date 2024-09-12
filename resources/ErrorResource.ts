@@ -3,6 +3,7 @@ import { Context } from './ResourceInterface';
 
 export class ErrorResource implements Resource {
 	constructor(public error) {}
+	isError = true;
 	allowRead(): never {
 		throw this.error;
 	}
