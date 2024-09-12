@@ -1,6 +1,8 @@
 import { Resource } from './Resource';
 import { transaction } from './transaction';
-
+import { ErrorResource } from './ErrorResource';
+import logger from '../utility/logging/harper_logger';
+import { ServerError } from '../utility/errors/hdbError';
 /**
  * This is the global set of all resources that have been registered on this server.
  */
@@ -24,7 +26,9 @@ export class Resources extends Map<string, typeof Resource> {
 				existing_entry.Resource.tableName !== resource.tableName) &&
 			!force
 		) {
-			throw new Error(`Conflicting paths for ${path}`);
+			const error = new ServerError(`Conflicting paths for ${path}`);
+			logger.error(error);
+			entry.Resource = new ErrorResource(error);
 		}
 		super.set(path, entry);
 		// now mark any entries that have sub paths so we can efficiently route forward
