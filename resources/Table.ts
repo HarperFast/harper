@@ -104,7 +104,7 @@ export interface Table {
 	subscriptions: Map<any, Function[]>;
 	expirationMS: number;
 	indexingOperations?: Promise<void>;
-	sources: { new (): ResourceInterface }[];
+	sources: (new () => ResourceInterface)[];
 	Transaction: ReturnType<typeof makeTable>;
 }
 // we default to the max age of the streams because this is the limit on the number of old transactions
@@ -720,7 +720,7 @@ export function makeTable(options) {
 						return id_allocation;
 					} else {
 						logger.debug?.('Looks like ids were already allocated');
-						return Object.assign({ alreadyUpdated: true }, updated_id_allocation.value);
+						return { alreadyUpdated: true, ...updated_id_allocation.value };
 					}
 				});
 			}
@@ -997,7 +997,7 @@ export function makeTable(options) {
 			let own_data;
 			if (typeof updates === 'object' && updates) {
 				if (full_update) {
-					if (Object.isFrozen(updates)) updates = Object.assign({}, updates);
+					if (Object.isFrozen(updates)) updates = { ...updates };
 					this[RECORD_PROPERTY] = {}; // clear out the existing record
 					this[OWN_DATA] = updates;
 				} else {
@@ -3501,33 +3501,50 @@ export function coerceType(value: any, attribute: any): any {
 	} else if (value === '' && type && type !== 'String' && type !== 'Any') {
 		return null;
 	}
-	switch (type) {
-		case 'Int':
-		case 'Long':
-			// allow $ prefix as special syntax for more compact numeric representations and then use parseInt to force being an integer (might consider Math.floor, which is a little faster, but rounds in a different way with negative numbers).
-			return value[0] === '$' ? parseInt(value.slice(1), 36) : value === 'null' ? null : parseInt(value);
-		case 'Float':
-			return value === 'null' ? null : parseFloat(value);
-		case 'BigInt':
-			return value === 'null' ? null : BigInt(value);
-		case 'Boolean':
-			return value === 'true' ? true : value === 'false' ? false : value;
-		case 'Date':
-			if (isNaN(value)) {
-				if (value === 'null') return null;
-				//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
-				if (!ENDS_WITH_TIMEZONE.test(value)) {
-					value += 'Z';
+	try {
+		switch (type) {
+			case 'Int':
+			case 'Long':
+				// allow $ prefix as special syntax for more compact numeric representations and then use parseInt to force being an integer (might consider Math.floor, which is a little faster, but rounds in a different way with negative numbers).
+				return value[0] === '$'
+					? rejectNaN(parseInt(value.slice(1), 36))
+					: value === 'null'
+					? null
+					: rejectNaN(parseInt(value));
+			case 'Float':
+				return value === 'null' ? null : rejectNaN(parseFloat(value));
+			case 'BigInt':
+				return value === 'null' ? null : BigInt(value);
+			case 'Boolean':
+				return value === 'true' ? true : value === 'false' ? false : value;
+			case 'Date':
+				if (isNaN(value)) {
+					if (value === 'null') return null;
+					//if the value is not an integer (to handle epoch values) and does not end in a timezone we suffiz with 'Z' tom make sure the Date is GMT timezone
+					if (!ENDS_WITH_TIMEZONE.test(value)) {
+						value += 'Z';
+					}
+					const date = new Date(value);
+					rejectNaN(date.getTime());
+					return date;
 				}
-				return new Date(value);
-			}
-			return new Date(+value); // epoch ms number
-		case undefined:
-		case 'Any':
-			return autoCast(value);
-		default:
-			return value;
+				return new Date(+value); // epoch ms number
+			case undefined:
+			case 'Any':
+				return autoCast(value);
+			default:
+				return value;
+		}
+	} catch (error) {
+		error.message = `Invalid value for attribute ${attribute.name}: "${value}", expecting ${type}`;
+		error.statusCode = 400;
+		throw error;
 	}
+}
+// This is a simple function to throw on NaNs that can come out of parseInt, parseFloat, etc.
+function rejectNaN(value: number) {
+	if (isNaN(value)) throw new SyntaxError(); // will set the message in the catch block with more context
+	return value;
 }
 function isDescendantId(ancestor_id, descendant_id): boolean {
 	if (ancestor_id == null) return true; // ancestor of all ids
