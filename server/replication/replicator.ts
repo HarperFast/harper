@@ -265,32 +265,41 @@ export function setReplicator(db_name, table, options) {
 			 * elsewhere on the cluster, and will retrieve from the appropriate node
 			 * @param query
 			 */
-			static async load(entry) {
+			static async load(entry: any) {
 				if (entry) {
 					const residency_id = entry.residencyId;
 					const residency = entry.residency || table.dbisDB.get([Symbol.for('residency_by_id'), residency_id]);
 					if (residency) {
-						let first_error;
-						for (const node_name of residency) {
-							try {
-								const node = getHDBNodeTable().primaryStore.get(node_name);
-								if (node) {
-									const connection = getConnection(node.url, Replicator.subscription, db_name);
-									const request = {
-										requestId: next_id++,
-										table,
-										entry,
-										id: entry.key,
-									};
-									return await connection.getRecord(request);
+						let first_error: Error;
+						const attempted_connections = new Set();
+						do {
+							let best_connection: NodeReplicationConnection;
+							for (const node_name of residency) {
+								const connection = getConnectionByName(node_name, Replicator.subscription, db_name);
+								// find a connection, needs to be connected and we haven't tried it yet
+								if (connection?.isConnected && !attempted_connections.has(connection)) {
+									// choose this as the best connection if latency is lower (or hasn't been tested yet)
+									if (!best_connection || connection.latency < best_connection.latency) {
+										best_connection = connection;
+									}
 								}
+							}
+							if (!best_connection) throw first_error || new Error('No connection to any other nodes are available');
+							const request = {
+								requestId: next_id++,
+								table,
+								entry,
+								id: entry.key,
+							};
+							attempted_connections.add(best_connection);
+							try {
+								return await best_connection.getRecord(request);
 							} catch (error) {
 								// if we got an error, record it and try the next node
 								logger.warn('Error in load from node', node_name, error);
 								if (!first_error) first_error = error;
 							}
-						}
-						if (first_error) throw first_error;
+						} while (true);
 					}
 				}
 			}
@@ -320,6 +329,21 @@ function getConnection(url, subscription, db_name) {
 		connection.once('finished', () => db_connections.delete(db_name));
 		return connection;
 	}
+}
+const node_name_to_db_connections = new Map();
+/** Get connection by node name, using caching
+ *
+ * */
+function getConnectionByName(node_name, subscription, db_name) {
+	let connection = node_name_to_db_connections.get(node_name)?.get(db_name);
+	if (connection) return connection;
+	const node = getHDBNodeTable().primaryStore.get(node_name);
+	if (node) {
+		connection = getConnection(node.url, subscription, db_name);
+		// cache the connection
+		node_name_to_db_connections.set(node_name, connections.get(node.url));
+	}
+	return connection;
 }
 
 export async function sendOperationToNode(node, operation, options) {

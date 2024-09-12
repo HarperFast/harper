@@ -130,6 +130,7 @@ export class NodeReplicationConnection extends EventEmitter {
 	isConnected = true; // we start out assuming we will be connected
 	isFinished = false;
 	nodeSubscriptions = [];
+	latency = 0;
 	replicateTablesByDefault: boolean;
 	session: any; // this is a promise that resolves to the session object, which is the object that handles the replication
 	sessionResolve: Function;
@@ -1141,14 +1142,16 @@ export function replicateOverWS(ws, options, authorization) {
 	});
 	ws.on('ping', resetPingTimer);
 	ws.on('pong', () => {
-		if (options.connection)
+		if (options.connection) {
 			// every pong we can use to update our connection information (and latency)
+			options.connection.latency = performance.now() - last_ping_time;
 			connectedToNode({
 				name: remote_node_name,
 				database: database_name,
 				url: options.url,
-				latency: performance.now() - last_ping_time,
+				latency: options.connection.latency,
 			});
+		}
 		last_ping_time = null;
 	});
 	ws.on('close', (code, reason_buffer) => {
