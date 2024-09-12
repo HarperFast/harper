@@ -2132,6 +2132,7 @@ export function makeTable(options) {
 						for (const { key, value: audit_entry } of audit_store.getRange({
 							start: start_time,
 							exclusiveStart: true,
+							snapshot: false, // no need for a snapshot, audits don't change
 						})) {
 							const audit_record = readAuditEntry(audit_entry);
 							if (audit_record.tableId !== table_id) continue;
@@ -2182,6 +2183,7 @@ export function makeTable(options) {
 							start: this_id ?? false,
 							end: this_id == null ? undefined : [this_id, MAXIMUM_KEY],
 							versions: true,
+							snapshot: false, // no need for a snapshot, just want the latest data
 						})) {
 							if (!value) continue;
 							subscription.send({ id, timestamp: localTime, value, version, type: 'put' });
