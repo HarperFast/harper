@@ -70,6 +70,7 @@ jobs:
       npm_extra_tags: ${{ steps.get-values.outputs.npm_extra_tags }}
       dockerhub_tag_latest: ${{ steps.get-values.outputs.dockerhub_tag_latest }}
       dryrun: ${{ steps.get-values.outputs.dryrun }}
+      push: ${[ steps.get-values.outputs.push }}
     steps:
       - uses: actions/checkout@v4
       - name: 'Get values'
@@ -83,14 +84,17 @@ jobs:
           
           # set default
           dryrun='true'
+          push='false'
           
           # make sure we know what the value of dryrun is 
           if [[ "${inputs_dryrun}" == "false" ]]; then
             dryrun='false'
+            push='true'
           
           # this workflow needs a tag to function properly, in the case of being on a pushed tag, lets just check the tag
           elif [[ "${tag}" =~ ^refs/tags/release_.*$ ]]; then
             dryrun="${inputs_dryrun:-false}"
+            [[ "${dryrun}" == 'false' ]] && push='true'
           
           else
             cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
@@ -98,13 +102,15 @@ jobs:
           > Exiting as I have no idea what dryrun is supposed to be: 
           > tag    == ${tag}
           > dryrun == "${dryrun}"
+          > push   == "${push}"
           
           EOF
-           Exiting as I have no idea what dryrun is supposed to be: tag=${tag}
+           Exiting as I have no idea what dryrun/push is supposed to be: tag=${tag}
             exit 1
           fi
           
           echo "dryrun=${dryrun}" >> "${GITHUB_OUTPUT}"
+          echo "push=${push}" >> "${GITHUB_OUTPUT}"
           
           harperdbVersion=$(jq -r '.version' package.json)
           echo "harperdbVersion=${harperdbVersion}" >> "${GITHUB_OUTPUT}"
@@ -299,7 +305,7 @@ jobs:
       container: 'harperdb/private'
       latest: ${{ needs.meta.outputs.dockerhub_tag_latest == 'true' && true || false }}
       platforms: 'linux/amd64,linux/arm64'
-      push: ${{ needs.meta.outputs.dryrun == false && true || false }}
+      push: ${{ needs.meta.outputs.push }}
     secrets:
       DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
@@ -484,7 +490,7 @@ jobs:
           context: .
           file: 'utility/Docker/Dockerfile'
           platforms: 'linux/amd64,linux/arm64'
-          push: ${{ needs.meta.outputs.dryrun == 'false' && 'true' || 'false' }}
+          push: ${{ needs.meta.outputs.push }}
           tags: ${{ steps.meta-standard.outputs.tags }}
           build-args: |
             HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}
@@ -503,7 +509,7 @@ jobs:
           context: .
           file: 'utility/Docker/Dockerfile-openshift'
           platforms: 'linux/amd64,linux/arm64'
-          push: ${{ needs.meta.outputs.dryrun == 'false' && 'true' || 'false' }}
+          push: ${{ needs.meta.outputs.push }}
           tags: ${{ steps.meta-openshift.outputs.tags }}
           build-args: |
             HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}
