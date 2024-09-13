@@ -298,7 +298,9 @@ export function setReplicator(db_name, table, options) {
 							try {
 								return await best_connection.getRecord(request);
 							} catch (error) {
-								// if we got an error, record it and try the next node (continuing through the loop)
+								// if we are still connected, must be a non-network error
+								if (best_connection.isConnected) throw error;
+								// if we got a network error, record it and try the next node (continuing through the loop)
 								logger.warn('Error in load from node', node_name, error);
 								if (!first_error) first_error = error;
 							}
