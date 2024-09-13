@@ -17,7 +17,6 @@ import { secureImport } from '../security/jsLoader';
 import { server } from '../server/Server';
 import { Resources } from '../resources/Resources';
 import { handleHDBError } from '../utility/errors/hdbError';
-import { Resource } from '../resources/Resource';
 import { table } from '../resources/databases';
 import { startSocketServer } from '../server/threads/socketRouter';
 import { getHdbBasePath } from '../utility/environment/environmentManager';
@@ -28,7 +27,7 @@ import * as replication from '../server/replication/replicator';
 import * as mqtt from '../server/mqtt';
 import { getConfigObj, resolvePath } from '../config/configUtils';
 import { createReuseportFd } from '../server/serverHelpers/Request';
-import { Context } from '../resources/ResourceInterface';
+import { ErrorResource } from '../resources/ErrorResource';
 
 const { readFile } = promises;
 
@@ -375,51 +374,5 @@ export async function loadComponent(
 		error.message = `Could not load application due to ${error.message}`;
 		error_reporter?.(error);
 		resources.set('', new ErrorResource(error));
-	}
-}
-class ErrorResource implements Resource {
-	constructor(public error) {}
-	allowRead(): never {
-		throw this.error;
-	}
-	allowUpdate(): never {
-		throw this.error;
-	}
-	allowCreate(): never {
-		throw this.error;
-	}
-	allowDelete(): never {
-		throw this.error;
-	}
-	getId(): never {
-		throw this.error;
-	}
-	getContext(): Context {
-		throw this.error;
-	}
-	get(): never {
-		throw this.error;
-	}
-	post(): never {
-		throw this.error;
-	}
-	put(): never {
-		throw this.error;
-	}
-	delete(): never {
-		throw this.error;
-	}
-	connect(): never {
-		throw this.error;
-	}
-	getResource() {
-		// all child paths resolve back to reporting this error
-		return this;
-	}
-	publish(): never {
-		throw this.error;
-	}
-	subscribe(): never {
-		throw this.error;
 	}
 }

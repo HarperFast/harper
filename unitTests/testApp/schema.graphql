@@ -53,3 +53,9 @@ type HasBigInt @table @export {
 	name: String @indexed
 	anotherBigint: BigInt
 }
+type Conflicted1 @table @export(name: "Conflicted") {
+	id: ID @primaryKey
+}
+type Conflicted2 @table @export(name: "Conflicted") {
+	id: ID @primaryKey
+}

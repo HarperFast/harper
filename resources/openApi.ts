@@ -49,7 +49,8 @@ export function generateJsonApi(resources) {
 	];
 
 	for (const [, resource] of resources) {
-		if (!resource.path) continue;
+		// skip invalid and error resources
+		if (!resource.path || resource.Resource.isError) continue;
 
 		const { path } = resource;
 		const stripped_path = path.split('/').slice(-1); // strip any namespace from path
@@ -83,18 +84,16 @@ export function generateJsonApi(resources) {
 						} else {
 							props[name] = { $ref: SCHEMA_COMP_REF + def.type };
 						}
-					} else {
-						if (type === 'array') {
-							if (elements.type === 'Any' || elements.type == 'ID') {
-								props[name] = { type: 'array', items: { format: elements.type } };
-							} else {
-								props[name] = { type: 'array', items: new Type(DATA_TYPES[elements.type], elements.type) };
-							}
-						} else if (type === 'Any' || type == 'ID') {
-							props[name] = { format: type };
+					} else if (type === 'array') {
+						if (elements.type === 'Any' || elements.type == 'ID') {
+							props[name] = { type: 'array', items: { format: elements.type } };
 						} else {
-							props[name] = new Type(DATA_TYPES[type], type);
+							props[name] = { type: 'array', items: new Type(DATA_TYPES[elements.type], elements.type) };
 						}
+					} else if (type === 'Any' || type == 'ID') {
+						props[name] = { format: type };
+					} else {
+						props[name] = new Type(DATA_TYPES[type], type);
 					}
 				}
 				query_params_array.push(new Parameter(name, 'query', props[name]));

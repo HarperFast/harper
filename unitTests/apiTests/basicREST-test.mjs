@@ -441,4 +441,14 @@ describe('test REST calls', () => {
 			assert.equal(data[0].anotherBigint, -Number(bigint64BitAsString));
 		});
 	});
+	it('conflicted endpoints return error', async () => {
+		const response = await axios.get('http://localhost:9926/Conflicted/35555', {
+			customResponse: true,
+			validateStatus: function (status) {
+				return true;
+			},
+		});
+		assert.equal(response.status, 500);
+		assert(response.data.includes('Conflicting paths'));
+	});
 });
