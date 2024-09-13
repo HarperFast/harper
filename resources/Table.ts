@@ -3506,13 +3506,13 @@ export function coerceType(value: any, attribute: any): any {
 			case 'Int':
 			case 'Long':
 				// allow $ prefix as special syntax for more compact numeric representations and then use parseInt to force being an integer (might consider Math.floor, which is a little faster, but rounds in a different way with negative numbers).
-				return value[0] === '$'
-					? rejectNaN(parseInt(value.slice(1), 36))
-					: value === 'null'
-					? null
-					: rejectNaN(parseInt(value));
+				if (value[0] === '$') return rejectNaN(parseInt(value.slice(1), 36));
+				if (value === 'null') return null;
+				// strict check to make sure it is really an integer
+				if (!/^-?[0-9]+$/.test(value)) throw new SyntaxError();
+				return rejectNaN(+value); // numeric conversion is stricter than parseInt
 			case 'Float':
-				return value === 'null' ? null : rejectNaN(parseFloat(value));
+				return value === 'null' ? null : rejectNaN(+value); // numeric conversion is stricter than parseFloat
 			case 'BigInt':
 				return value === 'null' ? null : BigInt(value);
 			case 'Boolean':
