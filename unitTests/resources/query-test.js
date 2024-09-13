@@ -14,6 +14,10 @@ function random(max) {
 // might want to enable an iteration with NATS being assigned as a source
 describe('Querying through Resource API', () => {
 	let QueryTable, RelatedTable, ManyToMany, many_to_many_attribute;
+	let long_str = 'testing' + Math.random();
+	for (let i = 0; i < 100; i++) {
+		long_str += 'testing';
+	}
 	before(async function () {
 		getMockLMDBPath();
 		setMainIsWorker(true); // TODO: Should be default until changed
@@ -115,7 +119,10 @@ describe('Querying through Resource API', () => {
 			});
 		}
 		for (let i = 0; i < 25; i++) {
-			ManyToMany.put({ id: i, name: 'many-to-many entry ' + i });
+			ManyToMany.put({
+				id: i,
+				name: i === 17 ? [long_str] : i === 18 ? long_str : 'many-to-many entry ' + i,
+			});
 		}
 		let last;
 		for (let i = 0; i < 100; i++) {
@@ -1508,6 +1515,36 @@ describe('Querying through Resource API', () => {
 			put_error = error;
 		}
 		assert(put_error.message.includes('key size is too large'));
+	});
+	it('Query with big value that should work', async function () {
+		let results = [];
+		for await (let record of ManyToMany.search({
+			conditions: [
+				{
+					attribute: 'name',
+					comparator: 'equals',
+					value: long_str,
+				},
+			],
+		})) {
+			results.push(record);
+		}
+		assert.equal(results.length, 2);
+	});
+	it('Query with big value and greater than or equal should work', async function () {
+		let results = [];
+		for await (let record of ManyToMany.search({
+			conditions: [
+				{
+					attribute: 'name',
+					comparator: 'ge',
+					value: long_str,
+				},
+			],
+		})) {
+			results.push(record);
+		}
+		assert.equal(results.length, 2);
 	});
 	it('Too many read transactions should fail, but work afterwards', async function () {
 		this.timeout(10000);
