@@ -638,7 +638,10 @@ export function table({
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
 		for (const attribute of attributes || []) {
-			if (attribute.relationship) continue;
+			if (attribute.relationship || attribute.computed) {
+				has_changes = true; // need to update the table so the computed properties are translated to property resolvers
+				continue;
+			}
 			let dbi_key = table_name + '/' + (attribute.name || '');
 			Object.defineProperty(attribute, 'key', { value: dbi_key, configurable: true });
 			let attribute_descriptor = attributes_dbi.get(dbi_key);
@@ -721,7 +724,6 @@ export function table({
 		if (txn_commit) txn_commit();
 	}
 	if (has_changes) {
-		root_store.auditStore;
 		Table.schemaVersion++;
 		Table.updatedAttributes();
 	}

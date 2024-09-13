@@ -346,7 +346,7 @@ function getConnectionByName(node_name, subscription, db_name) {
 	let connection = node_name_to_db_connections.get(node_name)?.get(db_name);
 	if (connection) return connection;
 	const node = getHDBNodeTable().primaryStore.get(node_name);
-	if (node) {
+	if (node?.url) {
 		connection = getConnection(node.url, subscription, db_name);
 		// cache the connection
 		node_name_to_db_connections.set(node_name, connections.get(node.url));

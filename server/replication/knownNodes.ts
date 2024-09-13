@@ -61,7 +61,9 @@ export function subscribeToNodeUpdates(listener) {
 				if (event.type === 'put' && node_name !== getThisNodeName()) {
 					// add any new nodes
 					if (event.value) server.nodes.push(event.value);
-					else console.error('Invalid node update event', event);
+					else {
+						console.error('Invalid node update event', event);
+					}
 				}
 				if (event.type === 'put' || event.type === 'delete') {
 					listener(event.value, event.id);
