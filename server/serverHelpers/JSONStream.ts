@@ -244,6 +244,8 @@ function jsStringify(value) {
 }
 const HAS_BIG_NUMBER = /[[,:]\s*-?\d{16,}/;
 export function parse(json) {
+	if (!(json?.length > 0)) return null; // empty string or null
+	if (typeof json !== 'string') json = json.toString(); // make sure we just do this once
 	// we use JSONbig if there is a big number in the JSON, otherwise we use the native JSON parser
 	// because JSONbig is much slower (about 4x slower)
 	if (HAS_BIG_NUMBER.test(json)) return JSONbigint.parse(json);

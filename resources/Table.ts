@@ -2839,10 +2839,7 @@ export function makeTable(options) {
 			if (residency) {
 				if (!residency.includes(server.hostname)) {
 					// this record is not on this node, so we shouldn't load it here
-					return source_load({ key: id, residency }).then(with_entry, (error) => {
-						// TODO: This doesn't have a mechanism for returning errors yet
-						logger.error?.('Unable to retrieve data', error);
-					});
+					return source_load({ key: id, residency }).then(with_entry);
 				}
 			}
 		}

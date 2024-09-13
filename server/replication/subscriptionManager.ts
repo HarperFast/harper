@@ -18,6 +18,8 @@ import { parentPort } from 'worker_threads';
 import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes, shouldReplicateToNode } from './knownNodes';
 import * as logger from '../../utility/logging/harper_logger';
 import { cloneDeep } from 'lodash';
+import env from '../../utility/environment/environmentManager';
+import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 
 const NODE_SUBSCRIBE_DELAY = 200; // delay before sending node subscribe to other nodes, so operations can complete first
 const connection_replication_map = new Map();
@@ -120,6 +122,9 @@ export async function startOnMainThread(options) {
 		if (!(node.replicates === true || node.replicates?.sends) && !node.subscriptions?.length && !db_replication_workers)
 			return; // we don't have any subscriptions and we haven't connected yet, so just return
 		logger.info(`Added node ${node.name} at ${node.url} for process ${getThisNodeName()}`);
+		if (node.replicates && node.subscriptions) {
+			node = { ...node, subscriptions: null }; // if we have replicates flag set and have subscriptions, remove the subscriptions, they are just there for NATS
+		}
 		if (node.name) {
 			// don't add to a map if we don't have a name (yet)
 			// replace any node with same url
@@ -387,7 +392,7 @@ export async function ensureNode(name: string, node) {
 	if (!existing) {
 		await table.put(node);
 	} else {
-		if (node.replicates) node.subscriptions = null; // if we are fully replicating, we don't need to have subscriptions
+		if (node.replicates && !env.get(CONFIG_PARAMS.CLUSTERING_ENABLED)) node.subscriptions = null; // if we are fully replicating without NATS, we don't need to have subscriptions
 		for (const key in node) {
 			if (existing[key] !== node[key] && key === 'subscriptions' && node[key] && existing[key]) {
 				// Update any existing subscriptions or append to subscriptions array

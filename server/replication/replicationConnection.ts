@@ -62,7 +62,7 @@ const SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY = 300;
 // We want it be fairly quick so we can let the sending node know that we have received and committed the update.
 // (but still allow for batching so we aren't sending out a message for every update under load)
 const COMMITTED_UPDATE_DELAY = 2;
-const PING_INTERVAL = 300000;
+const PING_INTERVAL = 30000;
 let secure_contexts: Map<string, tls.SecureContext>;
 /**
  * Handles reconnection, and requesting catch-up
@@ -250,7 +250,6 @@ export class NodeReplicationConnection extends EventEmitter {
  * This handles both incoming and outgoing WS allowing either one to issue a subscription and get replication and/or handle subscription requests
  */
 export function replicateOverWS(ws, options, authorization) {
-	//ws._socket.unref();
 	const p = options.port || options.securePort;
 	const connection_id =
 		(process.pid % 1000) +
@@ -288,6 +287,9 @@ export function replicateOverWS(ws, options, authorization) {
 	let last_sequence_id_received, last_sequence_id_committed;
 	const this_node_url = env.get('replication_url');
 	let send_ping_interval, receive_ping_timer, last_ping_time, skipped_message_sequence_update_timer;
+	const DELAY_CLOSE_TIME = 1000;
+	let delayed_close: NodeJS.Timeout;
+	let last_message_time = 0;
 	if (options.url) {
 		const send_ping = () => {
 			if (last_ping_time) ws.terminate(); // timeout
@@ -328,6 +330,7 @@ export function replicateOverWS(ws, options, authorization) {
 	ws.on('message', (body) => {
 		// A replication header should begin with either a transaction timestamp or messagepack message of
 		// of an array that begins with the command code
+		last_message_time = performance.now();
 		try {
 			const decoder = (body.dataView = new Decoder(body.buffer, body.byteOffset, body.byteLength));
 			if (body[0] > 127) {
@@ -1273,9 +1276,21 @@ export function replicateOverWS(ws, options, authorization) {
 		);
 
 		if (node_subscriptions) {
+			clearTimeout(delayed_close);
 			if (node_subscriptions.length > 0) ws.send(encode([SUBSCRIPTION_REQUEST, node_subscriptions]));
-			// no nodes means we are unsubscribing/disconnecting
-			else close(1008, 'No nodes to subscribe to');
+			else {
+				// no nodes means we are unsubscribing/disconnecting
+				// don't immediately close the connection, but wait a bit to see if we get any messages, since opening new connections is a bit expensive
+				const schedule_close = () => {
+					const scheduled = performance.now();
+					delayed_close = setTimeout(() => {
+						// if we have not received any messages in a while, we can close the connection
+						if (last_message_time <= scheduled) close(1008, 'No nodes to subscribe to');
+						else schedule_close();
+					}, DELAY_CLOSE_TIME);
+				};
+				schedule_close();
+			}
 		}
 	}
 

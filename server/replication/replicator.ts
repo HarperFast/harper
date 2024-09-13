@@ -30,6 +30,7 @@ import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes, shouldReplicate
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 import { exportIdMapping } from './nodeIdMapping';
 import * as tls from 'node:tls';
+import { ServerError } from '../../utility/errors/hdbError';
 import { isMainThread } from 'worker_threads';
 
 let replication_disabled;
@@ -210,7 +211,7 @@ function assignReplicationSource(options) {
  * @param table_name
  * @param db_name
  */
-export function setReplicator(db_name, table, options) {
+export function setReplicator(db_name: string, table: any, options: any) {
 	if (!table) {
 		return console.error(`Attempt to replicate non-existent table ${table.name} from database ${db_name}`);
 	}
@@ -287,7 +288,8 @@ export function setReplicator(db_name, table, options) {
 								}
 							}
 							// if there are no connections left, throw an error
-							if (!best_connection) throw first_error || new Error('No connection to any other nodes are available');
+							if (!best_connection)
+								throw first_error || new ServerError('No connection to any other nodes are available', 502);
 							const request = {
 								requestId: next_id++,
 								table,

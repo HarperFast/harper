@@ -27,7 +27,9 @@ _assignPackageExport('contentTypes', contentTypes);
 media_types.set('application/json', {
 	serializeStream: streamAsJSON,
 	serialize: JSONStringify,
-	deserialize: JSONParse,
+	deserialize(data) {
+		return JSONParse(data);
+	},
 	q: 0.8,
 });
 const cbor_encoder = new Encoder(PUBLIC_ENCODE_OPTIONS);
