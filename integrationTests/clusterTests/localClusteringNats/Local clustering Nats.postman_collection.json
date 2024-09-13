@@ -1,0 +1,1149 @@
+{
+	"info": {
+		"_postman_id": "12418807-09c3-475d-ae2e-2190c8115833",
+		"name": "Local clustering Nats",
+		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
+		"_exporter_id": "38120670",
+		"_collection_link": "https://harperdbio.postman.co/workspace/Engineering~6bba0aa1-cefc-4c15-b990-1833f7309538/collection/38120670-12418807-09c3-475d-ae2e-2190c8115833?action=share&source=collection_link&creator=38120670"
+	},
+	"item": [
+		{
+			"name": "Create table 'fish'",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('Check response message', () => {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response.message).to.contain(`table 'data.fish' successfully created`);",
+							"});"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"create_table\",\n    \"table\": \"fish\",\n    \"primary_key\": \"id\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://{{NODE1_HOST}}:{{NODE1_PORT}}",
+					"protocol": "http",
+					"host": [
+						"{{NODE1_HOST}}"
+					],
+					"port": "{{NODE1_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Add node 2 to 1",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('Check response message', () => {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response.message).to.contain('Successfully added');",
+							"});"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"add_node\",\n    \"node_name\": \"{{NODE2_NAME}}\",\n    \"subscriptions\": [\n        {\n            \"schema\": \"data\",\n            \"table\": \"fish\",\n            \"publish\": true,\n            \"subscribe\": true\n        }\n    ]\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://{{NODE1_HOST}}:{{NODE1_PORT}}",
+					"protocol": "http",
+					"host": [
+						"{{NODE1_HOST}}"
+					],
+					"port": "{{NODE1_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Insert node1 'fish'",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('Check response message', () => {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response.message).to.contain('inserted 4 of 4 records');",
+							"    pm.expect(response.inserted_hashes[0]).to.eql(1);",
+							"    pm.expect(response.inserted_hashes[1]).to.eql(2);",
+							"    pm.expect(response.inserted_hashes[2]).to.eql(3);",
+							"    pm.expect(response.inserted_hashes[3]).to.eql(4);",
+							"    pm.expect(response.inserted_hashes).to.eql([1,2,3,4]);",
+							"});"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"insert\",\n    \"table\": \"fish\",\n    \"records\": [\n        {\n            \"id\": 1,\n            \"name\": \"Mullet\"\n        },\n        {\n            \"id\": 2,\n            \"name\": \"Trout\"\n        },\n        {\n            \"id\": 3,\n            \"name\": \"Grouper\"\n        },\n        {\n            \"id\": 4,\n            \"name\": \"Mackerel\"\n        }\n    ]\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://{{NODE1_HOST}}:{{NODE1_PORT}}",
+					"protocol": "http",
+					"host": [
+						"{{NODE1_HOST}}"
+					],
+					"port": "{{NODE1_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Insert node2 'fish'",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('Check node message', () => {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response.message).to.contain('inserted 1 of 1 records');",
+							"    pm.expect(response.inserted_hashes).to.eql([200]);",
+							"});"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"insert\",\n    \"table\": \"fish\",\n    \"records\": [\n        {\n            \"id\": 200,\n            \"name\": \"Trout\"\n        }\n    ]\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://{{NODE2_HOST}}:{{NODE2_PORT}}",
+					"protocol": "http",
+					"host": [
+						"{{NODE2_HOST}}"
+					],
+					"port": "{{NODE2_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Select * 'fish' node1",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"const lodash = require('lodash');",
+							"",
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('Check response message', () => {",
+							"    const response = pm.response.json();",
+							"    ",
+							"    pm.expect(lodash.size(response)).to.equal(5);",
+							"    const expected = [1,2,3,4,200];",
+							"    let actual = [];",
+							"    lodash.each(response, (item) => {",
+							"        actual.push(item.id);",
+							"    })",
+							"    pm.expect(actual).to.eql(expected);",
+							"",
+							"    pm.expect(response.find(el => el.id === 1)).to.exist;",
+							"    pm.expect(response.find(el => el.id === 2)).to.exist;",
+							"    pm.expect(response.find(el => el.id === 3)).to.exist;",
+							"    pm.expect(response.find(el => el.id === 4)).to.exist;",
+							"    pm.expect(response.find(el => el.id === 200)).to.exist;",
+							"});"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"select * from data.fish\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://{{NODE1_HOST}}:{{NODE1_PORT}}",
+					"protocol": "http",
+					"host": [
+						"{{NODE1_HOST}}"
+					],
+					"port": "{{NODE1_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Select * 'fish' node2",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"const lodash = require('lodash');",
+							"",
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('Check response message', () => {",
+							"    const response = pm.response.json();",
+							"",
+							"    pm.expect(lodash.size(response)).to.equal(5);",
+							"    const expected = [1,2,3,4,200];",
+							"    let actual = [];",
+							"    lodash.each(response, (item) => {",
+							"        actual.push(item.id);",
+							"    })",
+							"    pm.expect(actual).to.eql(expected);",
+							"",
+							"    pm.expect(response.find(el => el.id === 1)).to.exist;",
+							"    pm.expect(response.find(el => el.id === 2)).to.exist;",
+							"    pm.expect(response.find(el => el.id === 3)).to.exist;",
+							"    pm.expect(response.find(el => el.id === 4)).to.exist;",
+							"    pm.expect(response.find(el => el.id === 200)).to.exist;",
+							"});"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"select * from data.fish\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://{{NODE2_HOST}}:{{NODE2_PORT}}",
+					"protocol": "http",
+					"host": [
+						"{{NODE2_HOST}}"
+					],
+					"port": "{{NODE2_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Update node2 fish records",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('Check node message', () => {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response.message).to.contain('updated 1 of 1 records');",
+							"    pm.expect(response.update_hashes).to.eql([1]);",
+							"});"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"update\",\n    \"table\": \"fish\",\n    \"records\": [\n        {\n            \"id\": 1,\n            \"name\": \"Salmon\",\n            \"type\": [4, 5, 6]\n        }\n    ]\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://{{NODE2_HOST}}:{{NODE2_PORT}}",
+					"protocol": "http",
+					"host": [
+						"{{NODE2_HOST}}"
+					],
+					"port": "{{NODE2_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Select * 'fish' node1",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('Check response message', () => {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response[0].id).to.eql(1);",
+							"    pm.expect(response[0].name).to.eql('Salmon');",
+							"    pm.expect(response[0].type).to.eql([4,5,6]);",
+							"});"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"select * from data.fish\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://{{NODE1_HOST}}:{{NODE1_PORT}}",
+					"protocol": "http",
+					"host": [
+						"{{NODE1_HOST}}"
+					],
+					"port": "{{NODE1_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Delete node2 fish record",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('Check node message', () => {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response.message).to.contain('2 of 2 records successfully deleted');",
+							"    pm.expect(response.deleted_hashes).to.eql([1,2]);",
+							"});"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"delete\",\n    \"table\": \"fish\",\n    \"ids\": [\n        1,\n        2\n    ]\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://{{NODE2_HOST}}:{{NODE2_PORT}}",
+					"protocol": "http",
+					"host": [
+						"{{NODE2_HOST}}"
+					],
+					"port": "{{NODE2_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Select * 'fish' node1 deleted",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('Check response message', () => {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response.find(el => el.id === 1)).to.not.exist;",
+							"    pm.expect(response.find(el => el.id === 2)).to.not.exist;",
+							"",
+							"    pm.expect(response.find(el => el.id === 3)).to.exist;",
+							"    pm.expect(response.find(el => el.id === 4)).to.exist;",
+							"    pm.expect(response.find(el => el.id === 200)).to.exist;",
+							"});"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"select * from data.fish\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://{{NODE1_HOST}}:{{NODE1_PORT}}",
+					"protocol": "http",
+					"host": [
+						"{{NODE1_HOST}}"
+					],
+					"port": "{{NODE1_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Delete table 'fish' node 1",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('Check response message', () => {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response.message).to.contain(`successfully deleted table 'data.fish'`);",
+							"});"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"drop_table\",\n    \"table\": \"fish\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://{{NODE1_HOST}}:{{NODE1_PORT}}",
+					"protocol": "http",
+					"host": [
+						"{{NODE1_HOST}}"
+					],
+					"port": "{{NODE1_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Select * 'fish' node2 table should not exist",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"//intended",
+							"",
+							"// pm.test('Check error message', () => {",
+							"//     const response = pm.response.json();",
+							"//     pm.expect(response.error).to.contain('does not exist');",
+							"// });"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"select * from data.fish\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://{{NODE2_HOST}}:{{NODE2_PORT}}",
+					"protocol": "http",
+					"host": [
+						"{{NODE2_HOST}}"
+					],
+					"port": "{{NODE2_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Delete table 'fish' node 2",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('Check response message', () => {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response.message).to.contain(`successfully deleted table 'data.fish'`);",
+							"});"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"drop_table\",\n    \"table\": \"fish\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://{{NODE2_HOST}}:{{NODE2_PORT}}",
+					"protocol": "http",
+					"host": [
+						"{{NODE2_HOST}}"
+					],
+					"port": "{{NODE2_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Select * 'fish' node2 table ok now",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 404', () => {",
+							"    pm.response.to.have.status(404);",
+							"});",
+							"",
+							"",
+							"pm.test('Check error message', () => {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response.error).to.contain('does not exist');",
+							"});",
+							""
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"sql\",\n    \"sql\": \"select * from data.fish\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://{{NODE2_HOST}}:{{NODE2_PORT}}",
+					"protocol": "http",
+					"host": [
+						"{{NODE2_HOST}}"
+					],
+					"port": "{{NODE2_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Restart node1",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('Check response message', () => {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response.message).to.contain('Restarting clustering');",
+							"});"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"clustering\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://{{NODE1_HOST}}:{{NODE1_PORT}}",
+					"protocol": "http",
+					"host": [
+						"{{NODE1_HOST}}"
+					],
+					"port": "{{NODE1_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Restart node2",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('Check response message', () => {",
+							"    const response = pm.response.json();",
+							"    pm.expect(response.message).to.contain('Restarting clustering');",
+							"});"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"clustering\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://{{NODE2_HOST}}:{{NODE2_PORT}}",
+					"protocol": "http",
+					"host": [
+						"{{NODE2_HOST}}"
+					],
+					"port": "{{NODE2_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
+			"name": "Remove node 2 from 1 (moved up - error reaching node)",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"pm.test('Check response message', () => {",
+							"    const response = pm.response.json();",
+							"    const node_name = pm.environment.get(\"NODE2_NAME\");",
+							"    pm.expect(response.message).to.contain(`Successfully removed '${node_name}'`);",
+							"});"
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"remove_node\",\n    \"node_name\": \"{{NODE2_NAME}}\"\n}",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "http://{{NODE1_HOST}}:{{NODE1_PORT}}",
+					"protocol": "http",
+					"host": [
+						"{{NODE1_HOST}}"
+					],
+					"port": "{{NODE1_PORT}}"
+				}
+			},
+			"response": []
+		}
+	]
+}
