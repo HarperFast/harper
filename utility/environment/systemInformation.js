@@ -152,6 +152,7 @@ async function getHDBProcessInfo() {
 async function getDiskInfo() {
 	let disk = {};
 	try {
+		if (!env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_SYSINFO_DISK)) return disk;
 		// eslint-disable-next-line no-unused-vars
 		let { rIO_sec, wIO_sec, tIO_sec, ms, ...disk_io } = await si.disksIO();
 		disk.io = disk_io;
@@ -182,6 +183,7 @@ async function getNetworkInfo() {
 		connections: [],
 	};
 	try {
+		if (!env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_SYSINFO_NETWORK)) return network;
 		network.default_interface = await si.networkInterfaceDefault();
 
 		network.latency = await si.inetChecksite('google.com');
