@@ -640,7 +640,7 @@ export function table({
 		for (const attribute of attributes || []) {
 			if (attribute.relationship || attribute.computed) {
 				has_changes = true; // need to update the table so the computed properties are translated to property resolvers
-				continue;
+				if (attribute.relationship) continue;
 			}
 			let dbi_key = table_name + '/' + (attribute.name || '');
 			Object.defineProperty(attribute, 'key', { value: dbi_key, configurable: true });
