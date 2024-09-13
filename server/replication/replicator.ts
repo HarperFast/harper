@@ -273,6 +273,8 @@ export function setReplicator(db_name, table, options) {
 						let first_error: Error;
 						const attempted_connections = new Set();
 						do {
+							// This loop is for trying multiple nodes if the first one fails. With each iteration, we add the node to the attempted_connections,
+							// so after fails we progressively try the next best node each time.
 							let best_connection: NodeReplicationConnection;
 							for (const node_name of residency) {
 								const connection = getConnectionByName(node_name, Replicator.subscription, db_name);
@@ -284,6 +286,7 @@ export function setReplicator(db_name, table, options) {
 									}
 								}
 							}
+							// if there are no connections left, throw an error
 							if (!best_connection) throw first_error || new Error('No connection to any other nodes are available');
 							const request = {
 								requestId: next_id++,
@@ -295,10 +298,11 @@ export function setReplicator(db_name, table, options) {
 							try {
 								return await best_connection.getRecord(request);
 							} catch (error) {
-								// if we got an error, record it and try the next node
+								// if we got an error, record it and try the next node (continuing through the loop)
 								logger.warn('Error in load from node', node_name, error);
 								if (!first_error) first_error = error;
 							}
+							// eslint-disable-next-line no-constant-condition
 						} while (true);
 					}
 				}
