@@ -603,7 +603,7 @@ export function replicateOverWS(ws, options, authorization) {
 						awaiting_response.delete(message[1]);
 						break;
 					}
-					case SUBSCRIPTION_REQUEST:
+					case SUBSCRIPTION_REQUEST: {
 						node_subscriptions = data;
 						// permission check to make sure that this node is allowed to subscribe to this database, that is that
 						// we have publish permission for this node/database
@@ -824,6 +824,7 @@ export function replicateOverWS(ws, options, authorization) {
 								);
 								// entry is encoded, send it after checks for new structure and residency
 							}
+
 							// when we can skip an audit record, we still need to occasionally send a sequence update:
 							function skipAuditRecord() {
 								if (!skipped_message_sequence_update_timer) {
@@ -838,6 +839,7 @@ export function replicateOverWS(ws, options, authorization) {
 									}, SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY).unref();
 								}
 							}
+
 							const typed_structs = encoder.typedStructs;
 							const structures = encoder.structures;
 							if (
@@ -890,7 +892,9 @@ export function replicateOverWS(ws, options, authorization) {
 							}
 						};
 						const sendQueuedData = () => {
-							ws.send(encoding_buffer.subarray(encoding_start, position));
+							if (position - encoding_start > 8)
+								// if we have more than just a txn time, send it
+								ws.send(encoding_buffer.subarray(encoding_start, position));
 						};
 
 						audit_subscription = new EventEmitter();
@@ -1046,6 +1050,7 @@ export function replicateOverWS(ws, options, authorization) {
 								close(1008, 'Error handling subscription to node');
 							});
 						break;
+					}
 				}
 				return;
 			}
