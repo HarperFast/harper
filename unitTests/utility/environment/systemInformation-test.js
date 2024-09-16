@@ -237,22 +237,9 @@ const EXPECTED_PROPERTIES = {
 	disk_read_write: ['rx', 'wx', 'tx', 'ms'],
 	disk_size: ['fs', 'type', 'size', 'used', 'use', 'mount', 'available'],
 	network: ['default_interface', 'latency', 'interfaces', 'stats', 'connections'],
-	network_latency: ['url', 'ok', 'status', 'ms'],
-	network_interfaces: [
-		'iface',
-		'ifaceName',
-		'ip4',
-		'ip4subnet',
-		'ip6',
-		'ip6subnet',
-		'mac',
-		'operstate',
-		'type',
-		'duplex',
-		'speed',
-		'carrierChanges',
-	],
-	network_stats: ['iface', 'operstate', 'rx_bytes', 'rx_dropped', 'rx_errors', 'tx_bytes', 'tx_dropped', 'tx_errors'],
+	network_latency: [], // these should NOT return anything unless enabled
+	network_interfaces: [],
+	network_stats: [],
 	harperdb_processes: ['core', 'clustering'],
 	harperdb_processes_core: [
 		'pid',
@@ -408,10 +395,6 @@ describe('test systemInformation module', () => {
 		});
 
 		assert(Array.isArray(results.stats));
-
-		Object.keys(results.stats[0]).forEach((key) => {
-			assert(EXPECTED_PROPERTIES.network_stats.indexOf(key) >= 0);
-		});
 
 		EXPECTED_PROPERTIES.network_stats.forEach((property) => {
 			assert(results.stats[0].hasOwnProperty(property));
