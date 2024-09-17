@@ -26,18 +26,35 @@ const connection_replication_map = new Map();
 export let disconnectedFromNode; // this is set by thread to handle when a node is disconnected (or notify main thread so it can handle)
 export let connectedToNode; // this is set by thread to handle when a node is connected (or notify main thread so it can handle)
 const node_map = new Map(); // this is a map of all nodes that are available to connect to
+const self_catchup_of_database = new Map<string, number>(); // this is a map of databases that need to catch up to themselves, and the time of the last audit entry (to start from)
 export async function startOnMainThread(options) {
 	// we do all of the main management of tracking connections and subscriptions on the main thread and delegate
 	// the actual work to the worker threads
-	const new_node_listeners = [];
-	let all_nodes: any[];
 	let next_worker_index = 0;
-
+	const databases = getDatabases();
+	// find all the databases last recorded audit entry so that we can inquire from the first node for self catch-up
+	// of any records that may have been missed
+	for (const db_name of Object.getOwnPropertyNames(databases)) {
+		const database = databases[db_name];
+		for (const table_name in database) {
+			const table = database[table_name];
+			const audit_store = table.auditStore;
+			if (audit_store) {
+				for (const timestamp of audit_store.getKeys({
+					limit: 1,
+					reverse: true,
+				})) {
+					self_catchup_of_database.set(db_name, timestamp);
+				}
+				break;
+			}
+		}
+	}
 	// we need to wait for the threads to start before we can start adding nodes
 	// but don't await this because this start function has to finish before the threads can start
 	whenThreadsStarted.then(async () => {
 		const nodes = [];
-		for await (const node of getDatabases().system.hdb_nodes.search([])) {
+		for await (const node of databases.system.hdb_nodes.search([])) {
 			nodes.push(node);
 		}
 		for (const route of iterateRoutes(options)) {
@@ -169,6 +186,20 @@ export async function startOnMainThread(options) {
 			const existing_entry = db_replication_workers.get(database_name);
 			let worker;
 			const nodes = [{ replicateByDefault: tables_replicate_by_default, ...node }];
+			// Self catchup is done in case we have replicated any records that weren't actually written to our storage
+			// before a crash.
+			if (self_catchup_of_database.has(database_name)) {
+				// if we have a self catchup, we need to add this node to the list of nodes that need to catch up
+				// and then we will remove it when it is done
+				nodes.push({
+					replicateByDefault: tables_replicate_by_default,
+					name: getThisNodeName(),
+					start_time: self_catchup_of_database.get(database_name),
+					end_time: Date.now(),
+					replicates: true,
+				});
+				self_catchup_of_database.delete(database_name);
+			}
 			const should_subscribe = shouldReplicateToNode(node, database_name);
 			const http_workers = workers.filter((worker) => worker.name === 'http');
 			if (existing_entry) {

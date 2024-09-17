@@ -727,7 +727,11 @@ export function replicateOverWS(ws, options, authorization) {
 								const value = audit_record.getValue(primary_store, true);
 								JSON.stringify(value);
 							}
-							const is_within_subscription_range = subscribed_node_ids[node_id] < local_time;
+							const time_range = subscribed_node_ids[node_id];
+							const is_within_subscription_range =
+								time_range &&
+								time_range.startTime < local_time &&
+								(!time_range.endTime || time_range.endTime > local_time);
 							if (!is_within_subscription_range) {
 								if (DEBUG_MODE)
 									logger.info?.(
@@ -913,10 +917,10 @@ export function replicateOverWS(ws, options, authorization) {
 								audit_store = table_subscription_to_replicator.auditStore;
 								table_by_id = table_subscription_to_replicator.tableById.map(tableToTableEntry);
 								subscribed_node_ids = [];
-								for (const { name, startTime } of node_subscriptions) {
+								for (const { name, startTime, endTime } of node_subscriptions) {
 									const local_id = getIdOfRemoteNode(name, audit_store);
 									logger.info?.('subscription to', name, 'using local id', local_id, 'starting', startTime);
-									subscribed_node_ids[local_id] = startTime;
+									subscribed_node_ids[local_id] = { startTime, endTime };
 								}
 
 								sendDBSchema(database_name);
@@ -1271,6 +1275,7 @@ export function replicateOverWS(ws, options, authorization) {
 				replicateByDefault: replicate_by_default,
 				tables: table_subs, // omitted or included based on flag above
 				startTime: start_time,
+				endTime: node.end_time,
 			};
 		});
 		logger.info?.(
