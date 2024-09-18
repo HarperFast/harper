@@ -212,7 +212,7 @@ function loadCertificates() {
 								let record_timestamp =
 									!cert_record || cert_record.is_self_signed
 										? 1
-										: cert_record.file_timestamp ?? cert_record.__updatedtime__;
+										: (cert_record.file_timestamp ?? cert_record.__updatedtime__);
 								if (cert_record && file_timestamp <= record_timestamp) {
 									if (file_timestamp < record_timestamp)
 										hdb_logger.info(
@@ -544,8 +544,8 @@ async function getCertAuthority() {
 		const matching_private_key = private_keys.get(cert.private_key_name);
 		if (cert.private_key_name && matching_private_key) {
 			const key_check = new X509Certificate(cert.certificate).checkPrivateKey(createPrivateKey(matching_private_key));
-			hdb_logger.trace(`CA named: ${cert.name} found with matching private key`);
 			if (key_check) {
+				hdb_logger.trace(`CA named: ${cert.name} found with matching private key`);
 				match = { ca: cert, private_key: matching_private_key };
 				break;
 			}
@@ -655,7 +655,7 @@ async function reviewSelfSignedCert() {
 			name: hdb_ca.subject.getField('CN').value,
 			uses: ['https', 'wss'],
 			certificate: pki.certificateToPem(hdb_ca),
-			private_key_name: path.basename(tls_private_key),
+			private_key_name: relative(join(env_manager.get(CONFIG_PARAMS.ROOTPATH), 'keys'), tls_private_key),
 			is_authority: true,
 			is_self_signed: true,
 		});
@@ -875,9 +875,9 @@ function createTLSSelector(type, mtls_options) {
 											// so we split on commas and then use the part after the colon as the host name
 											let colon_index = part.indexOf(':');
 											return part.slice(colon_index + 1);
-									  })
+										})
 									: // finally we fall back to the common name
-									  [extractCommonName(cert_parsed)]);
+										[extractCommonName(cert_parsed)]);
 							if (!Array.isArray(hostnames)) hostnames = [hostnames];
 							let has_ip_address;
 							for (let hostname of hostnames) {
