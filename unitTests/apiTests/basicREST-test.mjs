@@ -365,6 +365,30 @@ describe('test REST calls', () => {
 		assert(!response.headers['server-timing'].includes('miss'));
 		assert.equal(response.data.name, 'name3');
 	});
+	it('query from cache with errors', async () => {
+		// ensure that the error entry exists so we can query with it.
+		let response = await axios.post('http://localhost:9926/SimpleCache/error', {
+			invalidate: true,
+		});
+		response = await axios.post('http://localhost:9926/SimpleCache/error2', {
+			invalidate: true,
+		});
+		response = await axios.post('http://localhost:9926/SimpleCache/undefined', {
+			invalidate: true,
+		});
+		response = await axios('http://localhost:9926/SimpleCache/?select(id,name)');
+		assert.equal(response.status, 200);
+		assert(response.data.length > 10);
+		assert(response.data[response.data.length - 2].error.includes('Error'));
+		assert(response.data[response.data.length - 2].message.includes('Test error'));
+		assert(response.data[response.data.length - 2].id.includes('error'));
+		response = await axios('http://localhost:9926/SimpleCache/?id=gt=3');
+		assert.equal(response.status, 200);
+		assert(response.data.length < 10);
+		assert(response.data[response.data.length - 2].message.includes('Test error'));
+		assert(response.data[response.data.length - 2].id.includes('error'));
+		// TODO: Test computed properties
+	});
 	it('delete with body', async () => {
 		// we have to use native request module here, axios doesn't actually support
 		// sending a body with a DELETE request

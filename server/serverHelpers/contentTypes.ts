@@ -10,6 +10,7 @@ import { _assignPackageExport } from '../../globals';
 import env_mgr from '../../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 import * as YAML from 'yaml';
+import logger from '../../utility/logging/logger';
 const SERIALIZATION_BIGINT = env_mgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
 const JSONStringify = SERIALIZATION_BIGINT ? stringify : JSON.stringify;
 const JSONParse = SERIALIZATION_BIGINT ? parse : JSON.parse;
@@ -219,8 +220,28 @@ const registerFastifySerializers = fp(
 			if (content_type) return;
 			const { serializer, type } = findBestSerializer(request.raw);
 			reply.type(type);
-			reply.serializer(function (data) {
-				return (serializer.serializeStream || serializer.serialize)(data, {
+			reply.serializer(function (data: any) {
+				let serialize: (data: any, context: any) => any;
+				if (
+					typeof data === 'object' &&
+					data &&
+					(data[Symbol.iterator] || data[Symbol.asyncIterator]) &&
+					serializer.serializeStream
+				) {
+					if (data.mapError) {
+						// indicate that we want iterator errors to be returned so we can serialize them in a meaningful way, if possible
+						const getColumns = data.getColumns;
+						data = data.mapError((error) => {
+							// make errors serializable in a descriptive way
+							error.toJSON = () => ({ error: error.name, message: error.message, ...error.partialObject });
+							return error;
+						});
+						data.getColumns = getColumns;
+					}
+					serialize = serializer.serializeStream;
+				} else serialize = serializer.serialize;
+
+				return serialize(data, {
 					// a small header shim to allow us to set headers in serializers
 					headers: {
 						set: (key, value) => {
@@ -319,9 +340,21 @@ export function serialize(response_data, request, response_object) {
 		response_object.headers.set('Content-Type', serializer.type);
 		if (
 			typeof response_data === 'object' &&
+			response_data &&
 			(response_data[Symbol.iterator] || response_data[Symbol.asyncIterator]) &&
 			serializer.serializer.serializeStream
 		) {
+			if (response_data.mapError) {
+				// indicate that we want iterator errors to be returned so we can serialize them in a meaningful way, if possible
+				const getColumns = response_data.getColumns;
+				response_data = response_data.mapError((error) => {
+					// make errors serializable in a descriptive way
+					error.toJSON = () => ({ error: error.name, message: error.message, ...error.partialObject });
+					logger.warn?.(`Error serializing error ${request?.url || request}: ${error}`);
+					return error;
+				});
+				response_data.getColumns = getColumns;
+			}
 			let stream = serializer.serializer.serializeStream(response_data, response_object);
 			if (can_compress) {
 				response_object.headers.set('Content-Encoding', 'br');

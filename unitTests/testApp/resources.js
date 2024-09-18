@@ -48,7 +48,15 @@ tables.FourProp.setComputedAttribute('ageInMonths', (instance) => instance.age *
 export const namespace = {
 	SubObject,
 };
-class SimpleCacheSource extends tables.FourProp {}
+class SimpleCacheSource extends tables.FourProp {
+	get(query) {
+		if (this.getId().includes?.('error')) {
+			throw new Error('Test error');
+		}
+		if (this.getId() === 'undefined') return undefined;
+		return super.get(query);
+	}
+}
 export class SimpleCache extends tables.SimpleCache.sourcedFrom(SimpleCacheSource) {
 	post(data) {
 		if (data.invalidate) this.invalidate();

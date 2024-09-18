@@ -79,8 +79,8 @@ const SAVING_FULL_UPDATE = 1;
 const SAVING_CRDT_UPDATE = 2;
 const LOADED_FROM_SOURCE = Symbol('loaded-from-source');
 const NOTIFICATION = { isNotification: true, ensureLoaded: false };
-const INVALIDATED = 1;
-const EVICTED = 8; // note that 2 is reserved for timestamps
+export const INVALIDATED = 1;
+export const EVICTED = 8; // note that 2 is reserved for timestamps
 const TEST_WRITE_KEY_BUFFER = Buffer.allocUnsafeSlow(8192);
 const MAX_KEY_BYTES = 1978;
 const EVENT_HIGH_WATER_MARK = 100;
@@ -158,7 +158,6 @@ export function makeTable(options) {
 	let cleanup_timer: NodeJS.Timeout;
 	let property_resolvers: any;
 	let has_relationships = false;
-	let last_entry;
 	let running_record_expiration: boolean;
 	const residency_list_to_id = new Map();
 	const residency_id_to_list = new Map();
@@ -1858,7 +1857,23 @@ export function makeTable(options) {
 				applySortingOnSelect(sort);
 			} else {
 				results.iterate = (entries[Symbol.asyncIterator] || entries[Symbol.iterator]).bind(entries);
-				results = results.map(transformToRecord);
+				results = results.map(function (entry) {
+					try {
+						// because this is a part of a stream of results, we will often be continuing to iterate over the results when there are errors,
+						// but to improve the legibility of the error, we attach the primary key to the error
+						const result = transformToRecord.call(this, entry);
+						// if it is a catchable thenable (promise)
+						if (typeof result?.catch === 'function')
+							return result.catch((error) => {
+								error.partialObject = { [primary_key]: entry.key };
+								throw error;
+							});
+						return result;
+					} catch (error) {
+						error.partialObject = { [primary_key]: entry.key };
+						throw error;
+					}
+				});
 			}
 			return results;
 		}
@@ -1902,12 +1917,10 @@ export function makeTable(options) {
 				check_loaded = true;
 			}
 			let transform_cache;
-			const transform = function (entry) {
+			const transform = function (entry: Entry) {
 				let record;
 				if (context?.transaction?.stale) context.transaction.stale = false;
 				if (entry != undefined) {
-					// TODO: remove this:
-					last_entry = entry;
 					record = entry.value || entry.deref?.();
 					if (!record && (entry.key === undefined || entry.deref)) {
 						// if the record is not loaded, either due to the entry actually be a key, or the entry's value
@@ -3026,8 +3039,7 @@ export function makeTable(options) {
 		if (!entry) {
 			return;
 		}
-		last_entry = entry;
-		const record = entry.value || entry.deref?.() || (last_entry = primary_store.getEntry(entry.key))?.value;
+		const record = entry.value || entry.deref?.() || primary_store.getEntry(entry.key)?.value;
 		if (typeof attribute_name === 'object') {
 			// attribute_name is an array of attributes, pointing to nested attribute
 			let resolvers = property_resolvers;

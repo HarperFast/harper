@@ -2,6 +2,7 @@ import { ClientError, ServerError } from '../utility/errors/hdbError';
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms';
 import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
 import { RangeIterable, SKIP } from 'lmdb';
+import { INVALIDATED, EVICTED } from './Table';
 import { join } from 'path';
 import { MultiPartId } from './Resource';
 // these are ratios/percentages of overall table size
@@ -293,7 +294,7 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 		const results = index.getRange(range_options).map(
 			filter
 				? function ({ key, value }) {
-						if (this.isSync) return value && filter(value) ? key : SKIP;
+						if (this?.isSync) return value && filter(value) ? key : SKIP;
 						// for filter operations, we intentionally yield the event turn so that scanning queries
 						// do not hog resources
 						return new Promise((resolve, reject) =>
@@ -307,7 +308,7 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 						);
 				  }
 				: (entry) => {
-						if (entry.value == null) return SKIP;
+						if (entry.value == null && !(entry.metadataFlags & (INVALIDATED | EVICTED))) return SKIP;
 						return entry;
 				  }
 		);
@@ -835,8 +836,7 @@ export function parseQuery(query_to_parse) {
 			throw error;
 		}
 	} else {
-		const query = new URLSearchParams(query_to_parse);
-		return query;
+		return new URLSearchParams(query_to_parse);
 	}
 }
 function parseBlock(query, expected_end) {

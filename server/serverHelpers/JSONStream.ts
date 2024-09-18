@@ -30,16 +30,35 @@ class JSONStream extends Readable {
 				yield '[';
 				let first = true;
 				if ((hasAsyncIterator || hasIterator) && !(object instanceof Array)) {
-					const iterator = hasAsyncIterator ? object[Symbol.asyncIterator]() : object[Symbol.iterator]();
+					let iterator = hasAsyncIterator ? object[Symbol.asyncIterator]() : object[Symbol.iterator]();
 					this.activeIterators.push(iterator);
 					let iteratorResult;
 					while (true) {
-						iteratorResult = iterator.next();
-						if (iteratorResult.then) {
-							yield iteratorResult.then((result) => {
-								iteratorResult = result;
-								return '';
-							});
+						try {
+							iteratorResult = iterator.next();
+							if (iteratorResult.then) {
+								yield iteratorResult.then(
+									(result) => {
+										// don't send anything here, assign the iteratorResult and continue
+										// with the serialization loop
+										iteratorResult = result;
+										return ''; // return nothing now and serialization will continue below
+									},
+									(error) => {
+										// try to properly serialize the error, but then finish the iterator
+										iteratorResult = { done: false, value: { error: error.toString() } };
+										iterator = {
+											next: () => ({ done: true }),
+										};
+										return '';
+									}
+								);
+							}
+						} catch (error) {
+							iteratorResult = { done: false, value: { error: error.toString() } };
+							iterator = {
+								next: () => ({ done: true }),
+							};
 						}
 						if (iteratorResult.done) {
 							this.activeIterators.splice(this.activeIterators.indexOf(iterator), 1);
