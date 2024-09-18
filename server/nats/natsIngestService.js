@@ -336,6 +336,8 @@ async function messageProcessor(msg) {
 		// Don't ack until this is completed
 		let completion = new Promise((resolve) => (onCommit = resolve));
 		let { timestamp, user, node_name } = origin || {};
+		const latency = Date.now() - timestamp;
+		if (timestamp) recordAction(latency, 'replication-latency', database_name, operation, 'ingest');
 		let subscription = database_subscriptions.get(database_name)?.get(table_name);
 		if (!subscription) {
 			throw new Error('Missing table for replication message', table_name);
