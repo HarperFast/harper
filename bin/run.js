@@ -82,7 +82,7 @@ function addExitListeners() {
 async function initialize(called_by_install = false, called_by_main = false) {
 	// Check to see if HDB is installed, if it isn't we call install.
 	console.log(chalk.magenta('Starting HarperDB...'));
-	hdb_logger.suppressLogging(() => {
+	hdb_logger.suppressLogging?.(() => {
 		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'utility/install/ascii_logo.txt'))));
 	});
 
@@ -223,7 +223,7 @@ async function main(called_by_install = false) {
 		await startHTTPThreads(
 			process.env.DEV_MODE
 				? 1
-				: (env.get(hdb_terms.CONFIG_PARAMS.THREADS_COUNT) ?? env.get(hdb_terms.CONFIG_PARAMS.THREADS))
+				: env.get(hdb_terms.CONFIG_PARAMS.THREADS_COUNT) ?? env.get(hdb_terms.CONFIG_PARAMS.THREADS)
 		);
 
 		if (env.get(terms.CONFIG_PARAMS.LOGGING_ROTATION_ENABLED)) await log_rotator();
