@@ -188,7 +188,6 @@ function stdioLogging() {
 		process.stdout.write = function (data) {
 			if (
 				typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
-				log_fd &&
 				logging_enabled &&
 				LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['info']
 			) {
@@ -202,7 +201,6 @@ function stdioLogging() {
 		process.stderr.write = function (data) {
 			if (
 				typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
-				log_fd &&
 				logging_enabled &&
 				LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['error']
 			) {

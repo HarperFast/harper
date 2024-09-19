@@ -445,4 +445,20 @@ describe('Test run module', () => {
 			);
 		});
 	});
+
+	it('Test startupLog', () => {
+		sandbox.resetHistory();
+		run_rw.startupLog(new Map());
+		const test_values = [
+			'Worker Threads',
+			'Root Path',
+			'Debugging',
+			'Logging',
+			'Default',
+			'Operations API',
+			'MQTT',
+			'Replication',
+		];
+		test_values.forEach((value) => expect(console_log_stub.args[0][0]).to.include(value));
+	});
 });

@@ -322,9 +322,7 @@ describe('Test configValidator module', () => {
 
 			const schema = configValidator(bad_config_obj);
 			const expected_schema_message =
-				"'clustering.leafServer.network.port' is required. 'clustering.leafServer.streams.maxAge' must be" +
-				" greater than or equal to 120. 'clustering.nodeName'" +
-				' invalid, must not contain ., * or >';
+				"'clustering.leafServer.streams.maxAge' must be greater than or equal to 120. 'clustering.nodeName' invalid, must not contain ., * or >";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});
@@ -348,20 +346,7 @@ describe('Test configValidator module', () => {
 			bad_config_obj.clustering.hubServer.network.port = undefined;
 
 			const schema = configValidator(bad_config_obj);
-			const expected_schema_message =
-				"'clustering.hubServer.cluster.name' is required. 'clustering.hubServer.cluster.network.port' is" +
-				" required. 'clustering.hubServer.leafNodes.network.port' is required." +
-				" 'clustering.hubServer.network.port' is required";
-
-			expect(schema.error.message).to.eql(expected_schema_message);
-		});
-
-		it('Test null/undefined values for required keys in clustering.leafServer', () => {
-			let bad_config_obj = test_utils.deepClone(FAKE_CONFIG);
-			bad_config_obj.clustering.leafServer.network.port = undefined;
-
-			const schema = configValidator(bad_config_obj);
-			const expected_schema_message = "'clustering.leafServer.network.port' is required";
+			const expected_schema_message = "'clustering.hubServer.cluster.name' is required";
 
 			expect(schema.error.message).to.eql(expected_schema_message);
 		});

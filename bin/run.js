@@ -23,7 +23,7 @@ const log_rotator = require('../utility/logging/logRotator');
 const { compactOnStart } = require('./copyDb');
 const minimist = require('minimist');
 const keys = require('../security/keys');
-const { PACKAGE_ROOT } = require('../utility/hdbTerms');
+const { PACKAGE_ROOT, CONFIG_PARAMS } = require('../utility/hdbTerms');
 const {
 	startHTTPThreads,
 	startSocketServer,
@@ -82,6 +82,9 @@ function addExitListeners() {
 async function initialize(called_by_install = false, called_by_main = false) {
 	// Check to see if HDB is installed, if it isn't we call install.
 	console.log(chalk.magenta('Starting HarperDB...'));
+	hdb_logger.suppressLogging(() => {
+		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'utility/install/ascii_logo.txt'))));
+	});
 
 	if ((await isHdbInstalled()) === false) {
 		console.log(HDB_NOT_FOUND_MSG);
@@ -220,7 +223,7 @@ async function main(called_by_install = false) {
 		await startHTTPThreads(
 			process.env.DEV_MODE
 				? 1
-				: env.get(hdb_terms.CONFIG_PARAMS.THREADS_COUNT) ?? env.get(hdb_terms.CONFIG_PARAMS.THREADS)
+				: (env.get(hdb_terms.CONFIG_PARAMS.THREADS_COUNT) ?? env.get(hdb_terms.CONFIG_PARAMS.THREADS))
 		);
 
 		if (env.get(terms.CONFIG_PARAMS.LOGGING_ROTATION_ENABLED)) await log_rotator();
@@ -234,8 +237,7 @@ async function main(called_by_install = false) {
 function started() {
 	// Console log Harper dog logo
 	hdb_logger.suppressLogging(() => {
-		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'utility/install/ascii_logo.txt'))));
-		console.log(chalk.magenta(`|------------- HarperDB ${pjson.version} successfully started ------------|`));
+		console.log(chalk.magenta(`HarperDB ${pjson.version} successfully started`));
 	});
 	hdb_logger.notify(HDB_STARTED);
 }
@@ -336,11 +338,12 @@ async function openCreateAuditEnvironment(schema, table_name) {
 	}
 }
 
-module.exports = {
+Object.assign(exports, {
 	launch,
 	main,
 	isHdbInstalled,
-};
+	startupLog,
+});
 
 /**
  *
@@ -362,4 +365,136 @@ async function isHdbInstalled() {
 	}
 
 	return true;
+}
+
+/**
+ * Logs running services and relevant ports/information.
+ * Called by worker thread 1 once all servers have started
+ * @param port_resolutions
+ */
+function startupLog(port_resolutions) {
+	// Adds padding to a string
+	const padding = 20;
+	const pad = (param) => param.padEnd(padding);
+	let log_msg = '\n';
+	if (env.get(CONFIG_PARAMS.REPLICATION_HOSTNAME))
+		log_msg += `${pad('Hostname:')}${env.get(CONFIG_PARAMS.REPLICATION_HOSTNAME)}\n`;
+
+	if (env.get(CONFIG_PARAMS.REPLICATION_URL))
+		log_msg += `${pad('Replication Url:')}${env.get(CONFIG_PARAMS.REPLICATION_URL)}\n`;
+
+	log_msg += `${pad('Worker Threads:')}${env.get(CONFIG_PARAMS.THREADS_COUNT)}\n`;
+
+	log_msg += `${pad('Root Path:')}${env.get(CONFIG_PARAMS.ROOTPATH)}\n`;
+
+	if (env.get(CONFIG_PARAMS.THREADS_DEBUG) !== false) {
+		log_msg += `${pad('Debugging:')}enabled: true`;
+		log_msg += env.get(CONFIG_PARAMS.THREADS_DEBUG_PORT)
+			? `, TCP: ${env.get(CONFIG_PARAMS.THREADS_DEBUG_PORT)}\n`
+			: '\n';
+	}
+
+	log_msg += `${pad('Logging:')}level: ${env.get(CONFIG_PARAMS.LOGGING_LEVEL)}, location: ${env.get(
+		CONFIG_PARAMS.LOGGING_ROOT
+	)}\n`;
+
+	// Database Log aka Applications API aka http (in config)
+	log_msg += pad('Default:');
+	log_msg += env.get(CONFIG_PARAMS.HTTP_PORT) ? `HTTP (and WS): ${env.get(CONFIG_PARAMS.HTTP_PORT)}, ` : '';
+	log_msg += env.get(CONFIG_PARAMS.HTTP_SECUREPORT)
+		? `HTTPS (and WS): ${env.get(CONFIG_PARAMS.HTTP_SECUREPORT)}, `
+		: '';
+	log_msg += `CORS: ${
+		env.get(CONFIG_PARAMS.HTTP_CORS) ? `enabled for ${env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST)}` : 'disabled'
+	}\n`;
+
+	// Operations API Log
+	log_msg += pad('Operations API:');
+	log_msg += env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT)
+		? `HTTP: ${env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT)}, `
+		: '';
+	log_msg += env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT)
+		? `HTTPS: ${env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT)}, `
+		: '';
+	log_msg += `CORS: ${
+		env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS)
+			? `enabled for ${env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST)}`
+			: 'disabled'
+	}`;
+	log_msg += `, unix socket: ${env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET)}\n`;
+
+	// MQTT Log
+	log_msg += pad('MQTT:');
+	log_msg += env.get(CONFIG_PARAMS.MQTT_NETWORK_PORT) ? `TCP: ${env.get(CONFIG_PARAMS.MQTT_NETWORK_PORT)}, ` : '';
+	log_msg += env.get(CONFIG_PARAMS.MQTT_NETWORK_SECUREPORT)
+		? `TLS: ${env.get(CONFIG_PARAMS.MQTT_NETWORK_SECUREPORT)}`
+		: '';
+	log_msg +=
+		env.get(CONFIG_PARAMS.MQTT_WEBSOCKET) && env.get(CONFIG_PARAMS.HTTP_PORT)
+			? `, WS: ${env.get(CONFIG_PARAMS.HTTP_PORT)}`
+			: '';
+	log_msg +=
+		env.get(CONFIG_PARAMS.MQTT_WEBSOCKET) && env.get(CONFIG_PARAMS.HTTP_SECUREPORT)
+			? `, WSS: ${env.get(CONFIG_PARAMS.HTTP_SECUREPORT)}\n`
+			: '\n';
+
+	// Replication log
+	const replication_port = env.get(CONFIG_PARAMS.REPLICATION_PORT) ?? env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
+	const replication_secure_port =
+		env.get(CONFIG_PARAMS.REPLICATION_SECUREPORT) ?? env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT);
+
+	let rep_log = pad('Replication:');
+	rep_log += replication_port ? `WS: ${replication_port}, ` : '';
+	rep_log += replication_secure_port ? `WSS: ${replication_secure_port}  ` : '';
+
+	log_msg += `${rep_log.slice(0, -2)}\n`;
+
+	// Extract all non-default components from the config file
+	let components = [];
+	const config_obj = config_utils.getConfigObj();
+	for (const cfg in config_obj) {
+		if (config_obj[cfg].package) components.push(cfg);
+	}
+
+	// port_resolutions is a Map of port to protocol name and component name built in threadServer.js
+	// we iterate through the map to build a log for REST and for any components that are using custom ports
+	let comps = {};
+	let rest_log = `${pad('REST:')}`;
+	for (const [key, values] of port_resolutions) {
+		for (const value of values) {
+			const name = value.name;
+			if (name === 'rest') {
+				rest_log += `${value.protocol_name}: ${key}, `;
+			}
+
+			if (components.includes(name)) {
+				if (comps[name]) {
+					comps[name] += `${value.protocol_name}: ${key}, `;
+				} else {
+					comps[name] = `${value.protocol_name}: ${key}, `;
+				}
+			}
+		}
+	}
+
+	// Remove the trailing comma and space
+	if (rest_log.length > padding + 1) {
+		rest_log = rest_log.slice(0, -2);
+		log_msg += `${rest_log}\n`;
+	}
+
+	let app_ports_log = env.get(CONFIG_PARAMS.HTTP_PORT) ? `HTTP: ${env.get(CONFIG_PARAMS.HTTP_PORT)}, ` : '';
+	app_ports_log += env.get(CONFIG_PARAMS.HTTP_SECUREPORT) ? `HTTPS: ${env.get(CONFIG_PARAMS.HTTP_SECUREPORT)}, ` : '';
+	if (app_ports_log.length > padding + 1) app_ports_log = app_ports_log.slice(0, -2);
+
+	// Build logs for all components
+	for (const c of components) {
+		if (comps[c]) {
+			log_msg += `${pad(c)}${comps[c].slice(0, -2)}\n`;
+		} else {
+			log_msg += `${pad(c)}${app_ports_log}\n`;
+		}
+	}
+
+	console.log(log_msg);
 }

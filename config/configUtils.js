@@ -36,7 +36,7 @@ let flat_default_config_obj;
 let flat_config_obj;
 let config_obj;
 
-module.exports = {
+Object.assign(exports, {
 	createConfigFile,
 	getDefaultConfig,
 	getConfigValue,
@@ -55,7 +55,8 @@ module.exports = {
 	deleteConfigFromFile,
 	getConfigObj,
 	resolvePath,
-};
+	getFlatConfigObj,
+});
 
 function resolvePath(relative_path) {
 	if (relative_path?.startsWith('~/')) {
@@ -811,4 +812,9 @@ function getConfigObj() {
 	}
 
 	return config_obj;
+}
+
+function getFlatConfigObj() {
+	if (!flat_config_obj) initConfig();
+	return flat_config_obj;
 }

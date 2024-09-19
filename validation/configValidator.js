@@ -24,7 +24,9 @@ const INVALID_INTERVAL_VALUE_MSG =
 const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
 const UNDEFINED_NATS_ENABLED = 'clustering.enabled config parameter is undefined';
 
-const port_constraints = Joi.alternatives([number.min(0), string]).required();
+const port_constraints = Joi.alternatives([number.min(0), string])
+	.optional()
+	.empty(null);
 const route_constraints = Joi.alternatives([
 	array
 		.items(
@@ -188,13 +190,9 @@ function configValidator(config_json, skip_fs_validation = false) {
 				corsAccessList: array.optional(),
 				headersTimeout: number.min(1).optional(),
 				keepAliveTimeout: number.min(1).optional(),
-				port: Joi.alternatives([number.min(0), string])
-					.optional()
-					.empty(null),
+				port: port_constraints,
 				domainSocket: Joi.optional().empty('hdb/operations-server').default(setDefaultRoot),
-				securePort: Joi.alternatives([number.min(0), string])
-					.optional()
-					.empty(null),
+				securePort: port_constraints,
 				timeout: number.min(1).optional(),
 			}).optional(),
 			tls: Joi.alternatives([Joi.array().items(tls_constraints), tls_constraints]),
@@ -221,12 +219,8 @@ function configValidator(config_json, skip_fs_validation = false) {
 			cors: boolean.optional(),
 			corsAccessList: array.optional(),
 			headersTimeout: number.min(1).optional(),
-			port: Joi.alternatives([number.min(0), string])
-				.optional()
-				.empty(null),
-			securePort: Joi.alternatives([number.min(0), string])
-				.optional()
-				.empty(null),
+			port: port_constraints,
+			securePort: port_constraints,
 			maxHeaderSize: number.optional(),
 			mtls: Joi.alternatives([
 				boolean.optional(),

@@ -128,6 +128,9 @@ export function setErrorReporter(reporter) {
 	error_reporter = reporter;
 }
 
+let comp_name: string;
+export const getComponentName = () => comp_name;
+
 /**
  * Load a component from the specified directory
  * @param component_path
@@ -174,9 +177,11 @@ export async function loadComponent(
 			harper_logger.error('Error symlinking harperdb module', error);
 		}
 
+		const parent_comp_name: string = comp_name;
 		let has_functionality = is_root;
 		// iterate through the app handlers so they can each do their own loading process
 		for (const component_name in config) {
+			comp_name = component_name;
 			const component_config = config[component_name];
 			component_errors.set(is_root ? component_name : basename(folder), false);
 			if (!component_config) continue;
@@ -354,6 +359,8 @@ export async function loadComponent(
 				component_errors.set(is_root ? component_name : basename(folder), error.message);
 			}
 		}
+
+		comp_name = parent_comp_name;
 		// Auto restart threads on changes to any app folder. TODO: Make this configurable
 		if (isMainThread && !watches_setup && auto_reload) {
 			watchDir(folder, async () => {

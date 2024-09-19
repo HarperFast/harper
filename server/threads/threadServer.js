@@ -18,6 +18,8 @@ const { Request, createReuseportFd } = require('../serverHelpers/Request');
 const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
 const { createTLSSelector } = require('../../security/keys');
 const { resolvePath } = require('../../config/configUtils');
+const { startupLog } = require('../../bin/run');
+
 const debug_threads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
 if (debug_threads) {
 	let port;
@@ -64,6 +66,7 @@ const { HDB_SETTINGS_NAMES, CONFIG_PARAMS } = terms;
 env.initSync();
 const session_affinity = env.get(CONFIG_PARAMS.HTTP_SESSIONAFFINITY);
 const SERVERS = {};
+const port_server = new Map();
 exports.registerServer = registerServer;
 exports.httpServer = httpServer;
 exports.deliverSocket = deliverSocket;
@@ -166,6 +169,13 @@ function startServers() {
 
 			// notify that we are now ready to start receiving requests
 			Promise.resolve(listening).then(() => {
+				if (getWorkerIndex() === 0) {
+					try {
+						startupLog(port_server);
+					} catch (err) {
+						console.error('Error displaying start-up log', err);
+					}
+				}
 				parentPort?.postMessage({ type: terms.ITC_EVENT_TYPES.CHILD_STARTED });
 			});
 		}));
@@ -182,7 +192,7 @@ function listenOnPorts() {
 				new Promise((resolve, reject) => {
 					server
 						.listen({ path: port }, () => {
-							resolve();
+							resolve({ port, name: server.name, protocol_name: server.protocol_name });
 							harper_logger.info('Domain socket listening on ' + port);
 						})
 						.on('error', reject);
@@ -221,7 +231,7 @@ function listenOnPorts() {
 			new Promise((resolve, reject) => {
 				server
 					.listen(listen_on, () => {
-						resolve();
+						resolve({ port, name: server.name, protocol_name: server.protocol_name });
 						harper_logger.trace('Listening on port ' + port, threadId);
 					})
 					.on('error', reject);
@@ -320,6 +330,7 @@ function proxyRequest(message) {
 			break;
 	}
 }
+const { getComponentName } = require('../../components/componentLoader');
 
 function registerServer(server, port, check_port = true) {
 	if (!port) {
@@ -390,7 +401,14 @@ function httpServer(listener, options) {
 
 	return servers;
 }
+
+function setPortServerMap(port, server) {
+	const port_entry = port_server.get(port) ?? [];
+	port_server.set(port, [...port_entry, server]);
+}
+
 function getHTTPServer(port, secure, is_operations_server) {
+	setPortServerMap(port, { protocol_name: secure ? 'HTTPS' : 'HTTP', name: getComponentName() });
 	if (!http_servers[port]) {
 		let server_prefix = is_operations_server ? 'operationsApi_network' : 'http';
 		let options = {
@@ -603,6 +621,7 @@ function onRequest(listener, options) {
 function onSocket(listener, options) {
 	let socket_server;
 	if (options.securePort) {
+		setPortServerMap(options.securePort, { protocol_name: 'TLS', name: getComponentName() });
 		let SNICallback = createTLSSelector('server', options.mtls);
 		socket_server = createSecureSocketServer(
 			{
@@ -619,6 +638,7 @@ function onSocket(listener, options) {
 		SERVERS[options.securePort] = socket_server;
 	}
 	if (options.port) {
+		setPortServerMap(options.port, { protocol_name: 'TCP', name: getComponentName() });
 		socket_server = createSocketServer(listener, {
 			noDelay: true,
 			keepAlive: true,
@@ -643,6 +663,10 @@ Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
 function onWebSocket(listener, options) {
 	let servers = [];
 	for (let { port: port_num, secure } of getPorts(options)) {
+		setPortServerMap(port_num, {
+			protocol_name: secure ? 'WSS' : 'WS',
+			name: getComponentName(),
+		});
 		if (!ws_servers[port_num]) {
 			let http_server;
 			ws_servers[port_num] = new WebSocketServer({
