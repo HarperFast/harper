@@ -13,6 +13,7 @@ import {
 	urlToNodeName,
 	forEachReplicatedDatabase,
 	unsubscribeFromNode,
+	lastTimeInAuditStore,
 } from './replicator';
 import { parentPort } from 'worker_threads';
 import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes, shouldReplicateToNode } from './knownNodes';
@@ -38,14 +39,8 @@ export async function startOnMainThread(options) {
 		const database = databases[db_name];
 		for (const table_name in database) {
 			const table = database[table_name];
-			const audit_store = table.auditStore;
-			if (audit_store) {
-				for (const timestamp of audit_store.getKeys({
-					limit: 1,
-					reverse: true,
-				})) {
-					self_catchup_of_database.set(db_name, timestamp);
-				}
+			if (table.auditStore) {
+				self_catchup_of_database.set(db_name, lastTimeInAuditStore(table.auditStore));
 				break;
 			}
 		}

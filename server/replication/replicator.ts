@@ -32,6 +32,7 @@ import { exportIdMapping } from './nodeIdMapping';
 import * as tls from 'node:tls';
 import { ServerError } from '../../utility/errors/hdbError';
 import { isMainThread } from 'worker_threads';
+import { Database } from 'lmdb';
 
 let replication_disabled;
 let next_id = 1; // for request ids
@@ -532,6 +533,19 @@ function hasExplicitlyReplicatedTable(database_name) {
 	for (const table_name in database) {
 		const table = database[table_name];
 		if (table.replicate) return true;
+	}
+}
+
+/**
+ * Get the last time that an audit record was added to the audit store
+ * @param audit_store
+ */
+export function lastTimeInAuditStore(audit_store: Database) {
+	for (const timestamp of audit_store.getKeys({
+		limit: 1,
+		reverse: true,
+	})) {
+		return timestamp;
 	}
 }
 

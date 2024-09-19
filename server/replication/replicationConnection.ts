@@ -17,6 +17,7 @@ import {
 	urlToNodeName,
 	getThisNodeId,
 	enabled_databases,
+	lastTimeInAuditStore,
 } from './replicator';
 import env from '../../utility/environment/environmentManager';
 import { getUpdateRecord, HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
@@ -716,7 +717,7 @@ export function replicateOverWS(ws, options, authorization) {
 									table_subscription_to_replicator.tableById[table_id]
 								);
 								if (!table_entry) {
-									return logger.trace?.('Not subscribed to table', table_id);
+									return logger.info?.('Not subscribed to table', table_id);
 								}
 							}
 							const table = table_entry.table;
@@ -1236,10 +1237,10 @@ export function replicateOverWS(ws, options, authorization) {
 			const node_id = audit_store && getIdOfRemoteNode(node.name, audit_store);
 			const sequence_entry = table_subscription_to_replicator?.dbisDB?.get([Symbol.for('seq'), node_id]) ?? 1;
 			// if we are connected directly to the node, we start from the last sequence number we received at the top level
-			let start_time =
-				sequence_entry?.seqId ??
-				(typeof node.start_time === 'string' ? new Date(node.start_time).getTime() : node.start_time) ??
-				1;
+			let start_time = Math.max(
+				sequence_entry?.seqId ?? 1,
+				(typeof node.start_time === 'string' ? new Date(node.start_time).getTime() : node.start_time) ?? 1
+			);
 			logger.info?.(
 				'Starting time recorded in db',
 				node.name,
