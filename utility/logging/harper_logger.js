@@ -38,6 +38,7 @@ const DEFAULT_CONFIG_FILE = path.join(PACKAGE_ROOT, 'config/yaml/', hdb_terms.HD
 
 const CLOSE_LOG_FD_TIMEOUT = 10000;
 
+let log_console;
 let log_to_file;
 let log_to_stdstreams;
 let log_level;
@@ -155,6 +156,9 @@ function initLogSettings(force_init = false) {
 				if (config_param === hdb_terms.CONFIG_PARAMS.LOGGING_FILE) {
 					log_to_file = config_param;
 				}
+				if (config_param === hdb_terms.CONFIG_PARAMS.LOGGING_CONSOLE) {
+					log_console = config_param;
+				}
 			}
 
 			const { default_level, default_to_file, default_to_stream } = getDefaultConfig();
@@ -189,12 +193,12 @@ function stdioLogging() {
 			if (
 				typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
 				logging_enabled &&
-				LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['info']
+				log_console !== false
 			) {
 				openLogFile();
 				data = data.toString();
 				if (data[data.length - 1] === '\n') data = data.slice(0, -1);
-				fs.appendFileSync(log_fd, createLogRecord('info', [data]));
+				fs.appendFileSync(log_fd, createLogRecord('stdout', [data]));
 			}
 			return native_std_write.apply(process.stdout, arguments);
 		};
@@ -202,11 +206,11 @@ function stdioLogging() {
 			if (
 				typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
 				logging_enabled &&
-				LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['error']
+				log_console !== false
 			) {
 				openLogFile();
 				if (data[data.length - 1] === '\n') data = data.slice(0, -1);
-				fs.appendFileSync(log_fd, createLogRecord('error', [data]));
+				fs.appendFileSync(log_fd, createLogRecord('stderr', [data]));
 			}
 			return native_std_write.apply(process.stderr, arguments);
 		};
