@@ -8,51 +8,10 @@ on:
     inputs:
       dryrun:
         type: boolean
-        description: "Do all the things except for actually publishing"
+        description: "dryrun: Do not publish"
         default: true
 
 jobs:
-  ############################################
-  #  Send Slack Message for start of Release
-  ############################################
-  sendSlackMessageRealeaseStarted:
-    if: ${{ inputs.dryrun == false }}
-    uses: ./.github/workflows/post-to-slack-channel.yaml
-    secrets: inherit
-    with:
-      channel_id: C05PLHLQFQA
-      payload: |
-        {
-          "text": "${{ github.run_id }} Release Initiated.",
-          "blocks": [
-            {
-              "type": "header",
-              "text": {
-                "type": "plain_text",
-                "text": "HarperDB Release"
-              }
-            },
-            {
-              "type": "context",
-              "elements": [
-                {
-                  "type": "mrkdwn",
-                  "text": "*Status*"
-                },
-                {
-                  "type": "mrkdwn",
-                  "text": "Initiated"
-                },
-                {
-                  "type": "mrkdwn",
-                  "text": "<${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}|run ${{ github.run_id }}>"
-                }
-              ]
-            }
-          ]
-        }
-
-
   ########
   #  Meta
   ########
@@ -70,7 +29,7 @@ jobs:
       npm_extra_tags: ${{ steps.get-values.outputs.npm_extra_tags }}
       dockerhub_tag_latest: ${{ steps.get-values.outputs.dockerhub_tag_latest }}
       dryrun: ${{ steps.get-values.outputs.dryrun }}
-      push: ${[ steps.get-values.outputs.push }}
+      push: ${{ steps.get-values.outputs.push }}
     steps:
       - uses: actions/checkout@v4
       - name: 'Get values'
@@ -78,7 +37,6 @@ jobs:
         env:
           inputs_dryrun: ${{ inputs.dryrun }}
           tag: ${{ github.ref }}
-        continue-on-error: true
         run: |
           #!/usr/bin/env bash
           
@@ -100,12 +58,11 @@ jobs:
             cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
           > [!CAUTION]
           > Exiting as I have no idea what dryrun is supposed to be: 
-          > tag    == ${tag}
+          > tag    == "${tag}"
           > dryrun == "${dryrun}"
           > push   == "${push}"
           
           EOF
-           Exiting as I have no idea what dryrun/push is supposed to be: tag=${tag}
             exit 1
           fi
           
@@ -171,6 +128,22 @@ jobs:
           EOF
           [[ "${release_type}" != "stable" ]] && echo "pre-release version: ${release_type}.${prerelease_version:-}" >> "${GITHUB_STEP_SUMMARY}"
           
+          cat <<EOF
+          harperdbVersion:      ${harperdbVersion}
+          version:              ${version}
+          full_version:         ${full_version}
+          version_major:        ${version_major}
+          version_minor:        ${version_minor}
+          version_patch:        ${version_patch}
+          release_type:         ${release_type}
+          prerelease_version:   ${prerelease_version}
+          npm_extra_tags:       ${npm_extra_tags}
+          dockerhub_tag_latest: ${dockerhub_tag_latest}
+          dryrun:               ${dryrun}
+          push:                 ${push}
+          inputs_dryrun:        ${inputs_dryrun}
+          EOF
+          
           if [[ "${dryrun}" != "false" ]]; then
             cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
           > [!WARNING]
@@ -188,19 +161,17 @@ jobs:
             exit 1
           fi
 
-  ##############################################
-  #  Send Slack Message: add version to message
-  ##############################################
-  sendSlackMessageRealeaseVersion:
-    if: ${{ inputs.dryrun == false }}
+  ############################################
+  #  Send Slack Message for start of Release
+  ############################################
+  sendSlackMessageRealeaseStarted:
+    if: needs.meta.outputs.dryrun == 'false'
     uses: ./.github/workflows/post-to-slack-channel.yaml
-    secrets: inherit
     needs:
-      - sendSlackMessageRealeaseStarted
       - meta
+    secrets: inherit
     with:
       channel_id: C05PLHLQFQA
-      update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       payload: |
         {
           "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.full_version }} In Progress.",
@@ -287,7 +258,7 @@ jobs:
           HARPERDB_VERSION:  "${{ needs.build.outputs.harperdbVersion }}"
           PUBLISH_DESTINATION: 'private'
           EXTRA_TAGS: "${{ needs.meta.outputs.npm_extra_tags }}"
-          DRYRUN: ${{ inputs.dryrun }}
+          DRYRUN: ${{ needs.meta.outputs.dryrun }}
         run: ./.github/scripts/npm-publish.sh
         continue-on-error: true
 
@@ -313,7 +284,7 @@ jobs:
   #  Send Slack Message on 'Ready to Deploy'
   ############################################
   sendSlackMessageReadyToDeploy:
-    if: ${{ needs.meta.outputs.release_type == 'stable' && inputs.dryrun == false }}
+    if: ${{ needs.meta.outputs.release_type == 'stable' && needs.meta.outputs.dryrun == 'false' }}
     uses: ./.github/workflows/post-to-slack-channel.yaml
     secrets: inherit
     needs:
@@ -321,7 +292,6 @@ jobs:
       - npmPrivateRelease
       - dockerhubPrivateRelease
       - sendSlackMessageRealeaseStarted
-      - sendSlackMessageRealeaseVersion
     with:
       channel_id: C05PLHLQFQA
       update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
@@ -419,7 +389,7 @@ jobs:
           HARPERDB_VERSION:  "${{ needs.build.outputs.harperdbVersion }}"
           PUBLISH_DESTINATION: 'public'
           EXTRA_TAGS: "${{ needs.meta.outputs.npm_extra_tags }}"
-          DRYRUN: ${{ inputs.dryrun }}
+          DRYRUN: ${{ needs.meta.outputs.dryrun }}
         run: ./.github/scripts/npm-publish.sh
 
 
@@ -533,7 +503,7 @@ jobs:
           container_registry: 'registry.hub.docker.com'
           container_image: 'harperdb/harperdb-openshift'
           container_tag: ${{ needs.build.outputs.harperdbVersion }}
-          dryrun: ${{ inputs.dryrun }}
+          dryrun: ${{ needs.meta.outputs.dryrun }}
         run: |
           #!/usr/bin/env bash
           set -euo pipefail
@@ -572,7 +542,7 @@ jobs:
           AWS_SECRET_ACCESS_KEY: ${{ secrets.AWS_SECRET_ACCESS_KEY }}
           AWS_DEFAULT_REGION: us-east-1
           updateLatest: ${{ needs.meta.outputs.dockerhub_tag_latest }}
-          dryrun: ${{ inputs.dryrun }}
+          dryrun: ${{ needs.meta.outputs.dryrun }}
         run: |
           #!/bin/bash
           set -e
@@ -594,7 +564,7 @@ jobs:
   #################################
   sendSlackMessageParty:
     uses: ./.github/workflows/post-to-slack-channel.yaml
-    if: ${{ !cancelled() && !failure() && needs.publicReleaseNPM.result == 'success' && needs.publicReleaseDocker.result == 'success' && needs.publicReleaseOfflineInstaller.result == 'success' && inputs.dryrun == false }}
+    if: ${{ !cancelled() && !failure() && needs.publicReleaseNPM.result == 'success' && needs.publicReleaseDocker.result == 'success' && needs.publicReleaseOfflineInstaller.result == 'success' && needs.meta.outputs.dryrun == 'false' }}
     secrets: inherit
     needs:
       - meta
@@ -602,11 +572,10 @@ jobs:
       - publicReleaseDocker
       - publicReleaseOfflineInstaller
       - sendSlackMessageRealeaseStarted
-      - sendSlackMessageRealeaseVersion
       - sendSlackMessageReadyToDeploy
     with:
       channel_id: C05PLHLQFQA
-      update_ts: ${{ needs.meta.outputs.release_type == 'stable' && needs.sendSlackMessageReadyToDeploy.outputs.ts || needs.sendSlackMessageRealeaseVersion.outputs.ts }}
+      update_ts: ${{ needs.meta.outputs.release_type == 'stable' && needs.sendSlackMessageReadyToDeploy.outputs.ts || needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       payload: |
         {
           "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.full_version }} Complete.",
@@ -646,7 +615,7 @@ jobs:
   #  Send Slack Message on failure
   #################################
   sendSlackMessageFailure:
-    if: ${{ failure() && !cancelled() && inputs.dryrun == false }}
+    if: ${{ failure() && !cancelled() && needs.meta.outputs.dryrun == 'false' }}
     uses: ./.github/workflows/post-to-slack-channel.yaml
     secrets: inherit
     needs:
@@ -696,4 +665,4 @@ jobs:
               ]
             }
           ]
-        }
+        } 
