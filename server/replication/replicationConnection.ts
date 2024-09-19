@@ -286,11 +286,11 @@ export function replicateOverWS(ws, options, authorization) {
 	let remote_node_name = authorization.name;
 	if (remote_node_name && options.connection) options.connection.nodeName = remote_node_name;
 	let last_sequence_id_received, last_sequence_id_committed;
-	const this_node_url = env.get('replication_url');
 	let send_ping_interval, receive_ping_timer, last_ping_time, skipped_message_sequence_update_timer;
 	const DELAY_CLOSE_TIME = 1000;
 	let delayed_close: NodeJS.Timeout;
 	let last_message_time = 0;
+	let last_audit_sent = 0;
 	if (options.url) {
 		const send_ping = () => {
 			if (last_ping_time) ws.terminate(); // timeout
@@ -1019,11 +1019,12 @@ export function replicateOverWS(ws, options, authorization) {
 										}
 									}
 									for (const { key, value: audit_entry } of audit_store.getRange({
-										start: (current_sequence_id || 1) + 1 / 4096, // TODO: Once exclusive start bug is fixed, remove the +1/4096
-										//exclusiveStart: true,
+										start: current_sequence_id || 1,
+										exclusiveStart: true,
 										snapshot: false, // don't want to use a snapshot, and we want to see new entries
 									})) {
 										if (closed) return;
+										last_audit_sent = key;
 										const audit_record = readAuditEntry(audit_entry);
 										sendAuditRecord(audit_record, key);
 										// wait if there is back-pressure
@@ -1047,6 +1048,7 @@ export function replicateOverWS(ws, options, authorization) {
 									listeners.push((table) => {
 										// TODO: send table update
 									});
+									last_audit_sent = 0; // indicate that we have sent all the audit log entries, we are not catching up right now
 									await whenNextTransaction(audit_store);
 								} while (!closed);
 							})
@@ -1158,10 +1160,12 @@ export function replicateOverWS(ws, options, authorization) {
 		if (options.connection) {
 			// every pong we can use to update our connection information (and latency)
 			options.connection.latency = performance.now() - last_ping_time;
+			// update the manager with latest connection information
 			connectedToNode({
 				name: remote_node_name,
 				database: database_name,
 				url: options.url,
+				lastSendTime: last_audit_sent,
 				latency: options.connection.latency,
 			});
 		}
