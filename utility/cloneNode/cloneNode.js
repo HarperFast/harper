@@ -341,10 +341,6 @@ async function cloneTablesHttp() {
 		sys_db_exist = true;
 		console.log(`Not cloning system database due to it already existing on clone`);
 	}
-	if (replication_hostname) {
-		hdb_log.info('Replication hostname set, not using backup to clone databases, replication will clone');
-		return;
-	}
 
 	// Create object where excluded db name is key
 	exclude_db = clone_node_config?.databaseConfig?.excludeDatabases;
@@ -378,16 +374,29 @@ async function cloneTablesHttp() {
 		if (_.isEmpty(leader_dbs[db])) continue;
 		let tables_to_clone = [];
 		let excluded_tables = false;
-		for (const table in leader_dbs[db]) {
-			if (excluded_table[db + table]) {
+		for (const table_name in leader_dbs[db]) {
+			if (excluded_table[db + table_name]) {
 				excluded_tables = true;
-				leader_dbs[db][table] = 'excluded';
+				leader_dbs[db][table_name] = 'excluded';
 			} else {
-				tables_to_clone.push(table);
+				tables_to_clone.push(leader_dbs[db][table_name]);
 			}
 		}
 
-		if (tables_to_clone.length === 0) return;
+		if (tables_to_clone.length === 0) continue;
+		if (replication_hostname) {
+			hdb_log.debug('Setting up tables for #{db}');
+			const ensureTable = require('../../resources/databases').table;
+			for (let table of tables_to_clone) {
+				ensureTable({
+					database: db,
+					table: table.name,
+					attributes: table.attributes,
+				});
+			}
+			continue;
+		}
+		tables_to_clone = tables_to_clone.map((table) => table.name);
 
 		let backup_req;
 		if (excluded_tables) {
