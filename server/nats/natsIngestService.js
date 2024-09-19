@@ -406,7 +406,7 @@ async function messageProcessor(msg) {
 
 		await completion;
 		const latency = Date.now() - timestamp;
-		if (timestamp) recordAction(latency, 'replication-latency', database_name + '.' + table_name, operation, 'ingest');
+		if (timestamp) recordAction(latency, 'replication-latency', msg.subject, operation, 'ingest');
 	} catch (e) {
 		harper_logger.error(e);
 	}
