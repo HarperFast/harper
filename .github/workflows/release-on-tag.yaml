@@ -172,8 +172,7 @@ jobs:
       - meta
     secrets: inherit
     with:
-      #channel_id: C05PLHLQFQA
-      channel_id: C06LRD9EWM7
+      channel_id: C05PLHLQFQA
       payload: |
         {
           "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.full_version }} In Progress.",
@@ -295,8 +294,7 @@ jobs:
       - dockerhubPrivateRelease
       - sendSlackMessageRealeaseStarted
     with:
-      #channel_id: C05PLHLQFQA
-      channel_id: C06LRD9EWM7
+      channel_id: C05PLHLQFQA
       update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       payload: |
         {
@@ -577,8 +575,7 @@ jobs:
       - sendSlackMessageRealeaseStarted
       - sendSlackMessageReadyToDeploy
     with:
-      #channel_id: C05PLHLQFQA
-      channel_id: C06LRD9EWM7
+      channel_id: C05PLHLQFQA
       update_ts: ${{ needs.meta.outputs.release_type == 'stable' && needs.sendSlackMessageReadyToDeploy.outputs.ts || needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       payload: |
         {
@@ -634,8 +631,7 @@ jobs:
       - sendSlackMessageReadyToDeploy
       - sendSlackMessageParty
     with:
-      #channel_id: C05PLHLQFQA
-      channel_id: C06LRD9EWM7
+      channel_id: C05PLHLQFQA
       update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       payload: |
         {
