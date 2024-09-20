@@ -2,6 +2,8 @@ name: "Release HarperDB"
 
 on:
   push:
+    branches:
+      - FIX-release-on-tag
     tags:
       - release_*
   workflow_dispatch:
@@ -40,31 +42,33 @@ jobs:
         run: |
           #!/usr/bin/env bash
           
+          [[ "${tag}" == "refs/heads/FIX-release-on-tag" ]] && tag='refs/tags/release_4.4.0-beta.1'
+          
           # set default
           dryrun='true'
           push='false'
           
           # make sure we know what the value of dryrun is 
-          if [[ "${inputs_dryrun}" == "false" ]]; then
-            dryrun='false'
-            push='true'
+          #if [[ "${inputs_dryrun}" == "false" ]]; then
+          #  dryrun='false'
+          #  push='true'
           
           # this workflow needs a tag to function properly, in the case of being on a pushed tag, lets just check the tag
-          elif [[ "${tag}" =~ ^refs/tags/release_.*$ ]]; then
-            dryrun="${inputs_dryrun:-false}"
-            [[ "${dryrun}" == 'false' ]] && push='true'
+          #elif [[ "${tag}" =~ ^refs/tags/release_.*$ ]]; then
+          #  dryrun="${inputs_dryrun:-false}"
+          #  [[ "${dryrun}" == 'false' ]] && push='true'
           
-          else
-            cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
-          > [!CAUTION]
-          > Exiting as I have no idea what dryrun is supposed to be: 
-          > tag    == "${tag}"
-          > dryrun == "${dryrun}"
-          > push   == "${push}"
+          #else
+          #  cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
+          #> [!CAUTION]
+          #> Exiting as I have no idea what dryrun is supposed to be: 
+          #> tag    == "${tag}"
+          #> dryrun == "${dryrun}"
+          #> push   == "${push}"
           
-          EOF
-            exit 1
-          fi
+          #EOF
+          #  exit 1
+          #fi
           
           echo "dryrun=${dryrun}" >> "${GITHUB_OUTPUT}"
           echo "push=${push}" >> "${GITHUB_OUTPUT}"
@@ -126,6 +130,7 @@ jobs:
           patch: ${version_patch}
           
           EOF
+          
           [[ "${release_type}" != "stable" ]] && echo "pre-release version: ${release_type}.${prerelease_version:-}" >> "${GITHUB_STEP_SUMMARY}"
           
           cat <<EOF
@@ -171,7 +176,8 @@ jobs:
       - meta
     secrets: inherit
     with:
-      channel_id: C05PLHLQFQA
+      #channel_id: C05PLHLQFQA
+      channel_id: C06LRD9EWM7
       payload: |
         {
           "text": "${{ github.run_id }} Release ${{ needs.meta.outputs.full_version }} In Progress.",
@@ -273,7 +279,7 @@ jobs:
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       container: 'harperdb/private'
-      latest: ${{ needs.meta.outputs.dockerhub_tag_latest == 'true' && true || false }}
+      latest: ${{ needs.meta.outputs.dockerhub_tag_latest }}
       platforms: 'linux/amd64,linux/arm64'
       push: ${{ needs.meta.outputs.push }}
     secrets:
@@ -293,7 +299,8 @@ jobs:
       - dockerhubPrivateRelease
       - sendSlackMessageRealeaseStarted
     with:
-      channel_id: C05PLHLQFQA
+      #channel_id: C05PLHLQFQA
+      channel_id: C06LRD9EWM7
       update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       payload: |
         {
@@ -574,7 +581,8 @@ jobs:
       - sendSlackMessageRealeaseStarted
       - sendSlackMessageReadyToDeploy
     with:
-      channel_id: C05PLHLQFQA
+      #channel_id: C05PLHLQFQA
+      channel_id: C06LRD9EWM7
       update_ts: ${{ needs.meta.outputs.release_type == 'stable' && needs.sendSlackMessageReadyToDeploy.outputs.ts || needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       payload: |
         {
@@ -630,7 +638,8 @@ jobs:
       - sendSlackMessageReadyToDeploy
       - sendSlackMessageParty
     with:
-      channel_id: C05PLHLQFQA
+      #channel_id: C05PLHLQFQA
+      channel_id: C06LRD9EWM7
       update_ts: ${{ needs.sendSlackMessageRealeaseStarted.outputs.ts }}
       payload: |
         {
