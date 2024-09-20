@@ -34,6 +34,7 @@ import * as tls from 'node:tls';
 import { getHDBNodeTable } from './knownNodes';
 import * as process from 'node:process';
 import { isIP } from 'node:net';
+import { recordAction } from '../../resources/analytics';
 
 // these are the codes we use for the different commands
 const SUBSCRIPTION_REQUEST = 129;
@@ -1052,7 +1053,7 @@ export function replicateOverWS(ws, options, authorization) {
 			// else we are handling a replication message
 			decoder.position = 8;
 			let begin_txn = true;
-			//const txn_time = decoder.getFloat64(0);
+			let event; // could also get txn_time from decoder.getFloat64(0);
 			let sequence_id_received;
 			do {
 				/*const table_id = decoder.readInt();
@@ -1082,7 +1083,7 @@ export function replicateOverWS(ws, options, authorization) {
 						audit_record.recordId
 					);
 				}
-				const event = {
+				event = {
 					table: table_decoder.name,
 					id: audit_record.recordId,
 					type: audit_record.type,
@@ -1114,6 +1115,13 @@ export function replicateOverWS(ws, options, authorization) {
 				decoder.position = start + event_length;
 			} while (decoder.position < body.byteLength);
 			outstanding_commits++;
+			recordAction(
+				body.byteLength,
+				'bytes-received',
+				remote_node_name + '.' + database_name + '.' + event.table,
+				'replication',
+				'ingest'
+			);
 			if (outstanding_commits > MAX_OUTSTANDING_COMMITS && !replication_paused) {
 				replication_paused = true;
 				ws.pause();
@@ -1123,6 +1131,16 @@ export function replicateOverWS(ws, options, authorization) {
 				localTime: last_sequence_id_received,
 				remoteNodeIds: receiving_data_from_node_ids,
 				onCommit() {
+					if (event) {
+						const latency = Date.now() - event.timestamp;
+						recordAction(
+							latency,
+							'replication-latency',
+							remote_node_name + '.' + database_name + '.' + event.table,
+							event.type,
+							'ingest'
+						);
+					}
 					outstanding_commits--;
 					if (replication_paused) {
 						replication_paused = false;
