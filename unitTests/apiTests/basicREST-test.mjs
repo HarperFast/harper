@@ -325,7 +325,7 @@ describe('test REST calls', () => {
 
 		it('query with parenthesis in value', async () => {
 			// at least shouldn't throw an error
-			let response = await axios('http://localhost:9926/FourProp?birthday=no(match)for this)');
+			let response = await axios('http://localhost:9926/FourProp?name=no(match)for this)');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.length, 0);
 		});
