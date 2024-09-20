@@ -216,6 +216,13 @@ describe('Test keys module', () => {
 		expect(cert_not_found).to.be.true;
 	});
 
+	it('hostnamesFromCert returns the correct hostnames', async () => {
+		const test_cert = {
+			subjectAltName: 'DirName:"CN=test-1.name\\u002cO=1999710",' + ' DirName:CN=test-2.org,IP-Address:1.2.3.4',
+		};
+		const hostnames = keys.hostnamesFromCert(test_cert);
+		expect(hostnames).to.eql(['test-1.name', 'test-2.org', '1.2.3.4']);
+	});
 	/*	it('Test SNI with wildcards', async () => {
 		let cert1 = await mkcert.createCert({
 			domains: ['host-one.com', 'default'],

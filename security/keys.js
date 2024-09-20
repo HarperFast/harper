@@ -42,6 +42,7 @@ Object.assign(exports, {
 	getReplicationCert,
 	getReplicationCertAuth,
 	renewSelfSigned,
+	hostnamesFromCert,
 });
 
 const {
@@ -212,7 +213,7 @@ function loadCertificates() {
 								let record_timestamp =
 									!cert_record || cert_record.is_self_signed
 										? 1
-										: (cert_record.file_timestamp ?? cert_record.__updatedtime__);
+										: cert_record.file_timestamp ?? cert_record.__updatedtime__;
 								if (cert_record && file_timestamp <= record_timestamp) {
 									if (file_timestamp < record_timestamp)
 										hdb_logger.info(
@@ -662,7 +663,7 @@ async function reviewSelfSignedCert() {
 	}
 
 	const existing_cert = await getReplicationCert();
-	if (!existing_cert || ca_created) {
+	if (!existing_cert) {
 		const cert_name = getThisNodeName();
 		hdb_logger.info(
 			`A suitable replication certificate was not found, creating new self singed cert named: ${cert_name}`
@@ -867,17 +868,7 @@ function createTLSSelector(type, mtls_options) {
 							secure_context.certStart = certificate.toString().slice(0, 100);
 							// we want to configure SNI handling to pick the right certificate based on all the registered SANs
 							// in the certificate
-							let hostnames =
-								cert.hostnames ??
-								(cert_parsed.subjectAltName
-									? cert_parsed.subjectAltName.split(',').map((part) => {
-											// the subject alt names looks like 'IP Address:127.0.0.1, DNS:localhost, IP Address:0:0:0:0:0:0:0:1'
-											// so we split on commas and then use the part after the colon as the host name
-											let colon_index = part.indexOf(':');
-											return part.slice(colon_index + 1);
-										})
-									: // finally we fall back to the common name
-										[extractCommonName(cert_parsed)]);
+							let hostnames = cert.hostnames ?? hostnamesFromCert(cert_parsed);
 							if (!Array.isArray(hostnames)) hostnames = [hostnames];
 							let has_ip_address;
 							for (let hostname of hostnames) {
@@ -958,7 +949,8 @@ function createTLSSelector(type, mtls_options) {
 		else harper_logger.debug('No SNI, using the default certificate');
 		// no matches, return the first/default one
 		let context = default_context;
-		if (context.replicationContext && (this.isReplicationConnection || broken_alpn_callback))
+		if (!context) harper_logger.info('No default certificate found');
+		else if (context.replicationContext && (this.isReplicationConnection || broken_alpn_callback))
 			context = context.replicationContext;
 		cb(null, context);
 	}
@@ -1114,4 +1106,32 @@ async function removeCertificate(req) {
 
 function extractCommonName(cert_obj) {
 	return cert_obj.subject.match(/CN=(.*)/)?.[1];
+}
+function hostnamesFromCert(cert /*X509Certificate*/) {
+	return cert.subjectAltName
+		? cert.subjectAltName
+				.split(',')
+				.map((part) => {
+					// the subject alt names looks like 'IP Address:127.0.0.1, DNS:localhost, IP
+					// Address:0:0:0:0:0:0:0:1, DirName:"CN=localhost"'
+					// so we split on commas and then use the part after the colon as the host name
+
+					let colon_index = part.indexOf(':'); // get the value part
+					part = part.slice(colon_index + 1);
+					part = part.trim();
+					if (part[0] === '"') {
+						// quoted value
+						try {
+							part = JSON.parse(part);
+						} catch (e) {
+							// ignore
+						}
+					}
+					// can have name=value inside
+					if (part.indexOf('=') > -1) return part.match(/CN=([^,]*)/)?.[1];
+					return part;
+				})
+				.filter((part) => part) // filter out any empty names
+		: // finally we fall back to the common name
+		  [extractCommonName(cert)];
 }
