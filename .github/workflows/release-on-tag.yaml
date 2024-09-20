@@ -279,7 +279,7 @@ jobs:
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       container: 'harperdb/private'
-      latest: ${{ needs.meta.outputs.dockerhub_tag_latest }}
+      latest: '${{ needs.meta.outputs.dockerhub_tag_latest }}'
       platforms: 'linux/amd64,linux/arm64'
       push: ${{ needs.meta.outputs.push }}
     secrets:
