@@ -877,6 +877,7 @@ function createTLSSelector(type, mtls_options) {
 										has_wildcards = true;
 										hostname = hostname.slice(1);
 									}
+									if (hostname === getHost()) quality += 2; // prefer a certificate with our hostname as the default
 									if (net.isIP(hostname)) has_ip_address = true;
 									// we use this certificate if it has a higher quality than the existing one for this hostname
 									let existing_cert_quality = secure_contexts.get(hostname)?.quality ?? 0;
