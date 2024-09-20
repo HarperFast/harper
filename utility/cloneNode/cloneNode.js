@@ -388,6 +388,9 @@ async function cloneTablesHttp() {
 			hdb_log.debug('Setting up tables for #{db}');
 			const ensureTable = require('../../resources/databases').table;
 			for (let table of tables_to_clone) {
+				for (let attribute of table.attributes) {
+					if (attribute.is_hash_attribute || attribute.is_primary_key) attribute.isPrimaryKey = true;
+				}
 				ensureTable({
 					database: db,
 					table: table.name,
