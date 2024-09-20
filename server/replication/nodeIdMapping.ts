@@ -1,8 +1,8 @@
 /**
- * This module is responsible for managing the mapping of node names to node ids.
+ * This module is responsible for managing the mapping of node/host names to node ids.
  */
 import * as logger from '../../utility/logging/logger';
-import { getThisNodeName } from './replicator';
+import { getThisNodeName, lastTimeInAuditStore } from './replicator';
 import { pack, unpack } from 'msgpackr';
 
 const REMOTE_NODE_IDS = Symbol.for('remote-ids');
@@ -13,12 +13,39 @@ function getIdMappingRecord(audit_store) {
 		id_mapping_record = { remoteNameToId: {} };
 	}
 	// this is the default mapping for the local node (id of 0 is used for local)
-	// TODO: We should add an option so the if the node name is changed, which should take place in a clone node operation, we will get a new node name and node id)
 	const node_name = getThisNodeName();
 	const has_changes = false;
 	id_mapping_record.nodeName = getThisNodeName();
-	if (id_mapping_record.remoteNameToId[node_name] !== 0) {
-		id_mapping_record.remoteNameToId[node_name] = 0;
+	const name_to_id = id_mapping_record.remoteNameToId;
+	if (name_to_id[node_name] !== 0) {
+		// if we don't have the local node id, we want to assign it and take over that id, but if there was a previous host name
+		// there, we need to reassign it and update the record and we want to assign a starting sequence id for it
+		let last_id = 0;
+		let previous_local_host_name: string;
+		for (const name in name_to_id) {
+			const id = name_to_id[name];
+			if (id === 0) {
+				previous_local_host_name = name;
+			} else if (id > last_id) {
+				last_id = id;
+			}
+		}
+		if (previous_local_host_name) {
+			// we need to reassign the local node id to the previous host name
+			last_id++;
+			name_to_id[previous_local_host_name] = last_id;
+			// we need to update the sequence id for the previous host name, and have it start from our last sequence id
+			const seq_key = [Symbol.for('seq'), last_id];
+			audit_store.rootStore.dbisDb.transactionSync(() => {
+				if (!audit_store.rootStore.dbisDb.get(seq_key))
+					audit_store.rootStore.dbisDb.putSync(seq_key, {
+						seqId: lastTimeInAuditStore(audit_store) ?? 1,
+						nodes: [],
+					});
+			});
+		}
+		// now we can take over the local node id
+		name_to_id[node_name] = 0;
 		audit_store.putSync(REMOTE_NODE_IDS, pack(id_mapping_record));
 	}
 	return id_mapping_record;

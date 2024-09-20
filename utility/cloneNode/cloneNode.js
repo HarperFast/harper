@@ -30,7 +30,11 @@ const hdb_info_controller = require('../../dataLayer/hdbInfoController');
 const { SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME, CONFIG_PARAMS, OPERATIONS_ENUM } = hdb_terms;
 const WAIT_FOR_RESTART_TIME = 10000;
 const CLONE_CONFIG_FILE = 'clone-node-config.yaml';
-const SYSTEM_TABLES_TO_CLONE = [SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME, SYSTEM_TABLE_NAMES.USER_TABLE_NAME];
+const SYSTEM_TABLES_TO_CLONE = [
+	SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME,
+	SYSTEM_TABLE_NAMES.USER_TABLE_NAME,
+	SYSTEM_TABLE_NAMES.NODE_TABLE_NAME,
+];
 const CONFIG_TO_NOT_CLONE = {
 	clustering_nodename: true,
 	clustering_leafserver_streams_path: true,
@@ -86,6 +90,7 @@ let exclude_db;
 let excluded_table;
 let fresh_clone = false;
 let sys_db_exist = false;
+let start_time;
 
 /**
  * This module will run when HarperDB is started with the required env/cli vars.
@@ -322,7 +327,9 @@ async function cloneTablesHttp() {
 
 			const headers = await leaderHttpStream(req, file_stream);
 			// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
-			await fs.utimes(sys_db_file_dir, Date.now(), new Date(headers.date));
+			let backup_date = new Date(headers.date);
+			if (!start_time || backup_date < start_time) start_time = backup_date;
+			await fs.utimes(sys_db_file_dir, Date.now(), backup_date);
 		}
 
 		if (!fresh_clone) {
@@ -367,16 +374,32 @@ async function cloneTablesHttp() {
 		if (_.isEmpty(leader_dbs[db])) continue;
 		let tables_to_clone = [];
 		let excluded_tables = false;
-		for (const table in leader_dbs[db]) {
-			if (excluded_table[db + table]) {
+		for (const table_name in leader_dbs[db]) {
+			if (excluded_table[db + table_name]) {
 				excluded_tables = true;
-				leader_dbs[db][table] = 'excluded';
+				leader_dbs[db][table_name] = 'excluded';
 			} else {
-				tables_to_clone.push(table);
+				tables_to_clone.push(leader_dbs[db][table_name]);
 			}
 		}
 
-		if (tables_to_clone.length === 0) return;
+		if (tables_to_clone.length === 0) continue;
+		if (replication_hostname) {
+			hdb_log.debug('Setting up tables for #{db}');
+			const ensureTable = require('../../resources/databases').table;
+			for (let table of tables_to_clone) {
+				for (let attribute of table.attributes) {
+					if (attribute.is_hash_attribute || attribute.is_primary_key) attribute.isPrimaryKey = true;
+				}
+				ensureTable({
+					database: db,
+					table: table.name,
+					attributes: table.attributes,
+				});
+			}
+			continue;
+		}
+		tables_to_clone = tables_to_clone.map((table) => table.name);
 
 		let backup_req;
 		if (excluded_tables) {
@@ -394,7 +417,9 @@ async function cloneTablesHttp() {
 		const req_headers = await leaderHttpStream(backup_req, table_file_stream);
 
 		// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
-		await fs.utimes(db_path, Date.now(), new Date(req_headers.date));
+		let backup_date = new Date(req_headers.date);
+		if (!start_time || backup_date < start_time) start_time = backup_date;
+		await fs.utimes(db_path, Date.now(), backup_date);
 	}
 }
 
@@ -418,6 +443,8 @@ async function cloneTablesFetch() {
 			await pipeline(sys_backup.body, createWriteStream(sys_db_file_dir, { overwrite: true }));
 
 			// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
+			let backup_date = new Date(sys_backup.headers.get('date'));
+			if (!start_time || backup_date < start_time) start_time = backup_date;
 			await fs.utimes(sys_db_file_dir, Date.now(), new Date(sys_backup.headers.get('date')));
 		}
 
@@ -429,6 +456,10 @@ async function cloneTablesFetch() {
 	} else {
 		sys_db_exist = true;
 		console.log(`Not cloning system database due to it already existing on clone`);
+	}
+	if (replication_hostname) {
+		hdb_log.info('Replication hostname set, not using backup to clone databases, replication will clone');
+		return;
 	}
 
 	// Create object where excluded db name is key
@@ -500,6 +531,7 @@ async function cloneTablesFetch() {
 		await fs.rename(temp_db_path, db_path);
 
 		// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
+		if (!start_time || backup_date < start_time) start_time = backup_date;
 		await fs.utimes(db_path, Date.now(), backup_date);
 	}
 }
@@ -582,6 +614,7 @@ async function setupReplication() {
 			operation: OPERATIONS_ENUM.ADD_NODE,
 			verify_tls: false, // TODO : if they have certs we shouldnt need to pass creds
 			url: `${leader_config.operationsApi.network.port ? 'ws' : 'wss'}://${new URL(leader_url).host}`,
+			start_time,
 			authorization: {
 				username,
 				password,

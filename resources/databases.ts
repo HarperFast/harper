@@ -299,10 +299,14 @@ export function readMetaDb(
 			} else {
 				table_id = primary_attribute.tableId;
 				if (table_id) {
-					if (table_id >= (dbis_store.get(NEXT_TABLE_ID) || 0)) dbis_store.putSync(NEXT_TABLE_ID, table_id + 1);
+					if (table_id >= (dbis_store.get(NEXT_TABLE_ID) || 0)) {
+						dbis_store.putSync(NEXT_TABLE_ID, table_id + 1);
+						harper_logger.info(`Updating next table id (it was out of sync) to ${table_id + 1} for ${table_name}`);
+					}
 				} else {
 					primary_attribute.tableId = table_id = dbis_store.get(NEXT_TABLE_ID);
 					if (!table_id) table_id = 1;
+					harper_logger.debug(`Table {table_name} missing an id, assigning {table_id}`);
 					dbis_store.putSync(NEXT_TABLE_ID, table_id + 1);
 					dbis_store.putSync(primary_attribute.key, primary_attribute);
 				}
@@ -508,20 +512,22 @@ export async function dropDatabase(database_name) {
  * @param sealed
  * @param replicate
  */
-export function table({
-	table: table_name,
-	database: database_name,
-	expiration,
-	eviction,
-	scanInterval: scan_interval,
-	attributes,
-	audit,
-	sealed,
-	replicate,
-	trackDeletes: track_deletes,
-	schemaDefined: schema_defined,
-	origin,
-}: TableDefinition) {
+export function table(table_definition: TableDefinition) {
+	// eslint-disable-next-line prefer-const
+	let {
+		table: table_name,
+		database: database_name,
+		expiration,
+		eviction,
+		scanInterval: scan_interval,
+		attributes,
+		audit,
+		sealed,
+		replicate,
+		trackDeletes: track_deletes,
+		schemaDefined: schema_defined,
+		origin,
+	} = table_definition;
 	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
 	const root_store = database({ database: database_name, table: table_name });
 	const tables = databases[database_name];
@@ -532,7 +538,6 @@ export function table({
 	}
 	let primary_key;
 	let primary_key_attribute;
-	let indices;
 	let attributes_dbi;
 	if (schema_defined == undefined) schema_defined = true;
 	const internal_dbi_init = new OpenDBIObject(false);
@@ -576,13 +581,22 @@ export function table({
 		const dbi_init = new OpenDBIObject(false, true);
 		dbi_init.compression = primary_key_attribute.compression;
 		const dbi_name = table_name + '/';
+		attributes_dbi = root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
+		startTxn(); // get an exclusive lock on the database so we can verify that we are the only thread creating the table (and assigning the table id)
+		if (attributes_dbi.get(dbi_name)) {
+			// table was created while we were setting up
+			if (txn_commit) txn_commit();
+			resetDatabases();
+			return table(table_definition);
+		}
 		const primary_store = handleLocalTimeForGets(root_store.openDB(dbi_name, dbi_init));
 		root_store.databaseName = database_name;
 		primary_store.rootStore = root_store;
-		attributes_dbi = root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
 		primary_store.tableId = attributes_dbi.get(NEXT_TABLE_ID);
+		harper_logger.trace(`Assigning new table id ${primary_store.tableId} for ${table_name}`);
 		if (!primary_store.tableId) primary_store.tableId = 1;
-		attributes_dbi.putSync(NEXT_TABLE_ID, primary_store.tableId + 1);
+		attributes_dbi.put(NEXT_TABLE_ID, primary_store.tableId + 1);
+
 		primary_key_attribute.tableId = primary_store.tableId;
 		Table = setTable(
 			tables,
@@ -609,10 +623,10 @@ export function table({
 		);
 		Table.schemaVersion = 1;
 		has_changes = true;
-		startTxn();
+
 		attributes_dbi.put(dbi_name, primary_key_attribute);
 	}
-	indices = Table.indices;
+	const indices = Table.indices;
 	attributes_dbi = attributes_dbi || (root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init));
 	Table.dbisDB = attributes_dbi;
 	const indices_to_remove = [];
