@@ -239,6 +239,7 @@ export async function startOnMainThread(options) {
 					type: 'unsubscribe-from-node',
 					database: database_name,
 					url: node.url,
+					name: node.name,
 				};
 				if (worker) {
 					worker.postMessage(request);
