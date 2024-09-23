@@ -645,11 +645,9 @@ async function reviewSelfSignedCert() {
 		return private_key;
 	};
 
-	let ca_created;
 	let ca_and_key = await getCertAuthority();
 	if (!ca_and_key) {
-		ca_created = true;
-		hdb_logger.info('No self signed Cert Authority found, generating new self signed CA');
+		hdb_logger.warn('No self signed Cert Authority found, generating new self signed CA');
 		await getPrivateKey();
 		const hdb_ca = await generateCertAuthority(private_key, pki.setRsaPublicKey(private_key.n, private_key.e));
 		await setCertTable({
@@ -665,7 +663,7 @@ async function reviewSelfSignedCert() {
 	const existing_cert = await getReplicationCert();
 	if (!existing_cert) {
 		const cert_name = getThisNodeName();
-		hdb_logger.info(
+		hdb_logger.warn(
 			`A suitable replication certificate was not found, creating new self singed cert named: ${cert_name}`
 		);
 
@@ -825,7 +823,17 @@ function createTLSSelector(type, mtls_options) {
 								continue;
 							}
 							let is_operations = type === 'operations-api';
-							if (!is_operations && cert.uses?.includes?.('operations')) continue;
+							if (!is_operations && cert.uses?.includes?.('operations')) {
+								harper_logger.trace(
+									'Skipping cert',
+									cert.name,
+									'for',
+									type,
+									server.ports || 'client',
+									'because it is for operations'
+								);
+								continue;
+							}
 
 							let quality = cert.is_self_signed ? 1 : 2;
 
@@ -888,6 +896,20 @@ function createTLSSelector(type, mtls_options) {
 									harper_logger.error('No hostname found for certificate at', tls.certificate);
 								}
 							}
+							harper_logger.trace(
+								'Adding TLS',
+								secure_context.name,
+								'for',
+								server.ports || 'client',
+								'cert named',
+								cert.name,
+								'hostnames',
+								hostnames,
+								'quality',
+								quality,
+								'best quality',
+								best_quality
+							);
 							if (quality > best_quality /* && has_ip_address*/) {
 								// we use this certificate as the default if it has a higher quality than the existing one
 								SNICallback.defaultContext = default_context = secure_context;
@@ -898,14 +920,6 @@ function createTLSSelector(type, mtls_options) {
 									// indeterminate situation of whether openssl will use this certificate or the one from the SNI
 									// callback
 									//server.setSecureContext?.(server, secure_options);
-									harper_logger.trace(
-										'Applying default TLS',
-										secure_context.name,
-										'for',
-										server.ports,
-										'cert named',
-										cert.name
-									);
 								}
 							}
 						} catch (error) {
@@ -928,7 +942,7 @@ function createTLSSelector(type, mtls_options) {
 	return SNICallback;
 	function SNICallback(servername, cb) {
 		// find the matching server name, substituting wildcards for each part of the domain to find matches
-		harper_logger.info('TLS requested for', servername, this.isReplicationConnection);
+		harper_logger.info('TLS requested for', servername || '(no SNI)', this.isReplicationConnection);
 		let matching_name = servername;
 		while (true) {
 			let context = secure_contexts.get(matching_name);
@@ -947,7 +961,7 @@ function createTLSSelector(type, mtls_options) {
 			} else break;
 		}
 		if (servername) harper_logger.debug('No certificate found to match', servername, 'using the default certificate');
-		else harper_logger.debug('No SNI, using the default certificate');
+		else harper_logger.debug('No SNI, using the default certificate', default_context.name);
 		// no matches, return the first/default one
 		let context = default_context;
 		if (!context) harper_logger.info('No default certificate found');
