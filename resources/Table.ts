@@ -1291,6 +1291,12 @@ export function makeTable(options) {
 					? () => apply_to_sources_intermediate.put(context, id, deepFreeze(this))
 					: null,
 				commit: (txn_time, existing_entry, retry) => {
+					logger.trace?.(
+						'Committing record update for id:',
+						id,
+						'value size',
+						record_update && Object.keys(record_update)
+					);
 					if (retry) {
 						if (context && existing_entry?.version > (context.lastModified || 0))
 							context.lastModified = existing_entry.version;
@@ -1315,6 +1321,7 @@ export function makeTable(options) {
 							// incremental CRDT updates are only available with audit logging on
 							let local_time = existing_entry.localTime;
 							let audited_version = existing_entry.version;
+							logger.trace?.('Applying CRDT update to record with id: ', id, 'applying later update:', audited_version);
 							while (update_to_apply && (local_time > txn_time || (audited_version >= txn_time && local_time > 0))) {
 								const audit_entry = audit_store.get(local_time);
 								if (!audit_entry) break;
@@ -1324,6 +1331,7 @@ export function makeTable(options) {
 									if (audit_record.type === 'patch') {
 										const newer_update = audit_record.getValue(primary_store);
 										update_to_apply = rebuildUpdateBefore(update_to_apply, newer_update);
+										logger.debug?.('Rebuilding update with future patch:', update_to_apply);
 									} else if (audit_record.type === 'put' || audit_record.type === 'delete') {
 										// There is newer full record update, so this incremental update is completely superseded
 										// TODO: We should still store the audit record for historical purposes
@@ -1345,6 +1353,7 @@ export function makeTable(options) {
 						} else {
 							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist
 							update_to_apply = rebuildUpdateBefore(update_to_apply, existing_record);
+							logger.debug?.('Rebuilding update without audit:', update_to_apply);
 						}
 					}
 					let record_to_store;
