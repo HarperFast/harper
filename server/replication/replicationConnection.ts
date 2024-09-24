@@ -1121,8 +1121,8 @@ export function replicateOverWS(ws, options, authorization) {
 						audit_record.version,
 						'nodeId',
 						event.nodeId,
-						'name',
-						event.value?.name
+						'value',
+						event.value
 					);
 				table_subscription_to_replicator.send(event);
 				decoder.position = start + event_length;

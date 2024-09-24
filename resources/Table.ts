@@ -1385,7 +1385,8 @@ export function makeTable(options) {
 							existing_entry
 								? ', replaces entry from: ' + new Date(existing_entry.version).toISOString()
 								: ', new entry'
-						}`
+						}`,
+						record_to_store
 					);
 					updateIndices(id, existing_record, record_to_store);
 					const type = full_update ? 'put' : 'patch';
