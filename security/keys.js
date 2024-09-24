@@ -206,6 +206,9 @@ function loadCertificates() {
 									return;
 								}
 
+								// Check if cert issued by compromised HarperDB certificate authority, if it is, do not load it
+								if (x509_cert.checkIssued(new X509Certificate(CERTIFICATE_VALUES.cert))) return;
+
 								// If a record already exists for cert check to see who is newer, cert record or cert file.
 								// If cert file is newer, add it to table
 								const cert_record = certificate_table.primaryStore.get(cert_cn);
@@ -213,7 +216,7 @@ function loadCertificates() {
 								let record_timestamp =
 									!cert_record || cert_record.is_self_signed
 										? 1
-										: cert_record.file_timestamp ?? cert_record.__updatedtime__;
+										: (cert_record.file_timestamp ?? cert_record.__updatedtime__);
 								if (cert_record && file_timestamp <= record_timestamp) {
 									if (file_timestamp < record_timestamp)
 										hdb_logger.info(
@@ -1148,5 +1151,5 @@ function hostnamesFromCert(cert /*X509Certificate*/) {
 				})
 				.filter((part) => part) // filter out any empty names
 		: // finally we fall back to the common name
-		  [extractCommonName(cert)];
+			[extractCommonName(cert)];
 }
