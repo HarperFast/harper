@@ -1330,7 +1330,7 @@ export function makeTable(options) {
 								if (audited_version > txn_time) {
 									if (audit_record.type === 'patch') {
 										const newer_update = audit_record.getValue(primary_store);
-										update_to_apply = rebuildUpdateBefore(update_to_apply, newer_update);
+										//update_to_apply = rebuildUpdateBefore(update_to_apply, newer_update);
 										logger.debug?.('Rebuilding update with future patch:', update_to_apply);
 									} else if (audit_record.type === 'put' || audit_record.type === 'delete') {
 										// There is newer full record update, so this incremental update is completely superseded
