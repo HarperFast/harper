@@ -1080,7 +1080,7 @@ export function replicateOverWS(ws, options, authorization) {
 					break;
 				}
 				const start = decoder.position;
-				const audit_record = readAuditEntry(body.subarray(start, start + event_length));
+				const audit_record = readAuditEntry(body, start, start + event_length);
 				const table_decoder = table_decoders[audit_record.tableId];
 				if (!table_decoder) {
 					logger.error?.(`No table found with an id of ${audit_record.tableId}`);

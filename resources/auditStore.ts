@@ -311,10 +311,11 @@ export function createAuditEntry(
 		}
 	}
 }
-export function readAuditEntry(buffer) {
+export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined) {
 	try {
 		const decoder =
 			buffer.dataView || (buffer.dataView = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+		decoder.position = start;
 		let previous_local_time;
 		if (buffer[decoder.position] == 66) {
 			// 66 is the first byte in a date double.
@@ -359,7 +360,9 @@ export function readAuditEntry(buffer) {
 			get user() {
 				return username_end > username_start ? readKey(buffer, username_start, username_end) : undefined;
 			},
-			encoded: buffer,
+			get encoded() {
+				return start ? buffer.subarray(start, end) : buffer;
+			},
 			getValue(store, full_record?, audit_time?) {
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !full_record))
 					return store.decoder.decode(buffer.subarray(decoder.position));
