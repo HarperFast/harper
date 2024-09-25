@@ -349,7 +349,7 @@ export function readAuditEntry(buffer) {
 			tableId: table_id,
 			nodeId: node_id,
 			get recordId() {
-				return readKeySafely(buffer, record_id_start, record_id_end);
+				return readKey(buffer, record_id_start, record_id_end);
 			},
 			getBinaryRecordId() {
 				return buffer.subarray(record_id_start, record_id_end);
@@ -357,7 +357,7 @@ export function readAuditEntry(buffer) {
 			version,
 			previousLocalTime: previous_local_time,
 			get user() {
-				return username_end > username_start ? readKeySafely(buffer, username_start, username_end) : undefined;
+				return username_end > username_start ? readKey(buffer, username_start, username_end) : undefined;
 			},
 			encoded: buffer,
 			getValue(store, full_record?, audit_time?) {
@@ -417,10 +417,4 @@ export class Decoder extends DataView {
 			debugger;
 		}
 	}
-}
-function readKeySafely(buffer, start, end) {
-	// ordered-binary's read key actually modifies the byte at end to be zero, we have to subarray this
-	// TODO: Can we fix this in ordered-binary?
-	const safe_buffer = buffer.subarray(start, end);
-	return readKey(safe_buffer, 0, end - start);
 }
