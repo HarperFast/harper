@@ -526,7 +526,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Routes set messaged returned', () => {",
+									"pm.test('Routes set message returned', () => {",
 									"    const response = pm.response.json();",
 									"    const node1_host = pm.environment.get('NODE1_HOST');",
 									"    const clustering_port = parseInt(pm.environment.get('CLUSTERING_PORT'));",
@@ -665,7 +665,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Routes skipped messaged returned', () => {",
+									"pm.test('Routes skipped message returned', () => {",
 									"    const response = pm.response.json();",
 									"    const clustering_port = parseInt(pm.environment.get('CLUSTERING_PORT'));",
 									"    const node2_host = pm.environment.get('NODE2_HOST');",
@@ -735,7 +735,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Routes set messaged returned', () => {",
+									"pm.test('Routes set message returned', () => {",
 									"    const response = pm.response.json();",
 									"    const clustering_port = parseInt(pm.environment.get('CLUSTERING_PORT'));",
 									"",
@@ -794,7 +794,7 @@
 					"response": []
 				},
 				{
-					"name": "Get routes returns leaf routes node 1",
+					"name": "Get routes returns leaf routes node 2",
 					"event": [
 						{
 							"listen": "test",
@@ -866,7 +866,7 @@
 					"response": []
 				},
 				{
-					"name": "Confrim routes added to config node 1",
+					"name": "Confirm routes added to config node 2",
 					"event": [
 						{
 							"listen": "test",
@@ -1007,7 +1007,7 @@
 					"response": []
 				},
 				{
-					"name": "Confrim routes removed from config node 1",
+					"name": "Confirm routes removed from config node 2",
 					"event": [
 						{
 							"listen": "test",
@@ -1017,7 +1017,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Leaf routes are not there', () => {",
+									"pm.test('Routes are not there', () => {",
 									"    const response = pm.response.json();",
 									"    const node2_host = pm.environment.get('NODE2_HOST');",
 									"    const clustering_port = parseInt(pm.environment.get('CLUSTERING_PORT'));",
@@ -1077,7 +1077,7 @@
 					"response": []
 				},
 				{
-					"name": "Delete all routes node 1",
+					"name": "Delete all routes node 2",
 					"event": [
 						{
 							"listen": "test",
@@ -1146,7 +1146,7 @@
 					"response": []
 				},
 				{
-					"name": "Delete all routes node 2",
+					"name": "Delete all routes node 1",
 					"event": [
 						{
 							"listen": "test",
@@ -1220,7 +1220,7 @@
 			"name": "Transaction log",
 			"item": [
 				{
-					"name": "Ceate schema 'tx_log_test' for tx log tests",
+					"name": "Create schema 'tx_log_test' for tx log tests",
 					"event": [
 						{
 							"listen": "test",
@@ -1281,7 +1281,7 @@
 					"response": []
 				},
 				{
-					"name": "Ceate table 'chicken' for tx log tests",
+					"name": "Create table 'chicken' for tx log tests",
 					"event": [
 						{
 							"listen": "test",
@@ -2314,7 +2314,7 @@
 					"response": []
 				},
 				{
-					"name": "Confrim partial tx log records deleted",
+					"name": "Confirm partial tx log records deleted",
 					"event": [
 						{
 							"listen": "test",
@@ -2619,7 +2619,7 @@
 					"response": []
 				},
 				{
-					"name": "Confrim all tx log records deleted",
+					"name": "Confirm all tx log records deleted",
 					"event": [
 						{
 							"listen": "test",
@@ -6214,7 +6214,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Confirm records unchanged node 2', () => {",
+									"pm.test('Confirm records node 2', () => {",
 									"    try {",
 									"        const response = pm.response.json();",
 									"console.log('updated entries',response);",
@@ -7894,7 +7894,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Config set messaged returned', () => {",
+									"pm.test('Config set message returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
 									"});"
@@ -8016,7 +8016,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Config set messaged returned', () => {",
+									"pm.test('Config set message returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
 									"});"
@@ -8268,7 +8268,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('No schema msessage returned', () => {",
+									"pm.test('No schema message returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Unable to create subscriptions due to schema and/or tables not existing on the local or remote node\");",
 									"    pm.expect(response.added.length).to.equal(0);",
@@ -9877,7 +9877,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Confirm record updated node 2', () => {",
+									"pm.test('Confirm record updated node 1', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.length).to.equal(2);",
 									"    pm.expect(response).to.have.deep.members([",
@@ -10210,7 +10210,7 @@
 									"    pm.response.to.have.status(500);",
 									"});",
 									"",
-									"pm.test('Unknown column', () => {",
+									"pm.test('Unknown column message returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.error).to.equal(\"unknown column breed\");",
 									"});"
@@ -13885,7 +13885,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Records inserted into csv_s3_load node 2', () => {",
+									"pm.test('Records inserted into start_date_test node 2', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"inserted 3 of 3 records\");",
 									"});"
@@ -14267,7 +14267,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Config set messaged returned', () => {",
+									"pm.test('Config set message returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
 									"});"
@@ -14402,7 +14402,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Routes set messaged returned', () => {",
+									"pm.test('Routes set message returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal('cluster routes successfully set');",
 									"});",
@@ -15073,7 +15073,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('DB data dropped', () => {",
+									"pm.test('DB humans dropped', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"successfully deleted 'humans'\");",
 									"});",
@@ -15197,7 +15197,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Config set messaged returned', () => {",
+									"pm.test('Config set message returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
 									"});"
@@ -15332,7 +15332,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Routes set messaged returned', () => {",
+									"pm.test('Routes set message returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal('cluster routes successfully set');",
 									"});",
@@ -15459,7 +15459,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Routes set messaged returned', () => {",
+									"pm.test('Routes set message returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal('cluster routes successfully set');",
 									"});",
@@ -15586,7 +15586,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Routes set messaged returned', () => {",
+									"pm.test('Routes set message returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal('cluster routes successfully set');",
 									"});",
@@ -16489,7 +16489,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Correct cluster status node 4', () => {",
+									"pm.test('Correct cluster status node 3', () => {",
 									"    const response = pm.response.json();",
 									"    const node3_name = pm.environment.get(\"NODE3_NAME\");",
 									"    const node2_name = pm.environment.get(\"NODE2_NAME\");",
@@ -17047,7 +17047,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Confirm frog insert not on node 4', () => {",
+									"pm.test('Confirm frog insert not on node 3', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.record_count).to.equal(0);",
 									"});"
@@ -17311,7 +17311,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Confirm bird insert not on node 3', () => {",
+									"pm.test('Confirm bird insert not on node 1', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.length).to.equal(2);",
 									"    pm.expect(response).to.have.deep.members([",
@@ -18723,7 +18723,7 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test('Config set messaged returned', () => {",
+									"pm.test('Config set message returned', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.equal(\"Configuration successfully set. You must restart HarperDB for new config settings to take effect.\");",
 									"});"
