@@ -371,8 +371,8 @@ export function requestClusterStatus(message, port) {
 						database,
 						connected,
 						latency,
-						catchingUpFrom: catchingUpFrom ? new Date(catchingUpFrom).toISOString() : 'up-to-date',
-						threadId: worker?.threadId,
+						catching_up_from: catchingUpFrom ? new Date(catchingUpFrom).toISOString() : 'up-to-date',
+						thread_id: worker?.threadId,
 						nodes: nodes.map((node) => node.name),
 					});
 				}

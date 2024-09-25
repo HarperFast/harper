@@ -12,6 +12,7 @@ const nats_utils = require('../../server/nats/utility/natsUtils');
 const user = require('../../security/user');
 const cluster_status = require('../../utility/clustering/clusterStatus');
 const run = require('../../bin/run');
+const hdb_utils = require('../../utility/common_utils');
 const status = rewire('../../bin/status');
 
 describe('Test status module', () => {
@@ -114,9 +115,41 @@ describe('Test status module', () => {
 		close: () => {},
 	};
 
+	const fake_replication_status = {
+		type: 'cluster-status',
+		connections: [
+			{
+				url: 'wss://127.0.0.1:9925',
+				subscriptions: [
+					{
+						database: 'data',
+						table: 'fish',
+						publish: true,
+						subscribe: true,
+					},
+				],
+				name: 'node-1',
+				database_sockets: [
+					{
+						database: 'data',
+						connected: true,
+						latency: 0.49228906631469727,
+						catching_up_from: 'up-to-date',
+						thread_id: 1,
+						nodes: ['node-1'],
+					},
+				],
+			},
+		],
+		node_name: 'node-2',
+		is_enabled: true,
+	};
+	let http_request_stub;
+
 	before(() => {
 		console_log_stub = sandbox.stub(console, 'log');
 		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.ROOTPATH, 'unit-test');
+		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.REPLICATION_HOSTNAME, 'unit-test');
 		read_file_stub = sandbox.stub(fs, 'readFile').resolves('62076');
 		get_hdb_process_info_stub = sandbox.stub(sys_info, 'getHDBProcessInfo').resolves(fake_hdb_process_info);
 		get_server_config_stub = sandbox.stub(nats_utils, 'getServerConfig').returns({ port: 1234 });
@@ -126,6 +159,9 @@ describe('Test status module', () => {
 		sandbox.stub(cluster_status, 'clusterStatus').resolves(fake_cluster_status);
 		sandbox.stub(nats_utils, 'closeConnection').resolves();
 		sandbox.stub(run, 'isHdbInstalled').resolves(true);
+		http_request_stub = sandbox
+			.stub(hdb_utils, 'httpRequest')
+			.resolves({ body: JSON.stringify(fake_replication_status) });
 	});
 
 	after(() => {
@@ -141,13 +177,16 @@ describe('Test status module', () => {
 		await status();
 		process_exit_stub.restore();
 		expect(console_log_stub.args[0][0]).to.eql(
-			'harperdb:\n  status: running\n  pid: 62076\nclustering:\n  hub server:\n    status: running\n    pid: 62076\n  leaf server:\n    status: running\n    pid: 62076\n  network:\n    - name: local\n      response time: 8\n      connected nodes:\n        - ec2-3-14-144-240\n      routes:\n        - host: 3.14.144.240\n          port: 12345\n    - name: ec2-3-14-144-240\n      response time: 43\n      connected nodes:\n        - local\n        - ec2-18-216-178-34\n        - ec2-3-133-121-113\n      routes: []\n  replication:\n    node name: local\n    is enabled: true\n    connections:\n      - node name: ec2-18-216-178-34\n        status: NoResponders\n        ports: {}\n        subscriptions:\n          - schema: four\n            table: frog\n            publish: true\n            subscribe: true\n        system info: {}\n      - node name: ec2-3-14-144-240\n        status: open\n        ports:\n          clustering: 12345\n          operations api: 9925\n        latency ms: 108\n        uptime: 18h 18m 3s\n        subscriptions:\n          - schema: four\n            table: frog\n            publish: true\n            subscribe: true\n          - schema: four\n            table: bird\n            publish: true\n            subscribe: true\n        system info:\n          hdb version: 4.1.1\n          node version: 18.15.0\n          platform: linux\n'
+			'harperdb:\n  status: running\n  pid: 62076\nreplication:\n  node name: node-2\n  is enabled: true\n  connections:\n    - node name: node-1\n      url: wss://127.0.0.1:9925\n      subscriptions:\n        - database: data\n          table: fish\n          publish: true\n          subscribe: true\n      database sockets:\n        - database: data\n          connected: true\n          latency: 0.49228906631469727\n          catching up from: up-to-date\n          thread id: 1\n          nodes:\n            - node-1\nclustering:\n  hub server:\n    status: running\n    pid: 62076\n  leaf server:\n    status: running\n    pid: 62076\n  network:\n    - name: local\n      response time: 8\n      connected nodes:\n        - ec2-3-14-144-240\n      routes:\n        - host: 3.14.144.240\n          port: 12345\n    - name: ec2-3-14-144-240\n      response time: 43\n      connected nodes:\n        - local\n        - ec2-18-216-178-34\n        - ec2-3-133-121-113\n      routes: []\n  replication:\n    node name: local\n    is enabled: true\n    connections:\n      - node name: ec2-18-216-178-34\n        status: NoResponders\n        ports: {}\n        subscriptions:\n          - schema: four\n            table: frog\n            publish: true\n            subscribe: true\n        system info: {}\n      - node name: ec2-3-14-144-240\n        status: open\n        ports:\n          clustering: 12345\n          operations api: 9925\n        latency ms: 108\n        uptime: 18h 18m 3s\n        subscriptions:\n          - schema: four\n            table: frog\n            publish: true\n            subscribe: true\n          - schema: four\n            table: bird\n            publish: true\n            subscribe: true\n        system info:\n          hdb version: 4.1.1\n          node version: 18.15.0\n          platform: linux\n'
 		);
 	});
 
 	it('Test status when nothing is running', async () => {
+		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.REPLICATION_HOSTNAME, undefined);
+		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.REPLICATION_URL, undefined);
 		const process_exit_stub = sandbox.stub(process, 'exit');
 		get_hdb_process_info_stub.resolves({ core: [], clustering: [] });
+
 		await status();
 		process_exit_stub.restore();
 		expect(console_log_stub.args[0][0]).to.eql(
