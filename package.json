@@ -68,7 +68,7 @@
 		"coverage": "nyc --reporter=lcov npm test",
 		"format": "prettier .",
 		"format:fix": "npm run format -- --write",
-		"lint": "eslint . --ignore-path .gitignore --ignore-pattern 'studio/' --ignore-pattern 'application-template/'",
+		"lint": "eslint .",
 		"lint:fix": "npm run lint -- --fix"
 	},
 	"dependencies": {
