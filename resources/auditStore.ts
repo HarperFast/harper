@@ -365,13 +365,13 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined) {
 			},
 			getValue(store, full_record?, audit_time?) {
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !full_record))
-					return store.decoder.decode(buffer.subarray(decoder.position));
+					return store.decoder.decode(buffer.subarray(decoder.position, end));
 				if (action & HAS_PARTIAL_RECORD && audit_time) {
 					return getRecordAtTime(store.getEntry(this.recordId), audit_time, store);
 				} // TODO: If we store a partial and full record, may need to read both sequentially
 			},
 			getBinaryValue() {
-				return action & (HAS_RECORD | HAS_PARTIAL_RECORD) ? buffer.subarray(decoder.position) : undefined;
+				return action & (HAS_RECORD | HAS_PARTIAL_RECORD) ? buffer.subarray(decoder.position, end) : undefined;
 			},
 			extendedType: action,
 			residencyId: residency_id,
