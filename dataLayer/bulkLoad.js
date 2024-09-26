@@ -82,13 +82,13 @@ async function csvDataLoad(json_message, nats_msg_header) {
 		const attrsPermsErrors = new PermissionResponseObject();
 
 		if (
-			json_message?.hdb_user &&
-			json_message?.hdb_user?.role &&
-			json_message?.hdb_user?.role?.permission &&
-			json_message?.hdb_user?.role?.permission?.super_user !== true
+			json_message.hdb_user &&
+			json_message.hdb_user?.role &&
+			json_message.hdb_user?.role?.permission &&
+			json_message.hdb_user?.role?.permission?.super_user !== true
 		) {
 			verifyBulkLoadAttributePerms(
-				json_message?.hdb_user?.role?.permission,
+				json_message.hdb_user?.role?.permission,
 				this.job_operation_function.name,
 				json_message.action,
 				json_message.schema,
@@ -159,7 +159,7 @@ async function csvURLLoad(json_message) {
 			json_message.table,
 			temp_file_path,
 			hdb_terms.VALID_S3_FILE_TYPES.CSV,
-			json_message?.hdb_user?.role?.permission
+			json_message.hdb_user?.role?.permission
 		);
 
 		let bulk_load_result = await fileLoad(csv_file_load_obj);
@@ -200,7 +200,7 @@ async function csvFileLoad(json_message) {
 		json_message.table,
 		json_message.file_path,
 		hdb_terms.VALID_S3_FILE_TYPES.CSV,
-		json_message?.hdb_user?.role?.permission
+		json_message.hdb_user?.role?.permission
 	);
 
 	try {
@@ -243,7 +243,7 @@ async function importFromS3(json_message) {
 			json_message.table,
 			temp_file_path,
 			s3_file_type,
-			json_message?.hdb_user?.role?.permission
+			json_message.hdb_user?.role?.permission
 		);
 
 		await downloadFileFromS3(s3_file_name, json_message);
