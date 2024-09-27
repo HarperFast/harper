@@ -329,17 +329,17 @@ function verifyPerms(request_json, operation) {
 	const permsResponse = new PermissionResponseObject();
 
 	if (
-		common_utils.isEmptyOrZeroLength(request_json.hdb_user.role) ||
-		common_utils.isEmptyOrZeroLength(request_json.hdb_user.role.permission)
+		common_utils.isEmptyOrZeroLength(request_json.hdb_user?.role) ||
+		common_utils.isEmptyOrZeroLength(request_json.hdb_user?.role?.permission)
 	) {
 		harper_logger.info(
-			`User ${request_json.hdb_user.username} has no role or permissions.  Please assign the user a valid role.`
+			`User ${request_json.hdb_user?.username} has no role or permissions.  Please assign the user a valid role.`
 		);
-		return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.USER_HAS_NO_PERMS(request_json.hdb_user.username));
+		return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.USER_HAS_NO_PERMS(request_json.hdb_user?.username));
 	}
 
-	const is_super_user = !!request_json.hdb_user.role.permission.super_user;
-	const structure_user = request_json.hdb_user.role.permission.structure_user;
+	const is_super_user = !!request_json.hdb_user?.role?.permission?.super_user;
+	const structure_user = request_json.hdb_user?.role?.permission?.structure_user;
 	// set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
 	let is_su_system_operation =
 		schema_table_map.has(terms.SYSTEM_SCHEMA_NAME) || operation_schema === terms.SYSTEM_SCHEMA_NAME;
@@ -376,8 +376,8 @@ function verifyPerms(request_json, operation) {
 		);
 	}
 
-	const full_role_perms = permsTranslator.getRolePermissions(request_json.hdb_user.role);
-	request_json.hdb_user.role.permission = full_role_perms;
+	const full_role_perms = permsTranslator.getRolePermissions(request_json.hdb_user?.role);
+	if (request_json.hdb_user?.role) request_json.hdb_user.role.permission = full_role_perms;
 
 	//check if user is trying to describe a system table and, if so, return schema perm error
 	if (op === DESCRIBE_SCHEMA_KEY || op === DESCRIBE_TABLE_KEY) {
@@ -439,7 +439,7 @@ function verifyPerms(request_json, operation) {
 	}
 
 	const record_attrs = getRecordAttributes(request_json);
-	const attr_permissions = getAttributePermissions(request_json.hdb_user.role.permission, operation_schema, table);
+	const attr_permissions = getAttributePermissions(request_json.hdb_user?.role?.permission, operation_schema, table);
 	checkAttributePerms(record_attrs, attr_permissions, op, table, operation_schema, permsResponse, action);
 
 	//This result value will be null if no perms issues were found in checkAttributePerms

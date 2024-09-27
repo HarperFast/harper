@@ -142,7 +142,7 @@ function chooseOperation(json) {
 				let ast_perm_check = sql.checkASTPermissions(json, parsed_sql_object);
 				if (ast_perm_check) {
 					operation_log.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
-					operation_log.warn(`User '${json.hdb_user.username}' is not permitted to ${json.operation}`);
+					operation_log.warn(`User '${json.hdb_user?.username}' is not permitted to ${json.operation}`);
 					throw handleHDBError(
 						new Error(),
 						ast_perm_check,
@@ -171,7 +171,7 @@ function chooseOperation(json) {
 			if (verify_perms_result) {
 				operation_log.error(`${HTTP_STATUS_CODES.FORBIDDEN} from operation ${json.operation}`);
 				operation_log.warn(
-					`User '${operation_json.hdb_user.username}' is not permitted to ${operation_json.operation}`
+					`User '${operation_json.hdb_user?.username}' is not permitted to ${operation_json.operation}`
 				);
 				throw handleHDBError(
 					new Error(),

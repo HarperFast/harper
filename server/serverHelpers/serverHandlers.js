@@ -91,9 +91,9 @@ async function handlePostRequest(req, res, bypass_auth = false) {
 	let operation_function;
 
 	try {
-		if (bypass_auth && (req.body.operation !== 'configure_cluster' || req.body.operation !== 'set_configuration')) {
-			req.body.bypass_auth = bypass_auth;
-		}
+		// Just in case someone tries to bypass auth
+		if (req.body.bypass_auth) delete req.body.bypass_auth;
+
 		operation_function = server_utilities.chooseOperation(req.body);
 		let result = await server_utilities.processLocalTransaction(req, operation_function);
 		if (result instanceof Readable && result.headers) {
