@@ -102,7 +102,10 @@ async function runCommand(command, cwd = undefined, env = process.env) {
  * @returns {Promise<{}>}
  */
 async function installModules(req) {
-	harper_logger.info(`starting installModules for request: ${req}`);
+	const deprecation_warning =
+		'install_node_modules is deprecated. Dependencies are automatically installed on' +
+		' deploy, and install_node_modules can lead to inconsistent behavior';
+	harper_logger.warn(deprecation_warning, req);
 	const validation = modulesValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
@@ -150,6 +153,7 @@ async function installModules(req) {
 		}
 	}
 	harper_logger.info(`finished installModules with response ${response_object}`);
+	response_object.warning = deprecation_warning;
 	return response_object;
 }
 
