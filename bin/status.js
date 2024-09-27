@@ -14,6 +14,7 @@ const cluster_status = require('../utility/clustering/clusterStatus');
 const sys_info = require('../utility/environment/systemInformation');
 const env_mgr = require('../utility/environment/environmentManager');
 const run = require('./run');
+const hdb_utils = require('../utility/common_utils');
 env_mgr.initSync();
 
 const STATUSES = {
@@ -69,6 +70,12 @@ async function status() {
 		}
 	}
 
+	if (
+		env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_URL) ||
+		env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_HOSTNAME)
+	) {
+		status.replication = await getReplicationStatus();
+	}
 	status.clustering = await getHubLeafStatus(hdb_sys_info);
 
 	// Can only get cluster network & status if both servers are running and happy
@@ -178,4 +185,48 @@ async function getHubLeafStatus(hdb_sys_info) {
 	}
 
 	return status;
+}
+
+/**
+ * Gets the replication AKA Plexus status of the HarperDB instance
+ * @returns {Promise<{"node name", "is enabled": (boolean|*), connections: *[]}>}
+ */
+async function getReplicationStatus() {
+	let response = await hdb_utils.httpRequest(
+		{
+			method: 'POST',
+			protocol: 'http:',
+			socketPath: env_mgr.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET),
+			headers: { 'Content-Type': 'application/json' },
+		},
+		{ operation: 'cluster_status' }
+	);
+
+	response = JSON.parse(response.body);
+	const rep_status = {
+		'node name': response.node_name,
+		'is enabled': response.is_enabled,
+		'connections': [],
+	};
+
+	for (const cons of response.connections) {
+		rep_status.connections.push({
+			'node name': cons.name,
+			'url': cons.url,
+			'subscriptions': cons.subscriptions,
+			'replicates': cons.replicates,
+			'database sockets': cons.database_sockets.map((socket) => {
+				return {
+					'database': socket.database,
+					'connected': socket.connected,
+					'latency': socket.latency,
+					'catching up from': socket.catching_up_from,
+					'thread id': socket.thread_id,
+					'nodes': socket.nodes,
+				};
+			}),
+		});
+	}
+
+	return rep_status;
 }
