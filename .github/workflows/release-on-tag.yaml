@@ -126,7 +126,7 @@ jobs:
           patch: ${version_patch}
 
           EOF
-
+          
           [[ "${release_type}" != "stable" ]] && echo "pre-release version: ${release_type}.${prerelease_version:-}" >> "${GITHUB_STEP_SUMMARY}"
           
           cat <<EOF
@@ -276,7 +276,7 @@ jobs:
       container: 'harperdb/private'
       latest: ${{ needs.meta.outputs.dockerhub_tag_latest == 'true' && true || false }}
       platforms: 'linux/amd64,linux/arm64'
-      push: ${{ needs.meta.outputs.push }}
+      push: ${{ needs.meta.outputs.push == 'true' && true || false }}
     secrets:
       DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
       DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
@@ -665,4 +665,4 @@ jobs:
               ]
             }
           ]
-        } 
+        }

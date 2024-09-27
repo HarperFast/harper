@@ -28,10 +28,11 @@ module.exports = {
 async function describeAll(op_obj) {
 	try {
 		const sys_call = hdb_utils.isEmptyOrZeroLength(op_obj);
+		const bypass_auth = !!op_obj.bypass_auth;
 		let role_perms;
 		let is_su;
-		if (!sys_call) {
-			role_perms = op_obj.hdb_user.role.permission;
+		if (!sys_call && !bypass_auth) {
+			role_perms = op_obj.hdb_user?.role?.permission;
 			is_su = role_perms.super_user || role_perms.cluster_user;
 		}
 		let databases = getDatabases();
@@ -41,12 +42,13 @@ async function describeAll(op_obj) {
 		const exact_count = op_obj?.exact_count;
 		for (let schema in databases) {
 			schema_list[schema] = true;
-			if (!sys_call && !is_su) schema_perms[schema] = op_obj.hdb_user.role.permission[schema].describe;
+			if (!sys_call && !is_su && !bypass_auth)
+				schema_perms[schema] = op_obj.hdb_user?.role?.permission[schema]?.describe;
 			let tables = databases[schema];
 			for (let table in tables) {
 				try {
 					let desc;
-					if (sys_call || is_su) {
+					if (sys_call || is_su || bypass_auth) {
 						desc = await descTable({ schema, table, exact_count });
 					} else if (role_perms && role_perms[schema].describe && role_perms[schema].tables[table].describe) {
 						const t_attr_perms = role_perms[schema].tables[table].attribute_permissions;
@@ -63,7 +65,7 @@ async function describeAll(op_obj) {
 
 		let hdb_description = {};
 		for (let t in t_results) {
-			if (sys_call || is_su) {
+			if (sys_call || is_su || bypass_auth) {
 				if (hdb_description[t_results[t].schema] == null) {
 					hdb_description[t_results[t].schema] = {};
 				}
@@ -85,7 +87,7 @@ async function describeAll(op_obj) {
 		}
 
 		for (let schema in schema_list) {
-			if (sys_call || is_su) {
+			if (sys_call || is_su || bypass_auth) {
 				hdb_description[schema] = {};
 			} else if (schema_perms[schema]) {
 				hdb_description[schema] = {};
@@ -118,8 +120,8 @@ async function descTable(describe_table_object, attr_perms) {
 
 	//If the describe_table_object includes a `hdb_user` value, it is being called from the API and we can grab the user's
 	// role permissions from there
-	if (describe_table_object.hdb_user && !describe_table_object.hdb_user.role.permission.super_user) {
-		table_attr_perms = describe_table_object.hdb_user.role.permission[schema].tables[table].attribute_permissions;
+	if (describe_table_object.hdb_user && !describe_table_object.hdb_user?.role?.permission?.super_user) {
+		table_attr_perms = describe_table_object.hdb_user?.role?.permission[schema]?.tables[table]?.attribute_permissions;
 	}
 
 	let validation = validator.describe_table(describe_table_object);
@@ -233,8 +235,8 @@ async function describeSchema(describe_schema_object) {
 
 	let schema_perms;
 
-	if (describe_schema_object.hdb_user && !describe_schema_object.hdb_user.role.permission.super_user) {
-		schema_perms = describe_schema_object.hdb_user.role.permission[describe_schema_object.schema];
+	if (describe_schema_object.hdb_user && !describe_schema_object.hdb_user?.role?.permission?.super_user) {
+		schema_perms = describe_schema_object.hdb_user?.role?.permission[describe_schema_object.schema];
 	}
 	const schema_name = describe_schema_object.schema.toString();
 
