@@ -4,7 +4,6 @@ import search_validator from '../../validation/searchValidator';
 import { handleHDBError, ClientError, hdb_errors } from '../../utility/errors/hdbError';
 import { table, getDatabases, database, dropDatabase } from '../../resources/databases';
 import insertUpdateValidate from './bridgeUtility/insertUpdateValidate';
-import lmdbProcessRows from './lmdbBridge/lmdbUtility/lmdbProcessRows';
 import SearchObject from '../SearchObject';
 import {
 	OPERATIONS_ENUM,
@@ -175,8 +174,6 @@ export class ResourceBridge extends LMDBBridge {
 	async upsertRecords(upsert_obj) {
 		const { schema_table, attributes } = insertUpdateValidate(upsert_obj);
 
-		lmdbProcessRows(upsert_obj, attributes, schema_table.primaryKey);
-
 		let new_attributes;
 		const Table = getDatabases()[upsert_obj.schema][upsert_obj.table];
 		const context = {
@@ -210,7 +207,8 @@ export class ResourceBridge extends LMDBBridge {
 			const keys = [];
 			const skipped = [];
 			for (const record of upsert_obj.records) {
-				let existing_record = await Table.get(record[Table.primaryKey], context);
+				const id = record[Table.primaryKey];
+				let existing_record = id != undefined && (await Table.get(id, context));
 				if (
 					(upsert_obj.requires_existing && !existing_record) ||
 					(upsert_obj.requires_no_existing && existing_record)
@@ -242,7 +240,7 @@ export class ResourceBridge extends LMDBBridge {
 						if (!Object.prototype.hasOwnProperty.call(record, key)) record[key] = existing_record[key];
 					}
 				}
-				await Table.put(record, context);
+				await (id == undefined ? Table.create(record, context) : Table.put(record, context));
 				keys.push(record[Table.primaryKey]);
 			}
 			return {

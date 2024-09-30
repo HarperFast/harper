@@ -30,6 +30,7 @@ function processRows(insert_obj, attributes, hash_attribute) {
 		validateHash(record, hash_attribute, insert_obj.operation);
 	}
 }
+processRows.validateAttribute = validateAttribute;
 
 /**
  * Validates that attribute is under max size and is not null, undefined or empty.
