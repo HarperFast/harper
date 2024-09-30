@@ -594,12 +594,15 @@ export function table({
 			attribute_name = attribute_table_name;
 		}
 		const attribute = attributes.find((attribute) => attribute.name === attribute_name);
-		if (!attribute?.indexed && value.indexed && !value.isPrimaryKey) {
+		const remove_index = !attribute?.indexed && value.indexed && !value.isPrimaryKey;
+		if (!attribute || remove_index) {
 			startTxn();
 			has_changes = true;
-			attributes_dbi.remove(key);
-			const index_dbi = Table.indices[attribute_table_name];
-			if (index_dbi) indices_to_remove.push(index_dbi);
+			if (!attribute) attributes_dbi.remove(key);
+			if (remove_index) {
+				const index_dbi = Table.indices[attribute_table_name];
+				if (index_dbi) indices_to_remove.push(index_dbi);
+			}
 		}
 	}
 	const attributes_to_index = [];
