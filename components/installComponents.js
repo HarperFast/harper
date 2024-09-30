@@ -61,6 +61,17 @@ async function installComponents() {
 				update_occurred = true;
 				break;
 			}
+			if (pkg.startsWith('file:')) {
+				try {
+					if (fs.statSync(new URL(pkg + '/package.json')).mtimeMs > fs.statSync(pkg_json_path).mtimeMs) {
+						update_occurred = true;
+						break;
+					}
+				} catch (err) {
+					hdb_log.info(`Error checking ${pkg}/package.json modification time`, err);
+					break;
+				}
+			}
 		}
 	}
 
