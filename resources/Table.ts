@@ -8,7 +8,8 @@ import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME 
 import { Database, SKIP } from 'lmdb';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
-import { Query, ResourceInterface, Request, SubscriptionRequest, Id, Context } from './ResourceInterface';
+import { Query, ResourceInterface, SubscriptionRequest, Id, Context } from './ResourceInterface';
+import { validateAttribute } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows';
 import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
 import { DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction';
 import * as env_mngr from '../utility/environment/environmentManager';
@@ -2009,7 +2010,7 @@ export function makeTable(options) {
 				if (!attribute.name) throw new ClientError('Attribute name is required');
 				if (attribute.name.match(/[`/]/))
 					throw new ClientError('Attribute names cannot include backticks or forward slashes');
-
+				validateAttribute(attribute.name);
 				new_attributes.push(attribute);
 			}
 			table({
