@@ -18,6 +18,7 @@ import {
 	Sort,
 	SubSelect,
 } from './ResourceInterface';
+import { validateAttribute } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows';
 import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
 import { DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction';
 import * as env_mngr from '../utility/environment/environmentManager';
@@ -2487,7 +2488,7 @@ export function makeTable(options) {
 				if (!attribute.name) throw new ClientError('Attribute name is required');
 				if (attribute.name.match(/[`/]/))
 					throw new ClientError('Attribute names cannot include backticks or forward slashes');
-
+				validateAttribute(attribute.name);
 				new_attributes.push(attribute);
 			}
 			table({

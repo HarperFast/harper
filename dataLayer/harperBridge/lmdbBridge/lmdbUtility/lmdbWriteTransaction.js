@@ -65,7 +65,7 @@ async function writeTransaction(hdb_operation, lmdb_response) {
  * @returns {LMDBInsertTransactionObject|LMDBUpdateTransactionObject|LMDBDeleteTransactionObject}
  */
 function createTransactionObject(hdb_operation, lmdb_response) {
-	let username = !hdb_util.isEmpty(hdb_operation.hdb_user) ? hdb_operation.hdb_user.username : undefined;
+	let username = !hdb_util.isEmpty(hdb_operation.hdb_user) ? hdb_operation.hdb_user?.username : undefined;
 	if (hdb_operation.operation === OPERATIONS_ENUM.INSERT) {
 		return new LMDBInsertTransactionObject(
 			hdb_operation.records,
