@@ -417,13 +417,12 @@ async function deployComponent(req) {
 
 	// The main thread can install the components, but we do it here and now so that if it fails, we can immediately
 	// know about it and report it.
-	if (!payload) {
-		await installComponents();
-		// now we attempt to actually load the component in case there is
-		// an error we can immediately detect and report
-		const root_path = eng_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
-		path_to_project = path.join(root_path, 'node_modules', project);
-	}
+	await installComponents();
+	// now we attempt to actually load the component in case there is
+	// an error we can immediately detect and report
+	const root_path = eng_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
+	path_to_project = path.join(root_path, 'node_modules', project);
+
 	// the main thread should never actually load component, just do a deploy
 	if (isMainThread) return;
 	const pseudo_resources = new Map();
