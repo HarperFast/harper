@@ -204,7 +204,7 @@ async function http(request: Context & Request, next_handler) {
 		if (error.statusCode) {
 			if (error.statusCode === 500) harper_logger.warn(error);
 			else harper_logger.info(error);
-		} else harper_logger.error(error);
+		} else harper_logger.error('Unexpected REST error', error);
 		if (error.statusCode === 405) {
 			if (error.method) error.message += ` to handle HTTP method ${error.method.toUpperCase() || ''}`;
 			if (error.allow) {
