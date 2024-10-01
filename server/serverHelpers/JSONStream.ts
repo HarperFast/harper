@@ -1,4 +1,5 @@
 import { Readable } from 'stream';
+import * as harper_logger from '../../utility/logging/harper_logger';
 import JSONbig from 'json-bigint-fixes';
 const JSONbigint = JSONbig({ useNativeBigInt: true });
 const BUFFER_SIZE = 10000;
@@ -267,6 +268,16 @@ export function parse(json) {
 	if (typeof json !== 'string') json = json.toString(); // make sure we just do this once
 	// we use JSONbig if there is a big number in the JSON, otherwise we use the native JSON parser
 	// because JSONbig is much slower (about 4x slower)
-	if (HAS_BIG_NUMBER.test(json)) return JSONbigint.parse(json);
-	else return JSON.parse(json);
+
+	if (HAS_BIG_NUMBER.test(json)) {
+		harper_logger.info('JSON parse is using JSONbig');
+		try {
+			const result = JSONbigint.parse(json);
+			harper_logger.info('JSON parsed as', result);
+			return result;
+		} catch (error) {
+			harper_logger.error('JSON parse error', error);
+			throw error;
+		}
+	} else return JSON.parse(json);
 }

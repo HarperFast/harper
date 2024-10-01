@@ -7,6 +7,7 @@ import { ClientError } from '../utility/errors/hdbError';
 import { OWN_DATA } from './tracked';
 import { transaction } from './transaction';
 import { parseQuery, SimpleURLQuery } from './search';
+import * as harper_logger from '../utility/logging/harper_logger';
 
 export const CONTEXT = Symbol.for('context');
 export const ID_PROPERTY = Symbol.for('primary-key');
@@ -77,6 +78,7 @@ export class Resource implements ResourceInterface {
 	 */
 	static put = transactional(
 		function (resource: Resource, query?: Map, request: Context, data?: any) {
+			harper_logger.info('Resource.put', data);
 			if (Array.isArray(data) && resource[IS_COLLECTION]) {
 				const results = [];
 				const authorize = request.authorize;
