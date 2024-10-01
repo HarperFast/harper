@@ -78,7 +78,6 @@ export class Resource implements ResourceInterface {
 	 */
 	static put = transactional(
 		function (resource: Resource, query?: Map, request: Context, data?: any) {
-			harper_logger.info('Resource.put', data);
 			if (Array.isArray(data) && resource[IS_COLLECTION]) {
 				const results = [];
 				const authorize = request.authorize;
