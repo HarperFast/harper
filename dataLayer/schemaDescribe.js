@@ -33,7 +33,7 @@ async function describeAll(op_obj = {}) {
 		let is_su;
 		if (!sys_call && !bypass_auth) {
 			role_perms = op_obj.hdb_user?.role?.permission;
-			is_su = role_perms.super_user || role_perms.cluster_user;
+			is_su = role_perms?.super_user || role_perms.cluster_user;
 		}
 		let databases = getDatabases();
 		let schema_list = {};
