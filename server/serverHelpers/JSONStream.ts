@@ -270,13 +270,14 @@ export function parse(json) {
 	// because JSONbig is much slower (about 4x slower)
 
 	if (HAS_BIG_NUMBER.test(json)) {
-		harper_logger.info('JSON parse is using JSONbig');
+		harper_logger.info('JSON parse is using JSONbig', json);
 		try {
 			const result = JSONbigint.parse(json);
 			harper_logger.info('JSON parsed as', result);
 			return result;
 		} catch (error) {
 			harper_logger.error('JSON parse error', error);
+			JSON.parse(json); // will this will throw an error?
 			throw error;
 		}
 	} else return JSON.parse(json);
