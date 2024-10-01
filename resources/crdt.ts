@@ -26,7 +26,7 @@ const operations = {
  * @param update
  * @param newer_update
  */
-export function rebuildUpdateBefore(update, newer_update) {
+export function rebuildUpdateBefore(update: any, newer_update: any, full_update?: boolean) {
 	let new_update = null;
 	for (const key in update) {
 		if (key in newer_update) {
@@ -46,8 +46,13 @@ export function rebuildUpdateBefore(update, newer_update) {
 					// and apply the newer update
 					add(new_update, key, newer_value);
 				}
-			} // else if the newer update has a direct non-CRDT value, it overwrites the older update, so we can ignore/skip it
+			} else if (full_update) {
+				// if the newer update has a direct non-CRDT value, it overwrites the older update, but if we are using a full copy, we need to include it
+				if (!new_update) new_update = {};
+				new_update[key] = newer_value;
+			} // else we can skip for a patch
 		} else {
+			// if the newer update does not have a value for this key, we can include it
 			if (!new_update) new_update = {};
 			new_update[key] = update[key];
 		}

@@ -314,7 +314,7 @@ const hasOwnProperty = Object.prototype.hasOwnProperty;
  * @param target
  * @returns
  */
-export function deepFreeze(target, changes = target[OWN_DATA]) {
+export function updateAndFreeze(target, changes = target[OWN_DATA]) {
 	let copied_source;
 	if (hasOwnProperty.call(target, RECORD_PROPERTY) && target.constructor === Array && !Object.isFrozen(target)) {
 		// a tracked array, by default we can freeze the tracked array itself
@@ -322,7 +322,7 @@ export function deepFreeze(target, changes = target[OWN_DATA]) {
 		for (let i = 0, l = target.length; i < l; i++) {
 			let value = target[i];
 			if (value && typeof value === 'object') {
-				const new_value = deepFreeze(value);
+				const new_value = updateAndFreeze(value);
 				if (new_value !== value && copied_source === target) {
 					// if we need to make any changes to the user's array, we make a copy so we don't modify
 					// an array that the user may be using with transient properties
@@ -344,7 +344,7 @@ export function deepFreeze(target, changes = target[OWN_DATA]) {
 				if (!operation) throw new Error('Invalid CRDT operation ' + value.__op__);
 				else operation(copied_source, key, value);
 				continue;
-			} else value = deepFreeze(value);
+			} else value = updateAndFreeze(value);
 		}
 		copied_source[key] = value;
 	}
