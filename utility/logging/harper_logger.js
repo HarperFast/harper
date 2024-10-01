@@ -280,7 +280,11 @@ function createLogRecord(level, args) {
 		if (arg instanceof Error && arg.stack) {
 			log_msg += arg.stack;
 		} else if (typeof arg === 'object') {
-			log_msg += JSON.stringify(arg);
+			try {
+				log_msg += JSON.stringify(arg);
+			} catch (error) {
+				log_msg += 'Object [' + Object.keys(arg) + ']';
+			}
 		} else {
 			log_msg += arg;
 		}
