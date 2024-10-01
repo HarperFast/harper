@@ -25,7 +25,7 @@ module.exports = {
  * @param op_obj
  * @returns {Promise<{}|HdbError>}
  */
-async function describeAll(op_obj) {
+async function describeAll(op_obj = {}) {
 	try {
 		const sys_call = hdb_utils.isEmptyOrZeroLength(op_obj);
 		const bypass_auth = !!op_obj.bypass_auth;
