@@ -95,6 +95,7 @@ describe('Test setNode', () => {
 			{
 				url: 'wss://127.0.0.4:9925',
 				ca: test_signing_ca,
+				subscriptions: null,
 				replicates: true,
 			},
 		]);
@@ -119,6 +120,7 @@ describe('Test setNode', () => {
 			{
 				url: 'wss://127.0.0.4:9925',
 				ca: test_using_ca,
+				subscriptions: null,
 				replicates: true,
 			},
 		]);
@@ -127,6 +129,7 @@ describe('Test setNode', () => {
 			{
 				url: 'wss://127.0.0.4:9925',
 				ca: test_using_ca,
+				subscriptions: null,
 				replicates: true,
 			},
 		]);
