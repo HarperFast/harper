@@ -1048,7 +1048,7 @@ export function makeTable(options) {
 				before: apply_to_sources.invalidate?.bind(this, context, id),
 				beforeIntermediate: apply_to_sources_intermediate.invalidate?.bind(this, context, id),
 				commit: (txn_time, existing_entry) => {
-					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId)) return;
+					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId) <= 0) return;
 					let partial_record = null;
 					for (const name in indices) {
 						if (!partial_record) partial_record = {};
@@ -1084,7 +1084,7 @@ export function makeTable(options) {
 				before: apply_to_sources.relocate?.bind(this, context, id),
 				beforeIntermediate: apply_to_sources_intermediate.relocate?.bind(this, context, id),
 				commit: (txn_time, existing_entry) => {
-					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId)) return;
+					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId) <= 0) return;
 					const residency = TableResource.getResidencyRecord(options.residencyId);
 					let metadata = 0;
 					let new_record = null;
@@ -1309,9 +1309,9 @@ export function makeTable(options) {
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
-					const precedes_existing_version = precedesExistingVersion(txn_time, existing_entry, options?.nodeId);
+					let precedes_existing_version = precedesExistingVersion(txn_time, existing_entry, options?.nodeId);
 					let audit_record_to_store: any; // what to store in the audit record. For a full update, this can be left undefined in which case it is the same as full record update and optimized to use a binary copy
-					if (precedes_existing_version) {
+					if (precedes_existing_version <= 0) {
 						// This block is to handle the case of saving an update where the transaction timestamp is older than the
 						// existing timestamp, which means that we received updates out of order, and must resequence the application
 						// of the updates to the record to ensure consistency across the cluster
@@ -1327,15 +1327,18 @@ export function makeTable(options) {
 								if (!audit_entry) break;
 								const audit_record = readAuditEntry(audit_entry);
 								audited_version = audit_record.version;
-								if (
-									audited_version > txn_time ||
-									(audited_version === txn_time &&
-										precedesExistingVersion(
+								if (audited_version >= txn_time) {
+									if (audited_version === txn_time) {
+										precedes_existing_version = precedesExistingVersion(
 											txn_time,
 											{ version: audited_version, localTime: local_time },
 											options?.nodeId
-										))
-								) {
+										);
+										if (precedes_existing_version === 0) {
+											return; // treat a tie as a duplicate and drop it
+										}
+										if (precedes_existing_version > 0) continue; // if the existing version is older, we can skip this update
+									}
 									if (audit_record.type === 'patch') {
 										// record patches so we can reply in order
 										succeeding_updates.push(audit_record);
@@ -1468,7 +1471,7 @@ export function makeTable(options) {
 							context.lastModified = existing_entry.version;
 						updateResource(this, existing_entry);
 					}
-					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId)) return; // a newer record exists locally
+					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId) <= 0) return; // a newer record exists locally
 					updateIndices(this[ID_PROPERTY], existing_record);
 					logger.trace?.(`Deleting record with id: ${id}, txn timestamp: ${new Date(txn_time).toISOString()}`);
 					if (audit || track_deletes) {
@@ -3125,7 +3128,11 @@ export function makeTable(options) {
 		return ids;
 	}
 
-	function precedesExistingVersion(txn_time, existing_entry, node_id = server.replication?.getThisNodeId(audit_store)) {
+	function precedesExistingVersion(
+		txn_time: number,
+		existing_entry: Entry,
+		node_id: number = server.replication?.getThisNodeId(audit_store)
+	): number {
 		if (txn_time <= existing_entry?.version) {
 			if (existing_entry?.version === txn_time && node_id !== undefined) {
 				// if we have a timestamp tie, we break the tie by comparing the node name of the
@@ -3143,13 +3150,14 @@ export function makeTable(options) {
 					}
 					if (updated_node_name > existing_node_name)
 						// if the updated node name is greater (alphabetically), it wins (it doesn't precede the existing version)
-						return false;
+						return 1;
+					if (updated_node_name === existing_node_name) return 0; // a tie
 				}
 			}
 			// transaction time is older than existing version, so we treat that as an update that loses to the existing record version
-			return true;
+			return -1;
 		}
-		return false;
+		return 1;
 	}
 
 	/**
