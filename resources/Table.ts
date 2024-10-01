@@ -1292,12 +1292,6 @@ export function makeTable(options) {
 					? () => apply_to_sources_intermediate.put(context, id, deepFreeze(this))
 					: null,
 				commit: (txn_time, existing_entry, retry) => {
-					logger.trace?.(
-						'Committing record update for id:',
-						id,
-						'value size',
-						record_update && Object.keys(record_update)
-					);
 					if (retry) {
 						if (context && existing_entry?.version > (context.lastModified || 0))
 							context.lastModified = existing_entry.version;

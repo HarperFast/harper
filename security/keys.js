@@ -216,7 +216,7 @@ function loadCertificates() {
 								let record_timestamp =
 									!cert_record || cert_record.is_self_signed
 										? 1
-										: (cert_record.file_timestamp ?? cert_record.__updatedtime__);
+										: cert_record.file_timestamp ?? cert_record.__updatedtime__;
 								if (cert_record && file_timestamp <= record_timestamp) {
 									if (file_timestamp < record_timestamp)
 										hdb_logger.info(
@@ -650,7 +650,7 @@ async function reviewSelfSignedCert() {
 
 	let ca_and_key = await getCertAuthority();
 	if (!ca_and_key) {
-		hdb_logger.warn('No self signed Cert Authority found, generating new self signed CA');
+		hdb_logger.info('No self signed Cert Authority found, generating new self signed CA');
 		await getPrivateKey();
 		const hdb_ca = await generateCertAuthority(private_key, pki.setRsaPublicKey(private_key.n, private_key.e));
 		await setCertTable({
@@ -666,7 +666,7 @@ async function reviewSelfSignedCert() {
 	const existing_cert = await getReplicationCert();
 	if (!existing_cert) {
 		const cert_name = getThisNodeName();
-		hdb_logger.warn(
+		hdb_logger.info(
 			`A suitable replication certificate was not found, creating new self singed cert named: ${cert_name}`
 		);
 
@@ -1151,5 +1151,5 @@ function hostnamesFromCert(cert /*X509Certificate*/) {
 				})
 				.filter((part) => part) // filter out any empty names
 		: // finally we fall back to the common name
-			[extractCommonName(cert)];
+		  [extractCommonName(cert)];
 }
