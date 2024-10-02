@@ -603,7 +603,7 @@ Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
 		return (
 			'connection' in this.headers &&
 			'upgrade' in this.headers &&
-			this.headers.connection.startsWith('Upgrade') &&
+			this.headers.connection.includes('Upgrade') &&
 			this.headers.upgrade.toLowerCase() == 'websocket'
 		);
 	},
