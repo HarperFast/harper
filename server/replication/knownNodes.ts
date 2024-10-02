@@ -38,6 +38,9 @@ export function getHDBNodeTable() {
 					attribute: 'ca',
 				},
 				{
+					attribute: 'ca_info',
+				},
+				{
 					attribute: 'replicates',
 				},
 				{

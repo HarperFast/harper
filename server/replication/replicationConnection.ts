@@ -1197,7 +1197,7 @@ export function replicateOverWS(ws, options, authorization) {
 		if (audit_subscription) audit_subscription.emit('close');
 		if (subscription_request) subscription_request.end();
 		for (const [id, { reject }] of awaiting_response) {
-			reject(new Error('Connection closed'));
+			reject(new Error(`Connection closed ${reason_buffer?.toString()} ${code}`));
 		}
 		logger.debug?.(connection_id, 'closed', code, reason_buffer?.toString());
 	});

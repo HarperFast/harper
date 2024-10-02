@@ -21,6 +21,7 @@ import * as logger from '../../utility/logging/harper_logger';
 import { cloneDeep } from 'lodash';
 import env from '../../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
+import { X509Certificate } from 'crypto';
 
 const NODE_SUBSCRIBE_DELAY = 200; // delay before sending node subscribe to other nodes, so operations can complete first
 const connection_replication_map = new Map();
@@ -423,6 +424,23 @@ export async function ensureNode(name: string, node) {
 	const table = getHDBNodeTable();
 	name = name ?? urlToNodeName(node.url);
 	node.name = name;
+
+	try {
+		if (node.ca) {
+			const cert = new X509Certificate(node.ca);
+			node.ca_info = {
+				issuer: cert.issuer.replace(/\n/g, ' '),
+				subject: cert.subject.replace(/\n/g, ' '),
+				subject_alt_name: cert.subjectAltName,
+				serial_number: cert.serialNumber,
+				valid_from: cert.validFrom,
+				valid_to: cert.validTo,
+			};
+		}
+	} catch (err) {
+		logger.error('Error parsing replication CA info for hdb_nodes table', err.message);
+	}
+
 	const existing = table.primaryStore.get(name);
 	logger.debug(`Ensuring node ${name} at ${node.url}, existing record:`, existing, 'new record:', node);
 	if (!existing) {
