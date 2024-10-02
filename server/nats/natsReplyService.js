@@ -88,7 +88,7 @@ async function getRemoteDescribeAll() {
 	try {
 		return {
 			status: nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.SUCCESS,
-			message: await schema_describe.describeAll(),
+			message: await schema_describe.describeAll({ bypass_auth: true }),
 		};
 	} catch (err) {
 		harper_logger.error(err);
