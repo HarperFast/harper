@@ -463,7 +463,9 @@ function getHTTPServer(port, secure, is_operations_server) {
 					method,
 					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
 				);
+				// TODO: Remove the "success" metric, since we have switch to using recording responses by status code
 				recordActionBinary(status < 400, 'success', handler_path, method);
+				recordActionBinary(1, status, handler_path, method);
 				if (!sent_body) {
 					// if it is a stream, pipe it
 					if (body?.pipe) {
