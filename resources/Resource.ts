@@ -396,24 +396,32 @@ function pathToId(path, Resource) {
 	id_was_collection = false;
 	if (path === '') return null;
 	path = path.slice(1);
-	if (path.indexOf('/') === -1) {
-		if (path === '') {
-			id_was_collection = true;
-			return null;
+	if (Resource.splitSegments) {
+		if (path.indexOf('/') === -1) {
+			if (path === '') {
+				id_was_collection = true;
+				return null;
+			}
+			return Resource.coerceId(decodeURIComponent(path));
 		}
-		return Resource.coerceId(decodeURIComponent(path));
-	}
-	const string_ids = path.split('/');
-	const ids = new MultiPartId();
-	for (let i = 0; i < string_ids.length; i++) {
-		const id_part = string_ids[i];
-		if (!id_part && i === string_ids.length - 1) {
-			id_was_collection = true;
-			break;
+		const string_ids = path.split('/');
+		const ids = new MultiPartId();
+		for (let i = 0; i < string_ids.length; i++) {
+			const id_part = string_ids[i];
+			if (!id_part && i === string_ids.length - 1) {
+				id_was_collection = true;
+				break;
+			}
+			ids[i] = Resource.coerceId(decodeURIComponent(id_part));
 		}
-		ids[i] = Resource.coerceId(decodeURIComponent(id_part));
+		return ids;
+	} else if (path === '') {
+		id_was_collection = true;
+		return null;
+	} else if (path[path.length - 1] === '/') {
+		id_was_collection = true;
 	}
-	return ids;
+	return Resource.coerceId(decodeURIComponent(path));
 }
 /**
  * An array for ids that toString's back to slash-delimited string

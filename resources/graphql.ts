@@ -67,6 +67,7 @@ export function start({ ensureTable }) {
 							tables.push(type_def);
 						}
 						if (directive.name.value === 'sealed') type_def.sealed = true;
+						if (directive.name.value === 'splitSegments') type_def.splitSegments = true;
 						if (directive.name.value === 'replicate') type_def.replicate = true;
 						if (directive.name.value === 'export') {
 							type_def.export = true;

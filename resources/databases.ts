@@ -291,6 +291,7 @@ export function readMetaDb(
 			const expiration = primary_attribute.expiration;
 			const eviction = primary_attribute.eviction;
 			const sealed = primary_attribute.sealed;
+			const split_segments = primary_attribute.splitSegments;
 			const replicate = primary_attribute.replicate;
 			if (table) {
 				indices = table.indices;
@@ -352,6 +353,7 @@ export function readMetaDb(
 						auditStore: audit_store,
 						audit,
 						sealed,
+						splitSegments: split_segments,
 						replicate,
 						expirationMS: expiration && expiration * 1000,
 						evictionMS: eviction && eviction * 1000,
@@ -388,6 +390,7 @@ interface TableDefinition {
 	scanInterval?: number;
 	audit?: boolean;
 	sealed?: boolean;
+	splitSegments?: boolean;
 	replicate?: boolean;
 	trackDeletes?: boolean;
 	attributes: any[];
@@ -510,6 +513,7 @@ export async function dropDatabase(database_name) {
  * @param attributes
  * @param audit
  * @param sealed
+ * @param splitSegments
  * @param replicate
  */
 export function table(table_definition: TableDefinition) {
@@ -523,6 +527,7 @@ export function table(table_definition: TableDefinition) {
 		attributes,
 		audit,
 		sealed,
+		splitSegments: split_segments,
 		replicate,
 		trackDeletes: track_deletes,
 		schemaDefined: schema_defined,
@@ -557,7 +562,8 @@ export function table(table_definition: TableDefinition) {
 		if (Table.primaryStore.rootStore.status === 'closed') {
 			throw new Error(`Can not use a closed data store from ${table_name} class`);
 		}
-
+		// it table already exists, get the split segments setting
+		if (split_segments == undefined) split_segments = Table.splitSegments;
 		Table.attributes.splice(0, Table.attributes.length, ...attributes);
 	} else {
 		const audit_store = root_store.auditStore;
@@ -571,6 +577,7 @@ export function table(table_definition: TableDefinition) {
 		audit = primary_key_attribute.audit = typeof audit === 'boolean' ? audit : env_get(CONFIG_PARAMS.LOGGING_AUDITLOG);
 		if (expiration) primary_key_attribute.expiration = expiration;
 		if (eviction) primary_key_attribute.eviction = eviction;
+		primary_key_attribute.splitSegments = false; // always default to not splitting segments going forward
 		if (typeof sealed === 'boolean') primary_key_attribute.sealed = sealed;
 		if (typeof replicate === 'boolean') primary_key_attribute.replicate = replicate;
 		if (origin) {
@@ -606,6 +613,7 @@ export function table(table_definition: TableDefinition) {
 				auditStore: audit_store,
 				audit,
 				sealed,
+				splitSegments: split_segments,
 				replicate,
 				trackDeletes: track_deletes,
 				expirationMS: expiration && expiration * 1000,

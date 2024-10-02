@@ -101,6 +101,7 @@ export interface Table {
 	databaseName: string;
 	attributes: any[];
 	primaryKey: string;
+	splitSegments?: boolean;
 	replicate?: boolean;
 	subscriptions: Map<any, Function[]>;
 	expirationMS: number;
@@ -130,6 +131,7 @@ export function makeTable(options) {
 		schemaDefined: schema_defined,
 		dbisDB: dbis_db,
 		sealed,
+		splitSegments: split_segments,
 		replicate,
 	} = options;
 	let { expirationMS: expiration_ms, evictionMS: eviction_ms, audit, trackDeletes: track_deletes } = options;
@@ -191,6 +193,7 @@ export function makeTable(options) {
 		static attributes = attributes;
 		static replicate = replicate;
 		static sealed = sealed;
+		static splitSegments = split_segments ?? true;
 		static createdTimeProperty = created_time_property;
 		static updatedTimeProperty = updated_time_property;
 		static propertyResolvers;
@@ -1505,7 +1508,13 @@ export function makeTable(options) {
 				conditions = conditions[Symbol.iterator] ? Array.from(conditions) : [conditions];
 			}
 			if (this[ID_PROPERTY]) {
-				conditions = [{ attribute: null, comparator: 'prefix', value: this[ID_PROPERTY] }].concat(conditions);
+				conditions = [
+					{
+						attribute: null,
+						comparator: Array.isArray(this[ID_PROPERTY]) ? 'prefix' : 'starts_with',
+						value: this[ID_PROPERTY],
+					},
+				].concat(conditions);
 			}
 			let order_aligned_condition;
 			const filtered = {};
@@ -3581,7 +3590,7 @@ function rejectNaN(value: number) {
 }
 function isDescendantId(ancestor_id, descendant_id): boolean {
 	if (ancestor_id == null) return true; // ancestor of all ids
-	if (!Array.isArray(descendant_id)) return ancestor_id === descendant_id;
+	if (!Array.isArray(descendant_id)) return ancestor_id === descendant_id || descendant_id.startsWith?.(ancestor_id);
 	if (Array.isArray(ancestor_id)) {
 		let al = ancestor_id.length;
 		if (ancestor_id[al - 1] === null) al--;
