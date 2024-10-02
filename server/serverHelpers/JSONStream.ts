@@ -1,8 +1,9 @@
 import { Readable } from 'stream';
+import * as harper_logger from '../../utility/logging/harper_logger';
 import JSONbig from 'json-bigint-fixes';
 const JSONbigint = JSONbig({ useNativeBigInt: true });
 const BUFFER_SIZE = 10000;
-const BIGINT_SERIALIZATION = {};
+const BIGINT_SERIALIZATION = { message: 'Cannot serialize BigInt to JSON' };
 BigInt.prototype.toJSON = function () {
 	throw BIGINT_SERIALIZATION;
 };

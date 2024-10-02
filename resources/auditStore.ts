@@ -311,10 +311,11 @@ export function createAuditEntry(
 		}
 	}
 }
-export function readAuditEntry(buffer) {
+export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined) {
 	try {
 		const decoder =
 			buffer.dataView || (buffer.dataView = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+		decoder.position = start;
 		let previous_local_time;
 		if (buffer[decoder.position] == 66) {
 			// 66 is the first byte in a date double.
@@ -349,7 +350,7 @@ export function readAuditEntry(buffer) {
 			tableId: table_id,
 			nodeId: node_id,
 			get recordId() {
-				return readKeySafely(buffer, record_id_start, record_id_end);
+				return readKey(buffer, record_id_start, record_id_end);
 			},
 			getBinaryRecordId() {
 				return buffer.subarray(record_id_start, record_id_end);
@@ -357,18 +358,20 @@ export function readAuditEntry(buffer) {
 			version,
 			previousLocalTime: previous_local_time,
 			get user() {
-				return username_end > username_start ? readKeySafely(buffer, username_start, username_end) : undefined;
+				return username_end > username_start ? readKey(buffer, username_start, username_end) : undefined;
 			},
-			encoded: buffer,
+			get encoded() {
+				return start ? buffer.subarray(start, end) : buffer;
+			},
 			getValue(store, full_record?, audit_time?) {
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !full_record))
-					return store.decoder.decode(buffer.subarray(decoder.position));
+					return store.decoder.decode(buffer.subarray(decoder.position, end));
 				if (action & HAS_PARTIAL_RECORD && audit_time) {
 					return getRecordAtTime(store.getEntry(this.recordId), audit_time, store);
 				} // TODO: If we store a partial and full record, may need to read both sequentially
 			},
 			getBinaryValue() {
-				return action & (HAS_RECORD | HAS_PARTIAL_RECORD) ? buffer.subarray(decoder.position) : undefined;
+				return action & (HAS_RECORD | HAS_PARTIAL_RECORD) ? buffer.subarray(decoder.position, end) : undefined;
 			},
 			extendedType: action,
 			residencyId: residency_id,
@@ -417,10 +420,4 @@ export class Decoder extends DataView {
 			debugger;
 		}
 	}
-}
-function readKeySafely(buffer, start, end) {
-	// ordered-binary's read key actually modifies the byte at end to be zero, we have to subarray this
-	// TODO: Can we fix this in ordered-binary?
-	const safe_buffer = buffer.subarray(start, end);
-	return readKey(safe_buffer, 0, end - start);
 }

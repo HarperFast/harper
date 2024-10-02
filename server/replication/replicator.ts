@@ -235,11 +235,7 @@ export function setReplicator(db_name: string, table: any, options: any) {
 				const table_by_id = subscription?.tableById || [];
 				table_by_id[table.tableId] = table;
 				const resolve = subscription?.ready;
-				logger.trace(
-					'Setting up replicator subscription to database',
-					db_name,
-					subscription && Object.keys(subscription)
-				);
+				logger.trace('Setting up replicator subscription to database', db_name);
 				if (!subscription?.auditStore) {
 					// if and only if we are the first table for the database, then we set up the subscription.
 					// We only need one subscription for the database
@@ -411,7 +407,15 @@ export function subscribeToNode(request) {
 		logger.error('Error in subscription to node', request.nodes[0]?.url, error);
 	}
 }
-export async function unsubscribeFromNode({ url, database }) {
+export async function unsubscribeFromNode({ name, url, database }) {
+	logger.trace(
+		'Unsubscribing from node',
+		name,
+		url,
+		database,
+		'nodes',
+		Array.from(getHDBNodeTable().primaryStore.getRange({}))
+	);
 	const db_connections = connections.get(url);
 	if (db_connections) {
 		const connection = db_connections.get(database);

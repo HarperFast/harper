@@ -105,7 +105,7 @@ async function accessConsumers() {
 	for await (const connection of connections) {
 		const domain = connection.name + nats_terms.SERVER_SUFFIX.LEAF;
 		let js, jsm;
-		for (const sub of connection.subscriptions) {
+		for (const sub of connection.subscriptions || []) {
 			if (sub.subscribe === true) {
 				if (!js) {
 					({ js, jsm } = await connectToRemoteJS(domain));

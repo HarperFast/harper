@@ -36,7 +36,7 @@ import {
 	executeConditions,
 } from './search';
 import logger from '../utility/logging/logger';
-import { Addition, assignTrackedAccessors, deepFreeze, hasChanges, OWN_DATA } from './tracked';
+import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, OWN_DATA } from './tracked';
 import { transaction } from './transaction';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads';
@@ -1048,7 +1048,7 @@ export function makeTable(options) {
 				before: apply_to_sources.invalidate?.bind(this, context, id),
 				beforeIntermediate: apply_to_sources_intermediate.invalidate?.bind(this, context, id),
 				commit: (txn_time, existing_entry) => {
-					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId)) return;
+					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId) <= 0) return;
 					let partial_record = null;
 					for (const name in indices) {
 						if (!partial_record) partial_record = {};
@@ -1084,7 +1084,7 @@ export function makeTable(options) {
 				before: apply_to_sources.relocate?.bind(this, context, id),
 				beforeIntermediate: apply_to_sources_intermediate.relocate?.bind(this, context, id),
 				commit: (txn_time, existing_entry) => {
-					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId)) return;
+					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId) <= 0) return;
 					const residency = TableResource.getResidencyRecord(options.residencyId);
 					let metadata = 0;
 					let new_record = null;
@@ -1265,7 +1265,7 @@ export function makeTable(options) {
 												? new Date(txn_time).toISOString()
 												: txn_time;
 								}
-								record_update = deepFreeze(record_update); // this flatten and freeze the record
+								record_update = updateAndFreeze(record_update); // this flatten and freeze the record
 							}
 							// TODO: else freeze after we have applied the changes
 						}
@@ -1280,7 +1280,7 @@ export function makeTable(options) {
 					: apply_to_sources.patch // otherwise, we need to use the patch method if available
 					? () => apply_to_sources.patch(context, id, record_update)
 					: apply_to_sources.put // if this is incremental, but only have put, we can use that by generating the full record (at least the expected one)
-					? () => apply_to_sources.put(context, id, deepFreeze(this))
+					? () => apply_to_sources.put(context, id, updateAndFreeze(this))
 					: null,
 				beforeIntermediate: full_update
 					? apply_to_sources_intermediate.put
@@ -1289,7 +1289,7 @@ export function makeTable(options) {
 					: apply_to_sources_intermediate.patch
 					? () => apply_to_sources_intermediate.patch(context, id, record_update)
 					: apply_to_sources_intermediate.put
-					? () => apply_to_sources_intermediate.put(context, id, deepFreeze(this))
+					? () => apply_to_sources_intermediate.put(context, id, updateAndFreeze(this))
 					: null,
 				commit: (txn_time, existing_entry, retry) => {
 					if (retry) {
@@ -1309,34 +1309,54 @@ export function makeTable(options) {
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
-					const precedes_existing_version = precedesExistingVersion(txn_time, existing_entry, options?.nodeId);
-					if (precedes_existing_version) {
-						// TODO: can the previous version be older, by a prior version be newer?
+					let precedes_existing_version = precedesExistingVersion(txn_time, existing_entry, options?.nodeId);
+					let audit_record_to_store: any; // what to store in the audit record. For a full update, this can be left undefined in which case it is the same as full record update and optimized to use a binary copy
+					if (precedes_existing_version <= 0) {
+						// This block is to handle the case of saving an update where the transaction timestamp is older than the
+						// existing timestamp, which means that we received updates out of order, and must resequence the application
+						// of the updates to the record to ensure consistency across the cluster
+						// TODO: can the previous version be older, but even more previous version be newer?
 						if (audit) {
 							// incremental CRDT updates are only available with audit logging on
 							let local_time = existing_entry.localTime;
 							let audited_version = existing_entry.version;
-							while (update_to_apply && (local_time > txn_time || (audited_version >= txn_time && local_time > 0))) {
+							logger.trace?.('Applying CRDT update to record with id: ', id, 'applying later update:', audited_version);
+							const succeeding_updates = []; // record the "future" updates, as we need to apply the updates in reverse order
+							while (local_time > txn_time || (audited_version >= txn_time && local_time > 0)) {
 								const audit_entry = audit_store.get(local_time);
 								if (!audit_entry) break;
 								const audit_record = readAuditEntry(audit_entry);
 								audited_version = audit_record.version;
-								if (audited_version > txn_time) {
+								if (audited_version >= txn_time) {
+									if (audited_version === txn_time) {
+										precedes_existing_version = precedesExistingVersion(
+											txn_time,
+											{ version: audited_version, localTime: local_time },
+											options?.nodeId
+										);
+										if (precedes_existing_version === 0) {
+											return; // treat a tie as a duplicate and drop it
+										}
+										if (precedes_existing_version > 0) continue; // if the existing version is older, we can skip this update
+									}
 									if (audit_record.type === 'patch') {
-										const newer_update = audit_record.getValue(primary_store);
-										update_to_apply = rebuildUpdateBefore(update_to_apply, newer_update);
+										// record patches so we can reply in order
+										succeeding_updates.push(audit_record);
+										audit_record_to_store = record_update; // use the original update for the audit record
 									} else if (audit_record.type === 'put' || audit_record.type === 'delete') {
 										// There is newer full record update, so this incremental update is completely superseded
 										// TODO: We should still store the audit record for historical purposes
 										return;
 									}
-								} else if (audited_version === txn_time) {
-									// if there is an exact match in txn time, we assume this a duplicate update, and we can ignore it
-									// TODO: Once we have node ids, we can check if this is a duplicate update from the same node
-									// (otherwise we can break ties by the node id)
-									return;
 								}
 								local_time = audit_record.previousLocalTime;
+							}
+							succeeding_updates.sort((a, b) => a.version - b.version); // order the patches
+							for (const audit_record of succeeding_updates) {
+								const newer_update = audit_record.getValue(primary_store);
+								update_to_apply = rebuildUpdateBefore(update_to_apply, newer_update, full_update);
+								logger.debug?.('Rebuilding update with future patch:', update_to_apply);
+								if (!update_to_apply) return; // if all changes are overwritten, nothing left to do
 							}
 						} else if (full_update) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
@@ -1345,19 +1365,20 @@ export function makeTable(options) {
 							return;
 						} else {
 							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist
-							update_to_apply = rebuildUpdateBefore(update_to_apply, existing_record);
+							update_to_apply = rebuildUpdateBefore(update_to_apply, existing_record, full_update);
+							logger.debug?.('Rebuilding update without audit:', update_to_apply);
 						}
 					}
-					let record_to_store;
+					let record_to_store: any;
 					if (full_update) record_to_store = update_to_apply;
 					else {
 						this[RECORD_PROPERTY] = existing_record;
-						record_to_store = full_update ? update_to_apply : deepFreeze(this, update_to_apply);
+						record_to_store = updateAndFreeze(this, update_to_apply);
 					}
 					this[RECORD_PROPERTY] = record_to_store;
 					if (record_to_store?.[RECORD_PROPERTY])
 						throw new Error('Can not assign a record to a record, check for circular references');
-					let audit_record, residency_id;
+					let residency_id: number;
 					if (options?.residencyId != undefined) residency_id = options.residencyId;
 					else {
 						if (entry?.residencyId) context.previousResidency = TableResource.getResidencyRecord(entry.residencyId);
@@ -1375,8 +1396,8 @@ export function makeTable(options) {
 						residency_id = getResidencyId(residency);
 					}
 					if (!full_update) {
-						// that is a CRDT, we use our own data as the basis for the audit record, which will include information about the incremental updates
-						audit_record = record_update;
+						// we use our own data as the basis for the audit record, which will include information about the incremental updates, even if it was overwritten by CRDT resolution
+						audit_record_to_store = record_update;
 					}
 					const expires_at = context?.expiresAt ?? (expiration_ms ? expiration_ms + Date.now() : -1);
 					logger.trace?.(
@@ -1386,7 +1407,8 @@ export function makeTable(options) {
 							existing_entry
 								? ', replaces entry from: ' + new Date(existing_entry.version).toISOString()
 								: ', new entry'
-						}`
+						}`,
+						record_to_store
 					);
 					updateIndices(id, existing_record, record_to_store);
 					const type = full_update ? 'put' : 'patch';
@@ -1407,7 +1429,7 @@ export function makeTable(options) {
 						},
 						type,
 						false,
-						audit_record
+						audit_record_to_store
 					);
 					if (context.expiresAt) scheduleCleanup();
 				},
@@ -1449,7 +1471,7 @@ export function makeTable(options) {
 							context.lastModified = existing_entry.version;
 						updateResource(this, existing_entry);
 					}
-					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId)) return; // a newer record exists locally
+					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId) <= 0) return; // a newer record exists locally
 					updateIndices(this[ID_PROPERTY], existing_record);
 					logger.trace?.(`Deleting record with id: ${id}, txn timestamp: ${new Date(txn_time).toISOString()}`);
 					if (audit || track_deletes) {
@@ -3106,7 +3128,11 @@ export function makeTable(options) {
 		return ids;
 	}
 
-	function precedesExistingVersion(txn_time, existing_entry, node_id = server.replication?.getThisNodeId(audit_store)) {
+	function precedesExistingVersion(
+		txn_time: number,
+		existing_entry: Entry,
+		node_id: number = server.replication?.getThisNodeId(audit_store)
+	): number {
 		if (txn_time <= existing_entry?.version) {
 			if (existing_entry?.version === txn_time && node_id !== undefined) {
 				// if we have a timestamp tie, we break the tie by comparing the node name of the
@@ -3124,13 +3150,14 @@ export function makeTable(options) {
 					}
 					if (updated_node_name > existing_node_name)
 						// if the updated node name is greater (alphabetically), it wins (it doesn't precede the existing version)
-						return false;
+						return 1;
+					if (updated_node_name === existing_node_name) return 0; // a tie
 				}
 			}
 			// transaction time is older than existing version, so we treat that as an update that loses to the existing record version
-			return true;
+			return -1;
 		}
-		return false;
+		return 1;
 	}
 
 	/**

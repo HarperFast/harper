@@ -111,7 +111,7 @@ export async function setNode(req: object) {
 
 	if (req.subscriptions) {
 		target_add_node_obj.subscriptions = req.subscriptions.map(reverseSubscription);
-	}
+	} else target_add_node_obj.subscriptions = null;
 
 	if (req.hasOwnProperty('subscribe') || req.hasOwnProperty('publish')) {
 		const rev = reverseSubscription(req);
@@ -176,6 +176,7 @@ export async function setNode(req: object) {
 			url: this_url,
 			ca: cert_auth,
 			replicates: true,
+			subscriptions: null,
 		};
 		if (req.start_time) this_node.start_time = req.start_time;
 		await ensureNode(getThisNodeName(), this_node);
@@ -215,7 +216,10 @@ export async function addNodeBack(req) {
 
 	const node_record = { url: req.url, ca: origin_ca };
 	if (req.subscriptions) node_record.subscriptions = req.subscriptions;
-	else node_record.replicates = true;
+	else {
+		node_record.replicates = true;
+		node_record.subscriptions = null;
+	}
 
 	if (req.start_time) node_record.start_time = req.start_time;
 
@@ -225,6 +229,7 @@ export async function addNodeBack(req) {
 			url: getThisNodeUrl(),
 			ca: rep_ca?.certificate,
 			replicates: true,
+			subscriptions: null,
 		};
 		if (req.start_time) this_node.start_time = req.start_time;
 		await ensureNode(getThisNodeName(), this_node);

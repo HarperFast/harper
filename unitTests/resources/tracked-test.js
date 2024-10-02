@@ -1,7 +1,7 @@
 require('../test_utils');
 const assert = require('assert');
 const { RECORD_PROPERTY } = require('../../resources/Resource');
-const { assignTrackedAccessors, deepFreeze, hasChanges, collapseData } = require('../../resources/tracked');
+const { assignTrackedAccessors, updateAndFreeze, hasChanges, collapseData } = require('../../resources/tracked');
 describe('Tracked Object', () => {
 	let source = {
 		str: 'string',
@@ -34,7 +34,7 @@ describe('Tracked Object', () => {
 		assert.equal(instance.arrayOfStrings[0], 'str1');
 		assert.equal(collapseData(instance).str, 'string');
 		assert.equal(collapseData(instance).num, 42);
-		assert.equal(deepFreeze(instance).str, 'string');
+		assert.equal(updateAndFreeze(instance).str, 'string');
 	});
 	it('Can update RecordObject', async function () {
 		let instance = new ResourceClass();
@@ -54,10 +54,10 @@ describe('Tracked Object', () => {
 		assert.equal(collapseData(instance).num, 32);
 		assert.equal(collapseData(instance).newProperty, 'new value');
 		assert.equal(collapseData(instance).transitiveProperty, 'here for now');
-		assert.equal(deepFreeze(instance).str, 'new string');
-		assert.equal(deepFreeze(instance).num, 32);
-		assert.equal(deepFreeze(instance).newProperty, 'new value');
-		assert.equal(deepFreeze(instance).transitiveProperty, undefined);
+		assert.equal(updateAndFreeze(instance).str, 'new string');
+		assert.equal(updateAndFreeze(instance).num, 32);
+		assert.equal(updateAndFreeze(instance).newProperty, 'new value');
+		assert.equal(updateAndFreeze(instance).transitiveProperty, undefined);
 	});
 
 	it('Can reject invalid types', async function () {

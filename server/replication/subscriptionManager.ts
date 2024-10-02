@@ -110,6 +110,7 @@ export async function startOnMainThread(options) {
 						found_node = true;
 						for (const [database, { worker }] of db_replication_workers) {
 							db_replication_workers.delete(database);
+							logger.warn('Node was deleted, unsubscribing from node', hostname, database, url);
 							worker?.postMessage({ type: 'unsubscribe-from-node', node: hostname, database, url });
 						}
 						break;
@@ -230,6 +231,12 @@ export async function startOnMainThread(options) {
 					} else subscribeToNode(request);
 				}, NODE_SUBSCRIBE_DELAY);
 			} else {
+				logger.info(
+					'Node no longer should be used, unsubscribing from node',
+					node.replicates,
+					!!databases[database_name],
+					getHDBNodeTable().primaryStore.get(getThisNodeName())?.replicates
+				);
 				if (!getHDBNodeTable().primaryStore.get(getThisNodeName())?.replicates) {
 					// if we are not fully replicating because it is turned off, make sure we set this
 					// flag so that we actually turn on subscriptions if full replication is turned on
@@ -239,6 +246,7 @@ export async function startOnMainThread(options) {
 					type: 'unsubscribe-from-node',
 					database: database_name,
 					url: node.url,
+					name: node.name,
 				};
 				if (worker) {
 					worker.postMessage(request);
@@ -416,7 +424,7 @@ export async function ensureNode(name: string, node) {
 	name = name ?? urlToNodeName(node.url);
 	node.name = name;
 	const existing = table.primaryStore.get(name);
-	logger.info(`Ensuring node ${name} at ${node.url}, existing record:`, existing);
+	logger.debug(`Ensuring node ${name} at ${node.url}, existing record:`, existing, 'new record:', node);
 	if (!existing) {
 		await table.put(node);
 	} else {
