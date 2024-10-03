@@ -251,6 +251,23 @@ describe('Test harper_logger module', () => {
 			const result = createLogRecord_rw('info', [{ foo: 'bar' }]);
 			expect(result).to.equal(`2018-10-03T18:50:33.675Z [main/0] [info]: {"foo":"bar"}\n`);
 		});
+
+		it('Test record is correctly returned if message is an error with a cause', () => {
+			const test_error_cause = new SyntaxError('test cause error');
+			test_error_cause.statusCode = 400;
+			const test_error = new TypeError('test error', { cause: test_error_cause });
+			const result = createLogRecord_rw('error', [test_error]);
+			const lines = result.split('\n');
+			expect(lines[0]).to.equal('2018-10-03T18:50:33.675Z [main/0] [error]: TypeError: test error');
+			expect(lines[1]).to.include(' at '); // stack trace
+			let found_caused_by, found_statusCode;
+			for (let line of lines) {
+				if (line.includes('Caused by: SyntaxError: test cause error')) found_caused_by = true;
+				if (line.includes('"statusCode":400')) found_statusCode = true;
+			}
+			expect(found_caused_by).to.be.true;
+			expect(found_statusCode).to.be.true;
+		});
 	});
 
 	describe('Test logStdOut and logStdErr functions', () => {

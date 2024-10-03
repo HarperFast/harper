@@ -519,6 +519,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 						response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
 					);
 					recordActionBinary(status < 400, 'success', handler_path, method);
+					recordActionBinary(1, 'response_' + status, handler_path, method);
 					if (!sent_body) {
 						// if it is a stream, pipe it
 						if (body?.pipe) {
@@ -654,7 +655,7 @@ Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
 		return (
 			'connection' in this.headers &&
 			'upgrade' in this.headers &&
-			this.headers.connection.startsWith('Upgrade') &&
+			this.headers.connection.includes('Upgrade') &&
 			this.headers.upgrade.toLowerCase() == 'websocket'
 		);
 	},

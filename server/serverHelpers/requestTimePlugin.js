@@ -28,7 +28,9 @@ module.exports = fp(
 				method = config.method;
 			}
 			recordAction(response_time, 'duration', action, method, type);
+			// TODO: Remove the "success" metric, since we have switch to using recording responses by status code
 			recordActionBinary(reply.raw.statusCode < 400, 'success', action, method, type);
+			recordActionBinary(1, 'response_' + reply.raw.statusCode, action, method, type);
 			let bytes_sent = ESTIMATED_HEADER_SIZE;
 			if (payload?.pipe) {
 				// if we are sending a stream, track the bytes sent and wait for when it completes

@@ -279,6 +279,14 @@ function createLogRecord(level, args) {
 		let arg = args[x];
 		if (arg instanceof Error && arg.stack) {
 			log_msg += arg.stack;
+			if (Object.keys(arg).length > 0)
+				// print any extra properties on the error
+				log_msg += '\n' + JSON.stringify(arg);
+			if (arg.cause) {
+				// if there is a cause, add it to the args to be processed
+				args[x--] = arg.cause;
+				if (arg) log_msg += '\nCaused by:';
+			}
 		} else if (typeof arg === 'object') {
 			try {
 				log_msg += JSON.stringify(arg);
