@@ -409,21 +409,14 @@ function joinTo(right_iterable, attribute, store, is_many_to_many, joined: Map<a
 		[Symbol.iterator]() {
 			let joined_iterator;
 			joined.hasMappings = true;
-			let has_multi_part_keys;
 			return {
 				next() {
 					if (!joined_iterator) {
 						const right_property = attribute.relationship.to;
 						const add_entry = (key, entry) => {
-							let flat_key = key;
-							if (Array.isArray(key)) {
-								flat_key = flattenKey(key);
-								has_multi_part_keys = true;
-							}
-							let entries_for_key = joined.get(flat_key);
+							let entries_for_key = joined.get(key);
 							if (entries_for_key) entries_for_key.push(entry);
-							else joined.set(flat_key, (entries_for_key = [entry]));
-							if (key !== flat_key) entries_for_key.key = key;
+							else joined.set(key, (entries_for_key = [entry]));
 						};
 						//let i = 0;
 						// get all the ids of the related records
@@ -447,15 +440,14 @@ function joinTo(right_iterable, attribute, store, is_many_to_many, joined: Map<a
 								i = 0;
 							}*/
 						}
-						// if there are multi-part keys, we need to be able to get the original key from the key property on the entry array
-						joined_iterator = (has_multi_part_keys ? joined : joined.keys())[Symbol.iterator]();
+						joined_iterator = joined.keys()[Symbol.iterator]();
 						return this.next();
 					}
 					const joined_entry = joined_iterator.next();
 					if (joined_entry.done) return joined_entry;
 					return {
 						// if necessary, get the original key from the entries array
-						value: has_multi_part_keys ? joined_entry.value[1].key || joined_entry.value[0] : joined_entry.value,
+						value: joined_entry.value,
 					};
 				},
 				return() {
@@ -488,7 +480,7 @@ function joinFrom(right_iterable, attribute, store, joined: Map<any, any[]>, sea
 						while (true) {
 							joined_entry = joined_iterator.next();
 							if (joined_entry.done) break; // and continue to find next
-							const id = flattenKey(joined_entry.value);
+							const id = joined_entry.value;
 							if (seen_ids.has(id)) continue;
 							seen_ids.add(id);
 							return joined_entry;
@@ -497,12 +489,12 @@ function joinFrom(right_iterable, attribute, store, joined: Map<any, any[]>, sea
 					if (!id_iterator) {
 						// get the ids of the related records as a Set so we can quickly check if it is in the set
 						// when are iterating through the results
-						const ids = new Map();
+						const ids = new Set();
 						// Define the fromRecord function so that we can use it to filter the related records
 						// that are in the select(), to only those that are in this set of ids
 						joined.fromRecord = (record) => {
 							// TODO: Sort based on order ids
-							return record[attribute.relationship.from]?.filter?.((id) => ids.has(flattenKey(id)));
+							return record[attribute.relationship.from]?.filter?.((id) => ids.has(id));
 						};
 						//let i = 0;
 						// get all the ids of the related records
@@ -512,7 +504,7 @@ function joinFrom(right_iterable, attribute, store, joined: Map<any, any[]>, sea
 								const record = store.get(id);
 								if (joined.filters.some((filter) => !filter(record))) continue;
 							}
-							ids.set(flattenKey(id), id);
+							ids.add(id);
 							// TODO: Re-enable this when async iteration is used, and do so with manually iterating so that we don't need to do an await on every iteration
 							/*
 							if (i++ > 100) {
@@ -527,7 +519,7 @@ function joinFrom(right_iterable, attribute, store, joined: Map<any, any[]>, sea
 							}*/
 						}
 						// and now start iterating through the ids
-						id_iterator = ids.values()[Symbol.iterator]();
+						id_iterator = ids[Symbol.iterator]();
 						return this.next();
 					}
 					do {
