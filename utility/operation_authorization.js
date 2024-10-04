@@ -158,6 +158,7 @@ required_permissions.set(keys.signCertificate.name, new permission(true, []));
 required_permissions.set(keys.listCertificates.name, new permission(true, []));
 required_permissions.set(keys.addCertificate.name, new permission(true, []));
 required_permissions.set(keys.removeCertificate.name, new permission(true, []));
+required_permissions.set(keys.getKey.name, new permission(true, []));
 required_permissions.set(set_node.addNodeBack.name, new permission(true, []));
 required_permissions.set(set_node.removeNodeBack.name, new permission(true, []));
 

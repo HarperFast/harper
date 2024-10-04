@@ -24,6 +24,7 @@ const assign_cmdenv_vars = require('../utility/assignCmdEnvVariables');
 const config_utils = require('../config/configUtils');
 const broken_alpn_callback = parseInt(process.version.slice(1)) < 20;
 const { table, getDatabases, databases } = require('../resources/databases');
+const { getJWTRSAKeys } = require('./tokenAuthentication');
 
 Object.assign(exports, {
 	generateKeys,
@@ -43,6 +44,7 @@ Object.assign(exports, {
 	getReplicationCertAuth,
 	renewSelfSigned,
 	hostnamesFromCert,
+	getKey,
 });
 
 const {
@@ -216,7 +218,7 @@ function loadCertificates() {
 								let record_timestamp =
 									!cert_record || cert_record.is_self_signed
 										? 1
-										: cert_record.file_timestamp ?? cert_record.__updatedtime__;
+										: (cert_record.file_timestamp ?? cert_record.__updatedtime__);
 								if (cert_record && file_timestamp <= record_timestamp) {
 									if (file_timestamp < record_timestamp)
 										hdb_logger.info(
@@ -1151,5 +1153,27 @@ function hostnamesFromCert(cert /*X509Certificate*/) {
 				})
 				.filter((part) => part) // filter out any empty names
 		: // finally we fall back to the common name
-		  [extractCommonName(cert)];
+			[extractCommonName(cert)];
+}
+
+async function getKey(req) {
+	const validation = validateBySchema(
+		req,
+		Joi.object({
+			name: Joi.string().required(),
+		})
+	);
+	if (validation) throw new ClientError(validation.message);
+
+	const { name } = req;
+
+	if (name === '.jwtPrivate') {
+		const jwt = await getJWTRSAKeys();
+		return jwt.private_key;
+	} else if (name === '.jwtPublic') {
+		const jwt = await getJWTRSAKeys();
+		return jwt.public_key;
+	} else {
+		return private_keys.get(req.name);
+	}
 }

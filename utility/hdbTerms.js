@@ -392,6 +392,7 @@ const OPERATIONS_ENUM = {
 	LIST_SSH_KEYS: 'list_ssh_keys',
 	SET_SSH_KNOWN_HOSTS: 'set_ssh_known_hosts',
 	GET_SSH_KNOWN_HOSTS: 'get_ssh_known_hosts',
+	GET_KEY: 'get_key',
 };
 
 // Defines valid file types that we are able to handle in 'import_from_s3' ops
