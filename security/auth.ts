@@ -222,12 +222,6 @@ export async function authentication(request, next_handler) {
 				request.user = await server.getUser(user, password, request);
 				request.session.update({ user: request.user.username });
 			};
-			if (
-				((new_user && !session) || session?.user?.username !== new_user?.username) && // new session or change in session
-				headers['user-agent']?.startsWith('Mozilla') // only auto-set cookies and create sessions on web browsers
-			) {
-				request.session.update({ user: request.user.username });
-			}
 		}
 		const response = await next_handler(request);
 		if (!response) return response;
