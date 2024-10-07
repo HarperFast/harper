@@ -393,10 +393,10 @@ function startupLog(port_resolutions) {
 			? `, TCP: ${env.get(CONFIG_PARAMS.THREADS_DEBUG_PORT)}\n`
 			: '\n';
 	}
-
-	log_msg += `${pad('Logging:')}level: ${env.get(CONFIG_PARAMS.LOGGING_LEVEL)}, location: ${env.get(
-		CONFIG_PARAMS.LOGGING_ROOT
-	)}\n`;
+	const log_file_path = path.join(env.get(CONFIG_PARAMS.LOGGING_ROOT), 'hdb.log');
+	log_msg += `${pad('Logging:')}level: ${env.get(CONFIG_PARAMS.LOGGING_LEVEL)}, location: ${
+		log_file_path + (env.get(CONFIG_PARAMS.LOGGING_STDSTREAMS) ? ', stdout/err' : '')
+	}\n`;
 
 	// Database Log aka Applications API aka http (in config)
 	log_msg += pad('Default:');
@@ -497,4 +497,11 @@ function startupLog(port_resolutions) {
 	}
 
 	console.log(log_msg);
+	if (env.get(CONFIG_PARAMS.LOGGING_STDSTREAMS) && hdb_logger.logsAtLevel('info')) {
+		hdb_logger.suppressLogging(() => {
+			console.log(
+				`Note that log messages are being sent to the console (stdout and stderr) in addition to the log file ${log_file_path}. This can be disabled by setting logging.stdStreams to false, and the log file can be directly monitored/tailed.`
+			);
+		});
+	}
 }
