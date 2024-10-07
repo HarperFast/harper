@@ -338,7 +338,7 @@ async function messageProcessor(msg) {
 		let { timestamp, user, node_name } = origin || {};
 		let subscription = database_subscriptions.get(database_name)?.get(table_name);
 		if (!subscription) {
-			throw new Error('Missing table for replication message', table_name);
+			throw new Error(`Missing table for replication message: ${table_name}`);
 		}
 		if (operation === 'define_schema') {
 			entry.type = operation;
