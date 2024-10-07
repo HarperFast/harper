@@ -138,6 +138,7 @@ module.exports = function (search_object, type) {
 			check_attributes,
 			(attribute) =>
 				attribute !== '*' &&
+				!attribute.startsWith?.('$') && // meta attributes
 				attribute.attribute !== '*' && // skip check for asterik attribute
 				!Array.isArray(attribute) &&
 				!attribute.name && // nested attribute

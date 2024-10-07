@@ -1600,6 +1600,7 @@ export function makeTable(options) {
 				// TODO: Support index-assisted sorts of unions, which will require potentially recursively adding/modifying an order aligned condition and be able to recursively undo it if necessary
 				if (operator !== 'or') {
 					const attribute_name = sort.attribute;
+					if (attribute_name == undefined) throw new ClientError('Sort requires an attribute');
 					order_aligned_condition = conditions.find(
 						(condition) => flattenKey(condition.attribute) === flattenKey(attribute_name)
 					);
@@ -1952,6 +1953,12 @@ export function makeTable(options) {
 						(entry?.expiresAt != undefined && entry?.expiresAt < Date.now())
 					) {
 						// should expiration really apply?
+						if (context.onlyIfCached && context.noCacheStore) {
+							return {
+								[primary_key]: entry.key,
+								message: 'This entry has expired',
+							};
+						}
 						const loading_from_source = ensureLoadedFromSource(entry.key ?? entry, entry, context);
 						if (loading_from_source?.then) {
 							return loading_from_source.then(transform);
@@ -2985,6 +2992,7 @@ export function makeTable(options) {
 						(entry.expiresAt != undefined && entry.expiresAt < Date.now())
 					)
 						needs_source_data = true;
+					// else needs_source_data is left falsy
 				} else needs_source_data = true;
 				recordActionBinary(!needs_source_data, 'cache-hit', table_name);
 			}

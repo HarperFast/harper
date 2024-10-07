@@ -72,6 +72,10 @@ export class ResourceBridge extends LMDBBridge {
 			select: getSelect(search_object, table),
 			sort: search_object.sort,
 			allowFullScan: true, // operations API can do full scans by default, but REST is more cautious about what it allows
+		}, {
+			onlyIfCached: search_object.onlyIfCached,
+			noCacheStore: search_object.noCacheStore,
+			noCache: search_object.noCache,
 		});
 	}
 	/**
@@ -404,14 +408,22 @@ export class ResourceBridge extends LMDBBridge {
 						},
 				  ];
 
-		return table.search({
-			conditions,
-			allowFullScan: true,
-			limit: search_object.limit,
-			offset: search_object.offset,
-			reverse: search_object.reverse,
-			select: getSelect(search_object, table),
-		});
+		return table.search(
+			{
+				conditions,
+				allowFullScan: true,
+				limit: search_object.limit,
+				offset: search_object.offset,
+				reverse: search_object.reverse,
+				sort: search_object.sort,
+				select: getSelect(search_object, table),
+			},
+			{
+				onlyIfCached: search_object.onlyIfCached,
+				noCacheStore: search_object.noCacheStore,
+				noCache: search_object.noCache,
+			}
+		);
 	}
 	async getDataByValue(search_object: SearchObject, comparator) {
 		const map = new Map();
@@ -500,7 +512,12 @@ function getRecords(search_object, return_key_value?) {
 	if (select && table.attributes.length - select.length > 2 && select.length < 5) lazy = true;
 	// we need to get the transaction and ensure that the transaction spans the entire duration
 	// of the iteration
-	const context = { user: search_object.hdb_user };
+	const context = {
+		user: search_object.hdb_user,
+		onlyIfCached: search_object.onlyIfCached,
+		noCacheStore: search_object.noCacheStore,
+		noCache: search_object.noCache,
+	};
 	let finished_iteration;
 	transaction(context, () => new Promise((resolve) => (finished_iteration = resolve)));
 	const ids = search_object.ids || search_object.hash_values;
@@ -511,8 +528,15 @@ function getRecords(search_object, return_key_value?) {
 				async next() {
 					if (i < ids.length) {
 						const id = ids[i++];
-						let record = await table.get({ id, lazy, select }, context);
-						record = record && collapseData(record);
+						let record;
+						try {
+							record = await table.get({ id, lazy, select }, context);
+							record = record && collapseData(record);
+						} catch(error) {
+							record = {
+								message: error.toString()
+							}
+						}
 						if (return_key_value)
 							return {
 								value: { key: id, value: record },
