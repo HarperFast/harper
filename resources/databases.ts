@@ -249,7 +249,7 @@ export function readMetaDb(
 					}
 				}
 				if (!primary_attribute) {
-					harper_logger.fatal(
+					harper_logger.warn(
 						`Unable to find a primary key attribute on table ${table_name}, with attributes: ${JSON.stringify(
 							attributes
 						)}`
@@ -530,7 +530,7 @@ export function table({
 		}
 		primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
 		primary_key = primary_key_attribute.name;
-		primary_key_attribute.is_hash_attribute = true;
+		primary_key_attribute.is_hash_attribute = primary_key_attribute.isPrimaryKey = true;
 		primary_key_attribute.schemaDefined = schema_defined;
 		// can't change compression after the fact (except threshold), so save only when we create the table
 		primary_key_attribute.compression = getDefaultCompression();
@@ -591,7 +591,8 @@ export function table({
 		if (attribute_name) {
 			if (attribute_table_name !== table_name) continue;
 		} else {
-			attribute_name = attribute_table_name;
+			// table attribute for a table with no primary key, we don't want to remove this, so continue on
+			continue;
 		}
 		const attribute = attributes.find((attribute) => attribute.name === attribute_name);
 		const remove_index = !attribute?.indexed && value.indexed && !value.isPrimaryKey;
