@@ -1,6 +1,6 @@
 'use strict';
 
-const { mkdirpSync } = require('fs-extra');
+const { mkdirpSync, copySync } = require('fs-extra');
 const path = require('path');
 const terms = require('../utility/hdbTerms');
 const hdb_logger = require('../utility/logging/harper_logger');
@@ -15,15 +15,12 @@ async function mountHdb(hdb_path) {
 
 	makeDirectory(hdb_path);
 	makeDirectory(path.join(hdb_path, 'backup'));
-	makeDirectory(path.join(hdb_path, 'trash'));
 	makeDirectory(path.join(hdb_path, 'keys'));
 	makeDirectory(path.join(hdb_path, 'keys', terms.LICENSE_FILE_NAME));
 	makeDirectory(path.join(hdb_path, 'log'));
-	makeDirectory(path.join(hdb_path, 'doc'));
 	makeDirectory(path.join(hdb_path, 'database'));
-	makeDirectory(path.join(hdb_path, terms.TRANSACTIONS_DIR_NAME));
-	makeDirectory(path.join(hdb_path, 'clustering', 'leaf'));
 	makeDirectory(path.join(hdb_path, 'components'));
+	copySync(path.resolve(terms.PACKAGE_ROOT, './utility/install/README.md'), path.join(hdb_path, 'README.md'));
 
 	await createLMDBTables();
 }

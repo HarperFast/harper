@@ -50,6 +50,7 @@ describe('test mount_hdb module', () => {
 		init_sys_schema_path_stub = sandbox.stub(init_paths, 'initSystemSchemaPaths').resolves();
 		create_table_stub = sandbox.stub(bridge, 'createTable');
 		mount_hdb.__set__('mkdirpSync', mk_dirp_sync_stub);
+		mount_hdb.__set__('copySync', sandbox.stub());
 		mount_hdb.__set__('system_schema', test_system_schema);
 	});
 
@@ -62,15 +63,11 @@ describe('test mount_hdb module', () => {
 		await mount_hdb(test_hdb_path);
 		expect(mk_dirp_sync_stub.getCall(0).args[0]).to.equal(`mount${SEP}test${SEP}hdb`);
 		expect(mk_dirp_sync_stub.getCall(1).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}backup`);
-		expect(mk_dirp_sync_stub.getCall(2).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}trash`);
-		expect(mk_dirp_sync_stub.getCall(3).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}keys`);
-		expect(mk_dirp_sync_stub.getCall(4).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}keys${SEP}.license`);
-		expect(mk_dirp_sync_stub.getCall(5).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}log`);
-		expect(mk_dirp_sync_stub.getCall(6).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}doc`);
-		expect(mk_dirp_sync_stub.getCall(7).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}database`);
-		expect(mk_dirp_sync_stub.getCall(8).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}transactions`);
-		expect(mk_dirp_sync_stub.getCall(9).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}clustering${SEP}leaf`);
-		expect(mk_dirp_sync_stub.getCall(10).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}components`);
+		expect(mk_dirp_sync_stub.getCall(2).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}keys`);
+		expect(mk_dirp_sync_stub.getCall(3).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}keys${SEP}.license`);
+		expect(mk_dirp_sync_stub.getCall(4).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}log`);
+		expect(mk_dirp_sync_stub.getCall(5).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}database`);
+		expect(mk_dirp_sync_stub.getCall(6).args[0]).to.equal(`mount${SEP}test${SEP}hdb${SEP}components`);
 	});
 
 	it('Test createLMDBTables happy path', async () => {

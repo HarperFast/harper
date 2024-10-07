@@ -41,6 +41,8 @@ function getHubConfigPath() {
  * @returns {Promise<void>}
  */
 async function generateNatsConfig(is_restart = false, process_name = undefined) {
+	const HDB_ROOT = env_manager.get(CONFIG_PARAMS.ROOTPATH);
+	fs.ensureDirSync(path.join(HDB_ROOT, 'clustering', 'leaf'));
 	env_manager.initSync();
 	const CA_FILE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH);
 	const KEY_FILE = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY);
@@ -50,7 +52,6 @@ async function generateNatsConfig(is_restart = false, process_name = undefined) 
 		await keys.createNatsCerts();
 	}
 
-	const HDB_ROOT = env_manager.get(CONFIG_PARAMS.ROOTPATH);
 	const HUB_PID_FILE_PATH = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, nats_terms.PID_FILES.HUB);
 	const LEAF_PID_FILE_PATH = path.join(HDB_ROOT, HDB_CLUSTERING_FOLDER, nats_terms.PID_FILES.LEAF);
 	const LEAF_JS_STORE_DIR = config_utils.getConfigFromFile(CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_PATH);

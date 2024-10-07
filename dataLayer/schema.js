@@ -222,7 +222,7 @@ async function dropTable(drop_table_object) {
 }
 
 /**
- * Drops (moves to trash) all files for the specified attribute.
+ * Drops all files for the specified attribute.
  * @param drop_attribute_object - The JSON formatted inbound message.
  * @returns {Promise<*>}
  */

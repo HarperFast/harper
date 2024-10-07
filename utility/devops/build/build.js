@@ -51,6 +51,7 @@ for (let entry_module of entry_modules) {
 		'json/*.json',
 		'utility/install/ascii_logo.txt',
 		'utility/install/harperdb-config.yaml',
+		'utility/install/README.md',
 		'config/yaml/*',
 		'dependencies/**',
 		'README.md',

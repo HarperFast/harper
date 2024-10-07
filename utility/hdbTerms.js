@@ -168,7 +168,6 @@ const RESTART_CODE_NUM = 24;
 const RESTART_TIMEOUT_MS = 60000;
 const HDB_FILE_PERMISSIONS = 0o700;
 const BLOB_FOLDER_NAME = 'blob';
-const HDB_TRASH_DIR = 'trash';
 const DATABASES_DIR_NAME = 'database';
 const LEGACY_DATABASES_DIR_NAME = 'schema';
 const TRANSACTIONS_DIR_NAME = 'transactions';
@@ -1137,7 +1136,6 @@ module.exports = {
 	CLUSTERING_MESSAGE_TYPES,
 	HDB_FILE_SUFFIX,
 	BLOB_FOLDER_NAME,
-	HDB_TRASH_DIR,
 	// Make the message objects available through hdbTerms to keep clustering as modular as possible.
 	ORIGINATOR_SET_VALUE,
 	LICENSE_VALUES,
