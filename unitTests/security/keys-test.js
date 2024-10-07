@@ -223,6 +223,27 @@ describe('Test keys module', () => {
 		const hostnames = keys.hostnamesFromCert(test_cert);
 		expect(hostnames).to.eql(['test-1.name', 'test-2.org', '1.2.3.4']);
 	});
+
+	it('test get_key returns JWT and key', async () => {
+		const jwt_private = await keys.getKey({ name: '.jwtPrivate' });
+		expect(jwt_private).to.include('PRIVATE KEY');
+
+		const jwt_public = await keys.getKey({ name: '.jwtPublic' });
+		expect(jwt_public).to.include('PUBLIC KEY');
+
+		const private_key = await keys.getKey({ name: 'privateKey.pem' });
+		expect(private_key).to.include('RSA PRIVATE KEY');
+	});
+
+	it('test get_key handles a non-existent key correctly', async () => {
+		let error;
+		try {
+			await keys.getKey({ name: 'imNotAKey.pem' });
+		} catch (err) {
+			error = err;
+		}
+		expect(error.message).to.equal('Key not found');
+	});
 	/*	it('Test SNI with wildcards', async () => {
 		let cert1 = await mkcert.createCert({
 			domains: ['host-one.com', 'default'],

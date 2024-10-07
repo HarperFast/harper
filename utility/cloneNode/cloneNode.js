@@ -6,7 +6,7 @@ let http = require('http');
 const fs = require('fs-extra');
 const YAML = require('yaml');
 const { pipeline } = require('stream/promises');
-const { createWriteStream, ensureDir } = require('fs-extra');
+const { createWriteStream, ensureDir, writeFileSync } = require('fs-extra');
 const { join } = require('path');
 const _ = require('lodash');
 const minimist = require('minimist');
@@ -67,6 +67,7 @@ const CLONE_VARS = {
 	HDB_LEADER_URL: 'HDB_LEADER_URL',
 	REPLICATION_HOSTNAME: 'REPLICATION_HOSTNAME',
 	HDB_CLONE_OVERTOP: 'HDB_CLONE_OVERTOP',
+	CLONE_KEYS: 'CLONE_KEYS',
 };
 
 const cli_args = minimist(process.argv);
@@ -77,8 +78,8 @@ const replication_hostname = cli_args[CLONE_VARS.REPLICATION_HOSTNAME] ?? proces
 
 const clone_overtop = (cli_args[CLONE_VARS.HDB_CLONE_OVERTOP] ?? process.env[CLONE_VARS.HDB_CLONE_OVERTOP]) === 'true'; // optional var - will allow clone to work overtop of an existing HDB install
 const cloned_var = cli_args[CONFIG_PARAMS.CLONED.toUpperCase()] ?? process.env[CONFIG_PARAMS.CLONED.toUpperCase()];
+const clone_keys = cli_args[CLONE_VARS.CLONE_KEYS] ?? process.env[CLONE_VARS.CLONE_KEYS];
 
-let leader_clustering_enabled;
 let clone_node_config;
 let hdb_config = {};
 let hdb_config_json;
@@ -173,7 +174,11 @@ module.exports = async function cloneNode(background = false, run = false) {
 	await cloneDatabases();
 
 	// Only call install if a fresh sys DB was added
-	if (!sys_db_exist) await installHDB();
+	if (!sys_db_exist) {
+		await installHDB();
+		await cloneKeys();
+	}
+
 	await startHDB(background, run);
 
 	if (replication_hostname) {
@@ -184,6 +189,18 @@ module.exports = async function cloneNode(background = false, run = false) {
 	if (background) process.exit();
 };
 
+async function cloneKeys() {
+	if (clone_keys !== false) {
+		console.log('Cloning JWT keys');
+		const keys_dir = path.join(root_path, hdb_terms.LICENSE_KEY_DIR_NAME);
+		const jwt_public = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_KEY, name: '.jwtPublic' });
+		writeFileSync(path.join(keys_dir, hdb_terms.JWT_ENUM.JWT_PUBLIC_KEY_NAME), JSON.parse(jwt_public.body).message);
+
+		const jwt_private = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_KEY, name: '.jwtPrivate' });
+		writeFileSync(path.join(keys_dir, hdb_terms.JWT_ENUM.JWT_PRIVATE_KEY_NAME), JSON.parse(jwt_private.body).message);
+	}
+}
+
 /**
  * Clone config from leader except for any existing config or any excluded config (mainly path related values)
  * @returns {Promise<void>}
@@ -192,7 +209,6 @@ async function cloneConfig() {
 	console.info('Cloning configuration');
 	leader_config = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
 	leader_config = await JSON.parse(leader_config.body);
-	leader_clustering_enabled = leader_config?.clustering?.enabled;
 	leader_config_flat = config_utils.flattenConfig(leader_config);
 	const exclude_comps = clone_node_config?.componentConfig?.exclude;
 	const config_update = {
@@ -347,7 +363,7 @@ async function cloneTablesHttp() {
 	exclude_db = exclude_db
 		? exclude_db.reduce((obj, item) => {
 				return { ...obj, [item['database']]: true };
-		  }, {})
+			}, {})
 		: {};
 
 	// Check to see if DB already on clone, if it is we dont clone it
@@ -363,7 +379,7 @@ async function cloneTablesHttp() {
 	excluded_table = excluded_table
 		? excluded_table.reduce((obj, item) => {
 				return { ...obj, [item['database'] == null ? null : item['database'] + item['table']]: true };
-		  }, {})
+			}, {})
 		: {};
 
 	for (const db in leader_dbs) {
@@ -467,7 +483,7 @@ async function cloneTablesFetch() {
 	exclude_db = exclude_db
 		? exclude_db.reduce((obj, item) => {
 				return { ...obj, [item['database']]: true };
-		  }, {})
+			}, {})
 		: {};
 
 	// Check to see if DB already on clone, if it is we dont clone it
@@ -483,7 +499,7 @@ async function cloneTablesFetch() {
 	excluded_table = excluded_table
 		? excluded_table.reduce((obj, item) => {
 				return { ...obj, [item['database'] == null ? null : item['database'] + item['table']]: true };
-		  }, {})
+			}, {})
 		: {};
 
 	for (const db in leader_dbs) {

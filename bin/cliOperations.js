@@ -71,6 +71,7 @@ const SUPPORTED_OPS = {
 	list_ssh_keys: true,
 	set_ssh_known_hosts: true,
 	get_ssh_known_hosts: true,
+	get_key: true,
 };
 
 module.exports = { cliOperations, buildRequest };

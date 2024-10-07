@@ -1173,7 +1173,9 @@ async function getKey(req) {
 	} else if (name === '.jwtPublic') {
 		const jwt = await getJWTRSAKeys();
 		return jwt.public_key;
-	} else {
+	} else if (private_keys.get(name)) {
 		return private_keys.get(req.name);
+	} else {
+		throw new ClientError('Key not found');
 	}
 }
