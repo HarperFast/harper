@@ -1525,8 +1525,6 @@ export function makeTable(options) {
 					default:
 						throw new Error('Invalid operator ' + operator);
 				}
-				const condition_by_name = is_intersection && {};
-				let has_multiple_for_name: boolean;
 				for (const condition of conditions) {
 					if (condition.conditions) {
 						condition.conditions = prepareConditions(condition.conditions, condition.operator);
@@ -1537,54 +1535,42 @@ export function makeTable(options) {
 					if (!attribute) {
 						if (attribute_name != null)
 							throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
-					} else {
-						if (is_intersection) {
-							const key = flattenKey(attribute_name);
-							const named_conditions = condition_by_name[key];
-							if (named_conditions) {
-								named_conditions.push(condition);
-								has_multiple_for_name = true;
-							} else condition_by_name[key] = [condition];
-						}
-						if (attribute.type || COERCIBLE_OPERATORS[condition.comparator]) {
-							// Do auto-coercion or coercion as required by the attribute type
-							if (condition[1] === undefined) condition.value = coerceTypedValues(condition.value, attribute);
-							else condition[1] = coerceTypedValues(condition[1], attribute);
-						}
+					} else if (attribute.type || COERCIBLE_OPERATORS[condition.comparator]) {
+						// Do auto-coercion or coercion as required by the attribute type
+						if (condition[1] === undefined) condition.value = coerceTypedValues(condition.value, attribute);
+						else condition[1] = coerceTypedValues(condition[1], attribute);
 					}
-				}
-				if (request.enforceExecutionOrder) return conditions; // don't rearrange conditions
-				if (has_multiple_for_name) {
-					for (const name in condition_by_name) {
-						const conditions_for_name = condition_by_name[name];
-						const l = conditions_for_name.length;
-						if (l > 1) {
-							// if there are multiple conditions for the same attribute, see if we can collapse them into a single condition
-							for (let i = 0; i < l; i++) {
-								const condition = conditions_for_name[i];
-								if (condition.comparator === 'ge' || condition.comparator === 'greater_than_equal') {
-									for (let j = 0; j < l; j++) {
-										const other_condition = conditions_for_name[j];
-										if (other_condition.comparator === 'le' || other_condition.comparator === 'less_than_equal') {
-											condition.comparator = 'between';
-											condition.value = [condition.value, other_condition.value];
-											conditions.splice(conditions.indexOf(other_condition), 1);
-										}
-									}
-								}
-								if (condition.comparator === 'equals' || !condition.comparator) {
-									// if there is an equals condition, we can remove all other conditions
-									// and just use the equals condition
-									for (let j = 0; j < l; j++) {
-										if (j !== i) {
-											const other_condition = conditions_for_name[j];
-											conditions.splice(conditions.indexOf(other_condition), 1);
-										}
-									}
-									break;
-								}
+					if (condition.chainedConditions) {
+						if (condition.chainedConditions.length === 1 && (!condition.operator || condition.operator == 'and')) {
+							const chained = condition.chainedConditions[0];
+							let upper: any, lower: any;
+							if (
+								chained.comparator === 'gt' ||
+								chained.comparator === 'greater_than' ||
+								chained.comparator === 'ge' ||
+								chained.comparator === 'greater_than_equal'
+							) {
+								upper = condition;
+								lower = chained;
+							} else {
+								upper = chained;
+								lower = condition;
 							}
-						}
+							if (
+								upper.comparator !== 'lt' &&
+								upper.comparator !== 'less_than' &&
+								upper.comparator !== 'le' &&
+								upper.comparator !== 'less_than_equal'
+							) {
+								throw new Error(
+									'Invalid chained condition, only less than and greater than conditions can be chained together'
+								);
+							}
+							const is_ge = lower.comparator === 'ge' || lower.comparator === 'greater_than_equal';
+							const is_le = upper.comparator === 'le' || upper.comparator === 'less_than_equal';
+							condition.comparator = (is_ge ? 'ge' : 'gt') + (is_le ? 'le' : 'lt');
+							condition.value = [lower.value, upper.value];
+						} else throw new Error('Multiple chained conditions are not currently supported');
 					}
 				}
 				return conditions;
@@ -2630,7 +2616,7 @@ export function makeTable(options) {
 								if (ids === undefined) return undefined;
 								if (attribute.elements) {
 									let has_promises;
-									const results = ids.map((id) => {
+									const results = ids?.map((id) => {
 										const value = direct_entry
 											? definition.tableClass.primaryStore.getEntry(id, {
 													transaction: txnForContext(context).getReadTxn(),

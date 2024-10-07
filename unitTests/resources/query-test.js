@@ -142,6 +142,39 @@ describe('Querying through Resource API', () => {
 		}
 		await last;
 	});
+	// This test should be working. My local reproduction works fine with the code changes. I'm sure this has to do with how I created the tables and records in the `before()` maybe?
+	it('should properly evaluate an `and` operation', async function () {
+		let results = [];
+		for await (let record of QueryTable.search({
+			operation: 'and',
+			conditions: [
+				{ attribute: 'manyToManyIds', value: 1 },
+				{ attribute: 'manyToManyIds', value: 2 },
+			],
+		})) {
+			results.push(record);
+		}
+
+		for (let result of results) {
+			assert(result.manyToManyIds.includes(1) && result.manyToManyIds.includes(2));
+		}
+	});
+	it('should properly evaluate an `or` operation', async function () {
+		let results = [];
+		for await (let record of QueryTable.search({
+			operation: 'or',
+			conditions: [
+				{ attribute: 'manyToManyIds', value: 1 },
+				{ attribute: 'manyToManyIds', value: 2 },
+			],
+		})) {
+			results.push(record);
+		}
+
+		for (let result of results) {
+			assert(result.manyToManyIds.includes(1) || result.manyToManyIds.includes(2));
+		}
+	});
 	it('Query data in a table with not-equal', async function () {
 		let results = [];
 		for await (let record of QueryTable.search({
@@ -193,11 +226,12 @@ describe('Querying through Resource API', () => {
 		assert.equal(results.length, 1);
 	});
 	it('Collapse into between query', async function () {
-		let query = parseQuery('id=ge=id-2&id=le=id-4');
+		let query = parseQuery('id=ge=id-2&=le=id-4');
 		query.explain = true;
 		let explanation = QueryTable.search(query);
 		assert.equal(explanation.conditions.length, 1);
-		query = parseQuery('id=ge=id-2&id=le=id-4');
+		assert.equal(explanation.conditions[0].comparator, 'gele');
+		query = parseQuery('id=ge=id-2&=le=id-4');
 		let results = [];
 		let start_count = QueryTable.primaryStore.readCount;
 		for await (let record of QueryTable.search(query)) {
@@ -295,6 +329,21 @@ describe('Querying through Resource API', () => {
 			assert.equal(results[0].related.name, 'related name 1');
 			assert.equal(results[0].id, 'id-1');
 			assert.equal(results[1].id, 'id-11');
+			assert(QueryTable.primaryStore.readCount - start_count < 30);
+		});
+		it('Query by simple join with many-to-one with primary key of secondary table', async function () {
+			let results = [];
+			let start_count = QueryTable.primaryStore.readCount;
+			for await (let record of QueryTable.search({
+				conditions: [{ attribute: ['related', 'id'], value: 2 }],
+				select: ['id', 'related', 'name'],
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 20);
+			assert.equal(results[0].related.name, 'related name 2');
+			assert.equal(results[0].id, 'id-12');
+			assert.equal(results[1].id, 'id-17');
 			assert(QueryTable.primaryStore.readCount - start_count < 30);
 		});
 

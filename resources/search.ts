@@ -1,9 +1,9 @@
 import { ClientError, ServerError } from '../utility/errors/hdbError';
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms';
 import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
-import { RangeIterable, SKIP } from 'lmdb';
+import { SKIP } from 'lmdb';
 import { INVALIDATED, EVICTED } from './Table';
-import { join } from 'path';
+import { DirectCondition, Id } from './ResourceInterface';
 import { MultiPartId } from './Resource';
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;
@@ -107,7 +107,23 @@ export function executeConditions(conditions, operator, table, txn, request, con
 	}
 }
 
-export function searchByIndex(search_condition, transaction, reverse, Table, allow_full_scan?, filtered?) {
+/**
+ * Search for records or keys, based on the search condition, using an index if available
+ * @param search_condition
+ * @param transaction
+ * @param reverse
+ * @param Table
+ * @param allow_full_scan
+ * @param filtered
+ */
+export function searchByIndex(
+	search_condition: DirectCondition,
+	transaction: any,
+	reverse: boolean,
+	Table: any,
+	allow_full_scan?: boolean,
+	filtered?: boolean
+): AsyncIterable<Id | { key: Id; value: any }> {
 	let attribute_name = search_condition[0] ?? search_condition.attribute;
 	let value = search_condition[1] ?? search_condition.value;
 	const comparator = search_condition.comparator;
@@ -145,6 +161,7 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 			}
 			if (attribute.relationship.from) {
 				const searchEntry = (related_entry) => {
+					if (related_entry?.key !== undefined) related_entry = related_entry.key;
 					return searchByIndex(
 						{ attribute: attribute.relationship.from, value: related_entry },
 						transaction,
@@ -205,11 +222,16 @@ export function searchByIndex(search_condition, transaction, reverse, Table, all
 			end = value + String.fromCharCode(0xffff);
 			break;
 		case 'between':
+		case 'gele':
+		case 'gelt':
+		case 'gtlt':
+		case 'gtle':
 			start = value[0];
 			if (start instanceof Date) start = start.getTime();
 			end = value[1];
 			if (end instanceof Date) end = end.getTime();
-			inclusiveEnd = true;
+			inclusiveEnd = comparator === 'gele' || comparator === 'gtle' || comparator === 'between';
+			exclusiveStart = comparator === 'gtlt' || comparator === 'gtle';
 			break;
 		case 'equals':
 		case undefined:
@@ -856,7 +878,7 @@ function parseBlock(query, expected_end) {
 		let entry;
 		switch (operator) {
 			case '=':
-				if (attribute) {
+				if (attribute != undefined) {
 					// a FIQL operator like =gt= (and don't allow just any string)
 					if (value.length <= 2) comparator = value;
 					else throw new SyntaxError(`invalid FIQL operator ${value}`);
@@ -884,6 +906,8 @@ function parseBlock(query, expected_end) {
 				if (!value) throw new SyntaxError(`attribute must be specified before comparator ${operator}`);
 				attribute = decodeProperty(value);
 				break;
+			case '&=': // for chaining conditions on to the same attribute
+			case '|=':
 			case '|':
 			case '&':
 			case '':
@@ -904,16 +928,34 @@ function parseBlock(query, expected_end) {
 					if (!query.conditions) throw new SyntaxError('conditions/comparisons are not allowed in a property list');
 					const condition = {
 						comparator: comparator,
-						attribute,
+						attribute: attribute || null,
 						value: valueDecoder(value),
 					};
 					if (comparator === 'eq') wildcardDecoding(condition, value);
-					assignOperator(query, last_binary_operator);
-					query.conditions.push(condition);
+					if (attribute === '') {
+						// this is a nested condition
+						const last_condition = query.conditions[query.conditions.length - 1];
+						last_condition.chainedConditions = last_condition.chainedConditions || [];
+						last_condition.chainedConditions.push(condition);
+						last_condition.operator = last_binary_operator;
+					} else {
+						assignOperator(query, last_binary_operator);
+						query.conditions.push(condition);
+					}
 				}
-				if (operator === '&') last_binary_operator = 'and';
-				if (operator === '|') last_binary_operator = 'or';
-				attribute = undefined;
+				if (operator === '&') {
+					last_binary_operator = 'and';
+					attribute = undefined;
+				} else if (operator === '|') {
+					last_binary_operator = 'or';
+					attribute = undefined;
+				} else if (operator === '&=') {
+					last_binary_operator = 'and';
+					attribute = '';
+				} else if (operator === '|=') {
+					last_binary_operator = 'or';
+					attribute = '';
+				}
 				break;
 			case ',':
 				if (query.conditions) {

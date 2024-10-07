@@ -38,7 +38,7 @@ export interface Context {
 	/**	 An array of nodes to replicate to */
 	replicateTo?: string[];
 }
-interface DirectCondition {
+export interface DirectCondition {
 	attribute: string;
 	comparator?: string;
 	value: any;
