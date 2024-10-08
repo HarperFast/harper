@@ -85,6 +85,10 @@ async function http(request: Context & Request, next_handler) {
 			request.replicateTo =
 				parsed.length === 1 && +parsed[0] >= 0 ? +parsed[0] : parsed[0] === '*' ? undefined : parsed;
 		}
+		const replicate_from = headers_object['x-replicate-from'];
+		if (replicate_from === 'none') {
+			request.replicateFrom = false;
+		}
 		let response_data = await transaction(request, () => {
 			if (headers_object['content-length'] || headers_object['transfer-encoding']) {
 				// TODO: Support cancellation (if the request otherwise fails or takes too many bytes)

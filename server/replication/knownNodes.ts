@@ -6,6 +6,7 @@ import { table } from '../../resources/databases';
 import { forEachReplicatedDatabase, getThisNodeName } from './replicator';
 import { replicationConfirmation } from '../../resources/DatabaseTransaction';
 import { isMainThread } from 'worker_threads';
+import { ClientError } from '../../utility/errors/hdbError';
 import env from '../../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 let hdb_node_table;
@@ -89,7 +90,10 @@ const replication_confirmation_float64s = new Map<string, Map<string, Float64Arr
  */
 export let commits_awaiting_replication: Map<string, []>;
 
-replicationConfirmation((database_name, txnTime, confirmationCount) => {
+replicationConfirmation((database_name, txnTime, confirmation_count) => {
+	if (confirmation_count > server.nodes.length) {
+		throw new ClientError('Cannot confirm replication to more nodes than are in the network');
+	}
 	if (!commits_awaiting_replication) {
 		commits_awaiting_replication = new Map();
 		startSubscriptionToReplications();
@@ -101,7 +105,7 @@ replicationConfirmation((database_name, txnTime, confirmationCount) => {
 		awaiting.push({
 			txnTime,
 			onConfirm: () => {
-				if (++count === confirmationCount) resolve();
+				if (++count === confirmation_count) resolve();
 			},
 		});
 	});

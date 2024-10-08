@@ -1941,7 +1941,7 @@ export function makeTable(options) {
 				if (context?.transaction?.stale) context.transaction.stale = false;
 				if (entry != undefined) {
 					record = entry.value || entry.deref?.();
-					if (!record && (entry.key === undefined || entry.deref)) {
+					if (!record && (entry.key === undefined || entry.deref || entry?.metadataFlags & INVALIDATED)) {
 						// if the record is not loaded, either due to the entry actually be a key, or the entry's value
 						// being GC'ed, we need to load it now
 						entry = loadLocalRecord(
@@ -1950,6 +1950,7 @@ export function makeTable(options) {
 							{
 								transaction: read_txn,
 								lazy: select?.length < 4,
+								ensureLoaded: ensure_loaded,
 							},
 							this?.isSync,
 							(entry: Entry) => entry
@@ -2870,7 +2871,7 @@ export function makeTable(options) {
 		return true;
 	}
 	function loadLocalRecord(id, context, options, sync, with_entry) {
-		if (TableResource.getResidencyById && options.ensureLoaded) {
+		if (TableResource.getResidencyById && options.ensureLoaded && context?.replicateFrom !== false) {
 			// this is a special case for when the residency can be determined from the id alone (hash-based sharding),
 			// allow for a fast path to load the record from the correct node
 			const residency = TableResource.getResidencyById(id);
@@ -2888,7 +2889,13 @@ export function makeTable(options) {
 			// through query results and the iterator ends (abruptly)
 			if (options.transaction?.isDone) return with_entry(null, id);
 			const entry = primary_store.getEntry(id, options);
-			if (entry?.residencyId && entry.metadataFlags & INVALIDATED && source_load && options.ensureLoaded) {
+			if (
+				entry?.residencyId &&
+				entry.metadataFlags & INVALIDATED &&
+				source_load &&
+				options.ensureLoaded &&
+				context?.replicateFrom !== false
+			) {
 				// load from other node
 				return source_load(entry).then((entry) => with_entry(entry, id));
 			}
