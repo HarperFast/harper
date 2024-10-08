@@ -26,6 +26,7 @@ const mount = require('../mount_hdb');
 const hdb_terms = require('../hdbTerms');
 const version = require('../../bin/version');
 const hdb_info_controller = require('../../dataLayer/hdbInfoController');
+const { sendOperationToNode } = require('../../server/replication/replicator');
 
 const { SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME, CONFIG_PARAMS, OPERATIONS_ENUM } = hdb_terms;
 const WAIT_FOR_RESTART_TIME = 10000;
@@ -78,7 +79,7 @@ const replication_hostname = cli_args[CLONE_VARS.REPLICATION_HOSTNAME] ?? proces
 
 const clone_overtop = (cli_args[CLONE_VARS.HDB_CLONE_OVERTOP] ?? process.env[CLONE_VARS.HDB_CLONE_OVERTOP]) === 'true'; // optional var - will allow clone to work overtop of an existing HDB install
 const cloned_var = cli_args[CONFIG_PARAMS.CLONED.toUpperCase()] ?? process.env[CONFIG_PARAMS.CLONED.toUpperCase()];
-const clone_keys = cli_args[CLONE_VARS.CLONE_KEYS] ?? process.env[CLONE_VARS.CLONE_KEYS];
+const clone_keys = cli_args[CLONE_VARS.CLONE_KEYS] !== 'false' && process.env[CLONE_VARS.CLONE_KEYS] !== 'false';
 
 let clone_node_config;
 let hdb_config = {};
@@ -92,6 +93,7 @@ let excluded_table;
 let fresh_clone = false;
 let sys_db_exist = false;
 let start_time;
+let leader_replication_url;
 
 /**
  * This module will run when HarperDB is started with the required env/cli vars.
@@ -176,13 +178,17 @@ module.exports = async function cloneNode(background = false, run = false) {
 	// Only call install if a fresh sys DB was added
 	if (!sys_db_exist) {
 		await installHDB();
-		await cloneKeys();
 	}
 
 	await startHDB(background, run);
 
 	if (replication_hostname) {
 		await setupReplication();
+		try {
+			await cloneKeys();
+		} catch (err) {
+			console.log(err);
+		}
 	}
 
 	console.info('\nSuccessfully cloned node: ' + leader_url);
@@ -190,14 +196,33 @@ module.exports = async function cloneNode(background = false, run = false) {
 };
 
 async function cloneKeys() {
-	if (clone_keys !== false) {
-		console.log('Cloning JWT keys');
-		const keys_dir = path.join(root_path, hdb_terms.LICENSE_KEY_DIR_NAME);
-		const jwt_public = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_KEY, name: '.jwtPublic' });
-		writeFileSync(path.join(keys_dir, hdb_terms.JWT_ENUM.JWT_PUBLIC_KEY_NAME), JSON.parse(jwt_public.body).message);
+	try {
+		if (clone_keys !== false) {
+			console.log('Cloning JWT keys');
+			const keys_dir = path.join(root_path, hdb_terms.LICENSE_KEY_DIR_NAME);
+			// sendOperationToNode is used for extra security, it uses mtls when connecting to leader node.
+			const jwt_public = await sendOperationToNode(
+				{ url: leader_replication_url },
+				{
+					operation: OPERATIONS_ENUM.GET_KEY,
+					name: '.jwtPublic',
+				},
+				{ rejectUnauthorized: false }
+			);
+			writeFileSync(path.join(keys_dir, hdb_terms.JWT_ENUM.JWT_PUBLIC_KEY_NAME), jwt_public.message);
 
-		const jwt_private = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_KEY, name: '.jwtPrivate' });
-		writeFileSync(path.join(keys_dir, hdb_terms.JWT_ENUM.JWT_PRIVATE_KEY_NAME), JSON.parse(jwt_private.body).message);
+			const jwt_private = await sendOperationToNode(
+				{ url: leader_replication_url },
+				{
+					operation: OPERATIONS_ENUM.GET_KEY,
+					name: '.jwtPrivate',
+				},
+				{ rejectUnauthorized: false }
+			);
+			writeFileSync(path.join(keys_dir, hdb_terms.JWT_ENUM.JWT_PRIVATE_KEY_NAME), jwt_private.message);
+		}
+	} catch (err) {
+		console.error('Error cloning JWT keys', err);
 	}
 }
 
@@ -625,11 +650,12 @@ async function setupReplication() {
 
 	await global_schema.setSchemaDataToGlobalAsync();
 	const add_node = require('../clustering/addNode');
+	leader_replication_url = `${leader_config.operationsApi.network.port ? 'ws' : 'wss'}://${new URL(leader_url).host}`;
 	const add_node_response = await add_node(
 		{
 			operation: OPERATIONS_ENUM.ADD_NODE,
 			verify_tls: false, // TODO : if they have certs we shouldnt need to pass creds
-			url: `${leader_config.operationsApi.network.port ? 'ws' : 'wss'}://${new URL(leader_url).host}`,
+			url: leader_replication_url,
 			start_time,
 			authorization: {
 				username,

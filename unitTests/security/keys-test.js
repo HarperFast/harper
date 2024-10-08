@@ -225,7 +225,7 @@ describe('Test keys module', () => {
 	});
 
 	it('test get_key returns JWT and key', async () => {
-		const jwt_private = await keys.getKey({ name: '.jwtPrivate' });
+		const jwt_private = await keys.getKey({ name: '.jwtPrivate', bypass_auth: true });
 		expect(jwt_private).to.include('PRIVATE KEY');
 
 		const jwt_public = await keys.getKey({ name: '.jwtPublic' });
@@ -238,7 +238,7 @@ describe('Test keys module', () => {
 	it('test get_key handles a non-existent key correctly', async () => {
 		let error;
 		try {
-			await keys.getKey({ name: 'imNotAKey.pem' });
+			await keys.getKey({ name: 'imNotAKey.pem', bypass_auth: true });
 		} catch (err) {
 			error = err;
 		}
