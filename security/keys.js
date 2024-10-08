@@ -1157,7 +1157,7 @@ function hostnamesFromCert(cert /*X509Certificate*/) {
 }
 
 async function getKey(req) {
-	// This is here to block this function from being called by operations API. It can be called by replication of resource
+	// This is here to block this function from being called by operations API. It can be called by replication or a resource
 	if (req.bypass_auth !== true) throw new ClientError('Unauthorized', '401');
 	const validation = validateBySchema(
 		req,

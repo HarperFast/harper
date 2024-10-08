@@ -176,19 +176,13 @@ module.exports = async function cloneNode(background = false, run = false) {
 	await cloneDatabases();
 
 	// Only call install if a fresh sys DB was added
-	if (!sys_db_exist) {
-		await installHDB();
-	}
+	if (!sys_db_exist) await installHDB();
 
 	await startHDB(background, run);
 
 	if (replication_hostname) {
 		await setupReplication();
-		try {
-			await cloneKeys();
-		} catch (err) {
-			console.log(err);
-		}
+		await cloneKeys();
 	}
 
 	console.info('\nSuccessfully cloned node: ' + leader_url);
