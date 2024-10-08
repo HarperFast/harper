@@ -96,7 +96,8 @@ export class DatabaseTransaction implements Transaction {
 	 */
 	commit(options: { letItLinger?: boolean; timestamp?: number } = {}): Promise<CommitResolution> {
 		let txn_time = this.timestamp;
-		if (!txn_time) txn_time = this.timestamp = options.timestamp = options.timestamp || getNextMonotonicTime();
+		if (!txn_time) txn_time = this.timestamp = options.timestamp || getNextMonotonicTime();
+		if (!options.timestamp) options.timestamp = txn_time;
 		const retries = options.retries || 0;
 		// now validate
 		if (this.validated < this.writes.length) {
