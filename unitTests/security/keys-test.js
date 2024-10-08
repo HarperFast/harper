@@ -228,10 +228,10 @@ describe('Test keys module', () => {
 		const jwt_private = await keys.getKey({ name: '.jwtPrivate', bypass_auth: true });
 		expect(jwt_private).to.include('PRIVATE KEY');
 
-		const jwt_public = await keys.getKey({ name: '.jwtPublic' });
+		const jwt_public = await keys.getKey({ name: '.jwtPublic', bypass_auth: true });
 		expect(jwt_public).to.include('PUBLIC KEY');
 
-		const private_key = await keys.getKey({ name: 'privateKey.pem' });
+		const private_key = await keys.getKey({ name: 'privateKey.pem', bypass_auth: true });
 		expect(private_key).to.include('RSA PRIVATE KEY');
 	});
 
