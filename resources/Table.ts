@@ -393,6 +393,10 @@ export function makeTable(options) {
 			})();
 			return this;
 		}
+		// define a caching table as one that has a origin source with a get
+		static get isCaching() {
+			return has_source_get;
+		}
 		/**
 		 * Gets a resource instance, as defined by the Resource class, adding the table-specific handling
 		 * of also loading the stored record into the resource instance.

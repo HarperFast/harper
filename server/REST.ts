@@ -41,17 +41,18 @@ async function http(request: Context & Request, next_handler) {
 			resource_request = { url: entry.relativeURL, async: true }; // TODO: We don't want to have to remove the forward slash and then re-add it
 			resource = entry.Resource;
 		}
-
-		let cache_control = headers_object['cache-control'];
-		if (cache_control) {
-			cache_control = cache_control.toLowerCase();
-			const max_age = cache_control.match(/max-age=(\d+)/)?.[1];
-			if (max_age) request.expiresAt = max_age * 1000 + Date.now();
-			if (cache_control.includes('only-if-cached')) request.onlyIfCached = true;
-			if (cache_control.includes('no-cache')) request.noCache = true;
-			if (cache_control.includes('no-store')) request.noCacheStore = true;
-			if (cache_control.includes('stale-if-error')) request.staleIfError = true;
-			if (cache_control.includes('must-revalidate')) request.mustRevalidate = true;
+		if (resource.isCaching) {
+			let cache_control = headers_object['cache-control'];
+			if (cache_control) {
+				cache_control = cache_control.toLowerCase();
+				const max_age = cache_control.match(/max-age=(\d+)/)?.[1];
+				if (max_age) request.expiresAt = max_age * 1000 + Date.now();
+				if (cache_control.includes('only-if-cached')) request.onlyIfCached = true;
+				if (cache_control.includes('no-cache')) request.noCache = true;
+				if (cache_control.includes('no-store')) request.noCacheStore = true;
+				if (cache_control.includes('stale-if-error')) request.staleIfError = true;
+				if (cache_control.includes('must-revalidate')) request.mustRevalidate = true;
+			}
 		}
 		let response_data = await transaction(request, () => {
 			if (headers_object['content-length'] || headers_object['transfer-encoding']) {
