@@ -74,6 +74,16 @@ const FORBIDDEN_SYSTEM_OPS_ENUM = {
 	upsertData: true,
 };
 
+const ALLOWED_HDB_NODES_OPS = {
+	insert: true,
+	delete: true,
+	deleteRecord: true,
+	update: true,
+	updateData: true,
+	upsert: true,
+	upsertData: true,
+};
+
 const CATCHUP = 'catchup';
 const HANDLE_GET_JOB = 'handleGetJob';
 const HANDLE_GET_JOB_BY_START_DATE = 'handleGetJobsByStartDate';
@@ -359,6 +369,16 @@ function verifyPerms(request_json, operation) {
 	// set to true if this operation affects a system table.  Only su can read from system tables, but can't update/delete.
 	let is_su_system_operation =
 		schema_table_map.has(terms.SYSTEM_SCHEMA_NAME) || operation_schema === terms.SYSTEM_SCHEMA_NAME;
+
+	// Allow the hdb_nodes table to be modified by superusers
+	if (
+		is_super_user &&
+		is_su_system_operation &&
+		table === terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME &&
+		ALLOWED_HDB_NODES_OPS[request_json.operation]
+	) {
+		return null;
+	}
 
 	if (is_su_system_operation && FORBIDDEN_SYSTEM_OPS_ENUM[op]) {
 		throw handleHDBError(new Error(), HDB_ERROR_MSGS.DROP_SYSTEM, HTTP_STATUS_CODES.FORBIDDEN);
