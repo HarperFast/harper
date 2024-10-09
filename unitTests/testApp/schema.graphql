@@ -46,6 +46,10 @@ type SimpleCache @table {
 	id: ID @primaryKey
 }
 
+type CacheOfResource @table @export {
+	id: ID @primaryKey
+}
+
 type HasBigInt @table @export {
 	id: BigInt @primaryKey
 	name: String @indexed

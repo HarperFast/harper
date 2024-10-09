@@ -57,6 +57,16 @@ export class SimpleCache extends tables.SimpleCache.sourcedFrom(SimpleCacheSourc
 		return super.delete(query);
 	}
 }
+tables.CacheOfResource.sourceGetsPerformed = 0;
+tables.CacheOfResource.sourcedFrom({
+	get() {
+		tables.CacheOfResource.sourceGetsPerformed++;
+		return {
+			name: 'test',
+		};
+	},
+});
+
 export class FourPropWithHistory extends tables.FourProp {
 	static acknowledgements = 0;
 	async subscribe(options) {
