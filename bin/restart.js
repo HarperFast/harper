@@ -109,7 +109,7 @@ async function restartService(req) {
 	if (hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service] === undefined) {
 		throw handleHDBError(new Error(), INVALID_SERVICE_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
-
+	process_man.expectedRestartOfChildren();
 	pm2_mode = await process_man.isServiceRegistered(hdb_terms.HDB_PROC_DESCRIPTOR);
 	if (!isMainThread) {
 		parentPort.postMessage({
