@@ -5,6 +5,7 @@ import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager';
 import { PACKAGE_ROOT, CONFIG_PARAMS } from '../utility/hdbTerms';
 import * as graphql_handler from '../resources/graphql';
+import * as graphql_query_handler from '../server/graphqlQuerying';
 import * as js_handler from '../resources/jsResource';
 import * as login from '../resources/login';
 import * as REST from '../server/REST';
@@ -71,6 +72,7 @@ export function loadComponentDirectories(loaded_plugin_modules?: Map<any, any>, 
 const TRUSTED_RESOURCE_LOADERS = {
 	REST, // for backwards compatibility with older configs
 	rest: REST,
+	graphql: graphql_query_handler,
 	graphqlSchema: graphql_handler,
 	jsResource: js_handler,
 	fastifyRoutes: fastify_routes_handler,
@@ -91,6 +93,7 @@ const TRUSTED_RESOURCE_LOADERS = {
 
 const DEFAULT_CONFIG = {
 	rest: true,
+	graphql: true,
 	graphqlSchema: {
 		files: '*.graphql',
 		//path: '/', // from root path by default, like http://server/query

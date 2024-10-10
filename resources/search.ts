@@ -292,7 +292,7 @@ export function searchByIndex(
 			);
 		if (index?.isIndexing)
 			throw new ServerError(`"${attribute_name}" is not indexed yet, can not search for this attribute`, 503);
-		if (value === null && !index.indexNulls)
+		if (value === null && index && !index.indexNulls)
 			throw new ClientError(
 				`"${attribute_name}" is not indexed for nulls, index needs to be rebuilt to search for nulls, can not search for this attribute`,
 				400

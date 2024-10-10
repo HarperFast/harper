@@ -35,6 +35,7 @@ module.exports = {
 	validateOperationToken,
 	refreshOperationToken,
 	validateRefreshToken,
+	getJWTRSAKeys,
 };
 
 async function createTokens(auth_object) {

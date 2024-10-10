@@ -158,6 +158,7 @@
 		"eslint-config-prettier": "8.3.0",
 		"eslint-plugin-sonarjs": "^2.0.2",
 		"eventsource": "^2.0.2",
+		"graphql-http": "^1.22.1",
 		"hook-std": "3.0.0",
 		"intercept-stdout": "0.1.2",
 		"mkcert": "1.5.1",
@@ -176,6 +177,7 @@
 		"sinon-chai": "3.7.0",
 		"source-map-support": "^0.5.21",
 		"typescript": "^5.4.2",
+		"undici": "^6.19.8",
 		"why-is-node-still-running": "^1.0.0"
 	},
 	"overrides": {

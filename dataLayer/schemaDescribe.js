@@ -12,6 +12,7 @@ const env_mngr = require('../utility/environment/environmentManager');
 env_mngr.initSync();
 const { getDatabases } = require('../resources/databases');
 const fs = require('fs-extra');
+const hdb_terms = require('../utility/hdbTerms');
 
 module.exports = {
 	describeAll,
@@ -193,10 +194,17 @@ async function descTable(describe_table_object, attr_perms) {
 		attributes,
 		db_size,
 	};
-
+	if (table_obj.replicate !== undefined) table_result.replicate = table_obj.replicate;
+	if (table_obj.expirationMS !== undefined) table_result.expiration = table_obj.expirationMS / 1000 + 's';
+	if (table_obj.sealed !== undefined) table_result.sealed = table_obj.sealed;
+	if (table_obj.sources?.length > 0)
+		table_result.sources = table_obj.sources
+			.map((source) => source.name)
+			.filter((source) => source && source !== 'NATSReplicator' && source !== 'Replicator');
 	// Nats/clustering stream names are hashed to ensure constant length alphanumeric values.
 	// String will always hash to the same value.
-	table_result.clustering_stream_name = crypto_hash.createNatsTableStreamName(table_result.schema, table_result.name);
+	if (env_mngr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED))
+		table_result.clustering_stream_name = crypto_hash.createNatsTableStreamName(table_result.schema, table_result.name);
 
 	try {
 		const record_count = table_obj.getRecordCount({ exactCount: describe_table_object.exact_count === 'true' });

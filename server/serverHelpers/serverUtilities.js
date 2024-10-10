@@ -341,6 +341,7 @@ function initializeOperationFunctionMap() {
 	op_func_map.set(terms.OPERATIONS_ENUM.LIST_CERTIFICATES, new OperationFunctionObject(keys.listCertificates));
 	op_func_map.set(terms.OPERATIONS_ENUM.ADD_CERTIFICATES, new OperationFunctionObject(keys.addCertificate));
 	op_func_map.set(terms.OPERATIONS_ENUM.REMOVE_CERTIFICATE, new OperationFunctionObject(keys.removeCertificate));
+	op_func_map.set(terms.OPERATIONS_ENUM.GET_KEY, new OperationFunctionObject(keys.getKey));
 	op_func_map.set(terms.OPERATIONS_ENUM.ADD_NODE_BACK, new OperationFunctionObject(set_node.addNodeBack));
 	op_func_map.set(terms.OPERATIONS_ENUM.REMOVE_NODE_BACK, new OperationFunctionObject(set_node.removeNodeBack));
 
