@@ -1940,7 +1940,7 @@ export function makeTable(options) {
 				let record;
 				if (context?.transaction?.stale) context.transaction.stale = false;
 				if (entry != undefined) {
-					record = entry.value || entry.deref?.();
+					record = entry.value || entry.deref?.()?.value;
 					if (!record && (entry.key === undefined || entry.deref || entry?.metadataFlags & INVALIDATED)) {
 						// if the record is not loaded, either due to the entry actually be a key, or the entry's value
 						// being GC'ed, we need to load it now
@@ -3072,7 +3072,7 @@ export function makeTable(options) {
 		if (!entry) {
 			return;
 		}
-		const record = entry.value || entry.deref?.() || primary_store.getEntry(entry.key)?.value;
+		const record = entry.value || primary_store.getEntry(entry.key)?.value;
 		if (typeof attribute_name === 'object') {
 			// attribute_name is an array of attributes, pointing to nested attribute
 			let resolvers = property_resolvers;
