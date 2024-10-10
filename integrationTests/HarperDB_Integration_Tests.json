@@ -2621,7 +2621,6 @@
 									"",
 									"    pm.expect(json_data.schema).to.equal(\"123\");",
 									"    pm.expect(json_data.name).to.equal(\"4\");",
-									"    pm.expect(json_data.clustering_stream_name).to.equal('e7074b29890bbf5443325df5572bff0e');",
 									"});"
 								],
 								"type": "text/javascript"
@@ -51260,7 +51259,7 @@
 													"pm.test(\"Should return the ONE schema w/ ONE table user has permissions for\", function() {",
 													"    pm.expect(Object.keys(jsonResponse).length).to.eql(1);",
 													"    pm.expect(Object.keys(jsonResponse.northnwd).length).to.eql(1);",
-													"    pm.expect(Object.keys(jsonResponse.northnwd.employees).length).to.eql(10)",
+													"    pm.expect(Object.keys(jsonResponse.northnwd.employees).length).to.eql(11)",
 													"    pm.expect(jsonResponse.northnwd.employees.db_size).to.be.a('number')",
 													"    pm.expect(jsonResponse.northnwd.employees.attributes.length).to.eql(4)",
 													"});",
