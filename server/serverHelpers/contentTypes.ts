@@ -20,7 +20,16 @@ const PUBLIC_ENCODE_OPTIONS = {
 	useToJSON: true,
 };
 
-const media_types = new Map();
+type Deserialize = (data: Buffer) => { contentType?: string; data: unknown } | unknown;
+
+const media_types = new Map<string, {
+	serialize?: unknown;
+	deserialize?: Deserialize;
+	serializeStream?: unknown;
+	compressible?: boolean;
+	q?: number;
+}>();
+
 export const contentTypes = media_types;
 server.contentTypes = contentTypes;
 _assignPackageExport('contentTypes', contentTypes);
@@ -406,7 +415,7 @@ export function serializeMessage(message, request) {
 	return serialize(message);
 }
 
-function streamToBuffer(stream) {
+function streamToBuffer(stream: Readable): Promise<Buffer> {
 	return new Promise((resolve, reject) => {
 		const buffers = [];
 		stream.on('data', (data) => buffers.push(data));
@@ -414,46 +423,95 @@ function streamToBuffer(stream) {
 		stream.on('error', reject);
 	});
 }
-export function getDeserializer(content_type: string, streaming: boolean) {
-	if (!content_type) content_type = '';
+
+/**
+ * An object based representation of a content-type header string.
+ * The parameters `charset` and `boundary` have been added to the type as
+ * they are common parameters for the `Content-Type` header, but HTTP specifies
+ * that any parameter can be included (hence the `[k: string]: string`).
+ * 
+ * Use `parseContentType(content_type: string)` to create this object.
+ */
+type ContentType = {
+	type: string;
+	parameters?: { charset?: string, boundary?: string, [k: string]: string }
+}
+
+const BUFFER_ENCODINGS= ["ascii","utf8","utf-8","utf16le","utf-16le","ucs2","ucs-2","base64","base64url","latin1","binary","hex"];
+function isBufferEncoding(value: string): value is BufferEncoding {
+	return BUFFER_ENCODINGS.includes(value);
+}
+
+/**
+ * Parse the content-type header for the type and parameters.
+ * @param content_type 
+ */
+function parseContentType(content_type: string): ContentType {
+	// Get the first `;` character to separate the type from the parameters
 	const parameters_start = content_type.indexOf(';');
-	let parameters;
+	let parameters: ContentType['parameters'];
+
+	// If the `;` exists, then parse the parameters
 	if (parameters_start > -1) {
-		parameters = content_type.slice(parameters_start + 1);
+		parameters = {};
+		// Parameters are separated by `;` and key-value pairs are separated by `=`
+		// i.e. `multipart/form-data; charset=UTF-8; boundary=---123`
+		const parts = content_type.slice(parameters_start + 1).split(';');
+		for (const part of parts) {
+			const [key, value] = part.split('=')
+			parameters[key.trim()] = value.trim();
+		}
 		content_type = content_type.slice(0, parameters_start);
 	}
-	const preferred_handler = media_types.get(content_type);
-	if (streaming) {
-		if (preferred_handler?.deserializeStream) return preferred_handler.deserializeStream;
-		const deserialize = media_types.get(content_type)?.deserialize || deserializerUnknownType(content_type, parameters);
-		return (stream) => streamToBuffer(stream).then(deserialize);
-	}
-	return (
-		(content_type && media_types.get(content_type)?.deserialize) || deserializerUnknownType(content_type, parameters)
-	);
+
+	return { type: content_type, parameters };
 }
-function deserializerUnknownType(content_type, parameters) {
+
+/**
+ * Given a content-type header string, get a deserializer function that can be used to parse the body.
+ */
+export function getDeserializer(content_type_string: string, streaming: false): Deserialize
+export function getDeserializer(content_type_string: string , streaming: true): ((stream: Readable) => Promise<ReturnType<Deserialize>>)
+export function getDeserializer(content_type_string: string = '', streaming: boolean = false): Deserialize | ((stream: Readable) => Promise<ReturnType<Deserialize>>) {
+	const content_type = parseContentType(content_type_string);
+
+	const deserialize = (content_type.type && media_types.get(content_type.type)?.deserialize) || deserializerUnknownType(content_type);
+
+	return streaming
+		? (stream: Readable) => streamToBuffer(stream).then(deserialize)
+		: deserialize;
+}
+
+function deserializerUnknownType(content_type: ContentType): Deserialize {
 	// TODO: store the content-disposition too
-	if (content_type.startsWith('text/')) {
+
+	if (content_type.type.startsWith('text/')) {
 		// convert the data to a string since it is text (using the provided charset if specified)
-		const charset = parameters?.match(/charset=(.+)/)?.[1] || 'utf-8';
+		if (content_type.parameters?.charset && !isBufferEncoding(content_type.parameters.charset)) {
+			logger.info(`Unknown Buffer encoding ${content_type.parameters.charset} in content-type. Proceeding anyways.`);
+		}
 		return (data) => ({
-			contentType: content_type,
-			data: data.toString(charset),
+			contentType: content_type.type,
+			// @ts-expect-error We are okay with passing whatever the user has specified as the encoding to the `toString` method
+			data: data.toString(content_type.parameters?.charset || 'utf-8'),
 		});
-	} else if (content_type === 'application/octet-stream') {
+	} else if (content_type.type === 'application/octet-stream') {
 		// use this type as a way of directly transferring binary data (since that is what it means)
 		return (data) => data;
 	} else {
 		return (data) => {
-			if (!content_type) {
+			if (content_type.type === '') {
 				// try to parse as JSON if no content type
 				try {
+					// if the first byte is `{` then it is likely JSON
 					if (data?.[0] === 123) return JSONParse(data);
-				} catch (error) {}
+				// eslint-disable-next-line sonarjs/no-ignored-exceptions
+				} catch (error) {
+					// continue if cannot parse as JSON
+				}
 			}
 			// else record the type and binary data as a pair
-			return { contentType: content_type || 'application/octet-stream', data };
+			return { contentType: content_type.type || 'application/octet-stream', data };
 		};
 	}
 }
