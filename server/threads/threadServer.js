@@ -19,6 +19,7 @@ const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
 const { createTLSSelector } = require('../../security/keys');
 const { resolvePath } = require('../../config/configUtils');
 const { startupLog } = require('../../bin/run');
+const { Readable } = require('node:stream');
 
 const debug_threads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
 if (debug_threads) {
@@ -521,6 +522,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 					recordActionBinary(status < 400, 'success', handler_path, method);
 					recordActionBinary(1, 'response_' + status, handler_path, method);
 					if (!sent_body) {
+						if (body instanceof ReadableStream) body = Readable.fromWeb(body);
 						// if it is a stream, pipe it
 						if (body?.pipe) {
 							body.pipe(node_response);

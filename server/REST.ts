@@ -150,7 +150,11 @@ async function http(request: Context & Request, next_handler) {
 		} else if (response_data.status > 0 && response_data.headers) {
 			// if response is a Response object, use it as the response
 			// merge headers from response
-			response_data.headers = mergeHeaders(response_data.headers, headers);
+			const response_headers = mergeHeaders(response_data.headers, headers);
+			if (response_data.headers !== response_headers)
+				// if we rebuilt the headers, reassign it, but we don't want to assign to a Response object (which should already
+				// have a valid Headers object) or it will throw an error
+				response_data.headers = response_headers;
 			// if data is provided, serialize it
 			if (response_data.data !== undefined) response_data.body = serialize(response_data.data, request, response_data);
 			return response_data;
