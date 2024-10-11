@@ -2672,7 +2672,7 @@ export function makeTable(options) {
 						has_changes = invalidated || version > existing_version || !existing_record;
 						if (!version) version = getNextMonotonicTime();
 						const resolve_duration = performance.now() - start;
-						recordAction(resolve_duration, 'cache-resolution', table_name);
+						recordAction(resolve_duration, 'cache-resolution', table_name, null, 'success');
 						if (response_headers)
 							appendHeader(response_headers, 'Server-Timing', `cache-resolve;dur=${resolve_duration.toFixed(2)}`, true);
 						txn.timestamp = version;
@@ -2707,6 +2707,10 @@ export function makeTable(options) {
 							});
 							harper_logger.trace(error.message, '(returned stale record)');
 						} else reject(error);
+						const resolve_duration = performance.now() - start;
+						recordAction(resolve_duration, 'cache-resolution', table_name, null, 'fail');
+						if (response_headers)
+							appendHeader(response_headers, 'Server-Timing', `cache-resolve;dur=${resolve_duration.toFixed(2)}`, true);
 						source_context.transaction.abort();
 						return;
 					}
