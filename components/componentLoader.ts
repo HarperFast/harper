@@ -309,6 +309,9 @@ export async function loadComponent(
 					} else if ((root_end = files.indexOf('/*')) > -1) {
 						root_file_path = files.slice(0, root_end + 1);
 						root_path = relative(folder, root_file_path);
+					} else if (component_config.files.indexOf('/') > -1) {
+						root_file_path = files.slice(0, files.lastIndexOf('/') + 1);
+						root_path = relative(folder, root_file_path);
 					}
 					let directory_handled = false;
 					if (isMainThread && extension_module.setupDirectory) {
