@@ -42,6 +42,7 @@ module.exports = {
 	isClusteringRunning,
 	stopClustering,
 	reloadClustering,
+	expectedRestartOfChildren,
 };
 
 // This indicates when we are running as a CLI scripting command (kind of taking the place of processManagement's CLI), and so we
@@ -87,6 +88,7 @@ function start(proc_config, no_kill = false) {
 	if (pm2_mode) return startWithPM2(proc_config);
 	let subprocess = execFile(proc_config.script, proc_config.args.split(' '), proc_config);
 	subprocess.name = proc_config.name;
+	subprocess.config = proc_config;
 	subprocess.on('exit', async (code) => {
 		let index = child_processes.indexOf(subprocess); // dead, remove it from processes to kill now
 		if (index > -1) child_processes.splice(index, 1);
@@ -152,18 +154,20 @@ function start(proc_config, no_kill = false) {
 	subprocess.unref();
 
 	// if we are running in standard mode, then we want to clean up our child processes when we exit
-	child_processes = [];
-	if (!child_processes && !no_kill) {
-		const kill_children = () => {
-			shutting_down = true;
-			if (!child_processes) return;
-			child_processes.map((proc) => proc.kill());
-			process.exit(0);
-		};
-		process.on('exit', kill_children);
-		process.on('SIGINT', kill_children);
-		process.on('SIGQUIT', kill_children);
-		process.on('SIGTERM', kill_children);
+	if (!child_processes) {
+		child_processes = [];
+		if (!no_kill) {
+			const kill_children = () => {
+				shutting_down = true;
+				if (!child_processes) return;
+				child_processes.map((proc) => proc.kill());
+				process.exit(0);
+			};
+			process.on('exit', kill_children);
+			process.on('SIGINT', kill_children);
+			process.on('SIGQUIT', kill_children);
+			process.on('SIGTERM', kill_children);
+		}
 	}
 	child_processes.push(subprocess);
 }
@@ -258,6 +262,7 @@ function reload(service_name) {
  */
 function restart(service_name) {
 	if (!pm2_mode) {
+		expectedRestartOfChildren();
 		for (let child_process of child_processes || []) {
 			// kill the child process and let it (auto) restart
 			if (child_process.name === service_name) {
@@ -278,6 +283,14 @@ function restart(service_name) {
 	});
 }
 
+/**
+ * Reset the restart counts for all child processes because we are doing an intentional restart
+ */
+function expectedRestartOfChildren() {
+	for (let child_process of child_processes || []) {
+		if (child_process.config) child_process.config.restarts = 0; // reset the restart count
+	}
+}
 /**
  * Delete a process from Pm2
  * @param service_name

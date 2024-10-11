@@ -44,30 +44,31 @@ async function http(request: Context & Request, next_handler) {
 			resource_request.async = true;
 			resource = entry.Resource;
 		}
-
-		const cache_control = headers_object['cache-control'];
-		if (cache_control) {
-			const cache_control_parts = parseHeaderValue(cache_control);
-			for (const part of cache_control_parts) {
-				switch (part.name) {
-					case 'max-age':
-						request.expiresAt = part.value * 1000 + Date.now();
-						break;
-					case 'only-if-cached':
-						request.onlyIfCached = true;
-						break;
-					case 'no-cache':
-						request.noCache = true;
-						break;
-					case 'no-store':
-						request.noCacheStore = true;
-						break;
-					case 'stale-if-error':
-						request.staleIfError = true;
-						break;
-					case 'must-revalidate':
-						request.mustRevalidate = true;
-						break;
+		if (resource.isCaching) {
+			const cache_control = headers_object['cache-control'];
+			if (cache_control) {
+				const cache_control_parts = parseHeaderValue(cache_control);
+				for (const part of cache_control_parts) {
+					switch (part.name) {
+						case 'max-age':
+							request.expiresAt = part.value * 1000 + Date.now();
+							break;
+						case 'only-if-cached':
+							request.onlyIfCached = true;
+							break;
+						case 'no-cache':
+							request.noCache = true;
+							break;
+						case 'no-store':
+							request.noCacheStore = true;
+							break;
+						case 'stale-if-error':
+							request.staleIfError = true;
+							break;
+						case 'must-revalidate':
+							request.mustRevalidate = true;
+							break;
+					}
 				}
 			}
 		}
