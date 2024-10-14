@@ -1226,7 +1226,7 @@ export function replicateOverWS(ws, options, authorization) {
 				end: [Symbol.for('seq'), Buffer.from([0xff])],
 			}) || []) {
 				for (const node of entry.value.nodes || []) {
-					if (node.seqId > (last_txn_times.get(node.id) ?? 0)) last_txn_times.set(node.id, node.seqId);
+					if (node.lastTxnTime > (last_txn_times.get(node.id) ?? 0)) last_txn_times.set(node.id, node.lastTxnTime);
 				}
 			}
 		} catch (error) {

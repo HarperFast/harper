@@ -394,7 +394,9 @@ export function makeTable(options) {
 													node_states.push(node_state);
 												}
 												node_state.seqId = Math.max(existing_seq?.seqId ?? 1, event.localTime);
-												if (node_id === event.nodeId) node_state.lastTxnTime = event.timestamp;
+												if (node_id === txn_in_progress.nodeId) {
+													node_state.lastTxnTime = event.timestamp;
+												}
 											}
 											const seq_id = Math.max(existing_seq?.seqId ?? 1, event.localTime);
 											logger.trace?.('Received txn', database_name, seq_id, event.localTime, event.remoteNodeIds);
