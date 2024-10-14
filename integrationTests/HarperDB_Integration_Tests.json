@@ -53660,84 +53660,6 @@
 							"response": []
 						},
 						{
-							"name": "Insert record system table as SU",
-							"event": [
-								{
-									"listen": "test",
-									"script": {
-										"exec": [
-											"pm.test(\"Status code is 403\", function () {",
-											"    pm.response.to.have.status(403);",
-											"});",
-											"",
-											"var jsonData = pm.response.json();",
-											"",
-											"pm.test(\"Op auth error message\", function () {",
-											"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid database items\");",
-											"});",
-											"",
-											"pm.test(\"Includes correct system table perm object in unauthorized_access\", function () {",
-											"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
-											"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1);",
-											"    pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql('insert');",
-											"    pm.expect(jsonData.unauthorized_access[0].schema).to.eql('system');",
-											"    pm.expect(jsonData.unauthorized_access[0].table).to.eql('hdb_user');",
-											"});",
-											"",
-											"pm.test(\"invalid_schema_items is empty\", function () {",
-											"    pm.expect(jsonData.invalid_schema_items.length).to.eql(0);",
-											"});"
-										],
-										"type": "text/javascript"
-									}
-								}
-							],
-							"request": {
-								"auth": {
-									"type": "basic",
-									"basic": [
-										{
-											"key": "username",
-											"value": "{{username}}",
-											"type": "string"
-										},
-										{
-											"key": "password",
-											"value": "{{password}}",
-											"type": "string"
-										},
-										{
-											"key": "showPassword",
-											"value": false,
-											"type": "boolean"
-										}
-									]
-								},
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"value": "Basic SERCX0FETUlOOnJvb3Q="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"insert\",\n\"schema\":\"system\",\n\"table\":\"hdb_user\",\n\"records\": [\n  {\n\t\"username\": \"admin\",\n    \"role\": \"0bffc136-0b0b-4582-8efe-44031f40d906\",\n    \"password\": \"fakepassword\",\n    \"active\": true\n  }\n]\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": ["{{host}}"],
-									"port": "{{port}}"
-								},
-								"description": "Confirm that a super user can NOT insert record into system table"
-							},
-							"response": []
-						},
-						{
 							"name": "Insert record system table as non SU",
 							"event": [
 								{
@@ -53816,72 +53738,6 @@
 							"response": []
 						},
 						{
-							"name": "Update record system table as SU",
-							"event": [
-								{
-									"listen": "test",
-									"script": {
-										"exec": [
-											"pm.test(\"Status code is 403\", function () {",
-											"    pm.response.to.have.status(403);",
-											"});",
-											"",
-											"var jsonData = pm.response.json();",
-											"",
-											"pm.test(\"Op auth error message\", function () {",
-											"    pm.expect(jsonData.error).to.eql(\"The 'system' database, tables and records are used internally by HarperDB and cannot be updated or removed.\");",
-											"});"
-										],
-										"type": "text/javascript"
-									}
-								}
-							],
-							"request": {
-								"auth": {
-									"type": "basic",
-									"basic": [
-										{
-											"key": "username",
-											"value": "{{username}}",
-											"type": "string"
-										},
-										{
-											"key": "password",
-											"value": "{{password}}",
-											"type": "string"
-										},
-										{
-											"key": "showPassword",
-											"value": false,
-											"type": "boolean"
-										}
-									]
-								},
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"value": "Basic SERCX0FETUlOOnJvb3Q="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"update\",\n\"schema\":\"system\",\n\"table\":\"hdb_user\",\n\"records\": [\n  {\n\t\"username\": \"admin\",\n    \"role\": \"0bffc136-0b0b-4582-8efe-44031f40d906\",\n    \"password\": \"fakepassword\",\n    \"active\": true\n  }\n]\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": ["{{host}}"],
-									"port": "{{port}}"
-								},
-								"description": "Confirm that a super user can NOT update record in system table"
-							},
-							"response": []
-						},
-						{
 							"name": "Update record system table as non SU ",
 							"event": [
 								{
@@ -53944,73 +53800,6 @@
 									"port": "{{port}}"
 								},
 								"description": "Confirm that a non super user can NOT update record in system table"
-							},
-							"response": []
-						},
-						{
-							"name": "Delete record system table as SU ",
-							"event": [
-								{
-									"listen": "test",
-									"script": {
-										"exec": [
-											"pm.test(\"Status code is 403\", function () {",
-											"    pm.response.to.have.status(403);",
-											"});",
-											"",
-											"var jsonData = pm.response.json();",
-											"",
-											"pm.test(\"Op auth error message\", function () {",
-											"    pm.expect(jsonData.error).to.eql(\"The 'system' database, tables and records are used internally by HarperDB and cannot be updated or removed.\");",
-											"});",
-											""
-										],
-										"type": "text/javascript"
-									}
-								}
-							],
-							"request": {
-								"auth": {
-									"type": "basic",
-									"basic": [
-										{
-											"key": "username",
-											"value": "{{username}}",
-											"type": "string"
-										},
-										{
-											"key": "password",
-											"value": "{{password}}",
-											"type": "string"
-										},
-										{
-											"key": "showPassword",
-											"value": false,
-											"type": "boolean"
-										}
-									]
-								},
-								"method": "POST",
-								"header": [
-									{
-										"key": "Content-Type",
-										"value": "application/json"
-									},
-									{
-										"key": "Authorization",
-										"value": "Basic SERCX0FETUlOOnJvb3Q="
-									}
-								],
-								"body": {
-									"mode": "raw",
-									"raw": "{\n\"operation\":\"delete\",\n\"schema\":\"system\",\n\"table\":\"hdb_user\",\n\"hash_values\": [\"admin1\"]\n}"
-								},
-								"url": {
-									"raw": "{{host}}:{{port}}",
-									"host": ["{{host}}"],
-									"port": "{{port}}"
-								},
-								"description": "Confirm that a super user can NOT delete record from system table"
 							},
 							"response": []
 						},
@@ -55388,7 +55177,7 @@
 					}
 				},
 				{
-					"name": "Test modifying hdb_nodes table",
+					"name": "Test modifying system tables",
 					"item": [
 						{
 							"name": "Insert record into table",
