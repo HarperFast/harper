@@ -200,6 +200,10 @@ module.exports = async function cloneNode(background = false, run = false) {
 	if (background) process.exit();
 };
 
+/**
+ * Will make all the necessary calls to the leader node using a WebSocket connection rather than http.
+ * @returns {Promise<void>}
+ */
 async function cloneUsingWS() {
 	if (hdb_config?.cloned && cloned_var !== 'false') {
 		console.log('Instance marked as cloned, clone will not run');
