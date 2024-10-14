@@ -724,9 +724,10 @@ export function replicateOverWS(ws, options, authorization) {
 							const primary_store = table.primaryStore;
 							const encoder = primary_store.encoder;
 							if (audit_record.extendedType & HAS_STRUCTURE_UPDATE || !encoder.typedStructs) {
-								// there is a structure update, fully load the entire record so it is all loaded into memory
-								const value = audit_record.getValue(primary_store, true);
-								JSON.stringify(value);
+								// there is a structure update, we need to reload the structure from storage.
+								// this is copied from msgpackr's struct, may want to expose as public method
+								encoder._mergeStructures(encoder.getStructures());
+								if (encoder.typedStructs) encoder.lastTypedStructuresLength = encoder.typedStructs.length;
 							}
 							const time_range = subscribed_node_ids[node_id];
 							const is_within_subscription_range =
@@ -1225,7 +1226,7 @@ export function replicateOverWS(ws, options, authorization) {
 				end: [Symbol.for('seq'), Buffer.from([0xff])],
 			}) || []) {
 				for (const node of entry.value.nodes || []) {
-					if (node.seqId > (last_txn_times.get(node.id) ?? 0)) last_txn_times.set(node.id, node.seqId);
+					if (node.lastTxnTime > (last_txn_times.get(node.id) ?? 0)) last_txn_times.set(node.id, node.lastTxnTime);
 				}
 			}
 		} catch (error) {
