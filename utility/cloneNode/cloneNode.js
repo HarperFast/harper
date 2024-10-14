@@ -102,7 +102,7 @@ let leader_replication_url;
  * This module will run when HarperDB is started with the required env/cli vars.
  * Any config, databases and replication that doesn't already exist on this node will be cloned from the leader node
  * @param background
- * @returns {Promise<>}
+ * @returns {Promise<void>}
  */
 module.exports = async function cloneNode(background = false, run = false) {
 	console.info(`Starting clone node from leader node: ${leader_url}`);
@@ -269,15 +269,15 @@ async function restartAndWait() {
 		return;
 	}
 
-	let loops = 0;
-	while (restart_status === 'IN_PROGRESS' && loops < 10) {
+	let count = 0;
+	while (restart_status === 'IN_PROGRESS' && count < 10) {
 		await new Promise((resolve) => setTimeout(resolve, WAIT_FOR_RESTART_TIME));
 		const job_record = await jobs.getJobById(restart_response.job_id);
 		restart_status = job_record[0].status;
-		loops++;
+		count++;
 	}
 
-	if (loops === 10) console.error('Error restarting http workers, restart took too long', job_record[0]);
+	if (count === 10) console.error('Error restarting http workers, restart took too long', job_record[0]);
 }
 /**
  * Send a request to the leader node using either http or websockets
@@ -595,6 +595,10 @@ async function cloneTablesFetch() {
 		sys_db_exist = true;
 		console.log(`Not cloning system database due to it already existing on clone`);
 	}
+	if (replication_hostname) {
+		hdb_log.info('Replication hostname set, not using backup to clone databases, replication will clone');
+		return;
+	}
 
 	// Create object where excluded db name is key
 	exclude_db = clone_node_config?.databaseConfig?.excludeDatabases;
@@ -746,7 +750,7 @@ async function setupReplication() {
 	const add_node_response = await add_node(
 		{
 			operation: OPERATIONS_ENUM.ADD_NODE,
-			verify_tls: false,
+			verify_tls: false, // TODO : if they have certs we shouldnt need to pass creds
 			url: leader_replication_url,
 			start_time,
 			authorization: {

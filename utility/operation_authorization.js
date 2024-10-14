@@ -74,7 +74,7 @@ const FORBIDDEN_SYSTEM_OPS_ENUM = {
 	upsertData: true,
 };
 
-const ALLOWED_HDB_NODES_OPS = {
+const ALLOWED_SYS_OPS = {
 	insert: true,
 	delete: true,
 	deleteRecord: true,
@@ -375,7 +375,7 @@ function verifyPerms(request_json, operation) {
 	if (
 		is_super_user &&
 		is_su_system_operation &&
-		ALLOWED_HDB_NODES_OPS[request_json.operation] &&
+		ALLOWED_SYS_OPS[request_json.operation] &&
 		(table === terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME ||
 			table === terms.SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME ||
 			table === terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME)
