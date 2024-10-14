@@ -314,10 +314,18 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					for (const subscription of packet.subscriptions) {
 						let granted_qos;
 						try {
-							granted_qos = (await session.addSubscription(subscription, subscription.qos >= 1)).qos || 0;
+							const granted_subscription = await session.addSubscription(subscription, subscription.qos >= 1);
+							granted_qos = granted_subscription
+								? granted_subscription.qos || 0
+								: mqtt_options.protocolVersion < 5
+								? 0x80 // only error code in v3.1.1
+								: 0x8f; // invalid topic indicated
 						} catch (error) {
 							mqtt_settings.events.emit('error', error, socket, subscription, session);
-							mqtt_log.error?.(error);
+							if (error.statusCode) {
+								if (error.statusCode === 500) mqtt_log.warn?.(error);
+								else mqtt_log.info?.(error);
+							} else mqtt_log.error?.(error);
 							granted_qos =
 								mqtt_options.protocolVersion < 5
 									? 0x80 // the only error code in v3.1.1
