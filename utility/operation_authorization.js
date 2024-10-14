@@ -371,12 +371,14 @@ function verifyPerms(request_json, operation) {
 	let is_su_system_operation =
 		schema_table_map.has(terms.SYSTEM_SCHEMA_NAME) || operation_schema === terms.SYSTEM_SCHEMA_NAME;
 
-	// Allow the hdb_nodes table to be modified by superusers
+	// Allow the hdb_nodes, hdb_role & hdb_user tables to be modified by superusers
 	if (
 		is_super_user &&
 		is_su_system_operation &&
-		table === terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME &&
-		ALLOWED_HDB_NODES_OPS[request_json.operation]
+		ALLOWED_HDB_NODES_OPS[request_json.operation] &&
+		(table === terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME ||
+			table === terms.SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME ||
+			table === terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME)
 	) {
 		return null;
 	}

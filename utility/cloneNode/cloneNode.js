@@ -27,6 +27,7 @@ const hdb_terms = require('../hdbTerms');
 const version = require('../../bin/version');
 const hdb_info_controller = require('../../dataLayer/hdbInfoController');
 const { sendOperationToNode } = require('../../server/replication/replicator');
+const { updateConfigCert } = require('../../security/keys');
 
 const { SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME, CONFIG_PARAMS, OPERATIONS_ENUM } = hdb_terms;
 const WAIT_FOR_RESTART_TIME = 10000;
@@ -69,6 +70,7 @@ const CLONE_VARS = {
 	REPLICATION_HOSTNAME: 'REPLICATION_HOSTNAME',
 	HDB_CLONE_OVERTOP: 'HDB_CLONE_OVERTOP',
 	CLONE_KEYS: 'CLONE_KEYS',
+	CLONE_USING_WS: 'CLONE_USING_WS',
 };
 
 const cli_args = minimist(process.argv);
@@ -80,6 +82,7 @@ const replication_hostname = cli_args[CLONE_VARS.REPLICATION_HOSTNAME] ?? proces
 const clone_overtop = (cli_args[CLONE_VARS.HDB_CLONE_OVERTOP] ?? process.env[CLONE_VARS.HDB_CLONE_OVERTOP]) === 'true'; // optional var - will allow clone to work overtop of an existing HDB install
 const cloned_var = cli_args[CONFIG_PARAMS.CLONED.toUpperCase()] ?? process.env[CONFIG_PARAMS.CLONED.toUpperCase()];
 const clone_keys = cli_args[CLONE_VARS.CLONE_KEYS] !== 'false' && process.env[CLONE_VARS.CLONE_KEYS] !== 'false';
+const clone_using_ws = (cli_args[CLONE_VARS.CLONE_USING_WS] ?? process.env[CLONE_VARS.CLONE_USING_WS]) === 'true';
 
 let clone_node_config;
 let hdb_config = {};
@@ -99,7 +102,7 @@ let leader_replication_url;
  * This module will run when HarperDB is started with the required env/cli vars.
  * Any config, databases and replication that doesn't already exist on this node will be cloned from the leader node
  * @param background
- * @returns {Promise<void>}
+ * @returns {Promise<>}
  */
 module.exports = async function cloneNode(background = false, run = false) {
 	console.info(`Starting clone node from leader node: ${leader_url}`);
@@ -155,6 +158,15 @@ module.exports = async function cloneNode(background = false, run = false) {
 		}
 	}
 
+	if (replication_hostname)
+		leader_replication_url =
+			(new URL(leader_url).protocol === 'https:' ? 'wss://' : 'ws://') + new URL(leader_url).host;
+
+	if (clone_using_ws) {
+		await cloneUsingWS();
+		return;
+	}
+
 	if (hdb_config?.cloned && cloned_var !== 'false') {
 		console.log('Instance marked as cloned, clone will not run');
 		env_mgr.setCloneVar(false);
@@ -163,8 +175,7 @@ module.exports = async function cloneNode(background = false, run = false) {
 	}
 
 	// Get all the non-system db/table from leader node
-	leader_dbs = await leaderHttpReq({ operation: OPERATIONS_ENUM.DESCRIBE_ALL });
-	leader_dbs = await JSON.parse(leader_dbs.body);
+	leader_dbs = await leaderReq({ operation: OPERATIONS_ENUM.DESCRIBE_ALL });
 
 	await cloneConfig();
 	env_mgr.setCloneVar(false);
@@ -188,6 +199,99 @@ module.exports = async function cloneNode(background = false, run = false) {
 	console.info('\nSuccessfully cloned node: ' + leader_url);
 	if (background) process.exit();
 };
+
+async function cloneUsingWS() {
+	if (hdb_config?.cloned && cloned_var !== 'false') {
+		console.log('Instance marked as cloned, clone will not run');
+		env_mgr.setCloneVar(false);
+		env_mgr.initSync();
+		// Start HDB
+		return main();
+	}
+
+	console.log('Cloning using WebSockets');
+
+	const system_db_dir = getDBPath('system');
+	const sys_db_file_dir = join(system_db_dir, 'system.mdb');
+	if (fresh_clone || !(await fs.exists(sys_db_file_dir)) || clone_overtop) {
+		console.info('Clone node installing HarperDB');
+		process.env.TC_AGREEMENT = 'yes';
+		process.env.ROOTPATH = root_path;
+		if (!username) throw new Error('HDB_LEADER_USERNAME is undefined.');
+		process.env.HDB_ADMIN_USERNAME = username;
+		if (!password) throw new Error('HDB_LEADER_PASSWORD is undefined.');
+		process.env.HDB_ADMIN_PASSWORD = password;
+		setIgnoreExisting(true);
+		await install();
+	} else {
+		env_mgr.setCloneVar(false);
+		env_mgr.initSync();
+	}
+
+	await main();
+	await cloneConfig();
+	await updateConfigCert();
+
+	//Restarting HDB to pick up new config
+	await restartAndWait();
+
+	// When cloning with WS we utilize add_node to clone all the DB and setup replication
+	console.log('Adding node to the cluster');
+	const add_node = require('../clustering/addNode');
+	const add_node_response = await add_node({
+		operation: OPERATIONS_ENUM.ADD_NODE,
+		verify_tls: false, //TODO: We can probably remove this when being used in plexus
+		url: leader_replication_url,
+	});
+	console.log('Add node response: ', add_node_response);
+
+	await cloneKeys();
+
+	console.log(`Successfully cloned node: ${leader_url} using WebSockets`);
+}
+
+/**
+ * Calls restart and then monitors restart job until it is complete
+ * @returns {Promise<void>}
+ */
+async function restartAndWait() {
+	console.log('Restarting clone node http workers');
+	const server_utils = require('../../server/serverHelpers/serverUtilities');
+	const jobs = require('../../server/jobs/jobs');
+	const restart_response = await server_utils.executeJob({
+		operation: 'restart_service',
+		service: 'http_workers',
+	});
+	const job_record = await jobs.getJobById(restart_response.job_id);
+	let restart_status = job_record[0].status;
+	if (restart_status !== 'IN_PROGRESS' && restart_status !== 'COMPLETE') {
+		console.error('Error restarting http workers', job_record[0]);
+		return;
+	}
+
+	let loops = 0;
+	while (restart_status === 'IN_PROGRESS' && loops < 10) {
+		await new Promise((resolve) => setTimeout(resolve, WAIT_FOR_RESTART_TIME));
+		const job_record = await jobs.getJobById(restart_response.job_id);
+		restart_status = job_record[0].status;
+		loops++;
+	}
+
+	if (loops === 10) console.error('Error restarting http workers, restart took too long', job_record[0]);
+}
+/**
+ * Send a request to the leader node using either http or websockets
+ * If websockets are used the leader node needs to know about the clone before any requests are made.
+ * @param req
+ * @returns {Promise<unknown>}
+ */
+async function leaderReq(req) {
+	if (clone_using_ws) {
+		return sendOperationToNode({ url: `wss://${new URL(leader_url).host}` }, req, { rejectUnauthorized: false });
+	}
+
+	return JSON.parse((await leaderHttpReq(req)).body);
+}
 
 async function cloneKeys() {
 	try {
@@ -226,8 +330,7 @@ async function cloneKeys() {
  */
 async function cloneConfig() {
 	console.info('Cloning configuration');
-	leader_config = await leaderHttpReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
-	leader_config = await JSON.parse(leader_config.body);
+	leader_config = await leaderReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
 	leader_config_flat = config_utils.flattenConfig(leader_config);
 	const exclude_comps = clone_node_config?.componentConfig?.exclude;
 	const config_update = {
@@ -492,10 +595,6 @@ async function cloneTablesFetch() {
 		sys_db_exist = true;
 		console.log(`Not cloning system database due to it already existing on clone`);
 	}
-	if (replication_hostname) {
-		hdb_log.info('Replication hostname set, not using backup to clone databases, replication will clone');
-		return;
-	}
 
 	// Create object where excluded db name is key
 	exclude_db = clone_node_config?.databaseConfig?.excludeDatabases;
@@ -644,11 +743,10 @@ async function setupReplication() {
 
 	await global_schema.setSchemaDataToGlobalAsync();
 	const add_node = require('../clustering/addNode');
-	leader_replication_url = `${leader_config.operationsApi.network.port ? 'ws' : 'wss'}://${new URL(leader_url).host}`;
 	const add_node_response = await add_node(
 		{
 			operation: OPERATIONS_ENUM.ADD_NODE,
-			verify_tls: false, // TODO : if they have certs we shouldnt need to pass creds
+			verify_tls: false,
 			url: leader_replication_url,
 			start_time,
 			authorization: {
