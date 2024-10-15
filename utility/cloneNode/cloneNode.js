@@ -159,9 +159,10 @@ module.exports = async function cloneNode(background = false, run = false) {
 		}
 	}
 
-	if (replication_hostname)
-		leader_replication_url =
-			(new URL(leader_url).protocol === 'https:' ? 'wss://' : 'ws://') + new URL(leader_url).host;
+	if (replication_hostname) {
+		const leader_url_inst = new URL(leader_url);
+		leader_replication_url = `${leader_url_inst.protocol === 'https:' ? 'wss://' : 'ws://'}${leader_url_inst.host}`;
+	}
 
 	if (clone_using_ws) {
 		await cloneUsingWS();
@@ -267,7 +268,7 @@ async function cloneUsingWS() {
  */
 async function leaderReq(req) {
 	if (clone_using_ws) {
-		return sendOperationToNode({ url: `wss://${new URL(leader_url).host}` }, req, { rejectUnauthorized: false });
+		return sendOperationToNode({ url: leader_replication_url }, req, { rejectUnauthorized: false });
 	}
 
 	return JSON.parse((await leaderHttpReq(req)).body);
