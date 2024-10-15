@@ -28,6 +28,7 @@ const version = require('../../bin/version');
 const hdb_info_controller = require('../../dataLayer/hdbInfoController');
 const { sendOperationToNode } = require('../../server/replication/replicator');
 const { updateConfigCert } = require('../../security/keys');
+const { restartWorkers } = require('../../server/threads/manageThreads');
 
 const { SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME, CONFIG_PARAMS, OPERATIONS_ENUM } = hdb_terms;
 const WAIT_FOR_RESTART_TIME = 10000;
@@ -232,19 +233,23 @@ async function cloneUsingWS() {
 		env_mgr.initSync();
 	}
 
+	// Starts HDB
 	await main();
+
+	// Cloning the leader configuration, excluding CONFIG_TO_NOT_CLONE values
 	await cloneConfig();
+
+	// Updates the keys configuration
 	await updateConfigCert();
 
-	//Restarting HDB to pick up new config
-	await restartAndWait();
+	// Restarting HDB to pick up new config
+	await restartWorkers();
 
 	// When cloning with WS we utilize add_node to clone all the DB and setup replication
 	console.log('Adding node to the cluster');
 	const add_node = require('../clustering/addNode');
 	const add_node_response = await add_node({
 		operation: OPERATIONS_ENUM.ADD_NODE,
-		verify_tls: false, //TODO: We can probably remove this when being used in plexus
 		url: leader_replication_url,
 	});
 	console.log('Add node response: ', add_node_response);
@@ -254,35 +259,6 @@ async function cloneUsingWS() {
 	console.log(`Successfully cloned node: ${leader_url} using WebSockets`);
 }
 
-/**
- * Calls restart and then monitors restart job until it is complete
- * @returns {Promise<void>}
- */
-async function restartAndWait() {
-	console.log('Restarting clone node http workers');
-	const server_utils = require('../../server/serverHelpers/serverUtilities');
-	const jobs = require('../../server/jobs/jobs');
-	const restart_response = await server_utils.executeJob({
-		operation: 'restart_service',
-		service: 'http_workers',
-	});
-	const job_record = await jobs.getJobById(restart_response.job_id);
-	let restart_status = job_record[0].status;
-	if (restart_status !== 'IN_PROGRESS' && restart_status !== 'COMPLETE') {
-		console.error('Error restarting http workers', job_record[0]);
-		return;
-	}
-
-	let count = 0;
-	while (restart_status === 'IN_PROGRESS' && count < 10) {
-		await new Promise((resolve) => setTimeout(resolve, WAIT_FOR_RESTART_TIME));
-		const job_record = await jobs.getJobById(restart_response.job_id);
-		restart_status = job_record[0].status;
-		count++;
-	}
-
-	if (count === 10) console.error('Error restarting http workers, restart took too long', job_record[0]);
-}
 /**
  * Send a request to the leader node using either http or websockets
  * If websockets are used the leader node needs to know about the clone before any requests are made.

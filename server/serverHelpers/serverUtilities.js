@@ -118,7 +118,6 @@ module.exports = {
 	getOperationFunction,
 	operation,
 	processLocalTransaction,
-	executeJob,
 };
 setServerUtilities(module.exports);
 server.operation = operation;
