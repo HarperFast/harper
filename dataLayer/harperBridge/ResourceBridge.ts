@@ -62,21 +62,25 @@ export class ResourceBridge extends LMDBBridge {
 				};
 		}
 
-		return table.search({
-			conditions,
-			//set the operator to always be lowercase for later evaluations
-			operator: search_object.operator ? search_object.operator.toLowerCase() : undefined,
-			limit: search_object.limit,
-			offset: search_object.offset,
-			reverse: search_object.reverse,
-			select: getSelect(search_object, table),
-			sort: search_object.sort,
-			allowFullScan: true, // operations API can do full scans by default, but REST is more cautious about what it allows
-		}, {
-			onlyIfCached: search_object.onlyIfCached,
-			noCacheStore: search_object.noCacheStore,
-			noCache: search_object.noCache,
-		});
+		return table.search(
+			{
+				conditions,
+				//set the operator to always be lowercase for later evaluations
+				operator: search_object.operator ? search_object.operator.toLowerCase() : undefined,
+				limit: search_object.limit,
+				offset: search_object.offset,
+				reverse: search_object.reverse,
+				select: getSelect(search_object, table),
+				sort: search_object.sort,
+				allowFullScan: true, // operations API can do full scans by default, but REST is more cautious about what it allows
+			},
+			{
+				onlyIfCached: search_object.onlyIfCached,
+				noCacheStore: search_object.noCacheStore,
+				noCache: search_object.noCache,
+				replicateFrom: search_object.replicateFrom,
+			}
+		);
 	}
 	/**
 	 * Writes new table data to the system tables creates the environment file and creates two datastores to track created and updated
@@ -422,6 +426,7 @@ export class ResourceBridge extends LMDBBridge {
 				onlyIfCached: search_object.onlyIfCached,
 				noCacheStore: search_object.noCacheStore,
 				noCache: search_object.noCache,
+				replicateFrom: search_object.replicateFrom,
 			}
 		);
 	}
@@ -517,6 +522,7 @@ function getRecords(search_object, return_key_value?) {
 		onlyIfCached: search_object.onlyIfCached,
 		noCacheStore: search_object.noCacheStore,
 		noCache: search_object.noCache,
+		replicateFrom: search_object.replicateFrom,
 	};
 	let finished_iteration;
 	transaction(context, () => new Promise((resolve) => (finished_iteration = resolve)));
@@ -532,10 +538,10 @@ function getRecords(search_object, return_key_value?) {
 						try {
 							record = await table.get({ id, lazy, select }, context);
 							record = record && collapseData(record);
-						} catch(error) {
+						} catch (error) {
 							record = {
-								message: error.toString()
-							}
+								message: error.toString(),
+							};
 						}
 						if (return_key_value)
 							return {

@@ -44,30 +44,31 @@ async function http(request: Context & Request, next_handler) {
 			resource_request.async = true;
 			resource = entry.Resource;
 		}
-
-		const cache_control = headers_object['cache-control'];
-		if (cache_control) {
-			const cache_control_parts = parseHeaderValue(cache_control);
-			for (const part of cache_control_parts) {
-				switch (part.name) {
-					case 'max-age':
-						request.expiresAt = part.value * 1000 + Date.now();
-						break;
-					case 'only-if-cached':
-						request.onlyIfCached = true;
-						break;
-					case 'no-cache':
-						request.noCache = true;
-						break;
-					case 'no-store':
-						request.noCacheStore = true;
-						break;
-					case 'stale-if-error':
-						request.staleIfError = true;
-						break;
-					case 'must-revalidate':
-						request.mustRevalidate = true;
-						break;
+		if (resource.isCaching) {
+			const cache_control = headers_object['cache-control'];
+			if (cache_control) {
+				const cache_control_parts = parseHeaderValue(cache_control);
+				for (const part of cache_control_parts) {
+					switch (part.name) {
+						case 'max-age':
+							request.expiresAt = part.value * 1000 + Date.now();
+							break;
+						case 'only-if-cached':
+							request.onlyIfCached = true;
+							break;
+						case 'no-cache':
+							request.noCache = true;
+							break;
+						case 'no-store':
+							request.noCacheStore = true;
+							break;
+						case 'stale-if-error':
+							request.staleIfError = true;
+							break;
+						case 'must-revalidate':
+							request.mustRevalidate = true;
+							break;
+					}
 				}
 			}
 		}
@@ -84,6 +85,10 @@ async function http(request: Context & Request, next_handler) {
 			});
 			request.replicateTo =
 				parsed.length === 1 && +parsed[0] >= 0 ? +parsed[0] : parsed[0] === '*' ? undefined : parsed;
+		}
+		const replicate_from = headers_object['x-replicate-from'];
+		if (replicate_from === 'none') {
+			request.replicateFrom = false;
 		}
 		let response_data = await transaction(request, () => {
 			if (headers_object['content-length'] || headers_object['transfer-encoding']) {
@@ -146,7 +151,11 @@ async function http(request: Context & Request, next_handler) {
 		} else if (response_data.status > 0 && response_data.headers) {
 			// if response is a Response object, use it as the response
 			// merge headers from response
-			response_data.headers = mergeHeaders(response_data.headers, headers);
+			const response_headers = mergeHeaders(response_data.headers, headers);
+			if (response_data.headers !== response_headers)
+				// if we rebuilt the headers, reassign it, but we don't want to assign to a Response object (which should already
+				// have a valid Headers object) or it will throw an error
+				response_data.headers = response_headers;
 			// if data is provided, serialize it
 			if (response_data.data !== undefined) response_data.body = serialize(response_data.data, request, response_data);
 			return response_data;

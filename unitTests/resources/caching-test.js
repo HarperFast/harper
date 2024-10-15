@@ -16,6 +16,7 @@ describe('Caching', () => {
 	let CachingTable,
 		IndexedCachingTable,
 		CachingTableStaleWhileRevalidate,
+		Source,
 		source_requests = 0,
 		source_responses = 0;
 	let events = [];
@@ -41,7 +42,7 @@ describe('Caching', () => {
 				{ name: 'name', indexed: true },
 			],
 		});
-		class Source extends Resource {
+		Source = class extends Resource {
 			get() {
 				return new Promise((resolve, reject) => {
 					setTimeout(() => {
@@ -60,7 +61,7 @@ describe('Caching', () => {
 					}, timer);
 				});
 			}
-		}
+		};
 		setPublishToStream(
 			(subject, stream, header, message) => {
 				published_messages.push(message);
@@ -100,6 +101,11 @@ describe('Caching', () => {
 	});
 	after(() => {
 		setPublishToStream(natsPublishToStream, natsSetSubscription); // restore
+	});
+	it('Has isCaching flag', async function () {
+		assert(CachingTable.isCaching);
+		assert(IndexedCachingTable.isCaching);
+		assert(!Source.isCaching);
 	});
 	it('Can load cached data', async function () {
 		source_requests = 0;

@@ -233,7 +233,7 @@ class SubscriptionsSession {
 			context.retainHandling = retain_handling;
 			const subscription = await resource.subscribe(request, context);
 			if (!subscription) {
-				throw new Error(`No subscription was returned from subscribe for topic ${topic}`);
+				return; // if no subscription, nothing to return
 			}
 			if (!subscription[Symbol.asyncIterator])
 				throw new Error(`Subscription is not (async) iterable for topic ${topic}`);

@@ -394,7 +394,9 @@ export function makeTable(options) {
 													node_states.push(node_state);
 												}
 												node_state.seqId = Math.max(existing_seq?.seqId ?? 1, event.localTime);
-												if (node_id === event.nodeId) node_state.lastTxnTime = event.timestamp;
+												if (node_id === txn_in_progress.nodeId) {
+													node_state.lastTxnTime = event.timestamp;
+												}
 											}
 											const seq_id = Math.max(existing_seq?.seqId ?? 1, event.localTime);
 											logger.trace?.('Received txn', database_name, seq_id, event.localTime, event.remoteNodeIds);
@@ -488,6 +490,10 @@ export function makeTable(options) {
 				}
 			})();
 			return this;
+		}
+		// define a caching table as one that has a origin source with a get
+		static get isCaching() {
+			return has_source_get;
 		}
 		/**
 		 * Gets a resource instance, as defined by the Resource class, adding the table-specific handling
@@ -1940,8 +1946,8 @@ export function makeTable(options) {
 				let record;
 				if (context?.transaction?.stale) context.transaction.stale = false;
 				if (entry != undefined) {
-					record = entry.value || entry.deref?.();
-					if (!record && (entry.key === undefined || entry.deref)) {
+					record = entry.value || entry.deref?.()?.value;
+					if (!record && (entry.key === undefined || entry.deref || entry?.metadataFlags & INVALIDATED)) {
 						// if the record is not loaded, either due to the entry actually be a key, or the entry's value
 						// being GC'ed, we need to load it now
 						entry = loadLocalRecord(
@@ -1950,6 +1956,7 @@ export function makeTable(options) {
 							{
 								transaction: read_txn,
 								lazy: select?.length < 4,
+								ensureLoaded: ensure_loaded,
 							},
 							this?.isSync,
 							(entry: Entry) => entry
@@ -2870,7 +2877,7 @@ export function makeTable(options) {
 		return true;
 	}
 	function loadLocalRecord(id, context, options, sync, with_entry) {
-		if (TableResource.getResidencyById && options.ensureLoaded) {
+		if (TableResource.getResidencyById && options.ensureLoaded && context?.replicateFrom !== false) {
 			// this is a special case for when the residency can be determined from the id alone (hash-based sharding),
 			// allow for a fast path to load the record from the correct node
 			const residency = TableResource.getResidencyById(id);
@@ -2888,7 +2895,13 @@ export function makeTable(options) {
 			// through query results and the iterator ends (abruptly)
 			if (options.transaction?.isDone) return with_entry(null, id);
 			const entry = primary_store.getEntry(id, options);
-			if (entry?.residencyId && entry.metadataFlags & INVALIDATED && source_load && options.ensureLoaded) {
+			if (
+				entry?.residencyId &&
+				entry.metadataFlags & INVALIDATED &&
+				source_load &&
+				options.ensureLoaded &&
+				context?.replicateFrom !== false
+			) {
 				// load from other node
 				return source_load(entry).then((entry) => with_entry(entry, id));
 			}
@@ -3065,7 +3078,7 @@ export function makeTable(options) {
 		if (!entry) {
 			return;
 		}
-		const record = entry.value || entry.deref?.() || primary_store.getEntry(entry.key)?.value;
+		const record = entry.value || primary_store.getEntry(entry.key)?.value;
 		if (typeof attribute_name === 'object') {
 			// attribute_name is an array of attributes, pointing to nested attribute
 			let resolvers = property_resolvers;
@@ -3239,7 +3252,7 @@ export function makeTable(options) {
 						has_changes = invalidated || version > existing_version || !existing_record;
 						if (!version) version = getNextMonotonicTime();
 						const resolve_duration = performance.now() - start;
-						recordAction(resolve_duration, 'cache-resolution', table_name);
+						recordAction(resolve_duration, 'cache-resolution', table_name, null, 'success');
 						if (response_headers)
 							appendHeader(response_headers, 'Server-Timing', `cache-resolve;dur=${resolve_duration.toFixed(2)}`, true);
 						txn.timestamp = version;
@@ -3292,6 +3305,10 @@ export function makeTable(options) {
 							});
 							logger.trace?.(error.message, '(returned stale record)');
 						} else reject(error);
+						const resolve_duration = performance.now() - start;
+						recordAction(resolve_duration, 'cache-resolution', table_name, null, 'fail');
+						if (response_headers)
+							appendHeader(response_headers, 'Server-Timing', `cache-resolve;dur=${resolve_duration.toFixed(2)}`, true);
 						source_context.transaction.abort();
 						return;
 					}

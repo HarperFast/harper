@@ -41,34 +41,32 @@ describe('test REST calls with cache table', () => {
 		assert.equal(response.data.id, 3);
 		assert.equal(response.data.name, 'name change');
 	});
-	it('put with immediate expiration on non-sourced table should expire immediately', async () => {
-		let response = await axios('http://localhost:9926/FourProp/3');
-		let data = response.data;
-		data.name = 'going to expire';
-		response = await axios.put('http://localhost:9926/FourProp/3', data, {
-			headers: {
-				'Cache-Control': 'max-age=0',
-			},
-		});
+	it('put with immediate expiration on sourced table should expire immediately', async () => {
+		let data = { name: 'not going to expire' };
+		let response = await axios.put('http://localhost:9926/CacheOfResource/33', data);
 		assert.equal(response.status, 204);
-		response = await axios('http://localhost:9926/FourProp/3', {
+		let start_count = tables.CacheOfResource.sourceGetsPerformed;
+		response = await axios('http://localhost:9926/CacheOfResource/33', {
 			validateStatus: function (status) {
 				return true;
 			},
 		});
-		assert.equal(response.status, 404);
-		response = await axios('http://localhost:9926/FourProp/?id=3');
-		assert.equal(response.data.length, 0);
-	});
-	it('put with immediate expiration on non-sourced table should expire immediately with query', async () => {
-		let data = { name: 'going to expire' };
-		let response = await axios.put('http://localhost:9926/FourProp/3', data, {
+		assert.equal(tables.CacheOfResource.sourceGetsPerformed, start_count);
+		assert.equal(response.status, 200);
+		data = { name: 'going to expire' };
+		response = await axios.put('http://localhost:9926/CacheOfResource/33', data, {
 			headers: {
 				'Cache-Control': 'max-age=0',
 			},
 		});
 		assert.equal(response.status, 204);
-		response = await axios('http://localhost:9926/FourProp/?id=3');
-		assert.equal(response.data.length, 0);
+		start_count = tables.CacheOfResource.sourceGetsPerformed;
+		response = await axios('http://localhost:9926/CacheOfResource/33', {
+			validateStatus: function (status) {
+				return true;
+			},
+		});
+		assert(tables.CacheOfResource.sourceGetsPerformed > start_count);
+		assert.equal(response.status, 200);
 	});
 });

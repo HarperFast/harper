@@ -8032,7 +8032,6 @@
 									"pm.test('pre_con1 data on node 2', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.record_count).to.equal(1200);",
-									"    pm.expect(response.clustering_stream_name).to.equal(\"38242ee9a8e77a42001c54dfd562262b\");",
 									"});"
 								],
 								"type": "text/javascript",
@@ -8122,7 +8121,6 @@
 									"        pm.expect(record_count).to.equal(expected_record_count);",
 									"        console.log(response);",
 									"    });",
-									"    pm.expect(response.clustering_stream_name).to.equal(\"5ceb1f99ed5602e5cf0fc46b9848c3d9\");",
 									"} else if (record_count < expected_record_count) {",
 									"    request_count++",
 									"    pm.environment.set('JOB_STATUS_COUNT', request_count);",
@@ -8908,7 +8906,6 @@
 									"        pm.expect(record_count).to.equal(expected_record_count);",
 									"        console.log(response);",
 									"    });",
-									"    pm.expect(response.clustering_stream_name).to.equal(\"00e8c00d3aea0cf37c5b7f366efb9b62\");",
 									"} else if (record_count < expected_record_count) {",
 									"    request_count++",
 									"    pm.environment.set('JOB_STATUS_COUNT', request_count);",

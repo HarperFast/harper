@@ -175,7 +175,15 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 
 	parser.on('packet', async (packet) => {
 		if (user?.then) user = await user;
-		if (session?.then) await session;
+		const command = packet.cmd;
+		if (session) {
+			if (session.then) await session;
+		} else if (command !== 'connect') {
+			mqtt_log.info?.('Received packet before connection was established, closing connection');
+			if (socket?.destroy) socket.destroy();
+			else socket?.terminate();
+			return;
+		}
 		const topic = packet.topic;
 		const slash_index = topic?.indexOf('/', 1);
 		const general_topic = slash_index > 0 ? topic.slice(0, slash_index) : topic;
@@ -183,7 +191,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 
 		try {
 			session?.receivedPacket?.();
-			switch (packet.cmd) {
+			switch (command) {
 				case 'connect':
 					mqtt_options.protocolVersion = packet.protocolVersion;
 					if (packet.username) {
@@ -306,10 +314,18 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					for (const subscription of packet.subscriptions) {
 						let granted_qos;
 						try {
-							granted_qos = (await session.addSubscription(subscription, subscription.qos >= 1)).qos || 0;
+							const granted_subscription = await session.addSubscription(subscription, subscription.qos >= 1);
+							granted_qos = granted_subscription
+								? granted_subscription.qos || 0
+								: mqtt_options.protocolVersion < 5
+								? 0x80 // only error code in v3.1.1
+								: 0x8f; // invalid topic indicated
 						} catch (error) {
 							mqtt_settings.events.emit('error', error, socket, subscription, session);
-							mqtt_log.error?.(error);
+							if (error.statusCode) {
+								if (error.statusCode === 500) mqtt_log.warn?.(error);
+								else mqtt_log.info?.(error);
+							} else mqtt_log.error?.(error);
 							granted_qos =
 								mqtt_options.protocolVersion < 5
 									? 0x80 // the only error code in v3.1.1

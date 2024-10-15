@@ -724,9 +724,10 @@ export function replicateOverWS(ws, options, authorization) {
 							const primary_store = table.primaryStore;
 							const encoder = primary_store.encoder;
 							if (audit_record.extendedType & HAS_STRUCTURE_UPDATE || !encoder.typedStructs) {
-								// there is a structure update, fully load the entire record so it is all loaded into memory
-								const value = audit_record.getValue(primary_store, true);
-								JSON.stringify(value);
+								// there is a structure update, we need to reload the structure from storage.
+								// this is copied from msgpackr's struct, may want to expose as public method
+								encoder._mergeStructures(encoder.getStructures());
+								if (encoder.typedStructs) encoder.lastTypedStructuresLength = encoder.typedStructs.length;
 							}
 							const time_range = subscribed_node_ids[node_id];
 							const is_within_subscription_range =
@@ -1046,11 +1047,6 @@ export function replicateOverWS(ws, options, authorization) {
 											current_sequence_id
 										);
 
-									let listeners = table_update_listeners.get(first_table);
-									if (!listeners) table_update_listeners.set(first_table, (listeners = []));
-									listeners.push((table) => {
-										// TODO: send table update
-									});
 									last_audit_sent = 0; // indicate that we have sent all the audit log entries, we are not catching up right now
 									await whenNextTransaction(audit_store);
 								} while (!closed);
@@ -1096,18 +1092,23 @@ export function replicateOverWS(ws, options, authorization) {
 						audit_record.recordId
 					);
 				}
-				event = {
-					table: table_decoder.name,
-					id: audit_record.recordId,
-					type: audit_record.type,
-					nodeId: remote_short_id_to_local_id.get(audit_record.nodeId),
-					residencyList: residency_list,
-					timestamp: audit_record.version,
-					value: audit_record.getValue(table_decoder),
-					user: audit_record.user,
-					beginTxn: begin_txn,
-					expiresAt: audit_record.expiresAt,
-				};
+				try {
+					event = {
+						table: table_decoder.name,
+						id: audit_record.recordId,
+						type: audit_record.type,
+						nodeId: remote_short_id_to_local_id.get(audit_record.nodeId),
+						residencyList: residency_list,
+						timestamp: audit_record.version,
+						value: audit_record.getValue(table_decoder),
+						user: audit_record.user,
+						beginTxn: begin_txn,
+						expiresAt: audit_record.expiresAt,
+					};
+				} catch (error) {
+					error.message += 'typed structures for current decoder' + JSON.stringify(table_decoder.decoder.typedStructs);
+					throw error;
+				}
 				begin_txn = false;
 				// TODO: Once it is committed, also record the localtime in the table with symbol metadata, so we can resume from that point
 				if (DEBUG_MODE)
@@ -1225,7 +1226,7 @@ export function replicateOverWS(ws, options, authorization) {
 				end: [Symbol.for('seq'), Buffer.from([0xff])],
 			}) || []) {
 				for (const node of entry.value.nodes || []) {
-					if (node.seqId > (last_txn_times.get(node.id) ?? 0)) last_txn_times.set(node.id, node.seqId);
+					if (node.lastTxnTime > (last_txn_times.get(node.id) ?? 0)) last_txn_times.set(node.id, node.lastTxnTime);
 				}
 			}
 		} catch (error) {
