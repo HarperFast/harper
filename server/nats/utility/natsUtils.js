@@ -196,8 +196,7 @@ async function createConnection(port, username, password, wait_on_first_connect 
 		if (err) {
 			hdb_logger.error('Error with Nats client connection, connection closed', err);
 		}
-
-		clearClientCache();
+		if (c === nats_connection) clearClientCache();
 	});
 
 	return c;
@@ -209,7 +208,6 @@ function clearClientCache() {
 	jetstream = undefined;
 	nats_connection_promise = undefined;
 }
-
 /**
  * Disconnect from nats-server
  * @returns {Promise<void>}
