@@ -2127,9 +2127,17 @@ export function makeTable(options) {
 				this[ID_PROPERTY] ?? null, // treat undefined and null as the root
 				function (id, audit_record, timestamp, begin_txn) {
 					try {
-						let value = audit_record.getValue?.(primary_store, get_full_record);
 						let type = audit_record.type;
-						if (!value && audit_record.type === 'patch' && get_full_record) {
+						let value;
+						// If we have an overwritten get method, we can't trust that these put and patch events actually represent the real
+						// returned value from the get method, so we have to switch to invalidate them
+						if (this.get !== TableResource.prototype.get && (type === 'put' || type === 'patch')) {
+							type = 'invalidate';
+							value = null;
+						} else {
+							value = audit_record.getValue?.(primary_store, get_full_record);
+						}
+						if (!value && type === 'patch' && get_full_record) {
 							// we don't have the full record, need to get it
 							const entry = primary_store.getEntry(id);
 							// if the current record matches the timestamp, we can use that
