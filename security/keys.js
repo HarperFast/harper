@@ -652,7 +652,6 @@ async function reviewSelfSignedCert() {
 		const keys_path = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
 		let private_key;
 		let key_name = relative(keys_path, tls_private_key);
-
 		try {
 			private_key = pki.privateKeyFromPem(await fs.readFile(tls_private_key));
 		} catch (err) {
