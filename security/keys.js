@@ -547,7 +547,7 @@ async function getCertAuthority() {
 	let match;
 	for (let cert of all_certs) {
 		if (!cert.is_authority) continue;
-		const matching_private_key = private_keys.get(cert.private_key_name);
+		const matching_private_key = await getPrivateKeyByName(cert.private_key_name);
 		if (cert.private_key_name && matching_private_key) {
 			const key_check = new X509Certificate(cert.certificate).checkPrivateKey(createPrivateKey(matching_private_key));
 			if (key_check) {
@@ -861,16 +861,7 @@ function createTLSSelector(type, mtls_options) {
 
 							let quality = cert.is_self_signed ? 1 : 2;
 
-							let private_key = private_keys.get(cert.private_key_name);
-							if (!private_key && cert.private_key_name) {
-								private_key = await fs.readFile(
-									path.join(
-										env_manager.get(CONFIG_PARAMS.ROOTPATH),
-										hdb_terms.LICENSE_KEY_DIR_NAME,
-										cert.private_key_name
-									)
-								);
-							}
+							const private_key = await getPrivateKeyByName(cert.private_key_name);
 
 							let certificate = cert.certificate;
 							const cert_parsed = new X509Certificate(certificate);
@@ -994,6 +985,19 @@ function createTLSSelector(type, mtls_options) {
 		cb(null, context);
 	}
 }
+
+async function getPrivateKeyByName(private_key_name) {
+	const private_key = private_keys.get(private_key_name);
+	if (!private_key && private_key_name) {
+		return await fs.readFile(
+			path.join(env_manager.get(CONFIG_PARAMS.ROOTPATH), hdb_terms.LICENSE_KEY_DIR_NAME, private_key_name),
+			'utf8'
+		);
+	}
+
+	return private_key;
+}
+
 function reverseSubscription(subscription) {
 	const { subscribe, publish } = subscription;
 	return { ...subscription, subscribe: publish, publish: subscribe };
