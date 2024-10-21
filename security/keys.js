@@ -642,24 +642,43 @@ async function reviewSelfSignedCert() {
 	await loadCertificates();
 	getCertTable();
 
-	let private_key;
-	const tls_private_key = env_manager.get(CONFIG_PARAMS.TLS_PRIVATEKEY);
-	const getPrivateKey = async () => {
-		if (private_key) return private_key;
-		private_key = pki.privateKeyFromPem(await fs.readFile(tls_private_key));
-		return private_key;
-	};
-
 	let ca_and_key = await getCertAuthority();
 	if (!ca_and_key) {
-		hdb_logger.info('No self signed Cert Authority found, generating new self signed CA');
-		await getPrivateKey();
+		hdb_logger.notify(
+			"A matching Certificate Authority and key was not found. A new CA will be created in advance, so it's available if needed."
+		);
+
+		const tls_private_key = env_manager.get(CONFIG_PARAMS.TLS_PRIVATEKEY);
+		const keys_path = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
+		let private_key;
+		let key_name = relative(keys_path, tls_private_key);
+		try {
+			private_key = pki.privateKeyFromPem(await fs.readFile(tls_private_key));
+		} catch (err) {
+			hdb_logger.warn(
+				'Unable to parse the TLS key',
+				tls_private_key,
+				'A new key will be generated and used to create Certificate Authority',
+				err
+			);
+			// Currently we can only parse RSA keys, so if it's not an RSA key, we need to generate a new one
+			// There is a ticket to add support for other key types CORE-2457
+			({ private_key } = await generateKeys());
+
+			// If there is an existing private key, we will save the new one with a unique name
+			if (await fs.exists(path.join(keys_path, certificates_terms.PRIVATEKEY_PEM_NAME)))
+				key_name = `privateKey${uuidv4().split('-')[0]}.pem`;
+
+			await fs.writeFile(path.join(keys_path, key_name), pki.privateKeyToPem(private_key));
+		}
+
 		const hdb_ca = await generateCertAuthority(private_key, pki.setRsaPublicKey(private_key.n, private_key.e));
+
 		await setCertTable({
 			name: hdb_ca.subject.getField('CN').value,
 			uses: ['https', 'wss'],
 			certificate: pki.certificateToPem(hdb_ca),
-			private_key_name: relative(join(env_manager.get(CONFIG_PARAMS.ROOTPATH), 'keys'), tls_private_key),
+			private_key_name: key_name,
 			is_authority: true,
 			is_self_signed: true,
 		});
@@ -668,7 +687,7 @@ async function reviewSelfSignedCert() {
 	const existing_cert = await getReplicationCert();
 	if (!existing_cert) {
 		const cert_name = getThisNodeName();
-		hdb_logger.info(
+		hdb_logger.notify(
 			`A suitable replication certificate was not found, creating new self singed cert named: ${cert_name}`
 		);
 
