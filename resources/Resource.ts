@@ -491,8 +491,9 @@ function transactional(action, options) {
 					const search_index = id.indexOf('?');
 					if (search_index > -1) {
 						const parsed_query = this.parseQuery(id.slice(search_index + 1));
-						if (query) query = Object.assign(parsed_query, query);
-						else query = parsed_query;
+						if (query) {
+							if (parsed_query) query = Object.assign(parsed_query, query);
+						} else query = parsed_query;
 						id = id.slice(0, search_index);
 					}
 					// handle paths of the form /path/id.property
