@@ -343,24 +343,23 @@ export function makeTable(options) {
 					const has_subscribe = source.subscribe;
 					// if subscriptions come in out-of-order, we need to track deletes to ensure consistency
 					if (has_subscribe && track_deletes == undefined) track_deletes = true;
+					const subscription_options = {
+						// this is used to indicate that all threads are (presumably) making this subscription
+						// and we do not need to propagate events across threads (more efficient)
+						crossThreads: false,
+						// this is used to indicate that we want, if possible, immediate notification of writes
+						// within the process (not supported yet)
+						inTransactionUpdates: true,
+						// supports transaction operations
+						supportsTransactions: true,
+						// don't need the current state, should be up-to-date
+						omitCurrent: true,
+					};
 					const subscribe_on_this_thread = source.subscribeOnThisThread
-						? source.subscribeOnThisThread(getWorkerIndex())
+						? source.subscribeOnThisThread(getWorkerIndex(), subscription_options)
 						: getWorkerIndex() === 0;
 					const subscription =
-						has_subscribe &&
-						subscribe_on_this_thread &&
-						(await source.subscribe?.({
-							// this is used to indicate that all threads are (presumably) making this subscription
-							// and we do not need to propagate events across threads (more efficient)
-							crossThreads: false,
-							// this is used to indicate that we want, if possible, immediate notification of writes
-							// within the process (not supported yet)
-							inTransactionUpdates: true,
-							// supports transaction operations
-							supportsTransactions: true,
-							// don't need the current state, should be up-to-date
-							omitCurrent: true,
-						}));
+						has_subscribe && subscribe_on_this_thread && (await source.subscribe?.(subscription_options));
 					if (subscription) {
 						let txn_in_progress;
 						// we listen for events by iterating through the async iterator provided by the subscription
@@ -420,6 +419,8 @@ export function makeTable(options) {
 										continue;
 									}
 								}
+								// use the version as the transaction timestamp
+								if (!event.timestamp && event.version) event.timestamp = event.version;
 								const commit_resolution = transaction(event, () => {
 									if (event.type === 'transaction') {
 										// if it is a transaction, we need to individually iterate through each write event
@@ -2126,7 +2127,7 @@ export function makeTable(options) {
 			const subscription = addSubscription(
 				TableResource,
 				this[ID_PROPERTY] ?? null, // treat undefined and null as the root
-				function (id, audit_record, timestamp, begin_txn) {
+				function (id, audit_record, local_time, begin_txn) {
 					try {
 						let type = audit_record.type;
 						let value;
@@ -2152,7 +2153,7 @@ export function makeTable(options) {
 						}
 						const event = {
 							id,
-							timestamp,
+							localTime: local_time,
 							value,
 							version: audit_record.version,
 							type,
@@ -2195,7 +2196,7 @@ export function makeTable(options) {
 								const value = audit_record.getValue(primary_store, get_full_record, key);
 								subscription.send({
 									id,
-									timestamp: key,
+									localTime: key,
 									value,
 									version: audit_record.version,
 									type: audit_record.type,
@@ -2286,7 +2287,7 @@ export function makeTable(options) {
 						// if retain and it exists, send the current value first
 						subscription.send({
 							id: this_id,
-							timestamp: local_time,
+							localTime: local_time,
 							value: this[RECORD_PROPERTY],
 							version: this[VERSION_PROPERTY],
 							type: 'put',
@@ -2301,6 +2302,15 @@ export function makeTable(options) {
 			})();
 			if (request.listener) subscription.on('data', request.listener);
 			return subscription;
+		}
+
+		/**
+		 * Subscribe on one thread unless this is a per-thread subscription
+		 * @param worker_index
+		 * @param options
+		 */
+		static subscribeOnThisThread(worker_index, options) {
+			return worker_index === 0 || options?.crossThreads === false;
 		}
 		doesExist() {
 			return Boolean(this[RECORD_PROPERTY] || this[SAVE_MODE]);
