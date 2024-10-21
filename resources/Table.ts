@@ -2220,7 +2220,7 @@ export function makeTable(options) {
 								const id = audit_record.recordId;
 								if (this_id == null || isDescendantId(this_id, id)) {
 									const value = audit_record.getValue(primary_store, get_full_record, key);
-									history.push({ id, timestamp: key, value, version: audit_record.version, type: audit_record.type });
+									history.push({ id, localTime: key, value, version: audit_record.version, type: audit_record.type });
 									if (--count <= 0) break;
 								}
 							} catch (error) {
@@ -2232,7 +2232,7 @@ export function makeTable(options) {
 						for (let i = history.length; i > 0; ) {
 							subscription.send(history[--i]);
 						}
-						if (history[0]) subscription.startTime = history[0].timestamp; // update so don't double send
+						if (history[0]) subscription.startTime = history[0].localTime; // update so don't double send
 					} else if (!request.omitCurrent) {
 						for (const { key: id, value, version, localTime } of primary_store.getRange({
 							start: this_id ?? false,
@@ -2241,7 +2241,7 @@ export function makeTable(options) {
 							snapshot: false, // no need for a snapshot, just want the latest data
 						})) {
 							if (!value) continue;
-							subscription.send({ id, timestamp: localTime, value, version, type: 'put' });
+							subscription.send({ id, localTime, value, version, type: 'put' });
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 								// if we have too many messages, we need to pause and let the client catch up
 								if ((await subscription.waitForDrain()) === false) return;
@@ -2273,7 +2273,7 @@ export function makeTable(options) {
 								const audit_record = readAuditEntry(audit_entry);
 								const value = audit_record.getValue(primary_store, get_full_record, next_time);
 								if (get_full_record) audit_record.type = 'put';
-								history.push({ id: this_id, value, timestamp: next_time, ...audit_record });
+								history.push({ id: this_id, value, localTime: next_time, ...audit_record });
 								next_time = audit_record.previousLocalTime;
 							} else break;
 							if (count) count--;
