@@ -533,7 +533,7 @@ function transactional(action, options) {
 			} else {
 				id = id_or_query;
 				query = new SimpleURLQuery(id);
-				if (id === null) is_collection = true;
+				if (id == null) is_collection = true;
 			}
 		}
 
