@@ -2123,17 +2123,17 @@ export function makeTable(options) {
 			if (!request) request = {};
 			const get_full_record = !request.rawEvents;
 			let pending_real_time_queue = []; // while we are servicing a loop for older messages, we have to queue up real-time messages and deliver them in order
-			const tableReference = this;
+			const table_reference = this;
 			const subscription = addSubscription(
 				TableResource,
 				this[ID_PROPERTY] ?? null, // treat undefined and null as the root
 				function (id, audit_record, local_time, begin_txn) {
 					try {
 						let type = audit_record.type;
-						let value;
+						let value: any;
 						// If we have an overwritten get method, we can't trust that these put and patch events actually represent the real
 						// returned value from the get method, so we have to switch to invalidate them
-						if (tableReference.get !== TableResource.prototype.get && (type === 'put' || type === 'patch')) {
+						if (table_reference.get !== TableResource.prototype.get && (type === 'put' || type === 'patch')) {
 							type = 'invalidate';
 							value = null;
 						} else {
