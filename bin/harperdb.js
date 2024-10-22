@@ -63,14 +63,14 @@ async function harperdb() {
 		service = process.argv[2].toLowerCase();
 	}
 
+	let cli_api_op;
+	if (!run_clone) {
+		cli_api_op = cli_operations.buildRequest();
+		if (cli_api_op.operation) service = SERVICE_ACTIONS_ENUM.OPERATION;
+	}
+
 	switch (service) {
 		case SERVICE_ACTIONS_ENUM.OPERATION:
-			let cli_api_op;
-			if (!run_clone) {
-				cli_api_op = cli_operations.buildRequest();
-				if (cli_api_op.operation) service = SERVICE_ACTIONS_ENUM.OPERATION;
-			}
-
 			logger.trace('calling cli operations with:', cli_api_op);
 			return cli_operations.cliOperations(cli_api_op);
 		case SERVICE_ACTIONS_ENUM.START:
@@ -101,14 +101,15 @@ async function harperdb() {
 			return require('../security/keys')
 				.renewSelfSigned()
 				.then(() => 'Successfully renewed self-signed certificates');
-		case SERVICE_ACTIONS_ENUM.COPYDB:
+		case SERVICE_ACTIONS_ENUM.COPYDB: {
 			let source_db = process.argv[3];
 			let target_db_path = process.argv[4];
 			return require('./copyDb').copyDb(source_db, target_db_path);
+		}
 		case SERVICE_ACTIONS_ENUM.DEV:
 			process.env.DEV_MODE = true;
 		// fall through
-		case SERVICE_ACTIONS_ENUM.RUN:
+		case SERVICE_ACTIONS_ENUM.RUN: {
 			// Run a specific application folder
 			let app_folder = process.argv[3];
 			if (app_folder && app_folder[0] !== '-') {
@@ -126,9 +127,11 @@ async function harperdb() {
 					process.env.RUN_HDB_APP = app_folder;
 				}
 			}
+		}
 		// fall through
 		case undefined: // run harperdb in the foreground in standard mode
 			return run_clone ? require('../utility/cloneNode/cloneNode')() : require('./run').main();
+		// eslint-disable-next-line sonarjs/prefer-default-last
 		default:
 			console.warn(`The "${service}" command is not understood.`);
 		// fall through
