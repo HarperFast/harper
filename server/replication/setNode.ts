@@ -83,9 +83,6 @@ export async function setNode(req: object) {
 	let csr;
 	let cert_auth;
 	if (url?.startsWith('wss:')) {
-		if (req.operation === 'add_node' && !req.authorization)
-			throw new ClientError('authorization parameter is required');
-
 		rep = await getReplicationCert();
 		const ca_record = await getReplicationCertAuth();
 		if (!rep) throw new Error('Unable to find a certificate to use for replication');
