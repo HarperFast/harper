@@ -16,6 +16,7 @@ const pm2_utils = require('../../utility/processManagement/processManagement');
 const nats_config = require('../../server/nats/utility/natsConfig');
 const child_process = require('child_process');
 const settings_test_file = require('../settingsTestFile');
+const { Worker } = require('node:worker_threads');
 let hdbInfoController;
 let schema_describe;
 let upgrade;
@@ -194,6 +195,17 @@ describe('Test run module', () => {
 			expect(log_error_stub.getCall(0).firstArg.name).to.equal(TEST_ERROR);
 			expect(process_exit_stub.getCall(0).firstArg).to.equal(1);
 			is_hdb_installed_stub.resolves(true);
+		});
+		it('Test that a user thread can access harperdb as a module', async () => {
+			// Unfortunately this test is probably only get to test source version, but problems have occurred built version
+			const worker = new Worker(__dirname + '/user-thread.js');
+			return new Promise((resolve) => {
+				worker.on('message', (message) => {
+					expect(message.hasResource).to.be.true;
+					expect(message.hasServer).to.be.true;
+					resolve();
+				});
+			});
 		});
 	});
 
