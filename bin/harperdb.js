@@ -21,7 +21,7 @@ Usage: harperdb [command]
 
 With no command, harperdb will simply run HarperDB (in the foreground)
 
-By default, the CLI also supports all Operation APIs. Specify the operation name and any required parameters, and omit the 'operation' command.
+By default, the CLI also supports certain Operation APIs. Specify the operation name and any required parameters, and omit the 'operation' command.
 
 Commands:
 copy-db <source> <target>       - Copies a database from source path to target path
