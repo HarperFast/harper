@@ -23,6 +23,7 @@ function getServerOptions(is_https) {
 		return503OnClosing: false,
 		forceCloseConnections: true,
 		ignoreTrailingSlash: true,
+		maxParamLength: env.get(CONFIG_PARAMS.HTTP_MAXPARAMLENGTH) ?? 1000,
 		// http2: is_https, // for now we are not enabling HTTP/2 since it seems to show slower performance
 		https: is_https /* && {
 			allowHTTP1: true,
