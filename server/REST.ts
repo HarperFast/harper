@@ -269,6 +269,10 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 				}
 			}
 		} catch (error) {
+			if (error.statusCode) {
+				if (error.statusCode === 500) harper_logger.warn(error);
+				else harper_logger.info(error);
+			} else harper_logger.error(error);
 			ws.close(
 				HTTP_TO_WEBSOCKET_CLOSE_CODES[error.statusCode] || // try to return a helpful code
 					1011, // otherwise generic internal error

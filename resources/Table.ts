@@ -284,24 +284,23 @@ export function makeTable(options) {
 					const has_subscribe = source.subscribe;
 					// if subscriptions come in out-of-order, we need to track deletes to ensure consistency
 					if (has_subscribe && track_deletes == undefined) track_deletes = true;
+					const subscription_options = {
+						// this is used to indicate that all threads are (presumably) making this subscription
+						// and we do not need to propagate events across threads (more efficient)
+						crossThreads: false,
+						// this is used to indicate that we want, if possible, immediate notification of writes
+						// within the process (not supported yet)
+						inTransactionUpdates: true,
+						// supports transaction operations
+						supportsTransactions: true,
+						// don't need the current state, should be up-to-date
+						omitCurrent: true,
+					};
 					const subscribe_on_this_thread = source.subscribeOnThisThread
-						? source.subscribeOnThisThread(getWorkerIndex())
+						? source.subscribeOnThisThread(getWorkerIndex(), subscription_options)
 						: getWorkerIndex() === 0;
 					const subscription =
-						has_subscribe &&
-						subscribe_on_this_thread &&
-						(await source.subscribe?.({
-							// this is used to indicate that all threads are (presumably) making this subscription
-							// and we do not need to propagate events across threads (more efficient)
-							crossThreads: false,
-							// this is used to indicate that we want, if possible, immediate notification of writes
-							// within the process (not supported yet)
-							inTransactionUpdates: true,
-							// supports transaction operations
-							supportsTransactions: true,
-							// don't need the current state, should be up-to-date
-							omitCurrent: true,
-						}));
+						has_subscribe && subscribe_on_this_thread && (await source.subscribe?.(subscription_options));
 					if (subscription) {
 						let txn_in_progress;
 						// we listen for events by iterating through the async iterator provided by the subscription
@@ -324,6 +323,8 @@ export function makeTable(options) {
 									}
 								}
 								if (event.type === 'end_txn') continue;
+								// use the version as the transaction timestamp
+								if (!event.timestamp && event.version) event.timestamp = event.version;
 								const commit_resolution = transaction(event, () => {
 									if (event.type === 'transaction') {
 										// if it is a transaction, we need to individually iterate through each write event
@@ -1640,13 +1641,23 @@ export function makeTable(options) {
 			if (!request) request = {};
 			const get_full_record = !request.rawEvents;
 			let pending_real_time_queue = []; // while we are servicing a loop for older messages, we have to queue up real-time messages and deliver them in order
+			const table_reference = this;
 			const subscription = addSubscription(
 				TableResource,
 				this[ID_PROPERTY] ?? null, // treat undefined and null as the root
-				function (id, audit_record, timestamp, begin_txn) {
+				function (id, audit_record, local_time, begin_txn) {
 					try {
-						let value = audit_record.getValue?.(primary_store, get_full_record);
-						if (!value && audit_record.type === 'patch' && get_full_record) {
+						let type = audit_record.type;
+						let value: any;
+						// If we have an overwritten get method, we can't trust that these put and patch events actually represent the real
+						// returned value from the get method, so we have to switch to invalidate them
+						if (table_reference.get !== TableResource.prototype.get && (type === 'put' || type === 'patch')) {
+							type = 'invalidate';
+							value = null;
+						} else {
+							value = audit_record.getValue?.(primary_store, get_full_record);
+						}
+						if (!value && type === 'patch' && get_full_record) {
 							// we don't have the full record, need to get it
 							const entry = primary_store.getEntry(id);
 							// if the current record matches the timestamp, we can use that
@@ -1660,10 +1671,10 @@ export function makeTable(options) {
 						}
 						const event = {
 							id,
-							timestamp,
+							localTime: local_time,
 							value,
 							version: audit_record.version,
-							type: audit_record.type,
+							type,
 							beginTxn: begin_txn,
 						};
 						if (pending_real_time_queue) pending_real_time_queue.push(event);
@@ -1703,7 +1714,7 @@ export function makeTable(options) {
 								const value = audit_record.getValue(primary_store, get_full_record, key);
 								subscription.send({
 									id,
-									timestamp: key,
+									localTime: key,
 									value,
 									version: audit_record.version,
 									type: audit_record.type,
@@ -1727,7 +1738,7 @@ export function makeTable(options) {
 								const id = audit_record.recordId;
 								if (this_id == null || isDescendantId(this_id, id)) {
 									const value = audit_record.getValue(primary_store, get_full_record, key);
-									history.push({ id, timestamp: key, value, version: audit_record.version, type: audit_record.type });
+									history.push({ id, localTime: key, value, version: audit_record.version, type: audit_record.type });
 									if (--count <= 0) break;
 								}
 							} catch (error) {
@@ -1739,7 +1750,7 @@ export function makeTable(options) {
 						for (let i = history.length; i > 0; ) {
 							subscription.send(history[--i]);
 						}
-						if (history[0]) subscription.startTime = history[0].timestamp; // update so don't double send
+						if (history[0]) subscription.startTime = history[0].localTime; // update so don't double send
 					} else if (!request.omitCurrent) {
 						for (const { key: id, value, version, localTime } of primary_store.getRange({
 							start: this_id ?? false,
@@ -1748,7 +1759,7 @@ export function makeTable(options) {
 							snapshot: false, // no need for a snapshot, just want the latest data
 						})) {
 							if (!value) continue;
-							subscription.send({ id, timestamp: localTime, value, version, type: 'put' });
+							subscription.send({ id, localTime, value, version, type: 'put' });
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 								// if we have too many messages, we need to pause and let the client catch up
 								if ((await subscription.waitForDrain()) === false) return;
@@ -1780,7 +1791,7 @@ export function makeTable(options) {
 								const audit_record = readAuditEntry(audit_entry);
 								const value = audit_record.getValue(primary_store, get_full_record, next_time);
 								if (get_full_record) audit_record.type = 'put';
-								history.push({ id: this_id, value, timestamp: next_time, ...audit_record });
+								history.push({ id: this_id, value, localTime: next_time, ...audit_record });
 								next_time = audit_record.previousLocalTime;
 							} else break;
 							if (count) count--;
@@ -1794,7 +1805,7 @@ export function makeTable(options) {
 						// if retain and it exists, send the current value first
 						subscription.send({
 							id: this_id,
-							timestamp: local_time,
+							localTime: local_time,
 							value: this[RECORD_PROPERTY],
 							version: this[VERSION_PROPERTY],
 							type: 'put',
@@ -1809,6 +1820,15 @@ export function makeTable(options) {
 			})();
 			if (request.listener) subscription.on('data', request.listener);
 			return subscription;
+		}
+
+		/**
+		 * Subscribe on one thread unless this is a per-thread subscription
+		 * @param worker_index
+		 * @param options
+		 */
+		static subscribeOnThisThread(worker_index, options) {
+			return worker_index === 0 || options?.crossThreads === false;
 		}
 		doesExist() {
 			return Boolean(this[RECORD_PROPERTY] || this[SAVE_MODE]);
