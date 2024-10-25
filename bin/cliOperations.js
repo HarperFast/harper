@@ -95,8 +95,6 @@ function buildRequest() {
 			}
 
 			req[first] = rest;
-		} else {
-			console.warn(`Invalid argument: ${arg}`);
 		}
 	}
 
