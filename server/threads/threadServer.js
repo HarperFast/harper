@@ -20,6 +20,7 @@ const { createTLSSelector } = require('../../security/keys');
 const { resolvePath } = require('../../config/configUtils');
 const { startupLog } = require('../../bin/run');
 const { Readable } = require('node:stream');
+const globals = require('../../globals');
 
 const debug_threads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
 if (debug_threads) {
@@ -73,6 +74,7 @@ exports.httpServer = httpServer;
 exports.deliverSocket = deliverSocket;
 exports.startServers = startServers;
 exports.listenOnPorts = listenOnPorts;
+exports.globals = globals;
 exports.when_components_loaded = null;
 server.http = httpServer;
 server.request = onRequest;
@@ -241,7 +243,7 @@ function listenOnPorts() {
 	}
 	return Promise.all(listening);
 }
-if (!isMainThread && !workerData.noServerStart) {
+if (!isMainThread && !workerData?.noServerStart) {
 	startServers();
 }
 

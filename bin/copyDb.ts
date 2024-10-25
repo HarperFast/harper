@@ -159,9 +159,11 @@ export async function copyDb(source_database: string, target_database_path: stri
 			console.log('copying', key, 'from', source_database, 'to', target_database_path);
 			await copyDbi(source_dbi, target_dbi, is_primary, transaction);
 		}
-		const target_audit_store = root_store.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
-		console.log('copying audit log');
-		copyDbi(source_audit_store, target_audit_store, false, transaction);
+		if (source_audit_store) {
+			const target_audit_store = root_store.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
+			console.log('copying audit log for', source_database, 'to', target_database_path);
+			copyDbi(source_audit_store, target_audit_store, false, transaction);
+		}
 
 		async function copyDbi(source_dbi, target_dbi, is_primary, transaction) {
 			let records_copied = 0;
