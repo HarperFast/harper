@@ -8,93 +8,95 @@ const path = require('path');
 const fs = require('fs-extra');
 const YAML = require('yaml');
 
-const SUPPORTED_OPS = {
-	describe_table: true,
-	describe_all: true,
-	describe_database: true,
-	list_users: true,
-	list_roles: true,
-	drop_role: true,
-	add_user: true,
-	alter_user: true,
-	drop_user: true,
-	restart_service: true,
-	restart: true,
-	create_database: true,
-	drop_database: true,
-	create_table: true,
-	drop_table: true,
-	create_attribute: true,
-	drop_attribute: true,
-	search_by_id: true,
-	delete: true,
-	search_by_value: true,
-	csv_file_load: true,
-	csv_url_load: true,
-	cluster_get_routes: true,
-	cluster_network: true,
-	cluster_status: true,
-	remove_node: true,
-	add_component: true,
-	deploy_component: true,
-	package_component: true,
-	drop_component: true,
-	get_components: true,
-	get_component_file: true,
-	set_component_file: true,
-	registration_info: true,
-	get_fingerprint: true,
-	set_license: true,
-	get_job: true,
-	search_jobs_by_start_date: true,
-	read_log: true,
-	read_transaction_log: true,
-	read_audit_log: true,
-	delete_transaction_logs_before: true,
-	purge_stream: true,
-	delete_records_before: true,
-	install_node_modules: true,
-	set_configuration: true,
-	get_configuration: true,
-	create_authentication_tokens: true,
-	refresh_operation_token: true,
-	system_information: true,
-	sql: true,
-	create_csr: true,
-	sign_certificate: true,
-	list_certificates: true,
-	add_certificate: true,
-	remove_certificate: true,
-	add_ssh_key: true,
-	update_ssh_key: true,
-	delete_ssh_key: true,
-	list_ssh_keys: true,
-	set_ssh_known_hosts: true,
-	get_ssh_known_hosts: true,
-};
+const SUPPORTED_OPS = [
+	'describe_table',
+	'describe_all',
+	'describe_database',
+	'list_users',
+	'list_roles',
+	'drop_role',
+	'add_user',
+	'alter_user',
+	'drop_user',
+	'restart_service',
+	'restart',
+	'create_database',
+	'drop_database',
+	'create_table',
+	'drop_table',
+	'create_attribute',
+	'drop_attribute',
+	'search_by_id',
+	'delete',
+	'search_by_value',
+	'csv_file_load',
+	'csv_url_load',
+	'cluster_get_routes',
+	'cluster_network',
+	'cluster_status',
+	'remove_node',
+	'add_component',
+	'deploy_component',
+	'package_component',
+	'drop_component',
+	'get_components',
+	'get_component_file',
+	'set_component_file',
+	'registration_info',
+	'get_fingerprint',
+	'set_license',
+	'get_job',
+	'search_jobs_by_start_date',
+	'read_log',
+	'read_transaction_log',
+	'read_audit_log',
+	'delete_transaction_logs_before',
+	'purge_stream',
+	'delete_records_before',
+	'install_node_modules',
+	'set_configuration',
+	'get_configuration',
+	'create_authentication_tokens',
+	'refresh_operation_token',
+	'system_information',
+	'sql',
+	'create_csr',
+	'sign_certificate',
+	'list_certificates',
+	'add_certificate',
+	'remove_certificate',
+	'add_ssh_key',
+	'update_ssh_key',
+	'delete_ssh_key',
+	'list_ssh_keys',
+	'set_ssh_known_hosts',
+	'get_ssh_known_hosts',
+];
 
 module.exports = { cliOperations, buildRequest };
 
 /**
  * Builds an Op-API request object from CLI args
- * @returns {{}}
  */
 function buildRequest() {
 	const req = {};
-	for (const arg of process.argv) {
-		if (SUPPORTED_OPS[arg]) {
+	for (const arg of process.argv.slice(2)) {
+		if (SUPPORTED_OPS.includes(arg)) {
 			req.operation = arg;
-			continue;
-		}
-
-		if (arg.includes('=')) {
+		} else if (arg.includes('=')) {
 			let [first, ...rest] = arg.split('=');
 			rest = rest.join('=');
+
 			try {
 				rest = JSON.parse(rest);
-			} catch (e) {}
+				// eslint-disable-next-line sonarjs/no-ignored-exceptions
+			} catch (e) {
+				/* noop */
+			}
 
 			req[first] = rest;
+		} else {
+			console.warn(`Invalid argument: ${arg}`);
 		}
 	}
 
