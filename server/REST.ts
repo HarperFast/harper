@@ -44,7 +44,7 @@ async function http(request: Context & Request, next_handler) {
 			resource_request.async = true;
 			resource = entry.Resource;
 		}
-		if (resource.isCaching) {
+		if (resource?.isCaching) {
 			const cache_control = headers_object['cache-control'];
 			if (cache_control) {
 				const cache_control_parts = parseHeaderValue(cache_control);
