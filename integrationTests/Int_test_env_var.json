@@ -1,5 +1,5 @@
 {
-	"id": "0c807f8d-1960-46a7-ae3b-3f4d782d592c",
+	"id": "ddc4fadc-2742-48de-966b-186edd9fbd15",
 	"name": "HarperDB Integration Tests Environment Variables",
 	"values": [
 		{
@@ -10,6 +10,12 @@
 		{
 			"key": "port",
 			"value": "9925",
+			"enabled": true
+		},
+		{
+			"key": "portRest",
+			"value": "9926",
+			"type": "default",
 			"enabled": true
 		},
 		{
@@ -214,6 +220,6 @@
 		}
 	],
 	"_postman_variable_scope": "environment",
-	"_postman_exported_at": "2020-09-08T15:51:42.285Z",
-	"_postman_exported_using": "Postman/7.31.1"
+	"_postman_exported_at": "2024-10-29T14:46:32.418Z",
+	"_postman_exported_using": "Postman/11.18.0"
 }
