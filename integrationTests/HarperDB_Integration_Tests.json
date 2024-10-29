@@ -72714,6 +72714,654 @@
 					"response": []
 				}
 			]
+		},
+		{
+			"name": "21. Authentication Tests",
+			"item": [
+				{
+					"name": "Describe all with valid credentials",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				},
+				{
+					"name": "Describe all with invalid password",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 401\", function () {\r",
+									"    pm.response.to.have.status(401);\r",
+									"});\r",
+									"\r",
+									"tests[\"Login failed\"] = responseBody.has(\"Login failed\");"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "thisIsNotMyPassword",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				},
+				{
+					"name": "Describe all with invalid username",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 401\", function () {\r",
+									"    pm.response.to.have.status(401);\r",
+									"});\r",
+									"\r",
+									"tests[\"Login failed\"] = responseBody.has(\"Login failed\");"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "thisIsNotMyUsername",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				},
+				{
+					"name": "Describe all with empty credentials",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 401\", function () {\r",
+									"    pm.response.to.have.status(401);\r",
+									"});\r",
+									"\r",
+									"tests[\"Must login\"] = responseBody.has(\"Must login\");"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				},
+				{
+					"name": "Describe all with long credentials",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 401\", function () {\r",
+									"    pm.response.to.have.status(401);\r",
+									"});\r",
+									"\r",
+									"tests[\"Login failed\"] = responseBody.has(\"Login failed\");"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "sdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafksdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdj",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "sdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdj",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				},
+				{
+					"name": "Describe all without auth",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
+									"\r",
+									"// this is only for prod config, not dev\r",
+									"//pm.test(\"Status code is 401\", function () {\r",
+									"//     pm.response.to.have.status(401);\r",
+									"// });\r",
+									"// tests[\"Must login\"] = responseBody.has(\"Must login\");"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				},
+				{
+					"name": "Create auth token with valid credentials",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Get operation token\", function () {\r",
+									"    var jsonData = pm.response.json();\r",
+									"    pm.expect(jsonData).to.haveOwnProperty('operation_token');\r",
+									"    pm.expect(jsonData.operation_token).to.not.be.empty;\r",
+									"    pm.environment.set('my_operation_token', jsonData.operation_token);\r",
+									"    // console.log(pm.variables.get('my_operation_token'));\r",
+									"});\r",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"create_authentication_tokens\",\n    \"username\": \"{{username}}\",\n    \"password\": \"{{password}}\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				},
+				{
+					"name": "Describe all with valid auth token",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {\r",
+									"    pm.response.to.have.status(200);\r",
+									"});\r",
+									"\r",
+									"// pm.test(\"Check response not empty\", function () {\r",
+									"//    pm.expect(pm.response.json()).to.not.be.empty;\r",
+									"// });\r",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Bearer {{my_operation_token}}",
+								"type": "text"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\":\"describe_all\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				},
+				{
+					"name": "Create auth token with invalid credentials",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 401\", function () {\r",
+									"    pm.response.to.have.status(401);\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Check response\", function () {\r",
+									"    var response = JSON.stringify(pm.response.json());\r",
+									"    pm.expect(response).to.include(\"invalid credentials\");\r",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"create_authentication_tokens\",\n    \"username\": \"{{username}}\",\n    \"password\": \"\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				},
+				{
+					"name": "Create auth token with invalid credentials 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 401\", function () {\r",
+									"    pm.response.to.have.status(401);\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Check response\", function () {\r",
+									"    var response = JSON.stringify(pm.response.json());\r",
+									"    pm.expect(response).to.include(\"invalid credentials\");\r",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"create_authentication_tokens\",\n    \"username\": \"\",\n    \"password\": \"{{password}}\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				},
+				{
+					"name": "Create auth token with invalid credentials 3",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 401\", function () {\r",
+									"    pm.response.to.have.status(401);\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Check response\", function () {\r",
+									"    var response = JSON.stringify(pm.response.json());\r",
+									"    pm.expect(response).to.include(\"invalid credentials\");\r",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"create_authentication_tokens\",\n    \"username\": \"wrongusername\",\n    \"password\": \"wrongpassword\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				},
+				{
+					"name": "Create auth token with empty credentials",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 401\", function () {\r",
+									"    pm.response.to.have.status(401);\r",
+									"});\r",
+									"\r",
+									"pm.test(\"Check response\", function () {\r",
+									"    var response = JSON.stringify(pm.response.json());\r",
+									"    pm.expect(response).to.include(\"invalid credentials\");\r",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "noauth"
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"create_authentication_tokens\",\n    \"username\": \"\",\n    \"password\": \"\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used to create a schema.  It like all other functions requires basic auth.  \n\nAttributes:\n\noperation (required) - must always be create_schema\n\nschema (required) - name of the schema you are creating"
+					},
+					"response": []
+				}
+			]
 		}
 	],
 	"event": [
