@@ -236,7 +236,27 @@ export function assignTrackedAccessors(Target, type_def) {
 			configurable: true,
 		});
 	}
+	// walk the prototype chain and set the prototype of the last object to the proxy that forwards to get
+	let last_prototype = prototype;
+	do {
+		const next_prototype = Object.getPrototypeOf(last_prototype);
+		if (next_prototype === Object.prototype) {
+			Object.setPrototypeOf(last_prototype, get_on_missing_property);
+			break;
+		}
+		last_prototype = next_prototype;
+	} while (last_prototype && last_prototype !== get_on_missing_property);
 }
+// a proxy that will forward any attempt at a missing property to the get() method
+const get_on_missing_property = new Proxy(
+	{},
+	{
+		get(target, prop, receiver) {
+			if (typeof prop === 'string') return receiver.get(prop);
+		},
+	}
+);
+
 function trackObject(source_object, type_def) {
 	// lazily instantiate in case of recursive structures
 	let TrackedObject;
