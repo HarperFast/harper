@@ -194,7 +194,9 @@ export function assignTrackedAccessors(Target, type_def) {
 	}
 	setMethod('getProperty', function (name) {
 		const descriptor = descriptors[name];
-		if (descriptor) return descriptor.get.call(this);
+		if (descriptor) {
+			return descriptor.get.call(this);
+		}
 		const changes = this[OWN_DATA];
 		if (changes?.[name] !== undefined) return changes[name];
 		return this[RECORD_PROPERTY]?.[name];
@@ -247,17 +249,34 @@ export function assignTrackedAccessors(Target, type_def) {
 		last_prototype = next_prototype;
 	} while (last_prototype && last_prototype !== get_on_missing_property);
 }
-// a proxy that will forward any attempt at a missing property to the get() method
+const Object_prototype = Object.prototype;
+// a proxy that will handle any missing property as a getter to the changes/record
 const get_on_missing_property = new Proxy(
 	{},
 	{
-		get(target, prop, receiver) {
-			if (typeof prop === 'string') return receiver.get(prop);
+		get(target, name, receiver) {
+			if (typeof name === 'string') {
+				if (name === 'then') return undefined; // shortcut
+				if (Object_prototype[name]) return Object_prototype[name];
+				let changes = receiver[OWN_DATA];
+				if (changes && name in changes) {
+					return changes[name];
+				}
+				const source_value = receiver[RECORD_PROPERTY]?.[name];
+				if (source_value && typeof source_value === 'object') {
+					const updated_value = trackObject(source_value);
+					if (updated_value) {
+						if (!changes) changes = receiver[OWN_DATA] = Object.create(null);
+						return (changes[name] = updated_value);
+					}
+				}
+				return source_value;
+			}
 		},
 	}
 );
 
-function trackObject(source_object, type_def) {
+function trackObject(source_object: any, type_def?: any) {
 	// lazily instantiate in case of recursive structures
 	let TrackedObject;
 	switch (source_object.constructor) {
@@ -335,41 +354,48 @@ const hasOwnProperty = Object.prototype.hasOwnProperty;
  * @returns
  */
 export function updateAndFreeze(target, changes = target[OWN_DATA]) {
-	let copied_source;
+	let merged_updated_object: any;
 	if (hasOwnProperty.call(target, RECORD_PROPERTY) && target.constructor === Array && !Object.isFrozen(target)) {
 		// a tracked array, by default we can freeze the tracked array itself
-		copied_source = target;
+		merged_updated_object = target;
 		for (let i = 0, l = target.length; i < l; i++) {
 			let value = target[i];
 			if (value && typeof value === 'object') {
 				const new_value = updateAndFreeze(value);
-				if (new_value !== value && copied_source === target) {
+				if (new_value !== value && merged_updated_object === target) {
 					// if we need to make any changes to the user's array, we make a copy so we don't modify
 					// an array that the user may be using with transient properties
-					copied_source = target.slice(0);
+					merged_updated_object = target.slice(0);
 				}
 				value = new_value;
 			}
-			copied_source[i] = value;
+			merged_updated_object[i] = value;
 		}
-		return Object.freeze(copied_source);
+		return Object.freeze(merged_updated_object);
 	}
+	// copy the changes into the merged updated object
 	for (const key in changes) {
 		// copy the source first so we have properties in the right order and can override them
-		if (!copied_source) copied_source = { ...target[RECORD_PROPERTY] };
+		if (!merged_updated_object) merged_updated_object = { ...target[RECORD_PROPERTY] };
 		let value = changes[key];
 		if (value && typeof value === 'object') {
 			if (value.__op__) {
 				const operation = crdtOperations[value?.__op__];
 				if (!operation) throw new Error('Invalid CRDT operation ' + value.__op__);
-				else operation(copied_source, key, value);
+				else operation(merged_updated_object, key, value);
 				continue;
 			} else value = updateAndFreeze(value);
 		}
-		copied_source[key] = value;
+		merged_updated_object[key] = value;
 	}
-	return copied_source
-		? Object.freeze(copied_source)
+	// now copy any properties on the instances itself to the merged updated object
+	for (const key in target) {
+		if (hasOwnProperty.call(target, key)) {
+			merged_updated_object[key] = target[key];
+		}
+	}
+	return merged_updated_object
+		? Object.freeze(merged_updated_object)
 		: hasOwnProperty.call(target, RECORD_PROPERTY)
 		? target[RECORD_PROPERTY]
 		: target;

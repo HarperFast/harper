@@ -706,7 +706,7 @@ export function table(table_definition: TableDefinition) {
 				attribute_descriptor.indexed !== attribute.indexed ||
 				attribute_descriptor.nullable !== attribute.nullable ||
 				attribute_descriptor.version !== attribute.version ||
-				JSON.stringify(attribute_descriptor.attributes) !== JSON.stringify(attribute.attributes) ||
+				JSON.stringify(attribute_descriptor.properties) !== JSON.stringify(attribute.properties) ||
 				JSON.stringify(attribute_descriptor.elements) !== JSON.stringify(attribute.elements);
 			if (attribute.indexed) {
 				const dbi_init = new OpenDBIObject(true, false);
