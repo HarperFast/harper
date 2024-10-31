@@ -114,7 +114,8 @@ async function install() {
 		prompt_override[hdb_terms.INSTALL_PROMPTS.TC_AGREEMENT] &&
 		prompt_override[hdb_terms.INSTALL_PROMPTS.ROOTPATH] &&
 		prompt_override[hdb_terms.INSTALL_PROMPTS.HDB_ADMIN_USERNAME] &&
-		prompt_override[hdb_terms.INSTALL_PROMPTS.HDB_ADMIN_PASSWORD]
+		prompt_override[hdb_terms.INSTALL_PROMPTS.HDB_ADMIN_PASSWORD] &&
+		prompt_override[hdb_terms.INSTALL_PROMPTS.DEFAULTS_MODE] === undefined
 	) {
 		skip_hostname = true;
 		prompt_override[hdb_terms.INSTALL_PROMPTS.DEFAULTS_MODE] = 'prod';
