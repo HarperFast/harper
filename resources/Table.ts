@@ -2901,7 +2901,7 @@ export function makeTable(options) {
 			// allow for a fast path to load the record from the correct node
 			const residency = TableResource.getResidencyById(id);
 			if (residency) {
-				if (!residency.includes(server.hostname)) {
+				if (!residency.includes(server.hostname) && source_load) {
 					// this record is not on this node, so we shouldn't load it here
 					return source_load({ key: id, residency }).then(with_entry);
 				}
