@@ -393,7 +393,7 @@ export function makeTable(options) {
 													node_states.push(node_state);
 												}
 												node_state.seqId = Math.max(existing_seq?.seqId ?? 1, event.localTime);
-												if (node_id === txn_in_progress.nodeId) {
+												if (node_id === txn_in_progress?.nodeId) {
 													node_state.lastTxnTime = event.timestamp;
 												}
 											}
@@ -2147,7 +2147,7 @@ export function makeTable(options) {
 								value = entry.value;
 							} else {
 								// otherwise try to go back in the audit log
-								value = audit_record.getValue?.(primary_store, true, timestamp);
+								value = audit_record.getValue?.(primary_store, true, local_time);
 							}
 							type = 'put';
 						}
