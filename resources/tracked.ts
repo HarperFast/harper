@@ -1,4 +1,3 @@
-import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY } from './Resource';
 import { ClientError } from '../utility/errors/hdbError';
 import * as crdtOperations from './crdt';
 // perhaps we want these in the global registry, not sure:
@@ -30,7 +29,7 @@ export function assignTrackedAccessors(Target, type_def) {
 		if (attribute.resolve) {
 			descriptor = {
 				get() {
-					return attribute.resolve(this, this[CONTEXT]);
+					return attribute.resolve(this, this.getContext?.());
 				},
 				set(related) {
 					return attribute.set(this, related);
@@ -162,12 +161,12 @@ export function assignTrackedAccessors(Target, type_def) {
 					if (changes && name in changes) {
 						const value = changes[name];
 						if (value?.__op__) {
-							const source_value = this[RECORD_PROPERTY]?.[name];
+							const source_value = this.getRecord()?.[name];
 							return value.update(source_value);
 						}
 						return value;
 					}
-					const source_value = this[RECORD_PROPERTY]?.[name];
+					const source_value = this.getRecord()?.[name];
 					if (source_value && typeof source_value === 'object') {
 						const updated_value = trackObject(source_value, attribute);
 						if (updated_value) {
@@ -199,7 +198,7 @@ export function assignTrackedAccessors(Target, type_def) {
 		}
 		const changes = this[OWN_DATA];
 		if (changes?.[name] !== undefined) return changes[name];
-		return this[RECORD_PROPERTY]?.[name];
+		return this.getRecord()?.[name];
 	});
 	setMethod('set', function (name, value) {
 		const descriptor = descriptors[name];
@@ -215,7 +214,7 @@ export function assignTrackedAccessors(Target, type_def) {
 		let copied_source;
 		for (const key in changes) {
 			// copy the source first so we have properties in the right order and can override them
-			if (!copied_source) copied_source = { ...this[RECORD_PROPERTY] };
+			if (!copied_source) copied_source = { ...this.getRecord() };
 			let value = changes[key];
 			if (value?.__op__) {
 				const source_value = copied_source[key];
@@ -225,10 +224,10 @@ export function assignTrackedAccessors(Target, type_def) {
 		}
 		const keys = Object.keys(this); // we use Object.keys because it is expected that the many inherited enumerables would slow a for-in loop down
 		if (keys.length > 0) {
-			if (!copied_source) copied_source = { ...this[RECORD_PROPERTY] };
+			if (!copied_source) copied_source = { ...this.getRecord() };
 			Object.assign(copied_source, this);
 		}
-		return copied_source || this[RECORD_PROPERTY];
+		return copied_source || this.getRecord();
 	});
 	if (!prototype.get) setMethod('get', prototype.getProperty);
 	if (!prototype.delete) setMethod('delete', prototype.deleteProperty);
@@ -256,13 +255,13 @@ const get_on_missing_property = new Proxy(
 	{
 		get(target, name, receiver) {
 			if (typeof name === 'string') {
-				if (name === 'then') return undefined; // shortcut
+				if (name === 'then' || name === 'getRecord') return undefined; // shortcut
 				if (Object_prototype[name]) return Object_prototype[name];
 				let changes = receiver[OWN_DATA];
 				if (changes && name in changes) {
 					return changes[name];
 				}
-				const source_value = receiver[RECORD_PROPERTY]?.[name];
+				const source_value = receiver.getRecord?.()[name];
 				if (source_value && typeof source_value === 'object') {
 					const updated_value = trackObject(source_value);
 					if (updated_value) {
@@ -284,10 +283,17 @@ function trackObject(source_object: any, type_def?: any) {
 			if (type_def) {
 				if (!(TrackedObject = type_def.TrackedObject)) {
 					type_def.TrackedObject = TrackedObject = class {
+						#record;
 						constructor(source_object) {
-							if (source_object?.[RECORD_PROPERTY])
+							if (source_object?.getRecord)
 								throw new Error('Can not track an already tracked object, check for circular references');
-							this[RECORD_PROPERTY] = source_object;
+							this.#record = source_object;
+						}
+						getRecord() {
+							return this.#record;
+						}
+						setRecord(record) {
+							this.#record = record;
 						}
 					};
 					assignTrackedAccessors(TrackedObject, type_def);
@@ -297,8 +303,7 @@ function trackObject(source_object: any, type_def?: any) {
 				return new GenericTrackedObject(source_object);
 			}
 		case Array:
-			const tracked_array = new TrackedArray(source_object.length);
-			tracked_array[RECORD_PROPERTY] = source_object;
+			const tracked_array = new TrackedArray(source_object.length, source_object);
 			for (let i = 0, l = source_object.length; i < l; i++) {
 				let element = source_object[i];
 				if (element && typeof element === 'object') element = trackObject(element, type_def?.elements);
@@ -311,10 +316,14 @@ function trackObject(source_object: any, type_def?: any) {
 	}
 }
 class GenericTrackedObject {
+	#record: any;
 	constructor(source_object) {
-		if (source_object?.[RECORD_PROPERTY])
+		if (source_object?.getRecord)
 			throw new Error('Can not track an already tracked object, check for circular references');
-		this[RECORD_PROPERTY] = source_object;
+		this.#record = source_object;
+	}
+	getRecord() {
+		return this.#record;
 	}
 }
 assignTrackedAccessors(GenericTrackedObject, {});
@@ -329,7 +338,7 @@ export function collapseData(target) {
 	let copied_source;
 	for (const key in changes) {
 		// copy the source first so we have properties in the right order and can override them
-		if (!copied_source) copied_source = { ...target[RECORD_PROPERTY] };
+		if (!copied_source) copied_source = { ...target.getRecord() };
 		let value = changes[key];
 		if (value && typeof value === 'object') {
 			if (value.__op__) {
@@ -341,10 +350,10 @@ export function collapseData(target) {
 	}
 	const keys = Object.keys(target); // we use Object.keys because it is expected that the many inherited enumerables would slow a for-in loop down
 	if (keys.length > 0) {
-		if (!copied_source) copied_source = { ...target[RECORD_PROPERTY] };
+		if (!copied_source) copied_source = { ...target.getRecord() };
 		Object.assign(copied_source, target);
 	}
-	return copied_source || target[RECORD_PROPERTY];
+	return copied_source || target.getRecord();
 }
 const hasOwnProperty = Object.prototype.hasOwnProperty;
 /**
@@ -355,7 +364,7 @@ const hasOwnProperty = Object.prototype.hasOwnProperty;
  */
 export function updateAndFreeze(target, changes = target[OWN_DATA]) {
 	let merged_updated_object: any;
-	if (hasOwnProperty.call(target, RECORD_PROPERTY) && target.constructor === Array && !Object.isFrozen(target)) {
+	if (target.getRecord && target.constructor === Array && !Object.isFrozen(target)) {
 		// a tracked array, by default we can freeze the tracked array itself
 		merged_updated_object = target;
 		for (let i = 0, l = target.length; i < l; i++) {
@@ -376,7 +385,7 @@ export function updateAndFreeze(target, changes = target[OWN_DATA]) {
 	// copy the changes into the merged updated object
 	for (const key in changes) {
 		// copy the source first so we have properties in the right order and can override them
-		if (!merged_updated_object) merged_updated_object = { ...target[RECORD_PROPERTY] };
+		if (!merged_updated_object) merged_updated_object = { ...target.getRecord?.() };
 		let value = changes[key];
 		if (value && typeof value === 'object') {
 			if (value.__op__) {
@@ -391,14 +400,11 @@ export function updateAndFreeze(target, changes = target[OWN_DATA]) {
 	// now copy any properties on the instances itself to the merged updated object
 	for (const key in target) {
 		if (hasOwnProperty.call(target, key)) {
+			if (!merged_updated_object) merged_updated_object = { ...target.getRecord?.() };
 			merged_updated_object[key] = target[key];
 		}
 	}
-	return merged_updated_object
-		? Object.freeze(merged_updated_object)
-		: hasOwnProperty.call(target, RECORD_PROPERTY)
-		? target[RECORD_PROPERTY]
-		: target;
+	return merged_updated_object ? Object.freeze(merged_updated_object) : target.getRecord?.() ?? target;
 }
 /**
  * Determine if any changes have been made to this tracked object
@@ -406,7 +412,7 @@ export function updateAndFreeze(target, changes = target[OWN_DATA]) {
  * @returns
  */
 export function hasChanges(target) {
-	const source = target[RECORD_PROPERTY];
+	const source = target.getRecord?.();
 	if (source === undefined) return true; // if no original source then it is always a change
 	if (target.constructor === Array) {
 		if (!source) return true;
@@ -415,7 +421,7 @@ export function hasChanges(target) {
 		for (let i = 0, l = target.length; i < l; i++) {
 			const source_value = source[i];
 			const target_value = target[i];
-			if (source_value && target_value?.[RECORD_PROPERTY] === source_value) {
+			if (source_value && target_value?.getRecord?.() === source_value) {
 				if (hasChanges(target_value)) return true;
 			} else return true;
 		}
@@ -427,7 +433,7 @@ export function hasChanges(target) {
 			if (value && typeof value === 'object') {
 				const source_value = source[key];
 				// could just be a copy, need to check
-				if (source_value && value[RECORD_PROPERTY] === source_value) {
+				if (source_value && value.getRecord?.() === source_value) {
 					if (hasChanges(value)) return true;
 				} else return true;
 			} else return true;
@@ -438,9 +444,14 @@ export function hasChanges(target) {
 
 const HAS_ARRAY_CHANGES = Symbol.for('has-array-changes');
 class TrackedArray extends Array {
+	#record: any;
 	[HAS_ARRAY_CHANGES]: boolean;
-	constructor(length) {
+	constructor(length, record) {
 		super(length);
+		this.#record = record;
+	}
+	getRecord() {
+		return this.#record;
 	}
 	splice(...args) {
 		this[HAS_ARRAY_CHANGES] = true;
@@ -467,7 +478,7 @@ TrackedArray.prototype.constructor = Array; // this makes type checks easier/fas
 
 // Copy a record into a resource, using copy-on-write for nested objects/arrays
 export function copyRecord(record, target_resource, attributes) {
-	target_resource[RECORD_PROPERTY] = record;
+	target_resource.setRecord(record);
 	for (const attribute of attributes) {
 		// do not override existing methods
 		if (target_resource[key] === undefined) {

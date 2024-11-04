@@ -19,7 +19,7 @@ import {
 	SubSelect,
 } from './ResourceInterface';
 import { validateAttribute } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows';
-import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY, Resource, IS_COLLECTION } from './Resource';
+import { Resource } from './Resource';
 import { DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction';
 import * as env_mngr from '../utility/environment/environmentManager';
 import { addSubscription } from './transactionBroadcast';
@@ -72,13 +72,8 @@ const DELETED_RECORD_EXPIRATION = 86400000; // one day for non-audit records tha
 env_mngr.initSync();
 const LMDB_PREFETCH_WRITES = env_mngr.get(CONFIG_PARAMS.STORAGE_PREFETCHWRITES);
 const LOCK_TIMEOUT = 10000;
-const VERSION_PROPERTY = Symbol.for('version');
-const INCREMENTAL_UPDATE = Symbol.for('incremental-update');
-const ENTRY_PROPERTY = Symbol('entry');
-const SAVE_MODE = Symbol('is-saving');
 const SAVING_FULL_UPDATE = 1;
 const SAVING_CRDT_UPDATE = 2;
-const LOADED_FROM_SOURCE = Symbol('loaded-from-source');
 const NOTIFICATION = { isNotification: true, ensureLoaded: false };
 export const INVALIDATED = 1;
 export const EVICTED = 8; // note that 2 is reserved for timestamps
@@ -180,6 +175,11 @@ export function makeTable(options) {
 	const MAX_PREFETCH_BUNDLE = 6;
 	if (audit) addDeleteRemoval();
 	class TableResource extends Resource {
+		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
+		#version: number; // version of the record
+		#entry: Entry; // the entry from the database
+		#saveMode: boolean; // indicates that the record is currently being saved
+		#loadedFromSource: boolean; // indicates that the record was loaded from the source
 		static name = table_name; // for display/debugging purposes
 		static primaryStore = primary_store;
 		static auditStore = audit_store;
@@ -509,7 +509,7 @@ export function makeTable(options) {
 			if (id != null) {
 				checkValidId(id);
 				try {
-					if (resource.hasOwnProperty(RECORD_PROPERTY)) return resource; // already loaded, don't reload, current version may have modifications
+					if (resource.getRecord?.()) return resource; // already loaded, don't reload, current version may have modifications
 					if (typeof id === 'object' && id && !Array.isArray(id)) {
 						throw new Error(`Invalid id ${JSON.stringify(id)}`);
 					}
@@ -526,8 +526,8 @@ export function makeTable(options) {
 						sync,
 						(entry) => {
 							if (entry) {
-								updateResource(resource, entry);
-							} else resource[RECORD_PROPERTY] = null;
+								TableResource._updateResource(resource, entry);
+							} else resource.#record = null;
 							if (request.onlyIfCached && request.noCacheStore) {
 								// don't go into the loading from source condition, but HTTP spec says to
 								// return 504 (rather than 404) if there is no content and the cache-control header
@@ -537,9 +537,9 @@ export function makeTable(options) {
 								const loading_from_source = ensureLoadedFromSource(id, entry, request, resource);
 								if (loading_from_source) {
 									txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
-									resource[LOADED_FROM_SOURCE] = true;
+									resource.#loadedFromSource = true;
 									return when(loading_from_source, (entry) => {
-										updateResource(resource, entry);
+										TableResource._updateResource(resource, entry);
 										return resource;
 									});
 								}
@@ -554,19 +554,24 @@ export function makeTable(options) {
 			}
 			return resource;
 		}
+		static _updateResource(resource, entry) {
+			resource.#entry = entry;
+			resource.#record = entry?.value ?? null;
+			resource.#version = entry?.version;
+		}
 		/**
 		 * This is a request to explicitly ensure that the record is loaded from source, rather than only using the local record.
 		 * This will load from source if the current record is expired, missing, or invalidated.
 		 * @returns
 		 */
 		ensureLoaded() {
-			const loaded_from_source = ensureLoadedFromSource(this[ID_PROPERTY], this[ENTRY_PROPERTY], this[CONTEXT]);
+			const loaded_from_source = ensureLoadedFromSource(this.getId(), this.#entry, this.getContext());
 			if (loaded_from_source) {
-				this[LOADED_FROM_SOURCE] = true;
+				this.#loadedFromSource = true;
 				return when(loaded_from_source, (entry) => {
-					this[ENTRY_PROPERTY] = entry;
-					this[RECORD_PROPERTY] = entry.value;
-					this[VERSION_PROPERTY] = entry.version;
+					this.#entry = entry;
+					this.#record = entry.value;
+					this.#version = entry.version;
 				});
 			}
 		}
@@ -849,17 +854,16 @@ export function makeTable(options) {
 				new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, database_name, table_name)
 			);
 		}
-
 		/**
 		 * This retrieves the data of this resource. By default, with no argument, just return `this`.
 		 * @param query - If included, specifies a query to perform on the record
 		 */
 		get(query?: Query | string): Promise<object | void> | object | void {
 			if (typeof query === 'string') return this.getProperty(query);
-			if (this[IS_COLLECTION]) {
+			if (this.isCollection) {
 				return this.search(query);
 			}
-			if (this[ID_PROPERTY] === null) {
+			if (this.getId() === null) {
 				if (query?.conditions) return this.search(query); // if there is a query, assume it was meant to be a root level query
 				const record_count = TableResource.getRecordCount();
 				return {
@@ -874,7 +878,7 @@ export function makeTable(options) {
 				};
 			}
 			if (query?.property) return this.getProperty(query.property);
-			if (this.doesExist() || query?.ensureLoaded === false || this[CONTEXT]?.returnNonexistent) {
+			if (this.doesExist() || query?.ensureLoaded === false || this.getContext()?.returnNonexistent) {
 				return this;
 			}
 		}
@@ -949,7 +953,7 @@ export function makeTable(options) {
 						}
 					}
 				}
-				return checkContextPermissions(this[CONTEXT]);
+				return checkContextPermissions(this.getContext());
 			}
 		}
 		/**
@@ -958,7 +962,7 @@ export function makeTable(options) {
 		 * @param new_data
 		 */
 		allowCreate(user, new_data: {}) {
-			if (this[IS_COLLECTION]) {
+			if (this.isCollection) {
 				const table_permission = getTablePermissions(user);
 				if (table_permission?.insert) {
 					const attribute_permissions = table_permission.attribute_permissions;
@@ -968,9 +972,9 @@ export function makeTable(options) {
 						for (const key in new_data) {
 							if (!attrs_for_type[key]) return false;
 						}
-						return checkContextPermissions(this[CONTEXT]);
+						return checkContextPermissions(this.getContext());
 					} else {
-						return checkContextPermissions(this[CONTEXT]);
+						return checkContextPermissions(this.getContext());
 					}
 				}
 			} else {
@@ -987,7 +991,7 @@ export function makeTable(options) {
 		 */
 		allowDelete(user) {
 			const table_permission = getTablePermissions(user);
-			return table_permission?.delete && checkContextPermissions(this[CONTEXT]);
+			return table_permission?.delete && checkContextPermissions(this.getContext());
 		}
 
 		/**
@@ -997,7 +1001,7 @@ export function makeTable(options) {
 		 * @param full_update The provided data in updates is the full intended record; any properties in the existing record that are not in the updates, should be removed
 		 */
 		update(updates?: any, full_update?: boolean) {
-			const env_txn = txnForContext(this[CONTEXT]);
+			const env_txn = txnForContext(this.getContext());
 			if (!env_txn) throw new Error('Can not update a table resource outside of a transaction');
 			// record in the list of updating records so it can be written to the database when we commit
 			if (updates === false) {
@@ -1008,7 +1012,7 @@ export function makeTable(options) {
 			if (typeof updates === 'object' && updates) {
 				if (full_update) {
 					if (Object.isFrozen(updates)) updates = { ...updates };
-					this[RECORD_PROPERTY] = {}; // clear out the existing record
+					this.#record = {}; // clear out the existing record
 					this[OWN_DATA] = updates;
 				} else {
 					own_data = this[OWN_DATA];
@@ -1022,9 +1026,9 @@ export function makeTable(options) {
 
 		addTo(property, value) {
 			if (typeof value === 'number' || typeof value === 'bigint') {
-				if (this[SAVE_MODE] === SAVING_FULL_UPDATE) this.set(property, (+this.getProperty(property) || 0) + value);
+				if (this.#saveMode === SAVING_FULL_UPDATE) this.set(property, (+this.getProperty(property) || 0) + value);
 				else {
-					if (!this[SAVE_MODE]) this.update();
+					if (!this.#saveMode) this.update();
 					this.set(property, new Addition(value));
 				}
 			} else {
@@ -1039,22 +1043,28 @@ export function makeTable(options) {
 			}
 		}
 		getMetadata() {
-			return this[ENTRY_PROPERTY];
+			return this.#entry;
+		}
+		getRecord() {
+			return this.#record;
+		}
+		setRecord(record) {
+			this.#record = record;
 		}
 
 		invalidate() {
 			this._writeInvalidate();
 		}
 		_writeInvalidate(options) {
-			const context = this[CONTEXT];
-			const id = this[ID_PROPERTY];
+			const context = this.getContext();
+			const id = this.getId();
 			checkValidId(id);
-			const transaction = txnForContext(this[CONTEXT]);
+			const transaction = txnForContext(this.getContext());
 			transaction.addWrite({
 				key: id,
 				store: primary_store,
 				invalidated: true,
-				entry: this[ENTRY_PROPERTY],
+				entry: this.#entry,
 				before: apply_to_sources.invalidate?.bind(this, context, id),
 				beforeIntermediate: apply_to_sources_intermediate.invalidate?.bind(this, context, id),
 				commit: (txn_time, existing_entry) => {
@@ -1070,7 +1080,7 @@ export function makeTable(options) {
 					updateRecord(
 						id,
 						partial_record,
-						this[ENTRY_PROPERTY],
+						this.#entry,
 						txn_time,
 						INVALIDATED,
 						audit,
@@ -1082,15 +1092,15 @@ export function makeTable(options) {
 			});
 		}
 		_writeRelocate(options) {
-			const context = this[CONTEXT];
-			const id = this[ID_PROPERTY];
+			const context = this.getContext();
+			const id = this.getId();
 			checkValidId(id);
-			const transaction = txnForContext(this[CONTEXT]);
+			const transaction = txnForContext(this.getContext());
 			transaction.addWrite({
 				key: id,
 				store: primary_store,
 				invalidated: true,
-				entry: this[ENTRY_PROPERTY],
+				entry: this.#entry,
 				before: apply_to_sources.relocate?.bind(this, context, id),
 				beforeIntermediate: apply_to_sources_intermediate.relocate?.bind(this, context, id),
 				commit: (txn_time, existing_entry) => {
@@ -1115,7 +1125,7 @@ export function makeTable(options) {
 					updateRecord(
 						id,
 						new_record,
-						this[ENTRY_PROPERTY],
+						this.#entry,
 						txn_time,
 						metadata,
 						audit,
@@ -1236,13 +1246,13 @@ export function makeTable(options) {
 		// a notification that a write has already occurred in the canonical data source, we need to update our
 		// local copy
 		_writeUpdate(record_update: any, full_update: boolean, options?: any) {
-			const context = this[CONTEXT];
+			const context = this.getContext();
 			const transaction = txnForContext(context);
 
-			const id = this[ID_PROPERTY];
+			const id = this.getId();
 			checkValidId(id);
-			const entry = this[ENTRY_PROPERTY];
-			this[SAVE_MODE] = full_update ? SAVING_FULL_UPDATE : SAVING_CRDT_UPDATE; // mark that this resource is being saved so doesExist return true
+			const entry = this.#entry;
+			this.#saveMode = full_update ? SAVING_FULL_UPDATE : SAVING_CRDT_UPDATE; // mark that this resource is being saved so doesExist return true
 			const write = {
 				key: id,
 				store: primary_store,
@@ -1305,17 +1315,17 @@ export function makeTable(options) {
 					if (retry) {
 						if (context && existing_entry?.version > (context.lastModified || 0))
 							context.lastModified = existing_entry.version;
-						this[ENTRY_PROPERTY] = existing_entry;
-						if (existing_entry?.value?.[RECORD_PROPERTY])
+						this.#entry = existing_entry;
+						if (existing_entry?.value && existing_entry.value.getRecord)
 							throw new Error('Can not assign a record to a record, check for circular references');
-						if (!full_update) this[RECORD_PROPERTY] = existing_entry?.value ?? null;
+						if (!full_update) this.#record = existing_entry?.value ?? null;
 					}
 					this[OWN_DATA] = undefined; // once we are committing to write this update, we no longer should track the changes, and want to avoid double application (of any CRDTs)
-					this[VERSION_PROPERTY] = txn_time;
+					this.#version = txn_time;
 					const existing_record = existing_entry?.value;
 					let update_to_apply = record_update;
 
-					this[SAVE_MODE] = 0;
+					this.#saveMode = 0;
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
@@ -1382,11 +1392,11 @@ export function makeTable(options) {
 					let record_to_store: any;
 					if (full_update) record_to_store = update_to_apply;
 					else {
-						this[RECORD_PROPERTY] = existing_record;
+						this.#record = existing_record;
 						record_to_store = updateAndFreeze(this, update_to_apply);
 					}
-					this[RECORD_PROPERTY] = record_to_store;
-					if (record_to_store?.[RECORD_PROPERTY])
+					this.#record = record_to_store;
+					if (record_to_store && record_to_store.getRecord)
 						throw new Error('Can not assign a record to a record, check for circular references');
 					let residency_id: number;
 					if (options?.residencyId != undefined) residency_id = options.residencyId;
@@ -1450,7 +1460,7 @@ export function makeTable(options) {
 		async delete(request?: Query | string): Promise<boolean> {
 			if (typeof request === 'string') return this.deleteProperty(request);
 			// TODO: Handle deletion of a collection/query
-			if (this[IS_COLLECTION]) {
+			if (this.isCollection) {
 				for await (const entry of this.search(request)) {
 					const resource = await TableResource.getResource(entry[primary_key], this.getContext(), {
 						ensureLoaded: false,
@@ -1459,14 +1469,14 @@ export function makeTable(options) {
 				}
 				return;
 			}
-			if (!this[RECORD_PROPERTY]) return false;
+			if (!this.#record) return false;
 			return this._writeDelete(request);
 		}
 		_writeDelete(options?: any) {
-			const transaction = txnForContext(this[CONTEXT]);
-			const id = this[ID_PROPERTY];
+			const transaction = txnForContext(this.getContext());
+			const id = this.getId();
 			checkValidId(id);
-			const context = this[CONTEXT];
+			const context = this.getContext();
 			transaction.addWrite({
 				key: id,
 				store: primary_store,
@@ -1479,16 +1489,16 @@ export function makeTable(options) {
 					if (retry) {
 						if (context && existing_entry?.version > (context.lastModified || 0))
 							context.lastModified = existing_entry.version;
-						updateResource(this, existing_entry);
+						TableResource._updateResource(this, existing_entry);
 					}
 					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId) <= 0) return; // a newer record exists locally
-					updateIndices(this[ID_PROPERTY], existing_record);
+					updateIndices(this.getId(), existing_record);
 					logger.trace?.(`Deleting record with id: ${id}, txn timestamp: ${new Date(txn_time).toISOString()}`);
 					if (audit || track_deletes) {
 						updateRecord(
 							id,
 							null,
-							this[ENTRY_PROPERTY],
+							this.#entry,
 							txn_time,
 							0,
 							audit,
@@ -1497,7 +1507,7 @@ export function makeTable(options) {
 						);
 						if (!audit) scheduleCleanup();
 					} else {
-						primary_store.remove(this[ID_PROPERTY]);
+						primary_store.remove(this.getId());
 					}
 				},
 			});
@@ -1505,7 +1515,7 @@ export function makeTable(options) {
 		}
 
 		search(request: Query): AsyncIterable<any> {
-			const context = this[CONTEXT];
+			const context = this.getContext();
 			const txn = txnForContext(context);
 			if (!request) throw new Error('No query provided');
 			let conditions = request.conditions;
@@ -1514,12 +1524,12 @@ export function makeTable(options) {
 			else if (conditions.length === undefined) {
 				conditions = conditions[Symbol.iterator] ? Array.from(conditions) : [conditions];
 			}
-			if (this[ID_PROPERTY]) {
+			if (this.getId()) {
 				conditions = [
 					{
 						attribute: null,
-						comparator: Array.isArray(this[ID_PROPERTY]) ? 'prefix' : 'starts_with',
-						value: this[ID_PROPERTY],
+						comparator: Array.isArray(this.getId()) ? 'prefix' : 'starts_with',
+						value: this.getId(),
 					},
 				].concat(conditions);
 			}
@@ -2126,7 +2136,7 @@ export function makeTable(options) {
 			const table_reference = this;
 			const subscription = addSubscription(
 				TableResource,
-				this[ID_PROPERTY] ?? null, // treat undefined and null as the root
+				this.getId() ?? null, // treat undefined and null as the root
 				function (id, audit_record, local_time, begin_txn) {
 					try {
 						let type = audit_record.type;
@@ -2169,16 +2179,16 @@ export function makeTable(options) {
 				request
 			);
 			const result = (async () => {
-				if (this[IS_COLLECTION]) {
+				if (this.isCollection) {
 					subscription.includeDescendants = true;
 					if (request.onlyChildren) subscription.onlyChildren = true;
 				}
 				if (request.supportsTransactions) subscription.supportsTransactions = true;
-				const this_id = this[ID_PROPERTY];
+				const this_id = this.getId();
 				let count = request.previousCount;
 				if (count > 1000) count = 1000; // don't allow too many, we have to hold these in memory
 				let start_time = request.startTime;
-				if (this[IS_COLLECTION]) {
+				if (this.isCollection) {
 					// a collection should retrieve all descendant ids
 					if (start_time) {
 						if (count)
@@ -2250,14 +2260,14 @@ export function makeTable(options) {
 					}
 				} else {
 					if (count && !start_time) start_time = 0;
-					let local_time = this[ENTRY_PROPERTY]?.localTime;
+					let local_time = this.#entry?.localTime;
 					if (local_time === PENDING_LOCAL_TIME) {
 						// we can't use the pending commit because it doesn't have the local audit time yet,
 						// so try to retrieve the previous/committed record
 						primary_store.cache?.delete(this_id);
-						this[ENTRY_PROPERTY] = primary_store.getEntry(this_id);
-						logger.trace?.('re-retrieved record', local_time, this[ENTRY_PROPERTY]?.localTime);
-						local_time = this[ENTRY_PROPERTY]?.localTime;
+						this.#entry = primary_store.getEntry(this_id);
+						logger.trace?.('re-retrieved record', local_time, this.#entry?.localTime);
+						local_time = this.#entry?.localTime;
 					}
 					logger.trace?.('Subscription from', start_time, 'from', this_id, local_time);
 					if (start_time < local_time) {
@@ -2288,8 +2298,8 @@ export function makeTable(options) {
 						subscription.send({
 							id: this_id,
 							localTime: local_time,
-							value: this[RECORD_PROPERTY],
-							version: this[VERSION_PROPERTY],
+							value: this.#record,
+							version: this.#version,
 							type: 'put',
 						});
 					}
@@ -2313,7 +2323,7 @@ export function makeTable(options) {
 			return worker_index === 0 || options?.crossThreads === false;
 		}
 		doesExist() {
-			return Boolean(this[RECORD_PROPERTY] || this[SAVE_MODE]);
+			return Boolean(this.#record || this.#saveMode);
 		}
 
 		/**
@@ -2327,14 +2337,14 @@ export function makeTable(options) {
 			this._writePublish(message, options);
 		}
 		_writePublish(message, options?: any) {
-			const transaction = txnForContext(this[CONTEXT]);
-			const id = this[ID_PROPERTY] || null;
+			const transaction = txnForContext(this.getContext());
+			const id = this.getId() || null;
 			if (id != null) checkValidId(id); // note that we allow the null id for publishing so that you can publish to the root topic
-			const context = this[CONTEXT];
+			const context = this.getContext();
 			transaction.addWrite({
 				key: id,
 				store: primary_store,
-				entry: this[ENTRY_PROPERTY],
+				entry: this.#entry,
 				nodeName: context?.nodeName,
 				validate: () => {
 					if (!context?.source) {
@@ -2517,10 +2527,10 @@ export function makeTable(options) {
 			}
 		}
 		getUpdatedTime() {
-			return this[VERSION_PROPERTY];
+			return this.#version;
 		}
 		wasLoadedFromSource(): boolean | void {
-			return has_source_get ? Boolean(this[LOADED_FROM_SOURCE]) : undefined;
+			return has_source_get ? Boolean(this.#loadedFromSource) : undefined;
 		}
 		static async addAttributes(attributes_to_add) {
 			const new_attributes = attributes.slice(0);
@@ -2684,11 +2694,11 @@ export function makeTable(options) {
 							attribute.set = (object, related) => {
 								if (Array.isArray(related)) {
 									const target_ids = related.map(
-										(related) => related[ID_PROPERTY] || related[definition.tableClass.primaryKey]
+										(related) => related.getId?.() || related[definition.tableClass.primaryKey]
 									);
 									object[relationship.from] = target_ids;
 								} else {
-									const target_id = related[ID_PROPERTY] || related[definition.tableClass.primaryKey];
+									const target_id = related.getId?.() || related[definition.tableClass.primaryKey];
 									object[relationship.from] = target_id;
 								}
 							};
@@ -2802,7 +2812,6 @@ export function makeTable(options) {
 	}
 	TableResource.updatedAttributes(); // on creation, update accessors as well
 	const prototype = TableResource.prototype;
-	prototype[INCREMENTAL_UPDATE] = true; // default behavior
 	if (expiration_ms) TableResource.setTTLExpiration(expiration_ms / 1000);
 	if (expires_at_property) runRecordExpirationEviction();
 	return TableResource;
@@ -3039,7 +3048,8 @@ export function makeTable(options) {
 			}
 			if (needs_source_data) {
 				const loading_from_source = getFromSource(id, entry, context).then((entry) => {
-					if (entry?.value?.[RECORD_PROPERTY]) logger.error?.('Can not assign a record with a record property');
+					if (entry?.value && entry?.value.getRecord?.())
+						logger.error?.('Can not assign a record that is already a resource');
 					if (context) {
 						if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;
 						context.lastRefreshed = Date.now(); // localTime is probably not available yet
@@ -3647,11 +3657,6 @@ const rest = () => new Promise(setImmediate);
 function when(value, callback, reject?) {
 	if (value?.then) return value.then(callback, reject);
 	return callback(value);
-}
-export function updateResource(resource, entry) {
-	resource[ENTRY_PROPERTY] = entry;
-	resource[RECORD_PROPERTY] = entry?.value ?? null;
-	resource[VERSION_PROPERTY] = entry?.version;
 }
 // for filtering
 function exists(value) {

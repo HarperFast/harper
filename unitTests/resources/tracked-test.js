@@ -27,7 +27,7 @@ describe('Tracked Object', () => {
 	before(function () {});
 	it('Can read from RecordObject', async function () {
 		let instance = new ResourceClass();
-		instance[RECORD_PROPERTY] = source;
+		instance.getRecord = () => source;
 		assert.equal(instance.str, 'string');
 		assert.equal(instance.num, 42);
 		assert.equal(instance.bool, false);
@@ -38,7 +38,7 @@ describe('Tracked Object', () => {
 	});
 	it('Can update RecordObject', async function () {
 		let instance = new ResourceClass();
-		instance[RECORD_PROPERTY] = source;
+		instance.getRecord = () => source;
 		assert.equal(hasChanges(instance), false);
 		instance.str = 'new string';
 		instance.num = 32;
@@ -62,7 +62,7 @@ describe('Tracked Object', () => {
 
 	it('Can reject invalid types', async function () {
 		let instance = new ResourceClass();
-		instance[RECORD_PROPERTY] = source;
+		instance.getRecord = () => source;
 		assert.equal(hasChanges(instance), false);
 		assert.throws(() => (instance.str = 4));
 		assert.throws(() => (instance.num = 'wrong type'));
@@ -73,7 +73,7 @@ describe('Tracked Object', () => {
 
 	it('Can update detect sub object change', async function () {
 		let instance = new ResourceClass();
-		instance[RECORD_PROPERTY] = source;
+		instance.getRecord = () => source;
 		assert.equal(hasChanges(instance), false);
 		instance.subObject.name = 'changed sub';
 		assert.equal(hasChanges(instance), true);
@@ -82,7 +82,7 @@ describe('Tracked Object', () => {
 	});
 	it('Can update detect array push', async function () {
 		let instance = new ResourceClass();
-		instance[RECORD_PROPERTY] = source;
+		instance.getRecord = () => source;
 		assert.equal(hasChanges(instance), false);
 		instance.arrayOfStrings.push('another string');
 		assert.equal(hasChanges(instance), true);
