@@ -73028,16 +73028,17 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
-									"});\r",
+									"// this is only for dev config, not prod\r",
+									"// pm.test(\"Status code is 200\", function () {\r",
+									"//     pm.response.to.have.status(200);\r",
+									"// });\r",
 									"\r",
 									"\r",
 									"// this is only for prod config, not dev\r",
-									"//pm.test(\"Status code is 401\", function () {\r",
-									"//     pm.response.to.have.status(401);\r",
-									"// });\r",
-									"// tests[\"Must login\"] = responseBody.has(\"Must login\");"
+									"pm.test(\"Status code is 401\", function () {\r",
+									"    pm.response.to.have.status(401);\r",
+									"});\r",
+									"tests[\"Must login\"] = responseBody.has(\"Must login\");"
 								],
 								"type": "text/javascript",
 								"packages": {}
