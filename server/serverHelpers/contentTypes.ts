@@ -83,6 +83,9 @@ media_types.set('text/plain', {
 	serialize(data) {
 		return data.toString();
 	},
+	serializeStream(data, response) {
+		return Readable.from(data.map ? data.map((d) => d.toString()) : data);
+	},
 	deserialize(data) {
 		return data.toString();
 	},
