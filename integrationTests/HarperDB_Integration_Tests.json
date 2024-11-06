@@ -73363,6 +73363,227 @@
 					"response": []
 				}
 			]
+		},
+		{
+			"name": "22. OpenAPI",
+			"item": [
+				{
+					"name": "Add component",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Add node success message', () => {",
+									"    const response = JSON.stringify(pm.response.json());",
+									"    pm.expect(response).to.contain.oneOf(['Successfully added project', 'Project already exists']);",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"add_component\",\n    \"project\": \"myApp111\"\n}\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Restart service and wait",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Status code is 200', () => {",
+									"    pm.response.to.have.status(200);",
+									"    ",
+									"    //wait for 31 seconds",
+									"    console.log('waiting for 31 seconds for the restart of services');",
+									"    setTimeout(() => {}, 31000);",
+									"    //retry request if needed with:",
+									"    // pm.setNextRequest(pm.info.requestId);",
+									"});",
+									"",
+									"pm.test('Check message', () => {",
+									"    const response = pm.response.json();",
+									"    pm.expect(response.message).to.contain('Restarting');",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Get open api",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Response message assertions\", () =>{",
+									"     var jsonData = pm.response.json();",
+									"",
+									"     var openapi_text = JSON.stringify(jsonData.openapi);",
+									"     pm.expect(openapi_text).to.not.be.empty;",
+									"",
+									"     pm.expect(jsonData.info.title).to.contain('HarperDB HTTP REST interface');",
+									"     ",
+									"     pm.expect(jsonData.paths).to.exist;",
+									"     pm.expect(jsonData.paths).to.haveOwnProperty('/TableName/');",
+									"     pm.expect(jsonData.paths).to.haveOwnProperty('/TableName/{id}');",
+									"     pm.expect(jsonData.paths).to.haveOwnProperty('/Greeting/');",
+									"     var paths_text = JSON.stringify(jsonData.paths);",
+									"     pm.expect(paths_text).to.include('post');",
+									"     pm.expect(paths_text).to.include('get');",
+									"",
+									"     pm.expect(jsonData.components).to.exist;",
+									"     pm.expect(jsonData.components.schemas).to.exist;",
+									"     pm.expect(jsonData.components.schemas.TableName).to.exist;",
+									"     pm.expect(jsonData.components.schemas.Greeting).to.exist;",
+									"     ",
+									"     pm.expect(jsonData.components.securitySchemes).to.exist;",
+									"     pm.expect(jsonData.components.securitySchemes.basicAuth).to.exist;",
+									"     pm.expect(jsonData.components.securitySchemes.bearerAuth).to.exist;",
+									"});",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "GET",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic SERCX0FETUlOOnJvb3QxOTg0"
+							}
+						],
+						"url": {
+							"raw": "{{host}}:{{portRest}}/openapi",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{portRest}}",
+							"path": [
+								"openapi"
+							]
+						}
+					},
+					"response": []
+				}
+			]
 		}
 	],
 	"event": [
