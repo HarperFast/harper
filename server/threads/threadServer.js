@@ -525,6 +525,8 @@ function getHTTPServer(port, secure, is_operations_server) {
 					recordActionBinary(1, 'response_' + status, handler_path, method);
 					if (!sent_body) {
 						if (body instanceof ReadableStream) body = Readable.fromWeb(body);
+						if (body[Symbol.iterator] || body[Symbol.asyncIterator]) body = Readable.from(body);
+
 						// if it is a stream, pipe it
 						if (body?.pipe) {
 							body.pipe(node_response);
