@@ -233,7 +233,7 @@ export async function authentication(request, next_handler) {
 			};
 			request.login = async function (user, password) {
 				request.user = await server.getUser(user, password, request);
-				request.session.update({ user: user && (user.getId?.() ?? user.username) });
+				request.session.update({ user: request.user && (request.user.getId?.() ?? request.user.username) });
 			};
 		}
 		const response = await next_handler(request);
