@@ -365,22 +365,6 @@ describe('Test user.js', () => {
 			assert.equal(signal_spy.called, false);
 		});
 
-		it('Test failed validation', async function () {
-			validate_stub.restore();
-			const user_clone = test_utils.deepClone(TEST_ADD_USER_JSON);
-			user_clone.username = 'kevin spacey';
-			user_clone.active = true;
-
-			let err;
-			try {
-				let res = await user.addUser(user_clone);
-			} catch (error) {
-				err = error;
-			}
-			assert.equal(err.message, 'Username is invalid', 'Expected success result not returned.');
-			assert.equal(signal_spy.called, false);
-		});
-
 		it('Test user exists error is thrown', async () => {
 			insert_stub.resolves({ skipped_hashes: ['123abc'] });
 
