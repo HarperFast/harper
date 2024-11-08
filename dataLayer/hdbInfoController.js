@@ -51,7 +51,7 @@ async function insertHdbInstallInfo(new_version_string) {
 		hdb_terms.OPERATIONS_ENUM.INSERT,
 		hdb_terms.SYSTEM_SCHEMA_NAME,
 		hdb_terms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME,
-		hdb_terms.SYSTEM_TABLE_HASH_ATTRIBUTES.INFO_TABLE_ATTRIBUTE,
+		hdb_terms.INFO_TABLE_HASH_ATTRIBUTE,
 		[info_table_insert_object]
 	);
 	global_schema.setSchemaDataToGlobal();
@@ -86,7 +86,7 @@ async function insertHdbUpgradeInfo(new_version_string) {
 		hdb_terms.OPERATIONS_ENUM.INSERT,
 		hdb_terms.SYSTEM_SCHEMA_NAME,
 		hdb_terms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME,
-		hdb_terms.SYSTEM_TABLE_HASH_ATTRIBUTES.INFO_TABLE_ATTRIBUTE,
+		hdb_terms.INFO_TABLE_HASH_ATTRIBUTE,
 		[new_info_record]
 	);
 
@@ -104,7 +104,7 @@ async function getAllHdbInfoRecords() {
 		hdb_terms.SYSTEM_SCHEMA_NAME,
 		hdb_terms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME,
 		HDB_INFO_SEARCH_ATTRIBUTE,
-		hdb_terms.SYSTEM_TABLE_HASH_ATTRIBUTES.INFO_TABLE_ATTRIBUTE,
+		hdb_terms.INFO_TABLE_HASH_ATTRIBUTE,
 		['*'],
 		'*'
 	);

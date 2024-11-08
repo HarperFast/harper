@@ -11,7 +11,7 @@ const util = require('util');
 const child_process = require('child_process');
 const { platform } = require('os');
 const exec = util.promisify(child_process.exec);
-const { PACKAGE_ROOT } = require('../../../utility/hdbTerms');
+const { PACKAGE_ROOT } = require('../../../utility/getHDBPackageRoot');
 
 const DEPENDENCIES_PATH = path.join(PACKAGE_ROOT, 'dependencies');
 const ZIP_PATH = path.join(DEPENDENCIES_PATH, nats_terms.NATS_SERVER_ZIP);

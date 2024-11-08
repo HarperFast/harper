@@ -3,7 +3,6 @@ const fg = require('fast-glob');
 const fs = require('fs-extra');
 const path = require('path');
 const util = require('util');
-const { PACKAGE_ROOT } = require('../../hdbTerms');
 const { spawnSync, exec } = require('child_process');
 let cwd_path = path.resolve(__dirname, '../../../');
 process.chdir(cwd_path);
