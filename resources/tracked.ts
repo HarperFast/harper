@@ -259,9 +259,9 @@ const get_on_missing_property = new Proxy(
 	{
 		get(target, name, receiver) {
 			if (typeof name === 'string') {
-				if (name === 'then' || name === 'getRecord') return undefined; // shortcut
+				if (name === 'then' || name === 'getRecord' || name === 'getChanges') return undefined; // shortcut
 				if (Object_prototype[name]) return Object_prototype[name];
-				let changes = receiver.getChanges();
+				let changes = receiver.getChanges?.();
 				if (changes && name in changes) {
 					return changes[name];
 				}
@@ -269,8 +269,12 @@ const get_on_missing_property = new Proxy(
 				if (source_value && typeof source_value === 'object') {
 					const updated_value = trackObject(source_value);
 					if (updated_value) {
-						if (!changes) receiver._setChanges(changes, = Object.create(null));
-						return (changes[name] = updated_value);
+						if (!changes) {
+							changes = Object.create(null);
+							receiver._setChanges(changes);
+						}
+						changes[name] = updated_value;
+						return updated_value;
 					}
 				}
 				return source_value;
