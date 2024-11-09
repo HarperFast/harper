@@ -161,7 +161,7 @@ export function assignTrackedAccessors(Target, type_def) {
 			}
 			descriptor = {
 				get() {
-					let changes = this.getChanges();
+					let changes = this.getChanges?.();
 					if (changes && name in changes) {
 						const value = changes[name];
 						if (value?.__op__) {
@@ -214,7 +214,7 @@ export function assignTrackedAccessors(Target, type_def) {
 		getChanges(this)[name] = undefined;
 	});
 	setMethod('toJSON', function () {
-		const changes = this.getChanges();
+		const changes = this.getChanges?.();
 		let copied_source;
 		for (const key in changes) {
 			// copy the source first so we have properties in the right order and can override them
@@ -289,21 +289,9 @@ function trackObject(source_object: any, type_def?: any) {
 	switch (source_object.constructor) {
 		case Object:
 			if (type_def) {
-				if (!(TrackedObject = type_def.TrackedObject)) {
-					type_def.TrackedObject = TrackedObject = class {
-						#record;
-						constructor(source_object) {
-							if (source_object?.getRecord)
-								throw new Error('Can not track an already tracked object, check for circular references');
-							this.#record = source_object;
-						}
-						getRecord() {
-							return this.#record;
-						}
-						setRecord(record) {
-							this.#record = record;
-						}
-					};
+				TrackedObject = type_def.TrackedObject;
+				if (!TrackedObject) {
+					type_def.TrackedObject = TrackedObject = class extends GenericTrackedObject {};
 					assignTrackedAccessors(TrackedObject, type_def);
 				}
 				return new TrackedObject(source_object);
@@ -325,6 +313,7 @@ function trackObject(source_object: any, type_def?: any) {
 }
 class GenericTrackedObject {
 	#record: any;
+	#changes: any;
 	constructor(source_object) {
 		if (source_object?.getRecord)
 			throw new Error('Can not track an already tracked object, check for circular references');
@@ -332,6 +321,15 @@ class GenericTrackedObject {
 	}
 	getRecord() {
 		return this.#record;
+	}
+	setRecord(record) {
+		this.#record = record;
+	}
+	getChanges() {
+		return this.#changes;
+	}
+	_setChanges(changes) {
+		this.#changes = changes;
 	}
 }
 assignTrackedAccessors(GenericTrackedObject, {});
@@ -406,10 +404,12 @@ export function updateAndFreeze(target, changes = target.getChanges?.()) {
 		merged_updated_object[key] = value;
 	}
 	// now copy any properties on the instances itself to the merged updated object
-	for (const key in target) {
-		if (hasOwnProperty.call(target, key)) {
-			if (!merged_updated_object) merged_updated_object = { ...target.getRecord?.() };
-			merged_updated_object[key] = target[key];
+	if (!Array.isArray(target)) {
+		for (const key in target) {
+			if (hasOwnProperty.call(target, key)) {
+				if (!merged_updated_object) merged_updated_object = { ...target.getRecord?.() };
+				merged_updated_object[key] = target[key];
+			}
 		}
 	}
 	return merged_updated_object ? Object.freeze(merged_updated_object) : target.getRecord?.() ?? target;
