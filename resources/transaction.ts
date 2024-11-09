@@ -27,7 +27,7 @@ export function transaction<T>(
 	const transaction = (context.transaction = new DatabaseTransaction());
 	if (context.timestamp) transaction.timestamp = context.timestamp;
 	if (context.replicatedConfirmation) transaction.replicatedConfirmation = context.replicatedConfirmation;
-	transaction[CONTEXT] = context;
+	transaction.setContext(context);
 	// create a resource cache so that multiple requests to the same resource return the same resource
 	if (!context.resourceCache) context.resourceCache = [];
 	let result;
@@ -61,12 +61,12 @@ export function transaction<T>(
 _assignPackageExport('transaction', transaction);
 
 transaction.commit = function (context_source) {
-	const transaction = (context_source[CONTEXT] || context_source)?.transaction;
+	const transaction = (context_source.getContext?.() || context_source)?.transaction;
 	if (!transaction) throw new Error('No active transaction is available to commit');
 	return transaction.commit();
 };
 transaction.abort = function (context_source) {
-	const transaction = (context_source[CONTEXT] || context_source)?.transaction;
+	const transaction = (context_source.getContext?.() || context_source)?.transaction;
 	if (!transaction) throw new Error('No active transaction is available to abort');
 	return transaction.abort();
 };
