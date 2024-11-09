@@ -1,11 +1,15 @@
 import { ClientError } from '../utility/errors/hdbError';
 import * as crdtOperations from './crdt';
 // perhaps we want these in the global registry, not sure:
-export const OWN_DATA = Symbol('own-data'); // property that references an object with any changed properties or cloned/writable sub-objects
 const record_class_cache = {}; // we cache the WritableRecord classes because they are pretty expensive to create
 
 function getChanges(target) {
-	return target[OWN_DATA] || (target[OWN_DATA] = Object.create(null));
+	let changes = target.getChanges();
+	if (!changes) {
+		changes = Object.create(null);
+		target._setChanges(changes);
+	}
+	return changes;
 }
 /**
  *	A tracked class cacheable, (potentially) frozen read-only record, designed to facilitate record updates,
@@ -157,7 +161,7 @@ export function assignTrackedAccessors(Target, type_def) {
 			}
 			descriptor = {
 				get() {
-					let changes = this[OWN_DATA];
+					let changes = this.getChanges();
 					if (changes && name in changes) {
 						const value = changes[name];
 						if (value?.__op__) {
@@ -170,7 +174,7 @@ export function assignTrackedAccessors(Target, type_def) {
 					if (source_value && typeof source_value === 'object') {
 						const updated_value = trackObject(source_value, attribute);
 						if (updated_value) {
-							if (!changes) changes = this[OWN_DATA] = Object.create(null);
+							if (!changes) this._setChanges((changes = Object.create(null)));
 							return (changes[name] = updated_value);
 						}
 					}
@@ -196,7 +200,7 @@ export function assignTrackedAccessors(Target, type_def) {
 		if (descriptor) {
 			return descriptor.get.call(this);
 		}
-		const changes = this[OWN_DATA];
+		const changes = this.getChanges();
 		if (changes?.[name] !== undefined) return changes[name];
 		return this.getRecord()?.[name];
 	});
@@ -210,7 +214,7 @@ export function assignTrackedAccessors(Target, type_def) {
 		getChanges(this)[name] = undefined;
 	});
 	setMethod('toJSON', function () {
-		const changes = this[OWN_DATA];
+		const changes = this.getChanges();
 		let copied_source;
 		for (const key in changes) {
 			// copy the source first so we have properties in the right order and can override them
@@ -257,7 +261,7 @@ const get_on_missing_property = new Proxy(
 			if (typeof name === 'string') {
 				if (name === 'then' || name === 'getRecord') return undefined; // shortcut
 				if (Object_prototype[name]) return Object_prototype[name];
-				let changes = receiver[OWN_DATA];
+				let changes = receiver.getChanges();
 				if (changes && name in changes) {
 					return changes[name];
 				}
@@ -265,7 +269,7 @@ const get_on_missing_property = new Proxy(
 				if (source_value && typeof source_value === 'object') {
 					const updated_value = trackObject(source_value);
 					if (updated_value) {
-						if (!changes) changes = receiver[OWN_DATA] = Object.create(null);
+						if (!changes) receiver._setChanges(changes, = Object.create(null));
 						return (changes[name] = updated_value);
 					}
 				}
@@ -334,7 +338,7 @@ assignTrackedAccessors(GenericTrackedObject, {});
  * @returns
  */
 export function collapseData(target) {
-	const changes = target[OWN_DATA];
+	const changes = target.getChanges();
 	let copied_source;
 	for (const key in changes) {
 		// copy the source first so we have properties in the right order and can override them
@@ -362,7 +366,7 @@ const hasOwnProperty = Object.prototype.hasOwnProperty;
  * @param target
  * @returns
  */
-export function updateAndFreeze(target, changes = target[OWN_DATA]) {
+export function updateAndFreeze(target, changes = target.getChanges?.()) {
 	let merged_updated_object: any;
 	if (target.getRecord && target.constructor === Array && !Object.isFrozen(target)) {
 		// a tracked array, by default we can freeze the tracked array itself
@@ -426,7 +430,7 @@ export function hasChanges(target) {
 			} else return true;
 		}
 	} else {
-		const changes = target[OWN_DATA];
+		const changes = target.getChanges?.();
 		if (changes && !source) return true;
 		for (const key in changes) {
 			const value = changes[key];

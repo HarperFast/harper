@@ -36,7 +36,7 @@ import {
 	executeConditions,
 } from './search';
 import logger from '../utility/logging/logger';
-import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, OWN_DATA } from './tracked';
+import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges } from './tracked';
 import { transaction } from './transaction';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads';
@@ -176,6 +176,7 @@ export function makeTable(options) {
 	if (audit) addDeleteRemoval();
 	class TableResource extends Resource {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
+		#changes: any; // the changes to the record that have been made (should not be modified directly)
 		#version: number; // version of the record
 		#entry: Entry; // the entry from the database
 		#saveMode: boolean; // indicates that the record is currently being saved
@@ -1013,14 +1014,14 @@ export function makeTable(options) {
 				if (full_update) {
 					if (Object.isFrozen(updates)) updates = { ...updates };
 					this.#record = {}; // clear out the existing record
-					this[OWN_DATA] = updates;
+					this.#changes = updates;
 				} else {
-					own_data = this[OWN_DATA];
+					own_data = this.#changes;
 					if (own_data) updates = Object.assign(own_data, updates);
-					this[OWN_DATA] = own_data = updates;
+					this.#changes = updates;
 				}
 			}
-			this._writeUpdate(this[OWN_DATA], full_update);
+			this._writeUpdate(this.#changes, full_update);
 			return this;
 		}
 
@@ -1047,6 +1048,12 @@ export function makeTable(options) {
 		}
 		getRecord() {
 			return this.#record;
+		}
+		getChanges() {
+			return this.#changes;
+		}
+		_setChanges(changes) {
+			this.#changes = changes;
 		}
 		setRecord(record) {
 			this.#record = record;
@@ -1259,8 +1266,8 @@ export function makeTable(options) {
 				entry,
 				nodeName: context?.nodeName,
 				validate: (txn_time) => {
-					if (!record_update) record_update = this[OWN_DATA];
-					if (full_update || (record_update && hasChanges(this[OWN_DATA] === record_update ? this : record_update))) {
+					if (!record_update) record_update = this.#changes;
+					if (full_update || (record_update && hasChanges(this.#changes === record_update ? this : record_update))) {
 						if (!context?.source) {
 							transaction.checkOverloaded();
 							this.validate(record_update, !full_update);
@@ -1320,7 +1327,7 @@ export function makeTable(options) {
 							throw new Error('Can not assign a record to a record, check for circular references');
 						if (!full_update) this.#record = existing_entry?.value ?? null;
 					}
-					this[OWN_DATA] = undefined; // once we are committing to write this update, we no longer should track the changes, and want to avoid double application (of any CRDTs)
+					this.#changes = undefined; // once we are committing to write this update, we no longer should track the changes, and want to avoid double application (of any CRDTs)
 					this.#version = txn_time;
 					const existing_record = existing_entry?.value;
 					let update_to_apply = record_update;

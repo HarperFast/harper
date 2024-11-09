@@ -4,10 +4,8 @@ import { Transaction } from './DatabaseTransaction';
 import { IterableEventQueue } from './IterableEventQueue';
 import { _assignPackageExport } from '../globals';
 import { ClientError } from '../utility/errors/hdbError';
-import { OWN_DATA } from './tracked';
 import { transaction } from './transaction';
 import { parseQuery, SimpleURLQuery } from './search';
-import * as harper_logger from '../utility/logging/harper_logger';
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -610,7 +608,7 @@ function selectFromObject(object, property_resolvers, context) {
 	// TODO: eventually we will do aggregate functions here
 	const record = object.getRecord?.();
 	if (record) {
-		const own_data = object[OWN_DATA];
+		const own_data = object.getChanges?.();
 		return (property) => {
 			let value, resolver;
 			if (object.hasOwnProperty(property) && typeof (value = object[property]) !== 'function') {
