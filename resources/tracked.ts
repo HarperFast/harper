@@ -174,7 +174,9 @@ export function assignTrackedAccessors(Target, type_def) {
 					if (source_value && typeof source_value === 'object') {
 						const updated_value = trackObject(source_value, attribute);
 						if (updated_value) {
-							if (!changes) this._setChanges((changes = Object.create(null)));
+							if (!changes) {
+								this._setChanges((changes = Object.create(null)));
+							}
 							return (changes[name] = updated_value);
 						}
 					}
@@ -311,7 +313,7 @@ function trackObject(source_object: any, type_def?: any) {
 			return source_object;
 	}
 }
-class GenericTrackedObject {
+export class GenericTrackedObject {
 	#record: any;
 	#changes: any;
 	constructor(source_object) {
@@ -340,11 +342,11 @@ assignTrackedAccessors(GenericTrackedObject, {});
  * @returns
  */
 export function collapseData(target) {
-	const changes = target.getChanges();
+	const changes = target.getChanges?.();
 	let copied_source;
 	for (const key in changes) {
 		// copy the source first so we have properties in the right order and can override them
-		if (!copied_source) copied_source = { ...target.getRecord() };
+		if (!copied_source) copied_source = target.getRecord ? { ...target.getRecord() } : {};
 		let value = changes[key];
 		if (value && typeof value === 'object') {
 			if (value.__op__) {
@@ -356,10 +358,10 @@ export function collapseData(target) {
 	}
 	const keys = Object.keys(target); // we use Object.keys because it is expected that the many inherited enumerables would slow a for-in loop down
 	if (keys.length > 0) {
-		if (!copied_source) copied_source = { ...target.getRecord() };
+		if (!copied_source) copied_source = target.getRecord ? { ...target.getRecord() } : {};
 		Object.assign(copied_source, target);
 	}
-	return copied_source || target.getRecord();
+	return copied_source || target.getRecord?.() || target;
 }
 const hasOwnProperty = Object.prototype.hasOwnProperty;
 /**
