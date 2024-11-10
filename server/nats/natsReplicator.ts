@@ -1,5 +1,5 @@
 import { getDatabases, onUpdatedTable } from '../../resources/databases';
-import { ID_PROPERTY, Resource } from '../../resources/Resource';
+import { Resource } from '../../resources/Resource';
 import { publishToStream as natsPublishToStream } from './utility/natsUtils';
 import { SUBJECT_PREFIXES } from './utility/natsTerms';
 import { createNatsTableStreamName } from '../../security/cryptoHash';
@@ -79,7 +79,7 @@ export function setNATSReplicator(table_name, db_name, Table) {
 				return getNATSTransaction(this.getContext()).addWrite(db_name, {
 					operation: 'put',
 					table: table_name,
-					id: this[ID_PROPERTY],
+					id: this.getId(),
 					record,
 				});
 			}
@@ -87,14 +87,14 @@ export function setNATSReplicator(table_name, db_name, Table) {
 				return getNATSTransaction(this.getContext()).addWrite(db_name, {
 					operation: 'delete',
 					table: table_name,
-					id: this[ID_PROPERTY],
+					id: this.getId(),
 				});
 			}
 			publish(message) {
 				return getNATSTransaction(this.getContext()).addWrite(db_name, {
 					operation: 'publish',
 					table: table_name,
-					id: this[ID_PROPERTY],
+					id: this.getId(),
 					record: message,
 				});
 			}
@@ -102,7 +102,7 @@ export function setNATSReplicator(table_name, db_name, Table) {
 				return getNATSTransaction(this.getContext()).addWrite(db_name, {
 					operation: 'patch',
 					table: table_name,
-					id: this[ID_PROPERTY],
+					id: this.getId(),
 					record: update,
 				});
 			}
@@ -110,7 +110,7 @@ export function setNATSReplicator(table_name, db_name, Table) {
 				getNATSTransaction(this.getContext()).addWrite(db_name, {
 					operation: 'invalidate',
 					table: table_name,
-					id: this[ID_PROPERTY],
+					id: this.getId(),
 				});
 			}
 			static defineSchema(Table) {
