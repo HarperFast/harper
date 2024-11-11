@@ -76,6 +76,27 @@ docker run -d \
   harperdb/harperdb
 ```
 
+Enable HTTPS, enable HarperDB clustering, and expose the HarperDB clustering port on the container host:
+
+```
+docker run -d \
+  -v <host directory>:/home/harperdb/hdb \
+  -e HDB_ADMIN_USERNAME=HDB_ADMIN \
+  -e HDB_ADMIN_PASSWORD=password \
+  -e THREADS=4 \
+  -e OPERATIONSAPI_NETWORK_PORT=null \
+  -e OPERATIONSAPI_NETWORK_SECUREPORT=9925 \
+  -e HTTP_SECUREPORT=9926 \
+  -e CLUSTERING_ENABLED=true \
+  -e CLUSTERING_USER=cluster_user \
+  -e CLUSTERING_PASSWORD=password \
+  -e CLUSTERING_NODENAME=hdb1 \
+  -p 9925:9925 \
+  -p 9926:9926 \
+  -p 9932:9932 \
+  harperdb/harperdb
+```
+
 Execute the `harperdb version` command, and remove the container when finished:
 
 ```
