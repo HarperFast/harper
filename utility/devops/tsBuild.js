@@ -3,7 +3,7 @@ const { statSync, existsSync, readFileSync, writeFileSync } = require('fs');
 const { spawnSync, spawn, execFileSync } = require('child_process');
 const { isMainThread } = require('worker_threads');
 const { join, relative } = require('path');
-const { PACKAGE_ROOT } = require('../getHDBPackageRoot');
+const { PACKAGE_ROOT } = require('../hdbTerms');
 const { tmpdir, platform } = require('os');
 require('source-map-support').install();
 const SRC_DIRECTORIES = ['resources', 'server', 'dataLayer', 'components'];
