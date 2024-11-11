@@ -237,6 +237,7 @@ export function assignTrackedAccessors(Target, type_def) {
 	});
 	if (!prototype.get) setMethod('get', prototype.getProperty);
 	if (!prototype.delete) setMethod('delete', prototype.deleteProperty);
+	if (!prototype.then) setMethod('then', null); // this is a shortcut to avoid the proxy for then, which is called frequently to determine if an object is a promise
 	function setMethod(name, method) {
 		Object.defineProperty(prototype, name, {
 			value: method,
@@ -255,7 +256,10 @@ export function assignTrackedAccessors(Target, type_def) {
 	} while (last_prototype && last_prototype !== get_on_missing_property);
 }
 const Object_prototype = Object.prototype;
-// a proxy that will handle any missing property as a getter to the changes/record
+// Here we define a proxy that will handle any missing property access as a getter, that will attempt
+// get the property value from the tracked object's changes or record. This is set as a prototype of
+// any tracked objects (including Table/Resource instances), so that any property access will be
+// intercepted by the proxy and the value will be returned from the changes or record.
 const get_on_missing_property = new Proxy(
 	{},
 	{
