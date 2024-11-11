@@ -1,8 +1,6 @@
 #!/usr/bin/env node
 'use strict';
 
-require('../utility/devops/tsBuild.js');
-
 const run_clone = process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL');
 if (run_clone) {
 	const env_mgr = require('../utility/environment/environmentManager');
