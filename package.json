@@ -121,7 +121,7 @@
 		"node-unix-socket": "0.2.5",
 		"normalize-path": "^3.0.0",
 		"ora": "5.4.1",
-		"ordered-binary": "1.5.2",
+		"ordered-binary": "1.5.3",
 		"papaparse": "5.4.1",
 		"passport": "0.6.0",
 		"passport-http": "0.3.0",
