@@ -217,7 +217,7 @@ function licenseSearch() {
 
 	try {
 		let file_licenses = fs.readFileSync(getLicenseFilePath(), 'utf-8');
-		licenses = file_licenses.split(terms.NEW_LINE);
+		licenses = file_licenses.split('\r\n');
 	} catch (e) {
 		if (e.code === 'ENOENT') {
 			log.debug('no license file found');

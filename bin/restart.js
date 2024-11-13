@@ -3,7 +3,6 @@
 const minimist = require('minimist');
 const { isMainThread, parentPort, threadId } = require('worker_threads');
 const hdb_terms = require('../utility/hdbTerms');
-const { PROCESS_DESCRIPTORS_VALIDATE: SERVICES } = hdb_terms;
 const hdb_logger = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
 const nats_config = require('../server/nats/utility/natsConfig');
@@ -54,7 +53,7 @@ if (isMainThread) {
  */
 async function restart(req) {
 	called_from_cli = Object.keys(req).length === 0;
-	pm2_mode = await process_man.isServiceRegistered(hdb_terms.HDB_PROC_DESCRIPTOR);
+	pm2_mode = await process_man.isServiceRegistered(hdb_terms.PROCESS_DESCRIPTORS.HDB);
 	const cli_args = minimist(process.argv);
 	if (cli_args.service) {
 		await restartService(cli_args);
@@ -108,11 +107,11 @@ async function restart(req) {
  */
 async function restartService(req) {
 	let { service } = req;
-	if (hdb_terms.PROCESS_DESCRIPTORS_VALIDATE[service] === undefined) {
+	if (hdb_terms.HDB_PROCESS_SERVICES[service] === undefined) {
 		throw handleHDBError(new Error(), INVALID_SERVICE_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 	process_man.expectedRestartOfChildren();
-	pm2_mode = await process_man.isServiceRegistered(hdb_terms.HDB_PROC_DESCRIPTOR);
+	pm2_mode = await process_man.isServiceRegistered(hdb_terms.PROCESS_DESCRIPTORS.HDB);
 	if (!isMainThread) {
 		if (req.replicated) {
 			monitorNodeCAs(); // get all the CAs from the nodes we know about
@@ -176,7 +175,7 @@ async function restartService(req) {
 
 	let err_msg;
 	switch (service) {
-		case SERVICES.clustering:
+		case hdb_terms.HDB_PROCESS_SERVICES.clustering:
 			if (!env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
 				err_msg = CLUSTERING_NOT_ENABLED_ERR;
 				break;
@@ -186,8 +185,8 @@ async function restartService(req) {
 			await restartClustering();
 			break;
 
-		case SERVICES.clustering_config:
-		case SERVICES['clustering config']:
+		case hdb_terms.HDB_PROCESS_SERVICES.clustering_config:
+		case hdb_terms.HDB_PROCESS_SERVICES['clustering config']:
 			if (!env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
 				err_msg = CLUSTERING_NOT_ENABLED_ERR;
 				break;
@@ -200,9 +199,9 @@ async function restartService(req) {
 
 		case 'custom_functions':
 		case 'custom functions':
-		case SERVICES.harperdb:
-		case SERVICES.http_workers:
-		case SERVICES.http:
+		case hdb_terms.HDB_PROCESS_SERVICES.harperdb:
+		case hdb_terms.HDB_PROCESS_SERVICES.http_workers:
+		case hdb_terms.HDB_PROCESS_SERVICES.http:
 			if (called_from_cli && !pm2_mode) {
 				err_msg = `Restart ${service} is not available from the CLI when running in non-pm2 mode. Either call restart ${service} from the API or stop and start HarperDB.`;
 				break;
@@ -212,7 +211,7 @@ async function restartService(req) {
 			hdb_logger.notify('Restarting http_workers');
 
 			if (called_from_cli) {
-				await process_man.restart(hdb_terms.HDB_PROC_DESCRIPTOR);
+				await process_man.restart(hdb_terms.PROCESS_DESCRIPTORS.HDB);
 			} else {
 				await restartWorkers('http');
 			}
@@ -237,7 +236,7 @@ async function restartService(req) {
  */
 async function restartPM2Mode() {
 	await restartClustering();
-	await process_man.restart(hdb_terms.HDB_PROC_DESCRIPTOR);
+	await process_man.restart(hdb_terms.PROCESS_DESCRIPTORS.HDB);
 	// Restarting HarperDB will regenerate the nats config, for that reason we remove it below.
 	// The timeout is there to wait for HDB to restart.
 	await hdb_utils.async_set_timeout(2000);

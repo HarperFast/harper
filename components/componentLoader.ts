@@ -3,7 +3,7 @@ import { join, relative, basename, dirname } from 'path';
 import { isMainThread } from 'worker_threads';
 import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager';
-import { PACKAGE_ROOT, CONFIG_PARAMS } from '../utility/hdbTerms';
+import { PACKAGE_ROOT, CONFIG_PARAMS, HDB_CONFIG_FILE, HDB_COMPONENT_CONFIG_FILE, HDB_ROOT_DIR_NAME } from '../utility/hdbTerms';
 import * as graphql_handler from '../resources/graphql';
 import * as graphql_query_handler from '../server/graphqlQuerying';
 import * as roles from '../resources/roles';
@@ -56,7 +56,7 @@ export function loadComponentDirectories(loaded_plugin_modules?: Map<any, any>, 
 			if (!app_entry.isDirectory() && !app_entry.isSymbolicLink()) continue;
 			const app_name = app_entry.name;
 			const app_folder = join(CF_ROUTES_DIR, app_name);
-			cfs_loaded.push(loadComponent(app_folder, resources, 'hdb', false));
+			cfs_loaded.push(loadComponent(app_folder, resources, HDB_ROOT_DIR_NAME, false));
 		}
 	}
 	const hdb_app_folder = process.env.RUN_HDB_APP;
@@ -162,7 +162,7 @@ export async function loadComponent(
 	try {
 		let config;
 		if (is_root) component_errors = new Map();
-		const config_path = join(folder, is_root ? 'harperdb-config.yaml' : 'config.yaml');
+		const config_path = join(folder, is_root ? HDB_CONFIG_FILE : HDB_COMPONENT_CONFIG_FILE );
 		if (existsSync(config_path)) {
 			config = is_root ? getConfigObj() : parseDocument(readFileSync(config_path, 'utf8')).toJSON();
 		} else {

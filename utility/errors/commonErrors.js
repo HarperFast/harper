@@ -101,10 +101,10 @@ const LMDB_ERRORS_ENUM = {
 //This ENUM includes error messages for INSERT, UPDATE, and UPSERT related ops
 const WRITE_OPS_ERROR_MSGS = {
 	ATTR_NAME_LENGTH_ERR: (attr_name) =>
-		`transaction aborted due to attribute name ${attr_name} being too long. Attribute names cannot be longer than ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes.`,
+		`transaction aborted due to attribute name ${attr_name} being too long. Attribute names cannot be longer than ${hdb_terms.INSERT_MAX_CHARACTER_SIZE} bytes.`,
 	ATTR_NAME_NULLISH_ERR:
 		'transaction aborted due to record(s) with an attribute name that is null, undefined or empty string',
-	HASH_VAL_LENGTH_ERR: `transaction aborted due to record(s) with a hash value that exceeds ${hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE} bytes, check log for more info`,
+	HASH_VAL_LENGTH_ERR: `transaction aborted due to record(s) with a hash value that exceeds ${hdb_terms.INSERT_MAX_CHARACTER_SIZE} bytes, check log for more info`,
 	INVALID_FORWARD_SLASH_IN_HASH_ERR:
 		'transaction aborted due to record(s) with a hash value that contains a forward slash, check log for more info',
 	RECORD_MISSING_HASH_ERR: 'transaction aborted due to record(s) with no hash value, check log for more info',
