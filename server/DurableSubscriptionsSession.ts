@@ -126,12 +126,6 @@ function getNextMessageId() {
 	if (next_message_id > 65500) next_message_id = 1;
 	return next_message_id;
 }
-type Acknowledgement = {
-	topic?: string;
-	timestamp?: number;
-	acknowledge?: () => any;
-};
-
 class SubscriptionsSession {
 	listener: (message, subscription, timestamp, qos) => any;
 	sessionId: any;
@@ -139,7 +133,7 @@ class SubscriptionsSession {
 	request: any;
 	socket: any;
 	subscriptions = [];
-	awaitingAcks: Map<number, Acknowledgement>;
+	awaitingAcks: Map<number, any>;
 	sessionWasPresent: boolean;
 	keepalive: number;
 	keepaliveTimer: any;
@@ -301,15 +295,15 @@ class SubscriptionsSession {
 		if (update.acknowledge) {
 			// only need to track if the source wants acknowledgements
 			if (!this.awaitingAcks) this.awaitingAcks = new Map();
-			this.awaitingAcks.set(message_id, { acknowledge: update.acknowledge });
+			this.awaitingAcks.set(message_id, update.acknowledge);
 		}
 		return message_id;
 	}
 	acknowledge(message_id) {
-		const acknowledgement = this.awaitingAcks?.get(message_id);
-		if (acknowledgement) {
+		const acknowledge = this.awaitingAcks?.get(message_id);
+		if (acknowledge) {
 			this.awaitingAcks.delete(message_id);
-			acknowledgement.acknowledge();
+			acknowledge();
 		}
 	}
 	async removeSubscription(topic) {
@@ -412,7 +406,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				true,
 				subscription.acks
 					? (update) => {
-							return !subscription.acks.includes(update.localTime);
+							return !subscription.acks.includes(update.timestamp);
 					  }
 					: null
 			);
@@ -424,9 +418,9 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 	needsAcknowledge(update) {
 		if (!this.awaitingAcks) this.awaitingAcks = new Map();
 		const message_id = getNextMessageId();
-		const ack_info: Acknowledgement = {
+		const ack_info = {
 			topic: update.topic,
-			timestamp: update.localTime,
+			timestamp: update.timestamp,
 		};
 		if (update.acknowledge) ack_info.acknowledge = update.acknowledge;
 		this.awaitingAcks.set(message_id, ack_info);
