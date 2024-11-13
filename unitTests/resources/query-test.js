@@ -45,6 +45,13 @@ describe('Querying through Resource API', () => {
 				relationship_attribute,
 				many_to_many_attribute,
 				{ name: 'computed', computed: true, indexed: true },
+				{
+					name: 'nestedData',
+					properties: [
+						{ name: 'id', type: 'String' },
+						{ name: 'name', type: 'String' },
+					],
+				},
 			],
 		});
 		QueryTable.setComputedAttribute('computed', (instance) => instance.name + ' computed');
@@ -137,7 +144,7 @@ describe('Querying through Resource API', () => {
 				sparse: i % 6 === 2 ? i : null,
 				manyToManyIds: many_ids,
 				notIndexed: 'not indexed ' + i,
-				nestedData: [{ id: 'nested-' + i, name: 'nested name ' + i }],
+				nestedData: { id: 'nested-' + i, name: 'nested name ' + i },
 			});
 		}
 		await last;
@@ -261,6 +268,18 @@ describe('Querying through Resource API', () => {
 		assert.equal(results.length, 1);
 		assert.equal(results[0].id, 'id-3');
 		assert.equal(results[0].computed, 'name-3 computed');
+	});
+	it('Sort by nested property', async function () {
+		let results = [];
+		for await (let record of QueryTable.search({
+			conditions: [],
+			allowFullScan: true,
+			sort: { attribute: ['nestedData', 'name'], descending: true },
+		})) {
+			results.push(record);
+		}
+		assert.equal(results.length, 100);
+		assert.equal(results[0].nestedData.name, 'nested name 99');
 	});
 
 	describe('joins', function () {

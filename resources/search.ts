@@ -384,9 +384,9 @@ export function findAttribute(attributes, attribute_name) {
 	if (Array.isArray(attribute_name)) {
 		if (attribute_name.length > 1) {
 			const first_attribute = findAttribute(attributes, attribute_name[0]);
-			const next_attributes = (
-				first_attribute?.definition?.tableClass || first_attribute?.elements.definition?.tableClass
-			)?.attributes;
+			const next_attributes =
+				(first_attribute?.definition?.tableClass || first_attribute?.elements?.definition?.tableClass)?.attributes ??
+				first_attribute?.properties;
 			if (next_attributes) return findAttribute(next_attributes, attribute_name.slice(1));
 			return;
 		} else attribute_name = attribute_name.toString();
