@@ -72,6 +72,7 @@ const CLONE_VARS = {
 	HDB_CLONE_OVERTOP: 'HDB_CLONE_OVERTOP',
 	CLONE_KEYS: 'CLONE_KEYS',
 	CLONE_USING_WS: 'CLONE_USING_WS',
+	NO_START: 'NO_START',
 };
 
 const cli_args = minimist(process.argv);
@@ -84,6 +85,7 @@ const clone_overtop = (cli_args[CLONE_VARS.HDB_CLONE_OVERTOP] ?? process.env[CLO
 const cloned_var = cli_args[CONFIG_PARAMS.CLONED.toUpperCase()] ?? process.env[CONFIG_PARAMS.CLONED.toUpperCase()];
 const clone_keys = cli_args[CLONE_VARS.CLONE_KEYS] !== 'false' && process.env[CLONE_VARS.CLONE_KEYS] !== 'false';
 const clone_using_ws = (cli_args[CLONE_VARS.CLONE_USING_WS] ?? process.env[CLONE_VARS.CLONE_USING_WS]) === 'true';
+const no_start = (cli_args[CLONE_VARS.NO_START] ?? process.env[CLONE_VARS.NO_START]) === 'true';
 
 let clone_node_config;
 let hdb_config = {};
@@ -199,7 +201,7 @@ module.exports = async function cloneNode(background = false, run = false) {
 	}
 
 	console.info('\nSuccessfully cloned node: ' + leader_url);
-	if (background) process.exit();
+	if (background || no_start) process.exit();
 };
 
 /**
