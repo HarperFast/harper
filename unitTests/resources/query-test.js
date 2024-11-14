@@ -144,7 +144,7 @@ describe('Querying through Resource API', () => {
 				sparse: i % 6 === 2 ? i : null,
 				manyToManyIds: many_ids,
 				notIndexed: 'not indexed ' + i,
-				nestedData: { id: 'nested-' + i, name: 'nested name ' + i },
+				nestedData: i > 0 ? { id: 'nested-' + i, name: 'nested name ' + i } : null,
 			});
 		}
 		await last;
@@ -294,7 +294,7 @@ describe('Querying through Resource API', () => {
 		})) {
 			results.push(record);
 		}
-		assert.equal(results.length, 100);
+		assert.equal(results.length, 99);
 	});
 
 	describe('joins', function () {
