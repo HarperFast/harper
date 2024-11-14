@@ -347,7 +347,9 @@ export function parseHeaderValue(value: string) {
 		let component;
 		while ((component = components.pop())) {
 			if (component.includes('=')) {
-				const [name, value] = component.trim().split('=');
+				let [name, value] = component.trim().split('=');
+				name = name.trim();
+				if (value) value = value.trim();
 				parsed = {
 					name: name.toLowerCase(),
 					value,

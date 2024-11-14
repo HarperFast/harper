@@ -16,11 +16,10 @@ describe('REST - parseHeaderValue', function () {
 			'a,b;' + ' '.repeat(100_000) + 'b',
 			'a,b;c=' + ' '.repeat(100_000) + 'c'
 		].forEach((value) => {
-			const timeout = setTimeout(() => {
-				assert.fail('parseHeaderValue took too long');
-			}, 1000);
+			const start = performance.now();
 			parseHeaderValue(value);
-			clearTimeout(timeout);
+			const elapsed = performance.now() - start;
+			assert(elapsed < 1000, 'should not take longer than 1 second');
 		});
 	});
 });
