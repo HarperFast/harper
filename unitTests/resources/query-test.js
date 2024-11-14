@@ -281,6 +281,21 @@ describe('Querying through Resource API', () => {
 		assert.equal(results.length, 100);
 		assert.equal(results[0].nestedData.name, 'nested name 99');
 	});
+	it('Not equal to null for objects', async function () {
+		let results = [];
+		for await (let record of QueryTable.search({
+			conditions: [
+				{
+					attribute: 'nestedData',
+					comparator: 'not_equal',
+					value: null,
+				},
+			],
+		})) {
+			results.push(record);
+		}
+		assert.equal(results.length, 100);
+	});
 
 	describe('joins', function () {
 		it('Query data in a table with relationships', async function () {
