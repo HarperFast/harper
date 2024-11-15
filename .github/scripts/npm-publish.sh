@@ -37,6 +37,13 @@ then
   fi
 # else no extra tag
 else
-  NPM_TAG="${EXTRA_TAGS}"
-  npm publish ./package/ --tag="${NPM_TAG}" "${NPM_ACCESS}" --dry-run="${NPM_DRYRUN}"
+  if [[ "${EXTRA_TAGS}" == "none" ]]
+  then
+    # don't add a tag to npm publish
+    npm publish ./package/ "${NPM_ACCESS}" --dry-run="${NPM_DRYRUN}"
+  else
+    # tag defaults to next if not specified otherwise
+    NPM_TAG="next"
+    npm publish ./package/ --tag="${NPM_TAG}" "${NPM_ACCESS}" --dry-run="${NPM_DRYRUN}"
+  fi
 fi

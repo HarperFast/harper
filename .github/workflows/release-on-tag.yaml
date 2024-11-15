@@ -126,7 +126,7 @@ jobs:
 
             else
 
-              npm_extra_tags=''
+              npm_extra_tags='none'
               dockerhub_tag_latest=false
             fi
           fi
