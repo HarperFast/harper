@@ -129,7 +129,7 @@ jobs:
 
               npm_extra_tags='next'
               dockerhub_tag_latest=false
-      
+            fi
           fi
 
           cat <<EOF >> "${GITHUB_OUTPUT}"
