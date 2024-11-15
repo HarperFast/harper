@@ -4,7 +4,6 @@ set -euo pipefail
 # defaults
 NPM_ACCESS="--access=restricted"
 NPM_DRYRUN="true"
-NPM_TAG="next"
 NPM_PACKAGE_NAME="@harperdb/harperdb"
 
 # Unpack package tarball artifact from build job
@@ -38,5 +37,6 @@ then
   fi
 # else no extra tag
 else
+  NPM_TAG="${EXTRA_TAGS}"
   npm publish ./package/ --tag="${NPM_TAG}" "${NPM_ACCESS}" --dry-run="${NPM_DRYRUN}"
 fi

@@ -127,7 +127,7 @@ jobs:
 
             else
 
-              npm_extra_tags='next'
+              npm_extra_tags=''
               dockerhub_tag_latest=false
             fi
           fi
