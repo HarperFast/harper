@@ -37,7 +37,8 @@ jobs:
         env:
           docker_repo_url: 'https://hub.docker.com/v2/namespaces/harperdb/repositories/harperdb/tags?page_size=100'
           inputs_dryrun: ${{ inputs.dryrun }}
-          tag: ${{ github.ref }}
+          #tag: ${{ github.ref }}
+          tag: "refs/tags/release_4.4.6"
         run: |
           #!/usr/bin/env bash
 
