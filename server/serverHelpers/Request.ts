@@ -51,6 +51,10 @@ export class Request {
 		// TODO: implement this
 		return false;
 	}
+	sendEarlyHints(link: string, headers = {}) {
+		headers.link = link;
+		this._nodeResponse.writeEarlyHints(headers);
+	}
 }
 class RequestBody {
 	#node_request;
