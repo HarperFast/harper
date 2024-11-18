@@ -127,6 +127,9 @@ export function searchByIndex(
 	let attribute_name = search_condition[0] ?? search_condition.attribute;
 	let value = search_condition[1] ?? search_condition.value;
 	const comparator = search_condition.comparator;
+	if (value === undefined && comparator !== 'sort') {
+		throw new ClientError(`Search condition for ${attribute_name} must have a value`);
+	}
 	if (Array.isArray(attribute_name)) {
 		const first_attribute_name = attribute_name[0];
 		// get the potential relationship attribute

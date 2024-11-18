@@ -902,6 +902,14 @@ describe('Querying through Resource API', () => {
 			assert.equal(results[1].id, 'id-98');
 			assert.equal(results[2].id, 'id-97');
 		});
+		it('Does not allow search when no value is provided', async function () {
+			assert.throws(() => {
+				for (let record of QueryTable.search({
+					conditions: [{ attribute: 'name', descending: true }],
+				})) {
+				}
+			});
+		});
 		it('Sort on non-indexed property', async function () {
 			assert.throws(() => {
 				for (let record of QueryTable.search({
