@@ -25,7 +25,7 @@ const { isMainThread } = require('worker_threads');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const manage_threads = require('../server/threads/manageThreads');
 const { replicateOperation } = require('../server/replication/replicator');
-
+const { packageDirectory } = require('../components/packageComponent');
 const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
 const TMP_PATH = path.join(env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY), 'tmp');
 const root_dir = env.get(terms.CONFIG_PARAMS.ROOTPATH);
@@ -337,29 +337,7 @@ async function packageComponent(req) {
 		}
 	}
 
-	await fs.ensureDir(TMP_PATH);
-	const file = path.join(TMP_PATH, `${project}.tar`);
-	let tar_opts = {};
-	if (req.skip_node_modules === true || req.skip_node_modules === 'true') {
-		// Create options for tar module that will exclude the CF projects node_modules directory.
-		tar_opts = {
-			ignore: (name) => {
-				return name.includes(path.join(path_to_project, 'node_modules'));
-			},
-		};
-	}
-
-	// pack the directory
-	tar.pack(path_to_project, tar_opts).pipe(fs.createWriteStream(file, { overwrite: true }));
-
-	// wait for a second
-	// eslint-disable-next-line no-magic-numbers
-	await new Promise((resolve) => setTimeout(resolve, 2000));
-
-	// read the output into base64
-	const payload = fs.readFileSync(file, { encoding: 'base64' });
-
-	await fs.remove(file);
+	const payload = await packageDirectory(path_to_project, req);
 
 	// return the package payload as base64-encoded string
 	return { project, payload };
