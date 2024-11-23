@@ -393,6 +393,12 @@ async function deployComponent(req) {
 	// Adds package to harperdb-config and then relies on restart to call install on the new app
 	await config_utils.addConfig(project, { package: pkg });
 
+	// if there is an .npmrc, it must go in the root of the project for NPM to use it
+	const npmrc_path = path.join(path_to_project, '.npmrc');
+	if (fs.existsSync(npmrc_path)) {
+		await fs.copy(npmrc_path, path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), '.npmrc'));
+	}
+
 	// The main thread can install the components, but we do it here and now so that if it fails, we can immediately
 	// know about it and report it.
 	await installComponents();
