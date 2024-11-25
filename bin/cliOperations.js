@@ -83,7 +83,7 @@ const PREPARE_OPERATION = {
 		const project_path = process.cwd();
 		req.payload = await packageDirectory(project_path, { skip_node_modules: true, ...req });
 		req.cborEncode = true;
-		if (!req.project) req.project = basename(project_path);
+		if (!req.project) req.project = path.basename(project_path);
 	},
 };
 
