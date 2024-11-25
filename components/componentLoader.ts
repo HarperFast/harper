@@ -130,7 +130,6 @@ const DEFAULT_CONFIG = {
 Object.defineProperty(DEFAULT_CONFIG, 'static', { value: { files: 'web/**' } });
 
 const ports_started = [];
-const loaded_paths = new Map();
 let error_reporter;
 export function setErrorReporter(reporter) {
 	error_reporter = reporter;
@@ -156,8 +155,6 @@ export async function loadComponent(
 	auto_reload?: boolean
 ) {
 	const resolved_folder = realpathSync(folder);
-	if (loaded_paths.has(resolved_folder)) return;
-	loaded_paths.set(resolved_folder, true);
 	if (provided_loaded_components) loaded_components = provided_loaded_components;
 	try {
 		let config;
@@ -299,10 +296,10 @@ export async function loadComponent(
 					base_url_path = base_url_path.startsWith('/')
 						? base_url_path
 						: base_url_path.startsWith('./')
-						? '/' + app_name + base_url_path.slice(2)
-						: base_url_path === '.'
-						? '/' + app_name
-						: '/' + app_name + '/' + base_url_path;
+							? '/' + app_name + base_url_path.slice(2)
+							: base_url_path === '.'
+								? '/' + app_name
+								: '/' + app_name + '/' + base_url_path;
 					let root_path, root_file_path;
 					let root_end;
 					if (component_config.root) {
