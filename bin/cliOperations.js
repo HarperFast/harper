@@ -4,7 +4,7 @@ const env_mgr = require('../utility/environment/environmentManager');
 env_mgr.initSync();
 const terms = require('../utility/hdbTerms');
 const { httpRequest } = require('../utility/common_utils');
-const { basename } = require('path');
+const path = require('path');
 const fs = require('fs-extra');
 const YAML = require('yaml');
 const { packageDirectory } = require('../components/packageComponent');
