@@ -337,7 +337,7 @@ async function packageComponent(req) {
 		}
 	}
 
-	const payload = await packageDirectory(path_to_project, req);
+	const payload = (await packageDirectory(path_to_project, req)).toString('base64');
 
 	// return the package payload as base64-encoded string
 	return { project, payload };
@@ -375,7 +375,7 @@ async function deployComponent(req) {
 		await fs.emptyDir(path_to_project);
 
 		// extract the reconstituted file to the proper project directory
-		const stream = Readable.from(Buffer.from(payload, 'base64'));
+		const stream = Readable.from(payload instanceof Buffer ? payload : Buffer.from(payload, 'base64'));
 		await new Promise((resolve, reject) => {
 			stream
 				.pipe(gunzip())

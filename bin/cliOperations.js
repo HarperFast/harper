@@ -8,6 +8,7 @@ const { basename } = require('path');
 const fs = require('fs-extra');
 const YAML = require('yaml');
 const { packageDirectory } = require('../components/packageComponent');
+const { encode } = require('cbor-x');
 
 const SUPPORTED_OPS = [
 	'describe_table',
@@ -81,6 +82,7 @@ const PREPARE_OPERATION = {
 	deploy_component: async (req) => {
 		const project_path = process.cwd();
 		req.payload = await packageDirectory(project_path, { skip_node_modules: true, ...req });
+		req.cborEncode = true;
 		if (!req.project) req.project = basename(project_path);
 	},
 };
@@ -153,6 +155,10 @@ async function cliOperations(req) {
 		options.headers = { 'Content-Type': 'application/json' };
 		if (target?.username) {
 			options.headers.Authorization = `Basic ${Buffer.from(`${target.username}:${target.password}`).toString('base64')}`;
+		}
+		if (req.cborEncode) {
+			options.headers['Content-Type'] = 'application/cbor';
+			req = encode(req);
 		}
 		let res = await httpRequest(options, req);
 

@@ -50,7 +50,7 @@ async function installAllRootModules(ignore_scripts = false) {
 	}
 
 	await runCommand(
-		ignore_scripts ? 'npm install --ignore-scripts' : 'npm install',
+		ignore_scripts ? 'npm install --ignore-scripts --force' : 'npm install --force',
 		env.get(terms.CONFIG_PARAMS.ROOTPATH),
 		env_vars
 	);
