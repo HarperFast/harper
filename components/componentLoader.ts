@@ -130,6 +130,7 @@ const DEFAULT_CONFIG = {
 Object.defineProperty(DEFAULT_CONFIG, 'static', { value: { files: 'web/**' } });
 
 const ports_started = [];
+const loaded_paths = new Map();
 let error_reporter;
 export function setErrorReporter(reporter) {
 	error_reporter = reporter;
@@ -155,6 +156,8 @@ export async function loadComponent(
 	auto_reload?: boolean
 ) {
 	const resolved_folder = realpathSync(folder);
+	if (loaded_paths.has(resolved_folder)) return loaded_paths.get(resolved_folder);
+	loaded_paths.set(resolved_folder, true);
 	if (provided_loaded_components) loaded_components = provided_loaded_components;
 	try {
 		let config;
@@ -376,7 +379,9 @@ export async function loadComponent(
 			});
 		}
 		if (config.extensionModule) {
-			return await secureImport(join(folder, config.extensionModule));
+			const extension_module = await secureImport(join(folder, config.extensionModule));
+			loaded_paths.set(resolved_folder, extension_module);
+			return extension_module;
 		}
 		if (!has_functionality && resources.isWorker) {
 			const error_message = `${folder} did not load any modules, resources, or files, is this a valid component?`;
