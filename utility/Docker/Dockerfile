@@ -1,4 +1,4 @@
-FROM docker.io/node:lts-slim
+FROM docker.io/node:20-slim
 
 ARG HARPERDB_TARBALL
 ARG HARPERDB_VERSION
