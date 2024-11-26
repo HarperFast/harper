@@ -26,6 +26,8 @@ const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const manage_threads = require('../server/threads/manageThreads');
 const { replicateOperation } = require('../server/replication/replicator');
 const { packageDirectory } = require('../components/packageComponent');
+const { installModules } = require('../utility/npmUtilities');
+const npm_utils = require('../utility/npmUtilities');
 const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
 const TMP_PATH = path.join(env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY), 'tmp');
 const root_dir = env.get(terms.CONFIG_PARAMS.ROOTPATH);
@@ -393,18 +395,24 @@ async function deployComponent(req) {
 		if (fs.existsSync(npmrc_path)) {
 			await fs.copy(npmrc_path, path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), '.npmrc'));
 		}
+		if (req.ownModules) {
+			const npm_utils = require('../utility/npmUtilities');
+			await npm_utils.installAllRootModules(false, path_to_project);
+		}
 	}
 
-	// Adds package to harperdb-config and then relies on restart to call install on the new app
-	await config_utils.addConfig(project, { package: pkg });
+	if (!req.ownModules) {
+		// Adds package to harperdb-config and then relies on restart to call install on the new app
+		await config_utils.addConfig(project, { package: pkg });
 
-	// The main thread can install the components, but we do it here and now so that if it fails, we can immediately
-	// know about it and report it.
-	await installComponents();
-	// now we attempt to actually load the component in case there is
-	// an error we can immediately detect and report
-	const root_path = eng_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
-	path_to_project = path.join(root_path, 'node_modules', project);
+		// The main thread can install the components, but we do it here and now so that if it fails, we can immediately
+		// know about it and report it.
+		await installComponents();
+		// now we attempt to actually load the component in case there is
+		// an error we can immediately detect and report
+		const root_path = eng_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
+		path_to_project = path.join(root_path, 'node_modules', project);
+	}
 
 	// the main thread should never actually load component, just do a deploy
 	if (isMainThread) return;
