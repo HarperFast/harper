@@ -370,6 +370,7 @@ async function deployComponent(req) {
 		throw new Error("'payload' or 'package' must be provided");
 	}
 	let path_to_project;
+	let own_modules = req.own_modules ?? req.ownModules;
 	if (payload) {
 		path_to_project = path.join(cf_dir, project);
 		pkg = 'file:' + path_to_project;
@@ -390,18 +391,17 @@ async function deployComponent(req) {
 			await fs.copy(path.join(path_to_project, 'package'), path_to_project);
 			await fs.remove(path.join(path_to_project, 'package'));
 		}
-		// if there is an .npmrc, it must go in the root of the project for NPM to use it
-		const npmrc_path = path.join(path_to_project, '.npmrc');
-		if (fs.existsSync(npmrc_path)) {
-			await fs.copy(npmrc_path, path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), '.npmrc'));
-		}
-		if (req.ownModules) {
+		// if we have a node_modules folder, we assume we have our own modules, and we don't need to npm install them
+		const node_modules_path = path.join(path_to_project, 'node_modules');
+		if (fs.existsSync(node_modules_path)) {
+			if (own_modules === undefined) own_modules = true;
+		} else if (own_modules) {
 			const npm_utils = require('../utility/npmUtilities');
 			await npm_utils.installAllRootModules(false, path_to_project);
 		}
 	}
 
-	if (!req.ownModules) {
+	if (!own_modules) {
 		// Adds package to harperdb-config and then relies on restart to call install on the new app
 		await config_utils.addConfig(project, { package: pkg });
 
