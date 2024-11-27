@@ -222,8 +222,13 @@ export function makeTable(options) {
 				source.intermediateSource = true;
 				this.sources.unshift(source);
 			} else {
-				if (this.sources.some((source) => !source.intermediateSource))
+				if (this.sources.some((source) => !source.intermediateSource)) {
+					if (this.sources.some((existing_source) => existing_source.name === source.name)) {
+						// if we are adding a source that is already in the list, we don't add it again
+						return;
+					}
 					throw new Error('Can not have multiple canonical (non-intermediate) sources');
+				}
 				this.sources.push(source);
 			}
 			has_source_get = has_source_get || (source.get && (!source.get.reliesOnPrototype || source.prototype.get));
