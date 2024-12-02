@@ -8,4 +8,6 @@
 # Otherwise, certain paths may require other reviewers as well
 /.github/  @HarperDB/development @HarperDB/devops
 /upgrade/  @HarperDB/development @HarperDB/devops
-/utility/  @HarperDB/development @HarperDB/devops
+/utility/AWS/  @HarperDB/development @HarperDB/devops
+/utility/Docker/  @HarperDB/development @HarperDB/devops
+/utility/devops/  @HarperDB/development @HarperDB/devops
