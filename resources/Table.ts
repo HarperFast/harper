@@ -222,8 +222,13 @@ export function makeTable(options) {
 				source.intermediateSource = true;
 				this.sources.unshift(source);
 			} else {
-				if (this.sources.some((source) => !source.intermediateSource))
+				if (this.sources.some((source) => !source.intermediateSource)) {
+					if (this.sources.some((existing_source) => existing_source.name === source.name)) {
+						// if we are adding a source that is already in the list, we don't add it again
+						return;
+					}
 					throw new Error('Can not have multiple canonical (non-intermediate) sources');
+				}
 				this.sources.push(source);
 			}
 			has_source_get = has_source_get || (source.get && (!source.get.reliesOnPrototype || source.prototype.get));
@@ -289,6 +294,7 @@ export function makeTable(options) {
 				publish: getApplyToIntermediateSource('publish'),
 				invalidate: getApplyToIntermediateSource('invalidate'),
 			};
+			const should_revalidate_events = canonical_source.shouldRevalidateEvents;
 
 			// External data source may provide a subscribe method, allowing for real-time proactive delivery
 			// of data from the source to this caching table. This is generally greatly superior to expiration-based
@@ -323,9 +329,13 @@ export function makeTable(options) {
 					const resource: TableResource = await Table.getResource(event.id, context, options);
 					switch (event.type) {
 						case 'put':
-							return resource._writeUpdate(value, true, options);
+							return should_revalidate_events
+								? resource._writeInvalidate(options)
+								: resource._writeUpdate(value, true, options);
 						case 'patch':
-							return resource._writeUpdate(value, false, options);
+							return should_revalidate_events
+								? resource._writeInvalidate(options)
+								: resource._writeUpdate(value, false, options);
 						case 'delete':
 							return resource._writeDelete(options);
 						case 'publish':
@@ -496,6 +506,13 @@ export function makeTable(options) {
 		static get isCaching() {
 			return has_source_get;
 		}
+
+		/** Indicates if the events should be revalidated when they are received. By default we do this if the get
+		 * method is overriden */
+		static get shouldRevalidateEvents() {
+			return this.prototype.get !== TableResource.prototype.get;
+		}
+
 		/**
 		 * Gets a resource instance, as defined by the Resource class, adding the table-specific handling
 		 * of also loading the stored record into the resource instance.
@@ -1259,8 +1276,8 @@ export function makeTable(options) {
 									updated_time_property.type === 'Date'
 										? new Date(txn_time)
 										: updated_time_property.type === 'String'
-										? new Date(txn_time).toISOString()
-										: txn_time;
+											? new Date(txn_time).toISOString()
+											: txn_time;
 							}
 							if (full_update) {
 								if (primary_key && record_update[primary_key] !== id) record_update[primary_key] = id;
@@ -1272,8 +1289,8 @@ export function makeTable(options) {
 											created_time_property.type === 'Date'
 												? new Date(txn_time)
 												: created_time_property.type === 'String'
-												? new Date(txn_time).toISOString()
-												: txn_time;
+													? new Date(txn_time).toISOString()
+													: txn_time;
 								}
 								record_update = updateAndFreeze(record_update); // this flatten and freeze the record
 							}
@@ -1288,19 +1305,19 @@ export function makeTable(options) {
 						? () => apply_to_sources.put(context, id, record_update)
 						: null
 					: apply_to_sources.patch // otherwise, we need to use the patch method if available
-					? () => apply_to_sources.patch(context, id, record_update)
-					: apply_to_sources.put // if this is incremental, but only have put, we can use that by generating the full record (at least the expected one)
-					? () => apply_to_sources.put(context, id, updateAndFreeze(this))
-					: null,
+						? () => apply_to_sources.patch(context, id, record_update)
+						: apply_to_sources.put // if this is incremental, but only have put, we can use that by generating the full record (at least the expected one)
+							? () => apply_to_sources.put(context, id, updateAndFreeze(this))
+							: null,
 				beforeIntermediate: full_update
 					? apply_to_sources_intermediate.put
 						? () => apply_to_sources_intermediate.put(context, id, record_update)
 						: null
 					: apply_to_sources_intermediate.patch
-					? () => apply_to_sources_intermediate.patch(context, id, record_update)
-					: apply_to_sources_intermediate.put
-					? () => apply_to_sources_intermediate.put(context, id, updateAndFreeze(this))
-					: null,
+						? () => apply_to_sources_intermediate.patch(context, id, record_update)
+						: apply_to_sources_intermediate.put
+							? () => apply_to_sources_intermediate.put(context, id, updateAndFreeze(this))
+							: null,
 				commit: (txn_time, existing_entry, retry) => {
 					if (retry) {
 						if (context && existing_entry?.version > (context.lastModified || 0))
@@ -2127,18 +2144,10 @@ export function makeTable(options) {
 			const subscription = addSubscription(
 				TableResource,
 				this[ID_PROPERTY] ?? null, // treat undefined and null as the root
-				function (id, audit_record, local_time, begin_txn) {
+				function (id: Id, audit_record: any, local_time: number, begin_txn: boolean) {
 					try {
+						let value = audit_record.getValue?.(primary_store, get_full_record);
 						let type = audit_record.type;
-						let value: any;
-						// If we have an overwritten get method, we can't trust that these put and patch events actually represent the real
-						// returned value from the get method, so we have to switch to invalidate them
-						if (table_reference.get !== TableResource.prototype.get && (type === 'put' || type === 'patch')) {
-							type = 'invalidate';
-							value = null;
-						} else {
-							value = audit_record.getValue?.(primary_store, get_full_record);
-						}
 						if (!value && type === 'patch' && get_full_record) {
 							// we don't have the full record, need to get it
 							const entry = primary_store.getEntry(id);
@@ -2662,7 +2671,7 @@ export function makeTable(options) {
 										const value = direct_entry
 											? definition.tableClass.primaryStore.getEntry(id, {
 													transaction: txnForContext(context).getReadTxn(),
-											  })
+												})
 											: definition.tableClass.get(id, context);
 										if (value?.then) has_promises = true;
 										return value;
@@ -2672,13 +2681,13 @@ export function makeTable(options) {
 											? Promise.all(results).then((results) => results.filter(exists))
 											: results.filter(exists)
 										: has_promises
-										? Promise.all(results)
-										: results;
+											? Promise.all(results)
+											: results;
 								}
 								return direct_entry
 									? definition.tableClass.primaryStore.getEntry(ids, {
 											transaction: txnForContext(context).getReadTxn(),
-									  })
+										})
 									: definition.tableClass.get(ids, context);
 							};
 							attribute.set = (object, related) => {
@@ -2839,7 +2848,7 @@ export function makeTable(options) {
 								// keep in the list of values to add to index
 								return true;
 							}
-					  })
+						})
 					: [];
 				values_to_remove = Array.from(set_to_remove);
 				if ((values_to_remove.length > 0 || values_to_add.length > 0) && LMDB_PREFETCH_WRITES) {

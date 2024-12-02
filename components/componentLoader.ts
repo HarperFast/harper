@@ -156,7 +156,7 @@ export async function loadComponent(
 	auto_reload?: boolean
 ) {
 	const resolved_folder = realpathSync(folder);
-	if (loaded_paths.has(resolved_folder)) return;
+	if (loaded_paths.has(resolved_folder)) return loaded_paths.get(resolved_folder);
 	loaded_paths.set(resolved_folder, true);
 	if (provided_loaded_components) loaded_components = provided_loaded_components;
 	try {
@@ -299,10 +299,10 @@ export async function loadComponent(
 					base_url_path = base_url_path.startsWith('/')
 						? base_url_path
 						: base_url_path.startsWith('./')
-						? '/' + app_name + base_url_path.slice(2)
-						: base_url_path === '.'
-						? '/' + app_name
-						: '/' + app_name + '/' + base_url_path;
+							? '/' + app_name + base_url_path.slice(2)
+							: base_url_path === '.'
+								? '/' + app_name
+								: '/' + app_name + '/' + base_url_path;
 					let root_path, root_file_path;
 					let root_end;
 					if (component_config.root) {
@@ -379,7 +379,9 @@ export async function loadComponent(
 			});
 		}
 		if (config.extensionModule) {
-			return await secureImport(join(folder, config.extensionModule));
+			const extension_module = await secureImport(join(folder, config.extensionModule));
+			loaded_paths.set(resolved_folder, extension_module);
+			return extension_module;
 		}
 		if (!has_functionality && resources.isWorker) {
 			const error_message = `${folder} did not load any modules, resources, or files, is this a valid component?`;

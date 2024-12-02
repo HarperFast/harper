@@ -334,18 +334,22 @@ const HTTP_TO_WEBSOCKET_CLOSE_CODES = {
 };
 
 /**
- * Parse a header value into a list of objects with name and value properties
+ * This parser is used to parse header values.
+ * 
+ * It is used within this file for parsing the `Cache-Control` and `X-Replicate-To` headers.
+ * 
  * @param value
  */
-function parseHeaderValue(value) {
-	const parts = value.split(/\s*,\s*/);
-	return parts.map((part) => {
+export function parseHeaderValue(value: string) {
+	return value.trim().split(',').map((part) => {
 		let parsed;
-		const components = part.split(/\s*;\s*/);
+		const components = part.trim().split(';');
 		let component;
 		while ((component = components.pop())) {
 			if (component.includes('=')) {
-				const [name, value] = component.split(/\s*=\s*/);
+				let [name, value] = component.trim().split('=');
+				name = name.trim();
+				if (value) value = value.trim();
 				parsed = {
 					name: name.toLowerCase(),
 					value,

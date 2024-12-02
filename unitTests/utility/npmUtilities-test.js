@@ -645,7 +645,7 @@ describe('Test install all, uninstall and link functions', () => {
 
 	it('Test installAllRootModules happy path', async () => {
 		await npm_utils.installAllRootModules();
-		expect(run_command_stub.args[1][0]).to.eql('npm install');
+		expect(run_command_stub.args[1][0]).to.include('npm install');
 		expect(run_command_stub.args[1][1]).to.eql('unit/test');
 	});
 

@@ -886,7 +886,7 @@ function httpRequest(options, data) {
 			reject(err);
 		});
 
-		req.write(JSON.stringify(data));
+		req.write(data instanceof Buffer ? data : JSON.stringify(data));
 		req.end();
 	});
 }

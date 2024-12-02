@@ -1,4 +1,5 @@
-FROM registry.access.redhat.com/ubi9/nodejs-20:latest AS builder
+ARG NODE_VERSION=22
+FROM registry.access.redhat.com/ubi9/nodejs-${NODE_VERSION}:latest AS builder
 
 ARG HARPERDB_TARBALL
 ARG HARPERDB_VERSION
@@ -33,7 +34,7 @@ RUN npm install $HARPERDB_TARBALL && \
     rm -f $HARPERDB_TARBALL
 
 # Runtime stage
-FROM registry.access.redhat.com/ubi9/nodejs-20-minimal:latest AS runtime
+FROM registry.access.redhat.com/ubi9/nodejs-${NODE_VERSION}-minimal:latest AS runtime
 COPY --from=builder $HOME $HOME
 
 # metadata for labels

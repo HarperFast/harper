@@ -25,7 +25,9 @@ const { isMainThread } = require('worker_threads');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const manage_threads = require('../server/threads/manageThreads');
 const { replicateOperation } = require('../server/replication/replicator');
-
+const { packageDirectory } = require('../components/packageComponent');
+const { installModules } = require('../utility/npmUtilities');
+const npm_utils = require('../utility/npmUtilities');
 const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
 const TMP_PATH = path.join(env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY), 'tmp');
 const root_dir = env.get(terms.CONFIG_PARAMS.ROOTPATH);
@@ -337,29 +339,7 @@ async function packageComponent(req) {
 		}
 	}
 
-	await fs.ensureDir(TMP_PATH);
-	const file = path.join(TMP_PATH, `${project}.tar`);
-	let tar_opts = {};
-	if (req.skip_node_modules === true || req.skip_node_modules === 'true') {
-		// Create options for tar module that will exclude the CF projects node_modules directory.
-		tar_opts = {
-			ignore: (name) => {
-				return name.includes(path.join(path_to_project, 'node_modules'));
-			},
-		};
-	}
-
-	// pack the directory
-	tar.pack(path_to_project, tar_opts).pipe(fs.createWriteStream(file, { overwrite: true }));
-
-	// wait for a second
-	// eslint-disable-next-line no-magic-numbers
-	await new Promise((resolve) => setTimeout(resolve, 2000));
-
-	// read the output into base64
-	const payload = fs.readFileSync(file, { encoding: 'base64' });
-
-	await fs.remove(file);
+	const payload = (await packageDirectory(path_to_project, req)).toString('base64');
 
 	// return the package payload as base64-encoded string
 	return { project, payload };
@@ -390,6 +370,7 @@ async function deployComponent(req) {
 		throw new Error("'payload' or 'package' must be provided");
 	}
 	let path_to_project;
+	let own_modules = req.own_modules ?? req.ownModules;
 	if (payload) {
 		path_to_project = path.join(cf_dir, project);
 		pkg = 'file:' + path_to_project;
@@ -397,7 +378,7 @@ async function deployComponent(req) {
 		await fs.emptyDir(path_to_project);
 
 		// extract the reconstituted file to the proper project directory
-		const stream = Readable.from(Buffer.from(payload, 'base64'));
+		const stream = Readable.from(payload instanceof Buffer ? payload : Buffer.from(payload, 'base64'));
 		await new Promise((resolve, reject) => {
 			stream
 				.pipe(gunzip())
@@ -410,18 +391,28 @@ async function deployComponent(req) {
 			await fs.copy(path.join(path_to_project, 'package'), path_to_project);
 			await fs.remove(path.join(path_to_project, 'package'));
 		}
+		// if we have a node_modules folder, we assume we have our own modules, and we don't need to npm install them
+		const node_modules_path = path.join(path_to_project, 'node_modules');
+		if (fs.existsSync(node_modules_path)) {
+			if (own_modules === undefined) own_modules = true;
+		} else if (own_modules) {
+			const npm_utils = require('../utility/npmUtilities');
+			await npm_utils.installAllRootModules(false, path_to_project);
+		}
 	}
 
-	// Adds package to harperdb-config and then relies on restart to call install on the new app
-	await config_utils.addConfig(project, { package: pkg });
+	if (!own_modules) {
+		// Adds package to harperdb-config and then relies on restart to call install on the new app
+		await config_utils.addConfig(project, { package: pkg });
 
-	// The main thread can install the components, but we do it here and now so that if it fails, we can immediately
-	// know about it and report it.
-	await installComponents();
-	// now we attempt to actually load the component in case there is
-	// an error we can immediately detect and report
-	const root_path = eng_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
-	path_to_project = path.join(root_path, 'node_modules', project);
+		// The main thread can install the components, but we do it here and now so that if it fails, we can immediately
+		// know about it and report it.
+		await installComponents();
+		// now we attempt to actually load the component in case there is
+		// an error we can immediately detect and report
+		const root_path = eng_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
+		path_to_project = path.join(root_path, 'node_modules', project);
+	}
 
 	// the main thread should never actually load component, just do a deploy
 	if (isMainThread) return;

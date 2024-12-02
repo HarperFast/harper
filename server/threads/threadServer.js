@@ -425,6 +425,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 			noDelay: true, // don't delay for Nagle's algorithm, it is a relic of the past that slows things down: https://brooker.co.za/blog/2024/05/09/nagle.html
 			keepAlive: true,
 			keepAliveInitialDelay: 600, // lower the initial delay to 10 minutes, we want to be proactive about closing unused connections
+			maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 		};
 		let mtls = env.get(server_prefix + '_mtls');
 		let mtls_required = env.get(server_prefix + '_mtls_required');
@@ -444,7 +445,6 @@ function getHTTPServer(port, secure, is_operations_server) {
 				rejectUnauthorized: Boolean(mtls_required),
 				requestCert: Boolean(mtls || is_operations_server),
 				ticketKeys: getTicketKeys(),
-				maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 				SNICallback: createTLSSelector(is_operations_server ? 'operations-api' : 'server', mtls),
 				ALPNCallback: http2
 					? undefined

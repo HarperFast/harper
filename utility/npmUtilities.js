@@ -32,7 +32,7 @@ module.exports = {
  * @param ignore_scripts - tell npm to not run any scripts that might exist in a package.json
  * @returns {Promise<void>}
  */
-async function installAllRootModules(ignore_scripts = false) {
+async function installAllRootModules(ignore_scripts = false, working_dir = env.get(terms.CONFIG_PARAMS.ROOTPATH)) {
 	await checkNPMInstalled();
 	let ssh_key_added = false;
 	let env_vars = process.env;
@@ -49,11 +49,7 @@ async function installAllRootModules(ignore_scripts = false) {
 		});
 	}
 
-	await runCommand(
-		ignore_scripts ? 'npm install --ignore-scripts' : 'npm install',
-		env.get(terms.CONFIG_PARAMS.ROOTPATH),
-		env_vars
-	);
+	await runCommand(ignore_scripts ? 'npm install --ignore-scripts' : 'npm install', working_dir, env_vars);
 }
 
 /**
