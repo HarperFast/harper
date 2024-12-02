@@ -137,6 +137,8 @@ jobs:
           prerelease_version=${prerelease_version}
           npm_extra_tags=${npm_extra_tags}
           dockerhub_tag_latest=${dockerhub_tag_latest}
+          dryrun=${dryrun}
+          push=${push}
           EOF
 
           cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
@@ -194,7 +196,7 @@ jobs:
   #  Send Slack Message for start of Release
   ############################################
   sendSlackMessageRealeaseStarted:
-    if: needs.meta.outputs.dryrun == 'false'
+    if: ${{ needs.meta.outputs.dryrun == 'false' }}
     uses: ./.github/workflows/post-to-slack-channel.yaml
     needs:
       - meta
@@ -248,7 +250,7 @@ jobs:
   #############################################################
   build-offline-installer:
     runs-on: ubuntu-latest
-    if: inputs.forcedVersion != 'no_forced'
+    if: ${{ inputs.forcedVersion != 'no_forced' }}
     needs:
       - meta
       - build
@@ -477,7 +479,7 @@ jobs:
   #  https://products-harperdb-io.s3.us-east-2.amazonaws.com/
   #############################################################
   publicReleaseOfflineInstaller:
-    if: inputs.forcedVersion != 'no_forced'
+    if: ${{ inputs.forcedVersion != 'no_forced' }}
     environment: ${{ needs.meta.outputs.release_type == 'stable' && 'release-offline-installer' || 'pre-release-offline-installer' }}
     runs-on: ubuntu-latest
     needs:
