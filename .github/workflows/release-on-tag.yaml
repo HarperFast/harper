@@ -454,6 +454,9 @@ jobs:
     strategy:
       matrix:
         nodeVersion: [ 16, 18, 20, 22 ]
+        container:
+          - 'harperdb/harperdb'
+          - 'harperdb/harperdb-openshift'
         include:
           - container: 'harperdb/harperdb'
             file: 'utility/Docker/Dockerfile'
