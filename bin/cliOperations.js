@@ -126,7 +126,15 @@ async function cliOperations(req) {
 	}
 	let target;
 	if (req.target) {
-		target = new URL(req.target);
+		try {
+			target = new URL(req.target);
+		} catch (error) {
+			try {
+				target = new URL(`https://${req.target}:9925`);
+			} catch (asHostError) {
+				throw error; // throw the original error
+			}
+		}
 		target = {
 			protocol: target.protocol,
 			hostname: target.hostname,
