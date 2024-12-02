@@ -60,7 +60,7 @@ jobs:
           harperdbVersion=$(jq -r '.version' package.json)
           
           # check for forcedVersion. override tag and harperdbVersion to match
-          if [[ "${forcedVersion}" != "no_forced" ]]; then
+          if [[ "${forcedVersion}" != "no_forced" && -n "${forcedVersion}" ]]; then
             tag="refs/tags/release_${forcedVersion}"
             harperdbVersion="${forcedVersion}"
           
