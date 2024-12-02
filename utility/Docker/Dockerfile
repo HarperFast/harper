@@ -1,4 +1,5 @@
-FROM docker.io/node:lts-slim
+ARG NODE_VERSION=22
+FROM docker.io/node:${NODE_VERSION}-slim
 
 ARG HARPERDB_TARBALL
 ARG HARPERDB_VERSION

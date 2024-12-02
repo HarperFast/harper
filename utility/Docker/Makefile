@@ -1,4 +1,4 @@
-NODE_VERSION = $(shell node --version | cut -c2-)
+NODE_VERSION = 22
 HDB_VERSION = $(shell jq -r .version ../../package.json)
 WARNING = "The docker images created with this file are not suitable for publishing, so please don't do that."
 

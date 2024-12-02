@@ -1,0 +1,182 @@
+name: 'Docker Build'
+description: 'Build a HarperDB Docker container. requires build and license artifacts'
+
+inputs:
+
+# required inputs
+  harperdbVersion:
+    description: 'version of Harperdb to build. used as a reference for download-artifact'
+    required: true
+
+# inputs with defaults
+  dockerImage:
+    description: 'name of image to create/upload. ex: `harperdb/harperdb`'
+    required: false
+  dockerFile:
+    description: 'path to Dockerfile'
+    required: false
+    default: 'utility/Docker/Dockerfile'
+  dockerUsername:
+    description: 'username for dockerhub'
+    required: false
+  dockerPassword:
+    description: 'password for dockerhub'
+    required: false
+  dockerContext:
+    description: 'context to pass to docker build. usually just `.`'
+    required: false
+    default: '.'
+  tagLatest:
+    description: 'should this image be tagged as latest'
+    required: false
+    default: 'false'
+  buildPlatforms:
+    description: 'which platform(s) to build the docker container. defaults to `linux/amd46,linux/arm64'
+    required: false
+    default: 'linux/amd64,linux/arm64'
+  push:
+    description: 'push the image to dockerhub'
+    required: false
+    default: 'false'
+
+# inputs for redhat connect
+  pushRedhatConnect:
+    description: 'push this image to the Redhat Connect platform'
+    required: false
+    default: 'false'
+  redhatCertificationProjectId:
+    description: 'certification project id for redhat connect'
+    required: false
+    default: 'false'
+  redhatDockerConfig:
+    description: 'redhat connect dockerconfig json'
+    required: false
+    default: '{}'
+  redhatPyxisApiToken:
+    description: 'Pyxis API token for redhat connect'
+    required: false
+    default: '1234'
+
+# inputs for node versioning
+  nodeVersion:
+    description: 'which version of node do we want for our container. defaults to 22'
+    required: false
+    default: '22'
+  latestNodeVersion:
+    description: 'just used to track the latest lts node version, currently `22`'
+    required: false
+    default: '22'
+
+runs:
+  using: 'composite'
+  steps:
+#########
+# setup #
+#########
+#    - name: checkout repo
+#      uses: actions/checkout@v4
+
+    - name: setup qemu
+      uses: docker/setup-qemu-action@v3
+
+    - name: setup buildx
+      uses: docker/setup-buildx-action@v3
+
+    - name: log into dockerhub
+      if: inputs.dockerImage != 'tar' || inputs.push == true
+      uses: docker/login-action@v3
+      with:
+        username: ${{ inputs.dockerUsername }}
+        password: ${{ inputs.dockerPassword }}
+
+######################
+# download artifacts #
+######################
+    - name: download harperdb
+      uses: actions/download-artifact@v4
+      with:
+        name: harperdb-${{ inputs.harperdbVersion }}.tgz
+        path: ./
+
+    - name: download licenses
+      uses: actions/download-artifact@v4
+      with:
+        name: 'licenses'
+        path: 'utility/Docker/licenses/'
+
+################################
+# generate tags for containers #
+################################
+    - name: docker meta
+      id: docker-meta
+      uses: docker/metadata-action@v5
+      with:
+        # list of Docker images to use as base name for tags
+        images: ${{ inputs.dockerImage }}
+        # generate Docker tags based on the following events/attributes
+        tags: |
+          type=raw,enable=${{ inputs.dockerImage != 'harperdb/private'}},value=${{ inputs.harperdbVersion }}
+          type=raw,enable=${{ inputs.dockerImage == 'harperdb/private'}},value=${{ inputs.harperdbVersion }}-${{ github.run_number }}
+          type=raw,enable=${{ inputs.dockerImage == 'tar'}},value=${{ inputs.harperdbVersion }}-${{ github.run_number }}
+          type=raw,enable=${{ inputs.nodeVersion != inputs.latestNodeVersion }},value=${{ inputs.harperdbVersion }}_node-${{ inputs.nodeVersion }}
+          type=raw,value=latest,enable=${{ inputs.nodeVersion == inputs.latestNodeVersion && inputs.tagLatest || false }}
+          type=raw,value=${{ github.sha }}
+          
+
+#########################
+# build container image #
+#########################
+    - name: build and push ${{ inputs.dockerImage }}:${{ inputs.harperdbVersion }}
+      id: build-push-container
+      uses: docker/build-push-action@v5
+      with:
+        context: ${{ inputs.dockerContext }}
+        file: ${{ inputs.dockerFile }}
+        platforms: ${{ inputs.buildPlatforms }}
+        push: ${{ inputs.push }}
+        tags: ${{ steps.docker-meta.outputs.tags }}
+        build-args: |
+          HARPERDB_VERSION=${{ inputs.harperdbVersion }}
+          HARPERDB_TARBALL=harperdb-${{ inputs.harperdbVersion }}.tgz
+          VCS_REF=`git rev-parse HEAD`
+          BUILD_DATE=`date -u +%FT%T`
+        cache-from: type=gha
+        cache-to: type=gha,mode=max
+
+#############################
+# publish to redhat connect #
+#############################
+    - name: install openshift CLI tools
+      if: ${{ inputs.pushRedhatConnect == 'true' && inputs.dockerImage == 'harperdb/harperdb-openshift' }}
+      uses: redhat-actions/openshift-tools-installer@v1
+      with:
+        source: 'github'
+        preflight: 'latest'
+
+    - name: publish to redhat connect ${{ inputs.dockerImage }}:${{ inputs.harperdbVersion }}
+      if: ${{ inputs.pushRedhatConnect == 'true' && inputs.dockerImage == 'harperdb/harperdb-openshift' }}
+      env:
+        CERTIFICATION_PROJECT_ID: ${{ inputs.redhatCertificationProjectId }}
+        REDHAT_DOCKERCONFIG: ${{ inputs.redhatDockerConfig }}
+        PYXIS_API_TOKEN: ${{ inputs.redhatPyxisApiToken }}
+        container_registry: 'registry.hub.docker.com'
+        container_image: ${{ inputs.dockerImage }}
+        container_tag: ${{ inputs.harperdbVersion }}
+        push: ${{ inputs.pushRedhatConnect }}
+      shell: bash
+      run: |
+        #!/usr/bin/env bash
+        set -euo pipefail
+
+        echo "writing docker-config.json for submission"
+        echo "${REDHAT_DOCKERCONFIG}" | jq '.' > docker-config.json
+
+        # push is handled by managing the '--submit' flag
+        submit=''
+        [ "${push}" == "true" ] && submit='--submit'
+
+        preflight check container "${container_registry}/${container_image}:${container_tag}" \
+          --pyxis-api-token="${PYXIS_API_TOKEN}" \
+          --certification-project-id="${CERTIFICATION_PROJECT_ID}" \
+          --docker-config ./docker-config.json \
+          ${submit} >> "${GITHUB_STEP_SUMMARY}"
