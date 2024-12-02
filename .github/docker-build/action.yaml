@@ -119,6 +119,7 @@ runs:
           type=raw,enable=${{ inputs.dockerImage == 'harperdb/private'}},value=${{ inputs.harperdbVersion }}-${{ github.run_number }}
           type=raw,enable=${{ inputs.dockerImage == 'tar'}},value=${{ inputs.harperdbVersion }}-${{ github.run_number }}
           type=raw,enable=${{ inputs.nodeVersion != inputs.latestNodeVersion }},value=${{ inputs.harperdbVersion }}_node-${{ inputs.nodeVersion }}
+          type=raw,enable=${{ inputs.nodeVersion == inputs.latestNodeVersion }},value=${{ inputs.harperdbVersion }}
           type=raw,value=latest,enable=${{ inputs.nodeVersion == inputs.latestNodeVersion && inputs.tagLatest || false }}
           type=raw,value=${{ github.sha }}
           
@@ -138,6 +139,7 @@ runs:
         build-args: |
           HARPERDB_VERSION=${{ inputs.harperdbVersion }}
           HARPERDB_TARBALL=harperdb-${{ inputs.harperdbVersion }}.tgz
+          NODE_VERSION=${{ inputs.nodeVersion }}
           VCS_REF=`git rev-parse HEAD`
           BUILD_DATE=`date -u +%FT%T`
         cache-from: type=gha
