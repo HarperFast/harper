@@ -115,11 +115,10 @@ runs:
         images: ${{ inputs.dockerImage }}
         # generate Docker tags based on the following events/attributes
         tags: |
-          type=raw,enable=${{ inputs.dockerImage != 'harperdb/private'}},value=${{ inputs.harperdbVersion }}
+          type=raw,enable=${{ inputs.dockerImage != 'harperdb/private' && inputs.nodeVersion == inputs.latestNodeVersion }},value=${{ inputs.harperdbVersion }}
           type=raw,enable=${{ inputs.dockerImage == 'harperdb/private'}},value=${{ inputs.harperdbVersion }}-${{ github.run_number }}
           type=raw,enable=${{ inputs.dockerImage == 'tar'}},value=${{ inputs.harperdbVersion }}-${{ github.run_number }}
           type=raw,enable=${{ inputs.nodeVersion != inputs.latestNodeVersion }},value=${{ inputs.harperdbVersion }}_node-${{ inputs.nodeVersion }}
-          type=raw,enable=${{ inputs.nodeVersion == inputs.latestNodeVersion }},value=${{ inputs.harperdbVersion }}
           type=raw,value=latest,enable=${{ inputs.nodeVersion == inputs.latestNodeVersion && inputs.tagLatest || false }}
           type=raw,value=${{ github.sha }}
           
