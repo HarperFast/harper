@@ -62931,7 +62931,7 @@
 									"",
 									"pm.test(\"get components\", function () {",
 									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.entries.length).to.equal(5);",
+									"    pm.expect(json_data.entries.length).to.equal(6);",
 									"    let gh_found = false;",
 									"    let payload_found = false;",
 									"    let add_test_found = false;",
@@ -63061,7 +63061,7 @@
 									"",
 									"pm.test(\"get components\", function () {",
 									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.entries.length).to.equal(4);",
+									"    pm.expect(json_data.entries.length).to.equal(5);",
 									"    let gh_found = false;",
 									"    let payload_found = false;",
 									"    let set_test_found = false;",
@@ -63815,6 +63815,10 @@
 							"script": {
 								"exec": [
 									"const expected_obj = {",
+									"    \"deploy-test-gh\": {",
+									"        \"routes\": [],",
+									"        \"helpers\": []",
+									"    },",
 									"    \"deploy-test-payload\": {",
 									"        \"routes\": [],",
 									"        \"helpers\": []",
