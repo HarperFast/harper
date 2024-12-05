@@ -55,6 +55,8 @@ describe('Test installApps module', () => {
 	let unlink_stub;
 	let ensure_sym_link;
 	let ensure_dir;
+	let symlink;
+	let move;
 
 	before(() => {
 		env_mgr.setProperty('rootPath', 'unit-test');
@@ -66,6 +68,8 @@ describe('Test installApps module', () => {
 		unlink_stub = sandbox.stub(fs, 'unlinkSync');
 		ensure_sym_link = sandbox.stub(fs, 'ensureSymlink');
 		ensure_dir = sandbox.stub(fs, 'ensureDirSync');
+		symlink = sandbox.stub(fs, 'symlink').returns(Promise.resolve());;
+		move = sandbox.stub(fs, 'move').returns(Promise.resolve());;
 	});
 
 	beforeEach(() => {
