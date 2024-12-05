@@ -1,4 +1,3 @@
-/*
 'use strict';
 
 import { assert, expect } from 'chai';
@@ -1220,4 +1219,3 @@ describe('test MQTT connections and commands', () => {
 function delay(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms));
 }
-*/
