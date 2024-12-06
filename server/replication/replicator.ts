@@ -79,7 +79,7 @@ export function start(options) {
 		if (request.isWebSocket && request.headers.get('Sec-WebSocket-Protocol') === 'harperdb-replication-v1') {
 			if (!request.authorized && request._nodeRequest.socket.authorizationError) {
 				logger.error(
-					`Incoming client connection from ${request.ip} did not have valid certificate `,
+					`Incoming client connection from ${request.ip} did not have valid certificate, you may need turn on enableRootCAs in the config if you are using a publicly signed certificate, or add the CA to the server's trusted CAs`,
 					request._nodeRequest.socket.authorizationError
 				);
 			}
