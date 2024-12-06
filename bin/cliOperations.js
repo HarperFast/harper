@@ -133,6 +133,7 @@ async function cliOperations(req) {
 			port: target.port,
 			username: req.username || target.username || process.env.CLI_TARGET_USERNAME,
 			password: req.password || target.password || process.env.CLI_TARGET_PASSWORD,
+			rejectUnauthorized: req.rejectUnauthorized,
 		};
 	} else {
 		if (!fs.existsSync(path.join(env_mgr.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE))) {
