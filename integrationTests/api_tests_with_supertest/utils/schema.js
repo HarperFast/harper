@@ -1,5 +1,5 @@
 import request from 'supertest';
-import  assert from "node:assert";
+import assert from "node:assert";
 
 export async function create_schema(url, schemaName) {
     await request(url)
@@ -24,13 +24,28 @@ export async function drop_schema(url, schemaName, failTest) {
             schema: schemaName
         })
         .expect((r) => {
-            if(failTest) {
+            if (failTest) {
                 const body = JSON.stringify(r.body);
                 assert.ok(body.includes('successfully deleted'));
                 assert.ok(body.includes(schemaName));
                 assert.equal(r.status, 200);
             }
         })
+}
+
+export async function describe_schema(url, schemaName) {
+    await request(url)
+        .post('')
+        .send({
+            operation: 'describe_schema',
+            schema: schemaName
+        })
+        .expect((r) => {
+            Object.values(r.body).forEach(table => {
+                assert.equal(table.schema, schemaName);
+            })
+        })
+        .expect(200)
 }
 
 export async function check_table_in_schema(url, schemaName, checkTableName) {

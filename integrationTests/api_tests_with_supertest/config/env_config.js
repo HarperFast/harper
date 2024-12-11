@@ -1,4 +1,4 @@
-export const global = {
+export let global = {
     host: 'http://localhost',
     port: '9925',
     portRest: '9926',
