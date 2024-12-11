@@ -9,7 +9,6 @@ const terms = require('../utility/hdbTerms');
 const hdb_logger = require('../utility/logging/harper_logger');
 const fs = require('fs-extra');
 const path = require('path');
-const si = require('systeminformation');
 const check_jwt_tokens = require('../utility/install/checkJWTTokensExist');
 const { install } = require('../utility/install/installer');
 const chalk = require('chalk');
@@ -116,23 +115,15 @@ async function initialize(called_by_install = false, called_by_main = false) {
 		process.exit(1);
 	}
 
-	try {
-		const hdb_pid = Number.parseInt(
-			await fs.readFile(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE), 'utf8')
-		);
-		let processes = await si.processes();
-		for (const p of processes.list) {
-			if (p.pid === hdb_pid) {
-				if (!service_clustering) {
-					console.log('HarperDB appears to be already running.');
-				} else {
-					is_hdb_running = true;
-				}
-				break;
-			}
+	const pidFile = path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE);
+	const hdbPid = await readPidFile(pidFile);
+	if (hdbPid && isProcessRunning(hdbPid)) {
+		if (!service_clustering) {
+			console.error(`Error: HarperDB is already running (pid: ${hdbPid})`);
+			process.exit(4);
+		} else {
+			is_hdb_running = true;
 		}
-	} catch (err) {
-		// Ignore error, If readFile finds no pid file we can assume that HDB is not already running
 	}
 
 	// Requiring the processManagement mod will create the .pm2 dir. This code is here to allow install to set
@@ -503,5 +494,39 @@ function startupLog(port_resolutions) {
 				`Note that log messages are being sent to the console (stdout and stderr) in addition to the log file ${log_file_path}. This can be disabled by setting logging.stdStreams to false, and the log file can be directly monitored/tailed.`
 			);
 		});
+	}
+}
+
+/**
+ * Reads the HarperDB PID file and returns the PID as a number.
+ * @param {string} pidFile - The path to the HarperDB PID file
+ * @returns {number|null} - The PID as a number, or null if the file is not found or cannot be read
+ */
+async function readPidFile(pidFile) {
+	try {
+		return Number.parseInt(await fs.readFile(pidFile, 'utf8'), 10);
+	} catch (err) {
+		return null;
+	}
+}
+
+/**
+ * Checks if a process is running by attempting to send a signal 0 to the process.
+ * @param {number} pid - The process ID to check
+ * @returns {boolean} - True if the process is running, false otherwise
+ */
+function isProcessRunning(pid) {
+	try {
+		// process.kill with signal 0 tests if process exists
+		// throws error if process doesn't exist
+		process.kill(pid, 0);
+		return true;
+	} catch (err) {
+		// EPERM means process exists but we don't have permission
+		// which still indicates the process is running
+		if (err.code === 'EPERM') {
+			return true;
+		}
+		return false;
 	}
 }
