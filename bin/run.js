@@ -116,7 +116,7 @@ async function initialize(called_by_install = false, called_by_main = false) {
 	}
 
 	const pidFile = path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE);
-	const hdbPid = await readPidFile(pidFile);
+	const hdbPid = readPidFile(pidFile);
 	if (hdbPid && isProcessRunning(hdbPid)) {
 		if (!service_clustering) {
 			console.error(`Error: HarperDB is already running (pid: ${hdbPid})`);
@@ -502,9 +502,9 @@ function startupLog(port_resolutions) {
  * @param {string} pidFile - The path to the HarperDB PID file
  * @returns {number|null} - The PID as a number, or null if the file is not found or cannot be read
  */
-async function readPidFile(pidFile) {
+function readPidFile(pidFile) {
 	try {
-		return Number.parseInt(await fs.readFile(pidFile, 'utf8'), 10);
+		return Number.parseInt(fs.readFileSync(pidFile, 'utf8'), 10);
 	} catch (err) {
 		return null;
 	}
