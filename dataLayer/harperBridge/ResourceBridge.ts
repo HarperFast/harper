@@ -89,7 +89,7 @@ export class ResourceBridge extends LMDBBridge {
 	 * @param table_create_obj
 	 * @param enableAudit
 	 */
-	async createTable(table_system_data, table_create_obj, enableAudit = undefined) {
+	async createTable(table_system_data, table_create_obj) {
 		let attributes = table_create_obj.attributes;
 		const schema_defined = Boolean(attributes);
 		const primary_key_name = table_create_obj.primary_key || table_create_obj.hash_attribute;
@@ -117,7 +117,7 @@ export class ResourceBridge extends LMDBBridge {
 			attributes,
 			schemaDefined: schema_defined,
 			expiration: table_create_obj.expiration,
-			audit: enableAudit,
+			audit: table_create_obj.audit,
 		});
 	}
 	async createAttribute(create_attribute_obj) {

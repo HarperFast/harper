@@ -325,6 +325,7 @@ describe('Test configUtils module', () => {
 					databases: '*',
 					hostname: null,
 					routes: null,
+					enableRootCAs: true,
 				},
 				componentsRoot: path.join(DIRNAME, '/test_custom_functions'),
 				localStudio: {
@@ -484,6 +485,7 @@ describe('Test configUtils module', () => {
 				replication_databases: '*',
 				replication_hostname: null,
 				replication_routes: null,
+				replication_enablerootcas: true,
 				rootpath: path.join(DIRNAME, '/yaml'),
 				storage_writeasync: true,
 				storage_caching: false,
@@ -574,6 +576,7 @@ describe('Test configUtils module', () => {
 			replication_databases: '*',
 			replication_hostname: null,
 			replication_routes: null,
+			replication_enablerootcas: true,
 			rootpath: null,
 			storage_writeasync: false,
 			storage_caching: true,
