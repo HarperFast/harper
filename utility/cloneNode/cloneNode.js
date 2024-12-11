@@ -390,7 +390,6 @@ async function cloneConfig() {
 
 	config_update.cloned = true;
 	config_utils.createConfigFile(config_update, true);
-	env_mgr.initSync(true);
 }
 
 /**
