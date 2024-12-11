@@ -60,7 +60,7 @@ export function start(options) {
 		subProtocol: 'harperdb-replication-v1',
 		mtls: true, // make sure that we request a certificate from the client
 		isOperationsServer: true, // we default to using the operations server ports
-
+		maxPayload: 10 * 1024 * 1024 * 1024, // 10 GB max payload, primarily to support replicating applications
 		...options,
 	};
 	// noinspection JSVoidFunctionReturnValueUsed
@@ -559,7 +559,7 @@ export async function replicateOperation(req) {
 		req.replicated = false; // don't send a replicated flag to the nodes we are sending to
 		logger.trace?.(
 			'Replicating operation',
-			req,
+			req.operation,
 			'to nodes',
 			server.nodes.map((node) => node.name)
 		);

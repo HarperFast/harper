@@ -678,6 +678,7 @@ function onWebSocket(listener, options) {
 			let http_server;
 			ws_servers[port_num] = new WebSocketServer({
 				server: (http_server = getHTTPServer(port_num, secure, options?.isOperationsServer)),
+				maxPayload: options.maxPayload ?? 100 * 1024 * 1024, // The ws library has a default of 100MB
 			});
 			http_server._ws = ws_servers[port_num];
 			servers.push(http_server);
