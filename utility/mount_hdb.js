@@ -44,7 +44,13 @@ async function createLMDBTables() {
 			create_table.attributes = system_schema[table_name].attributes;
 			let primary_key_attribute = create_table.attributes.find(({ attribute }) => attribute === hash_attribute);
 			primary_key_attribute.isPrimaryKey = true;
-			await bridge.createTable(table_name, create_table);
+
+			// Array of tables to enable audit store, config file doesn't exist yet so we need to manually set which tables to audit
+			if (['hdb_user', 'hdb_role'].includes(table_name)) {
+				await bridge.createTable(table_name, create_table, true);
+			} else {
+				await bridge.createTable(table_name, create_table);
+			}
 		} catch (e) {
 			hdb_logger.error(`issue creating environment for ${terms.SYSTEM_SCHEMA_NAME}.${table_name}: ${e}`);
 			throw e;

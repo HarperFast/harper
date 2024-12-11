@@ -41,7 +41,7 @@ export const servers = [];
 // This is the set of acceptable root certificates for replication, which includes the publicly trusted CAs if enabled
 // and any CAs that have been replicated across the cluster
 export const replication_certificate_authorities =
-	env.get(CONFIG_PARAMS.REPLICATION_ENABLEROOTCAS) === true ? new Set(tls.rootCertificates) : new Set();
+	env.get(CONFIG_PARAMS.REPLICATION_ENABLEROOTCAS) !== false ? new Set(tls.rootCertificates) : new Set();
 /**
  * Start the replication server. This will start a WebSocket server that will accept replication requests from other nodes.
  * @param options
