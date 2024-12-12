@@ -1,8 +1,9 @@
 import request from 'supertest';
 import assert from "node:assert";
+import {envUrl} from "../config/envConfig.js";
 
-export async function create_schema(url, schemaName) {
-    await request(url)
+export async function createSchema(schemaName) {
+    await request(envUrl)
         .post('')
         .send({
             operation: 'create_schema',
@@ -16,8 +17,8 @@ export async function create_schema(url, schemaName) {
         .expect(200)
 }
 
-export async function drop_schema(url, schemaName, failTest) {
-    await request(url)
+export async function dropSchema(schemaName, failTest) {
+    await request(envUrl)
         .post('')
         .send({
             operation: 'drop_schema',
@@ -33,8 +34,8 @@ export async function drop_schema(url, schemaName, failTest) {
         })
 }
 
-export async function describe_schema(url, schemaName) {
-    await request(url)
+export async function describeSchema(schemaName) {
+    await request(envUrl)
         .post('')
         .send({
             operation: 'describe_schema',
@@ -48,8 +49,8 @@ export async function describe_schema(url, schemaName) {
         .expect(200)
 }
 
-export async function check_table_in_schema(url, schemaName, checkTableName) {
-    await request(url)
+export async function checkTableInSchema(schemaName, checkTableName) {
+    await request(envUrl)
         .post('')
         .send({
             operation: 'describe_schema',
@@ -64,8 +65,6 @@ export async function check_table_in_schema(url, schemaName, checkTableName) {
                 }
             })
             assert.equal(count, 0);
-            // alternative check 2
-            // jsonData[checkTableName].schema == schemaName && jsonData[checkTableName].name == checkTableName;
         })
         .expect(200)
 }

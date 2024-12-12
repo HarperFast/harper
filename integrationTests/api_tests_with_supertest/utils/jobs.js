@@ -1,9 +1,10 @@
 import request from "supertest";
 import assert from "node:assert";
 import {sleep} from "./general.js";
+import {envUrl} from "../config/envConfig.js";
 
 
-export async function get_job_id(url, jsonData){
+export async function getJobId(jsonData){
     assert.ok(jsonData.hasOwnProperty('job_id'));
     assert.equal(jsonData.message.split(" ")[4], jsonData.job_id);
     let id_index = jsonData.message.indexOf("id ");
@@ -11,8 +12,8 @@ export async function get_job_id(url, jsonData){
     return parsedId;
 }
 
-export async function check_job_completed(url, job_id, expectedErrorMessage, expectedCompletedMessage){
-    const response = await request(url)
+export async function checkJobCompleted(job_id, expectedErrorMessage, expectedCompletedMessage){
+    const response = await request(envUrl)
         .post('')
         .send({
             operation: 'get_job',
@@ -49,7 +50,7 @@ export async function check_job_completed(url, job_id, expectedErrorMessage, exp
             console.log(status + ' checking again');
             await sleep(1000);
             assert.ok(status == 'IN_PROGRESS' || status == 0 || status == '0');
-            await check_job_completed(url, job_id, expectedErrorMessage, expectedCompletedMessage);
+            await checkJobCompleted(job_id, expectedErrorMessage, expectedCompletedMessage);
             break;
         default:
             console.log(status + " job id: " + job_id);

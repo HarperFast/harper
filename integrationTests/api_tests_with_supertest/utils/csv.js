@@ -1,9 +1,10 @@
 import request from "supertest";
 import assert from "node:assert";
-import {check_job_completed, get_job_id} from "./jobs.js";
+import {checkJobCompleted, getJobId} from "./jobs.js";
+import {envUrl} from "../config/envConfig.js";
 
-export async function csv_file_upload(url, schemaName, tableName, filePath) {
-    const response = await request(url)
+export async function csvFileUpload(schemaName, tableName, filePath) {
+    const response = await request(envUrl)
         .post('')
         .send({
             operation: 'csv_file_load',
@@ -13,12 +14,12 @@ export async function csv_file_upload(url, schemaName, tableName, filePath) {
             file_path: filePath
         })
         .expect(200)
-    const id = await get_job_id(url, response.body);
-    await check_job_completed(url, id);
+    const id = await getJobId(response.body);
+    await checkJobCompleted(id);
 }
 
-export async function csv_url_load(url, schemaName, tableName, fileUrl, expectedErrorMessage, expectedCompletedMessage) {
-    const response = await request(url)
+export async function csvUrlLoad(schemaName, tableName, fileUrl, expectedErrorMessage, expectedCompletedMessage) {
+    const response = await request(envUrl)
         .post('')
         .send({
             operation: 'csv_url_load',
@@ -28,6 +29,6 @@ export async function csv_url_load(url, schemaName, tableName, fileUrl, expected
             csv_url: fileUrl
         })
         .expect(200)
-    const id = await get_job_id(url, response.body);
-    await check_job_completed(url, id, expectedErrorMessage, expectedCompletedMessage);
+    const id = await getJobId(response.body);
+    await checkJobCompleted(id, expectedErrorMessage, expectedCompletedMessage);
 }

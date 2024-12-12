@@ -1,8 +1,9 @@
 import request from 'supertest';
 import assert from "node:assert";
+import {envUrl} from "../config/envConfig.js";
 
-export async function create_table(url, databaseName, tableName, hashAttribute ) {
-    await request(url)
+export async function createTable(databaseName, tableName, hashAttribute ) {
+    await request(envUrl)
         .post('')
         .send({
             operation: 'create_table',
@@ -18,8 +19,8 @@ export async function create_table(url, databaseName, tableName, hashAttribute )
         .expect(200)
 }
 
-export async function drop_table(url, schemaName, tableName, failTest) {
-    await request(url)
+export async function dropTable(schemaName, tableName, failTest) {
+    await request(envUrl)
         .post('')
         .send({
             operation: 'drop_table',
