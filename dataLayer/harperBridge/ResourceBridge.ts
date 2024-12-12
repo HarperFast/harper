@@ -116,6 +116,7 @@ export class ResourceBridge extends LMDBBridge {
 			attributes,
 			schemaDefined: schema_defined,
 			expiration: table_create_obj.expiration,
+			audit: table_create_obj.audit,
 		});
 	}
 	async createAttribute(create_attribute_obj) {
@@ -410,7 +411,7 @@ export class ResourceBridge extends LMDBBridge {
 							value,
 							comparator,
 						},
-				  ];
+					];
 
 		return table.search(
 			{

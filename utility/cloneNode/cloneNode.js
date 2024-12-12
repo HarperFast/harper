@@ -11,6 +11,7 @@ const { join } = require('path');
 const _ = require('lodash');
 const minimist = require('minimist');
 const path = require('path');
+const crypto = require('node:crypto');
 const PropertiesReader = require('properties-reader');
 const env_mgr = require('../environment/environmentManager');
 const sys_info = require('../environment/systemInformation');
@@ -29,6 +30,7 @@ const hdb_info_controller = require('../../dataLayer/hdbInfoController');
 const { sendOperationToNode } = require('../../server/replication/replicator');
 const { updateConfigCert } = require('../../security/keys');
 const { restartWorkers } = require('../../server/threads/manageThreads');
+const { databases } = require('../../resources/databases');
 
 const { SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME, CONFIG_PARAMS, OPERATIONS_ENUM } = hdb_terms;
 const WAIT_FOR_RESTART_TIME = 10000;
@@ -219,14 +221,13 @@ async function cloneUsingWS() {
 
 	const system_db_dir = getDBPath('system');
 	const sys_db_file_dir = join(system_db_dir, 'system.mdb');
-	if (fresh_clone || !(await fs.exists(sys_db_file_dir)) || clone_overtop) {
+	const sys_db_exists = fs.existsSync(sys_db_file_dir);
+	if (fresh_clone || !sys_db_exists || clone_overtop) {
 		console.info('Clone node installing HarperDB');
 		process.env.TC_AGREEMENT = 'yes';
 		process.env.ROOTPATH = root_path;
-		if (!username) throw new Error('HDB_LEADER_USERNAME is undefined.');
-		process.env.HDB_ADMIN_USERNAME = username;
-		if (!password) throw new Error('HDB_LEADER_PASSWORD is undefined.');
-		process.env.HDB_ADMIN_PASSWORD = password;
+		process.env.HDB_ADMIN_USERNAME = 'clone-temp-admin';
+		process.env.HDB_ADMIN_PASSWORD = crypto.randomBytes(10).toString('base64').slice(0, 10);
 		setIgnoreExisting(true);
 		await install();
 	} else {
@@ -242,6 +243,11 @@ async function cloneUsingWS() {
 
 	// Updates the keys configuration
 	await updateConfigCert();
+
+	// We delete the clone-temp-admin user because now that HDB is installed we want user to come from the leader via replication and the add node call
+	if (!sys_db_exists) {
+		await databases.system.hdb_user.delete({ username: 'clone-temp-admin' });
+	}
 
 	// Restarting HDB to pick up new config
 	await restartWorkers();
@@ -315,7 +321,6 @@ async function cloneConfig() {
 	leader_config_flat = config_utils.flattenConfig(leader_config);
 	const exclude_comps = clone_node_config?.componentConfig?.exclude;
 	const config_update = {
-		cloned: true,
 		rootpath: root_path,
 	};
 
@@ -383,8 +388,8 @@ async function cloneConfig() {
 	const args = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
 	Object.assign(config_update, args);
 
+	config_update.cloned = true;
 	config_utils.createConfigFile(config_update, true);
-	env_mgr.initSync(true);
 }
 
 /**
