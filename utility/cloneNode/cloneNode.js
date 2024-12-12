@@ -221,7 +221,7 @@ async function cloneUsingWS() {
 
 	const system_db_dir = getDBPath('system');
 	const sys_db_file_dir = join(system_db_dir, 'system.mdb');
-	const sys_db_exists = await fs.exists(sys_db_file_dir);
+	const sys_db_exists = fs.existsSync(sys_db_file_dir);
 	if (fresh_clone || !sys_db_exists || clone_overtop) {
 		console.info('Clone node installing HarperDB');
 		process.env.TC_AGREEMENT = 'yes';

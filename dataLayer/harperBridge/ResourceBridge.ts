@@ -87,7 +87,6 @@ export class ResourceBridge extends LMDBBridge {
 	 * timestamps for new table data.
 	 * @param table_system_data
 	 * @param table_create_obj
-	 * @param enableAudit
 	 */
 	async createTable(table_system_data, table_create_obj) {
 		let attributes = table_create_obj.attributes;
