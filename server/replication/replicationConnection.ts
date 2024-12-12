@@ -1066,7 +1066,7 @@ export function replicateOverWS(ws, options, authorization) {
 				return;
 			}
 
-			/* If we have are past the commands, we are now handling an incoming replication message, the next block
+			/* If we are past the commands, we are now handling an incoming replication message, the next block
 			 * handles parsing and transacting these replication messages */
 			decoder.position = 8;
 			let begin_txn = true;
