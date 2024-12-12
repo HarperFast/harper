@@ -78,9 +78,7 @@ async function harperdb() {
 		case SERVICE_ACTIONS_ENUM.START:
 			return run_clone ? require('../utility/cloneNode/cloneNode')(true) : require('./run').launch();
 		case SERVICE_ACTIONS_ENUM.INSTALL:
-			return require('./install')().then(() => {
-				return require('./run').main(true);
-			});
+			return require('./install')();
 		case SERVICE_ACTIONS_ENUM.REGISTER:
 			return require('./register').register();
 		case SERVICE_ACTIONS_ENUM.STOP:
