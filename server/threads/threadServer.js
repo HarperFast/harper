@@ -509,7 +509,8 @@ function getHTTPServer(port, secure, is_operations_server) {
 							server_timing += ', miss';
 						}
 						appendHeader(headers, 'Server-Timing', server_timing, true);
-						node_response.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
+						if (!node_response.headersSent)
+							node_response.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
 						if (sent_body) node_response.end(body);
 					}
 					const handler_path = request.handlerPath;
