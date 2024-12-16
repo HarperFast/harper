@@ -40,6 +40,7 @@ jobs:
       - name: 'Get values'
         id: get-values
         env:
+          docker_repo_url: 'https://hub.docker.com/v2/namespaces/harperdb/repositories/harperdb/tags?page_size=100'
           inputs_dryrun: ${{ inputs.dryrun }}
           tag: ${{ github.ref }}
           forcedVersion: ${{ inputs.forcedVersion }}
@@ -122,8 +123,39 @@ jobs:
             [[ "${forcedVersion}" != "no_forced" ]] && npm_extra_tags=''
             dockerhub_tag_latest=false
           else
-            npm_extra_tags='latest+stable'
-            dockerhub_tag_latest=true
+            # before we set to latest, we need to make sure that this isn't just a new stable release on an older release train
+            repo_data_json=$(curl -sL "${docker_repo_url}")
+            current_latest_image_digest=$(echo "${repo_data_json}" | jq -r '.results[] | select(.name == "latest").digest')
+            current_latest_image_tag=$(echo "${repo_data_json}" | jq ".results[] | select(.digest == \"${current_latest_image_digest}\")" | jq -r 'select(.name != "latest").name')
+          
+            current_latest_image_tag_major="${current_latest_image_tag%%\.*}"
+            current_latest_image_tag_minor="${current_latest_image_tag#*.}"
+            current_latest_image_tag_minor="${current_latest_image_tag_minor%.*}"
+            current_latest_image_tag_patch="${current_latest_image_tag##*.}"
+            
+            if [ "${version_major}" -gt "${current_latest_image_tag_major}" ]; then
+          
+              npm_extra_tags='latest+stable'
+              dockerhub_tag_latest=true
+          
+            elif [ "${version_major}" -eq "${current_latest_image_tag_major}" ] \
+              && [ "${version_minor}" -gt "${current_latest_image_tag_minor}" ]; then
+          
+              npm_extra_tags='latest+stable'
+              dockerhub_tag_latest=true
+          
+            elif [ "${version_major}" -eq "${current_latest_image_tag_major}" ] \
+              && [ "${version_minor}" -eq "${current_latest_image_tag_minor}" ] \
+              && [ "${version_patch}" -gt "${current_latest_image_tag_patch}" ]; then
+          
+              npm_extra_tags='latest+stable'
+              dockerhub_tag_latest=true
+
+            else
+
+              npm_extra_tags='none'
+              dockerhub_tag_latest=false
+            fi
           fi
 
           cat <<EOF >> "${GITHUB_OUTPUT}"

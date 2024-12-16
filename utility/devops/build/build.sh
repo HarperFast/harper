@@ -63,6 +63,9 @@ dot-json ./package.json scripts.postinstall "$post_install"
 npm install --package-lock-only
 npm shrinkwrap
 
+npm install --global pnpm
+pnpm install --lockfile-only
+
 dot-json ./npm_pack/package.json overrides --delete
 
 cd ../

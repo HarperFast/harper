@@ -51,6 +51,10 @@ export class Request {
 		// TODO: implement this
 		return false;
 	}
+	sendEarlyHints(link: string, headers = {}) {
+		headers.link = link;
+		this._nodeResponse.writeEarlyHints(headers);
+	}
 }
 class RequestBody {
 	#node_request;
@@ -86,6 +90,9 @@ class Headers {
 	}
 	values() {
 		return Object.values(this.asObject);
+	}
+	delete(name) {
+		delete this.asObject[name.toLowerCase()];
 	}
 	forEach(callback) {
 		for (const [key, value] of this) {

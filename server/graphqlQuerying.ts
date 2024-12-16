@@ -306,6 +306,9 @@ async function processFieldNode(
 	request: unknown
 ): Promise<[string, unknown[]]> {
 	const entry = resources.getMatch(fieldNode.name.value, 'graphql');
+	if (entry === undefined) {
+		throw new GraphQLQueryingError(`Resource \`${fieldNode.name.value}\` not found.`);
+	}
 	const resource = entry.Resource;
 
 	const query = {

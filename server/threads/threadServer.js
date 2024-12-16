@@ -1,9 +1,10 @@
 'use strict';
 
-const { isMainThread, parentPort, threadId, workerData } = require('worker_threads');
-const { Socket, createServer: createSocketServer } = require('net');
-const { createServer, IncomingMessage } = require('http');
-const { createServer: createSecureServer } = require('https');
+const { isMainThread, parentPort, threadId, workerData } = require('node:worker_threads');
+const { Socket, createServer: createSocketServer } = require('node:net');
+const { createServer, IncomingMessage } = require('node:http');
+const { createServer: createSecureServerHttp1 } = require('node:https');
+const { createSecureServer } = require('node:http2');
 const { unlinkSync, existsSync } = require('fs');
 const harper_logger = require('../../utility/logging/harper_logger');
 const env = require('../../utility/environment/environmentManager');
@@ -415,7 +416,6 @@ function getHTTPServer(port, secure, is_operations_server) {
 	if (!http_servers[port]) {
 		let server_prefix = is_operations_server ? 'operationsApi_network' : 'http';
 		let options = {
-			noDelay: true,
 			keepAliveTimeout: env.get(server_prefix + '_keepAliveTimeout'),
 			headersTimeout: env.get(server_prefix + '_headersTimeout'),
 			requestTimeout: env.get(server_prefix + '_timeout'),
@@ -429,8 +429,12 @@ function getHTTPServer(port, secure, is_operations_server) {
 		};
 		let mtls = env.get(server_prefix + '_mtls');
 		let mtls_required = env.get(server_prefix + '_mtls_required');
+		let http2;
 
 		if (secure) {
+			// check if we want to enable HTTP/2; operations server doesn't use HTTP/2 because it doesn't allow the
+			// ALPNCallback to work with our custom protocol for replication
+			http2 = env.get(server_prefix + '_http2') ?? !is_operations_server;
 			// If we are in secure mode, we use HTTP/2 (createSecureServer from http2), with back-compat support
 			// HTTP/1. We do not use HTTP/2 for insecure mode for a few reasons: browsers do not support insecure
 			// HTTP/2. We have seen slower performance with HTTP/2, when used for directly benchmarking. We have
@@ -442,18 +446,20 @@ function getHTTPServer(port, secure, is_operations_server) {
 				requestCert: Boolean(mtls || is_operations_server),
 				ticketKeys: getTicketKeys(),
 				SNICallback: createTLSSelector(is_operations_server ? 'operations-api' : 'server', mtls),
-				ALPNCallback: function (connection) {
-					// we use this as an indicator that the connection is a replication connection and that
-					// we should use the full set of replication CAs. Loading all of them for each connection
-					// is expensive
-					if (connection.protocols.includes('harperdb-replication')) this.isReplicationConnection = true;
-					return 'http/1.1';
-				},
+				ALPNCallback: http2
+					? undefined
+					: function (connection) {
+							// we use this as an indicator that the connection is a replication connection and that
+							// we should use the full set of replication CAs. Loading all of them for each connection
+							// is expensive
+							if (connection.protocols.includes('harperdb-replication')) this.isReplicationConnection = true;
+							return 'http/1.1';
+						},
 				ALPNProtocols: null,
 			});
 		}
 		let license_warning = checkMemoryLimit();
-		let server = (http_servers[port] = (secure ? createSecureServer : createServer)(
+		let server = (http_servers[port] = (secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer)(
 			options,
 			async (node_request, node_response) => {
 				try {

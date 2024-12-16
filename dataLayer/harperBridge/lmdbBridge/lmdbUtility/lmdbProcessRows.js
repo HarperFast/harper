@@ -37,7 +37,7 @@ processRows.validateAttribute = validateAttribute;
  * @param attribute
  */
 function validateAttribute(attribute) {
-	if (Buffer.byteLength(String(attribute)) > hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE) {
+	if (Buffer.byteLength(String(attribute)) > hdb_terms.INSERT_MAX_CHARACTER_SIZE) {
 		throw handleHDBError(
 			new Error(),
 			HDB_ERROR_MSGS.ATTR_NAME_LENGTH_ERR(attribute),
@@ -86,7 +86,7 @@ function validateHash(record, hash_attribute, operation) {
 		);
 	}
 
-	if (Buffer.byteLength(String(record[hash_attribute])) > hdb_terms.INSERT_MODULE_ENUM.MAX_CHARACTER_SIZE) {
+	if (Buffer.byteLength(String(record[hash_attribute])) > hdb_terms.INSERT_MAX_CHARACTER_SIZE) {
 		log.error(record);
 		throw handleHDBError(
 			new Error(),

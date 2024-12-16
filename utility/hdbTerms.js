@@ -1,52 +1,62 @@
-'use strict';
+const path = require('node:path');
+const fs = require('node:fs');
 
-const path = require('path');
-const fs = require('fs');
-const { relative, join } = path;
-const { existsSync } = fs;
 /**
  * Finds and returns the package root directory
- * @returns {string}
  */
 function getHDBPackageRoot() {
 	let dir = __dirname;
-	while (!existsSync(path.join(dir, 'package.json'))) {
-		let parent = path.dirname(dir);
+	while (!fs.existsSync(path.join(dir, 'package.json'))) {
+		const parent = path.dirname(dir);
 		if (parent === dir) throw new Error('Could not find package root');
 		dir = parent;
 	}
 	return dir;
 }
+
 const PACKAGE_ROOT = getHDBPackageRoot();
 
 /**
- * This module should contain common variables/values that will be used across the project.  This should avoid
- * duplicate values making refactoring a little easier.
+ * This module contains common variables/values that will be used across the project.
+ * Using these constant values helps with consistency across the project.
+ *
+ * All strings should be specified with ``.
+ * All exports should use a JSDoc comment to explain what it is.
+ *
  */
 
-const JAVASCRIPT_EXTENSION = 'js';
-const CODE_EXTENSION = JAVASCRIPT_EXTENSION;
-
+/** HarperDB Root Config File */
 const HDB_CONFIG_FILE = 'harperdb-config.yaml';
+/** HarperDB Default Config File */
 const HDB_DEFAULT_CONFIG_FILE = 'defaultConfig.yaml';
+/** HarperDB Root Directory Name */
 const HDB_ROOT_DIR_NAME = 'hdb';
+/** HarperDB Component Config File */
+const HDB_COMPONENT_CONFIG_FILE = 'config.yaml';
 
-// Name of the HDB process
-const HDB_PROC_NAME = `harperdb.${CODE_EXTENSION}`;
-const CUSTOM_FUNCTION_PROC_NAME = `customFunctionsServer.${CODE_EXTENSION}`;
-const HDB_RESTART_SCRIPT = `restartHdb.${CODE_EXTENSION}`;
+/** Name of the HarperDB Process Script */
+const HDB_PROC_NAME = 'harperdb.js';
+/** Name of the HarperDB Restart Script */
+const HDB_RESTART_SCRIPT = 'restartHdb.js';
 
+/** HarperDB Process Descriptor */
 const HDB_PROC_DESCRIPTOR = 'HarperDB';
+/** Custom Function Process Descriptor */
 const CUSTOM_FUNCTION_PROC_DESCRIPTOR = 'Custom Functions';
+/** Clustering Hub Process Descriptor */
 const CLUSTERING_HUB_PROC_DESCRIPTOR = 'Clustering Hub';
+/** Clustering Leaf Process Descriptor */
 const CLUSTERING_LEAF_PROC_DESCRIPTOR = 'Clustering Leaf';
+/** Clustering Ingest Service Process Descriptor */
 const CLUSTERING_INGEST_PROC_DESCRIPTOR = 'Clustering Ingest Service';
+/** Clustering Reply Service Process Descriptor */
 const CLUSTERING_REPLY_SERVICE_DESCRIPTOR = 'Clustering Reply Service';
 
-const FOREGROUND_PID_FILE = 'foreground.pid';
-const HDB_PID_FILE = 'hdb.pid';
-const DEFAULT_DATABASE_NAME = 'data';
-
+/**
+ * Process Descriptor Map
+ *
+ * Used throughout the project to map process descriptors to their respective process names.
+ */
 const PROCESS_DESCRIPTORS = {
 	HDB: HDB_PROC_DESCRIPTOR,
 	CLUSTERING_HUB: CLUSTERING_HUB_PROC_DESCRIPTOR,
@@ -64,24 +74,13 @@ const PROCESS_DESCRIPTORS = {
 	CLUSTERING_UPGRADE_4_0_0: 'Upgrade-4-0-0',
 };
 
-const LOG_NAMES = {
-	HDB: 'hdb.log',
-	INSTALL: 'install.log',
-	CLUSTERING_HUB: 'clustering_hub.log',
-	CLUSTERING_LEAF: 'clustering_leaf.log',
-};
-
-const LOG_LEVELS = {
-	NOTIFY: 'notify',
-	FATAL: 'fatal',
-	ERROR: 'error',
-	WARN: 'warn',
-	INFO: 'info',
-	DEBUG: 'debug',
-	TRACE: 'trace',
-};
-
-const PROCESS_DESCRIPTORS_VALIDATE = {
+/**
+ * Process Services Map
+ *
+ * These are the services that the HarperDB process provides.
+ * This object is used primarily in the restart workflow to determine which services to restart.
+ */
+const HDB_PROCESS_SERVICES = {
 	'harperdb': HDB_PROC_DESCRIPTOR,
 	'clustering hub': CLUSTERING_HUB_PROC_DESCRIPTOR,
 	'clustering leaf': CLUSTERING_LEAF_PROC_DESCRIPTOR,
@@ -94,24 +93,41 @@ const PROCESS_DESCRIPTORS_VALIDATE = {
 	'http': 'http',
 };
 
-// All the processes that make up clustering
+/**
+ * Clustering Process Services Map
+ *
+ * Used for process management to easily iterate over the clustering processes.
+ */
 const CLUSTERING_PROCESSES = {
 	CLUSTERING_HUB_PROC_DESCRIPTOR,
 	CLUSTERING_LEAF_PROC_DESCRIPTOR,
 };
 
-const SERVICE_SERVERS_CWD = {
-	HDB: path.join(PACKAGE_ROOT, `server/harperdb`),
-	CUSTOM_FUNCTIONS: path.join(PACKAGE_ROOT, `server/customFunctions`),
-	CLUSTERING_HUB: path.join(PACKAGE_ROOT, 'server/nats'),
-	CLUSTERING_LEAF: path.join(PACKAGE_ROOT, 'server/nats'),
+/** HarperDB Process Identifier File Name */
+const HDB_PID_FILE = 'hdb.pid';
+/** Default database name */
+const DEFAULT_DATABASE_NAME = 'data';
+
+/** Log File Names */
+const LOG_NAMES = {
+	HDB: 'hdb.log',
+	INSTALL: 'install.log',
+	CLUSTERING_HUB: 'clustering_hub.log',
+	CLUSTERING_LEAF: 'clustering_leaf.log',
 };
 
-const SERVICE_SERVERS = {
-	HDB: path.join(SERVICE_SERVERS_CWD.HDB, HDB_PROC_NAME),
-	CUSTOM_FUNCTIONS: path.join(SERVICE_SERVERS_CWD.CUSTOM_FUNCTIONS, CUSTOM_FUNCTION_PROC_NAME),
+/** Log Levels */
+const LOG_LEVELS = {
+	NOTIFY: 'notify',
+	FATAL: 'fatal',
+	ERROR: 'error',
+	WARN: 'warn',
+	INFO: 'info',
+	DEBUG: 'debug',
+	TRACE: 'trace',
 };
 
+/** Launch Service script paths */
 const LAUNCH_SERVICE_SCRIPTS = {
 	MAIN: 'bin/harperdb.js',
 	NATS_INGEST_SERVICE: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchNatsIngestService.js'),
@@ -119,69 +135,70 @@ const LAUNCH_SERVICE_SCRIPTS = {
 	NODES_UPGRADE_4_0_0: path.join(PACKAGE_ROOT, 'launchServiceScripts/launchUpdateNodes4-0-0.js'),
 };
 
+/** Specifies user role types */
 const ROLE_TYPES_ENUM = {
 	SUPER_USER: 'super_user',
 	CLUSTER_USER: 'cluster_user',
 };
 
+/** Email address for support requests */
 const HDB_SUPPORT_ADDRESS = 'support@harperdb.io';
-const HDB_LICENSE_EMAIL_ADDRESS = 'customer-success@harperdb.io';
 
-const BASIC_LICENSE_MAX_NON_CU_ROLES = 1;
-const BASIC_LICENSE_CLUSTER_CONNECTION_LIMIT_WS_ERROR_CODE = 4141;
-const HDB_SUPPORT_URL = 'https://harperdbhelp.zendesk.com/hc/en-us/requests/new';
-const HDB_PRICING_URL = 'https://www.harperdb.io/product';
-const SUPPORT_HELP_MSG = `For support, please submit a request at ${HDB_SUPPORT_URL} or contact ${HDB_SUPPORT_ADDRESS}`;
-const LICENSE_HELP_MSG = `For license support, please contact ${HDB_LICENSE_EMAIL_ADDRESS}`;
+/** Support Help Message */
+const SUPPORT_HELP_MSG = `For support, please submit a request at https://harperdbhelp.zendesk.com/hc/en-us/requests/new or contact ${HDB_SUPPORT_ADDRESS}`;
+/** Message when records cannot be found for a DELETE operation */
 const SEARCH_NOT_FOUND_MESSAGE = 'None of the specified records were found.';
-const SEARCH_ATTRIBUTE_NOT_FOUND = `hash attribute not found`;
-const LICENSE_ROLE_DENIED_RESPONSE = `Your current license only supports ${BASIC_LICENSE_MAX_NON_CU_ROLES} role.  ${LICENSE_HELP_MSG}`;
-const LICENSE_MAX_CONNS_REACHED = 'Your current license only supports 3 connections to a node.';
-const LOOPBACK = '127.0.0.1';
-const BASIC_LICENSE_MAX_CLUSTER_USER_ROLES = 1;
 
-const PERIOD_REGEX = /^\.$/;
-const DOUBLE_PERIOD_REGEX = /^\.\.$/;
+// TODO: The following unicode/regex terms seem pointless, and could be removed.
+// Singular character codes and basic regex patterns should be included inline where they are used.
+// These are not likely to ever change and don't need to be extrapolated into variables
+
+/** Unicode for the `.` character */
 const UNICODE_PERIOD = 'U+002E';
+/** Regex for matching the `/` character */
 const FORWARD_SLASH_REGEX = /\//g;
+/** Unicode for the `/` character */
 const UNICODE_FORWARD_SLASH = 'U+002F';
+/** Regex for matching an escaped `/` character */
 const ESCAPED_FORWARD_SLASH_REGEX = /U\+002F/g;
-const ESCAPED_PERIOD_REGEX = /^U\+002E$/;
-const ESCAPED_DOUBLE_PERIOD_REGEX = /^U\+002EU\+002E$/;
-const MOMENT_DAYS_TAG = 'd';
-const API_TURNOVER_SEC = 999999;
-const WILDCARD_SEARCH_VALUE = '*';
 
+/** CLI Argument for setting the memory value */
 const MEM_SETTING_KEY = '--max-old-space-size=';
 
-// Name of the System schema
+/** Name of the System schema */
 const SYSTEM_SCHEMA_NAME = 'system';
-const HASH_FOLDER_NAME = '__hdb_hash';
-const CLUSTERING_VERSION_HEADER_NAME = 'hdb_version';
-const HDB_HOME_DIR_NAME = '.harperdb';
-const HDB_FILE_SUFFIX = '.hdb';
-const LICENSE_KEY_DIR_NAME = 'keys';
-const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
-const UPDATE_FILE_NAME = '.updateConfig.json';
-const RESTART_CODE = 'SIGTSTP';
-const RESTART_CODE_NUM = 24;
-const RESTART_TIMEOUT_MS = 60000;
-const HDB_FILE_PERMISSIONS = 0o700;
-const BLOB_FOLDER_NAME = 'blob';
-const DATABASES_DIR_NAME = 'database';
-const LEGACY_DATABASES_DIR_NAME = 'schema';
-const TRANSACTIONS_DIR_NAME = 'transactions';
-const LIMIT_COUNT_NAME = '.count';
-const ID_ATTRIBUTE_STRING = 'id';
 
+/** HarperDB Home directory */
+const HDB_HOME_DIR_NAME = '.harperdb';
+
+/** License Key directory */
+const LICENSE_KEY_DIR_NAME = 'keys';
+
+/** HarperDB Boot Properties file name */
+const BOOT_PROPS_FILE_NAME = 'hdb_boot_properties.file';
+
+/** Restart timeout (milliseconds) */
+const RESTART_TIMEOUT_MS = 60000;
+
+/** HarperDB File Permissions Mode */
+const HDB_FILE_PERMISSIONS = 0o700;
+
+/** Database directory */
+const DATABASES_DIR_NAME = 'database';
+/** Legacy Database directory */
+const LEGACY_DATABASES_DIR_NAME = 'schema';
+/** Transaction directory */
+const TRANSACTIONS_DIR_NAME = 'transactions';
+
+/** Key for specifying process specific environment variables */
 const PROCESS_NAME_ENV_PROP = 'PROCESS_NAME';
 
+/** Boot sequence property parameters */
 const BOOT_PROP_PARAMS = {
 	SETTINGS_PATH_KEY: 'settings_path',
 };
 
-const _ = require('lodash');
-
+/** Installation prompt map */
 const INSTALL_PROMPTS = {
 	TC_AGREEMENT: 'TC_AGREEMENT',
 	CLUSTERING_USER: 'CLUSTERING_USER',
@@ -203,19 +220,16 @@ const INSTALL_PROMPTS = {
 	CLUSTERING: 'CLUSTERING',
 };
 
-const INSERT_MODULE_ENUM = {
-	HDB_PATH_KEY: 'HDB_INTERNAL_PATH',
-	HDB_AUTH_HEADER: 'hdb_auth_header',
-	HDB_USER_DATA_KEY: 'hdb_user',
-	CHUNK_SIZE: 1000,
-	MAX_CHARACTER_SIZE: 250,
-};
+/** Insert operation max character size */
+const INSERT_MAX_CHARACTER_SIZE = 250;
 
+/** Upgrade JSON field map */
 const UPGRADE_JSON_FIELD_NAMES_ENUM = {
 	DATA_VERSION: 'data_version',
 	UPGRADE_VERSION: 'upgrade_version',
 };
 
+/** System table names */
 const SYSTEM_TABLE_NAMES = {
 	JOB_TABLE_NAME: 'hdb_job',
 	NODE_TABLE_NAME: 'hdb_nodes',
@@ -228,35 +242,10 @@ const SYSTEM_TABLE_NAMES = {
 	INFO_TABLE_NAME: 'hdb_info',
 };
 
-const SYSTEM_TABLE_HASH_ATTRIBUTES = {
-	JOB_TABLE_HASH_ATTRIBUTE: 'id',
-	NODE_TABLE_HASH_ATTRIBUTE: 'name',
-	ATTRIBUTE_TABLE_HASH_ATTRIBUTE: 'id',
-	LICENSE_TABLE_HASH_ATTRIBUTE: 'license_key',
-	ROLE_TABLE_HASH_ATTRIBUTE: 'id',
-	SCHEMA_TABLE_HASH_ATTRIBUTE: 'name',
-	TABLE_TABLE_HASH_ATTRIBUTE: 'id',
-	USER_TABLE_HASH_ATTRIBUTE: 'username',
-	INFO_TABLE_ATTRIBUTE: 'info_id',
-};
+/** Hash attribute for the system info table */
+const INFO_TABLE_HASH_ATTRIBUTE = 'info_id';
 
-const HDB_INTERNAL_SC_CHANNEL_PREFIX = 'hdb_internal:';
-
-const INTERNAL_SC_CHANNELS = {
-	CREATE_SCHEMA: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'create_schema',
-	CREATE_TABLE: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'create_table',
-	CREATE_ATTRIBUTE: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'create_attribute',
-	ADD_USER: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'add_user',
-	ALTER_USER: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'alter_user',
-	DROP_USER: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'drop_user',
-	HDB_NODES: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'hdb_nodes',
-	HDB_USERS: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'hdb_users',
-	HDB_WORKERS: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'hdb_workers',
-	CATCHUP: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'catchup',
-	SCHEMA_CATCHUP: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'schema_catchup',
-	WORKER_ROOM: HDB_INTERNAL_SC_CHANNEL_PREFIX + 'cluster_workers',
-};
-
+/** System default attributes */
 const SYSTEM_DEFAULT_ATTRIBUTE_NAMES = {
 	ATTR_ATTRIBUTE_KEY: 'attribute',
 	ATTR_CREATEDDATE_KEY: 'createddate',
@@ -272,12 +261,13 @@ const SYSTEM_DEFAULT_ATTRIBUTE_NAMES = {
 	ATTR_USERNAME_KEY: 'username',
 };
 
-// Registration key file name
+/** Registration key file name */
 const REG_KEY_FILE_NAME = '060493.ks';
 
+/** License file name */
 const LICENSE_FILE_NAME = '.license';
 
-// Describes the available statuses for jobs
+/** Describes the available statuses for jobs */
 const JOB_STATUS_ENUM = {
 	CREATED: 'CREATED',
 	IN_PROGRESS: 'IN_PROGRESS',
@@ -285,7 +275,7 @@ const JOB_STATUS_ENUM = {
 	ERROR: 'ERROR',
 };
 
-// Operations
+/** Operations */
 const OPERATIONS_ENUM = {
 	INSERT: 'insert',
 	UPDATE: 'update',
@@ -394,13 +384,13 @@ const OPERATIONS_ENUM = {
 	GET_KEY: 'get_key',
 };
 
-// Defines valid file types that we are able to handle in 'import_from_s3' ops
+/** Defines valid file types that we are able to handle in 'import_from_s3' ops */
 const VALID_S3_FILE_TYPES = {
 	CSV: '.csv',
 	JSON: '.json',
 };
 
-// Defines the keys required in a request body for accessing a S3 bucket
+/** Defines the keys required in a request body for accessing a S3 bucket */
 const S3_BUCKET_AUTH_KEYS = {
 	AWS_ACCESS_KEY: 'aws_access_key_id',
 	AWS_SECRET: 'aws_secret_access_key',
@@ -409,9 +399,10 @@ const S3_BUCKET_AUTH_KEYS = {
 	REGION: 'region',
 };
 
-// Defines valid SQL operations to be used in the processAST method - this ensure we have appropriate unit test coverage
-// for all SQL operations that are dynamically set after the chooseOperation method which behaves differently for the
-// evaluateSQL operation.
+/**
+ * Defines valid SQL operations to be used in the processAST method - this ensure we have appropriate unit test coverage
+ * for all SQL operations that are dynamically set after the chooseOperation method which behaves differently for the evaluateSQL operation.
+ */
 const VALID_SQL_OPS_ENUM = {
 	SELECT: 'select',
 	INSERT: 'insert',
@@ -419,47 +410,15 @@ const VALID_SQL_OPS_ENUM = {
 	DELETE: 'delete',
 };
 
-// Defines operations that should be propagated to the cluster.
-let CLUSTER_OPERATIONS = {};
-CLUSTER_OPERATIONS[OPERATIONS_ENUM.INSERT] = OPERATIONS_ENUM.INSERT;
-CLUSTER_OPERATIONS[OPERATIONS_ENUM.UPDATE] = OPERATIONS_ENUM.UPDATE;
-CLUSTER_OPERATIONS[OPERATIONS_ENUM.UPSERT] = OPERATIONS_ENUM.UPSERT;
-CLUSTER_OPERATIONS[OPERATIONS_ENUM.DELETE] = OPERATIONS_ENUM.DELETE;
+/** Defines operations that should be propagated to the cluster. */
+const CLUSTER_OPERATIONS = {
+	[OPERATIONS_ENUM.INSERT]: OPERATIONS_ENUM.INSERT,
+	[OPERATIONS_ENUM.UPDATE]: OPERATIONS_ENUM.UPDATE,
+	[OPERATIONS_ENUM.UPSERT]: OPERATIONS_ENUM.UPSERT,
+	[OPERATIONS_ENUM.DELETE]: OPERATIONS_ENUM.DELETE,
+};
 
-//this variable defines operations that should only run locally and not pass over clustering to another node(s)
-const LOCAL_HARPERDB_OPERATIONS = Object.create(null);
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.DESCRIBE_ALL] = OPERATIONS_ENUM.DESCRIBE_ALL;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.DESCRIBE_TABLE] = OPERATIONS_ENUM.DESCRIBE_TABLE;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.DESCRIBE_SCHEMA] = OPERATIONS_ENUM.DESCRIBE_SCHEMA;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.READ_LOG] = OPERATIONS_ENUM.READ_LOG;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.ADD_NODE] = OPERATIONS_ENUM.ADD_NODE;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.LIST_USERS] = OPERATIONS_ENUM.LIST_USERS;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.LIST_ROLES] = OPERATIONS_ENUM.LIST_ROLES;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.USER_INFO] = OPERATIONS_ENUM.USER_INFO;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.SQL] = OPERATIONS_ENUM.SQL;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.GET_JOB] = OPERATIONS_ENUM.GET_JOB;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE] = OPERATIONS_ENUM.SEARCH_JOBS_BY_START_DATE;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.DELETE_FILES_BEFORE] = OPERATIONS_ENUM.DELETE_FILES_BEFORE;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.EXPORT_LOCAL] = OPERATIONS_ENUM.EXPORT_LOCAL;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.EXPORT_TO_S3] = OPERATIONS_ENUM.EXPORT_TO_S3;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.CLUSTER_STATUS] = OPERATIONS_ENUM.CLUSTER_STATUS;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.REMOVE_NODE] = OPERATIONS_ENUM.REMOVE_NODE;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.RESTART] = OPERATIONS_ENUM.RESTART;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.CUSTOM_FUNCTIONS_STATUS] = OPERATIONS_ENUM.CUSTOM_FUNCTIONS_STATUS;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.GET_CUSTOM_FUNCTIONS] = OPERATIONS_ENUM.GET_CUSTOM_FUNCTIONS;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.GET_CUSTOM_FUNCTION] = OPERATIONS_ENUM.GET_CUSTOM_FUNCTION;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.SET_CUSTOM_FUNCTION] = OPERATIONS_ENUM.SET_CUSTOM_FUNCTION;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION] = OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.ADD_CUSTOM_FUNCTION_PROJECT] = OPERATIONS_ENUM.ADD_CUSTOM_FUNCTION_PROJECT;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION_PROJECT] = OPERATIONS_ENUM.DROP_CUSTOM_FUNCTION_PROJECT;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT] =
-	OPERATIONS_ENUM.PACKAGE_CUSTOM_FUNCTION_PROJECT;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.DEPLOY_CUSTOM_FUNCTION_PROJECT] =
-	OPERATIONS_ENUM.DEPLOY_CUSTOM_FUNCTION_PROJECT;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.ADD_SSH_KEY] = OPERATIONS_ENUM.ADD_SSH_KEY;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.UPDATE_SSH_KEY] = OPERATIONS_ENUM.UPDATE_SSH_KEY;
-LOCAL_HARPERDB_OPERATIONS[OPERATIONS_ENUM.DELETE_SSH_KEY] = OPERATIONS_ENUM.DELETE_SSH_KEY;
-
+/** Available service actions */
 const SERVICE_ACTIONS_ENUM = {
 	DEV: 'dev',
 	RUN: 'run',
@@ -477,7 +436,7 @@ const SERVICE_ACTIONS_ENUM = {
 	COPYDB: 'copy-db',
 };
 
-//describes the Geo Conversion types
+/** describes the Geo Conversion types */
 const GEO_CONVERSION_ENUM = {
 	point: 'point',
 	lineString: 'lineString',
@@ -487,8 +446,10 @@ const GEO_CONVERSION_ENUM = {
 	polygon: 'polygon',
 };
 
-// These values are relics of before the config was converted to yaml.
-// The should no longer be used. Instead use CONFIG_PARAMS.
+/**
+ * These values are relics of before the config was converted to yaml.
+ * The should no longer be used. Instead use CONFIG_PARAMS.
+ */
 const HDB_SETTINGS_NAMES = {
 	HDB_ROOT_KEY: 'HDB_ROOT',
 	SERVER_PORT_KEY: 'SERVER_PORT',
@@ -538,12 +499,7 @@ const HDB_SETTINGS_NAMES = {
 	STORAGE_WRITE_ASYNC: 'STORAGE_WRITE_ASYNC',
 };
 
-/**
- * Used for looking up key names by the actual setting field name.
- */
-
-const HDB_SETTINGS_NAMES_REVERSE_LOOKUP = _.invert(HDB_SETTINGS_NAMES);
-
+/** Legacy configuration parameters */
 const LEGACY_CONFIG_PARAMS = {
 	CUSTOMFUNCTIONS_ENABLED: 'customFunctions_enabled',
 	CUSTOMFUNCTIONS_NETWORK_PORT: 'customFunctions_network_port',
@@ -560,7 +516,11 @@ const LEGACY_CONFIG_PARAMS = {
 	CUSTOMFUNCTIONS_ROOT: 'customFunctions_root',
 };
 
-// If a param is added to config it must also be added here.
+/**
+ * All configuration parameters for HarperDB
+ *
+ * If a param is added to config it must also be added here.
+ */
 const CONFIG_PARAMS = {
 	ANALYTICS_AGGREGATEPERIOD: 'analytics_aggregatePeriod',
 	AUTHENTICATION_AUTHORIZELOCAL: 'authentication_authorizeLocal',
@@ -616,6 +576,7 @@ const CONFIG_PARAMS = {
 	HTTP_MTLS_USER: 'http_mtls_user',
 	HTTP_MAXHEADERSIZE: 'http_maxHeaderSize',
 	HTTP_THREADRANGE: 'http_threadRange',
+	HTTP_HTTP2: 'http_http2',
 	LOCALSTUDIO_ENABLED: 'localStudio_enabled',
 	LOGGING_CONSOLE: 'logging_console',
 	LOGGING_FILE: 'logging_file',
@@ -639,6 +600,7 @@ const CONFIG_PARAMS = {
 	OPERATIONSAPI_NETWORK_PORT: 'operationsApi_network_port',
 	OPERATIONSAPI_NETWORK_DOMAINSOCKET: 'operationsApi_network_domainSocket',
 	OPERATIONSAPI_NETWORK_SECUREPORT: 'operationsApi_network_securePort',
+	OPERATIONSAPI_NETWORK_HTTP2: 'operationsApi_network_http2',
 	OPERATIONSAPI_TLS: 'operationsApi_tls',
 	OPERATIONSAPI_TLS_CERTIFICATE: 'operationsApi_tls_certificate',
 	OPERATIONSAPI_TLS_PRIVATEKEY: 'operationsApi_tls_privateKey',
@@ -692,6 +654,11 @@ const CONFIG_PARAMS = {
 	CLONED: 'cloned',
 };
 
+/**
+ * Configuration parameter map.
+ *
+ * Standardizes all configuration parameters types
+ */
 const CONFIG_PARAM_MAP = {
 	settings_path: BOOT_PROP_PARAMS.SETTINGS_PATH_KEY,
 	hdb_root_key: CONFIG_PARAMS.ROOTPATH,
@@ -802,6 +769,7 @@ const CONFIG_PARAM_MAP = {
 	http_mtls_required: CONFIG_PARAMS.HTTP_MTLS_REQUIRED,
 	http_maxheadersize: CONFIG_PARAMS.HTTP_MAXHEADERSIZE,
 	http_threadrange: CONFIG_PARAMS.HTTP_THREADRANGE,
+	http_http2: CONFIG_PARAMS.HTTP_HTTP2,
 	customfunctions_processes: CONFIG_PARAMS.THREADS_COUNT,
 	customfunctions_root: CONFIG_PARAMS.COMPONENTSROOT,
 	localstudio_enabled: CONFIG_PARAMS.LOCALSTUDIO_ENABLED,
@@ -828,6 +796,7 @@ const CONFIG_PARAM_MAP = {
 	operationsapi_network_port: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT,
 	operationsapi_network_domainsocket: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET,
 	operationsapi_network_secureport: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT,
+	operationsapi_network_http2: CONFIG_PARAMS.OPERATIONSAPI_NETWORK_HTTP2,
 	operationsapi_tls: CONFIG_PARAMS.OPERATIONSAPI_TLS,
 	operationsapi_tls_certificate: CONFIG_PARAMS.OPERATIONSAPI_TLS_CERTIFICATE,
 	operationsapi_tls_privatekey: CONFIG_PARAMS.OPERATIONSAPI_TLS_PRIVATEKEY,
@@ -867,18 +836,21 @@ const CONFIG_PARAM_MAP = {
 	tls_certificateauthority: CONFIG_PARAMS.TLS_CERTIFICATEAUTHORITY,
 	tls_ciphers: CONFIG_PARAMS.TLS_CIPHERS,
 };
-for (let key in CONFIG_PARAMS) {
-	let name = CONFIG_PARAMS[key];
+
+// TODO: What are we doing here? It feels like the constant definition above should be sufficient. Is this actually applying anything relevant?
+for (const key in CONFIG_PARAMS) {
+	const name = CONFIG_PARAMS[key];
 	CONFIG_PARAM_MAP[name.toLowerCase()] = name;
 }
 
+/** Database parameter config */
 const DATABASES_PARAM_CONFIG = {
 	TABLES: 'tables',
 	PATH: 'path',
 	AUDIT_PATH: 'auditPath',
 };
 
-// Describes all available job types
+/** Describes all available job types */
 const JOB_TYPE_ENUM = {
 	csv_file_load: 'csv_file_load',
 	csv_data_load: OPERATIONS_ENUM.CSV_DATA_LOAD,
@@ -894,6 +866,7 @@ const JOB_TYPE_ENUM = {
 	restart_service: 'restart_service',
 };
 
+/** Clustering Message types */
 const CLUSTER_MESSAGE_TYPE_ENUM = {
 	CLUSTERING_PAYLOAD: 'clustering_payload',
 	DELEGATE_THREAD_RESPONSE: 'delegate_thread_response',
@@ -906,65 +879,19 @@ const CLUSTER_MESSAGE_TYPE_ENUM = {
 	USER: 'user',
 	RESTART: 'restart',
 };
-const CLUSTER_CONNECTION_DIRECTION_ENUM = {
-	// Data flows to both the client and this server
-	BIDIRECTIONAL: 'BIDIRECTIONAL',
-	// This server only sends data to its client, it doesn't up update from received data
-	OUTBOUND: 'OUTBOUND',
-	// This server only receives data, it does not send updated data
-	INBOUND: 'INBOUND',
-};
 
+/** Specifies values for licenses */
 const LICENSE_VALUES = {
 	VERSION_DEFAULT: '2.2.0',
 };
 
-// The maximum ram allocation in MB per HDB child process
+/** The maximum ram allocation in MB per HDB child process */
 const RAM_ALLOCATION_ENUM = {
 	DEVELOPMENT: 8192, //8GB
 	DEFAULT: 512, //.5GB
 };
 
-const CLUSTER_EVENTS_DEFS_ENUM = {
-	IDENTIFY: 'identify',
-	AUTHENTICATE: 'authenticate',
-	AUTHENTICATE_OK: 'authenticated',
-	AUTHENTICATE_FAIL: 'authenticate_fail',
-	CONNECTION: 'connection',
-	CONNECT: 'connect',
-	CATCHUP_REQUEST: 'catchup_request',
-	CATCHUP_RESPONSE: 'catchup',
-	CONFIRM_MSG: 'confirm_msg',
-	ERROR: 'error',
-	DISCONNECT: 'disconnect',
-	SCHEMA_UPDATE_REQ: 'schema_update_request',
-	SCHEMA_UPDATE_RES: 'schema_update_response',
-	RECONNECT_ATTEMPT: 'reconnect_attempt',
-	CONNECT_ERROR: 'connect_error',
-	MESSAGE: 'msg',
-	VERSION_MISMATCH: 'version_mismatch',
-	DIRECTION_CHANGE: 'direction_change',
-};
-
-const WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP = {
-	1000: 'SUCCESSFUL_SHUTDOWN',
-	1001: 'CLOSE_GOING_AWAY',
-	1002: 'CLOSE_PROTOCOL_ERROR',
-	1003: 'CLOSE_UNSUPPORTED',
-	1005: 'CLOSE_NO_STATUS',
-	1006: 'CLOSE_ABNORMAL',
-	1007: 'UNSUPPORTED_PAYLOAD',
-	1008: 'POLICY_VIOLATION',
-	1009: 'CLOSE_TOO_LARGE',
-	1010: 'MANDATORY_EXTENSION',
-	1011: 'SERVER_ERROR',
-	1012: 'SERVICE_RESTART',
-	1013: 'SERVER_BUSY',
-	1014: 'BAD_GATEWAY',
-	1015: 'HANDSHAKE_FAIL',
-	4141: 'LICENSE_LIMIT_REACHED',
-};
-
+/** Common Node.js Error Codes */
 const NODE_ERROR_CODES = {
 	ENOENT: 'ENOENT', // No such file or directory.
 	EACCES: 'EACCES', // Permission denied.
@@ -972,19 +899,31 @@ const NODE_ERROR_CODES = {
 	ERR_INVALID_ARG_TYPE: 'ERR_INVALID_ARG_TYPE',
 };
 
-const TIME_STAMP_NAMES_ENUM = {
-	CREATED_TIME: '__createdtime__',
-	UPDATED_TIME: '__updatedtime__',
-};
+// TODO: Wherever this is used, replace this with a private property
+/** Symbol for metadata */
 const METADATA_PROPERTY = Symbol('metadata');
+
+/** Clustering flag */
 const CLUSTERING_FLAG = '__clustering__';
 
-const TIME_STAMP_NAMES = Object.values(TIME_STAMP_NAMES_ENUM);
+const CREATED_TIME = '__createdtime__';
+const UPDATED_TIME = '__updatedtime__';
 
-//This value is used to help evaluate whether or not a permissions translation error is related to old permissions values
-// or if it could be another code-related bug/error.
+/** Timestamp keys */
+const TIME_STAMP_NAMES_ENUM = {
+	CREATED_TIME,
+	UPDATED_TIME,
+};
+
+/** Timestamp values */
+const TIME_STAMP_NAMES = [CREATED_TIME, UPDATED_TIME];
+
+/**
+ * This value is used to help evaluate whether or not a permissions translation error is related to old permissions values or if it could be another code-related bug/error.
+ */
 const PERMS_UPDATE_RELEASE_TIMESTAMP = 1598486400000;
 
+/** Search comparator value strings */
 const VALUE_SEARCH_COMPARATORS = {
 	LESS: '<',
 	LESS_OR_EQ: '<=',
@@ -992,28 +931,17 @@ const VALUE_SEARCH_COMPARATORS = {
 	GREATER_OR_EQ: '>=',
 	BETWEEN: '...',
 };
-const VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP = _.invert(VALUE_SEARCH_COMPARATORS);
 
-// Message types that will flow through the HDB Child and Cluster rooms.
-const CLUSTERING_MESSAGE_TYPES = {
-	GET_CLUSTER_STATUS: 'GET_CLUSTER_STATUS',
-	CLUSTER_STATUS_RESPONSE: 'CLUSTER_STATUS_RESPONSE',
-	ERROR_RESPONSE: 'ERROR',
-	ADD_USER: 'ADD_USER',
-	ALTER_USER: 'ALTER_USER',
-	DROP_USER: 'DROP_USER',
-	HDB_OPERATION: 'HDB_OPERATION',
-	ADD_NODE: 'ADD_NODE',
-	UPDATE_NODE: 'UPDATE_NODE',
-	REMOVE_NODE: 'REMOVE_NODE',
-	HDB_USERS_MSG: 'HDB_USERS_MSG',
-	HDB_WORKERS: 'HDB_WORKERS',
-	HDB_TRANSACTION: 'HDB_TRANSACTION',
+/** Inverted form of VALUE_SEARCH_COMPARATORS */
+const VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP = {
+	'<': 'LESS',
+	'<=': 'LESS_OR_EQ',
+	'>': 'GREATER',
+	'>=': 'GREATER_OR_EQ',
+	'...': 'BETWEEN',
 };
 
-const ORIGINATOR_SET_VALUE = 111;
-const NEW_LINE = '\r\n';
-
+/** Standard CRUD operation map */
 const PERMS_CRUD_ENUM = {
 	READ: 'read',
 	INSERT: 'insert',
@@ -1021,24 +949,27 @@ const PERMS_CRUD_ENUM = {
 	DELETE: 'delete',
 };
 
+/** Search wildcards */
 const SEARCH_WILDCARDS = ['*', '%'];
 
-const UNAUTHORIZED_PERMISSION_NAME = 'unauthorized_access';
-
+/** Function value used in data layer and SQL transactions */
 const FUNC_VAL = 'func_val';
 
+/** Audit log search types for read operation */
 const READ_AUDIT_LOG_SEARCH_TYPES_ENUM = {
 	HASH_VALUE: 'hash_value',
 	TIMESTAMP: 'timestamp',
 	USERNAME: 'username',
 };
 
+/** JWT key and pass file names */
 const JWT_ENUM = {
 	JWT_PRIVATE_KEY_NAME: '.jwtPrivate.key',
 	JWT_PUBLIC_KEY_NAME: '.jwtPublic.key',
 	JWT_PASSPHRASE_NAME: '.jwtPass',
 };
 
+/** ITC Channel Event types */
 const ITC_EVENT_TYPES = {
 	SHUTDOWN: 'shutdown',
 	CHILD_STARTED: 'child_started',
@@ -1054,158 +985,105 @@ const ITC_EVENT_TYPES = {
 	NATS_CONSUMER_UPDATE: 'nats_consumer_update',
 };
 
-const SERVICES = {
-	HDB_CORE: 'hdb_core',
-	CUSTOM_FUNCTIONS: 'custom_functions',
-};
-
+/** Supported thread types */
 const THREAD_TYPES = {
 	HTTP: 'http',
 };
 
-const PM2_PROCESS_STATUSES = {
-	STOPPED: 'stopped',
-	ONLINE: 'online',
-};
-
+/** A version string for pre 4.0.0 comparison */
 const PRE_4_0_0_VERSION = '3.x.x';
 
+/** Authentication audit statusses */
 const AUTH_AUDIT_STATUS = {
 	SUCCESS: 'success',
 	FAILURE: 'failure',
 };
 
+/** Authentication audit types */
 const AUTH_AUDIT_TYPES = {
 	AUTHENTICATION: 'authentication',
 	AUTHORIZATION: 'authorization',
 };
 
 module.exports = {
-	LOCAL_HARPERDB_OPERATIONS,
-	HDB_SUPPORT_ADDRESS,
-	HDB_SUPPORT_URL,
-	HDB_PRICING_URL,
-	SUPPORT_HELP_MSG,
-	LICENSE_HELP_MSG,
+	PACKAGE_ROOT,
+	HDB_CONFIG_FILE,
+	HDB_DEFAULT_CONFIG_FILE,
+	HDB_ROOT_DIR_NAME,
+	HDB_COMPONENT_CONFIG_FILE,
 	HDB_PROC_NAME,
-	HDB_PROC_DESCRIPTOR,
-	CLUSTERING_LEAF_PROC_DESCRIPTOR,
-	CLUSTERING_HUB_PROC_DESCRIPTOR,
-	SYSTEM_SCHEMA_NAME,
-	HASH_FOLDER_NAME,
-	HDB_HOME_DIR_NAME,
-	UPDATE_FILE_NAME,
-	LICENSE_KEY_DIR_NAME,
-	BOOT_PROPS_FILE_NAME,
-	JOB_TYPE_ENUM,
-	JOB_STATUS_ENUM,
-	SYSTEM_TABLE_NAMES,
-	SYSTEM_TABLE_HASH_ATTRIBUTES,
-	OPERATIONS_ENUM,
-	VALID_S3_FILE_TYPES,
-	S3_BUCKET_AUTH_KEYS,
-	VALID_SQL_OPS_ENUM,
-	GEO_CONVERSION_ENUM,
-	HDB_SETTINGS_NAMES,
-	HDB_SETTINGS_NAMES_REVERSE_LOOKUP,
-	SERVICE_ACTIONS_ENUM,
-	CLUSTER_MESSAGE_TYPE_ENUM,
-	CLUSTER_CONNECTION_DIRECTION_ENUM,
-	CLUSTER_EVENTS_DEFS_ENUM,
-	PERIOD_REGEX,
-	DOUBLE_PERIOD_REGEX,
+	HDB_RESTART_SCRIPT,
+	PROCESS_DESCRIPTORS,
+	HDB_PROCESS_SERVICES,
+	CLUSTERING_PROCESSES,
+	HDB_PID_FILE,
+	DEFAULT_DATABASE_NAME,
+	LOG_NAMES,
+	LOG_LEVELS,
+	LAUNCH_SERVICE_SCRIPTS,
+	ROLE_TYPES_ENUM,
+	HDB_SUPPORT_ADDRESS,
+	SUPPORT_HELP_MSG,
+	SEARCH_NOT_FOUND_MESSAGE,
 	UNICODE_PERIOD,
 	FORWARD_SLASH_REGEX,
 	UNICODE_FORWARD_SLASH,
 	ESCAPED_FORWARD_SLASH_REGEX,
-	ESCAPED_PERIOD_REGEX,
-	ESCAPED_DOUBLE_PERIOD_REGEX,
-	REG_KEY_FILE_NAME,
+	MEM_SETTING_KEY,
+	SYSTEM_SCHEMA_NAME,
+	HDB_HOME_DIR_NAME,
+	LICENSE_KEY_DIR_NAME,
+	BOOT_PROPS_FILE_NAME,
 	RESTART_TIMEOUT_MS,
 	HDB_FILE_PERMISSIONS,
 	DATABASES_DIR_NAME,
 	LEGACY_DATABASES_DIR_NAME,
 	TRANSACTIONS_DIR_NAME,
-	LIMIT_COUNT_NAME,
-	ID_ATTRIBUTE_STRING,
-	INSERT_MODULE_ENUM,
+	PROCESS_NAME_ENV_PROP,
+	BOOT_PROP_PARAMS,
+	INSTALL_PROMPTS,
+	INSERT_MAX_CHARACTER_SIZE,
 	UPGRADE_JSON_FIELD_NAMES_ENUM,
-	RESTART_CODE,
-	RESTART_CODE_NUM,
-	CLUSTER_OPERATIONS,
+	SYSTEM_TABLE_NAMES,
+	INFO_TABLE_HASH_ATTRIBUTE,
 	SYSTEM_DEFAULT_ATTRIBUTE_NAMES,
-	HDB_INTERNAL_SC_CHANNEL_PREFIX,
-	INTERNAL_SC_CHANNELS,
-	CLUSTERING_MESSAGE_TYPES,
-	HDB_FILE_SUFFIX,
-	BLOB_FOLDER_NAME,
-	// Make the message objects available through hdbTerms to keep clustering as modular as possible.
-	ORIGINATOR_SET_VALUE,
+	REG_KEY_FILE_NAME,
+	LICENSE_FILE_NAME,
+	JOB_STATUS_ENUM,
+	OPERATIONS_ENUM,
+	VALID_S3_FILE_TYPES,
+	S3_BUCKET_AUTH_KEYS,
+	VALID_SQL_OPS_ENUM,
+	CLUSTER_OPERATIONS,
+	SERVICE_ACTIONS_ENUM,
+	GEO_CONVERSION_ENUM,
+	HDB_SETTINGS_NAMES,
+	LEGACY_CONFIG_PARAMS,
+	CONFIG_PARAMS,
+	CONFIG_PARAM_MAP,
+	DATABASES_PARAM_CONFIG,
+	JOB_TYPE_ENUM,
+	CLUSTER_MESSAGE_TYPE_ENUM,
 	LICENSE_VALUES,
 	RAM_ALLOCATION_ENUM,
+	NODE_ERROR_CODES,
+	METADATA_PROPERTY,
+	CLUSTERING_FLAG,
 	TIME_STAMP_NAMES_ENUM,
 	TIME_STAMP_NAMES,
 	PERMS_UPDATE_RELEASE_TIMESTAMP,
-	SEARCH_NOT_FOUND_MESSAGE,
-	SEARCH_ATTRIBUTE_NOT_FOUND,
-	LICENSE_ROLE_DENIED_RESPONSE,
-	LICENSE_MAX_CONNS_REACHED,
-	BASIC_LICENSE_MAX_NON_CU_ROLES,
-	BASIC_LICENSE_CLUSTER_CONNECTION_LIMIT_WS_ERROR_CODE,
 	VALUE_SEARCH_COMPARATORS,
 	VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP,
-	LICENSE_FILE_NAME,
-	WEBSOCKET_CLOSE_CODE_DESCRIPTION_LOOKUP,
-	NEW_LINE,
-	BASIC_LICENSE_MAX_CLUSTER_USER_ROLES,
-	MOMENT_DAYS_TAG,
-	API_TURNOVER_SEC,
-	LOOPBACK,
-	CODE_EXTENSION,
-	WILDCARD_SEARCH_VALUE,
-	NODE_ERROR_CODES,
-	JAVASCRIPT_EXTENSION,
 	PERMS_CRUD_ENUM,
-	UNAUTHORIZED_PERMISSION_NAME,
 	SEARCH_WILDCARDS,
 	FUNC_VAL,
 	READ_AUDIT_LOG_SEARCH_TYPES_ENUM,
 	JWT_ENUM,
-	CLUSTERING_FLAG,
 	ITC_EVENT_TYPES,
-	CUSTOM_FUNCTION_PROC_NAME,
-	CUSTOM_FUNCTION_PROC_DESCRIPTOR,
-	SERVICES,
 	THREAD_TYPES,
-	MEM_SETTING_KEY,
-	HDB_RESTART_SCRIPT,
-	PROCESS_DESCRIPTORS,
-	SERVICE_SERVERS,
-	SERVICE_SERVERS_CWD,
-	PROCESS_DESCRIPTORS_VALIDATE,
-	LAUNCH_SERVICE_SCRIPTS,
-	LOG_LEVELS,
-	PROCESS_NAME_ENV_PROP,
-	LOG_NAMES,
-	PM2_PROCESS_STATUSES,
-	CONFIG_PARAM_MAP,
-	CONFIG_PARAMS,
-	HDB_CONFIG_FILE,
-	HDB_DEFAULT_CONFIG_FILE,
-	ROLE_TYPES_ENUM,
-	BOOT_PROP_PARAMS,
-	INSTALL_PROMPTS,
-	HDB_ROOT_DIR_NAME,
-	CLUSTERING_PROCESSES,
-	FOREGROUND_PID_FILE,
-	PACKAGE_ROOT,
 	PRE_4_0_0_VERSION,
-	DATABASES_PARAM_CONFIG,
-	METADATA_PROPERTY,
 	AUTH_AUDIT_STATUS,
 	AUTH_AUDIT_TYPES,
-	HDB_PID_FILE,
-	DEFAULT_DATABASE_NAME,
-	LEGACY_CONFIG_PARAMS,
 };
+
 require('./devops/tsBuild');
