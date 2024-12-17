@@ -1,5 +1,5 @@
 ARG NODE_VERSION=22
-FROM docker.io/node:${NODE_VERSION} as builder
+FROM docker.io/node:${NODE_VERSION} AS builder
 
 ARG HARPERDB_TARBALL
 ARG HARPERDB_VERSION
@@ -36,7 +36,8 @@ RUN npm install -g $HARPERDB_TARBALL && \
     rm -f $HARPERDB_TARBALL
 
 FROM docker.io/node:${NODE_VERSION}-slim AS runtime
-COPY --from=builder $HOME $HOME
+ARG HARPERDB_TARBALL
+ARG HARPERDB_VERSION
 
 # metadata for labels
 ARG BUILD_DATE
@@ -88,8 +89,14 @@ EXPOSE 9932
 ENV NPM_CONFIG_PREFIX=/home/harperdb/.npm-global
 ENV PATH=/home/harperdb/.npm-global/bin:$PATH
 
+#Change node user and group to harperdb
+RUN usermod -d /home/harperdb -l harperdb node && \
+    groupmod -n harperdb node && \
+    rm -rf /home/node
+
 #Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
 USER harperdb
+COPY --from=builder /home/harperdb/ /home/harperdb/
 
 #If no arguments are passed to docker run, execute HarperDB
 CMD ["harperdb"]
