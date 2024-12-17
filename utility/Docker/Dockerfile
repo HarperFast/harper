@@ -92,7 +92,8 @@ ENV PATH=/home/harperdb/.npm-global/bin:$PATH
 #Change node user and group to harperdb
 RUN usermod -d /home/harperdb -l harperdb node && \
     groupmod -n harperdb node && \
-    rm -rf /home/node
+    rm -rf /home/node && \
+    chown -R harperdb: /home/harperdb
 
 #Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
 USER harperdb
