@@ -23,7 +23,7 @@ RUN mkdir -p /home/harperdb/hdb && \
 #Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
 USER harperdb
 
-#Set the  working directory for the below instructions
+#Set the  working directory
 WORKDIR /home/harperdb/
 
 #Set npm global directory
@@ -97,6 +97,9 @@ RUN usermod -d /home/harperdb -l harperdb node && \
 #Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
 USER harperdb
 COPY --from=builder /home/harperdb/ /home/harperdb/
+
+#Set the  working directory
+WORKDIR /home/harperdb/
 
 #If no arguments are passed to docker run, execute HarperDB
 CMD ["harperdb"]
