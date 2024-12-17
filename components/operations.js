@@ -392,7 +392,7 @@ async function deployComponent(req) {
 		}
 		// if we have a node_modules folder, we assume we have our own modules, and we don't need to npm install them
 		const node_modules_path = path.join(path_to_project, 'node_modules');
-		if (fs.existsSync(node_modules_path)) {
+		if (!fs.existsSync(node_modules_path)) {
 			// if the package came with node_modules, we don't need to npm install
 			// them, but otherwise we do
 			const npm_utils = require('../utility/npmUtilities');

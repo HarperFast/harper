@@ -530,7 +530,7 @@ export function makeTable(options) {
 					if (typeof id === 'object' && id && !Array.isArray(id)) {
 						throw new Error(`Invalid id ${JSON.stringify(id)}`);
 					}
-					const sync = !resource_options?.async || primary_store.cache?.get(id);
+					const sync = !resource_options?.async || primary_store.cache?.get?.(id);
 					const txn = txnForContext(request);
 					const read_txn = txn.getReadTxn();
 					if (read_txn?.isDone) {
