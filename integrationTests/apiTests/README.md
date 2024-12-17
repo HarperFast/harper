@@ -19,21 +19,11 @@ node --test tests/1_environmentSetup.js
 
 defined in harperdb root folder in package.json in scripts:
 ```
-"test:supertest": "cd integrationTests/api_tests_with_supertest && node --test tests/testSuite.cjs"
+"test:supertest": "cd integrationTests/apiTests && node --test tests/testSuite.cjs"
 ```
-from api_tests_with_supertest folder run:
+from apiTests folder run:
 ```
 node tests/testSuite.cjs
-```
-or add to package.json
-```
-"scripts": {
-"tests": "node --test tests/testSuite.cjs"
-}
-```
-and then run:
-```
-npm run tests
 ```
 
 ***
