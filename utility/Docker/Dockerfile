@@ -96,7 +96,7 @@ RUN usermod -d /home/harperdb -l harperdb node && \
 
 #Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
 USER harperdb
-COPY --from=builder --chown harperdb:harperdb /home/harperdb/ /home/harperdb/
+COPY --chown=harperdb:harperdb --from=builder /home/harperdb/ /home/harperdb/
 
 #Set the  working directory
 WORKDIR /home/harperdb/
