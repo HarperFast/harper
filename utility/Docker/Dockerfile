@@ -2,7 +2,6 @@ ARG NODE_VERSION=22
 FROM docker.io/node:${NODE_VERSION} AS builder
 
 ARG HARPERDB_TARBALL
-ARG HARPERDB_VERSION
 
 # Change node user and group to harperdb
 RUN usermod -d /home/harperdb -l harperdb node && \
@@ -36,7 +35,6 @@ RUN npm install -g $HARPERDB_TARBALL && \
     rm -f $HARPERDB_TARBALL
 
 FROM docker.io/node:${NODE_VERSION}-slim AS runtime
-ARG HARPERDB_TARBALL
 ARG HARPERDB_VERSION
 
 # Metadata for labels
