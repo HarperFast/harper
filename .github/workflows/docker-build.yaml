@@ -269,6 +269,7 @@ jobs:
         env:
           SUMMARY: ${{ steps.trivy_summary.outputs.summary }}
         run: |
+          #!/usr/bin/env bash
           trivy_results=$(cat trivy.txt)
           delimiter="$(openssl rand -hex 8)"
           cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
