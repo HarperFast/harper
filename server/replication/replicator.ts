@@ -41,7 +41,7 @@ export const servers = [];
 // This is the set of acceptable root certificates for replication, which includes the publicly trusted CAs if enabled
 // and any CAs that have been replicated across the cluster
 export const replication_certificate_authorities =
-	env.get(CONFIG_PARAMS.REPLICATION_ENABLEROOTCAS) === true ? new Set(tls.rootCertificates) : new Set();
+	env.get(CONFIG_PARAMS.REPLICATION_ENABLEROOTCAS) !== false ? new Set(tls.rootCertificates) : new Set();
 /**
  * Start the replication server. This will start a WebSocket server that will accept replication requests from other nodes.
  * @param options
@@ -60,7 +60,7 @@ export function start(options) {
 		subProtocol: 'harperdb-replication-v1',
 		mtls: true, // make sure that we request a certificate from the client
 		isOperationsServer: true, // we default to using the operations server ports
-
+		maxPayload: 10 * 1024 * 1024 * 1024, // 10 GB max payload, primarily to support replicating applications
 		...options,
 	};
 	// noinspection JSVoidFunctionReturnValueUsed
@@ -79,7 +79,7 @@ export function start(options) {
 		if (request.isWebSocket && request.headers.get('Sec-WebSocket-Protocol') === 'harperdb-replication-v1') {
 			if (!request.authorized && request._nodeRequest.socket.authorizationError) {
 				logger.error(
-					`Incoming client connection from ${request.ip} did not have valid certificate `,
+					`Incoming client connection from ${request.ip} did not have valid certificate, you may need turn on enableRootCAs in the config if you are using a publicly signed certificate, or add the CA to the server's trusted CAs`,
 					request._nodeRequest.socket.authorizationError
 				);
 			}
@@ -559,7 +559,7 @@ export async function replicateOperation(req) {
 		req.replicated = false; // don't send a replicated flag to the nodes we are sending to
 		logger.trace?.(
 			'Replicating operation',
-			req,
+			req.operation,
 			'to nodes',
 			server.nodes.map((node) => node.name)
 		);

@@ -9,6 +9,8 @@ import { isMainThread } from 'worker_threads';
 import { ClientError } from '../../utility/errors/hdbError';
 import env from '../../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
+import * as logger from '../../utility/logging/logger';
+
 let hdb_node_table;
 server.nodes = [];
 
@@ -61,6 +63,7 @@ export function subscribeToNodeUpdates(listener) {
 			for await (const event of events) {
 				// remove any nodes that have been updated or deleted
 				const node_name = event?.value?.name;
+				logger.debug?.('adding node', node_name, 'on  node', getThisNodeName(), ' on process', process.pid);
 				server.nodes = server.nodes.filter((node) => node.name !== node_name);
 				if (event.type === 'put' && node_name !== getThisNodeName()) {
 					// add any new nodes
@@ -92,7 +95,9 @@ export let commits_awaiting_replication: Map<string, []>;
 
 replicationConfirmation((database_name, txnTime, confirmation_count) => {
 	if (confirmation_count > server.nodes.length) {
-		throw new ClientError('Cannot confirm replication to more nodes than are in the network');
+		throw new ClientError(
+			`Cannot confirm replication to more nodes (${confirmation_count}) than are in the network (${server.nodes.length})`
+		);
 	}
 	if (!commits_awaiting_replication) {
 		commits_awaiting_replication = new Map();
@@ -164,7 +169,8 @@ export function* iterateRoutes(options) {
 			let port: number | string;
 			// if the host includes a port, use that port
 			if ((port = host.match(/:(\d+)$/)?.[1])) host = host.slice(0, -port[0].length - 1);
-			else if (route.port) port = route.port; // could be in the routes config
+			else if (route.port)
+				port = route.port; // could be in the routes config
 			// otherwise use the default port for the service
 			else
 				port =

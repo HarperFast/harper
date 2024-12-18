@@ -148,6 +148,7 @@ async function install() {
 
 	// We allow HDB to run without a boot file we check for a harperdb-config.yaml
 	if (
+		!ignore_existing &&
 		!cfg_env[hdb_terms.INSTALL_PROMPTS.HDB_CONFIG] &&
 		(await fs.pathExists(path.join(hdb_root, hdb_terms.HDB_CONFIG_FILE)))
 	) {

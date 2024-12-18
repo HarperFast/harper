@@ -67,12 +67,13 @@ describe('Replication', () => {
 		await createNode(0, database_config.data.path, node_count);
 		let started = addWorkerNode(1);
 		await started;
-		await new Promise((resolve) => setTimeout(resolve, 400));
+		await new Promise((resolve) => setTimeout(resolve, 1000));
 	});
 	beforeEach(async () => {
 		//await removeAllSchemas();
 	});
 	it('A write to one table should replicate', async function () {
+		console.log('A write to one table should replicate');
 		let name = 'name ' + Math.random();
 		await TestTable.put({
 			id: '1',
@@ -99,6 +100,7 @@ describe('Replication', () => {
 		} while (true);
 	});
 	it('A write to one table with replicated confirmation', async function () {
+		console.log('replicated confirmation');
 		this.timeout(5000);
 		let name = 'name ' + Math.random();
 		let context = { replicatedConfirmation: 1 };
@@ -128,6 +130,7 @@ describe('Replication', () => {
 
 	it('A write to second table should replicate back', async function () {
 		this.timeout(5000);
+		console.log('A write to second table should replicate back');
 		let name = 'name ' + Math.random();
 		child_processes[0].send({
 			action: 'put',

@@ -110,7 +110,7 @@ export async function createWebSocket(
 		rejectUnauthorized: rejectUnauthorized !== false,
 		secureContext: undefined,
 	};
-	if (rejectUnauthorized !== false && secure_context) {
+	if (secure_context) {
 		ws_options.secureContext = tls.createSecureContext({
 			...secure_context.options,
 			ca: Array.from(replication_certificate_authorities), // do we need to add CA if secure context had one?
@@ -138,7 +138,11 @@ export class NodeReplicationConnection extends EventEmitter {
 	sessionResolve: Function;
 	sessionReject: Function;
 	nodeName: string;
-	constructor(public url, public subscription, public databaseName) {
+	constructor(
+		public url,
+		public subscription,
+		public databaseName
+	) {
 		super();
 		this.nodeName = urlToNodeName(url);
 	}
@@ -294,7 +298,8 @@ export function replicateOverWS(ws, options, authorization) {
 	let last_audit_sent = 0;
 	if (options.url) {
 		const send_ping = () => {
-			if (last_ping_time) ws.terminate(); // timeout
+			if (last_ping_time)
+				ws.terminate(); // timeout
 			else {
 				last_ping_time = performance.now();
 				ws.ping();
@@ -1061,7 +1066,7 @@ export function replicateOverWS(ws, options, authorization) {
 				return;
 			}
 
-			/* If we have are past the commands, we are now handling an incoming replication message, the next block
+			/* If we are past the commands, we are now handling an incoming replication message, the next block
 			 * handles parsing and transacting these replication messages */
 			decoder.position = 8;
 			let begin_txn = true;

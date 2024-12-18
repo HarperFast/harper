@@ -515,7 +515,8 @@ function getHTTPServer(port, secure, is_operations_server) {
 							server_timing += ', miss';
 						}
 						appendHeader(headers, 'Server-Timing', server_timing, true);
-						node_response.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
+						if (!node_response.headersSent)
+							node_response.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
 						if (sent_body) node_response.end(body);
 					}
 					const handler_path = request.handlerPath;
@@ -684,6 +685,7 @@ function onWebSocket(listener, options) {
 			let http_server;
 			ws_servers[port_num] = new WebSocketServer({
 				server: (http_server = getHTTPServer(port_num, secure, options?.isOperationsServer)),
+				maxPayload: options.maxPayload ?? 100 * 1024 * 1024, // The ws library has a default of 100MB
 			});
 			http_server._ws = ws_servers[port_num];
 			servers.push(http_server);

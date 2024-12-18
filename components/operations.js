@@ -370,7 +370,6 @@ async function deployComponent(req) {
 		throw new Error("'payload' or 'package' must be provided");
 	}
 	let path_to_project;
-	let own_modules = req.own_modules ?? req.ownModules;
 	if (payload) {
 		path_to_project = path.join(cf_dir, project);
 		pkg = 'file:' + path_to_project;
@@ -393,29 +392,27 @@ async function deployComponent(req) {
 		}
 		// if we have a node_modules folder, we assume we have our own modules, and we don't need to npm install them
 		const node_modules_path = path.join(path_to_project, 'node_modules');
-		if (fs.existsSync(node_modules_path)) {
-			if (own_modules === undefined) own_modules = true;
-		} else if (own_modules) {
+		if (!fs.existsSync(node_modules_path)) {
+			// if the package came with node_modules, we don't need to npm install
+			// them, but otherwise we do
 			const npm_utils = require('../utility/npmUtilities');
 			await npm_utils.installAllRootModules(false, path_to_project);
 		}
-	}
-
-	if (!own_modules) {
+	} else {
 		// Adds package to harperdb-config and then relies on restart to call install on the new app
 		await config_utils.addConfig(project, { package: pkg });
 
 		// The main thread can install the components, but we do it here and now so that if it fails, we can immediately
 		// know about it and report it.
 		await installComponents();
-		// now we attempt to actually load the component in case there is
-		// an error we can immediately detect and report
 		const root_path = eng_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
 		path_to_project = path.join(root_path, 'node_modules', project);
 	}
 
 	// the main thread should never actually load component, just do a deploy
 	if (isMainThread) return;
+	// now we attempt to actually load the component in case there is
+	// an error we can immediately detect and report
 	const pseudo_resources = new Map();
 	pseudo_resources.isWorker = true;
 	const component_loader = require('./componentLoader');

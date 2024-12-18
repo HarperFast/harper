@@ -214,7 +214,7 @@ async function main(called_by_install = false) {
 		await startHTTPThreads(
 			process.env.DEV_MODE
 				? 1
-				: env.get(hdb_terms.CONFIG_PARAMS.THREADS_COUNT) ?? env.get(hdb_terms.CONFIG_PARAMS.THREADS)
+				: (env.get(hdb_terms.CONFIG_PARAMS.THREADS_COUNT) ?? env.get(hdb_terms.CONFIG_PARAMS.THREADS))
 		);
 
 		if (env.get(terms.CONFIG_PARAMS.LOGGING_ROTATION_ENABLED)) await log_rotator();
@@ -481,9 +481,9 @@ function startupLog(port_resolutions) {
 	// Build logs for all components
 	for (const c of components) {
 		if (comps[c]) {
-			log_msg += `${pad(c)}${comps[c].slice(0, -2)}\n`;
+			log_msg += `${pad(c + ': ')}${comps[c].slice(0, -2)}\n`;
 		} else {
-			log_msg += `${pad(c)}${app_ports_log}\n`;
+			log_msg += `${pad(c + ': ')}${app_ports_log}\n`;
 		}
 	}
 

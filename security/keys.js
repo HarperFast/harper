@@ -562,7 +562,7 @@ async function getCertAuthority() {
 	hdb_logger.trace('No CA found with matching private key');
 }
 
-async function generateCertAuthority(private_key, public_key) {
+async function generateCertAuthority(private_key, public_key, write_key = true) {
 	const ca_cert = pki.createCertificate();
 
 	ca_cert.publicKey = public_key;
@@ -594,7 +594,9 @@ async function generateCertAuthority(private_key, public_key) {
 
 	const keys_path = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
 	const private_path = path.join(keys_path, certificates_terms.PRIVATEKEY_PEM_NAME);
-	await fs.writeFile(private_path, pki.privateKeyToPem(private_key));
+	if (write_key) {
+		await fs.writeFile(private_path, pki.privateKeyToPem(private_key));
+	}
 
 	return ca_cert;
 }
@@ -672,7 +674,7 @@ async function reviewSelfSignedCert() {
 			await fs.writeFile(path.join(keys_path, key_name), pki.privateKeyToPem(private_key));
 		}
 
-		const hdb_ca = await generateCertAuthority(private_key, pki.setRsaPublicKey(private_key.n, private_key.e));
+		const hdb_ca = await generateCertAuthority(private_key, pki.setRsaPublicKey(private_key.n, private_key.e), false);
 
 		await setCertTable({
 			name: hdb_ca.subject.getField('CN').value,

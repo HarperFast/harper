@@ -27,7 +27,7 @@ Commands:
 copy-db <source> <target>       - Copies a database from source path to target path
 dev <path>                      - Run the application in dev mode with debugging, foreground logging, no auth
 install                         - Install harperdb
-operation <op> <param>=<value>  - Run an API operation and return result to the CLI, not all operations are supported
+<api-operation> <param>=<value> - Run an API operation and return result to the CLI, not all operations are supported
 register                        - Register harperdb
 renew-certs                     - Generate a new set of self-signed certificates
 restart                         - Restart the harperdb background process

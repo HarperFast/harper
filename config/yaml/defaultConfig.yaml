@@ -22,6 +22,7 @@ authentication:
 analytics:
   aggregatePeriod: 60
 replication:
+  enableRootCAs: true
   hostname: null
   databases: '*' # Database name or list of database names to replicate, * defaults to all databases
   routes: null
