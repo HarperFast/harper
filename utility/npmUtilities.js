@@ -14,7 +14,7 @@ const validator = require('../validation/validationWrapper');
 const harper_logger = require('./logging/harper_logger');
 env.initSync();
 const CF_ROUTES_DIR = env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
-const NPM_INSTALL_COMMAND = 'npm install --omit=dev --json';
+const NPM_INSTALL_COMMAND = 'npm install --force --omit=dev --json';
 const NPM_INSTALL_DRY_RUN_COMMAND = `${NPM_INSTALL_COMMAND} --dry-run`;
 const root_dir = env.get(terms.CONFIG_PARAMS.ROOTPATH);
 const ssh_dir = path.join(root_dir, 'ssh');
@@ -49,7 +49,11 @@ async function installAllRootModules(ignore_scripts = false, working_dir = env.g
 		});
 	}
 
-	await runCommand(ignore_scripts ? 'npm install --ignore-scripts' : 'npm install', working_dir, env_vars);
+	await runCommand(
+		ignore_scripts ? 'npm install --force --ignore-scripts' : 'npm install --force',
+		working_dir,
+		env_vars
+	);
 }
 
 /**
