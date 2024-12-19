@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "2551980e-f639-49cf-adf6-734363b6f81e",
+		"_postman_id": "ea614d55-a38e-4d69-b2d2-9a83baee7443",
 		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
 		"_exporter_id": "38120670"
@@ -48602,7 +48602,7 @@
 			"name": "8a. Restart HDB to update config",
 			"item": [
 				{
-					"name": "Turn on log audit and custom functions",
+					"name": "Create new cluster_user",
 					"event": [
 						{
 							"listen": "test",
@@ -48612,7 +48612,8 @@
 									"    pm.response.to.have.status(200);",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -48654,7 +48655,216 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"set_configuration\",\n    \"logging_auditLog\": true,\n    \"customFunctions_enabled\": true,\n    \"localStudio_enabled\": true,\n    \"clustering_enabled\": true,\n    \"replication_url\": null\n}"
+							"raw": "{\n    \"operation\": \"add_user\",\n    \"role\": \"cluster_user\",\n    \"username\": \"cluster_user\",\n    \"password\": \"cluster_user\",\n    \"active\": true\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": []
+				},
+				{
+					"name": "Get Configuration",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"Get root path\", ()=>{",
+									"",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.rootPath).to.not.be.undefined;",
+									"    pm.environment.set(\"root_path\", jsonData.rootPath);",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"get_configuration\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": []
+				},
+				{
+					"name": "Set Nats clustering configuration",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"set_configuration\",\n    \"clustering_enabled\": true,\n\n    \"clustering_hubServer_cluster_name\": \"harperdb\",\n    \"clustering_hubServer_cluster_network_port\": \"9932\",\n    \"clustering_hubServer_cluster_network_routes\": null,\n\n    \"clustering_hubServer_leafNodes_network_port\": \"9931\",\n\n    \"clustering_hubServer_network_port\": \"9930\",\n    \n    \"clustering_leafServer_network_port\": \"9940\",\n    \"clustering_leafServer_network_routes\": null,\n\n    \"clustering_leafServer_streams_maxAge\": null,\n    \"clustering_leafServer_streams_maxBytes\": null,\n    \"clustering_leafServer_streams_maxMsgs\": null,\n    \"clustering_leafServer_streams_maxConsumeMsgs\": \"100\",\n    \"clustering_leafServer_streams_maxIngestThreads\": \"2\",\n\n    \"clustering_nodeName\": \"local\",\n\n    \"clustering_republishMessages\": false,\n    \"clustering_databaseLevel\": false,\n\n    \"clustering_user\": \"cluster_user\",\n\n    \"clustering_tls_certificate\": \"{{root_path}}/keys/natsCertificate.pem\",\n    \"clustering_tls_certificateAuthority\": \"{{root_path}}/keys/natsCaCertificate.pem\",\n    \"clustering_tls_privateKey\": \"{{root_path}}/keys/privateKey.pem\",\n    \"clustering_tls_insecure\": true,\n    \"clustering_tls_verify\": true\n\n\n\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": []
+				},
+				{
+					"name": "Turn on log audit and custom functions",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"set_configuration\",\n    \"logging_auditLog\": true,\n    \"customFunctions_enabled\": true,\n    \"localStudio_enabled\": true,\n    \"replication_url\": null\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
