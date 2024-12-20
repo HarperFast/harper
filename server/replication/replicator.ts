@@ -364,7 +364,7 @@ export async function sendOperationToNode(node, operation, options) {
 			reject(error);
 		});
 		socket.on('close', (error) => {
-			logger.error('Sending operation connection to ' + node.url + ' closed', error);
+			logger.info('Sending operation connection to ' + node.url + ' closed', error);
 		});
 	}).finally(() => {
 		socket.close();
