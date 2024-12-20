@@ -391,7 +391,9 @@ function httpServer(listener, options) {
 	const servers = [];
 
 	for (let { port, secure } of getPorts(options)) {
-		servers.push(getHTTPServer(port, secure, options?.isOperationsServer));
+		servers.push(
+			getHTTPServer(port, secure, options?.isOperationsServer, options?.subProtocol === 'harperdb-replication-v1')
+		);
 		if (typeof listener === 'function') {
 			http_responders[options?.runFirst ? 'unshift' : 'push']({ listener, port: options?.port || port });
 		} else {
@@ -410,7 +412,7 @@ function setPortServerMap(port, server) {
 	port_server.set(port, [...port_entry, server]);
 }
 
-function getHTTPServer(port, secure, is_operations_server) {
+function getHTTPServer(port, secure, is_operations_server, is_replication_server) {
 	setPortServerMap(port, { protocol_name: secure ? 'HTTPS' : 'HTTP', name: getComponentName() });
 	if (!http_servers[port]) {
 		let server_prefix = is_operations_server ? 'operationsApi_network' : 'http';
@@ -439,7 +441,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 			Object.assign(options, {
 				allowHTTP1: true,
 				rejectUnauthorized: Boolean(mtls_required),
-				requestCert: Boolean(mtls),
+				requestCert: Boolean(mtls || is_replication_server),
 				ticketKeys: getTicketKeys(),
 				SNICallback: createTLSSelector(is_operations_server ? 'operations-api' : 'server', mtls),
 				ALPNCallback: function (connection) {
@@ -678,7 +680,12 @@ function onWebSocket(listener, options) {
 		if (!ws_servers[port_num]) {
 			let http_server;
 			ws_servers[port_num] = new WebSocketServer({
-				server: (http_server = getHTTPServer(port_num, secure, options?.isOperationsServer)),
+				server: (http_server = getHTTPServer(
+					port_num,
+					secure,
+					options?.isOperationsServer,
+					options?.subProtocol === 'harperdb-replication-v1'
+				)),
 				maxPayload: options.maxPayload ?? 100 * 1024 * 1024, // The ws library has a default of 100MB
 			});
 			http_server._ws = ws_servers[port_num];
