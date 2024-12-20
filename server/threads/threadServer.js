@@ -439,7 +439,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 			Object.assign(options, {
 				allowHTTP1: true,
 				rejectUnauthorized: Boolean(mtls_required),
-				requestCert: Boolean(mtls || is_operations_server),
+				requestCert: Boolean(mtls),
 				ticketKeys: getTicketKeys(),
 				SNICallback: createTLSSelector(is_operations_server ? 'operations-api' : 'server', mtls),
 				ALPNCallback: function (connection) {
