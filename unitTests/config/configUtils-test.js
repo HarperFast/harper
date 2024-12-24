@@ -322,6 +322,7 @@ describe('Test configUtils module', () => {
 					user: 'test_user',
 				},
 				replication: {
+					securePort: 9999,
 					databases: '*',
 					hostname: null,
 					routes: null,
@@ -486,6 +487,7 @@ describe('Test configUtils module', () => {
 				replication_hostname: null,
 				replication_routes: null,
 				replication_enablerootcas: true,
+				replication_secureport: 9999,
 				rootpath: path.join(DIRNAME, '/yaml'),
 				storage_writeasync: true,
 				storage_caching: false,
@@ -577,6 +579,7 @@ describe('Test configUtils module', () => {
 			replication_hostname: null,
 			replication_routes: null,
 			replication_enablerootcas: true,
+			replication_secureport: 9999,
 			rootpath: null,
 			storage_writeasync: false,
 			storage_caching: true,
