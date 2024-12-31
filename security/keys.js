@@ -218,7 +218,7 @@ function loadCertificates() {
 								let record_timestamp =
 									!cert_record || cert_record.is_self_signed
 										? 1
-										: (cert_record.file_timestamp ?? cert_record.__updatedtime__);
+										: cert_record.file_timestamp ?? cert_record.__updatedtime__;
 								if (cert_record && file_timestamp <= record_timestamp) {
 									if (file_timestamp < record_timestamp)
 										hdb_logger.info(
@@ -801,7 +801,7 @@ TLSSocket.prototype._init = function (socket, wrap) {
 	this._handle.oncertcb = function (info) {
 		const servername = info.servername;
 		tls_socket._SNICallback(servername, (err, context) => {
-			this.sni_context = context.context || context;
+			this.sni_context = context?.context || context;
 			// note that this skips the checks for multiple callbacks and entirely skips OCSP, so if we ever need that, we
 			// need to call the original oncertcb
 			this.certCbDone();
@@ -978,7 +978,7 @@ function createTLSSelector(type, mtls_options) {
 			} else break;
 		}
 		if (servername) harper_logger.debug('No certificate found to match', servername, 'using the default certificate');
-		else harper_logger.debug('No SNI, using the default certificate', default_context.name);
+		else harper_logger.debug('No SNI, using the default certificate', default_context?.name);
 		// no matches, return the first/default one
 		let context = default_context;
 		if (!context) harper_logger.info('No default certificate found');
@@ -1178,7 +1178,7 @@ function hostnamesFromCert(cert /*X509Certificate*/) {
 				})
 				.filter((part) => part) // filter out any empty names
 		: // finally we fall back to the common name
-			[extractCommonName(cert)];
+		  [extractCommonName(cert)];
 }
 
 async function getKey(req) {

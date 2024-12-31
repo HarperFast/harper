@@ -87,6 +87,9 @@ class Headers {
 	values() {
 		return Object.values(this.asObject);
 	}
+	delete(name) {
+		delete this.asObject[name.toLowerCase()];
+	}
 	forEach(callback) {
 		for (const [key, value] of this) {
 			callback(value, key, this);

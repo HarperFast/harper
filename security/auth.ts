@@ -269,8 +269,8 @@ export async function authentication(request, next_handler) {
 	}
 }
 let started;
-export function start({ server, port }) {
-	server.http(authentication, { port: port || 'all' });
+export function start({ server, port, securePort }) {
+	server.http(authentication, port || securePort ? { port, securePort } : { port: 'all' });
 	// keep it cleaned out periodically
 	if (!started) {
 		started = true;
