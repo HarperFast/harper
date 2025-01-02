@@ -415,11 +415,13 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 	if (!http_servers[port]) {
 		let server_prefix = is_operations_server ? 'operationsApi_network' : 'http';
 		let keepAliveTimeout = env.get(server_prefix + '_keepAliveTimeout');
+		let requestTimeout = env.get(server_prefix + '_timeout');
+		let headersTimeout = env.get(server_prefix + '_headersTimeout');
 		let options = {
 			noDelay: true,
 			keepAliveTimeout,
-			headersTimeout: env.get(server_prefix + '_headersTimeout'),
-			requestTimeout: env.get(server_prefix + '_timeout'),
+			headersTimeout,
+			requestTimeout,
 			// we set this higher (2x times the default in v22, 8x times the default in v20) because it can help with
 			// performance
 			highWaterMark: 128 * 1024,
@@ -571,6 +573,8 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 			}
 		));
 		server.keepAliveTimeout = keepAliveTimeout; // Node v16 and earlier required setting this as a property
+		server.requestTimeout = requestTimeout; // Node v16 and earlier required setting this as a property
+		server.headersTimeout = headersTimeout; // Node v16 and earlier required setting this as a property
 		/* Should we use HTTP2 on upgrade?:
 		http_servers[port].on('upgrade', function upgrade(request, socket, head) {
 			wss.handleUpgrade(request, socket, head, function done(ws) {
