@@ -1965,7 +1965,10 @@ export function makeTable(options) {
 				if (context?.transaction?.stale) context.transaction.stale = false;
 				if (entry != undefined) {
 					record = entry.value || entry.deref?.()?.value;
-					if (!record && (entry.key === undefined || entry.deref || entry?.metadataFlags & INVALIDATED)) {
+					if ((!record && (entry.key === undefined || entry.deref)) || entry.metadataFlags & INVALIDATED) {
+						if (entry.metadataFlags & INVALIDATED && context.replicateFrom === false && can_skip && entry.residencyId) {
+							return SKIP;
+						}
 						// if the record is not loaded, either due to the entry actually be a key, or the entry's value
 						// being GC'ed, we need to load it now
 						entry = loadLocalRecord(

@@ -88,7 +88,7 @@ async function runCommand(command, cwd = undefined, env = process.env) {
 		throw new Error(err.stderr.replace('\n', ''));
 	}
 
-	if (stderr && !stderr.includes('Debugger listening')) {
+	if (stderr && !stderr.includes('Debugger listening') && !stderr.includes('warn using --force')) {
 		harper_logger.error('Error running NPM command:', command, stderr);
 	}
 

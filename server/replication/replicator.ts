@@ -321,7 +321,7 @@ const connections = new Map();
  * @param subscription
  * @param db_name
  */
-function getConnection(url, subscription, db_name) {
+function getConnection(url: string, subscription: any, db_name: string, node_name?: string, authorization?: string) {
 	let db_connections = connections.get(url);
 	if (!db_connections) {
 		connections.set(url, (db_connections = new Map()));
@@ -329,7 +329,10 @@ function getConnection(url, subscription, db_name) {
 	let connection = db_connections.get(db_name);
 	if (connection) return connection;
 	if (subscription) {
-		db_connections.set(db_name, (connection = new NodeReplicationConnection(url, subscription, db_name)));
+		db_connections.set(
+			db_name,
+			(connection = new NodeReplicationConnection(url, subscription, db_name, node_name, authorization))
+		);
 		connection.connect();
 		connection.once('finished', () => db_connections.delete(db_name));
 		return connection;
@@ -344,7 +347,7 @@ function getConnectionByName(node_name, subscription, db_name) {
 	if (connection) return connection;
 	const node = getHDBNodeTable().primaryStore.get(node_name);
 	if (node?.url) {
-		connection = getConnection(node.url, subscription, db_name);
+		connection = getConnection(node.url, subscription, db_name, node_name, node.authorization);
 		// cache the connection
 		node_name_to_db_connections.set(node_name, connections.get(node.url));
 	}
@@ -395,8 +398,19 @@ export function subscribeToNode(request) {
 			subscription_to_table.ready = ready;
 			database_subscriptions.set(request.database, subscription_to_table);
 		}
-		const connection = getConnection(request.nodes[0].url, subscription_to_table, request.database);
-		if (request.nodes[0].name === undefined) connection.tentativeNode = request.nodes[0]; // we don't have the node name yet
+		const connection = getConnection(
+			request.nodes[0].url,
+			subscription_to_table,
+			request.database,
+			request.nodes[0].name,
+			request.nodes[0].authorization
+		);
+		if (request.nodes[0].name === undefined) {
+			// we don't have the node name yet
+			connection.tentativeNode = request.nodes[0];
+		} else {
+			connection.nodeName = request.nodes[0].name;
+		}
 		connection.subscribe(
 			request.nodes.filter((node) => {
 				return shouldReplicateToNode(node, request.database);

@@ -137,21 +137,22 @@ export class NodeReplicationConnection extends EventEmitter {
 	session: any; // this is a promise that resolves to the session object, which is the object that handles the replication
 	sessionResolve: Function;
 	sessionReject: Function;
-	nodeName: string;
 	constructor(
-		public url,
-		public subscription,
-		public databaseName
+		public url: string,
+		public subscription: any,
+		public databaseName: string,
+		public nodeName?: string,
+		public authorization?: string
 	) {
 		super();
-		this.nodeName = urlToNodeName(url);
+		this.nodeName = this.nodeName ?? urlToNodeName(url);
 	}
 
 	async connect() {
 		if (!this.session) this.resetSession();
 		const tables = [];
 		// TODO: Need to do this specifically for each node
-		this.socket = await createWebSocket(this.url, { serverName: this.nodeName });
+		this.socket = await createWebSocket(this.url, { serverName: this.nodeName, authorization: this.authorization });
 
 		let session;
 		logger.debug?.(`Connecting to ${this.url}, db: ${this.databaseName}, process ${process.pid}`);
@@ -667,7 +668,7 @@ export function replicateOverWS(ws, options, authorization) {
 									logger.error?.(connection_id, 'Error subscribing to HDB nodes', error);
 								}
 							);
-						} else if (!(authorization?.permissions?.super_user || authorization.replicates)) {
+						} else if (!(authorization?.role?.permission?.super_user || authorization.replicates)) {
 							ws.send(encode([DISCONNECT]));
 							close(1008, `Unauthorized database subscription to ${database_name}`);
 							return;
@@ -681,7 +682,6 @@ export function replicateOverWS(ws, options, authorization) {
 						if (node_subscriptions.length === 0)
 							// this means we are unsubscribing
 							return;
-						let first_table;
 						const first_node = node_subscriptions[0];
 						const tableToTableEntry = (table) => {
 							if (
@@ -690,7 +690,6 @@ export function replicateOverWS(ws, options, authorization) {
 									? !first_node.tables.includes(table.tableName)
 									: first_node.tables.includes(table.tableName))
 							) {
-								first_table = table;
 								return { table };
 							}
 						};
