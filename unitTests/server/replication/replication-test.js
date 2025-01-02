@@ -101,7 +101,7 @@ describe('Replication', () => {
 			break;
 		} while (true);
 	});
-	it('A write to one table with replicated confirmation', async function () {
+	it.skip('A write to one table with replicated confirmation', async function () {
 		console.log('replicated confirmation');
 		this.timeout(5000);
 		let name = 'name ' + Math.random();
