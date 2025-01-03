@@ -392,7 +392,7 @@ function httpServer(listener, options) {
 	const servers = [];
 
 	for (let { port, secure } of getPorts(options)) {
-		servers.push(getHTTPServer(port, secure, options?.isOperationsServer));
+		servers.push(getHTTPServer(port, secure, options?.isOperationsServer, options?.mtls));
 		if (typeof listener === 'function') {
 			http_responders[options?.runFirst ? 'unshift' : 'push']({ listener, port: options?.port || port });
 		} else {
@@ -411,14 +411,17 @@ function setPortServerMap(port, server) {
 	port_server.set(port, [...port_entry, server]);
 }
 
-function getHTTPServer(port, secure, is_operations_server) {
+function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 	setPortServerMap(port, { protocol_name: secure ? 'HTTPS' : 'HTTP', name: getComponentName() });
 	if (!http_servers[port]) {
 		let server_prefix = is_operations_server ? 'operationsApi_network' : 'http';
+		let keepAliveTimeout = env.get(server_prefix + '_keepAliveTimeout');
+		let requestTimeout = env.get(server_prefix + '_timeout');
+		let headersTimeout = env.get(server_prefix + '_headersTimeout');
 		let options = {
-			keepAliveTimeout: env.get(server_prefix + '_keepAliveTimeout'),
-			headersTimeout: env.get(server_prefix + '_headersTimeout'),
-			requestTimeout: env.get(server_prefix + '_timeout'),
+			keepAliveTimeout,
+			headersTimeout,
+			requestTimeout,
 			// we set this higher (2x times the default in v22, 8x times the default in v20) because it can help with
 			// performance
 			highWaterMark: 128 * 1024,
@@ -443,7 +446,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 			Object.assign(options, {
 				allowHTTP1: true,
 				rejectUnauthorized: Boolean(mtls_required),
-				requestCert: Boolean(mtls || is_operations_server),
+				requestCert: Boolean(mtls || is_mtls),
 				ticketKeys: getTicketKeys(),
 				SNICallback: createTLSSelector(is_operations_server ? 'operations-api' : 'server', mtls),
 				ALPNCallback: http2
@@ -575,6 +578,11 @@ function getHTTPServer(port, secure, is_operations_server) {
 				}
 			}
 		));
+		// Node v16 and earlier required setting this as a property; but carefully, we must only set if it is actually a
+		// number or it will actually crash the server
+		if (keepAliveTimeout >= 0) server.keepAliveTimeout = keepAliveTimeout;
+		if (requestTimeout >= 0) server.requestTimeout = requestTimeout;
+		if (headersTimeout >= 0) server.headersTimeout = headersTimeout;
 		/* Should we use HTTP2 on upgrade?:
 		http_servers[port].on('upgrade', function upgrade(request, socket, head) {
 			wss.handleUpgrade(request, socket, head, function done(ws) {
@@ -684,7 +692,7 @@ function onWebSocket(listener, options) {
 		if (!ws_servers[port_num]) {
 			let http_server;
 			ws_servers[port_num] = new WebSocketServer({
-				server: (http_server = getHTTPServer(port_num, secure, options?.isOperationsServer)),
+				server: (http_server = getHTTPServer(port_num, secure, options?.isOperationsServer, options?.mtls)),
 				maxPayload: options.maxPayload ?? 100 * 1024 * 1024, // The ws library has a default of 100MB
 			});
 			http_server._ws = ws_servers[port_num];

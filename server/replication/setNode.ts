@@ -90,9 +90,9 @@ export async function setNode(req: object) {
 			// Create the certificate signing request that will be sent to the other node
 			csr = await createCsr();
 			hdb_logger.info('Sending CSR to target node:', url);
-		} else {
-			cert_auth = ca_record?.certificate;
-			hdb_logger.info('Sending CA named', ca_record?.name, 'to target node', url);
+		} else if (ca_record) {
+			cert_auth = ca_record.certificate;
+			hdb_logger.info('Sending CA named', ca_record.name, 'to target node', url);
 		}
 	}
 
@@ -104,6 +104,7 @@ export async function setNode(req: object) {
 		url: this_url,
 		csr,
 		cert_auth,
+		authorization: req.retain_authorization ? req.authorization : null,
 	};
 
 	if (req.subscriptions) {
@@ -121,18 +122,24 @@ export async function setNode(req: object) {
 			'Basic ' + Buffer.from(req.authorization.username + ':' + req.authorization.password).toString('base64');
 	}
 
-	let target_node_response;
+	let target_node_response: any;
+	let target_node_response_error: Error;
 	try {
 		target_node_response = await sendOperationToNode({ url }, target_add_node_obj, req);
 	} catch (err) {
 		err.message = `Error returned from ${url}: ` + err.message;
-		throw err;
+		hdb_logger.warn('Error adding node:', url, 'to cluster:', err);
+		target_node_response_error = err;
 	}
 
 	if (
 		csr &&
 		(!target_node_response?.certificate || !target_node_response?.certificate?.includes?.('BEGIN CERTIFICATE'))
 	) {
+		if (target_node_response_error) {
+			target_node_response_error.message += ' and connection was required to sign certificate';
+			throw target_node_response_error;
+		}
 		throw new Error(
 			`Unexpected certificate signature response from node ${url} response: ${JSON.stringify(target_node_response)}`
 		);
@@ -160,13 +167,14 @@ export async function setNode(req: object) {
 		cert_auth = target_node_response.signingCA;
 	}
 
-	const node_record = { url, ca: target_node_response.usingCA };
+	const node_record = { url, ca: target_node_response?.usingCA };
 	if (req.hostname) node_record.name = req.hostname;
 	if (req.subscriptions) node_record.subscriptions = req.subscriptions;
 	else node_record.replicates = true;
 	if (req.start_time) {
 		node_record.start_time = typeof req.start_time === 'string' ? new Date(req.start_time).getTime() : req.start_time;
 	}
+	if (req.retain_authorization) node_record.authorization = req.authorization;
 
 	if (node_record.replicates) {
 		const this_node = {
@@ -175,16 +183,21 @@ export async function setNode(req: object) {
 			replicates: true,
 			subscriptions: null,
 		};
+		if (req.retain_authorization) this_node.authorization = req.authorization;
 		if (req.start_time) this_node.start_time = req.start_time;
 		await ensureNode(getThisNodeName(), this_node);
 	}
-	await ensureNode(target_node_response.nodeName, node_record);
-
+	await ensureNode(
+		target_node_response ? target_node_response.nodeName : (node_record.name ?? urlToNodeName(url)),
+		node_record
+	);
+	let message: string;
 	if (req.operation === 'update_node') {
-		return `Successfully updated '${url}'`;
-	}
-
-	return `Successfully added '${url}' to cluster`;
+		message = `Successfully updated '${url}'`;
+	} else message = `Successfully added '${url}' to cluster`;
+	if (target_node_response_error)
+		message += ' but there was an error updating target node: ' + target_node_response_error.message;
+	return message;
 }
 
 /**
@@ -219,6 +232,7 @@ export async function addNodeBack(req) {
 	}
 
 	if (req.start_time) node_record.start_time = req.start_time;
+	if (req.authorization) node_record.authorization = req.authorization;
 
 	const rep_ca = await getReplicationCertAuth();
 	if (node_record.replicates) {
@@ -229,6 +243,7 @@ export async function addNodeBack(req) {
 			subscriptions: null,
 		};
 		if (req.start_time) this_node.start_time = req.start_time;
+		if (req.authorization) this_node.authorization = req.authorization;
 		await ensureNode(getThisNodeName(), this_node);
 	}
 	await ensureNode(req.hostname, node_record);

@@ -137,21 +137,22 @@ export class NodeReplicationConnection extends EventEmitter {
 	session: any; // this is a promise that resolves to the session object, which is the object that handles the replication
 	sessionResolve: Function;
 	sessionReject: Function;
-	nodeName: string;
 	constructor(
-		public url,
-		public subscription,
-		public databaseName
+		public url: string,
+		public subscription: any,
+		public databaseName: string,
+		public nodeName?: string,
+		public authorization?: string
 	) {
 		super();
-		this.nodeName = urlToNodeName(url);
+		this.nodeName = this.nodeName ?? urlToNodeName(url);
 	}
 
 	async connect() {
 		if (!this.session) this.resetSession();
 		const tables = [];
 		// TODO: Need to do this specifically for each node
-		this.socket = await createWebSocket(this.url, { serverName: this.nodeName });
+		this.socket = await createWebSocket(this.url, { serverName: this.nodeName, authorization: this.authorization });
 
 		let session;
 		logger.debug?.(`Connecting to ${this.url}, db: ${this.databaseName}, process ${process.pid}`);
@@ -296,13 +297,19 @@ export function replicateOverWS(ws, options, authorization) {
 	let delayed_close: NodeJS.Timeout;
 	let last_message_time = 0;
 	let last_audit_sent = 0;
+	// track bytes read and written so we can verify if a connection is really dead on pings
+	let bytes_read = 0;
+	let bytes_written = 0;
 	if (options.url) {
 		const send_ping = () => {
-			if (last_ping_time)
+			// if we have not received a message in the last ping interval, we should terminate the connection (but check to make sure we aren't just waiting for other data to flow)
+			if (last_ping_time && bytes_read === ws._socket?.bytesRead && bytes_written === ws._socket?.bytesWritten)
 				ws.terminate(); // timeout
 			else {
 				last_ping_time = performance.now();
 				ws.ping();
+				bytes_read = ws._socket?.bytesRead;
+				bytes_written = ws._socket?.bytesWritten;
 			}
 		};
 		send_ping_interval = setInterval(send_ping, PING_INTERVAL).unref();
@@ -312,9 +319,14 @@ export function replicateOverWS(ws, options, authorization) {
 	}
 	function resetPingTimer() {
 		clearTimeout(receive_ping_timer);
+		bytes_read = ws._socket?.bytesRead;
+		bytes_written = ws._socket?.bytesWritten;
 		receive_ping_timer = setTimeout(() => {
-			logger.warn?.(`Timeout waiting for ping from ${remote_node_name}, terminating connection and reconnecting`);
-			ws.terminate();
+			// double check to make sure we aren't just waiting for other data to flow
+			if (bytes_read === ws._socket?.bytesRead && bytes_written === ws._socket?.bytesWritten) {
+				logger.warn?.(`Timeout waiting for ping from ${remote_node_name}, terminating connection and reconnecting`);
+				ws.terminate();
+			}
 		}, PING_INTERVAL * 2).unref();
 	}
 	if (database_name) {
@@ -667,7 +679,7 @@ export function replicateOverWS(ws, options, authorization) {
 									logger.error?.(connection_id, 'Error subscribing to HDB nodes', error);
 								}
 							);
-						} else if (!(authorization?.permissions?.super_user || authorization.replicates)) {
+						} else if (!(authorization?.role?.permission?.super_user || authorization.replicates)) {
 							ws.send(encode([DISCONNECT]));
 							close(1008, `Unauthorized database subscription to ${database_name}`);
 							return;
@@ -681,7 +693,6 @@ export function replicateOverWS(ws, options, authorization) {
 						if (node_subscriptions.length === 0)
 							// this means we are unsubscribing
 							return;
-						let first_table;
 						const first_node = node_subscriptions[0];
 						const tableToTableEntry = (table) => {
 							if (
@@ -690,7 +701,6 @@ export function replicateOverWS(ws, options, authorization) {
 									? !first_node.tables.includes(table.tableName)
 									: first_node.tables.includes(table.tableName))
 							) {
-								first_table = table;
 								return { table };
 							}
 						};

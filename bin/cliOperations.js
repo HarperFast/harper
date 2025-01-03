@@ -172,14 +172,23 @@ async function cliOperations(req) {
 			options.headers['Content-Type'] = 'application/cbor';
 			req = encode(req);
 		}
-		let res = await httpRequest(options, req);
+		let response = await httpRequest(options, req);
 
-		res = JSON.parse(res.body);
+		let responseData;
+		try {
+			responseData = JSON.parse(response.body);
+			// eslint-disable-next-line sonarjs/no-ignored-exceptions
+		} catch (e) {
+			responseData = {
+				status: response.statusCode + ' ' + (response.statusMessage || 'Unknown'),
+				body: response.body,
+			};
+		}
 
 		if (req.json) {
-			console.log(JSON.stringify(res, null, 2));
+			console.log(JSON.stringify(responseData, null, 2));
 		} else {
-			console.log(YAML.stringify(res).trim());
+			console.log(YAML.stringify(responseData).trim());
 		}
 	} catch (err) {
 		let err_msg = 'Error: ';
@@ -188,7 +197,7 @@ async function cliOperations(req) {
 		} else if (err?.response?.data) {
 			err_msg += err?.response?.data;
 		} else {
-			err_msg += err.message;
+			return console.error(err);
 		}
 		console.error(err_msg);
 	}

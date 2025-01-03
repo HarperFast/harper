@@ -214,6 +214,7 @@ export function handleLocalTimeForGets(store) {
 				entry.metadataFlags = metadata;
 				entry.localTime = record_entry.localTime;
 				entry.value = record_entry.value;
+				entry.residencyId = record_entry.residencyId;
 				if (record_entry.expiresAt >= 0) entry.expiresAt = record_entry.expiresAt;
 			}
 			return entry;

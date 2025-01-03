@@ -866,18 +866,14 @@ function httpRequest(options, data) {
 	if (options.protocol === 'http:') client = http;
 	else client = https;
 	return new Promise((resolve, reject) => {
-		const req = client.request(options, (res) => {
-			res.setEncoding('utf8');
-			let response = {
-				body: '',
-				headers: res.headers,
-			};
-
-			res.on('data', (chunk) => {
+		const req = client.request(options, (response) => {
+			response.setEncoding('utf8');
+			response.body = '';
+			response.on('data', (chunk) => {
 				response.body += chunk;
 			});
 
-			res.on('end', () => {
+			response.on('end', () => {
 				resolve(response);
 			});
 		});
