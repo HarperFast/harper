@@ -88,7 +88,7 @@ export function openAuditStore(root_store) {
 					snapshot: false,
 					end: Date.now() - audit_retention,
 				})) {
-					if ((value[0] & 15) === DELETE) {
+					if ((readAction(value) & 15) === DELETE) {
 						// if this is a delete, we remove the delete entry from the primary table
 						// at the same time so the audit table the primary table are in sync
 						const audit_record = readAuditEntry(value);
@@ -210,7 +210,36 @@ export function createAuditEntry(txn_time, table_id, record_id, previous_local_t
 		}
 	}
 }
-export function readAuditEntry(buffer) {
+
+/**
+ * Reads an action from an audit entry binary data, quickly
+ * @param buffer
+ */
+function readAction(buffer) {
+	let position = 0;
+	if (buffer[0] == 66) {
+		// 66 is the first byte in a date double, so we need to skip it
+		position = 8;
+	}
+	const action = buffer[position];
+	if (action < 0x80) {
+		// simple case of a single byte
+		return action;
+	}
+	// otherwise, we need to decode the number
+	const decoder =
+		buffer.dataView || (buffer.dataView = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+	decoder.position = position;
+	return decoder.readInt();
+}
+
+/**
+ * Reads a audit entry from binary data
+ * @param buffer
+ * @param start
+ * @param end
+ */
+export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined) {
 	try {
 		const decoder =
 			buffer.dataView || (buffer.dataView = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
