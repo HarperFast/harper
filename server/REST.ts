@@ -245,6 +245,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 		if (request.isWebSocket) return;
 		return http(request, next_handler);
 	}, options);
+	if (options.webSocket === false) return;
 	options.server.ws(async (ws, request, chain_completion) => {
 		connection_count++;
 		const incoming_messages = new IterableEventQueue();
@@ -335,33 +336,36 @@ const HTTP_TO_WEBSOCKET_CLOSE_CODES = {
 
 /**
  * This parser is used to parse header values.
- * 
+ *
  * It is used within this file for parsing the `Cache-Control` and `X-Replicate-To` headers.
- * 
+ *
  * @param value
  */
 export function parseHeaderValue(value: string) {
-	return value.trim().split(',').map((part) => {
-		let parsed;
-		const components = part.trim().split(';');
-		let component;
-		while ((component = components.pop())) {
-			if (component.includes('=')) {
-				let [name, value] = component.trim().split('=');
-				name = name.trim();
-				if (value) value = value.trim();
-				parsed = {
-					name: name.toLowerCase(),
-					value,
-					next: parsed,
-				};
-			} else {
-				parsed = {
-					name: component.toLowerCase(),
-					next: parsed,
-				};
+	return value
+		.trim()
+		.split(',')
+		.map((part) => {
+			let parsed;
+			const components = part.trim().split(';');
+			let component;
+			while ((component = components.pop())) {
+				if (component.includes('=')) {
+					let [name, value] = component.trim().split('=');
+					name = name.trim();
+					if (value) value = value.trim();
+					parsed = {
+						name: name.toLowerCase(),
+						value,
+						next: parsed,
+					};
+				} else {
+					parsed = {
+						name: component.toLowerCase(),
+						next: parsed,
+					};
+				}
 			}
-		}
-		return parsed;
-	});
+			return parsed;
+		});
 }
