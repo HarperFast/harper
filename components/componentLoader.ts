@@ -325,7 +325,10 @@ export async function loadComponent(
 					if (resources.isWorker && extension_module.handleDirectory) {
 						directory_handled = await extension_module.handleDirectory?.(base_url_path, root_file_path, resources);
 					}
-					if (directory_handled) continue;
+					if (directory_handled) {
+						has_functionality = true;
+						continue;
+					}
 					for (const entry of await fg(files, { onlyFiles: false, objectMode: true })) {
 						const { path, dirent } = entry;
 						has_functionality = true;
