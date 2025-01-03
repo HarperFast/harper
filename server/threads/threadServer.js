@@ -572,9 +572,11 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 				}
 			}
 		));
-		server.keepAliveTimeout = keepAliveTimeout; // Node v16 and earlier required setting this as a property
-		server.requestTimeout = requestTimeout; // Node v16 and earlier required setting this as a property
-		server.headersTimeout = headersTimeout; // Node v16 and earlier required setting this as a property
+		// Node v16 and earlier required setting this as a property; but carefully, we must only set if it is actually a
+		// number or it will actually crash the server
+		if (keepAliveTimeout >= 0) server.keepAliveTimeout = keepAliveTimeout;
+		if (requestTimeout >= 0) server.requestTimeout = requestTimeout;
+		if (headersTimeout >= 0) server.headersTimeout = headersTimeout;
 		/* Should we use HTTP2 on upgrade?:
 		http_servers[port].on('upgrade', function upgrade(request, socket, head) {
 			wss.handleUpgrade(request, socket, head, function done(ws) {
