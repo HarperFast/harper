@@ -311,6 +311,7 @@ class Decoder extends DataView {
 			return value;
 		} catch (error) {
 			debugger;
+			throw error;
 		}
 	}
 }

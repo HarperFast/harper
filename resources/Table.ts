@@ -2210,7 +2210,7 @@ export function makeTable(options) {
 		}
 		static async *getHistory(start_time = 0, end_time = Infinity) {
 			for (const { key, value: audit_entry } of audit_store.getRange({
-				start: start_time,
+				start: start_time || 1, // if start_time is 0, we actually want to shift to 1 because 0 is encoded as all zeros with audit store's special encoder, and will include symbols
 				end: end_time,
 			})) {
 				await rest(); // yield to other async operations
