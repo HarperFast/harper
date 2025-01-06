@@ -40,7 +40,7 @@ import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, OWN_DATA
 import { transaction } from './transaction';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads';
-import { readAuditEntry } from './auditStore';
+import { readAuditEntry, removeAuditEntry } from './auditStore';
 import { autoCast, convertToMS } from '../utility/common_utils';
 import { getUpdateRecord, PENDING_LOCAL_TIME } from './RecordEncoder';
 import { recordAction, recordActionBinary } from './analytics';
@@ -2748,16 +2748,25 @@ export function makeTable(options) {
 			}
 			this.userResolvers[attribute_name] = resolver;
 		}
-		static async deleteHistory(end_time = 0) {
-			let completion;
+		static async deleteHistory(end_time = 0, cleanup_deleted_records = false) {
+			let completion: Promise<void>;
 			for (const { key, value: audit_entry } of audit_store.getRange({
 				start: 0,
 				end: end_time,
 			})) {
 				await rest(); // yield to other async operations
 				if (readAuditEntry(audit_entry).tableId !== table_id) continue;
-				completion = audit_store.remove(key);
-				// TODO: Cleanup delete entry from main table
+				completion = removeAuditEntry(audit_store, key, audit_entry);
+			}
+			if (cleanup_deleted_records) {
+				// this is separate procedure we can do if the records are not being cleaned up by the audit log. This shouldn't
+				// ever happen, but if there are cleanup failures for some reason, we can run this to clean up the records
+				for (const { key, value, localTime } of primary_store.getRange({ start: 0, versions: true })) {
+					await rest(); // yield to other async operations
+					if (value === null && localTime < end_time) {
+						completion = primary_store.remove(key);
+					}
+				}
 			}
 			await completion;
 		}
