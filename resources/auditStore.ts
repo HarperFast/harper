@@ -249,8 +249,9 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined) {
 	try {
 		const decoder =
 			buffer.dataView || (buffer.dataView = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+		decoder.position = start;
 		let previous_local_time;
-		if (buffer[0] == 66) {
+		if (buffer[decoder.position] == 66) {
 			// 66 is the first byte in a date double.
 			previous_local_time = decoder.readFloat64();
 		}
