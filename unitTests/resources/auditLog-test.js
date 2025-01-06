@@ -34,14 +34,15 @@ describe('Audit log', () => {
 		events = [];
 		await AuditedTable.put(1, { name: 'one' });
 		await AuditedTable.put(2, { name: 'two' });
+		await AuditedTable.put(2, { name: 'two-changed' });
 		await AuditedTable.delete(1);
 		assert.equal(AuditedTable.primaryStore.getEntry(1).value, null); // verify that there is a delete entry
 		let results = [];
 		for await (let entry of AuditedTable.getHistory()) {
 			results.push(entry);
 		}
-		assert.equal(results.length, 3);
-		assert.equal(events.length, 3);
+		assert.equal(results.length, 4);
+		assert.equal(events.length, 4);
 		setAuditRetention(0.001, 1);
 		AuditedTable.auditStore.scheduleAuditCleanup(1);
 		await AuditedTable.put(3, { name: 'three' });
@@ -52,6 +53,8 @@ describe('Audit log', () => {
 		}
 		assert.equal(results.length, 0);
 		assert.equal(AuditedTable.primaryStore.getEntry(1), undefined); // verify that the delete entry was removed
+		// verify that the twice-written entry was not removed
+		assert.equal(AuditedTable.primaryStore.getEntry(2)?.value?.name, 'two-changed');
 	});
 	it('write big key with big user name', async () => {
 		const key = [];
