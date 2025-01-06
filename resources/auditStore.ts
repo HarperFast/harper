@@ -68,6 +68,7 @@ export function openAuditStore(root_store) {
 	const delete_callbacks = [];
 	audit_store.addDeleteRemovalCallback = function (table_id, callback) {
 		delete_callbacks[table_id] = callback;
+		audit_store.deleteCallbacks = delete_callbacks;
 		return {
 			remove() {
 				delete delete_callbacks[table_id];
@@ -88,14 +89,8 @@ export function openAuditStore(root_store) {
 					snapshot: false,
 					end: Date.now() - audit_retention,
 				})) {
-					if ((readAction(value) & 15) === DELETE) {
-						// if this is a delete, we remove the delete entry from the primary table
-						// at the same time so the audit table the primary table are in sync
-						const audit_record = readAuditEntry(value);
-						const table_id = audit_record.tableId;
-						delete_callbacks[table_id]?.(audit_record.recordId);
-					}
-					committed = audit_store.remove(key);
+					committed = removeAuditEntry(audit_store, key, value);
+					//last_key = key;
 					await new Promise(setImmediate);
 					if (++deleted >= MAX_DELETES_PER_CLEANUP) {
 						// limit the amount we cleanup per event turn so we don't use too much memory/CPU
@@ -120,6 +115,17 @@ export function openAuditStore(root_store) {
 	}
 
 	return audit_store;
+}
+
+export function removeAuditEntry(audit_store: any, key: number, value: any): Promise<void> {
+	if ((readAction(value) & 15) === DELETE) {
+		// if this is a delete, we remove the delete entry from the primary table
+		// at the same time so the audit table the primary table are in sync
+		const audit_record = readAuditEntry(value);
+		const table_id = audit_record.tableId;
+		audit_store.deleteCallbacks[table_id]?.(audit_record.recordId);
+	}
+	return audit_store.remove(key);
 }
 
 export function setAuditRetention(retention_time, default_delay = DEFAULT_AUDIT_CLEANUP_DELAY) {
@@ -310,7 +316,7 @@ class Decoder extends DataView {
 			this.position += 8;
 			return value;
 		} catch (error) {
-			debugger;
+			error.message = `Error reading float64: ${error.message} at position ${this.position}`;
 			throw error;
 		}
 	}
