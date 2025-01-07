@@ -42456,12 +42456,13 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 403\", function () {",
 									"    pm.response.to.have.status(403);",
 									"});"
-								]
+								],
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -48602,6 +48603,69 @@
 			"name": "8a. Restart HDB to update config",
 			"item": [
 				{
+					"name": "Drop cluster_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is either 200 or 404\", function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 404]);",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46cGFzc3dvcmQ="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"cluster_user1\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
+					},
+					"response": []
+				},
+				{
 					"name": "Create new cluster_user",
 					"event": [
 						{
@@ -48611,6 +48675,16 @@
 									"pm.test(\"Status code is 200\", function () {",
 									"    pm.response.to.have.status(200);",
 									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
 								],
 								"type": "text/javascript",
 								"packages": {}
@@ -48655,7 +48729,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_user\",\n    \"role\": \"cluster_user\",\n    \"username\": \"cluster_user\",\n    \"password\": \"cluster_user\",\n    \"active\": true\n}"
+							"raw": "{\n    \"operation\": \"add_user\",\n    \"role\": \"cluster_user\",\n    \"username\": \"cluster_user1\",\n    \"password\": \"cluster_user1\",\n    \"active\": true\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -48797,7 +48871,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"set_configuration\",\n    \"clustering_enabled\": true,\n\n    \"clustering_hubServer_cluster_name\": \"harperdb\",\n    \"clustering_hubServer_cluster_network_port\": \"9932\",\n    \"clustering_hubServer_cluster_network_routes\": null,\n\n    \"clustering_hubServer_leafNodes_network_port\": \"9931\",\n\n    \"clustering_hubServer_network_port\": \"9930\",\n    \n    \"clustering_leafServer_network_port\": \"9940\",\n    \"clustering_leafServer_network_routes\": null,\n\n    \"clustering_leafServer_streams_maxAge\": null,\n    \"clustering_leafServer_streams_maxBytes\": null,\n    \"clustering_leafServer_streams_maxMsgs\": null,\n    \"clustering_leafServer_streams_maxConsumeMsgs\": \"100\",\n    \"clustering_leafServer_streams_maxIngestThreads\": \"2\",\n\n    \"clustering_nodeName\": \"local\",\n\n    \"clustering_republishMessages\": false,\n    \"clustering_databaseLevel\": false,\n\n    \"clustering_user\": \"cluster_user\",\n\n    \"clustering_tls_certificate\": \"{{root_path}}/keys/natsCertificate.pem\",\n    \"clustering_tls_certificateAuthority\": \"{{root_path}}/keys/natsCaCertificate.pem\",\n    \"clustering_tls_privateKey\": \"{{root_path}}/keys/privateKey.pem\",\n    \"clustering_tls_insecure\": true,\n    \"clustering_tls_verify\": true\n\n\n\n}"
+							"raw": "{\n\t\"operation\": \"set_configuration\",\n    \"clustering_enabled\": true,\n\n    \"clustering_hubServer_cluster_name\": \"harperdb\",\n    \"clustering_hubServer_cluster_network_port\": \"9932\",\n    \"clustering_hubServer_cluster_network_routes\": null,\n\n    \"clustering_hubServer_leafNodes_network_port\": \"9931\",\n\n    \"clustering_hubServer_network_port\": \"9930\",\n    \n    \"clustering_leafServer_network_port\": \"9940\",\n    \"clustering_leafServer_network_routes\": null,\n\n    \"clustering_leafServer_streams_maxAge\": null,\n    \"clustering_leafServer_streams_maxBytes\": null,\n    \"clustering_leafServer_streams_maxMsgs\": null,\n    \"clustering_leafServer_streams_maxConsumeMsgs\": \"100\",\n    \"clustering_leafServer_streams_maxIngestThreads\": \"2\",\n\n    \"clustering_nodeName\": \"local\",\n\n    \"clustering_republishMessages\": false,\n    \"clustering_databaseLevel\": false,\n\n    \"clustering_user\": \"cluster_user1\",\n\n    \"clustering_tls_certificate\": \"{{root_path}}/keys/natsCertificate.pem\",\n    \"clustering_tls_certificateAuthority\": \"{{root_path}}/keys/natsCaCertificate.pem\",\n    \"clustering_tls_privateKey\": \"{{root_path}}/keys/privateKey.pem\",\n    \"clustering_tls_insecure\": true,\n    \"clustering_tls_verify\": true\n\n\n\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -48888,8 +48962,10 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
+									"//waiting for restart for 80 seconds",
+									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
-									"setTimeout(() => {}, 60000)"
+									"setTimeout(() => {}, 80000)"
 								],
 								"type": "text/javascript",
 								"packages": {}
@@ -63463,7 +63539,7 @@
 									"});",
 									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
-									"setTimeout(() => {}, 60000)"
+									"setTimeout(() => {}, 80000)"
 								],
 								"type": "text/javascript"
 							}
@@ -69253,7 +69329,7 @@
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
 									"    ",
-									"    //wait for 80 seconds",
+									"    //wait for 59 seconds",
 									"    console.log('waiting for 80 seconds for the restart of services');",
 									"    setTimeout(() => {}, 80000);",
 									"    //retry request if needed with:",
@@ -70241,8 +70317,8 @@
 									"    pm.response.to.have.status(200);",
 									"    ",
 									"    //wait for 59 seconds",
-									"    console.log('waiting for 59 seconds for the restart of services');",
-									"    setTimeout(() => {}, 59000);",
+									"    console.log('waiting for 80 seconds for the restart of services');",
+									"    setTimeout(() => {}, 80000);",
 									"    //retry request if needed with:",
 									"    // pm.setNextRequest(pm.info.requestId);",
 									"});",
@@ -73584,8 +73660,8 @@
 									"    pm.response.to.have.status(200);",
 									"    ",
 									"    //wait for 59 seconds",
-									"    console.log('waiting for 59 seconds for the restart of services');",
-									"    setTimeout(() => {}, 59000);",
+									"    console.log('waiting for 80 seconds for the restart of services');",
+									"    setTimeout(() => {}, 80000);",
 									"    //retry request if needed with:",
 									"    // pm.setNextRequest(pm.info.requestId);",
 									"});",
