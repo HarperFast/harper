@@ -48962,10 +48962,10 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"//waiting for restart for 80 seconds",
+									"//waiting for restart for 120 seconds",
 									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
-									"setTimeout(() => {}, 80000)"
+									"setTimeout(() => {}, 120000)"
 								],
 								"type": "text/javascript",
 								"packages": {}
@@ -63539,7 +63539,7 @@
 									"});",
 									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
-									"setTimeout(() => {}, 80000)"
+									"setTimeout(() => {}, 120000)"
 								],
 								"type": "text/javascript"
 							}
@@ -69329,9 +69329,9 @@
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
 									"    ",
-									"    //wait for 59 seconds",
-									"    console.log('waiting for 80 seconds for the restart of services');",
-									"    setTimeout(() => {}, 80000);",
+									"    //wait for 120 seconds",
+									"    console.log('waiting for 120 seconds for the restart of services');",
+									"    setTimeout(() => {}, 120000);",
 									"    //retry request if needed with:",
 									"    // pm.setNextRequest(pm.info.requestId);",
 									"});",
@@ -70316,9 +70316,9 @@
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
 									"    ",
-									"    //wait for 59 seconds",
-									"    console.log('waiting for 80 seconds for the restart of services');",
-									"    setTimeout(() => {}, 80000);",
+									"    //wait for 120 seconds",
+									"    console.log('waiting for 120 seconds for the restart of services');",
+									"    setTimeout(() => {}, 120000);",
 									"    //retry request if needed with:",
 									"    // pm.setNextRequest(pm.info.requestId);",
 									"});",
@@ -73659,9 +73659,9 @@
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
 									"    ",
-									"    //wait for 59 seconds",
-									"    console.log('waiting for 80 seconds for the restart of services');",
-									"    setTimeout(() => {}, 80000);",
+									"    //wait for 120 seconds",
+									"    console.log('waiting for 120 seconds for the restart of services');",
+									"    setTimeout(() => {}, 120000);",
 									"    //retry request if needed with:",
 									"    // pm.setNextRequest(pm.info.requestId);",
 									"});",
