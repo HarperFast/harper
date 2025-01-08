@@ -4,7 +4,7 @@ import request from 'supertest';
 import {checkTableInSchema, createSchema, describeSchema, dropSchema} from "../utils/schema.js";
 import {generic, headers, envUrl} from "../config/envConfig.js";
 import {createTable, dropTable} from "../utils/table.js";
-import {sleep} from "../utils/general.js";
+import { setTimeout as sleep } from 'node:timers/promises';
 
 describe('1. Environment Setup', () => {
 

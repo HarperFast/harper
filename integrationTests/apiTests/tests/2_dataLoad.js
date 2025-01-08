@@ -5,7 +5,7 @@ import {checkTableInSchema, createSchema, describeSchema, dropSchema} from "../u
 import {envUrl, generic, headers} from "../config/envConfig.js";
 import {createTable, dropTable} from "../utils/table.js";
 import {csvFileUpload, csvUrlLoad} from "../utils/csv.js";
-import {sleep} from "../utils/general.js";
+import { setTimeout as sleep } from 'node:timers/promises';
 import * as path from "node:path";
 import { fileURLToPath } from 'url';
 

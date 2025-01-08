@@ -1,6 +1,6 @@
 import request from "supertest";
 import assert from "node:assert";
-import {sleep} from "./general.js";
+import { setTimeout as sleep } from 'node:timers/promises';
 import {envUrl} from "../config/envConfig.js";
 
 
