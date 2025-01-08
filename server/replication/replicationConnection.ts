@@ -1049,8 +1049,7 @@ export function replicateOverWS(ws, options, authorization) {
 										// wait if there is back-pressure
 										if (ws._socket.writableNeedDrain) {
 											await new Promise((resolve) => ws._socket.once('drain', resolve));
-										}
-										//await rest(); // possibly yield occasionally for fairness
+										} else await new Promise(setImmediate); // yield on each turn for fairness and letting other things run
 										audit_subscription.startTime = key; // update so don't double send
 										queued_entries = true;
 									}
