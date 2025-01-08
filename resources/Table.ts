@@ -397,7 +397,11 @@ export function makeTable(options) {
 											// to track this separately
 											// track the other nodes in the list
 											for (const node_id of event.remoteNodeIds.slice(1)) {
-												let node_state = node_states.find((existing_node) => existing_node.name === node_id);
+												let node_state = node_states.find((existing_node) => existing_node.id === node_id);
+												// remove any duplicates
+												node_states = node_states.filter(
+													(existing_node) => existing_node.id !== node_id || existing_node === node_state
+												);
 												if (!node_state) {
 													node_state = { id: node_id, seqId: 0 };
 													node_states.push(node_state);
