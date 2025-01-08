@@ -3190,7 +3190,7 @@ export function makeTable(options) {
 				// existing entry to the node name of the update
 				const node_name_to_id = server.replication?.exportIdMapping(audit_store);
 				const local_time = existing_entry.localTime;
-				const audit_entry = audit_store.get(local_time);
+				const audit_entry = local_time && audit_store.get(local_time);
 				if (audit_entry) {
 					// existing node id comes from the audit log
 					let updated_node_name, existing_node_name;
