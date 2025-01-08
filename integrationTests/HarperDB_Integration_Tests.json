@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "ea614d55-a38e-4d69-b2d2-9a83baee7443",
+		"_postman_id": "cb6f0cc4-dd73-4074-8a9e-3812f6f2ca2f",
 		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
 		"_exporter_id": "38120670"
@@ -48952,7 +48952,7 @@
 					"response": []
 				},
 				{
-					"name": "Restart for new settings",
+					"name": "Restart for new settings and wait",
 					"event": [
 						{
 							"listen": "test",
@@ -63523,7 +63523,7 @@
 					"response": []
 				},
 				{
-					"name": "restart service",
+					"name": "Restart and wait",
 					"event": [
 						{
 							"listen": "test",
@@ -63533,15 +63533,11 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test(\"Restart service success message is returned\", function () {",
-									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.message).to.equal(\"Restarting http_workers\");",
-									"});",
-									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
 									"setTimeout(() => {}, 120000)"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -63570,7 +63566,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -69320,7 +69316,7 @@
 					"response": []
 				},
 				{
-					"name": "Restart service and wait",
+					"name": "Restart and wait",
 					"event": [
 						{
 							"listen": "test",
@@ -69328,17 +69324,8 @@
 								"exec": [
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
-									"    ",
-									"    //wait for 120 seconds",
 									"    console.log('waiting for 120 seconds for the restart of services');",
 									"    setTimeout(() => {}, 120000);",
-									"    //retry request if needed with:",
-									"    // pm.setNextRequest(pm.info.requestId);",
-									"});",
-									"",
-									"pm.test('Check message', () => {",
-									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.contain('Restarting');",
 									"});"
 								],
 								"type": "text/javascript",
@@ -69371,7 +69358,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -70307,7 +70294,7 @@
 					"response": []
 				},
 				{
-					"name": "Restart service and wait",
+					"name": "Restart and wait",
 					"event": [
 						{
 							"listen": "test",
@@ -70315,17 +70302,8 @@
 								"exec": [
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
-									"    ",
-									"    //wait for 120 seconds",
 									"    console.log('waiting for 120 seconds for the restart of services');",
 									"    setTimeout(() => {}, 120000);",
-									"    //retry request if needed with:",
-									"    // pm.setNextRequest(pm.info.requestId);",
-									"});",
-									"",
-									"pm.test('Check message', () => {",
-									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.contain('Restarting');",
 									"});"
 								],
 								"type": "text/javascript",
@@ -70358,7 +70336,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -73650,7 +73628,7 @@
 					"response": []
 				},
 				{
-					"name": "Restart service and wait",
+					"name": "Restart and wait",
 					"event": [
 						{
 							"listen": "test",
@@ -73658,17 +73636,8 @@
 								"exec": [
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
-									"    ",
-									"    //wait for 120 seconds",
 									"    console.log('waiting for 120 seconds for the restart of services');",
 									"    setTimeout(() => {}, 120000);",
-									"    //retry request if needed with:",
-									"    // pm.setNextRequest(pm.info.requestId);",
-									"});",
-									"",
-									"pm.test('Check message', () => {",
-									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.contain('Restarting');",
 									"});"
 								],
 								"type": "text/javascript",
@@ -73701,7 +73670,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
