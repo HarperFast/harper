@@ -397,7 +397,11 @@ export function makeTable(options) {
 											// to track this separately
 											// track the other nodes in the list
 											for (const node_id of event.remoteNodeIds.slice(1)) {
-												let node_state = node_states.find((existing_node) => existing_node.name === node_id);
+												let node_state = node_states.find((existing_node) => existing_node.id === node_id);
+												// remove any duplicates
+												node_states = node_states.filter(
+													(existing_node) => existing_node.id !== node_id || existing_node === node_state
+												);
 												if (!node_state) {
 													node_state = { id: node_id, seqId: 0 };
 													node_states.push(node_state);
@@ -3186,7 +3190,7 @@ export function makeTable(options) {
 				// existing entry to the node name of the update
 				const node_name_to_id = server.replication?.exportIdMapping(audit_store);
 				const local_time = existing_entry.localTime;
-				const audit_entry = audit_store.get(local_time);
+				const audit_entry = local_time && audit_store.get(local_time);
 				if (audit_entry) {
 					// existing node id comes from the audit log
 					let updated_node_name, existing_node_name;
