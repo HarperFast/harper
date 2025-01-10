@@ -33,7 +33,7 @@ import { Addition, assignTrackedAccessors, deepFreeze, hasChanges, OWN_DATA } fr
 import { transaction } from './transaction';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads';
-import { readAuditEntry } from './auditStore';
+import { readAuditEntry, removeAuditEntry } from './auditStore';
 import { autoCast, convertToMS } from '../utility/common_utils';
 import { getUpdateRecord, PENDING_LOCAL_TIME } from './RecordEncoder';
 import { recordAction, recordActionBinary } from './analytics';
@@ -856,8 +856,8 @@ export function makeTable(options) {
 									updated_time_property.type === 'Date'
 										? new Date(txn_time)
 										: updated_time_property.type === 'String'
-										? new Date(txn_time).toISOString()
-										: txn_time;
+											? new Date(txn_time).toISOString()
+											: txn_time;
 							}
 							if (full_update) {
 								if (primary_key && record_update[primary_key] !== id) record_update[primary_key] = id;
@@ -869,8 +869,8 @@ export function makeTable(options) {
 											created_time_property.type === 'Date'
 												? new Date(txn_time)
 												: created_time_property.type === 'String'
-												? new Date(txn_time).toISOString()
-												: txn_time;
+													? new Date(txn_time).toISOString()
+													: txn_time;
 								}
 								record_update = deepFreeze(record_update); // this flatten and freeze the record
 							}
@@ -885,19 +885,19 @@ export function makeTable(options) {
 						? () => apply_to_sources.put(context, id, record_update)
 						: null
 					: apply_to_sources.patch // otherwise, we need to use the patch method if available
-					? () => apply_to_sources.patch(context, id, record_update)
-					: apply_to_sources.put // if this is incremental, but only have put, we can use that by generating the full record (at least the expected one)
-					? () => apply_to_sources.put(context, id, deepFreeze(this))
-					: null,
+						? () => apply_to_sources.patch(context, id, record_update)
+						: apply_to_sources.put // if this is incremental, but only have put, we can use that by generating the full record (at least the expected one)
+							? () => apply_to_sources.put(context, id, deepFreeze(this))
+							: null,
 				beforeIntermediate: full_update
 					? apply_to_sources_intermediate.put
 						? () => apply_to_sources_intermediate.put(context, id, record_update)
 						: null
 					: apply_to_sources_intermediate.patch
-					? () => apply_to_sources_intermediate.patch(context, id, record_update)
-					: apply_to_sources_intermediate.put
-					? () => apply_to_sources_intermediate.put(context, id, deepFreeze(this))
-					: null,
+						? () => apply_to_sources_intermediate.patch(context, id, record_update)
+						: apply_to_sources_intermediate.put
+							? () => apply_to_sources_intermediate.put(context, id, deepFreeze(this))
+							: null,
 				commit: (txn_time, existing_entry, retry) => {
 					if (retry) {
 						if (context && existing_entry?.version > (context.lastModified || 0))
@@ -2149,7 +2149,7 @@ export function makeTable(options) {
 										const value = direct_entry
 											? definition.tableClass.primaryStore.getEntry(id, {
 													transaction: txnForContext(context).getReadTxn(),
-											  })
+												})
 											: definition.tableClass.get(id, context);
 										if (value?.then) has_promises = true;
 										return value;
@@ -2159,13 +2159,13 @@ export function makeTable(options) {
 											? Promise.all(results).then((results) => results.filter(exists))
 											: results.filter(exists)
 										: has_promises
-										? Promise.all(results)
-										: results;
+											? Promise.all(results)
+											: results;
 								}
 								return direct_entry
 									? definition.tableClass.primaryStore.getEntry(ids, {
 											transaction: txnForContext(context).getReadTxn(),
-									  })
+										})
 									: definition.tableClass.get(ids, context);
 							};
 							attribute.set = (object, related) => {
@@ -2195,22 +2195,31 @@ export function makeTable(options) {
 			}
 			assignTrackedAccessors(this, this);
 		}
-		static async deleteHistory(end_time = 0) {
-			let completion;
+		static async deleteHistory(end_time = 0, cleanup_deleted_records = false) {
+			let completion: Promise<void>;
 			for (const { key, value: audit_entry } of audit_store.getRange({
 				start: 0,
 				end: end_time,
 			})) {
 				await rest(); // yield to other async operations
 				if (readAuditEntry(audit_entry).tableId !== table_id) continue;
-				completion = audit_store.remove(key);
-				// TODO: Cleanup delete entry from main table
+				completion = removeAuditEntry(audit_store, key, audit_entry);
+			}
+			if (cleanup_deleted_records) {
+				// this is separate procedure we can do if the records are not being cleaned up by the audit log. This shouldn't
+				// ever happen, but if there are cleanup failures for some reason, we can run this to clean up the records
+				for (const { key, value, localTime } of primary_store.getRange({ start: 0, versions: true })) {
+					await rest(); // yield to other async operations
+					if (value === null && localTime < end_time) {
+						completion = primary_store.remove(key);
+					}
+				}
 			}
 			await completion;
 		}
 		static async *getHistory(start_time = 0, end_time = Infinity) {
 			for (const { key, value: audit_entry } of audit_store.getRange({
-				start: start_time,
+				start: start_time || 1, // if start_time is 0, we actually want to shift to 1 because 0 is encoded as all zeros with audit store's special encoder, and will include symbols
 				end: end_time,
 			})) {
 				await rest(); // yield to other async operations
@@ -2296,7 +2305,7 @@ export function makeTable(options) {
 								// keep in the list of values to add to index
 								return true;
 							}
-					  })
+						})
 					: [];
 				values_to_remove = Array.from(set_to_remove);
 				if ((values_to_remove.length > 0 || values_to_add.length > 0) && LMDB_PREFETCH_WRITES) {
