@@ -111,6 +111,7 @@ jobs:
           cp integrationTests/newman/report.html artifact
           cp integrationTests/newman/extra_report.html artifact
       - name: 'Upload Artifact'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: logs-${{ matrix.name }}
