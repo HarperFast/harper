@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "cb6f0cc4-dd73-4074-8a9e-3812f6f2ca2f",
+		"_postman_id": "7bba425f-cbc9-4e74-866d-59b9beb43f75",
 		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
 		"_exporter_id": "38120670"
@@ -48962,10 +48962,10 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"//waiting for restart for 120 seconds",
+									"//waiting for restart for 90 seconds",
 									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
-									"setTimeout(() => {}, 120000)"
+									"setTimeout(() => {}, 90000)"
 								],
 								"type": "text/javascript",
 								"packages": {}
@@ -62059,7 +62059,8 @@
 									"    ",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -63534,7 +63535,7 @@
 									"});",
 									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
-									"setTimeout(() => {}, 120000)"
+									"setTimeout(() => {}, 90000)"
 								],
 								"type": "text/javascript",
 								"packages": {}
@@ -69266,6 +69267,7 @@
 									"pm.test('Check message', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.contain('Successfully set component: resources.js');",
+									"    setTimeout(() => {}, 2000);",
 									"});"
 								],
 								"type": "text/javascript",
@@ -69324,8 +69326,8 @@
 								"exec": [
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
-									"    console.log('waiting for 120 seconds for the restart of services');",
-									"    setTimeout(() => {}, 120000);",
+									"    console.log('waiting for 90 seconds for the restart of services');",
+									"    setTimeout(() => {}, 90000);",
 									"});"
 								],
 								"type": "text/javascript",
@@ -69364,6 +69366,72 @@
 									"language": "json"
 								}
 							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Describe all",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -70302,8 +70370,8 @@
 								"exec": [
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
-									"    console.log('waiting for 120 seconds for the restart of services');",
-									"    setTimeout(() => {}, 120000);",
+									"    console.log('waiting for 90 seconds for the restart of services');",
+									"    setTimeout(() => {}, 90000);",
 									"});"
 								],
 								"type": "text/javascript",
@@ -73636,8 +73704,8 @@
 								"exec": [
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
-									"    console.log('waiting for 120 seconds for the restart of services');",
-									"    setTimeout(() => {}, 120000);",
+									"    console.log('waiting for 90 seconds for the restart of services');",
+									"    setTimeout(() => {}, 90000);",
 									"});"
 								],
 								"type": "text/javascript",

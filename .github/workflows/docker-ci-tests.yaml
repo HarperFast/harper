@@ -47,7 +47,7 @@ jobs:
     needs:
       - dockerBuild
       - build
-    timeout-minutes: 40
+    timeout-minutes: 25
     strategy:
       fail-fast: false
       matrix:
