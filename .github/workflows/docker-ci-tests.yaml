@@ -47,7 +47,7 @@ jobs:
     needs:
       - dockerBuild
       - build
-    timeout-minutes: 25
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -71,6 +71,7 @@ jobs:
         with:
           node-version: ${{ needs.build.outputs.nodeVersion }}
       - name: Run Tests
+        timeout-minutes: 20
         run: |
           pushd utility/Docker
           docker load -i ${{ matrix.tarName }}
@@ -94,8 +95,9 @@ jobs:
           docker cp test/data/integrationTestsCsvs/ $containerId:/home/harperdb/
           cd ./integrationTests/
           newman run HarperDB_Integration_Tests.json -e Int_test_env_var.json --reporters cli,html,htmlextra --reporter-cli-show-timestamps --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --env-var "files_location=/home/harperdb/integrationTestsCsvs/" --env-var "username=admin" --env-var "password=Abc1234!"
+      - name: Create artifact
+        run: |
           cd ../
-
           mkdir -p artifact
 
           # Capture hdb_log.log from container
