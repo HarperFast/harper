@@ -95,21 +95,25 @@ jobs:
           docker cp test/data/integrationTestsCsvs/ $containerId:/home/harperdb/
           cd ./integrationTests/
           newman run HarperDB_Integration_Tests.json -e Int_test_env_var.json --reporters cli,html,htmlextra --reporter-cli-show-timestamps --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --env-var "files_location=/home/harperdb/integrationTestsCsvs/" --env-var "username=admin" --env-var "password=Abc1234!"
-          cd ../
+
+      - name: Create artifact
+        if: always()
+        run: |
           mkdir -p artifact
 
           # Capture hdb_log.log from container
-          docker cp $containerId:/home/harperdb/hdb/log/ artifact
+          docker cp harperdb:/home/harperdb/hdb/log/ artifact
 
           # Capture harperdb-config.yaml
-          docker cp $containerId:/home/harperdb/hdb/harperdb-config.yaml artifact
+          docker cp harperdb:/home/harperdb/hdb/harperdb-config.yaml artifact
 
           # Capture docker log
-          docker logs $containerId > artifact/docker_log.log
+          docker logs harperdb > artifact/docker_log.log
 
           # Capture newman reports
           cp integrationTests/newman/report.html artifact
           cp integrationTests/newman/extra_report.html artifact
+          
       - name: 'Upload Artifact'
         if: always()
         uses: actions/upload-artifact@v4
