@@ -149,7 +149,7 @@ export function removeAuditEntry(audit_store: any, key: number, value: any): Pro
 		// at the same time so the audit table the primary table are in sync
 		const audit_record = readAuditEntry(value);
 		const table_id = audit_record.tableId;
-		audit_store.deleteCallbacks[table_id]?.(audit_record.recordId);
+		audit_store.deleteCallbacks?.[table_id]?.(audit_record.recordId);
 	}
 	return audit_store.remove(key);
 }
@@ -321,7 +321,7 @@ export function createAuditEntry(
  * Reads an action from an audit entry binary data, quickly
  * @param buffer
  */
-function readAction(buffer) {
+function readAction(buffer: Buffer) {
 	let position = 0;
 	if (buffer[0] == 66) {
 		// 66 is the first byte in a date double, so we need to skip it
