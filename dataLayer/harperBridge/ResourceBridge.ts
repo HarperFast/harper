@@ -451,7 +451,7 @@ export class ResourceBridge extends LMDBBridge {
 	}
 	async deleteAuditLogsBefore(delete_obj) {
 		const table = getTable(delete_obj);
-		return table.deleteHistory(delete_obj.timestamp);
+		return table.deleteHistory(delete_obj.timestamp, delete_obj.cleanup_deleted_records);
 	}
 
 	async readAuditLog(read_audit_log_obj) {

@@ -40,7 +40,7 @@ import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, OWN_DATA
 import { transaction } from './transaction';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads';
-import { readAuditEntry } from './auditStore';
+import { readAuditEntry, removeAuditEntry } from './auditStore';
 import { autoCast, convertToMS } from '../utility/common_utils';
 import { getUpdateRecord, PENDING_LOCAL_TIME } from './RecordEncoder';
 import { recordAction, recordActionBinary } from './analytics';
@@ -397,7 +397,11 @@ export function makeTable(options) {
 											// to track this separately
 											// track the other nodes in the list
 											for (const node_id of event.remoteNodeIds.slice(1)) {
-												let node_state = node_states.find((existing_node) => existing_node.name === node_id);
+												let node_state = node_states.find((existing_node) => existing_node.id === node_id);
+												// remove any duplicates
+												node_states = node_states.filter(
+													(existing_node) => existing_node.id !== node_id || existing_node === node_state
+												);
 												if (!node_state) {
 													node_state = { id: node_id, seqId: 0 };
 													node_states.push(node_state);
@@ -2748,22 +2752,31 @@ export function makeTable(options) {
 			}
 			this.userResolvers[attribute_name] = resolver;
 		}
-		static async deleteHistory(end_time = 0) {
-			let completion;
+		static async deleteHistory(end_time = 0, cleanup_deleted_records = false) {
+			let completion: Promise<void>;
 			for (const { key, value: audit_entry } of audit_store.getRange({
 				start: 0,
 				end: end_time,
 			})) {
 				await rest(); // yield to other async operations
 				if (readAuditEntry(audit_entry).tableId !== table_id) continue;
-				completion = audit_store.remove(key);
-				// TODO: Cleanup delete entry from main table
+				completion = removeAuditEntry(audit_store, key, audit_entry);
+			}
+			if (cleanup_deleted_records) {
+				// this is separate procedure we can do if the records are not being cleaned up by the audit log. This shouldn't
+				// ever happen, but if there are cleanup failures for some reason, we can run this to clean up the records
+				for (const { key, value, localTime } of primary_store.getRange({ start: 0, versions: true })) {
+					await rest(); // yield to other async operations
+					if (value === null && localTime < end_time) {
+						completion = primary_store.remove(key);
+					}
+				}
 			}
 			await completion;
 		}
 		static async *getHistory(start_time = 0, end_time = Infinity) {
 			for (const { key, value: audit_entry } of audit_store.getRange({
-				start: start_time,
+				start: start_time || 1, // if start_time is 0, we actually want to shift to 1 because 0 is encoded as all zeros with audit store's special encoder, and will include symbols
 				end: end_time,
 			})) {
 				await rest(); // yield to other async operations
@@ -3186,7 +3199,7 @@ export function makeTable(options) {
 				// existing entry to the node name of the update
 				const node_name_to_id = server.replication?.exportIdMapping(audit_store);
 				const local_time = existing_entry.localTime;
-				const audit_entry = audit_store.get(local_time);
+				const audit_entry = local_time && audit_store.get(local_time);
 				if (audit_entry) {
 					// existing node id comes from the audit log
 					let updated_node_name, existing_node_name;

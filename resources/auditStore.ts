@@ -80,6 +80,7 @@ export function openAuditStore(root_store) {
 	const delete_callbacks = [];
 	audit_store.addDeleteRemovalCallback = function (table_id, callback) {
 		delete_callbacks[table_id] = callback;
+		audit_store.deleteCallbacks = delete_callbacks;
 		return {
 			remove() {
 				delete delete_callbacks[table_id];
@@ -101,14 +102,7 @@ export function openAuditStore(root_store) {
 					snapshot: false,
 					end: Date.now() - audit_retention,
 				})) {
-					if ((value[0] & 15) === DELETE) {
-						// if this is a delete, we remove the delete entry from the primary table
-						// at the same time so the audit table the primary table are in sync
-						const audit_record = readAuditEntry(value);
-						const table_id = audit_record.tableId;
-						delete_callbacks[table_id]?.(audit_record.recordId);
-					}
-					committed = audit_store.remove(key);
+					committed = removeAuditEntry(audit_store, key, value);
 					last_key = key;
 					await new Promise(setImmediate);
 					if (++deleted >= MAX_DELETES_PER_CLEANUP) {
@@ -147,6 +141,17 @@ export function openAuditStore(root_store) {
 		}
 	}
 	return audit_store;
+}
+
+export function removeAuditEntry(audit_store: any, key: number, value: any): Promise<void> {
+	if ((readAction(value) & 15) === DELETE) {
+		// if this is a delete, we remove the delete entry from the primary table
+		// at the same time so the audit table the primary table are in sync
+		const audit_record = readAuditEntry(value);
+		const table_id = audit_record.tableId;
+		audit_store.deleteCallbacks?.[table_id]?.(audit_record.recordId);
+	}
+	return audit_store.remove(key);
 }
 
 function updateLastRemoved(audit_store, last_key) {
@@ -311,6 +316,35 @@ export function createAuditEntry(
 		}
 	}
 }
+
+/**
+ * Reads an action from an audit entry binary data, quickly
+ * @param buffer
+ */
+function readAction(buffer: Buffer) {
+	let position = 0;
+	if (buffer[0] == 66) {
+		// 66 is the first byte in a date double, so we need to skip it
+		position = 8;
+	}
+	const action = buffer[position];
+	if (action < 0x80) {
+		// simple case of a single byte
+		return action;
+	}
+	// otherwise, we need to decode the number
+	const decoder =
+		buffer.dataView || (buffer.dataView = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+	decoder.position = position;
+	return decoder.readInt();
+}
+
+/**
+ * Reads a audit entry from binary data
+ * @param buffer
+ * @param start
+ * @param end
+ */
 export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined) {
 	try {
 		const decoder =
@@ -389,11 +423,7 @@ export class Decoder extends DataView {
 	position = 0;
 	readInt() {
 		let number;
-		try {
-			number = this.getUint8(this.position++);
-		} catch (error) {
-			throw error;
-		}
+		number = this.getUint8(this.position++);
 		if (number >= 0x80) {
 			if (number >= 0xc0) {
 				if (number === 0xff) {
@@ -417,7 +447,8 @@ export class Decoder extends DataView {
 			this.position += 8;
 			return value;
 		} catch (error) {
-			debugger;
+			error.message = `Error reading float64: ${error.message} at position ${this.position}`;
+			throw error;
 		}
 	}
 }
