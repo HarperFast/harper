@@ -1,4 +1,4 @@
-name: "Release HarperDB"
+name: 'Release HarperDB'
 
 on:
   push:
@@ -6,6 +6,11 @@ on:
       - release_*
   workflow_dispatch:
     inputs:
+      forcedVersion:
+        type: string
+        description: 'Force a release with this version (x.y.z[-<alpha|beta|rc|custom>.w]). Please make sure you know what you are doing. This process will not tag latest. Defaults to `no_forced`'
+        default: 'no_forced'
+        required: false
       dryrun:
         type: boolean
         description: "dryrun: Do not publish"
@@ -37,41 +42,62 @@ jobs:
         env:
           inputs_dryrun: ${{ inputs.dryrun }}
           tag: ${{ github.ref }}
+          forcedVersion: ${{ inputs.forcedVersion }}
         run: |
           #!/usr/bin/env bash
-          
+
           # set default
           dryrun='true'
           push='false'
-          
+
           # make sure we know what the value of dryrun is 
           if [[ "${inputs_dryrun}" == "false" ]]; then
             dryrun='false'
             push='true'
+          fi
+          
+          # get the version from package.json
+          harperdbVersion=$(jq -r '.version' package.json)
+          
+          # check for forcedVersion. override tag and harperdbVersion to match
+          if [[ "${forcedVersion}" != "no_forced" && -n "${forcedVersion}" ]]; then
+            tag="refs/tags/release_${forcedVersion}"
+            harperdbVersion="${forcedVersion}"
+          
+            cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
+          > [!CAUTION]
+          > Forced Version
+          > version    == "${harperdbVersion}"
+
+          EOF
+          
+            dryrun="${inputs_dryrun:-false}"
+            [[ "${dryrun}" == 'false' ]] && push='true'
           
           # this workflow needs a tag to function properly, in the case of being on a pushed tag, lets just check the tag
           elif [[ "${tag}" =~ ^refs/tags/release_.*$ ]]; then
             dryrun="${inputs_dryrun:-false}"
             [[ "${dryrun}" == 'false' ]] && push='true'
-          
+
           else
             cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
           > [!CAUTION]
-          > Exiting as I have no idea what dryrun is supposed to be: 
-          > tag    == "${tag}"
-          > dryrun == "${dryrun}"
-          > push   == "${push}"
-          
+          > Exiting as I am unable to determine the version: 
+          > tag             == "${tag}"
+          > harperdbVersion == "${harperdbVersion}"
+          > dryrun          == "${dryrun}"
+          > push            == "${push}"
+
           EOF
             exit 1
           fi
-          
-          echo "dryrun=${dryrun}" >> "${GITHUB_OUTPUT}"
-          echo "push=${push}" >> "${GITHUB_OUTPUT}"
-          
-          harperdbVersion=$(jq -r '.version' package.json)
-          echo "harperdbVersion=${harperdbVersion}" >> "${GITHUB_OUTPUT}"
-          
+
+          cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
+          dryrun=${dryrun}
+          push=${push}
+          harperdbVersion=${harperdbVersion}
+          EOF
+
           full_version=${tag#refs/*/release_}
           release_type='stable'
           prerelease_version=''
@@ -83,23 +109,25 @@ jobs:
           
           version="${full_version%%-*}"
           version="${version#[vV]}"
-          version_major="${version%%\.*}"
+          version_major="${version%%.*}"
           version_minor="${version#*.}"
           version_minor="${version_minor%.*}"
           version_patch="${version##*.}"
-          
+
           npm_extra_tags=''
           dockerhub_tag_latest=''
-          
-          if [[ "${release_type}" == @(alpha|beta|rc) ]]; then
+
+          if [[ "${release_type}" == @(alpha|beta|rc|custom) ]]; then
             npm_extra_tags='next'
+            [[ "${forcedVersion}" != "no_forced" ]] && npm_extra_tags=''
             dockerhub_tag_latest=false
           else
             npm_extra_tags='latest+stable'
             dockerhub_tag_latest=true
           fi
-          
+
           cat <<EOF >> "${GITHUB_OUTPUT}"
+          harperdbVersion=${harperdbVersion}
           version=${version}
           full_version=${full_version}
           version_major=${version_major}
@@ -109,22 +137,24 @@ jobs:
           prerelease_version=${prerelease_version}
           npm_extra_tags=${npm_extra_tags}
           dockerhub_tag_latest=${dockerhub_tag_latest}
+          dryrun=${dryrun}
+          push=${push}
           EOF
-          
+
           cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
           ## Release ${version} ##
           harperdbVersion:  ${harperdbVersion}
           version from tag: ${full_version}
-          
+
           > release type:         ${release_type}
           > npm tag:              ${npm_extra_tags}
           > dockerhub latest tag: ${dockerhub_tag_latest}
           ---
-          
+
           major: ${version_major}
           minor: ${version_minor}
           patch: ${version_patch}
-          
+
           EOF
           
           [[ "${release_type}" != "stable" ]] && echo "pre-release version: ${release_type}.${prerelease_version:-}" >> "${GITHUB_STEP_SUMMARY}"
@@ -149,15 +179,15 @@ jobs:
             cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
           > [!WARNING]
           > dryrun == "${dryrun}"
-          
+
           EOF
           fi 
-          
+
           if [[ "${full_version}" != "${harperdbVersion}" ]]; then
             cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
           > [!CAUTION]
           > Terminating job as the version from the tag (${tag}, derived version ${full_version}) does not match harperdbVersion (${harperdbVersion})
-          
+
           EOF
             exit 1
           fi
@@ -166,7 +196,7 @@ jobs:
   #  Send Slack Message for start of Release
   ############################################
   sendSlackMessageRealeaseStarted:
-    if: needs.meta.outputs.dryrun == 'false'
+    if: ${{ needs.meta.outputs.dryrun == 'false' }}
     uses: ./.github/workflows/post-to-slack-channel.yaml
     needs:
       - meta
@@ -211,6 +241,8 @@ jobs:
     needs:
       - meta
     uses: ./.github/workflows/build.yaml
+    with:
+      artifactVersionOverride: ${{ needs.meta.outputs.harperdbVersion }}
 
   #############################################################
   #  Build offline installer to
@@ -218,8 +250,10 @@ jobs:
   #############################################################
   build-offline-installer:
     runs-on: ubuntu-latest
+    if: ${{ inputs.forcedVersion != 'no_forced' }}
     needs:
       - meta
+      - build
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-node@v4
@@ -232,7 +266,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: offline-harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
-          path: harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
+          path: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
           retention-days: 1
 
   ##############################################
@@ -248,20 +282,20 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
+          name: harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
       - uses: actions/setup-node@v4
         with:
           node-version: '${{needs.build.outputs.nodeVersion}}'
           registry-url: 'https://registry.npmjs.org'
-      - name: "npm Publish"
+      - name: 'npm Publish'
         env:
-          NODE_AUTH_TOKEN: "${{ secrets.NPM_ACCESS_KEY }}"
-          HARPERDB_VERSION:  "${{ needs.build.outputs.harperdbVersion }}"
+          NODE_AUTH_TOKEN: '${{ secrets.NPM_ACCESS_KEY }}'
+          HARPERDB_VERSION: '${{ needs.meta.outputs.harperdbVersion }}'
           PUBLISH_DESTINATION: 'private'
           EXTRA_TAGS: "${{ needs.meta.outputs.npm_extra_tags }}"
-          DRYRUN: ${{ needs.meta.outputs.dryrun }}
+          DRYRUN: "${{ needs.meta.outputs.dryrun }}"
         run: ./.github/scripts/npm-publish.sh
-        continue-on-error: true
+        #continue-on-error: true
 
   #########################################
   #  Release to dockerhub harperdb/private
@@ -270,16 +304,26 @@ jobs:
     needs:
       - meta
       - build
-    uses: ./.github/workflows/docker-build.yaml
-    with:
-      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      container: 'harperdb/private'
-      latest: ${{ needs.meta.outputs.dockerhub_tag_latest == 'true' && true || false }}
-      platforms: 'linux/amd64,linux/arm64'
-      push: ${{ needs.meta.outputs.push == 'true' && true || false }}
-    secrets:
-      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        nodeVersion: [16, 18, 20, 22]
+    timeout-minutes: 30
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v4
+      - name: docker-build
+        uses: ./.github/docker-build
+        with:
+          harperdbVersion: ${{ needs.meta.outputs.harperdbVersion }}
+          nodeVersion: ${{ matrix.nodeVersion }}
+          dockerImage: 'harperdb/private'
+          tagLatest: ${{ needs.meta.outputs.dockerhub_tag_latest == 'true' && true || false }}
+          buildPlatforms: 'linux/amd64,linux/arm64'
+          push: ${{ needs.meta.outputs.push == 'true' && 'true' || 'false' }}
+          dockerUsername: ${{ secrets.DOCKER_USERNAME }}
+          dockerPassword: ${{ secrets.DOCKER_PASSWORD }}
+
 
   ############################################
   #  Send Slack Message on 'Ready to Deploy'
@@ -376,7 +420,7 @@ jobs:
       - uses: actions/checkout@v4
       - uses: actions/download-artifact@v4
         with:
-          name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
+          name: harperdb-${{ needs.meta.outputs.harperdbVersion }}.tgz
 
       # setup and publishing to npm
       - uses: actions/setup-node@v4
@@ -384,15 +428,14 @@ jobs:
           node-version: '${{needs.build.outputs.nodeVersion}}'
           registry-url: 'https://registry.npmjs.org'
 
-      - name: "npm Publish"
+      - name: 'npm Publish'
         env:
-          NODE_AUTH_TOKEN: "${{ secrets.NPM_ACCESS_KEY }}"
-          HARPERDB_VERSION:  "${{ needs.build.outputs.harperdbVersion }}"
+          NODE_AUTH_TOKEN: '${{ secrets.NPM_ACCESS_KEY }}'
+          HARPERDB_VERSION: '${{ needs.meta.outputs.harperdbVersion }}'
           PUBLISH_DESTINATION: 'public'
           EXTRA_TAGS: "${{ needs.meta.outputs.npm_extra_tags }}"
           DRYRUN: ${{ needs.meta.outputs.dryrun }}
         run: ./.github/scripts/npm-publish.sh
-
 
   ###################################
   #  Release to Public Dockerhub
@@ -408,125 +451,38 @@ jobs:
       - dockerhubPrivateRelease
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    strategy:
+      matrix:
+        nodeVersion: [ 16, 18, 20, 22 ]
+        container:
+          - 'harperdb/harperdb'
+          - 'harperdb/harperdb-openshift'
+        include:
+          - container: 'harperdb/harperdb'
+            file: 'utility/Docker/Dockerfile'
+          - container: 'harperdb/harperdb-openshift'
+            file: 'utility/Docker/Dockerfile-openshift'
     steps:
-      # start docker setup and build
-      - uses: actions/checkout@v4
-      - uses: actions/download-artifact@v4
+      - name: checkout repo
+        uses: actions/checkout@v4
+      - name: docker-build
+        uses: ./.github/docker-build
         with:
-          name: harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
-      - name: Set up QEMU
-        uses: docker/setup-qemu-action@v3
-      - name: "Setup Docker buildx"
-        uses: docker/setup-buildx-action@v3
-      - name: Log in to Docker Hub
-        uses: docker/login-action@v3
-        with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
-      - uses: actions/download-artifact@v4
-        with:
-          name: "licenses"
-          path: "utility/Docker/licenses/"
-
-      # generate tags for containers
-      - name: Docker Meta Standard
-        id: meta-standard
-        uses: docker/metadata-action@v5
-        with:
-          # list of Docker images to use as base name for tags
-          images: 'harperdb/harperdb'
-          # generate Docker tags based on the following events/attributes
-          tags: |
-            type=raw,value=${{ needs.build.outputs.harperdbVersion }}
-            type=raw,value=latest,enable=${{ needs.meta.outputs.dockerhub_tag_latest }}
-
-      - name: Docker Meta Openshift
-        id: meta-openshift
-        uses: docker/metadata-action@v5
-        with:
-          # list of Docker images to use as base name for tags
-          images: 'harperdb/harperdb-openshift'
-          # generate Docker tags based on the following events/attributes
-          tags: |
-            type=raw,value=${{ needs.build.outputs.harperdbVersion }}
-            type=raw,value=latest,enable=${{ needs.meta.outputs.dockerhub_tag_latest }}
-
-      # standard container
-      - name: "Publish harperdb:${{ needs.build.outputs.harperdbVersion }}"
-        id: build-image-standard
-        timeout-minutes: 30
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: 'utility/Docker/Dockerfile'
-          platforms: 'linux/amd64,linux/arm64'
-          push: ${{ needs.meta.outputs.push }}
-          tags: ${{ steps.meta-standard.outputs.tags }}
-          build-args: |
-            HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}
-            HARPERDB_TARBALL=harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
-            VCS_REF=`git rev-parse HEAD`
-            BUILD_DATE=`date -u +%FT%T`
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # openshift container
-      - name: "Publish harperdb-openshift:${{ needs.build.outputs.harperdbVersion }}"
-        id: build-image-openshift
-        timeout-minutes: 30
-        uses: docker/build-push-action@v5
-        with:
-          context: .
-          file: 'utility/Docker/Dockerfile-openshift'
-          platforms: 'linux/amd64,linux/arm64'
-          push: ${{ needs.meta.outputs.push }}
-          tags: ${{ steps.meta-openshift.outputs.tags }}
-          build-args: |
-            HARPERDB_VERSION=${{ needs.build.outputs.harperdbVersion }}
-            HARPERDB_TARBALL=harperdb-${{ needs.build.outputs.harperdbVersion }}.tgz
-            VCS_REF=`git rev-parse HEAD`
-            BUILD_DATE=`date -u +%FT%T`
-          cache-from: type=gha
-          cache-to: type=gha,mode=max
-
-      # publish to redhat connect
-      - name: Install Openshift CLI tools
-        uses: redhat-actions/openshift-tools-installer@v1
-        with:
-          source: "github"
-          preflight: "latest"
-
-      - name: Publish to Redhat Connect harperdb-openshift:${{ needs.build.outputs.harperdbVersion }}
-        env:
-          CERTIFICATION_PROJECT_ID: ${{ secrets.REDHAT_CERTIFICATION_PROJECT_ID }}
-          REDHAT_DOCKERCONFIG: ${{ secrets.REDHAT_CONNECT_DOCKERCONFIG_JSON }}
-          PYXIS_API_TOKEN: ${{ secrets.REDHAT_PYXIS_KEY }}
-          container_registry: 'registry.hub.docker.com'
-          container_image: 'harperdb/harperdb-openshift'
-          container_tag: ${{ needs.build.outputs.harperdbVersion }}
-          dryrun: ${{ needs.meta.outputs.dryrun }}
-        run: |
-          #!/usr/bin/env bash
-          set -euo pipefail
-
-          echo "writing docker-config.json for submission"
-          echo "${REDHAT_DOCKERCONFIG}" | jq '.' > docker-config.json
-
-          # dryrun is handled by managing the '--submit' flag
-          submit=''
-          [ "${dryrun}" == "false" ] && submit='--submit'
-
-          preflight check container "${container_registry}/${container_image}:${container_tag}" \
-            --pyxis-api-token="${PYXIS_API_TOKEN}" \
-            --certification-project-id="${CERTIFICATION_PROJECT_ID}" \
-            --docker-config ./docker-config.json \
-            ${submit} >> "${GITHUB_STEP_SUMMARY}"
+          harperdbVersion: ${{ needs.meta.outputs.harperdbVersion }}
+          nodeVersion: ${{ matrix.nodeVersion }}
+          dockerImage: ${{ matrix.container }}
+          tagLatest: ${{ needs.meta.outputs.dockerhub_tag_latest == 'true' && true || false }}
+          buildPlatforms: 'linux/amd64,linux/arm64'
+          push: ${{ needs.meta.outputs.push == 'true' && 'true' || 'false' }}
+          dockerUsername: ${{ secrets.DOCKER_USERNAME }}
+          dockerPassword: ${{ secrets.DOCKER_PASSWORD }}
 
   #############################################################
   #  Release offline installer to
   #  https://products-harperdb-io.s3.us-east-2.amazonaws.com/
   #############################################################
   publicReleaseOfflineInstaller:
+    if: ${{ inputs.forcedVersion != 'no_forced' }}
     environment: ${{ needs.meta.outputs.release_type == 'stable' && 'release-offline-installer' || 'pre-release-offline-installer' }}
     runs-on: ubuntu-latest
     needs:
