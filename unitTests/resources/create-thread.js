@@ -15,15 +15,17 @@ let CreateTest = table({
 		{ name: 'str', type: 'String' },
 	],
 });
-parentPort?.on('message', (message) => {
-	if (message.type === 'shutdown') {
-		process.exit(0);
-	}
-	if (message.type === 'increment') {
-		for (let i = 0; i < 100; i++) CreateTest.getNewId();
-		parentPort.postMessage({ type: 'incremented' });
-	}
-});
+parentPort
+	?.on('message', (message) => {
+		if (message.type === 'shutdown') {
+			process.exit(0);
+		}
+		if (message.type === 'increment') {
+			for (let i = 0; i < 100; i++) CreateTest.getNewId();
+			parentPort.postMessage({ type: 'incremented' });
+		}
+	})
+	.ref();
 /*(async () => {
 	try {
 		let results = [];

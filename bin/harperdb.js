@@ -65,11 +65,8 @@ async function harperdb() {
 		service = process.argv[2].toLowerCase();
 	}
 
-	let cli_api_op;
-	if (!run_clone) {
-		cli_api_op = cli_operations.buildRequest();
-		if (cli_api_op.operation) service = SERVICE_ACTIONS_ENUM.OPERATION;
-	}
+	const cli_api_op = cli_operations.buildRequest();
+	if (cli_api_op.operation) service = SERVICE_ACTIONS_ENUM.OPERATION;
 
 	switch (service) {
 		case SERVICE_ACTIONS_ENUM.OPERATION:
