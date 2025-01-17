@@ -81,12 +81,10 @@ server.http = httpServer;
 server.request = onRequest;
 server.socket = onSocket;
 server.ws = onWebSocket;
-let ws_listeners = {},
-	ws_servers = {},
-	ws_chain;
+server.upgrade = onUpgrade;
+const websocket_servers = {};
 let http_servers = {},
 	http_chain = {},
-	request_listeners = [],
 	http_responders = [];
 
 function startServers() {
@@ -362,6 +360,7 @@ function registerServer(server, port, check_port = true) {
 	}
 	server.on('unhandled', defaultNotFound);
 }
+
 function getPorts(options) {
 	let ports = [];
 	let port = options?.securePort;
@@ -400,7 +399,6 @@ function httpServer(listener, options) {
 			registerServer(listener, port, false);
 		}
 		http_chain[port] = makeCallbackChain(http_responders, port);
-		ws_chain = makeCallbackChain(request_listeners, port);
 	}
 
 	return servers;
@@ -614,9 +612,9 @@ function makeCallbackChain(responders, port_num) {
 		let { listener, port } = responders[--i];
 		if (port === port_num || port === 'all') {
 			let callback = next_callback;
-			next_callback = (request) => {
+			next_callback = (...args) => {
 				// for listener only layers, the response through
-				return listener(request, callback);
+				return listener(...args, callback);
 			};
 		}
 	}
@@ -683,72 +681,111 @@ Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
 	},
 	set(v) {},
 });
+
+/**
+ * @typedef {Object} OnUpgradeOptions
+ * @property {number=} port
+ * @property {number=} securePort
+ */
+
+/**
+ * @typedef {(request: unknown, next: Listener) => void | Promise<void>} Listener
+ */
+
+let upgrade_listeners = [],
+	upgrade_chains = {};
+
+/**
+ *
+ * @param {Listener} listener
+ * @param {OnUpgradeOptions} options
+ * @returns
+ */
+function onUpgrade(listener, options) {
+	for (const { port } of getPorts(options)) {
+		upgrade_listeners[options?.runFirst ? 'unshift' : 'push']({ listener, port });
+		upgrade_chains[port] = makeCallbackChain(upgrade_listeners, port);
+	}
+}
+
+/**
+ * @typedef {Object} OnWebSocketOptions
+ * @property {number=} port
+ * @property {number=} securePort
+ * @property {number=} maxPayload - The maximum size of a message that can be received. Defaults to 100MB
+ */
+
+let websocket_listeners = [],
+	websocket_chains = {};
+/**
+ *
+ * @param {Listener} listener
+ * @param {OnWebSocketOptions} options
+ * @returns
+ */
 function onWebSocket(listener, options) {
-	let servers = [];
-	for (let { port: port_num, secure } of getPorts(options)) {
-		setPortServerMap(port_num, {
+	const servers = [];
+
+	for (let { port, secure } of getPorts(options)) {
+		setPortServerMap(port, {
 			protocol_name: secure ? 'WSS' : 'WS',
 			name: getComponentName(),
 		});
-		if (!ws_servers[port_num]) {
-			let http_server;
-			ws_servers[port_num] = new WebSocketServer({
-				server: (http_server = getHTTPServer(port_num, secure, options?.isOperationsServer, options?.mtls)),
+
+		const server = getHTTPServer(port, secure, options?.isOperationsServer, options?.mtls);
+
+		if (!websocket_servers[port]) {
+			websocket_servers[port] = new WebSocketServer({
+				noServer: true,
+				// TODO: this should be a global config and not per ws listener
 				maxPayload: options.maxPayload ?? 100 * 1024 * 1024, // The ws library has a default of 100MB
 			});
-			http_server._ws = ws_servers[port_num];
-			servers.push(http_server);
-			ws_servers[port_num].on('connection', async (ws, node_request) => {
-				try {
-					let request = new Request(node_request);
-					request.isWebSocket = true;
-					let chain_completion = http_chain[port_num](request);
-					let protocol = node_request.headers['sec-websocket-protocol'];
-					let ws_listeners_for_port = ws_listeners[port_num];
-					let found_handler;
-					if (protocol) {
-						// first we try to match on WS handlers that match the specified protocol
-						for (let i = 0; i < ws_listeners_for_port.length; i++) {
-							let handler = ws_listeners_for_port[i];
-							if (handler.protocol === protocol) {
-								// if we have a handler for a specific protocol, allow it to select on that protocol
-								// to the exclusion of other handlers
-								found_handler = true;
-								handler.listener(ws, request, chain_completion);
-							}
-						}
-						if (found_handler) return;
-					}
-					// now let generic WS handlers handle the connection
-					for (let i = 0; i < ws_listeners_for_port.length; i++) {
-						let handler = ws_listeners_for_port[i];
-						if (!handler.protocol) {
-							// generic handlers don't have a protocol
-							handler.listener(ws, request, chain_completion);
-							found_handler = true;
-						}
-					}
-					if (!found_handler) {
-						// if we have no handlers, we close the connection
-						ws.close(1008, 'No handler for protocol');
-					}
-				} catch (error) {
-					harper_logger.warn('Error handling WebSocket connection', error);
-				}
+
+			websocket_servers[port].on('connection', (ws, incomingMessage) => {
+				const request = new Request(incomingMessage);
+				request.isWebSocket = true;
+				const chain_completion = http_chain[port](request);
+				websocket_chains[port](ws, request, chain_completion);
 			});
 
-			ws_servers[port_num].on('error', (error) => {
-				console.log('Error in setting up WebSocket server', error);
+			// Add the default upgrade handler if it doesn't exist.
+			onUpgrade(
+				(request, socket, head, next) => {
+					// If the request has already been upgraded, continue without upgrading
+					if (request.__harperdb_request_upgraded) {
+						return next(request, socket, head);
+					}
+
+					// Otherwise, upgrade the socket and then continue
+					return websocket_servers[port].handleUpgrade(request, socket, head, (ws) => {
+						request.__harperdb_request_upgraded = true;
+						next(request, socket, head);
+						websocket_servers[port].emit('connection', ws, request);
+					});
+				},
+				{ port }
+			);
+
+			// Call the upgrade middleware chain
+			server.on('upgrade', (request, socket, head) => {
+				if (upgrade_chains[port]) {
+					upgrade_chains[port](request, socket, head);
+				}
 			});
 		}
-		let protocol = options?.subProtocol || '';
-		let ws_listeners_for_port = ws_listeners[port_num];
-		if (!ws_listeners_for_port) ws_listeners_for_port = ws_listeners[port_num] = [];
-		ws_listeners_for_port.push({ listener, protocol });
-		http_chain[port_num] = makeCallbackChain(http_responders, port_num);
+
+		servers.push(server);
+
+		websocket_listeners[options?.runFirst ? 'unshift' : 'push']({ listener, port });
+		websocket_chains[port] = makeCallbackChain(websocket_listeners, port);
+
+		// mqtt doesn't invoke the http handler so this needs to be here to load up the http chains.
+		http_chain[port] = makeCallbackChain(http_responders, port);
 	}
+
 	return servers;
 }
+
 function defaultNotFound(request, response) {
 	response.writeHead(404);
 	response.end('Not found\n');

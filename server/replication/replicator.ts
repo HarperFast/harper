@@ -57,20 +57,24 @@ export function start(options) {
 	assignReplicationSource(options);
 	options = {
 		// We generally expect this to use the operations API ports (9925)
-		subProtocol: 'harperdb-replication-v1',
 		mtls: true, // make sure that we request a certificate from the client
 		isOperationsServer: true, // we default to using the operations server ports
 		maxPayload: 10 * 1024 * 1024 * 1024, // 10 GB max payload, primarily to support replicating applications
 		...options,
 	};
 	// noinspection JSVoidFunctionReturnValueUsed
-	const ws_servers = server.ws(async (ws, request, chain_completion) => {
+	// @ts-expect-error
+	const ws_servers = server.ws(async (ws, request, chain_completion, next) => {
+		if (request.headers.get('sec-websocket-protocol') !== 'harperdb-replication-v1') {
+			return next(ws, request, chain_completion);
+		}
 		await chain_completion;
 		ws._socket.unref(); // we don't want the socket to keep the thread alive
 		replicateOverWS(ws, options, request?.user);
 		ws.on('error', (error) => {
 			if (error.code !== 'ECONNREFUSED') logger.error('Error in connection to ' + this.url, error.message);
 		});
+
 	}, options);
 	options.runFirst = true;
 	// now setup authentication for the replication server, authorizing by certificate
@@ -120,9 +124,10 @@ export function start(options) {
 		return next_handler(request);
 	}, options);
 
+
+	// we need to keep track of the servers so we can update the secure contexts
+	// @ts-expect-error
 	for (const ws_server of ws_servers) {
-		// we need to keep track of the servers so we can update the secure contexts
-		servers.push(ws_server);
 		if (ws_server.secureContexts) {
 			// we have secure contexts, so we can update the replication variants with the replication CAs
 			const updateContexts = () => {
