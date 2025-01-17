@@ -34,27 +34,30 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 	const mtls = network?.mtls;
 	if (webSocket)
 		server_instances = server.ws(
-			(ws, request, chain_completion) => {
-				if (ws.protocol === 'mqtt') {
-					mqtt_settings.events.emit('connection', ws);
-					mqtt_log.debug?.('Received WebSocket connection for MQTT from', ws._socket.remoteAddress);
-					const { onMessage, onClose } = onSocket(
-						ws,
-						(message) => {
-							ws.send(message);
-						},
-						request,
-						Promise.resolve(chain_completion).then(() => request?.user),
-						mqtt_settings
-					);
-					ws.on('message', onMessage);
-					ws.on('close', onClose);
-					ws.on('error', (error) => {
-						mqtt_log.info?.('WebSocket error', error);
-					});
+			(ws, request, chain_completion, next) => {
+				if (request.headers.get('sec-websocket-protocol') !== 'mqtt') {
+					return next(ws, request, chain_completion);
 				}
+
+				mqtt_settings.events.emit('connection', ws);
+				mqtt_log.debug?.('Received WebSocket connection for MQTT from', ws._socket.remoteAddress);
+				const { onMessage, onClose } = onSocket(
+					ws,
+					(message) => {
+						ws.send(message);
+					},
+					request,
+					Promise.resolve(chain_completion).then(() => request?.user),
+					mqtt_settings
+				);
+				ws.on('message', onMessage);
+				ws.on('close', onClose);
+				ws.on('error', (error) => {
+					mqtt_log.info?.('WebSocket error', error);
+				});
+
 			},
-			{ subProtocol: 'mqtt', ...webSocket }
+			{ ...webSocket }
 		); // if there is no port, we are piggy-backing off of default app http server
 	// standard TCP socket
 	if (port || securePort) {
