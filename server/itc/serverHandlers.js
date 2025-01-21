@@ -88,7 +88,7 @@ async function userHandler(event) {
 		}
 
 		hdb_logger.trace(`ITC userHandler ${hdb_terms.HDB_ITC_CLIENT_PREFIX}${process.pid} received user event:`, event);
-		await user_schema.setUsersToGlobal();
+		await user_schema.setUsersWithRolesCache();
 		for (let listener of user_listeners) listener();
 	} catch (err) {
 		hdb_logger.error(err);

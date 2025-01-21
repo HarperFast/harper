@@ -102,3 +102,12 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Overlap: None
 - Can be deferred: Potentially, we could load it on-demand
 - Eventual removal: We could write code to read the first bytes to determine what type of file it is and choose whether to gunzip it or not
+
+## argon2id
+
+- Need for usage: An optional extra secure password hashing algorithm used for hdb users
+- Size/memory cost: 866KB
+- Security: None
+- Overlap: None
+- Can be deferred: Potentially, we could load it on-demand
+- Eventual removal: Yes, once node crypto adds native support for argon2

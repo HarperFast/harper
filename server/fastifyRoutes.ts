@@ -110,7 +110,7 @@ export async function customFunctionsServer() {
 async function setUp() {
 	try {
 		harper_logger.info('Custom Functions starting configuration.');
-		await user_schema.setUsersToGlobal();
+		await user_schema.setUsersWithRolesCache();
 		harper_logger.info('Custom Functions completed configuration.');
 	} catch (e) {
 		harper_logger.error(e);

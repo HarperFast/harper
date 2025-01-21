@@ -52,7 +52,7 @@ describe('Test customFunctionsServer module', () => {
 		sandbox.stub(harper_logger, 'error').callsFake(() => {});
 		sandbox.stub(harper_logger, 'fatal').callsFake(() => {});
 		sandbox.stub(harper_logger, 'trace').callsFake(() => {});
-		setUsersToGlobal_stub = sandbox.stub(user_schema, 'setUsersToGlobal').resolves();
+		setUsersToGlobal_stub = sandbox.stub(user_schema, 'setUsersWithRolesCache').resolves();
 		//setSchemaGlobal_stub = sandbox.stub(global_schema, 'setSchemaDataToGlobal').callsArg(0);
 		sandbox.stub().callsFake(() => {});
 

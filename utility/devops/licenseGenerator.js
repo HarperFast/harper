@@ -23,7 +23,10 @@ function generateLicense(license_object) {
 			throw validation_error;
 		}
 
-		let hash_license = password.hash(`${LICENSE_HASH_PREFIX}${license_object.fingerprint}${license_object.company}`);
+		let hash_license = password.hash(
+			`${LICENSE_HASH_PREFIX}${license_object.fingerprint}${license_object.company}`,
+			password.HASH_FUNCTION.MD5
+		);
 		let obj = new License(
 			moment.utc(license_object.exp_date).valueOf(),
 			license_object.ram_allocation,

@@ -27,7 +27,7 @@ const JOB_ID = JOB_NAME.substring(4);
 		harper_logger.notify('Starting job:', JOB_ID);
 		startNATS();
 		global_schema.setSchemaDataToGlobal();
-		await user.setUsersToGlobal();
+		await user.setUsersWithRolesCache();
 
 		// When the job record is first inserted in hdb_job table by HDB, the incoming API request is included, this is
 		// how we pass the request to the job process. IPC was initially used but messages were getting lost under heavy load.

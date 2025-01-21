@@ -6,7 +6,7 @@ const { join, relative } = require('path');
 const { PACKAGE_ROOT } = require('../hdbTerms');
 const { tmpdir, platform } = require('os');
 require('source-map-support').install();
-const SRC_DIRECTORIES = ['resources', 'server', 'dataLayer', 'components'];
+const SRC_DIRECTORIES = ['resources', 'server', 'dataLayer', 'components', 'bin', 'utility'];
 const TS_DIRECTORY = 'ts-build';
 let needs_compile;
 const is_source_code = __filename.endsWith('tsBuild.js');
@@ -40,7 +40,7 @@ if (is_source_code) {
 							(compiled_time
 								? ` (TS source file was modified at ${new Date(source_time)} and compiled file at ${new Date(
 										compiled_time
-								  )})`
+									)})`
 								: '') +
 							`, consider enabling auto-compilation of TypeScript in your IDE), compiling now.`
 					);
