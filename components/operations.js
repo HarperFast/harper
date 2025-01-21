@@ -561,16 +561,16 @@ async function dropComponent(req) {
 	}
 
 	const { project, file } = req;
-	const project_path = req.file ? path.join(project, file) : project;
-	const path_to_comp = path.join(env.get(terms.CONFIG_PARAMS.COMPONENTSROOT), project_path);
+	const projectPath = req.file ? path.join(project, file) : project;
+	const pathToComponent = path.join(env.get(terms.CONFIG_PARAMS.COMPONENTSROOT), projectPath);
 
 	const componentSymlink = path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
 	if (await fs.pathExists(componentSymlink)) {
 		await fs.unlink(componentSymlink);
 	}
 
-	if (await fs.pathExists(path_to_comp)) {
-		await fs.remove(path_to_comp);
+	if (await fs.pathExists(pathToComponent)) {
+		await fs.remove(pathToComponent);
 	}
 
 	// Remove the component from the package.json file
@@ -585,7 +585,7 @@ async function dropComponent(req) {
 
 	config_utils.deleteConfigFromFile([project]);
 	let response = await replicateOperation(req);
-	response.message = 'Successfully dropped: ' + project_path;
+	response.message = 'Successfully dropped: ' + projectPath;
 	return response;
 }
 
