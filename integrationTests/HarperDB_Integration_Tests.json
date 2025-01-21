@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "7bba425f-cbc9-4e74-866d-59b9beb43f75",
+		"_postman_id": "5c726b1f-9162-4a16-bc02-c6240d113783",
 		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
 		"_exporter_id": "38120670"
@@ -62670,17 +62670,35 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
-									"});",
+									"// pm.test(\"Status code is 200\", function () {",
+									"//     pm.response.to.have.status(200);",
+									"// });",
 									"",
 									"pm.test(\"Github component deployed\", function () {",
+									"   ",
 									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.message).to.equal(\"Successfully deployed: deploy-test-gh\");",
+									"   ",
+									"    var maxNumberOfTries = 2;",
+									"    if (!pm.environment.get(\"collection_tries\")) {",
+									"        pm.environment.set(\"collection_tries\", 1);",
+									"    }",
+									"",
+									"    if ((json_data.error) && (pm.environment.get(\"collection_tries\") < maxNumberOfTries)) {",
+									"        var tries = parseInt(pm.environment.get(\"collection_tries\"));",
+									"        pm.environment.set(\"collection_tries\", tries + 1);",
+									"        pm.execution.setNextRequest(\"deploy_component github package\");",
+									"        setTimeout(()=>{}, 5000);",
+									"    } else {",
+									"        pm.environment.unset(\"collection_tries\");",
+									"        pm.expect(json_data.message).to.equal(\"Successfully deployed: deploy-test-gh\");",
+									"        pm.expect(pm.response.to.have.status(200));",
+									"    }",
 									"});",
-									"setTimeout(()=>{}, 15000)"
+									"setTimeout(()=>{}, 15000);",
+									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
