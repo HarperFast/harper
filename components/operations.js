@@ -15,7 +15,7 @@ const env = require('../utility/environment/environmentManager');
 const config_utils = require('../config/configUtils');
 const hdb_utils = require('../utility/common_utils');
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
-const { handleHDBError, hdb_errors, ClientError } = require('../utility/errors/hdbError');
+const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { basename } = require('path');
 const installComponents = require('../components/installComponents');
 const eng_mgr = require('../utility/environment/environmentManager');
@@ -589,8 +589,6 @@ async function dropComponent(req) {
 	const componentSymlink = path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
 	if (await fs.pathExists(componentSymlink)) {
 		await fs.unlink(componentSymlink);
-	} else {
-		throw new ClientError(`Component not found: ${project}`, HTTP_STATUS_CODES.NOT_FOUND);
 	}
 
 	if (await fs.pathExists(path_to_comp)) {
