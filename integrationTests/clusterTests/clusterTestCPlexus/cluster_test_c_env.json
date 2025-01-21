@@ -22,7 +22,7 @@
 		},
 		{
 			"key": "REPLICATION_PORT",
-			"value": "9999",
+			"value": "9933",
 			"type": "default",
 			"enabled": true
 		},
