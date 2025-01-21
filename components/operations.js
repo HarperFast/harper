@@ -441,38 +441,26 @@ async function deployComponent(req) {
  * @returns {Promise<*>}
  */
 async function getComponents() {
-	const all_config = config_utils.getConfiguration();
-	let comps = [];
-	for (const element in all_config) {
-		if (all_config[element]?.package) {
-			// Do not return packages that are file paths.
-			if (all_config[element].package.startsWith('file:')) {
-				continue;
-			}
-			comps.push({ ...all_config[element], name: element });
-		}
-	}
-
 	// Recursive function that will traverse the components dir and build json
 	// directory tree as it goes.
-	const walk_dir = async (dir, result) => {
+	const walkDir = async (dir, result) => {
 		try {
 			const list = await fs.readdir(dir, { withFileTypes: true });
 			for (let item of list) {
-				const item_name = item.name;
-				if (item_name.startsWith('.') || item_name === 'node_modules') continue;
-				const item_path = path.join(dir, item_name);
+				const itemName = item.name;
+				if (itemName.startsWith('.') || itemName === 'node_modules') continue;
+				const itemPath = path.join(dir, itemName);
 				if (item.isDirectory() || item.isSymbolicLink()) {
 					let res = {
-						name: item_name,
+						name: itemName,
 						entries: [],
 					};
 					result.entries.push(res);
-					await walk_dir(item_path, res);
+					await walkDir(itemPath, res);
 				} else {
-					const stats = await fs.stat(item_path);
+					const stats = await fs.stat(itemPath);
 					const res = {
-						name: path.basename(item_name),
+						name: path.basename(itemName),
 						mtime: stats.mtime,
 						size: stats.size,
 					};
@@ -486,27 +474,17 @@ async function getComponents() {
 		}
 	};
 
-	const results = await walk_dir(env.get(terms.CONFIG_PARAMS.COMPONENTSROOT), {
+	const results = await walkDir(env.get(terms.CONFIG_PARAMS.COMPONENTSROOT), {
 		name: env.get(terms.CONFIG_PARAMS.COMPONENTSROOT).split(path.sep).slice(-1).pop(),
-		entries: comps,
+		entries: [],
 	});
 
-	for (const c of results.entries) {
-		if (c.package) {
-			const c_dir = await walk_dir(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), 'node_modules', c.name), {
-				name: c.name,
-				entries: [],
-			});
-			Object.assign(c, c_dir);
-		}
-	}
-
-	const component_loader = require('./componentLoader');
-	const component_errors = component_loader.component_errors;
-	for (const component of comps) {
-		const error = component_errors.get(component.name);
+	const componentLoader = require('./componentLoader');
+	const componentErrors = componentLoader.component_errors;
+	for (const component of results.entries) {
+		const error = componentErrors.get(component.name);
 		// if it is loaded properly, this should be false
-		if (error) component.error = component_errors.get(component.name);
+		if (error) component.error = componentErrors.get(component.name);
 		else if (error === undefined) component.error = 'The component has not been loaded yet (may need a restart)';
 	}
 	return results;
