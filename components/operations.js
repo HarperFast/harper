@@ -15,7 +15,7 @@ const env = require('../utility/environment/environmentManager');
 const config_utils = require('../config/configUtils');
 const hdb_utils = require('../utility/common_utils');
 const { PACKAGE_ROOT } = require('../utility/hdbTerms');
-const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const { handleHDBError, hdb_errors, ClientError } = require('../utility/errors/hdbError');
 const { basename } = require('path');
 const installComponents = require('../components/installComponents');
 const eng_mgr = require('../utility/environment/environmentManager');
@@ -582,14 +582,32 @@ async function dropComponent(req) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	const project_path = req.file ? path.join(req.project, req.file) : req.project;
+	const { project, file } = req;
+	const project_path = req.file ? path.join(project, file) : project;
 	const path_to_comp = path.join(env.get(terms.CONFIG_PARAMS.COMPONENTSROOT), project_path);
+
+	const componentSymlink = path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
+	if (await fs.pathExists(componentSymlink)) {
+		await fs.unlink(componentSymlink);
+	} else {
+		throw new ClientError(`Component not found: ${project}`, HTTP_STATUS_CODES.NOT_FOUND);
+	}
 
 	if (await fs.pathExists(path_to_comp)) {
 		await fs.remove(path_to_comp);
 	}
 
-	config_utils.deleteConfigFromFile([req.project]);
+	// Remove the component from the package.json file
+	const packageJsonPath = path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), 'package.json');
+	if (await fs.pathExists(packageJsonPath)) {
+		const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
+		if (packageJson?.dependencies?.[project]) {
+			delete packageJson.dependencies[project];
+		}
+		await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
+	}
+
+	config_utils.deleteConfigFromFile([project]);
 	let response = await replicateOperation(req);
 	response.message = 'Successfully dropped: ' + project_path;
 	return response;
