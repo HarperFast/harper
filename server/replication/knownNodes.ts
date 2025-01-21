@@ -91,9 +91,14 @@ export function shouldReplicateToNode(node, database_name) {
 const replication_confirmation_float64s = new Map<string, Map<string, Float64Array>>();
 /** Ensure that the shared user buffers are instantiated so we can communicate through them
  */
-export let commits_awaiting_replication: Map<string, []>;
 
-replicationConfirmation((database_name, txnTime, confirmation_count) => {
+type AwaitingReplication = {
+	txnTime: number;
+	onConfirm: () => void;
+};
+export let commits_awaiting_replication: Map<string, AwaitingReplication[]>;
+
+replicationConfirmation((database_name, txnTime, confirmation_count): Promise<void> => {
 	if (confirmation_count > server.nodes.length) {
 		throw new ClientError(
 			`Cannot confirm replication to more nodes (${confirmation_count}) than are in the network (${server.nodes.length})`
@@ -103,8 +108,11 @@ replicationConfirmation((database_name, txnTime, confirmation_count) => {
 		commits_awaiting_replication = new Map();
 		startSubscriptionToReplications();
 	}
-	let awaiting = commits_awaiting_replication.get(database_name);
-	if (!awaiting) commits_awaiting_replication.set(database_name, (awaiting = []));
+	let awaiting: AwaitingReplication[] = commits_awaiting_replication.get(database_name);
+	if (!awaiting) {
+		awaiting = [];
+		commits_awaiting_replication.set(database_name, awaiting);
+	}
 	return new Promise((resolve) => {
 		let count = 0;
 		awaiting.push({
@@ -151,8 +159,16 @@ function startSubscriptionToReplications() {
 		});
 	});
 }
+type Route = {
+	url?: string;
+	subscriptions?: { database: string; schema: string; subscribe: boolean }[];
+	hostname?: string;
+	host?: string;
+	port?: any;
+	routes?: any[];
+};
 
-export function* iterateRoutes(options) {
+export function* iterateRoutes(options: { routes: (Route | any)[] }) {
 	for (const route of options.routes || []) {
 		let url = route.url;
 		let host;
@@ -166,7 +182,7 @@ export function* iterateRoutes(options) {
 			const secure_port =
 				env.get(CONFIG_PARAMS.REPLICATION_SECUREPORT) ??
 				(!env.get(CONFIG_PARAMS.REPLICATION_PORT) && env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT));
-			let port: number | string;
+			let port: any;
 			// if the host includes a port, use that port
 			if ((port = host.match(/:(\d+)$/)?.[1])) host = host.slice(0, -port[0].length - 1);
 			else if (route.port)
@@ -186,6 +202,7 @@ export function* iterateRoutes(options) {
 		}
 
 		yield {
+			replicates: !route.subscriptions, // if there is not a list of subscriptions, then this node is authorized to fully replicate
 			url,
 			subscription: route.subscriptions,
 			routes: route.routes,

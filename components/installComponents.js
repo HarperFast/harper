@@ -94,22 +94,17 @@ async function installComponents() {
 }
 
 function moveModuleToComponents(root_path, components) {
-	return Promise.all(components.map(({ name }) => {
-		const mod_path = path.join(root_path, 'node_modules', name);
-		const comp_path = path.join(root_path, 'components', name);
-		if (!fs.existsSync(comp_path)) {
-			fs.move(
-				mod_path,
-				comp_path
-			).then(() => fs.symlink(
-				comp_path,
-				mod_path
-			)).catch((err) => {
-				if (err.message === 'dest already exists') return;
-				else throw err;
-			})
-		}
-	}));
+	return Promise.all(
+		components.map(({ name }) => {
+			const mod_path = path.join(root_path, 'node_modules', name);
+			const comp_path = path.join(root_path, 'components', name);
+			if (fs.existsSync(mod_path) && fs.lstatSync(mod_path).isDirectory()) {
+				return fs.move(mod_path, comp_path, { overwrite: true }).then(() => {
+					fs.symlink(comp_path, mod_path);
+				});
+			}
+		})
+	);
 }
 
 /**

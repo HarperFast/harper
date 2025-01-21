@@ -57,20 +57,24 @@ export function start(options) {
 	assignReplicationSource(options);
 	options = {
 		// We generally expect this to use the operations API ports (9925)
-		subProtocol: 'harperdb-replication-v1',
 		mtls: true, // make sure that we request a certificate from the client
 		isOperationsServer: true, // we default to using the operations server ports
 		maxPayload: 10 * 1024 * 1024 * 1024, // 10 GB max payload, primarily to support replicating applications
 		...options,
 	};
 	// noinspection JSVoidFunctionReturnValueUsed
-	const ws_servers = server.ws(async (ws, request, chain_completion) => {
+	// @ts-expect-error
+	const ws_servers = server.ws(async (ws, request, chain_completion, next) => {
+		if (request.headers.get('sec-websocket-protocol') !== 'harperdb-replication-v1') {
+			return next(ws, request, chain_completion);
+		}
 		await chain_completion;
 		ws._socket.unref(); // we don't want the socket to keep the thread alive
 		replicateOverWS(ws, options, request?.user);
 		ws.on('error', (error) => {
 			if (error.code !== 'ECONNREFUSED') logger.error('Error in connection to ' + this.url, error.message);
 		});
+
 	}, options);
 	options.runFirst = true;
 	// now setup authentication for the replication server, authorizing by certificate
@@ -120,9 +124,10 @@ export function start(options) {
 		return next_handler(request);
 	}, options);
 
+
+	// we need to keep track of the servers so we can update the secure contexts
+	// @ts-expect-error
 	for (const ws_server of ws_servers) {
-		// we need to keep track of the servers so we can update the secure contexts
-		servers.push(ws_server);
 		if (ws_server.secureContexts) {
 			// we have secure contexts, so we can update the replication variants with the replication CAs
 			const updateContexts = () => {
@@ -321,7 +326,7 @@ const connections = new Map();
  * @param subscription
  * @param db_name
  */
-function getConnection(url, subscription, db_name) {
+function getConnection(url: string, subscription: any, db_name: string, node_name?: string, authorization?: string) {
 	let db_connections = connections.get(url);
 	if (!db_connections) {
 		connections.set(url, (db_connections = new Map()));
@@ -329,7 +334,10 @@ function getConnection(url, subscription, db_name) {
 	let connection = db_connections.get(db_name);
 	if (connection) return connection;
 	if (subscription) {
-		db_connections.set(db_name, (connection = new NodeReplicationConnection(url, subscription, db_name)));
+		db_connections.set(
+			db_name,
+			(connection = new NodeReplicationConnection(url, subscription, db_name, node_name, authorization))
+		);
 		connection.connect();
 		connection.once('finished', () => db_connections.delete(db_name));
 		return connection;
@@ -344,7 +352,7 @@ function getConnectionByName(node_name, subscription, db_name) {
 	if (connection) return connection;
 	const node = getHDBNodeTable().primaryStore.get(node_name);
 	if (node?.url) {
-		connection = getConnection(node.url, subscription, db_name);
+		connection = getConnection(node.url, subscription, db_name, node_name, node.authorization);
 		// cache the connection
 		node_name_to_db_connections.set(node_name, connections.get(node.url));
 	}
@@ -364,7 +372,7 @@ export async function sendOperationToNode(node, operation, options) {
 			reject(error);
 		});
 		socket.on('close', (error) => {
-			logger.error('Sending operation connection to ' + node.url + ' closed', error);
+			logger.info('Sending operation connection to ' + node.url + ' closed', error);
 		});
 	}).finally(() => {
 		socket.close();
@@ -395,8 +403,19 @@ export function subscribeToNode(request) {
 			subscription_to_table.ready = ready;
 			database_subscriptions.set(request.database, subscription_to_table);
 		}
-		const connection = getConnection(request.nodes[0].url, subscription_to_table, request.database);
-		if (request.nodes[0].name === undefined) connection.tentativeNode = request.nodes[0]; // we don't have the node name yet
+		const connection = getConnection(
+			request.nodes[0].url,
+			subscription_to_table,
+			request.database,
+			request.nodes[0].name,
+			request.nodes[0].authorization
+		);
+		if (request.nodes[0].name === undefined) {
+			// we don't have the node name yet
+			connection.tentativeNode = request.nodes[0];
+		} else {
+			connection.nodeName = request.nodes[0].name;
+		}
 		connection.subscribe(
 			request.nodes.filter((node) => {
 				return shouldReplicateToNode(node, request.database);
