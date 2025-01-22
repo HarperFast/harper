@@ -25,6 +25,7 @@ module.exports = {
 	installAllRootModules,
 	uninstallRootModule,
 	linkHarperdb,
+	runCommand,
 };
 
 /**

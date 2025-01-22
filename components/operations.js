@@ -26,7 +26,6 @@ const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const manage_threads = require('../server/threads/manageThreads');
 const { replicateOperation } = require('../server/replication/replicator');
 const { packageDirectory } = require('../components/packageComponent');
-const { installModules } = require('../utility/npmUtilities');
 const npm_utils = require('../utility/npmUtilities');
 const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
 const TMP_PATH = path.join(env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY), 'tmp');
@@ -363,7 +362,7 @@ async function deployComponent(req) {
 	}
 
 	const cf_dir = env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
-	let { project, payload, package: pkg } = req;
+	let { project, payload, package: pkg, install_command } = req;
 	log.trace(`deploying component`, project);
 
 	if (!payload && !pkg) {
@@ -390,12 +389,16 @@ async function deployComponent(req) {
 			await fs.copy(path.join(path_to_project, 'package'), path_to_project);
 			await fs.remove(path.join(path_to_project, 'package'));
 		}
-		// if we have a node_modules folder, we assume we have our own modules, and we don't need to npm install them
 		const node_modules_path = path.join(path_to_project, 'node_modules');
-		if (!fs.existsSync(node_modules_path)) {
+		if (install_command) {
+			// if the user provided an install command, we run that instead of npm install at the root
+			// TODO: When we support untrusted packages in a secure mode, we will need to deny this
+			await npm_utils.runCommand(install_command, path_to_project);
+		}
+		// if we have a node_modules folder, we assume we have our own modules, and we don't need to npm install them
+		else if (!fs.existsSync(node_modules_path)) {
 			// if the package came with node_modules, we don't need to npm install
 			// them, but otherwise we do
-			const npm_utils = require('../utility/npmUtilities');
 			await npm_utils.installAllRootModules(false, path_to_project);
 		}
 	} else {
