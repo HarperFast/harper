@@ -2573,7 +2573,7 @@ export function makeTable(options) {
 			const stats = primary_store.getStats();
 			return (stats.treeBranchPageCount + stats.treeLeafPageCount + stats.overflowPages) * stats.pageSize;
 		}
-		static getAuditSize(options) {
+		static getAuditSize() {
 			const stats = audit_store?.getStats();
 			return stats && (stats.treeBranchPageCount + stats.treeLeafPageCount + stats.overflowPages) * stats.pageSize;
 		}
