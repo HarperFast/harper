@@ -20,6 +20,7 @@ import {
 	lastTimeInAuditStore,
 } from './replicator';
 import env from '../../utility/environment/environmentManager';
+import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 import { getUpdateRecord, HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
 import { CERT_PREFERENCE_REP } from '../../utility/terms/certificates';
 import { decode, encode, Packr, unpackMultiple } from 'msgpackr';
@@ -988,7 +989,10 @@ export function replicateOverWS(ws, options, authorization) {
 									if (is_first && !closed) {
 										is_first = false;
 										const last_removed = getLastRemoved(audit_store);
-										if (!(last_removed <= current_sequence_id)) {
+										if (
+											!(last_removed <= current_sequence_id) &&
+											env.get(CONFIG_PARAMS.REPLICATION_COPY_TABLES_TO_CATCHUP) !== false
+										) {
 											// This means the audit log doesn't extend far enough back, so we need to replicate all the tables
 											// This should only be done on a single node, we don't want full table replication from all the
 											// nodes that are connected to this one:
@@ -997,6 +1001,7 @@ export function replicateOverWS(ws, options, authorization) {
 												let last_sequence_id = current_sequence_id;
 												const node_id = getThisNodeId(audit_store);
 												for (const table_name in tables) {
+													if (!tableToTableEntry(table_name)) continue; // if we aren't replicating this table, skip it
 													const table = tables[table_name];
 													for (const entry of table.primaryStore.getRange({
 														snapshot: false,
