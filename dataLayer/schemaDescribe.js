@@ -210,6 +210,7 @@ async function descTable(describe_table_object, attr_perms) {
 		const record_count = table_obj.getRecordCount({ exactCount: describe_table_object.exact_count === 'true' });
 		table_result.record_count = record_count.recordCount;
 		table_result.table_size = table_obj.getSize();
+		table_result.db_audit_size = table_obj.getAuditSize();
 		table_result.estimated_record_range = record_count.estimatedRange;
 		let audit_store = table_obj.auditStore;
 		if (audit_store) {
