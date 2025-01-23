@@ -50,6 +50,20 @@ async function installAllRootModules(ignore_scripts = false, working_dir = env.g
 		});
 	}
 
+	try {
+		const root_path = env.get(terms.CONFIG_PARAMS.ROOTPATH);
+		const harper_module = path.join(root_path, 'node_modules', 'harperdb');
+
+		if (fs.lstatSync(harper_module).isSymbolicLink()) {
+			fs.unlinkSync(harper_module);
+		}
+	} catch (err) {
+		if (err.code !== 'ENOENT'){
+			harper_logger.error('Error removing symlink:', err);
+		}
+	}
+	
+
 	await runCommand(
 		ignore_scripts ? 'npm install --force --ignore-scripts' : 'npm install --force',
 		working_dir,
