@@ -882,18 +882,15 @@ describe('Test configUtils module', () => {
 		let validate_config_stub;
 		let validate_config_rw;
 		let logger_trace_stub;
-		let logger_info_stub;
 
 		beforeEach(() => {
 			logger_trace_stub = sandbox.stub(logger, 'trace');
-			logger_info_stub = sandbox.stub(logger, 'info');
 			validate_config_stub = sandbox.stub();
 			validate_config_rw = config_utils_rw.__set__('validateConfig', validate_config_stub);
 		});
 
 		afterEach(() => {
 			logger_trace_stub.restore();
-			logger_info_stub.restore();
 			validate_config_rw();
 		});
 
@@ -1048,8 +1045,8 @@ describe('Test configUtils module', () => {
 				operationsapi_network_port: 9925,
 			});
 
-			expect(logger_info_stub.called).to.be.true;
-			expect(logger_info_stub.args[0][0]).to.equal('No changes detected in config parameters, skipping update');
+			expect(logger_trace_stub.called).to.be.true;
+			expect(logger_trace_stub.args[0][0]).to.equal('No changes detected in config parameters, skipping update');
 		});
 	});
 
