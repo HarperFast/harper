@@ -588,7 +588,10 @@ async function dropComponent(req) {
 
 	config_utils.deleteConfigFromFile([project]);
 	let response = await replicateOperation(req);
-	response.message = 'Successfully dropped: ' + projectPath;
+	if (req.restart === true) {
+		manage_threads.restartWorkers('http');
+		response.message = `Successfully dropped: ${projectPath}, restarting HarperDB`;
+	} else response.message = `Successfully dropped: ${projectPath}`;
 	return response;
 }
 
