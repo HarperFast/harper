@@ -200,7 +200,7 @@ async function cliOperations(req) {
 	}
 }
 
-async function getProjectNameFromPackage(pkg) {
+function getProjectNameFromPackage(pkg) {
 	if (pkg.startsWith('git+ssh://')) {
 		return path.basename(pkg.split('#')[0].replace(/\.git$/, ''));
 	}
