@@ -48962,10 +48962,10 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"//waiting for restart for 60 seconds",
+									"//waiting for restart for 45 seconds",
 									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
-									"setTimeout(() => {}, 60000)"
+									"setTimeout(() => {}, 45000)"
 								],
 								"type": "text/javascript",
 								"packages": {}
@@ -63554,7 +63554,7 @@
 									"});",
 									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
-									"setTimeout(() => {}, 60000)"
+									"setTimeout(() => {}, 45000)"
 								],
 								"type": "text/javascript",
 								"packages": {}
@@ -69345,8 +69345,8 @@
 								"exec": [
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
-									"    console.log('waiting for 60 seconds for the restart of services');",
-									"    setTimeout(() => {}, 60000);",
+									"    console.log('waiting for 45 seconds for the restart of services');",
+									"    setTimeout(() => {}, 45000);",
 									"});"
 								],
 								"type": "text/javascript",
@@ -70448,8 +70448,8 @@
 								"exec": [
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
-									"    console.log('waiting for 60 seconds for the restart of services');",
-									"    setTimeout(() => {}, 60000);",
+									"    console.log('waiting for 45 seconds for the restart of services');",
+									"    setTimeout(() => {}, 45000);",
 									"});"
 								],
 								"type": "text/javascript",
