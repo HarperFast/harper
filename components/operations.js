@@ -431,11 +431,21 @@ async function deployComponent(req) {
 	}
 	if (last_error) throw last_error;
 	log.info('Installed component');
+	let isLeaderNode = req.replicated;
 	let response = await replicateOperation(req);
-	if (req.restart === true) {
-		manage_threads.restartWorkers('http');
+
+	if (req.restart === true && isLeaderNode) {
+		const serverUtilities = require('../server/serverHelpers/serverUtilities');
+		const jobResponse = await serverUtilities.executeJob({
+			operation: 'restart_service',
+			service: 'http',
+			replicated: true,
+		});
+
+		response.restartJobId = jobResponse.job_id;
 		response.message = `Successfully deployed: ${project}, restarting HarperDB`;
 	} else response.message = `Successfully deployed: ${project}`;
+
 	return response;
 }
 
