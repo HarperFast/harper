@@ -445,7 +445,6 @@ function updateConfigValue(
 		}
 
 		if (!doUpdate) {
-			logger.info(`No changes detected in config parameters, skipping update`);
 			return;
 		}
 	}
