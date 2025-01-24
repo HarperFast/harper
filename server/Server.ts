@@ -1,5 +1,6 @@
 import { Socket } from 'net';
 import { _assignPackageExport } from '../globals';
+import type { Value } from '../resources/analytics';
 
 /**
  * This is the central interface by which we define entry points for different server protocol plugins to listen for
@@ -19,6 +20,7 @@ interface Server {
 	contentTypes: Map<string, ContentTypeHandler>;
 	getUser(username: string, password: string | null, request: Request): any;
 	operation(operation: any, context: any, authorize?: boolean): Promise<any>;
+	recordAnalytics(value: Value, metric: string, path?: string, method?: string, type?: string): void;
 }
 interface ServerOptions {
 	port?: number;
