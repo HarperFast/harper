@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "7bba425f-cbc9-4e74-866d-59b9beb43f75",
+		"_postman_id": "9d6cae28-db07-4ab4-abe8-ae9ca95c7de9",
 		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
 		"_exporter_id": "38120670"
@@ -48962,10 +48962,10 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"//waiting for restart for 90 seconds",
+									"//waiting for restart for 60 seconds",
 									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
-									"setTimeout(() => {}, 90000)"
+									"setTimeout(() => {}, 60000)"
 								],
 								"type": "text/javascript",
 								"packages": {}
@@ -63536,7 +63536,7 @@
 									"});",
 									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
-									"setTimeout(() => {}, 90000)"
+									"setTimeout(() => {}, 60000)"
 								],
 								"type": "text/javascript",
 								"packages": {}
@@ -69327,8 +69327,8 @@
 								"exec": [
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
-									"    console.log('waiting for 90 seconds for the restart of services');",
-									"    setTimeout(() => {}, 90000);",
+									"    console.log('waiting for 60 seconds for the restart of services');",
+									"    setTimeout(() => {}, 60000);",
 									"});"
 								],
 								"type": "text/javascript",
@@ -70178,7 +70178,7 @@
 			"name": "19. GraphQL tests",
 			"item": [
 				{
-					"name": "Add component",
+					"name": "Add component for graphql and rest tests",
 					"event": [
 						{
 							"listen": "test",
@@ -70220,6 +70220,65 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n    \"operation\": \"add_component\",\n    \"project\": \"appGraphQL\"\n}\n",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Add default component for openapi endpoint",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test('Add node success message', () => {",
+									"    const response = JSON.stringify(pm.response.json());",
+									"    pm.expect(response).to.contain.oneOf(['Successfully added project', 'Project already exists']);",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"add_component\",\n    \"project\": \"myApp111\"\n}\n",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -70371,8 +70430,8 @@
 								"exec": [
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
-									"    console.log('waiting for 90 seconds for the restart of services');",
-									"    setTimeout(() => {}, 90000);",
+									"    console.log('waiting for 60 seconds for the restart of services');",
+									"    setTimeout(() => {}, 60000);",
 									"});"
 								],
 								"type": "text/javascript",
@@ -73637,125 +73696,6 @@
 		{
 			"name": "22. OpenAPI",
 			"item": [
-				{
-					"name": "Add component",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Add node success message', () => {",
-									"    const response = JSON.stringify(pm.response.json());",
-									"    pm.expect(response).to.contain.oneOf(['Successfully added project', 'Project already exists']);",
-									"});"
-								],
-								"type": "text/javascript",
-								"packages": {}
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{password}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{username}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"add_component\",\n    \"project\": \"myApp111\"\n}\n",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "{{host}}:{{port}}",
-							"host": [
-								"{{host}}"
-							],
-							"port": "{{port}}"
-						}
-					},
-					"response": []
-				},
-				{
-					"name": "Restart and wait",
-					"event": [
-						{
-							"listen": "test",
-							"script": {
-								"exec": [
-									"pm.test('Status code is 200', () => {",
-									"    pm.response.to.have.status(200);",
-									"    console.log('waiting for 90 seconds for the restart of services');",
-									"    setTimeout(() => {}, 90000);",
-									"});"
-								],
-								"type": "text/javascript",
-								"packages": {}
-							}
-						}
-					],
-					"request": {
-						"auth": {
-							"type": "basic",
-							"basic": [
-								{
-									"key": "password",
-									"value": "{{password}}",
-									"type": "string"
-								},
-								{
-									"key": "username",
-									"value": "{{username}}",
-									"type": "string"
-								},
-								{
-									"key": "showPassword",
-									"value": false,
-									"type": "boolean"
-								}
-							]
-						},
-						"method": "POST",
-						"header": [],
-						"body": {
-							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart\"\n}",
-							"options": {
-								"raw": {
-									"language": "json"
-								}
-							}
-						},
-						"url": {
-							"raw": "{{host}}:{{port}}",
-							"host": [
-								"{{host}}"
-							],
-							"port": "{{port}}"
-						}
-					},
-					"response": []
-				},
 				{
 					"name": "Get open api",
 					"event": [
