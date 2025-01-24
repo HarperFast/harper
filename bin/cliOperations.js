@@ -84,7 +84,6 @@ module.exports = { cliOperations, buildRequest };
 const PREPARE_OPERATION = {
 	deploy_component: async (req) => {
 		if (req.package) {
-			req.project = req.project || await getProjectNameFromPackage(req.package);
 			return;
 		}
 
@@ -198,23 +197,4 @@ async function cliOperations(req) {
 		}
 		console.error(err_msg);
 	}
-}
-
-function getProjectNameFromPackage(pkg) {
-	if (pkg.startsWith('git+ssh://')) {
-		return path.basename(pkg.split('#')[0].replace(/\.git$/, ''));
-	}
-
-	if (pkg.startsWith('http://') || pkg.startsWith('https://')) {
-		return path.basename(new URL(pkg.replace(/\.git$/, '')).pathname);
-	}
-
-	if (pkg.startsWith('file://')) {
-		try {
-			const { name } = JSON.parse(fs.readFileSync(path.join(pkg, 'package.json'), 'utf8'));
-			return path.basename(name);
-		} catch {}
-	}
-
-	return path.basename(pkg);
 }

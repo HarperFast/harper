@@ -354,6 +354,8 @@ async function packageComponent(req) {
 async function deployComponent(req) {
 	if (req.project) {
 		req.project = path.parse(req.project).name;
+	} else if (req.package) {
+		req.project = getProjectNameFromPackage(req.package);
 	}
 
 	const validation = validator.deployComponentValidator(req);
@@ -452,6 +454,30 @@ async function deployComponent(req) {
 	} else response.message = `Successfully deployed: ${project}`;
 
 	return response;
+}
+
+/**
+ * Extracts a project name from the specified package name or URL
+ * @param {string} pkg - Package name or URL
+ * @returns {string} The project name
+ */
+function getProjectNameFromPackage(pkg) {
+	if (pkg.startsWith('git+ssh://')) {
+		return path.basename(pkg.split('#')[0].replace(/\.git$/, ''));
+	}
+
+	if (pkg.startsWith('http://') || pkg.startsWith('https://')) {
+		return path.basename(new URL(pkg.replace(/\.git$/, '')).pathname);
+	}
+
+	if (pkg.startsWith('file://')) {
+		try {
+			const { name } = JSON.parse(fs.readFileSync(path.join(pkg, 'package.json'), 'utf8'));
+			return path.basename(name);
+		} catch {}
+	}
+
+	return path.basename(pkg);
 }
 
 /**
