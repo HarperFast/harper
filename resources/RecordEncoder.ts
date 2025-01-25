@@ -15,6 +15,7 @@ import {
 	HAS_ORIGINATING_OPERATION,
 } from './auditStore';
 import * as harper_logger from '../utility/logging/harper_logger';
+import './blob';
 
 // these are matched by lmdb-js for timestamp replacement. the first byte here is used to xor with the first byte of the date as a double so that it ends up less than 32 for easier identification (otherwise dates start with 66)
 export const TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 4, 0x40, 0, 0]);
