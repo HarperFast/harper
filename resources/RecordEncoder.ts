@@ -13,9 +13,11 @@ import {
 	HAS_CURRENT_RESIDENCY_ID,
 	HAS_EXPIRATION_EXTENDED_TYPE,
 	HAS_ORIGINATING_OPERATION,
+	HAS_BLOBS,
 } from './auditStore';
 import * as harper_logger from '../utility/logging/harper_logger';
 import './blob';
+import { blobsWereEncoded, encodeBlobsWithFilePath } from './blob';
 
 // these are matched by lmdb-js for timestamp replacement. the first byte here is used to xor with the first byte of the date as a double so that it ends up less than 32 for easier identification (otherwise dates start with 66)
 export const TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 4, 0x40, 0, 0]);
@@ -329,8 +331,10 @@ export function getUpdateRecord(store, table_id, audit_store) {
 			if (options?.originatingOperation) extended_type |= HAS_ORIGINATING_OPERATION;
 			// we use resolve_record outside of transaction, so must explicitly make it conditional
 			if (resolve_record) put_options.ifVersion = if_version = existing_entry?.version ?? null;
-			const result = store.put(id, record, put_options);
-
+			const result = encodeBlobsWithFilePath(() => store.put(id, record, put_options));
+			if (blobsWereEncoded) {
+				extended_type |= HAS_BLOBS;
+			}
 			/**
 			 TODO: We will need to pass in the node id, whether that is locally generated from node name, or there is a global registory
 			let node_id = audit_information.nodeName ? node_ids.get(audit_information.nodeName) : 0;
