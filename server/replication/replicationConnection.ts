@@ -22,7 +22,7 @@ import {
 import env from '../../utility/environment/environmentManager';
 import { getUpdateRecord, HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
 import { CERT_PREFERENCE_REP } from '../../utility/terms/certificates';
-import { decode, encode, Packr, unpackMultiple } from 'msgpackr';
+import { decode, encode, Packr } from 'msgpackr';
 import { WebSocket } from 'ws';
 import { readFileSync } from 'fs';
 import { threadId } from 'worker_threads';
@@ -36,6 +36,7 @@ import { getHDBNodeTable } from './knownNodes';
 import * as process from 'node:process';
 import { isIP } from 'node:net';
 import { recordAction } from '../../resources/analytics';
+import { decodeBlobsWithWrites } from '../../resources/blob';
 
 // these are the codes we use for the different commands
 const SUBSCRIPTION_REQUEST = 129;
@@ -1107,18 +1108,21 @@ export function replicateOverWS(ws, options, authorization) {
 					);
 				}
 				try {
-					event = {
-						table: table_decoder.name,
-						id: audit_record.recordId,
-						type: audit_record.type,
-						nodeId: remote_short_id_to_local_id.get(audit_record.nodeId),
-						residencyList: residency_list,
-						timestamp: audit_record.version,
-						value: audit_record.getValue(table_decoder),
-						user: audit_record.user,
-						beginTxn: begin_txn,
-						expiresAt: audit_record.expiresAt,
-					};
+					const finished = decodeBlobsWithWrites(() => {
+						event = {
+							table: table_decoder.name,
+							id: audit_record.recordId,
+							type: audit_record.type,
+							nodeId: remote_short_id_to_local_id.get(audit_record.nodeId),
+							residencyList: residency_list,
+							timestamp: audit_record.version,
+							value: audit_record.getValue(table_decoder),
+							user: audit_record.user,
+							beginTxn: begin_txn,
+							expiresAt: audit_record.expiresAt,
+						};
+					});
+					event.finished = finished;
 				} catch (error) {
 					error.message += 'typed structures for current decoder' + JSON.stringify(table_decoder.decoder.typedStructs);
 					throw error;

@@ -265,8 +265,8 @@ export function createAuditEntry(
 		position = 9;
 	}
 	if (extended_type) {
-		if (extended_type & 0xffc0ff) throw new Error('Illegal extended type');
-		position++;
+		if (extended_type & 0xff) throw new Error('Illegal extended type');
+		position += 3;
 	}
 
 	writeInt(node_id);
@@ -286,7 +286,7 @@ export function createAuditEntry(
 
 	if (username) writeValue(username);
 	else ENTRY_HEADER[position++] = 0;
-	if (extended_type) ENTRY_DATAVIEW.setUint16(previous_local_time ? 8 : 0, action | extended_type | 0x8000);
+	if (extended_type) ENTRY_DATAVIEW.setUint32(previous_local_time ? 8 : 0, action | extended_type | 0xc0000000);
 	else ENTRY_HEADER[previous_local_time ? 8 : 0] = action;
 	const header = ENTRY_HEADER.subarray(0, position);
 	if (encoded_record) {

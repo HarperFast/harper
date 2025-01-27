@@ -64,7 +64,7 @@ export class RecordEncoder extends Encoder {
 				const expires_at = expires_at_next_encoding;
 				const residency_id = residency_id_at_next_encoding;
 				if (metadata >= 0) {
-					value_start += 2; // make room for metadata bytes
+					value_start += 4; // make room for metadata bytes
 					metadata_in_next_encoding = -1; // reset indicator to mean no metadata
 					if (expires_at >= 0) {
 						value_start += 8; // make room for expiration timestamp
@@ -87,16 +87,11 @@ export class RecordEncoder extends Encoder {
 				}
 				if (blobsWereEncoded) metadata |= HAS_BLOBS;
 				if (metadata >= 0) {
-					if (metadata >= 0x1000) {
-						const data_view =
-							encoded.dataView ||
-							(encoded.dataView = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength));
-						data_view.setUint32(position | (ACTION_32_BIT << 24), metadata); // use the extended action byte
-						position += 4;
-					} else {
-						encoded[position++] = metadata & 0x1f;
-						encoded[position++] = metadata >> 5;
-					}
+					const data_view =
+						encoded.dataView ||
+						(encoded.dataView = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength));
+					data_view.setUint32(position, metadata | (ACTION_32_BIT << 24)); // use the extended action byte
+					position += 4;
 					if (expires_at >= 0) {
 						const data_view =
 							encoded.dataView ||
@@ -295,7 +290,6 @@ setInterval(() => {
 		}
 	}
 }, 15000).unref();
-let encoding_id = 1;
 export function getUpdateRecord(store, table_id, audit_store) {
 	return function (
 		id,
@@ -356,11 +350,7 @@ export function getUpdateRecord(store, table_id, audit_store) {
 					record_blobs_to_delete = existing_entry.value;
 				}
 			}
-			const result = encodeBlobsWithFilePath(
-				() => store.put(id, record, put_options),
-				++encoding_id,
-				record_blobs_to_delete
-			);
+			const result = encodeBlobsWithFilePath(() => store.put(id, record, put_options), id, record_blobs_to_delete);
 			if (blobsWereEncoded) {
 				extended_type |= HAS_BLOBS;
 			}
@@ -373,8 +363,7 @@ export function getUpdateRecord(store, table_id, audit_store) {
 			*/
 			if (audit) {
 				const username = options?.user?.username;
-				if (audit_record)
-					last_value_encoding = encodeBlobsWithFilePath(() => store.encoder.encode(audit_record), encoding_id);
+				if (audit_record) last_value_encoding = encodeBlobsWithFilePath(() => store.encoder.encode(audit_record), id);
 				if (store.encoder.hasStructureUpdate) {
 					extended_type |= HAS_STRUCTURE_UPDATE;
 					store.encoder.hasStructureUpdate = false;

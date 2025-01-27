@@ -327,6 +327,7 @@ export function makeTable(options) {
 						nodeId: event.nodeId,
 					};
 					const resource: TableResource = await Table.getResource(event.id, context, options);
+					if (event.finished) await event.finished;
 					switch (event.type) {
 						case 'put':
 							return should_revalidate_events

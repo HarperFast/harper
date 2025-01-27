@@ -1,17 +1,6 @@
 import { addExtension, pack, unpack } from 'msgpackr';
 import { stat, readFile, writeFile } from 'fs/promises';
-import {
-	createReadStream,
-	createWriteStream,
-	open,
-	close,
-	readFileSync,
-	unlink,
-	writeSync,
-	read,
-	readdirSync,
-	existsSync,
-} from 'fs';
+import { createReadStream, createWriteStream, readFileSync, unlink, readdirSync, existsSync } from 'fs';
 import { ensureDir } from 'fs-extra';
 import { server } from '../server/Server';
 import { get as envGet } from '../utility/environment/environmentManager';
@@ -21,8 +10,10 @@ import { join, dirname } from 'path';
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
 // We want to keep the file path private (but accessible to the extension)
 const storageInfoForBlob = new WeakMap();
-let filePathEncodingId: number = 0; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients
+let filePathEncodingId: number = 0; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
+let promisedWrites: Array<Promise<void>>;
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
+let syncFileStorage: boolean = true; // if true, we will flush to disk on each write
 addExtension({
 	Class: Blob,
 	type: 11,
@@ -35,10 +26,10 @@ addExtension({
 			});
 		} else {
 			// this directly encoded as a buffer, so we can just return the buffer in a blob object
-			buffer = new Uint8Array(buffer.buffer, 8);
-			const blob = new Blob([buffer]);
-			blob.buffer = buffer;
-			return buffer;
+			// we need to strip the first 8 bytes, which is the header
+			const [, blob, finished] = createBlobFromBuffer(buffer);
+			promisedWrites.push(finished);
+			return blob;
 		}
 	},
 	pack: function (blob) {
@@ -55,7 +46,7 @@ addExtension({
 				// if we want to encode as binary (necessary for replication), we need to encode as a buffer, not sure if we should always do that
 				// also, for replication, we would presume that this is most likely in OS cache, and sync will be fast. For other situations, a large sync call could be
 				// unpleasant
-				return readFileSync(filePath);
+				return readFileSync(getFilePath(storageInfo));
 			}
 		} else {
 			return blob.buffer;
@@ -63,10 +54,6 @@ addExtension({
 	},
 });
 
-const fdRegistry = new FinalizationRegistry((fd: number) => {
-	// cleanup the file descriptor when the blob is garbage collected
-	close(fd);
-});
 // we can delete the file.
 class FileBackedBlob extends Blob {
 	constructor(options?: FilePropertyBag) {
@@ -112,33 +99,44 @@ let blobStoragePaths: [];
 /**
  * Create a blob from a readable stream or a buffer by creating a file in the blob storage path with a new unique internal id, that
  * can be saved/stored.
- * @param stream
+ * @param source
  */
 server.createBlob = function (source: NodeJS.ReadableStream | NodeJS.Buffer): Promise<Blob> {
+	let result: [string, Blob, Promise<void>];
 	if (source instanceof Uint8Array) {
-		return createBlobFromBuffer(source);
+		result = createBlobFromBuffer(source);
 	} else {
-		return createBlobFromStream(source);
+		result = createBlobFromStream(source);
 	}
+	const [, blob, finished] = result;
+	return finished.then(() => blob);
 };
-async function createBlobFromStream(stream: NodeJS.ReadableStream): Promise<Blob> {
-	const [filePath, blob] = await createBlobWithFile();
-	return new Promise((resolve, reject) => {
-		// TODO: If the data is below the threshold, we should just store it in memory
-		// TODO: Implement compression
-		// pipe the stream to the file
-		const writeStream = createWriteStream(filePath);
-		stream
-			.pipe(writeStream)
-			.on('error', (error) => {
-				const storageInfo = storageInfoForBlob.get(blob);
-				unlink(storageInfo.path, () => {}); // if there's an error, delete the file
-				reject(error); // if there's an error, reject the promise
+/**
+ * Create a blob from a readable stream
+ */
+function createBlobFromStream(stream: NodeJS.ReadableStream): [string, Blob, Promise<void>] {
+	const results = createBlobWithFile();
+	const [filePath, blob, finished] = results;
+	results[2] = finished.then(
+		() =>
+			new Promise((resolve, reject) => {
+				// TODO: If the data is below the threshold, we should just store it in memory
+				// TODO: Implement compression
+				// pipe the stream to the file
+				const writeStream = createWriteStream(filePath, { flush: syncFileStorage });
+				stream
+					.pipe(writeStream)
+					.on('error', (error) => {
+						const storageInfo = storageInfoForBlob.get(blob);
+						unlink(storageInfo.path, () => {}); // if there's an error, delete the file
+						reject(error); // if there's an error, reject the promise
+					})
+					.on('finish', () => {
+						resolve(blob);
+					});
 			})
-			.on('finish', () => {
-				resolve(blob);
-			});
-	});
+	);
+	return results;
 }
 function getFilePath(storageInfo: any): string {
 	return join(
@@ -149,12 +147,17 @@ function getFilePath(storageInfo: any): string {
 		storageInfo.fileId.slice(-2)
 	);
 }
-async function createBlobFromBuffer(buffer: NodeJS.Buffer): Promise<Blob> {
-	const [filePath, blob] = await createBlobWithFile();
-	await writeFile(filePath, buffer);
-	return blob;
+function createBlobFromBuffer(buffer: NodeJS.Buffer): [string, Blob, Promise<void>] {
+	const results = createBlobWithFile();
+	const [filePath, , finished] = results;
+	results[2] = finished.then(() => writeFile(filePath, buffer, { flush: syncFileStorage }));
+	return results;
 }
-async function createBlobWithFile(): Promise<[string, Blob]> {
+
+/**
+ * Create a blob that is backed by a *new* file with a new unique internal id, so it can be filled with data and saved to the database
+ */
+function createBlobWithFile(): [string, Blob, Promise<void>] {
 	if (!blobStoragePaths) {
 		// initialize paths if not already done
 		blobStoragePaths = envGet(CONFIG_PARAMS.STORAGE_BLOBPATHS) || [
@@ -163,17 +166,17 @@ async function createBlobWithFile(): Promise<[string, Blob]> {
 				'blobs'
 			),
 		];
+		syncFileStorage = !envGet(CONFIG_PARAMS.STORAGE_WRITE_ASYNC);
 	}
 	const storageIndex = blobStoragePaths?.length > 1 ? Math.floor(blobStoragePaths.length * Math.random()) : 0;
 	const fileId = getNextFileId().toString(16); // get the next file id
 	const storageInfo = { storageIndex, fileId };
 	const filePath = getFilePath(storageInfo);
 	const fileDir = dirname(filePath);
-	// ensure the directory structure exists
-	await stat(fileDir).catch(() => ensureDir(fileDir));
-
 	const blob = new FileBackedBlob({ storageIndex, fileId });
-	return [filePath, blob];
+	// ensure the directory structure exists
+
+	return [filePath, blob, stat(fileDir).catch(() => ensureDir(fileDir))];
 }
 let idIncrementer: BigInt64Array;
 function getNextFileId(): number {
@@ -225,6 +228,21 @@ export function encodeBlobsWithFilePath<T>(callback: () => T, encodingId: number
 		return callback();
 	} finally {
 		filePathEncodingId = 0;
+	}
+}
+
+/**
+ * Decode blobs, creating local storage to holde the blogs and returning a promise that resolves when all the blobs are written to disk
+ * @param callback
+ */
+export function decodeBlobsWithWrites(callback: () => void) {
+	try {
+		promisedWrites = [];
+		return callback();
+	} finally {
+		const finished = promisedWrites.length < 2 ? promisedWrites[0] : Promise.all(promisedWrites);
+		promisedWrites = undefined;
+		return finished;
 	}
 }
 export function deleteBlobsInObject(obj) {
