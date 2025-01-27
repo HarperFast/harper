@@ -435,7 +435,7 @@ async function deployComponent(req) {
 	let isLeaderNode = req.replicated;
 	let response = await replicateOperation(req);
 
-	if (req.restart === true && isLeaderNode) {
+	if ((req.restart === true && isLeaderNode === undefined) || (req.restart === true && isLeaderNode)) {
 		const serverUtilities = require('../server/serverHelpers/serverUtilities');
 		const jobResponse = await serverUtilities.executeJob({
 			operation: 'restart_service',
