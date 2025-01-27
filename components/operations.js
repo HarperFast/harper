@@ -431,6 +431,7 @@ async function deployComponent(req) {
 	}
 	if (last_error) throw last_error;
 	log.info('Installed component');
+	// the replicated value is set to false inside replicateOperation
 	let isLeaderNode = req.replicated;
 	let response = await replicateOperation(req);
 
