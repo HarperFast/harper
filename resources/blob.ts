@@ -20,13 +20,13 @@ addExtension({
 	unpack: function (buffer) {
 		const data = unpack(buffer);
 		if (data instanceof Array) {
+			// this is a file backed blob, so we need to create a new blob object with the storage info
 			return new FileBackedBlob({
 				storageIndex: data[0],
 				fileId: data[1],
 			});
 		} else {
-			// this directly encoded as a buffer, so we can just return the buffer in a blob object
-			// we need to strip the first 8 bytes, which is the header
+			// this directly encoded as a buffer, so we need to create a new blob object backed by a file, with the buffer
 			const [, blob, finished] = createBlobFromBuffer(buffer);
 			promisedWrites.push(finished);
 			return blob;
@@ -54,7 +54,9 @@ addExtension({
 	},
 });
 
-// we can delete the file.
+/**
+ * A blob that is backed by a file, and can be saved to the database as a reference
+ */
 class FileBackedBlob extends Blob {
 	constructor(options?: FilePropertyBag) {
 		super([], options);
