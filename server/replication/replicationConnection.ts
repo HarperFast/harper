@@ -909,6 +909,9 @@ export function replicateOverWS(ws, options, authorization) {
 							} else {
 								// directly write the audit record. If it starts with the previous local time, we omit that
 								const encoded = audit_record.encoded;
+								if (audit_record.extendedType & HAS_BLOBS) {
+									// if there are blobs, we need to decode and send them
+								}
 								const start = encoded[0] === 66 ? 8 : 0;
 								writeInt(encoded.length - start);
 								writeBytes(encoded, start);
