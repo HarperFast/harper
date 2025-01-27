@@ -50,6 +50,7 @@ async function installAllRootModules(ignore_scripts = false, working_dir = env.g
 		});
 	}
 
+	// When the user running HarperDB does not have write permissions to the global node_modules directory npm install will fail due to the symlink
 	try {
 		const root_path = env.get(terms.CONFIG_PARAMS.ROOTPATH);
 		const harper_module = path.join(root_path, 'node_modules', 'harperdb');
