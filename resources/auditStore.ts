@@ -8,6 +8,7 @@ import { PREVIOUS_TIMESTAMP_PLACEHOLDER, LAST_TIMESTAMP_PLACEHOLDER } from './Re
 import * as harper_logger from '../utility/logging/harper_logger';
 import { getRecordAtTime } from './crdt';
 import { isMainThread } from 'worker_threads';
+import { deleteBlobsInObject } from './blob';
 
 /**
  * This module is responsible for the binary representation of audit records in an efficient form.
@@ -144,10 +145,21 @@ export function openAuditStore(root_store) {
 }
 
 export function removeAuditEntry(audit_store: any, key: number, value: any): Promise<void> {
-	if ((readAction(value) & 15) === DELETE) {
+	const type = readAction(value);
+	let audit_record;
+	if (type & HAS_BLOBS) {
+		// if it has blobs, and isn't in use from the main record, we need to delete them as well
+		audit_record = readAuditEntry(value);
+		if (primary_store.getEntry(audit_record.recordId).version !== audit_record.version) {
+			// if the versions don't match, then this should be the only/last reference to any blob
+			deleteBlobsInObject(audit_record.getValue(audit_store.rootStore.tables[table_id]));
+		}
+	}
+
+	if ((type & 15) === DELETE) {
 		// if this is a delete, we remove the delete entry from the primary table
 		// at the same time so the audit table the primary table are in sync
-		const audit_record = readAuditEntry(value);
+		audit_record = audit_record || readAuditEntry(value);
 		const table_id = audit_record.tableId;
 		audit_store.deleteCallbacks?.[table_id]?.(audit_record.recordId);
 	}
@@ -179,6 +191,8 @@ const MESSAGE = 3;
 const INVALIDATE = 4;
 const PATCH = 5;
 const RELOCATE = 6;
+export const ACTION_32_BIT = 14;
+export const ACTION_64_BIT = 15;
 /** Used to indicate we have received a remote local time update */
 export const REMOTE_SEQUENCE_UPDATE = 11;
 const HAS_PREVIOUS_VERSION = 64;

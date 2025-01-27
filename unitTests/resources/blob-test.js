@@ -29,8 +29,17 @@ describe('Blob test', () => {
 		}
 		let blob = await server.createBlob(Readable.from(testString));
 		await BlobTest.put({ id: 1, blob });
-		const record = await BlobTest.get(1);
+		let record = await BlobTest.get(1);
 		assert.equal(record.id, 1);
-		assert.equal(record.blob.toString(), testString);
+		let retrievedText = await record.blob.text();
+		assert.equal(retrievedText, testString);
+		testString += testString; // modify the string
+		assert.throws(() => BlobTest.put({ id: 1, blob }));
+		blob = await server.createBlob(Readable.from(testString));
+		await BlobTest.put({ id: 1, blob });
+		record = await BlobTest.get(1);
+		assert.equal(record.id, 1);
+		retrievedText = await record.blob.text();
+		assert.equal(retrievedText, testString);
 	});
 });

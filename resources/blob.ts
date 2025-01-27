@@ -1,16 +1,27 @@
 import { addExtension, pack, unpack } from 'msgpackr';
 import { stat, readFile, writeFile } from 'fs/promises';
-import { createReadStream, createWriteStream, open, close, readFileSync, unlink, writeSync, read } from 'fs';
+import {
+	createReadStream,
+	createWriteStream,
+	open,
+	close,
+	readFileSync,
+	unlink,
+	writeSync,
+	read,
+	readdirSync,
+	existsSync,
+} from 'fs';
 import { ensureDir } from 'fs-extra';
 import { server } from '../server/Server';
 import { get as envGet } from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS, getHdbBasePath, DATABASES_DIR_NAME } from '../utility/hdbTerms';
-import { join } from 'path';
+import { join, dirname } from 'path';
 
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
 // We want to keep the file path private (but accessible to the extension)
 const storageInfoForBlob = new WeakMap();
-let filePathEncodingEnabled = false; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients
+let filePathEncodingId: number = 0; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
 addExtension({
 	Class: Blob,
@@ -18,12 +29,10 @@ addExtension({
 	unpack: function (buffer) {
 		const data = unpack(buffer);
 		if (data instanceof Array) {
-			if (filePathEncodingEnabled) {
-				const data = unpack(buffer);
-				return new FileBackedBlob(data[0], data[1]);
-			} else {
-				server.getBlobFromStream;
-			}
+			return new FileBackedBlob({
+				storageIndex: data[0],
+				fileId: data[1],
+			});
 		} else {
 			// this directly encoded as a buffer, so we can just return the buffer in a blob object
 			buffer = new Uint8Array(buffer.buffer, 8);
@@ -35,10 +44,12 @@ addExtension({
 	pack: function (blob) {
 		const storageInfo = storageInfoForBlob.get(blob);
 		if (storageInfo) {
-			if (filePathEncodingEnabled) {
+			if (filePathEncodingId) {
 				blobsWereEncoded = true;
-				REFERENCE_COUNT_VIEW.setUint32(4, ++storageInfo.referenceCount);
-				writeSync(storageInfo.fd, REFERENCE_COUNT_BUFFER, 0);
+				if (storageInfo.filePathEncodingId && storageInfo.filePathEncodingId !== filePathEncodingId) {
+					//throw new Error('Cannot use the same blob in two different records');
+				}
+				storageInfo.filePathEncodingId = filePathEncodingId;
 				return pack([storageInfo.storageIndex, storageInfo.fileId, {}]);
 			} else {
 				// if we want to encode as binary (necessary for replication), we need to encode as a buffer, not sure if we should always do that
@@ -63,91 +74,40 @@ class FileBackedBlob extends Blob {
 		storageInfoForBlob.set(this, {
 			storageIndex: options?.storageIndex,
 			fileId: options?.fileId,
-			referenceCount: 1,
-		});
-	}
-	async open(flags) {
-		if (!blobStoragePaths) {
-			// initialize paths if not already done
-			blobStoragePaths = envGet(CONFIG_PARAMS.STORAGE_BLOBPATHS) || [
-				join(
-					process.env.STORAGE_PATH || envGet(CONFIG_PARAMS.STORAGE_PATH) || join(getHdbBasePath(), DATABASES_DIR_NAME),
-					'blobs'
-				),
-			];
-		}
-		const storageInfo = storageInfoForBlob.get(this);
-		const { storageIndex, fileId, fd } = storageInfo;
-		if (fd) return fd;
-		const blobStoragePath = blobStoragePaths[storageIndex];
-		const fileDir = join(
-			// create the file path, using the file id to create a directory structure in a 3-level deep format that won't create too many entries per directory
-			blobStoragePath,
-			fileId.slice(0, -6) || '0',
-			fileId.slice(-6, -4) || '0',
-			fileId.slice(-4, -2) || '0'
-		);
-		const filePath = join(fileDir, fileId.slice(-2));
-		storageInfo.path = filePath;
-		// ensure the directory structure exists
-		await stat(fileDir).catch(() => ensureDir(fileDir));
-
-		return new Promise((resolve, reject) => {
-			open(filePath, flags, (error, fd) => {
-				if (error) reject(error);
-				else {
-					storageInfo.fd = fd;
-					fdRegistry.register(this, fd);
-					resolve(fd);
-				}
-			});
 		});
 	}
 
 	async text(): Promise<string> {
-		return readFile(storageInfoForBlob.get(this), 'utf-8');
+		return readFile(getFilePath(storageInfoForBlob.get(this)), 'utf-8');
 	}
 
 	async arrayBuffer(): Promise<ArrayBuffer> {
-		const fileContent = await readFile(storageInfoForBlob.get(this));
+		const fileContent = await readFile(getFilePath(storageInfoForBlob.get(this)));
 		return fileContent.buffer;
 	}
 
 	stream(): NodeJS.ReadableStream {
-		return createReadStream(storageInfoForBlob.get(this));
+		return createReadStream(getFilePath(storageInfoForBlob.get(this)));
 	}
 }
 
 /**
- * Decrement the reference count for a blob and delete the file if the reference count reaches 0.
+ * Delete the file for the blob
  * @param blob
  */
-export function removeReferenceToBlob(blob: Blob): Promise<void> {
+export function deleteBlob(blob: Blob): Promise<void> {
+	// do we even need to check for completion here?
 	return new Promise((resolve, reject) => {
 		const storageInfo = storageInfoForBlob.get(blob);
-		blob.open('rw').then((fd) => {
-			if (error) reject(error);
-			read(fd, { length: 8 }, (error, buffer) => {
+		setTimeout(() => {
+			// TODO: we need to determine when any read transaction are done with the file, and then delete it, this is a hack to just give it some time for that
+			unlink(storageInfo.filePath, (error) => {
 				if (error) reject(error);
-				storageInfo.referenceCount = new DataView(buffer).getUint32(4) - 1;
-				if (storageInfo.referenceCount <= 0) {
-					close(fd);
-					unlink(storageInfo.filePath, (error) => {
-						if (error) reject(error);
-						else resolve();
-					});
-				} else {
-					REFERENCE_COUNT_VIEW.setUint32(4, storageInfo.referenceCount);
-					writeSync(fd, REFERENCE_COUNT_BUFFER, 0);
-					close(fd);
-				}
+				else resolve();
 			});
-		});
+		}, 500);
 	});
 }
-const STARTING_OFFSET = 8; // reserve 8 bytes for reference counting
-const REFERENCE_COUNT_BUFFER = new Uint8Array(STARTING_OFFSET);
-const REFERENCE_COUNT_VIEW = new DataView(REFERENCE_COUNT_BUFFER.buffer);
 let blobStoragePaths: [];
 /**
  * Create a blob from a readable stream or a buffer by creating a file in the blob storage path with a new unique internal id, that
@@ -162,13 +122,12 @@ server.createBlob = function (source: NodeJS.ReadableStream | NodeJS.Buffer): Pr
 	}
 };
 async function createBlobFromStream(stream: NodeJS.ReadableStream): Promise<Blob> {
-	const [fd, blob] = await createBlobWithFile();
+	const [filePath, blob] = await createBlobWithFile();
 	return new Promise((resolve, reject) => {
 		// TODO: If the data is below the threshold, we should just store it in memory
+		// TODO: Implement compression
 		// pipe the stream to the file
-		const writeStream = createWriteStream(null, { fd, autoClose: false });
-		REFERENCE_COUNT_VIEW.setUint32(4, 1); // set the reference count to 1
-		writeStream.write(REFERENCE_COUNT_BUFFER); // write the starting buffer to the file to reserve room for reference counting
+		const writeStream = createWriteStream(filePath);
 		stream
 			.pipe(writeStream)
 			.on('error', (error) => {
@@ -181,18 +140,40 @@ async function createBlobFromStream(stream: NodeJS.ReadableStream): Promise<Blob
 			});
 	});
 }
+function getFilePath(storageInfo: any): string {
+	return join(
+		blobStoragePaths[storageInfo.storageIndex],
+		storageInfo.fileId.slice(0, -6) || '0',
+		storageInfo.fileId.slice(-6, -4) || '0',
+		storageInfo.fileId.slice(-4, -2) || '0',
+		storageInfo.fileId.slice(-2)
+	);
+}
 async function createBlobFromBuffer(buffer: NodeJS.Buffer): Promise<Blob> {
-	const [fd, blob] = await createBlobWithFile();
-	await writeFile(fd, buffer);
+	const [filePath, blob] = await createBlobWithFile();
+	await writeFile(filePath, buffer);
 	return blob;
 }
-async function createBlobWithFile(): Promise<[number, Blob]> {
+async function createBlobWithFile(): Promise<[string, Blob]> {
+	if (!blobStoragePaths) {
+		// initialize paths if not already done
+		blobStoragePaths = envGet(CONFIG_PARAMS.STORAGE_BLOBPATHS) || [
+			join(
+				process.env.STORAGE_PATH || envGet(CONFIG_PARAMS.STORAGE_PATH) || join(getHdbBasePath(), DATABASES_DIR_NAME),
+				'blobs'
+			),
+		];
+	}
 	const storageIndex = blobStoragePaths?.length > 1 ? Math.floor(blobStoragePaths.length * Math.random()) : 0;
 	const fileId = getNextFileId().toString(16); // get the next file id
+	const storageInfo = { storageIndex, fileId };
+	const filePath = getFilePath(storageInfo);
+	const fileDir = dirname(filePath);
+	// ensure the directory structure exists
+	await stat(fileDir).catch(() => ensureDir(fileDir));
 
 	const blob = new FileBackedBlob({ storageIndex, fileId });
-	const fd = await blob.open('w');
-	return [fd, blob];
+	return [filePath, blob];
 }
 let idIncrementer: BigInt64Array;
 function getNextFileId(): number {
@@ -200,7 +181,25 @@ function getNextFileId(): number {
 	// first, we create our proposed incrementer buffer that will be used if we are the first thread to get here
 	// and initialize it with the starting id
 	if (!idIncrementer) {
-		const lastId = 1; // find the last file id
+		// get the last id by checking the highest id in all the blob storage paths
+		let lastId = 0;
+		for (let path of blobStoragePaths) {
+			// we need to get the highest id in the directory structure, so we need to iterate through all the directories to find the highest byte sequence
+			for (let i = 0; i < 4; i++) {
+				lastId = lastId * 256;
+				let highest = 0;
+				if (existsSync(path)) {
+					for (const entry of readdirSync(path)) {
+						const n = parseInt(entry, 16);
+						if (n > highest) {
+							highest = n;
+						}
+					}
+				}
+				lastId += highest;
+				path = join(path, highest.toString(16));
+			}
+		}
 		idIncrementer = new BigInt64Array([BigInt(lastId) + 1n]);
 		// now get the selected incrementer buffer, this is the shared buffer was first registered and that all threads will use
 		idIncrementer = new BigInt64Array(
@@ -210,24 +209,30 @@ function getNextFileId(): number {
 	return Number(Atomics.add(idIncrementer, 0, 1n));
 }
 
-export function encodeBlobsWithFilePath(callback, existingEntry) {
-	filePathEncodingEnabled = true;
+/**
+ * Encode blobs with file paths, so that they can be saved to the database
+ * @param callback
+ * @param encodingId
+ * @param objectToClear
+ */
+export function encodeBlobsWithFilePath<T>(callback: () => T, encodingId: number, objectToClear?: any) {
+	filePathEncodingId = encodingId;
 	blobsWereEncoded = false;
-	if (existingEntry?.value) {
-		removeBlobsInObject(existingEntry.value);
+	if (objectToClear) {
+		deleteBlobsInObject(objectToClear);
 	}
 	try {
 		return callback();
 	} finally {
-		filePathEncodingEnabled = false;
+		filePathEncodingId = 0;
 	}
 }
-function removeBlobsInObject(obj) {
+export function deleteBlobsInObject(obj) {
 	if (obj instanceof Blob) {
-		removeReferenceToBlob(obj);
-	} else if (obj instanceof Object) {
+		deleteBlob(obj);
+	} else if (obj.constructor === Object) {
 		for (const key in obj) {
-			removeBlobsInObject(obj[key]);
+			deleteBlobsInObject(obj[key]);
 		}
 	}
 }

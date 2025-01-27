@@ -14,6 +14,7 @@ import {
 	HAS_EXPIRATION_EXTENDED_TYPE,
 	HAS_ORIGINATING_OPERATION,
 	HAS_BLOBS,
+	ACTION_32_BIT,
 } from './auditStore';
 import * as harper_logger from '../utility/logging/harper_logger';
 import './blob';
@@ -59,7 +60,7 @@ export class RecordEncoder extends Encoder {
 					value_start += 8; // make room for local timestamp
 					timestamp_next_encoding = 0;
 				}
-				const metadata = metadata_in_next_encoding;
+				let metadata = metadata_in_next_encoding;
 				const expires_at = expires_at_next_encoding;
 				const residency_id = residency_id_at_next_encoding;
 				if (metadata >= 0) {
@@ -84,9 +85,18 @@ export class RecordEncoder extends Encoder {
 					encoded.set(TIMESTAMP_PLACEHOLDER, position);
 					position += 8;
 				}
+				if (blobsWereEncoded) metadata |= HAS_BLOBS;
 				if (metadata >= 0) {
-					encoded[position++] = metadata & 0x1f;
-					encoded[position++] = metadata >> 5;
+					if (metadata >= 0x1000) {
+						const data_view =
+							encoded.dataView ||
+							(encoded.dataView = new DataView(encoded.buffer, encoded.byteOffset, encoded.byteLength));
+						data_view.setUint32(position | (ACTION_32_BIT << 24), metadata); // use the extended action byte
+						position += 4;
+					} else {
+						encoded[position++] = metadata & 0x1f;
+						encoded[position++] = metadata >> 5;
+					}
 					if (expires_at >= 0) {
 						const data_view =
 							encoded.dataView ||
@@ -136,8 +146,15 @@ export class RecordEncoder extends Encoder {
 				}
 				let expires_at, residency_id;
 				if (next_byte < 32) {
-					metadata_flags = next_byte | (buffer[position + 1] << 5);
-					position += 2;
+					if (next_byte === ACTION_32_BIT) {
+						const data_view =
+							buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+						metadata_flags = data_view.getUint32(position);
+						position += 4;
+					} else {
+						metadata_flags = next_byte | (buffer[position + 1] << 5);
+						position += 2;
+					}
 					if (metadata_flags & HAS_EXPIRATION) {
 						const data_view =
 							buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
@@ -278,6 +295,7 @@ setInterval(() => {
 		}
 	}
 }, 15000).unref();
+let encoding_id = 1;
 export function getUpdateRecord(store, table_id, audit_store) {
 	return function (
 		id,
@@ -331,7 +349,18 @@ export function getUpdateRecord(store, table_id, audit_store) {
 			if (options?.originatingOperation) extended_type |= HAS_ORIGINATING_OPERATION;
 			// we use resolve_record outside of transaction, so must explicitly make it conditional
 			if (resolve_record) put_options.ifVersion = if_version = existing_entry?.version ?? null;
-			const result = encodeBlobsWithFilePath(() => store.put(id, record, put_options));
+			let record_blobs_to_delete;
+			if (existing_entry && existing_entry.metadataFlags & HAS_BLOBS) {
+				if (!audit_store.getBinaryFast(existing_entry.localTime)) {
+					// if it used to have blobs, and it doesn't exist in the audit store, we need to delete the old blobs
+					record_blobs_to_delete = existing_entry.value;
+				}
+			}
+			const result = encodeBlobsWithFilePath(
+				() => store.put(id, record, put_options),
+				++encoding_id,
+				record_blobs_to_delete
+			);
 			if (blobsWereEncoded) {
 				extended_type |= HAS_BLOBS;
 			}
@@ -344,7 +373,8 @@ export function getUpdateRecord(store, table_id, audit_store) {
 			*/
 			if (audit) {
 				const username = options?.user?.username;
-				if (audit_record) last_value_encoding = store.encoder.encode(audit_record);
+				if (audit_record)
+					last_value_encoding = encodeBlobsWithFilePath(() => store.encoder.encode(audit_record), encoding_id);
 				if (store.encoder.hasStructureUpdate) {
 					extended_type |= HAS_STRUCTURE_UPDATE;
 					store.encoder.hasStructureUpdate = false;
