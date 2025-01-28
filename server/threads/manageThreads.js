@@ -1,5 +1,5 @@
 'use strict';
-
+require('../../bin/dev');
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
 const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
 const { join, isAbsolute, extname } = require('path');

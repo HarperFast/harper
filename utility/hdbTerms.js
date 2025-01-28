@@ -979,5 +979,3 @@ module.exports = {
 	AUTH_AUDIT_STATUS,
 	AUTH_AUDIT_TYPES,
 };
-
-require('./devops/tsBuild');

@@ -1,17 +1,12 @@
 'use strict';
 
-import { assert, expect } from 'chai';
+import { assert } from 'chai';
 import axios from 'axios';
-import { decode, encode, DecoderStream } from 'cbor-x';
-import { getVariables } from './utility.js';
 import { setupTestApp } from './setupTestApp.mjs';
-import why_is_node_running from 'why-is-node-still-running';
-const { authorization, url } = getVariables();
 
 describe('test REST calls with cache table', () => {
-	let available_records;
 	before(async () => {
-		available_records = await setupTestApp();
+		await setupTestApp();
 	});
 
 	it('do get with JSON', async () => {

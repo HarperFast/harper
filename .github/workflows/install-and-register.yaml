@@ -99,6 +99,9 @@ jobs:
             echo "git submodule update..."
             git submodule update --init --recursive
 
+            # Build TS
+            npm run dev
+
             echo "HarperDB install..."
             cd /home/ubuntu/harperdb/bin
             node harperdb.js start \$CLI_ARGS

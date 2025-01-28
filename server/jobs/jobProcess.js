@@ -1,5 +1,6 @@
 'use strict';
 
+require('../../bin/dev');
 const hdb_terms = require('../../utility/hdbTerms');
 const hdb_utils = require('../../utility/common_utils');
 const harper_logger = require('../../utility/logging/harper_logger');

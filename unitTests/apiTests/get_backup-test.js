@@ -2,7 +2,6 @@ const { callOperation, removeAllSchemas } = require('./utility');
 const { promisify } = require('util');
 const { join } = require('path');
 const { pipeline } = require('stream/promises');
-require('../../utility/devops/tsBuild');
 const { readMetaDb, databases } = require('../../resources/databases');
 const { writeFileSync, mkdirpSync, createWriteStream } = require('fs-extra');
 const { assert, expect } = globalThis.chai || require('chai');
