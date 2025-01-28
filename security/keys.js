@@ -678,7 +678,7 @@ async function reviewSelfSignedCert() {
 
 		await setCertTable({
 			name: hdb_ca.subject.getField('CN').value,
-			uses: ['https', 'wss'],
+			uses: ['https'],
 			certificate: pki.certificateToPem(hdb_ca),
 			private_key_name: key_name,
 			is_authority: true,
