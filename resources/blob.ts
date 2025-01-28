@@ -9,7 +9,10 @@ import { join, dirname } from 'path';
 
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
 // We want to keep the file path private (but accessible to the extension)
+const HEADER_SIZE = 8;
+const DEFAULT_HEADER = new Uint8Array(HEADER_SIZE);
 const storageInfoForBlob = new WeakMap();
+const Blob = global.Blob || class Blob {};
 let filePathEncodingId: number = 0; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
 let promisedWrites: Array<Promise<void>>;
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
@@ -18,8 +21,8 @@ addExtension({
 	Class: Blob,
 	type: 11,
 	unpack: function (buffer) {
-		const data = unpack(buffer);
-		if (data instanceof Array) {
+		if (buffer[0] > 1) {
+			const data = unpack(buffer);
 			// this is a file backed blob, so we need to create a new blob object with the storage info
 			return new FileBackedBlob({
 				storageIndex: data[0],
@@ -27,7 +30,7 @@ addExtension({
 			});
 		} else {
 			// this directly encoded as a buffer, so we need to create a new blob object backed by a file, with the buffer
-			const [, blob, finished] = createBlobFromBuffer(buffer);
+			const [, blob, finished] = createBlobFromDirectBuffer(buffer);
 			promisedWrites.push(finished);
 			return blob;
 		}
@@ -38,7 +41,7 @@ addExtension({
 			if (filePathEncodingId) {
 				blobsWereEncoded = true;
 				if (storageInfo.filePathEncodingId && storageInfo.filePathEncodingId !== filePathEncodingId) {
-					//throw new Error('Cannot use the same blob in two different records');
+					throw new Error('Cannot use the same blob in two different records');
 				}
 				storageInfo.filePathEncodingId = filePathEncodingId;
 				return pack([storageInfo.storageIndex, storageInfo.fileId, {}]);
@@ -46,6 +49,7 @@ addExtension({
 				// if we want to encode as binary (necessary for replication), we need to encode as a buffer, not sure if we should always do that
 				// also, for replication, we would presume that this is most likely in OS cache, and sync will be fast. For other situations, a large sync call could be
 				// unpleasant
+				// we include the headers, as the receiving end will need them, and this differentiates from a reference
 				return readFileSync(getFilePath(storageInfo));
 			}
 		} else {
@@ -67,16 +71,16 @@ class FileBackedBlob extends Blob {
 	}
 
 	async text(): Promise<string> {
-		return readFile(getFilePath(storageInfoForBlob.get(this)), 'utf-8');
+		return (await readFile(getFilePath(storageInfoForBlob.get(this)))).subarray(HEADER_SIZE).toString('utf-8');
 	}
 
 	async arrayBuffer(): Promise<ArrayBuffer> {
-		const fileContent = await readFile(getFilePath(storageInfoForBlob.get(this)));
-		return fileContent.buffer;
+		const fileContent = await readFile(getFilePath(storageInfoForBlob.get(this))).subarray(HEADER_SIZE);
+		return new ArrayBuffer(fileContent);
 	}
 
 	stream(): NodeJS.ReadableStream {
-		return createReadStream(getFilePath(storageInfoForBlob.get(this)));
+		return createReadStream(getFilePath(storageInfoForBlob.get(this)), { start: HEADER_SIZE });
 	}
 }
 
@@ -126,6 +130,7 @@ function createBlobFromStream(stream: NodeJS.ReadableStream): [string, Blob, Pro
 				// TODO: Implement compression
 				// pipe the stream to the file
 				const writeStream = createWriteStream(filePath, { flush: syncFileStorage });
+				writeStream.write(DEFAULT_HEADER); // write the default header to the file
 				stream
 					.pipe(writeStream)
 					.on('error', (error) => {
@@ -149,10 +154,41 @@ function getFilePath(storageInfo: any): string {
 		storageInfo.fileId.slice(-2)
 	);
 }
+
+/**
+ * Create a blob from a buffer that already has a header
+ * @param buffer
+ */
+function createBlobFromDirectBuffer(buffer: NodeJS.Buffer): [string, Blob, Promise<void>] {
+	const results = createBlobWithFile();
+	const [filePath, , finished] = results;
+	results[2] = finished.then(() => {
+		return writeFile(filePath, buffer, { flush: syncFileStorage });
+	});
+	return results;
+}
+
+/**
+ * Create a blob from a buffer
+ * @param buffer
+ */
 function createBlobFromBuffer(buffer: NodeJS.Buffer): [string, Blob, Promise<void>] {
 	const results = createBlobWithFile();
 	const [filePath, , finished] = results;
-	results[2] = finished.then(() => writeFile(filePath, buffer, { flush: syncFileStorage }));
+	results[2] = finished.then(
+		() =>
+			new Promise((resolve, reject) => {
+				const writeStream = createWriteStream(filePath, { flush: syncFileStorage });
+				writeStream.write(DEFAULT_HEADER); // write the default header to the file
+				writeStream.end(buffer);
+				writeStream.on('finish', () => {
+					resolve();
+				});
+				writeStream.on('error', (error) => {
+					reject(error);
+				});
+			})
+	);
 	return results;
 }
 

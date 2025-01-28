@@ -6,6 +6,7 @@ import {
 	HAS_CURRENT_RESIDENCY_ID,
 	HAS_PREVIOUS_RESIDENCY_ID,
 	REMOTE_SEQUENCE_UPDATE,
+	HAS_BLOBS,
 	readAuditEntry,
 } from '../../resources/auditStore';
 import { exportIdMapping, getIdOfRemoteNode, remoteToLocalNodeId } from './nodeIdMapping';
@@ -908,9 +909,13 @@ export function replicateOverWS(ws, options, authorization) {
 								writeBytes(invalidation_entry);
 							} else {
 								// directly write the audit record. If it starts with the previous local time, we omit that
-								const encoded = audit_record.encoded;
+								let encoded = audit_record.getEncoded();
 								if (audit_record.extendedType & HAS_BLOBS) {
 									// if there are blobs, we need to decode and send them
+									encoded = Buffer.concat([
+										audit_record.getEncoded(true),
+										primary_store.encoder.encode(audit_record.getValue(primary_store)),
+									]);
 								}
 								const start = encoded[0] === 66 ? 8 : 0;
 								writeInt(encoded.length - start);

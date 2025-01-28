@@ -31,7 +31,7 @@ describe('Blob test', () => {
 		let retrievedText = await record.blob.text();
 		assert.equal(retrievedText, testString);
 		testString += testString; // modify the string
-		assert.throws(() => BlobTest.put({ id: 1, blob }));
+		assert.throws(() => BlobTest.put({ id: 2, blob }));
 		blob = await server.createBlob(Readable.from(testString));
 		await BlobTest.put({ id: 1, blob });
 		record = await BlobTest.get(1);

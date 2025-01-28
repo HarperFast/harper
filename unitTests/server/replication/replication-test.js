@@ -101,6 +101,28 @@ describe('Replication', () => {
 			break;
 		} while (true);
 	});
+	it('A write to one table with a blob should replicate', async function () {
+		let name = 'name ' + Math.random();
+		await TestTable.put({
+			id: '10',
+			name,
+			blob: await server.createBlob('this is a test'.repeat(100)),
+		});
+		let retries = 10;
+		do {
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			let result = await test_stores[1].get('10')?.value;
+			if (!result) {
+				assert(--retries > 0);
+				continue;
+			}
+			assert.equal(result.name, name);
+			result = await test_stores[1].get('2')?.value;
+			assert.equal(result.name, name);
+			assert.equal(await result.blob.text(), 'this is a test'.repeat(100));
+			break;
+		} while (true);
+	});
 	it.skip('A write to one table with replicated confirmation', async function () {
 		console.log('replicated confirmation');
 		this.timeout(5000);
