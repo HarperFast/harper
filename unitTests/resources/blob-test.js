@@ -23,10 +23,7 @@ describe('Blob test', () => {
 		});
 	});
 	it('create a blob and save it', async () => {
-		let testString = 'this is a test string';
-		for (let i = 0; i < 8; i++) {
-			testString += testString;
-		}
+		let testString = 'this is a test string'.repeat(256);
 		let blob = await server.createBlob(Readable.from(testString));
 		await BlobTest.put({ id: 1, blob });
 		let record = await BlobTest.get(1);
