@@ -81,7 +81,9 @@ const cli_args = minimist(process.argv);
 const username = cli_args[CLONE_VARS.HDB_LEADER_USERNAME] ?? process.env[CLONE_VARS.HDB_LEADER_USERNAME];
 const password = cli_args[CLONE_VARS.HDB_LEADER_PASSWORD] ?? process.env[CLONE_VARS.HDB_LEADER_PASSWORD];
 const leader_url = cli_args[CLONE_VARS.HDB_LEADER_URL] ?? process.env[CLONE_VARS.HDB_LEADER_URL];
-const replication_hostname = cli_args[CLONE_VARS.REPLICATION_HOSTNAME] ?? process.env[CLONE_VARS.REPLICATION_HOSTNAME];
+const replication_host = cli_args[CLONE_VARS.REPLICATION_HOSTNAME] ?? process.env[CLONE_VARS.REPLICATION_HOSTNAME];
+let replication_hostname, replication_port;
+if (replication_host) [replication_hostname, replication_port] = replication_host.split(':');
 
 const clone_overtop = (cli_args[CLONE_VARS.HDB_CLONE_OVERTOP] ?? process.env[CLONE_VARS.HDB_CLONE_OVERTOP]) === 'true'; // optional var - will allow clone to work overtop of an existing HDB install
 const cloned_var = cli_args[CONFIG_PARAMS.CLONED.toUpperCase()] ?? process.env[CONFIG_PARAMS.CLONED.toUpperCase()];
@@ -163,9 +165,9 @@ module.exports = async function cloneNode(background = false, run = false) {
 		}
 	}
 
-	if (replication_hostname) {
+	if (replication_host) {
 		const leader_url_inst = new URL(leader_url);
-		leader_replication_url = `${leader_url_inst.protocol === 'https:' ? 'wss://' : 'ws://'}${leader_url_inst.host}`;
+		leader_replication_url = `${leader_url_inst.protocol === 'https:' ? 'wss://' : 'ws://'}${leader_url_inst.hostname}:${replication_port || 9933}`;
 	}
 
 	if (clone_using_ws) {
@@ -197,7 +199,7 @@ module.exports = async function cloneNode(background = false, run = false) {
 
 	await startHDB(background, run);
 
-	if (replication_hostname) {
+	if (replication_host) {
 		await setupReplication();
 		await cloneKeys();
 	}
@@ -328,7 +330,7 @@ async function cloneConfig() {
 		rootpath: root_path,
 	};
 
-	if (replication_hostname) config_update.replication_hostname = replication_hostname;
+	if (replication_host) config_update.replication_hostname = replication_hostname;
 
 	for (const name in leader_config_flat) {
 		if (
@@ -443,7 +445,7 @@ async function cloneTablesHttp() {
 	const sys_db_file_dir = join(system_db_dir, 'system.mdb');
 	await ensureDir(system_db_dir);
 	if (fresh_clone || !(await fs.exists(sys_db_file_dir)) || clone_overtop) {
-		if (!replication_hostname) {
+		if (!replication_host) {
 			console.info('Cloning system database');
 			await ensureDir(system_db_dir);
 			const file_stream = createWriteStream(sys_db_file_dir, { overwrite: true });
@@ -512,7 +514,7 @@ async function cloneTablesHttp() {
 		}
 
 		if (tables_to_clone.length === 0) continue;
-		if (replication_hostname) {
+		if (replication_host) {
 			hdb_log.debug('Setting up tables for #{db}');
 			const ensureTable = require('../../resources/databases').table;
 			for (let table of tables_to_clone) {
@@ -556,7 +558,7 @@ async function cloneTablesFetch() {
 	const system_db_dir = getDBPath('system');
 	const sys_db_file_dir = join(system_db_dir, 'system.mdb');
 	if (fresh_clone || !(await fs.exists(sys_db_file_dir)) || clone_overtop) {
-		if (!replication_hostname) {
+		if (!replication_host) {
 			console.info('Cloning system database using fetch');
 			const req = {
 				operation: OPERATIONS_ENUM.GET_BACKUP,
@@ -585,7 +587,7 @@ async function cloneTablesFetch() {
 		sys_db_exist = true;
 		console.log(`Not cloning system database due to it already existing on clone`);
 	}
-	if (replication_hostname) {
+	if (replication_host) {
 		hdb_log.info('Replication hostname set, not using backup to clone databases, replication will clone');
 		return;
 	}
