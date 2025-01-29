@@ -78,9 +78,11 @@ export function openAuditStore(root_store) {
 		updateLastRemoved(audit_store, 1);
 	}
 	audit_store.rootStore = root_store;
+	audit_store.tableStores = [];
 	const delete_callbacks = [];
-	audit_store.addDeleteRemovalCallback = function (table_id, callback) {
+	audit_store.addDeleteRemovalCallback = function (table_id, table, callback) {
 		delete_callbacks[table_id] = callback;
+		audit_store.tableStores[table_id] = table;
 		audit_store.deleteCallbacks = delete_callbacks;
 		return {
 			remove() {
@@ -150,9 +152,10 @@ export function removeAuditEntry(audit_store: any, key: number, value: any): Pro
 	if (type & HAS_BLOBS) {
 		// if it has blobs, and isn't in use from the main record, we need to delete them as well
 		audit_record = readAuditEntry(value);
+		const primary_store = audit_store.tableStores[audit_record.tableId];
 		if (primary_store.getEntry(audit_record.recordId).version !== audit_record.version) {
 			// if the versions don't match, then this should be the only/last reference to any blob
-			deleteBlobsInObject(audit_record.getValue(audit_store.rootStore.tables[table_id]));
+			deleteBlobsInObject(audit_record.getValue(primary_store));
 		}
 	}
 

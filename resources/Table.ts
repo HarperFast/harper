@@ -1493,7 +1493,7 @@ export function makeTable(options) {
 			transaction.addWrite({
 				key: id,
 				store: primary_store,
-				resource: this,
+				entry: this[ENTRY_PROPERTY],
 				nodeName: context?.nodeName,
 				before: apply_to_sources.delete?.bind(this, context, id),
 				beforeIntermediate: apply_to_sources_intermediate.delete?.bind(this, context, id),
@@ -3534,7 +3534,7 @@ export function makeTable(options) {
 		}
 	}
 	function addDeleteRemoval() {
-		delete_callback_handle = audit_store?.addDeleteRemovalCallback(table_id, (id) => {
+		delete_callback_handle = audit_store?.addDeleteRemovalCallback(table_id, primary_store, (id) => {
 			const entry = primary_store.getEntry(id);
 			// make sure it is still deleted when we do the removal
 			if (entry?.value === null) {

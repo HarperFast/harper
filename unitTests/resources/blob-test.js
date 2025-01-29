@@ -5,7 +5,9 @@ const { table } = require('../../resources/databases');
 const { Readable } = require('node:stream');
 const { setAuditRetention } = require('../../resources/auditStore');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
-const { transaction } = require('../../resources/transaction');
+const { getFilePathForBlob, setDeletionDelay } = require('../../resources/blob');
+const { existsSync } = require('fs');
+
 // might want to enable an iteration with NATS being assigned as a source
 //const { setNATSReplicator } = require('../../server/nats/natsReplicator');
 describe('Blob test', () => {
@@ -24,7 +26,7 @@ describe('Blob test', () => {
 	});
 	it('create a blob and save it', async () => {
 		let testString = 'this is a test string'.repeat(256);
-		let blob = await server.createBlob(Readable.from(testString));
+		let blob = await createBlob(Readable.from(testString));
 		await BlobTest.put({ id: 1, blob });
 		let record = await BlobTest.get(1);
 		assert.equal(record.id, 1);
@@ -35,16 +37,44 @@ describe('Blob test', () => {
 			// should not be able to use the blob in a different record
 			BlobTest.put({ id: 2, blob });
 		});
-		blob = await server.createBlob(Readable.from(testString));
+		blob = await createBlob(Readable.from(testString));
 		await BlobTest.put({ id: 1, blob });
 		record = await BlobTest.get(1);
 		assert.equal(record.id, 1);
 		retrievedText = await record.blob.text();
 		assert.equal(retrievedText, testString);
 	});
+	it('Save a blob and delete it', async () => {
+		setAuditRetention(0.01); // 10 ms audit log retention
+		setDeletionDelay(0);
+		let testString = 'this is a test string for deletion'.repeat(256);
+		let blob = await createBlob(Readable.from(testString));
+		await BlobTest.put({ id: 3, blob });
+		let filePath = getFilePathForBlob(blob);
+		assert(existsSync(filePath));
+		await BlobTest.delete(3);
+		assert(existsSync(filePath)); // should not immediately be deleted
+		BlobTest.auditStore.scheduleAuditCleanup(1); // prune audit log, so the blob is actually deleted
+		await new Promise((resolve) => setTimeout(resolve, 60)); // wait for audit log removal and deletion
+		assert(!existsSync(filePath));
+		blob = await createBlob(Readable.from(testString));
+		await BlobTest.put({ id: 4, blob });
+		assert.notEqual(filePath, getFilePathForBlob(blob)); // it should be a new file path
+		filePath = getFilePathForBlob(blob);
+		BlobTest.auditStore.scheduleAuditCleanup(1); // prune audit log, so the blob is actually deleted
+		await new Promise((resolve) => setTimeout(resolve, 50)); // wait for audit log removal and deletion
+		assert(existsSync(filePath)); // should still exist because it isn't deleted yet
+		await BlobTest.delete(4);
+		await new Promise((resolve) => setTimeout(resolve, 50)); // wait for deletion
+		assert(!existsSync(filePath));
+	});
 	it('invalid blob attempts', async () => {
 		assert.throws(() => {
-			server.createBlob(undefined);
+			createBlob(undefined);
 		});
+	});
+	afterEach(function () {
+		setAuditRetention(60000);
+		setDeletionDelay(500);
 	});
 });
