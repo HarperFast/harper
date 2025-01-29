@@ -1,6 +1,17 @@
 import { addExtension, pack, unpack } from 'msgpackr';
 import { stat, readFile, writeFile } from 'node:fs/promises';
-import { createReadStream, createWriteStream, readFileSync, unlink, readdirSync, existsSync, statSync } from 'node:fs';
+import {
+	createReadStream,
+	createWriteStream,
+	readFileSync,
+	unlink,
+	readdirSync,
+	existsSync,
+	statSync,
+	openSync,
+	readSync,
+} from 'node:fs';
+import { createGzip, gunzip, createGunzip } from 'node:zlib';
 import { Readable } from 'node:stream';
 import { ensureDir } from 'fs-extra';
 import { get as envGet } from '../utility/environment/environmentManager';
@@ -11,9 +22,12 @@ const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will 
 // We want to keep the file path private (but accessible to the extension)
 const HEADER_SIZE = 8;
 const DEFAULT_HEADER = new Uint8Array(HEADER_SIZE);
+const COMPRESS_HEADER = new Uint8Array(HEADER_SIZE);
+const COMPRESSION_TYPE = 1;
+COMPRESS_HEADER[7] = 1;
 const storageInfoForBlob = new WeakMap();
 export const Blob = global.Blob || class Blob {}; // use the global Blob class if it exists (it doesn't on Node v16)
-let filePathEncodingId: number = 0; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
+let encodeForStorageForRecordId: number = 0; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
 let promisedWrites: Array<Promise<void>>;
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
 let syncFileStorage: boolean = true; // if true, we will flush to disk on each write
@@ -22,6 +36,7 @@ addExtension({
 	type: 11,
 	unpack: function (buffer) {
 		if (buffer[0] > 1) {
+			// this was encoded as reference to a file path, so we can decode it as msgpack and create the referencing blob
 			const data = unpack(buffer);
 			// this is a file backed blob, so we need to create a new blob object with the storage info
 			return new FileBackedBlob({
@@ -38,12 +53,13 @@ addExtension({
 	pack: function (blob) {
 		const storageInfo = storageInfoForBlob.get(blob);
 		if (storageInfo) {
-			if (filePathEncodingId) {
+			if (encodeForStorageForRecordId) {
+				// this is used when we are encoding the data for storage in the database, referencing the (local) file storage
 				blobsWereEncoded = true;
-				if (storageInfo.filePathEncodingId && storageInfo.filePathEncodingId !== filePathEncodingId) {
+				if (storageInfo.recordId && storageInfo.recordId !== encodeForStorageForRecordId) {
 					throw new Error('Cannot use the same blob in two different records');
 				}
-				storageInfo.filePathEncodingId = filePathEncodingId;
+				storageInfo.recordId = encodeForStorageForRecordId;
 				return pack([storageInfo.storageIndex, storageInfo.fileId, {}]);
 			} else {
 				// if we want to encode as binary (necessary for replication), we need to encode as a buffer, not sure if we should always do that
@@ -57,7 +73,7 @@ addExtension({
 		}
 	},
 });
-
+const READ_BUFFER = Buffer.alloc(8);
 /**
  * A blob that is backed by a file, and can be saved to the database as a reference
  */
@@ -75,7 +91,16 @@ class FileBackedBlob extends Blob {
 	}
 
 	async bytes(): Promise<Buffer> {
-		return (await readFile(getFilePathForBlob(this))).subarray(HEADER_SIZE);
+		const rawBytes = await readFile(getFilePathForBlob(this));
+		if (rawBytes[7] === COMPRESSION_TYPE) {
+			return await new Promise<Buffer>((resolve, reject) => {
+				gunzip(rawBytes.subarray(HEADER_SIZE), (error, result) => {
+					if (error) reject(error);
+					else resolve(result);
+				});
+			});
+		}
+		return rawBytes.subarray(HEADER_SIZE);
 	}
 
 	async arrayBuffer(): Promise<ArrayBuffer> {
@@ -87,7 +112,14 @@ class FileBackedBlob extends Blob {
 	}
 
 	stream(): NodeJS.ReadableStream {
-		return createReadStream(getFilePathForBlob(this), { start: HEADER_SIZE });
+		const fd = openSync(getFilePathForBlob(this), 'r');
+		readSync(fd, READ_BUFFER); // read the header
+		const readStream = createReadStream(getFilePathForBlob(this), { start: HEADER_SIZE });
+		if (READ_BUFFER[7] === COMPRESSION_TYPE) {
+			const gunzipStream = createGunzip();
+			return readStream.pipe(gunzipStream);
+		}
+		return readStream;
 	}
 	get size(): number {
 		return statSync(getFilePathForBlob(this)).size - HEADER_SIZE;
@@ -138,7 +170,7 @@ global.createBlob = function (source: NodeJS.ReadableStream | NodeJS.Buffer): Pr
 /**
  * Create a blob from a readable stream
  */
-function createBlobFromStream(stream: NodeJS.ReadableStream): [string, Blob, Promise<void>] {
+function createBlobFromStream(stream: NodeJS.ReadableStream, compress = false): [string, Blob, Promise<void>] {
 	const results = createBlobWithFile();
 	const [filePath, blob, finished] = results;
 	results[2] = finished.then(
@@ -148,9 +180,15 @@ function createBlobFromStream(stream: NodeJS.ReadableStream): [string, Blob, Pro
 				// TODO: Implement compression
 				// pipe the stream to the file
 				const writeStream = createWriteStream(filePath, { flush: syncFileStorage });
-				writeStream.write(DEFAULT_HEADER); // write the default header to the file
-				stream
-					.pipe(writeStream)
+				if (compress) {
+					writeStream.write(COMPRESS_HEADER); // write the default header to the file
+					const gzipStream = createGzip();
+					stream.pipe(gzipStream).pipe(writeStream);
+				} else {
+					writeStream.write(DEFAULT_HEADER); // write the default header to the file
+					stream.pipe(writeStream);
+				}
+				writeStream
 					.on('error', (error) => {
 						const storageInfo = storageInfoForBlob.get(blob);
 						unlink(storageInfo.path, () => {}); // if there's an error, delete the file
@@ -246,8 +284,8 @@ function getNextFileId(): number {
 		let lastId = 0;
 		for (let path of blobStoragePaths) {
 			// we need to get the highest id in the directory structure, so we need to iterate through all the directories to find the highest byte sequence
-			for (let i = 0; i < 4; i++) {
-				lastId = lastId * 256;
+			for (let i = 0; i < 3; i++) {
+				lastId = lastId * 0x1000;
 				let highest = 0;
 				if (existsSync(path)) {
 					for (const entry of readdirSync(path)) {
@@ -277,7 +315,7 @@ function getNextFileId(): number {
  * @param objectToClear
  */
 export function encodeBlobsWithFilePath<T>(callback: () => T, encodingId: number, objectToClear?: any) {
-	filePathEncodingId = encodingId;
+	encodeForStorageForRecordId = encodingId;
 	if (objectToClear) {
 		deleteBlobsInObject(objectToClear);
 	}
@@ -285,7 +323,7 @@ export function encodeBlobsWithFilePath<T>(callback: () => T, encodingId: number
 	try {
 		return callback();
 	} finally {
-		filePathEncodingId = 0;
+		encodeForStorageForRecordId = 0;
 	}
 }
 
