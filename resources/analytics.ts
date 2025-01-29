@@ -9,6 +9,7 @@ import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { get as env_get, initSync } from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { server } from '../server/Server';
+import process from 'node:process';
 
 const log = loggerWithTag('analytics');
 
@@ -284,8 +285,37 @@ function getCPUMetrics() {
 	return cpuMetricsSingleton;
 }
 
+interface PageFaults {
+	major: number;
+	minor: number;
+}
+
+class CachedResourceUsage {
+	refreshInterval: number;
+	lastRefreshed: number;
+	resourceUsage: NodeJS.ResourceUsage;
+
+	constructor(refreshIntervalSecs: number) {
+		this.refreshInterval = refreshIntervalSecs;
+		this.lastRefreshed = 0;
+	}
+
+	private refresh() {
+		const nextRefresh = this.lastRefreshed + this.refreshInterval;
+		if (Date.now() > nextRefresh) {
+			this.resourceUsage = process.resourceUsage();
+		}
+	}
+
+	pageFaults(): PageFaults {
+		this.refresh();
+		return { major: this.resourceUsage.majorPageFault, minor: this.resourceUsage.minorPageFault };
+	}
+}
+
 async function aggregation(from_period, to_period = 60000) {
 	const cpuMetrics = getCPUMetrics();
+	const resourceUsage = new CachedResourceUsage(to_period / 1000);
 
 	const raw_analytics_table = getRawAnalyticsTable();
 	const analytics_table = getAnalyticsTable();
@@ -466,7 +496,7 @@ async function aggregation(from_period, to_period = 60000) {
 	const cpuUtilization = cpuMetrics.getCPUUsage();
 	log.debug?.(`CPU Utilization: ${JSON.stringify(cpuUtilization)}`);
 	const { period, user, system, utilization } = cpuUtilization;
-	const value = {
+	const cpuValue = {
 		id: getNextMonotonicTime(),
 		metric: 'cpu',
 		period,
@@ -475,11 +505,27 @@ async function aggregation(from_period, to_period = 60000) {
 		utilization,
 		time: now,
 	}
-	analytics_table.primaryStore.put(value.id, value, { append: true }).then((success: boolean) => {
+	analytics_table.primaryStore.put(cpuValue.id, cpuValue, { append: true }).then((success: boolean) => {
 		if (!success) {
-			analytics_table.primaryStore.put(value.id, value);
+			analytics_table.primaryStore.put(cpuValue.id, cpuValue);
 		}
 	});
+
+	const pageFaults = resourceUsage.pageFaults();
+	log.debug?.(`Page Faults: ${JSON.stringify(pageFaults)}`);
+	const pageFaultsValue = {
+		id: getNextMonotonicTime(),
+		metric: 'page-faults',
+		major: pageFaults.major,
+		minor: pageFaults.minor,
+		time: now,
+	}
+	analytics_table.primaryStore.put(
+		pageFaultsValue.id, pageFaultsValue, { append: true }).then((success: boolean) => {
+		if (!success) {
+			analytics_table.primaryStore.put(pageFaultsValue.id, pageFaultsValue);
+		}
+	})
 }
 let last_idle = 0;
 let last_active = 0;
