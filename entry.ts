@@ -10,4 +10,7 @@ declare global {
 	const databases: typeof db_databases;
 	const server: typeof server_import;
 	const Resource: typeof Resource_import;
+	const createBlob: (
+		source: Uint8Array | NodeJS.ReadableStream | string | Iterable<Uint8Array> | AsyncIterator<Uint8Array>
+	) => Promise<Blob>;
 }

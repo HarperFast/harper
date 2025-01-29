@@ -31,12 +31,20 @@ describe('Blob test', () => {
 		let retrievedText = await record.blob.text();
 		assert.equal(retrievedText, testString);
 		testString += testString; // modify the string
-		assert.throws(() => BlobTest.put({ id: 2, blob }));
+		assert.throws(() => {
+			// should not be able to use the blob in a different record
+			BlobTest.put({ id: 2, blob });
+		});
 		blob = await server.createBlob(Readable.from(testString));
 		await BlobTest.put({ id: 1, blob });
 		record = await BlobTest.get(1);
 		assert.equal(record.id, 1);
 		retrievedText = await record.blob.text();
 		assert.equal(retrievedText, testString);
+	});
+	it('invalid blob attempts', async () => {
+		assert.throws(() => {
+			server.createBlob(undefined);
+		});
 	});
 });

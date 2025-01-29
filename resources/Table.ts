@@ -46,6 +46,7 @@ import { getUpdateRecord, PENDING_LOCAL_TIME } from './RecordEncoder';
 import { recordAction, recordActionBinary } from './analytics';
 import { rebuildUpdateBefore } from './crdt';
 import { appendHeader } from '../server/serverHelpers/Headers';
+import { Blob } from './blob';
 type Attribute = {
 	name: string;
 	type: string;
@@ -2487,6 +2488,12 @@ export function makeTable(options) {
 								if (!(value instanceof Uint8Array))
 									(validation_errors || (validation_errors = [])).push(
 										`Value ${stringify(value)} in property ${name} must be a Buffer or Uint8Array`
+									);
+								break;
+							case 'Blob':
+								if (!(value instanceof Blob))
+									(validation_errors || (validation_errors = [])).push(
+										`Value ${stringify(value)} in property ${name} must be a Blob`
 									);
 								break;
 							case 'array':

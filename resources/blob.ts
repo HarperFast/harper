@@ -1,6 +1,7 @@
 import { addExtension, pack, unpack } from 'msgpackr';
-import { stat, readFile, writeFile } from 'fs/promises';
-import { createReadStream, createWriteStream, readFileSync, unlink, readdirSync, existsSync } from 'fs';
+import { stat, readFile, writeFile } from 'node:fs/promises';
+import { createReadStream, createWriteStream, readFileSync, unlink, readdirSync, existsSync } from 'node:fs';
+import { Readable } from 'node:stream';
 import { ensureDir } from 'fs-extra';
 import { server } from '../server/Server';
 import { get as envGet } from '../utility/environment/environmentManager';
@@ -12,7 +13,7 @@ const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will 
 const HEADER_SIZE = 8;
 const DEFAULT_HEADER = new Uint8Array(HEADER_SIZE);
 const storageInfoForBlob = new WeakMap();
-const Blob = global.Blob || class Blob {};
+export const Blob = global.Blob || class Blob {}; // use the global Blob class if it exists (it doesn't on Node v16)
 let filePathEncodingId: number = 0; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
 let promisedWrites: Array<Promise<void>>;
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
@@ -101,19 +102,21 @@ export function deleteBlob(blob: Blob): Promise<void> {
 		}, 500);
 	});
 }
-let blobStoragePaths: [];
+let blobStoragePaths: Array<string>;
 /**
  * Create a blob from a readable stream or a buffer by creating a file in the blob storage path with a new unique internal id, that
  * can be saved/stored.
  * @param source
  */
-server.createBlob = function (source: NodeJS.ReadableStream | NodeJS.Buffer): Promise<Blob> {
+global.createBlob = function (source: NodeJS.ReadableStream | NodeJS.Buffer): Promise<Blob> {
 	let result: [string, Blob, Promise<void>];
-	if (source instanceof Uint8Array) {
-		result = createBlobFromBuffer(source);
-	} else {
-		result = createBlobFromStream(source);
-	}
+	if (source instanceof Uint8Array) result = createBlobFromBuffer(source);
+	else if (source instanceof Readable) result = createBlobFromStream(source);
+	else if (typeof source === 'string') result = createBlobFromBuffer(Buffer.from(source));
+	else if (source?.[Symbol.asyncIterator] || source?.[Symbol.iterator])
+		result = createBlobFromStream(Readable.from(source));
+	else throw new Error('Invalid source type');
+
 	const [, blob, finished] = result;
 	return finished.then(() => blob);
 };
@@ -258,10 +261,10 @@ function getNextFileId(): number {
  */
 export function encodeBlobsWithFilePath<T>(callback: () => T, encodingId: number, objectToClear?: any) {
 	filePathEncodingId = encodingId;
-	blobsWereEncoded = false;
 	if (objectToClear) {
 		deleteBlobsInObject(objectToClear);
 	}
+	blobsWereEncoded = false;
 	try {
 		return callback();
 	} finally {
