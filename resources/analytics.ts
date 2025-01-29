@@ -284,7 +284,9 @@ function getCPUMetrics() {
 	return cpuMetricsSingleton;
 }
 
-interface PageFaults {
+interface Metric {}
+
+interface PageFaults extends Metric {
 	major: number;
 	minor: number;
 }
@@ -310,6 +312,20 @@ class CachedResourceUsage {
 		this.refresh();
 		return { major: this.resourceUsage.majorPageFault, minor: this.resourceUsage.minorPageFault };
 	}
+}
+
+function storeMetric(table: any, metricName: string, metric: Metric, time: number) {
+	const metricValue = {
+		id: getNextMonotonicTime(),
+		metric: metricName,
+		time,
+		...metric,
+	};
+	table.primaryStore.put(metricValue.id, metricValue, { append: true }).then((success: boolean) => {
+		if (!success) {
+			table.primaryStore.put(metricValue.id, metricValue);
+		}
+	});
 }
 
 async function aggregation(from_period, to_period = 60000) {
@@ -494,36 +510,11 @@ async function aggregation(from_period, to_period = 60000) {
 
 	const cpuUtilization = cpuMetrics.getCPUUsage();
 	log.debug?.(`CPU Utilization: ${JSON.stringify(cpuUtilization)}`);
-	const { period, user, system, utilization } = cpuUtilization;
-	const cpuValue = {
-		id: getNextMonotonicTime(),
-		metric: 'cpu',
-		period,
-		user,
-		system,
-		utilization,
-		time: now,
-	}
-	analytics_table.primaryStore.put(cpuValue.id, cpuValue, { append: true }).then((success: boolean) => {
-		if (!success) {
-			analytics_table.primaryStore.put(cpuValue.id, cpuValue);
-		}
-	});
+	storeMetric(analytics_table, 'cpu', cpuUtilization, now);
 
 	const pageFaults = resourceUsage.pageFaults();
 	log.debug?.(`Page Faults: ${JSON.stringify(pageFaults)}`);
-	const pageFaultsValue = {
-		id: getNextMonotonicTime(),
-		metric: 'page-faults',
-		time: now,
-		...pageFaults,
-	};
-	analytics_table.primaryStore.put(
-		pageFaultsValue.id, pageFaultsValue, { append: true }).then((success: boolean) => {
-		if (!success) {
-			analytics_table.primaryStore.put(pageFaultsValue.id, pageFaultsValue);
-		}
-	});
+	storeMetric(analytics_table, 'page-faults', pageFaults, now);
 }
 let last_idle = 0;
 let last_active = 0;
