@@ -301,7 +301,7 @@ interface PageFaults extends Metric {
 	minor: number;
 }
 
-interface ContextSwitches {
+interface ContextSwitches extends Metric {
 	voluntary: number;
 	involuntary: number;
 }
@@ -569,18 +569,7 @@ async function aggregation(from_period, to_period = 60000) {
 
 	const contextSwitches = resourceUsage.contextSwitches();
 	log.debug?.(`Context switches: ${JSON.stringify(contextSwitches)}`);
-	const contextSwitchesValue = {
-		id: getNextMonotonicTime(),
-		metric: 'context-switches',
-		time: now,
-		...contextSwitches,
-	};
-	analytics_table.primaryStore.put(
-		contextSwitchesValue.id, contextSwitchesValue, { append: true }).then((success: boolean) => {
-			if (!success) {
-				analytics_table.primaryStore.put(contextSwitchesValue.id, contextSwitchesValue);
-			}
-	});
+	storeMetric(analytics_table, 'context-switches', contextSwitches, now);
 }
 let last_idle = 0;
 let last_active = 0;
