@@ -515,16 +515,15 @@ async function aggregation(from_period, to_period = 60000) {
 	const pageFaultsValue = {
 		id: getNextMonotonicTime(),
 		metric: 'page-faults',
-		major: pageFaults.major,
-		minor: pageFaults.minor,
 		time: now,
-	}
+		...pageFaults,
+	};
 	analytics_table.primaryStore.put(
 		pageFaultsValue.id, pageFaultsValue, { append: true }).then((success: boolean) => {
 		if (!success) {
 			analytics_table.primaryStore.put(pageFaultsValue.id, pageFaultsValue);
 		}
-	})
+	});
 }
 let last_idle = 0;
 let last_active = 0;
