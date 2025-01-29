@@ -1,9 +1,8 @@
 import { addExtension, pack, unpack } from 'msgpackr';
 import { stat, readFile, writeFile } from 'node:fs/promises';
-import { createReadStream, createWriteStream, readFileSync, unlink, readdirSync, existsSync } from 'node:fs';
+import { createReadStream, createWriteStream, readFileSync, unlink, readdirSync, existsSync, statSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { ensureDir } from 'fs-extra';
-import { server } from '../server/Server';
 import { get as envGet } from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS, getHdbBasePath, DATABASES_DIR_NAME } from '../utility/hdbTerms';
 import { join, dirname } from 'path';
@@ -72,19 +71,32 @@ class FileBackedBlob extends Blob {
 	}
 
 	async text(): Promise<string> {
-		return (await readFile(getFilePath(storageInfoForBlob.get(this)))).subarray(HEADER_SIZE).toString('utf-8');
+		return (await this.bytes()).toString();
+	}
+
+	async bytes(): Promise<Buffer> {
+		return (await readFile(getFilePathForBlob(this))).subarray(HEADER_SIZE);
 	}
 
 	async arrayBuffer(): Promise<ArrayBuffer> {
-		const fileContent = await readFile(getFilePath(storageInfoForBlob.get(this))).subarray(HEADER_SIZE);
-		return new ArrayBuffer(fileContent);
+		const bytes = await this.bytes();
+		const arrayBuffer = new ArrayBuffer(bytes.length);
+		const bufferUint8 = new Uint8Array(arrayBuffer);
+		bufferUint8.set(bytes);
+		return arrayBuffer;
 	}
 
 	stream(): NodeJS.ReadableStream {
-		return createReadStream(getFilePath(storageInfoForBlob.get(this)), { start: HEADER_SIZE });
+		return createReadStream(getFilePathForBlob(this), { start: HEADER_SIZE });
+	}
+	get size(): number {
+		return statSync(getFilePathForBlob(this)).size - HEADER_SIZE;
+	}
+	slice() {
+		throw new Error('Not implemented');
 	}
 }
-
+let deletion_delay = 500;
 /**
  * Delete the file for the blob
  * @param blob
@@ -92,15 +104,18 @@ class FileBackedBlob extends Blob {
 export function deleteBlob(blob: Blob): Promise<void> {
 	// do we even need to check for completion here?
 	return new Promise((resolve, reject) => {
-		const storageInfo = storageInfoForBlob.get(blob);
+		const filePath = getFilePathForBlob(blob);
 		setTimeout(() => {
 			// TODO: we need to determine when any read transaction are done with the file, and then delete it, this is a hack to just give it some time for that
-			unlink(storageInfo.filePath, (error) => {
+			unlink(filePath, (error) => {
 				if (error) reject(error);
 				else resolve();
 			});
-		}, 500);
+		}, deletion_delay);
 	});
+}
+export function setDeletionDelay(delay: number) {
+	deletion_delay = delay;
 }
 let blobStoragePaths: Array<string>;
 /**
@@ -147,6 +162,9 @@ function createBlobFromStream(stream: NodeJS.ReadableStream): [string, Blob, Pro
 			})
 	);
 	return results;
+}
+export function getFilePathForBlob(blob: FileBackedBlob): string {
+	return getFilePath(storageInfoForBlob.get(blob));
 }
 function getFilePath(storageInfo: any): string {
 	return join(
@@ -286,12 +304,13 @@ export function decodeBlobsWithWrites(callback: () => void) {
 		return finished;
 	}
 }
-export function deleteBlobsInObject(obj) {
-	if (obj instanceof Blob) {
-		deleteBlob(obj);
-	} else if (obj.constructor === Object) {
-		for (const key in obj) {
-			deleteBlobsInObject(obj[key]);
+export function deleteBlobsInObject(object) {
+	if (object instanceof Blob) {
+		deleteBlob(object);
+	} else if (object.constructor === Object || Array.isArray(object)) {
+		for (const key in object) {
+			const value = object[key];
+			if (typeof value === 'object') deleteBlobsInObject(object[key]);
 		}
 	}
 }
