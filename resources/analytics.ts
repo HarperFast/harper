@@ -301,6 +301,11 @@ interface PageFaults extends Metric {
 	minor: number;
 }
 
+interface ContextSwitches {
+	voluntary: number;
+	involuntary: number;
+}
+
 export class CachedResourceUsage {
 	refreshInterval: number;
 	lastRefreshed: number;
@@ -348,6 +353,14 @@ export class CachedResourceUsage {
 		return {
 			major: this.resourceUsage.majorPageFault - this.priorResourceUsage.majorPageFault,
 			minor: this.resourceUsage.minorPageFault - this.priorResourceUsage.minorPageFault,
+		};
+	}
+
+	contextSwitches(): ContextSwitches {
+		this.refresh();
+		return {
+			voluntary: this.resourceUsage.voluntaryContextSwitches,
+			involuntary: this.resourceUsage.involuntaryContextSwitches,
 		};
 	}
 }
@@ -553,6 +566,21 @@ async function aggregation(from_period, to_period = 60000) {
 	const pageFaults = resourceUsage.pageFaults();
 	log.debug?.(`Page Faults: ${JSON.stringify(pageFaults)}`);
 	storeMetric(analytics_table, 'page-faults', pageFaults, now);
+
+	const contextSwitches = resourceUsage.contextSwitches();
+	log.debug?.(`Context switches: ${JSON.stringify(contextSwitches)}`);
+	const contextSwitchesValue = {
+		id: getNextMonotonicTime(),
+		metric: 'context-switches',
+		time: now,
+		...contextSwitches,
+	};
+	analytics_table.primaryStore.put(
+		contextSwitchesValue.id, contextSwitchesValue, { append: true }).then((success: boolean) => {
+			if (!success) {
+				analytics_table.primaryStore.put(contextSwitchesValue.id, contextSwitchesValue);
+			}
+	});
 }
 let last_idle = 0;
 let last_active = 0;
