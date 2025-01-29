@@ -9,7 +9,6 @@ import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { get as env_get, initSync } from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { server } from '../server/Server';
-import process from 'node:process';
 
 const log = loggerWithTag('analytics');
 
