@@ -7,6 +7,7 @@ const auth = rewire('../../security/fastifyAuth');
 const token_auth = rewire('../../security/tokenAuthentication');
 const password_function = require('../../utility/password');
 const hdb_error = require('../../utility/errors/hdbError').handleHDBError;
+const { setUsersWithRolesCache } = require('../../security/user');
 
 const PASSPHRASE_VALUE = '6340b357-55b2-4fc8-b359-cae7d90c8c01';
 const PRIVATE_KEY_VALUE =
@@ -90,13 +91,13 @@ const VALID_ROLE = {
 	role: 'super_user',
 };
 
-global.hdb_users = new Map([
+const hdb_users_map = new Map([
 	[
 		'nook',
 		{
 			username: 'nook',
 			active: true,
-			password: password_function.hash('1234!'),
+			password: password_function.hash('1234!', password_function.HASH_FUNCTION.MD5),
 			role: VALID_ROLE,
 		},
 	],
@@ -105,7 +106,7 @@ global.hdb_users = new Map([
 		{
 			username: 'unactivenook',
 			active: false,
-			password: password_function.hash('1234!'),
+			password: password_function.hash('1234!', password_function.HASH_FUNCTION.MD5),
 			role: VALID_ROLE,
 		},
 	],
@@ -164,6 +165,10 @@ let invalid_other_user = {
 };
 
 describe('Test authorize function', function () {
+	before(async () => {
+		await setUsersWithRolesCache(hdb_users_map);
+	});
+
 	it('Cannot complete request Basic authorization: User not found ', function (done) {
 		auth.authorize(invalid_basic_user, null, function (err, user) {
 			assert.equal(err.message, 'Login failed', "Cannot complete request: User 'nonook' not found");
@@ -263,11 +268,6 @@ describe('test authorize function for JWT', () => {
 			signalUserChange: (obj) => {},
 		});
 
-		global.hdb_users = new Map([
-			['HDB_ADMIN', { username: 'HDB_ADMIN', active: true }],
-			['old_user', { username: 'old_user', active: false }],
-		]);
-
 		op_token_timeout = token_auth.__set__('OPERATION_TOKEN_TIMEOUT', '-1');
 		r_token_timeout = token_auth.__set__('REFRESH_TOKEN_TIMEOUT', '-1');
 		expired_user_tokens = await token_auth.createTokens({ username: 'EXPIRED', password: 'cool' });
@@ -279,7 +279,19 @@ describe('test authorize function for JWT', () => {
 		hdb_admin_tokens = await token_auth.createTokens({ username: 'HDB_ADMIN', password: 'cool' });
 		old_user_tokens = await token_auth.createTokens({ username: 'old_user', password: 'notcool' });
 		non_user_tokens = await token_auth.createTokens({ username: 'non_user', password: 'notcool' });
-		global.hdb_users.get('HDB_ADMIN').refresh_token = password_function.hash(hdb_admin_tokens.refresh_token);
+		const user_map = new Map([
+			[
+				'HDB_ADMIN',
+				{
+					username: 'HDB_ADMIN',
+					active: true,
+					refresh_token: password_function.hash(hdb_admin_tokens.refresh_token, password_function.HASH_FUNCTION.SHA256),
+				},
+			],
+			['old_user', { username: 'old_user', active: false }],
+		]);
+		await setUsersWithRolesCache(user_map);
+
 		rw_validate_user();
 		rw_signalling();
 		rw_update();

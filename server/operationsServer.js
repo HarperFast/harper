@@ -97,7 +97,7 @@ async function operationsServer(options) {
 async function setUp() {
 	harper_logger.trace('Configuring HarperDB process.');
 	global_schema.setSchemaDataToGlobal();
-	await user_schema.setUsersToGlobal();
+	await user_schema.setUsersWithRolesCache();
 	await hdb_license.getLicense();
 }
 

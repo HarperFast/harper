@@ -10,11 +10,12 @@ const sinon = require('sinon');
 const sandbox = sinon.createSandbox();
 const rewire = require('rewire');
 const password_function = require('../../utility/password');
-const token_auth = rewire('../../security/tokenAuthentication');
+let token_auth = rewire('../../security/tokenAuthentication');
 const JWTObjects = require('../../security/JWTObjects');
 const hdb_error = require('../../utility/errors/hdbError').handleHDBError;
 const env_mgr = require('../../utility/environment/environmentManager');
 const hdb_terms = require('../../utility/hdbTerms');
+const user = require('../../security/user');
 
 const KEYS_PATH = path.join(test_util.getMockTestPath(), 'keys');
 const PASSPHRASE_PATH = path.join(KEYS_PATH, '.jwtPass');
@@ -467,10 +468,12 @@ describe('test validateOperationToken function', () => {
 			findAndValidateUser: async (u, pw) => ({ username: u }),
 		});
 
-		global.hdb_users = new Map([
-			['HDB_ADMIN', { username: 'HDB_ADMIN', active: true }],
-			['old_user', { username: 'old_user', active: false }],
-		]);
+		await user.setUsersWithRolesCache(
+			new Map([
+				['HDB_ADMIN', { username: 'HDB_ADMIN', active: true }],
+				['old_user', { username: 'old_user', active: false }],
+			])
+		);
 
 		token_timeout = token_auth.__set__('OPERATION_TOKEN_TIMEOUT', '-1');
 		expired_user_tokens = await token_auth.createTokens({ username: 'EXPIRED', password: 'cool' });
@@ -496,9 +499,7 @@ describe('test validateOperationToken function', () => {
 
 	after(() => {
 		rw_get_tokens();
-
 		sandbox.restore();
-		delete global.hdb_users;
 	});
 
 	it('test hdb_admin token', async () => {
@@ -539,7 +540,7 @@ describe('test validateOperationToken function', () => {
 			validate_error = e;
 		}
 		assert(validate_error !== undefined);
-		assert.deepStrictEqual(validate_error, hdb_error(new Error(), 'Cannot complete request: User is inactive', 401));
+		assert.deepStrictEqual(validate_error.message, 'Cannot complete request: User is inactive');
 	});
 
 	it('test non-existent user', async () => {
@@ -618,11 +619,6 @@ describe('test validateRefreshToken function', () => {
 			signalUserChange: (obj) => {},
 		});
 
-		global.hdb_users = new Map([
-			['HDB_ADMIN', { username: 'HDB_ADMIN', active: true }],
-			['old_user', { username: 'old_user', active: false }],
-		]);
-
 		rw_validate_user = token_auth.__set__('user_functions', {
 			findAndValidateUser: async (u, pw) => {
 				return { username: u };
@@ -636,8 +632,18 @@ describe('test validateRefreshToken function', () => {
 		hdb_admin_tokens = await token_auth.createTokens({ username: 'HDB_ADMIN', password: 'cool' });
 		old_user_tokens = await token_auth.createTokens({ username: 'old_user', password: 'notcool' });
 		non_user_tokens = await token_auth.createTokens({ username: 'non_user', password: 'notcool' });
-
-		global.hdb_users.get('HDB_ADMIN').refresh_token = password_function.hash(hdb_admin_tokens.refresh_token);
+		const user_map = new Map([
+			[
+				'HDB_ADMIN',
+				{
+					username: 'HDB_ADMIN',
+					active: true,
+					refresh_token: password_function.hash(hdb_admin_tokens.refresh_token, password_function.HASH_FUNCTION.SHA256),
+				},
+			],
+			['old_user', { username: 'old_user', active: false }],
+		]);
+		await user.setUsersWithRolesCache(user_map);
 
 		rw_validate_user();
 		jwt_spy = sandbox.spy(jwt, 'verify');
@@ -654,23 +660,22 @@ describe('test validateRefreshToken function', () => {
 	after(() => {
 		rw_get_tokens();
 		sandbox.restore();
-		delete global.hdb_users;
 	});
 
 	it('test hdb_admin token', async () => {
 		let error;
-		let user;
+		let user_data;
 		try {
-			user = await validate_refresh_token(hdb_admin_tokens.refresh_token);
+			user_data = await validate_refresh_token(hdb_admin_tokens.refresh_token);
 		} catch (e) {
 			error = e;
 		}
 
 		assert.deepStrictEqual(error, undefined);
-		assert.deepStrictEqual(user, {
+		assert.deepStrictEqual(user_data, {
 			active: true,
 			username: 'HDB_ADMIN',
-			refresh_token: global.hdb_users.get('HDB_ADMIN').refresh_token,
+			refresh_token: (await user.getUsersWithRolesCache()).get('HDB_ADMIN').refresh_token,
 		});
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === false);
@@ -699,7 +704,7 @@ describe('test validateRefreshToken function', () => {
 			validate_error = e;
 		}
 		assert(validate_error !== undefined);
-		assert.deepStrictEqual(validate_error, hdb_error(new Error(), 'Cannot complete request: User is inactive', 401));
+		assert.deepStrictEqual(validate_error.message, 'Cannot complete request: User is inactive');
 	});
 
 	it('test non-existent user', async () => {
@@ -779,16 +784,29 @@ describe('test refreshOperationToken function', () => {
 			findAndValidateUser: async (u, pw) => ({ username: u }),
 		});
 
-		global.hdb_users = new Map([
-			['HDB_ADMIN', { username: 'HDB_ADMIN', active: true, role: { permission: { super_user: true } } }],
-			['old_user', { username: 'old_user', active: false }],
-		]);
-
 		hdb_admin_tokens = await token_auth.createTokens({ username: 'HDB_ADMIN', password: 'cool' });
 		old_user_tokens = await token_auth.createTokens({ username: 'old_user', password: 'notcool' });
 		non_user_tokens = await token_auth.createTokens({ username: 'non_user', password: 'notcool' });
 		rw_validate_user();
-		global.hdb_users.get('HDB_ADMIN').refresh_token = password_function.hash(hdb_admin_tokens.refresh_token);
+
+		await user.setUsersWithRolesCache(
+			new Map([
+				[
+					'HDB_ADMIN',
+					{
+						username: 'HDB_ADMIN',
+						active: true,
+						role: { permission: { super_user: true } },
+						refresh_token: password_function.hash(
+							hdb_admin_tokens.refresh_token,
+							password_function.HASH_FUNCTION.SHA256
+						),
+					},
+				],
+				['old_user', { username: 'old_user', active: false }],
+			])
+		);
+
 		jwt_spy = sandbox.spy(jwt, 'verify');
 		validate_user_spy = sandbox.spy(token_auth.__get__('user_functions'), 'findAndValidateUser');
 
@@ -803,9 +821,7 @@ describe('test refreshOperationToken function', () => {
 
 	after(() => {
 		rw_get_tokens();
-
 		sandbox.restore();
-		delete global.hdb_users;
 	});
 
 	it('test no body', async () => {
@@ -893,7 +909,7 @@ describe('test refreshOperationToken function', () => {
 			validate_error = e;
 		}
 		assert(validate_error !== undefined);
-		assert.deepStrictEqual(validate_error, hdb_error(new Error(), 'Cannot complete request: User is inactive', 401));
+		assert.deepStrictEqual(validate_error.message, 'Cannot complete request: User is inactive');
 	});
 
 	it('test non-existent user', async () => {

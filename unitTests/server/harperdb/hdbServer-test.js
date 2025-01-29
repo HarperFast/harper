@@ -88,7 +88,7 @@ describe('Test hdbServer module', () => {
 		});
 		sandbox.stub(serverHandlers, 'authHandler').callsFake((req, resp, done) => done());
 		sandbox.stub(server_utilities, 'chooseOperation').callsFake(() => {});
-		setUsersToGlobal_stub = sandbox.stub(user_schema, 'setUsersToGlobal').resolves();
+		setUsersToGlobal_stub = sandbox.stub(user_schema, 'setUsersWithRolesCache').resolves();
 		//setSchemaGlobal_stub = sandbox.stub(global_schema, 'setSchemaDataToGlobal').callsArg(0);
 		handlePostRequest_spy = sandbox.spy(serverHandlers, 'handlePostRequest');
 		getLicense_stub = sandbox.stub(hdb_license, 'getLicense').resolves();

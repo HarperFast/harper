@@ -1,5 +1,6 @@
 'use strict';
 require('./fixRewire');
+require('../bin/dev');
 const path = require('path');
 const fs = require('fs-extra');
 const sinon = require('sinon');

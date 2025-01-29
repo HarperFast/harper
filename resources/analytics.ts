@@ -1,91 +1,128 @@
-import { isMainThread, parentPort, threadId } from 'worker_threads';
-import { setChildListenerByType, getThreadInfo } from '../server/threads/manageThreads';
+import { parentPort, threadId } from 'worker_threads';
+import { setChildListenerByType } from '../server/threads/manageThreads';
 import { table } from './databases';
-import { getLogFilePath, warn } from '../utility/logging/harper_logger';
+import { getLogFilePath } from '../utility/logging/harper_logger';
+import { loggerWithTag } from '../utility/logging/logger';
 import { dirname, join } from 'path';
-import { open, stat, appendFile, readFile, writeFile } from 'fs/promises';
+import { open } from 'fs/promises';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { get as env_get, initSync } from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { server } from '../server/Server';
 
+const log = loggerWithTag('analytics');
+
 initSync();
-let active_actions = new Map<string, number[] & { occurred: number; count: number }>();
+
+type ActionCallback = (action: Action) => void;
+export type Value = number | boolean | ActionCallback;
+interface Action {
+	total?: number;
+	values?: Float32Array;
+	count?: number;
+	callback?: ActionCallback;
+	description?: {
+		metric: string,
+		path: string,
+		method: string,
+		type: string,
+	};
+}
+
+let active_actions = new Map<string, Action>();
 let analytics_enabled = env_get(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 
-export function setAnalyticsEnabled(enabled) {
+export function setAnalyticsEnabled(enabled: boolean) {
 	analytics_enabled = enabled;
 }
+
+function recordExistingAction(value: Value, action: Action) {
+	if (typeof value === 'number') {
+		let values: Float32Array = action.values;
+		const index = values.index++;
+		if (index >= values.length) {
+			const old_values = values;
+			action.values = values = new Float32Array(index * 2);
+			values.set(old_values);
+			values.index = index + 1;
+		}
+		values[index] = value;
+		action.total += value;
+	} else if (typeof value === 'boolean') {
+		if (value) action.total++;
+		action.count++;
+	} else if (typeof value === 'function') {
+		// nothing to do except wait for the callback
+		action.count++;
+	} else throw new TypeError('Invalid metric value type ' + typeof value);
+}
+
+function recordNewAction(key: string, value: Value, metric?: string, path?: string, method?: string, type?: string) {
+	const action: Action = {};
+	if (typeof value === 'number') {
+		action.total = value;
+		action.values = new Float32Array(4);
+		action.values.index = 1;
+		action.values[0] = value;
+		action.total = value;
+	} else if (typeof value === 'boolean') {
+		action.total = value ? 1 : 0;
+		action.count = 1;
+	} else if (typeof value === 'function') {
+		action.count = 1;
+		action.callback = value;
+	} else {
+		throw new TypeError('Invalid metric value type ' + typeof value);
+	}
+	action.description = {
+		metric,
+		path,
+		method,
+		type,
+	};
+	active_actions.set(key, action);
+}
+
 /**
  * Record an action for analytics (like an HTTP request, replication, MQTT message)
- * @param path
  * @param value
+ * @param metric
+ * @param path
+ * @param method
+ * @param type
  */
-export function recordAction(value, metric, path?, method?, type?) {
+export function recordAction(value: Value, metric: string, path?: string, method?: string, type?: string) {
 	if (!analytics_enabled) return;
 	// TODO: May want to consider nested paths, as they may yield faster hashing of (fixed) strings that hashing concatenated strings
 	let key = metric + (path ? '-' + path : '');
 	if (method !== undefined) key += '-' + method;
 	if (type !== undefined) key += '-' + type;
-	let action = active_actions.get(key);
+	const action = active_actions.get(key);
 	if (action) {
-		if (typeof value === 'number') {
-			let values: Float32Array = action.values;
-			const index = values.index++;
-			if (index >= values.length) {
-				const old_values = values;
-				action.values = values = new Float32Array(index * 2);
-				values.set(old_values);
-				values.index = index + 1;
-			}
-			values[index] = value;
-			action.total += value;
-		} else if (typeof value === 'boolean') {
-			if (value) action.total++;
-			action.count++;
-		} else if (typeof value === 'function') {
-			// nothing to do except wait for the callback
-			action.count++;
-		} else throw new TypeError('Invalid metric value type ' + typeof value);
+		recordExistingAction(value, action);
 	} else {
-		if (typeof value === 'number') {
-			action = { total: value, values: new Float32Array(4) };
-			action.values.index = 1;
-			action.values[0] = value;
-			action.total = value;
-		} else if (typeof value === 'boolean') {
-			action = {};
-			action.total = value ? 1 : 0;
-			action.count = 1;
-		} else if (typeof value === 'function') {
-			action = {};
-			action.count = 1;
-			action.callback = value;
-		} else {
-			throw new TypeError('Invalid metric value type ' + typeof value);
-		}
-		action.description = {
-			metric,
-			path,
-			method,
-			type,
-		};
-		active_actions.set(key, action);
+		recordNewAction(key, value, metric, path, method, type);
 	}
 	if (!analytics_start) sendAnalytics();
 }
+
 server.recordAnalytics = recordAction;
+
 export function recordActionBinary(value, metric, path?, method?, type?) {
 	recordAction(Boolean(value), metric, path, method, type);
 }
+
 let analytics_start = 0;
 const ANALYTICS_DELAY = 1000;
 const ANALYTICS_REPORT_TYPE = 'analytics-report';
 const analytics_listeners = [];
+
 export function addAnalyticsListener(callback) {
 	analytics_listeners.push(callback);
 }
+
 const IDEAL_PERCENTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999, 1];
+
 /**
  * Periodically send analytics data back to the main thread for storage
  */
@@ -164,7 +201,92 @@ function sendAnalytics() {
 		else recordAnalytics({ report });
 	}, ANALYTICS_DELAY).unref();
 }
+
+class CPUMetrics {
+	lastUpdateTime: number;
+	lastCPUTimes: NodeJS.CpuUsage;
+
+	constructor() {
+		this.lastUpdateTime = Number(process.hrtime.bigint() / 1000n); // normalize to microseconds
+		this.lastCPUTimes = process.cpuUsage();
+	}
+
+	toJSON(key: string) {
+		if (key === "lastScrapeTime") {
+			return this.lastUpdateTime;
+		}
+		if (key === "lastCPUTimes") {
+			return this.lastCPUTimes;
+		}
+		return { lastScrapeTime: this.lastUpdateTime, lastCPUTimes: this.lastCPUTimes };
+	}
+
+	getLastUpdateTime() {
+		log.debug?.(`getLastUpdateTime: ${this.lastUpdateTime}`);
+		return this.lastUpdateTime;
+	}
+
+	getLastCPUTimes() {
+		log.debug?.(`getLastCPUTimes: ${JSON.stringify(this.lastCPUTimes)}`);
+		return this.lastCPUTimes;
+	}
+
+	setLastUpdateTime(lastUpdateTime: number) {
+		log.debug?.(`setLastUpdateTime: ${lastUpdateTime}`);
+		this.lastUpdateTime = lastUpdateTime;
+	}
+
+	setLastCPUTimes(cpuTimes: NodeJS.CpuUsage) {
+		log.debug?.(`setLastCPUTimes: ${JSON.stringify(cpuTimes)}`);
+		this.lastCPUTimes = cpuTimes;
+	}
+
+	/**
+	 * getCPUUsage returns an object with the following keys:
+	 * utilization: a number between 0 and 1 signifying how much CPU time we used
+	 *              since the last time this function was called or since this
+	 *              instance was created
+	 * period:      the wall clock time elapsed in microseconds since the last time
+	 *              this function was called or since the instance was created
+	 * user:        user CPU time in microseconds
+	 * system:      system CPU time in microseconds
+	 */
+	getCPUUsage() {
+		const now = Number(process.hrtime.bigint() / 1000n); // normalize to microseconds
+		const timeElapsed = now - this.getLastUpdateTime();
+		log.debug?.(`getCPUUsage: timeElapsed: ${timeElapsed}`);
+		const cpuTimes = process.cpuUsage(this.getLastCPUTimes());
+
+		this.setLastUpdateTime(now);
+		this.setLastCPUTimes(cpuTimes);
+
+		const { user, system } = cpuTimes;
+		const cpuTime = user + system;
+		log.debug?.(`getCPUUsage: cpuTime: ${cpuTime}`);
+
+		const cpuUsage = (cpuTime / timeElapsed).toFixed(2);
+		log.debug?.(`getCPUUsage: cpuUsage: ${cpuUsage}`);
+
+		return {
+			utilization: cpuUsage,
+			period: timeElapsed,
+			user,
+			system,
+		};
+	}
+}
+
+let cpuMetricsSingleton: CPUMetrics;
+function getCPUMetrics() {
+	if (cpuMetricsSingleton === undefined) {
+		cpuMetricsSingleton = new CPUMetrics();
+	}
+	return cpuMetricsSingleton;
+}
+
 async function aggregation(from_period, to_period = 60000) {
+	const cpuMetrics = getCPUMetrics();
+
 	const raw_analytics_table = getRawAnalyticsTable();
 	const analytics_table = getAnalyticsTable();
 	const task_queue_latency = new Promise((resolve) => {
@@ -172,13 +294,13 @@ async function aggregation(from_period, to_period = 60000) {
 		setImmediate(() => {
 			const now = performance.now();
 			if (now - start > 5000)
-				warn('Unusually high event queue latency on the main thread of ' + Math.round(now - start) + 'ms');
+				log.warn?.('Unusually high event queue latency on the main thread of ' + Math.round(now - start) + 'ms');
 			start = performance.now(); // We use this start time to measure the time it actually takes to on the task queue, minus the time on the event queu
 		});
 		analytics_table.primaryStore.prefetch([1], () => {
 			const now = performance.now();
 			if (now - start > 5000)
-				warn('Unusually high task queue latency on the main thread of ' + Math.round(now - start) + 'ms');
+				log.warn?.('Unusually high task queue latency on the main thread of ' + Math.round(now - start) + 'ms');
 			resolve(now - start);
 		});
 	});
@@ -199,7 +321,7 @@ async function aggregation(from_period, to_period = 60000) {
 	const aggregate_actions = new Map();
 	const distributions = new Map();
 	const threads_to_average = [];
-	let last_time;
+	let last_time: number;
 	for (const { key, value } of raw_analytics_table.primaryStore.getRange({
 		start: last_for_period || false,
 		exclusiveStart: true,
@@ -309,7 +431,7 @@ async function aggregation(from_period, to_period = 60000) {
 	for (const [key, value] of aggregate_actions) {
 		value.id = getNextMonotonicTime();
 		value.time = last_time;
-		analytics_table.primaryStore.put(value.id, value, { append: true }).then((success) => {
+		analytics_table.primaryStore.put(value.id, value, { append: true }).then((success: boolean) => {
 			// if for some reason we can't append, try again without append
 			if (!success) {
 				analytics_table.primaryStore.put(value.id, value);
@@ -331,7 +453,7 @@ async function aggregation(from_period, to_period = 60000) {
 			time: now,
 			...process.memoryUsage(),
 		};
-		analytics_table.primaryStore.put(id, value, { append: true }).then((success) => {
+		analytics_table.primaryStore.put(id, value, { append: true }).then((success: boolean) => {
 			// if for some reason we can't append, try again without append
 			if (!success) {
 				analytics_table.primaryStore.put(id, value);
@@ -340,6 +462,24 @@ async function aggregation(from_period, to_period = 60000) {
 	}
 	last_idle = idle;
 	last_active = active;
+
+	const cpuUtilization = cpuMetrics.getCPUUsage();
+	log.debug?.(`CPU Utilization: ${JSON.stringify(cpuUtilization)}`);
+	const { period, user, system, utilization } = cpuUtilization;
+	const value = {
+		id: getNextMonotonicTime(),
+		metric: 'cpu',
+		period,
+		user,
+		system,
+		utilization,
+		time: now,
+	}
+	analytics_table.primaryStore.put(value.id, value, { append: true }).then((success: boolean) => {
+		if (!success) {
+			analytics_table.primaryStore.put(value.id, value);
+		}
+	});
 }
 let last_idle = 0;
 let last_active = 0;
@@ -475,8 +615,8 @@ async function logAnalytics(report) {
 }
 
 /**
- * This section contains a possible/experimental approach to bucketing values as they come instead of pushing all into an array and sortin.
- */
+ * This section contains a possible/experimental approach to bucketing values as they come instead of pushing all into an array and sorting.
+ *
 const BUCKET_COUNT = 100;
 function addToBucket(action, value) {
 	if (!action.buckets) {
@@ -505,11 +645,12 @@ function addToBucket(action, value) {
 		values[position] = value;
 	}
 	if (count > threshold) {
-		rebalance(action.buckets);
+		rebalance(action.buckets, false);
 	} else {
 		counts[position] = count;
 	}
 }
+
 function newBuckets() {
 	const ab = new ArrayBuffer(8 * BUCKET_COUNT);
 	return {
@@ -518,12 +659,15 @@ function newBuckets() {
 		totalCount: 0,
 	};
 }
+
 let balancing_buckets;
-/**
+
+ /**
  * Rebalance the buckets, we can reset the counts at the same time, if this occurred after a delivery
  * @param param
- */
-function rebalance({ counts, values, totalCount }, reset_counts) {
+ * @param reset_counts
+ *
+function rebalance({ counts, values, totalCount }, reset_counts: boolean) {
 	const count_per_bucket = totalCount / BUCKET_COUNT;
 	let target_position = 0;
 	let target_count = 0;
@@ -532,9 +676,8 @@ function rebalance({ counts, values, totalCount }, reset_counts) {
 	for (let i = 0; i < BUCKET_COUNT; i++) {
 		// iterate through the existing buckets, filling up the target buckets in a balanced way
 		let count = counts[i];
-		let remaining_in_bucket;
-		while ((remaining_in_bucket = count_per_bucket - target_count) < count) {
-			value = values[i];
+		while ((count_per_bucket - target_count) < count) {
+			const value = values[i];
 			last_target_value = ((count_per_bucket - target_count) / count) * (value - last_target_value) + last_target_value;
 			target_values[target_position] = last_target_value;
 			target_counts[target_position] = count_per_bucket;
@@ -549,3 +692,4 @@ function rebalance({ counts, values, totalCount }, reset_counts) {
 	if (reset_counts) counts.fill(0);
 	else counts.set(target_counts);
 }
+*/

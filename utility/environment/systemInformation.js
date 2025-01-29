@@ -267,8 +267,10 @@ async function getMetrics() {
 							const [pid, thread, txnid] = line.trim().split(' ');
 							return { pid, thread, txnid };
 						});
-					if (table.primaryStore.auditStore) {
-						db_stats.audit = table.auditStore.getStats();
+					if (table.auditStore) {
+						const { treeDepth, treeBranchPageCount, treeLeafPageCount, entryCount, overflowPages } =
+							table.auditStore.getStats();
+						db_stats.audit = { treeDepth, treeBranchPageCount, treeLeafPageCount, entryCount, overflowPages };
 					}
 				}
 				let table_full_stats = table.primaryStore.getStats();

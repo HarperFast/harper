@@ -21,6 +21,12 @@
 			"enabled": true
 		},
 		{
+			"key": "REPLICATION_PORT",
+			"value": "9933",
+			"type": "default",
+			"enabled": true
+		},
+		{
 			"key": "NODE1_HOST",
 			"value": "TEST_C_NODE1_HOST",
 			"type": "default",

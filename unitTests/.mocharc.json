@@ -3,5 +3,6 @@
 	"ui": "bdd",
 	"extension": ["js"],
 	"recursive": true,
-	"exit": true
+	"exit": true,
+	"require": ["../bin/dev.js"]
 }

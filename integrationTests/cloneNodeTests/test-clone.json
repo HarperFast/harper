@@ -161,7 +161,7 @@
 							"pm.test('Test cluster status on leader is correct', () => {",
 							"    const response = pm.response.json();",
 							"    const hostname = pm.environment.get('CLONE_1_NODENAME')",
-							"    const url = `wss://` + hostname + ':9925'",
+							"    const url = `wss://` + hostname + ':9933'",
 							"    pm.expect(response.connections[0].name).to.equal(hostname);",
 							"    pm.expect(response.connections[0].url).to.equal(url);",
 							"    pm.expect(response.connections[0].database_sockets.length > 0).to.be.true;",

@@ -5,9 +5,7 @@ const {
 	workers,
 	getThreadInfo,
 } = require('../../../server/threads/manageThreads');
-const terms = require('../../../utility/hdbTerms');
 const assert = require('assert');
-const { threadId } = require('worker_threads');
 
 describe('(Re)start/monitor workers', () => {
 	before(async function () {

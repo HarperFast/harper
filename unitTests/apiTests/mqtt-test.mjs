@@ -22,8 +22,7 @@ describe('test MQTT connections and commands', () => {
 	let natsPublishToStream = publishToStream;
 	let natsSetSubscription = setSubscription;
 	let replicated_published_messages = [];
-	before(async function () {
-		this.timeout(10000);
+	before(async () => {
 		available_records = await setupTestApp();
 		setPublishToStream(
 			(subject, stream, header, message) => {

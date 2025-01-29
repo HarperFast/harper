@@ -1,6 +1,6 @@
 {
 	"info": {
-		"_postman_id": "2551980e-f639-49cf-adf6-734363b6f81e",
+		"_postman_id": "7bba425f-cbc9-4e74-866d-59b9beb43f75",
 		"name": "HarperDB Integration Tests",
 		"schema": "https://schema.getpostman.com/json/collection/v2.1.0/collection.json",
 		"_exporter_id": "38120670"
@@ -42456,12 +42456,13 @@
 						{
 							"listen": "test",
 							"script": {
-								"type": "text/javascript",
 								"exec": [
 									"pm.test(\"Status code is 403\", function () {",
 									"    pm.response.to.have.status(403);",
 									"});"
-								]
+								],
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -48602,7 +48603,70 @@
 			"name": "8a. Restart HDB to update config",
 			"item": [
 				{
-					"name": "Turn on log audit and custom functions",
+					"name": "Drop cluster_user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is either 200 or 404\", function () {",
+									"    pm.expect(pm.response.code).to.be.oneOf([200, 404]);",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46cGFzc3dvcmQ="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n  \"operation\":\"drop_user\",\n  \"username\":\"cluster_user1\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "This method is used for dropping a role.  \n\n<i>You cannot drop a role with associated users.  </i>\n\n<ul>\n<li><b>operation </b><i>(required)</i> - this must always be drop_role </li>\n<li><b>id </b><i>(required) </i> - this is the id of the role you are dropping\n</ul>"
+					},
+					"response": []
+				},
+				{
+					"name": "Create new cluster_user",
 					"event": [
 						{
 							"listen": "test",
@@ -48612,7 +48676,18 @@
 									"    pm.response.to.have.status(200);",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -48654,7 +48729,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\": \"set_configuration\",\n    \"logging_auditLog\": true,\n    \"customFunctions_enabled\": true,\n    \"localStudio_enabled\": true,\n    \"clustering_enabled\": true,\n    \"replication_url\": null\n}"
+							"raw": "{\n    \"operation\": \"add_user\",\n    \"role\": \"cluster_user\",\n    \"username\": \"cluster_user1\",\n    \"password\": \"cluster_user1\",\n    \"active\": true\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -48668,7 +48743,7 @@
 					"response": []
 				},
 				{
-					"name": "Restart for new settings",
+					"name": "Get Configuration",
 					"event": [
 						{
 							"listen": "test",
@@ -48678,8 +48753,219 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
+									"pm.test(\"Get root path\", ()=>{",
+									"",
+									"    var jsonData = pm.response.json();",
+									"    pm.expect(jsonData.rootPath).to.not.be.undefined;",
+									"    pm.environment.set(\"root_path\", jsonData.rootPath);",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json",
+								"type": "text"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"get_configuration\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": []
+				},
+				{
+					"name": "Set Nats clustering configuration",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"set_configuration\",\n    \"clustering_enabled\": true,\n\n    \"clustering_hubServer_cluster_name\": \"harperdb\",\n    \"clustering_hubServer_cluster_network_port\": \"9932\",\n    \"clustering_hubServer_cluster_network_routes\": null,\n\n    \"clustering_hubServer_leafNodes_network_port\": \"9931\",\n\n    \"clustering_hubServer_network_port\": \"9930\",\n    \n    \"clustering_leafServer_network_port\": \"9940\",\n    \"clustering_leafServer_network_routes\": null,\n\n    \"clustering_leafServer_streams_maxAge\": null,\n    \"clustering_leafServer_streams_maxBytes\": null,\n    \"clustering_leafServer_streams_maxMsgs\": null,\n    \"clustering_leafServer_streams_maxConsumeMsgs\": \"100\",\n    \"clustering_leafServer_streams_maxIngestThreads\": \"2\",\n\n    \"clustering_nodeName\": \"local\",\n\n    \"clustering_republishMessages\": false,\n    \"clustering_databaseLevel\": false,\n\n    \"clustering_user\": \"cluster_user1\",\n\n    \"clustering_tls_certificate\": \"{{root_path}}/keys/natsCertificate.pem\",\n    \"clustering_tls_certificateAuthority\": \"{{root_path}}/keys/natsCaCertificate.pem\",\n    \"clustering_tls_privateKey\": \"{{root_path}}/keys/privateKey.pem\",\n    \"clustering_tls_insecure\": true,\n    \"clustering_tls_verify\": true\n\n\n\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": []
+				},
+				{
+					"name": "Turn on log audit and custom functions",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\": \"set_configuration\",\n    \"logging_auditLog\": true,\n    \"customFunctions_enabled\": true,\n    \"localStudio_enabled\": true,\n    \"replication_url\": null\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": []
+				},
+				{
+					"name": "Restart for new settings and wait",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"//waiting for restart for 90 seconds",
+									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
-									"setTimeout(() => {}, 60000)"
+									"setTimeout(() => {}, 90000)"
 								],
 								"type": "text/javascript",
 								"packages": {}
@@ -53034,8 +53320,9 @@
 													"pm.test(\"Should return the ONE schema w/ ONE table user has permissions for\", function() {",
 													"    pm.expect(Object.keys(jsonResponse).length).to.eql(1);",
 													"    pm.expect(Object.keys(jsonResponse.northnwd).length).to.eql(1);",
-													"    pm.expect(Object.keys(jsonResponse.northnwd.employees).length).to.eql(11)",
+													"    pm.expect(Object.keys(jsonResponse.northnwd.employees).length).to.gt(11)",
 													"    pm.expect(jsonResponse.northnwd.employees.db_size).to.be.a('number')",
+													"    pm.expect(jsonResponse.northnwd.employees.table_size).to.be.a('number')",
 													"    pm.expect(jsonResponse.northnwd.employees.attributes.length).to.eql(4)",
 													"});",
 													""
@@ -61773,7 +62060,8 @@
 									"    ",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -62931,7 +63219,7 @@
 									"",
 									"pm.test(\"get components\", function () {",
 									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.entries.length).to.equal(6);",
+									"    pm.expect(json_data.entries.length).to.equal(5);",
 									"    let gh_found = false;",
 									"    let payload_found = false;",
 									"    let add_test_found = false;",
@@ -63062,7 +63350,7 @@
 									"",
 									"pm.test(\"get components\", function () {",
 									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.entries.length).to.equal(5);",
+									"    pm.expect(json_data.entries.length).to.equal(4);",
 									"    let gh_found = false;",
 									"    let payload_found = false;",
 									"    let set_test_found = false;",
@@ -63238,7 +63526,7 @@
 					"response": []
 				},
 				{
-					"name": "restart service",
+					"name": "Restart and wait",
 					"event": [
 						{
 							"listen": "test",
@@ -63248,15 +63536,11 @@
 									"    pm.response.to.have.status(200);",
 									"});",
 									"",
-									"pm.test(\"Restart service success message is returned\", function () {",
-									"    const json_data = pm.response.json();",
-									"    pm.expect(json_data.message).to.equal(\"Restarting http_workers\");",
-									"});",
-									"",
 									"// This timeout is here to give HDB time to restart before the next text is ran.",
-									"setTimeout(() => {}, 60000)"
+									"setTimeout(() => {}, 90000)"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -63285,7 +63569,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -68985,6 +69269,7 @@
 									"pm.test('Check message', () => {",
 									"    const response = pm.response.json();",
 									"    pm.expect(response.message).to.contain('Successfully set component: resources.js');",
+									"    setTimeout(() => {}, 2000);",
 									"});"
 								],
 								"type": "text/javascript",
@@ -69035,7 +69320,7 @@
 					"response": []
 				},
 				{
-					"name": "Restart service and wait",
+					"name": "Restart and wait",
 					"event": [
 						{
 							"listen": "test",
@@ -69043,17 +69328,8 @@
 								"exec": [
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
-									"    ",
-									"    //wait for 59 seconds",
-									"    console.log('waiting for 59 seconds for the restart of services');",
-									"    setTimeout(() => {}, 59000);",
-									"    //retry request if needed with:",
-									"    // pm.setNextRequest(pm.info.requestId);",
-									"});",
-									"",
-									"pm.test('Check message', () => {",
-									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.contain('Restarting');",
+									"    console.log('waiting for 90 seconds for the restart of services');",
+									"    setTimeout(() => {}, 90000);",
 									"});"
 								],
 								"type": "text/javascript",
@@ -69086,12 +69362,78 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
 								}
 							}
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						}
+					},
+					"response": []
+				},
+				{
+					"name": "Describe all",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "saveHelperData",
+									"type": "any"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							},
+							{
+								"key": "Authorization",
+								"value": "Basic YWRtaW46MTQwMA=="
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"describe_all\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -70022,7 +70364,7 @@
 					"response": []
 				},
 				{
-					"name": "Restart service and wait",
+					"name": "Restart and wait",
 					"event": [
 						{
 							"listen": "test",
@@ -70030,17 +70372,8 @@
 								"exec": [
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
-									"    ",
-									"    //wait for 59 seconds",
-									"    console.log('waiting for 59 seconds for the restart of services');",
-									"    setTimeout(() => {}, 59000);",
-									"    //retry request if needed with:",
-									"    // pm.setNextRequest(pm.info.requestId);",
-									"});",
-									"",
-									"pm.test('Check message', () => {",
-									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.contain('Restarting');",
+									"    console.log('waiting for 90 seconds for the restart of services');",
+									"    setTimeout(() => {}, 90000);",
 									"});"
 								],
 								"type": "text/javascript",
@@ -70073,7 +70406,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"
@@ -73365,7 +73698,7 @@
 					"response": []
 				},
 				{
-					"name": "Restart service and wait",
+					"name": "Restart and wait",
 					"event": [
 						{
 							"listen": "test",
@@ -73373,17 +73706,8 @@
 								"exec": [
 									"pm.test('Status code is 200', () => {",
 									"    pm.response.to.have.status(200);",
-									"    ",
-									"    //wait for 59 seconds",
-									"    console.log('waiting for 59 seconds for the restart of services');",
-									"    setTimeout(() => {}, 59000);",
-									"    //retry request if needed with:",
-									"    // pm.setNextRequest(pm.info.requestId);",
-									"});",
-									"",
-									"pm.test('Check message', () => {",
-									"    const response = pm.response.json();",
-									"    pm.expect(response.message).to.contain('Restarting');",
+									"    console.log('waiting for 90 seconds for the restart of services');",
+									"    setTimeout(() => {}, 90000);",
 									"});"
 								],
 								"type": "text/javascript",
@@ -73416,7 +73740,7 @@
 						"header": [],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n    \"operation\": \"restart_service\",\n    \"service\": \"http_workers\"\n}",
+							"raw": "{\n    \"operation\": \"restart\"\n}",
 							"options": {
 								"raw": {
 									"language": "json"

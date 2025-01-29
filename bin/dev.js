@@ -1,0 +1,94 @@
+if (__filename.endsWith('dev.js')) {
+	const fg = require('fast-glob');
+	const { tmpdir } = require('node:os');
+	const { relative, join } = require('node:path');
+	const { existsSync, statSync, readFileSync, writeFileSync } = require('node:fs');
+	const { isMainThread } = require('node:worker_threads');
+	const { spawnSync, spawn } = require('node:child_process');
+
+	const { PACKAGE_ROOT } = require('../utility/hdbTerms');
+
+	const SRC_DIRECTORIES = ['bin', 'components', 'dataLayer', 'resources', 'server', 'sqlTranslator', 'upgrade', 'utility', 'validation'];
+	const TS_DIRECTORY = 'ts-build';
+
+	if (isMainThread) {
+		let needsCompile = false;
+		let buildDirectoryExists = false;
+		if ((buildDirectoryExists = existsSync(join(PACKAGE_ROOT, TS_DIRECTORY)))) {
+			needsCompile = fg.sync(
+				SRC_DIRECTORIES.map((dir) => `${dir}/**/*.ts`),
+				{ cwd: PACKAGE_ROOT }
+			).some((file) => {
+				let sourceTime = 0;
+				let compiledTime = 0;
+
+				try {
+					sourceTime = statSync(join(PACKAGE_ROOT, file)).mtimeMs - 5000;
+					compiledTime = statSync(join(PACKAGE_ROOT, TS_DIRECTORY, file.replace(/.ts$/, '.js'))).mtimeMs;
+				} catch (_) { }
+
+				return sourceTime > compiledTime;
+			});
+		} else {
+			needsCompile = true;
+		}
+
+		if (needsCompile) {
+			console.log('Compiling TypeScript...');
+
+			const result = spawnSync('npx', ['tsc'], { cwd: PACKAGE_ROOT });
+			if (result.stdout?.length) console.log(result.stdout.toString());
+			if (result.stderr?.length) console.log(result.stderr.toString());
+
+			if (buildDirectoryExists) {
+				const pidPath = join(tmpdir(), 'harperdb-tsc.pid');
+				let isRunning = false;
+				if (existsSync(pidPath)) {
+					try {
+						process.kill(+readFileSync(pidPath, 'utf8'), 0);
+						isRunning = true;
+					} catch (_) { }
+				}
+
+				if (!isRunning) {
+					console.log('Starting background TypeScript compilation...');
+					const tscProcess = spawn('npx', ['tsc', '--watch'], { detached: true, cwd: PACKAGE_ROOT, stdio: 'ignore' });
+					writeFileSync(pidPath, tscProcess.pid.toString());
+					tscProcess.unref();
+				}
+			}
+		}
+	}
+
+	let Module = module.constructor;
+	let findPath = Module._findPath;
+	/**
+	 * Hack the node module system to make it so we can load the TypeScript compiled modules from a separate directory
+	 * *and* load JavaScript files from their existing source directory. This is just intended for source/dev use, and
+	 * should be skipped in our built version. But this allows us to keep TypeScript alongside JavaScript while having
+	 * the built output in separate directory so we can easily gitignore all the built modules.
+	 */
+	Module._findPath = function (request, paths, isMain) {
+		if (
+			request.startsWith('.') &&
+			!isMain &&
+			paths.length === 1 &&
+			paths[0].startsWith(PACKAGE_ROOT) &&
+			!paths[0].includes('node_modules')
+		) {
+			// relative reference in our code base
+			let path = relative(PACKAGE_ROOT, paths[0]);
+			let alternate;
+			if (path.startsWith(TS_DIRECTORY)) {
+				alternate = join(PACKAGE_ROOT, relative(TS_DIRECTORY, path));
+			} else {
+				alternate = join(PACKAGE_ROOT, TS_DIRECTORY, path);
+			}
+			let base_filename = join(alternate, request);
+			let filename = base_filename + '.js';
+			if (existsSync(filename)) return filename;
+			if (base_filename.includes('.') && existsSync(base_filename)) return base_filename;
+		}
+		return findPath(request, paths, isMain);
+	};
+}
