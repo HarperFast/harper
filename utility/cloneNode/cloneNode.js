@@ -64,6 +64,7 @@ const CONFIG_TO_NOT_CLONE = {
 	tls_certificateauthority: true,
 	replication_hostname: true,
 	replication_url: true,
+	cloned: true,
 };
 
 const CLONE_VARS = {
@@ -243,7 +244,7 @@ async function cloneUsingWS() {
 	await main();
 
 	// Cloning the leader configuration, excluding CONFIG_TO_NOT_CLONE values
-	await cloneConfig();
+	await cloneConfig(true);
 
 	// Updates the keys configuration
 	await updateConfigCert();
@@ -268,6 +269,7 @@ async function cloneUsingWS() {
 	await cloneKeys();
 
 	console.log(`Successfully cloned node: ${leader_url} using WebSockets`);
+	config_utils.updateConfigValue(CONFIG_PARAMS.CLONED, true);
 
 	if (no_start) process.exit();
 }
@@ -319,9 +321,10 @@ async function cloneKeys() {
 
 /**
  * Clone config from leader except for any existing config or any excluded config (mainly path related values)
+ * @param with_ws - If true the config will be cloned using websockets
  * @returns {Promise<void>}
  */
-async function cloneConfig() {
+async function cloneConfig(with_ws = false) {
 	console.info('Cloning configuration');
 	leader_config = await leaderReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
 	leader_config_flat = config_utils.flattenConfig(leader_config);
@@ -394,7 +397,8 @@ async function cloneConfig() {
 	const args = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
 	Object.assign(config_update, args);
 
-	config_update.cloned = true;
+	// If cloning using websockets we set the cloned flag at the completion of the clone
+	if (!with_ws) config_update.cloned = true;
 	config_utils.createConfigFile(config_update, true);
 }
 

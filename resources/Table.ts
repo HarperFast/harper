@@ -2565,6 +2565,18 @@ export function makeTable(options) {
 			});
 			return TableResource.indexingOperation;
 		}
+		/**
+		 * Get the size of the table in bytes (based on amount of pages stored in the database)
+		 * @param options
+		 */
+		static getSize() {
+			const stats = primary_store.getStats();
+			return (stats.treeBranchPageCount + stats.treeLeafPageCount + stats.overflowPages) * stats.pageSize;
+		}
+		static getAuditSize() {
+			const stats = audit_store?.getStats();
+			return stats && (stats.treeBranchPageCount + stats.treeLeafPageCount + stats.overflowPages) * stats.pageSize;
+		}
 		static getRecordCount(options) {
 			// iterate through the metadata entries to exclude their count and exclude the deletion counts
 			const entry_count = primary_store.getStats().entryCount;
