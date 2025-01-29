@@ -431,11 +431,26 @@ async function deployComponent(req) {
 	}
 	if (last_error) throw last_error;
 	log.info('Installed component');
+
+	const rollingRestart = req.restart === 'rolling';
+	// if doing a rolling restart set restart to false so that other nodes don't also restart.
+	req.restart = rollingRestart ? false : req.restart;
 	let response = await replicateOperation(req);
 	if (req.restart === true) {
 		manage_threads.restartWorkers('http');
 		response.message = `Successfully deployed: ${project}, restarting HarperDB`;
+	} else if (rollingRestart) {
+		const serverUtilities = require('../server/serverHelpers/serverUtilities');
+		const jobResponse = await serverUtilities.executeJob({
+			operation: 'restart_service',
+			service: 'http',
+			replicated: true,
+		});
+
+		response.restartJobId = jobResponse.job_id;
+		response.message = `Successfully deployed: ${project}, restarting HarperDB`;
 	} else response.message = `Successfully deployed: ${project}`;
+
 	return response;
 }
 
