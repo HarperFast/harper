@@ -170,9 +170,8 @@ function getFilePath(storageInfo: any): string {
 	return join(
 		blobStoragePaths[storageInfo.storageIndex],
 		storageInfo.fileId.slice(0, -6) || '0',
-		storageInfo.fileId.slice(-6, -4) || '0',
-		storageInfo.fileId.slice(-4, -2) || '0',
-		storageInfo.fileId.slice(-2)
+		storageInfo.fileId.slice(-6, -3) || '0',
+		storageInfo.fileId.slice(-3)
 	);
 }
 
