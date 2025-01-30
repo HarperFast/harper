@@ -4,7 +4,9 @@ import {
 	close,
 	createWriteStream,
 	fdatasync,
+	open,
 	readFileSync,
+	read,
 	unlink,
 	readdirSync,
 	existsSync,
@@ -28,7 +30,7 @@ const COMPRESSION_TYPE = 1;
 COMPRESS_HEADER[1] = 1;
 const storageInfoForBlob = new WeakMap();
 export const Blob = global.Blob || class Blob {}; // use the global Blob class if it exists (it doesn't on Node v16)
-let encodeForStorageForRecordId: number = 0; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
+let encodeForStorageForRecordId: number = undefined; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
 let promisedWrites: Array<Promise<void>>;
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
 let syncFileStorage: boolean = true; // if true, we will flush to disk on each write
@@ -54,7 +56,7 @@ addExtension({
 	pack: function (blob) {
 		const storageInfo = storageInfoForBlob.get(blob);
 		if (storageInfo) {
-			if (encodeForStorageForRecordId) {
+			if (encodeForStorageForRecordId !== undefined) {
 				// this is used when we are encoding the data for storage in the database, referencing the (local) file storage
 				blobsWereEncoded = true;
 				if (storageInfo.recordId && storageInfo.recordId !== encodeForStorageForRecordId) {
@@ -99,7 +101,7 @@ class FileBackedBlob extends Blob {
 		let watcher, timer;
 		async function readContents(): Promise<Buffer> {
 			const rawBytes = await readFile(filePath);
-			rawBytes.copy(REUSABLE_BUFFER, 0, 0, 8);
+			rawBytes.copy(REUSABLE_BUFFER, 0, 0, HEADER_SIZE);
 			const size = headerView.getBigUint64(0) & 0xffffffffffffn;
 			if (size === 0n) {
 				// the file is not finished being written, watch the file for changes to resume reading
@@ -141,8 +143,74 @@ class FileBackedBlob extends Blob {
 		return arrayBuffer;
 	}
 
-	stream(): NodeJS.ReadableStream {
-		throw new Error('Not implemented yet');
+	stream(): ReadableStream {
+		const filePath = getFilePathForBlob(this);
+		let fd: number;
+		let offset = 0;
+		let watcher, timer;
+
+		return new ReadableStream({
+			start() {
+				return new Promise((resolve, reject) => {
+					open(filePath, 'r', (error, openedFd) => {
+						if (error) reject(error);
+						fd = openedFd;
+						resolve(openedFd);
+					});
+				});
+			},
+			pull: (controller) => {
+				let size = 0;
+				return new Promise((resolve, reject) => {
+					read(fd, { offset, length: 256 * 1024 }, (error, bytesRead, buffer) => {
+						if (error) return reject(error);
+						if (offset === 0) {
+							// for the first read, we need to read the header and skip it for the data
+							buffer.copy(REUSABLE_BUFFER, 0, 0, HEADER_SIZE);
+							size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
+							buffer = buffer.subarray(HEADER_SIZE);
+						} else if (bytesRead === 0) {
+							read(fd, REUSABLE_BUFFER, 0, 8, 0, (error) => {
+								if (error) reject(error);
+								size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
+								if (size === 0) {
+									// the file is not finished being written, watch the file for changes to resume reading
+									if (!watcher)
+										return new Promise((resolve) => {
+											const start = Date.now();
+											const tryAgain = () => {
+												read(fd, REUSABLE_BUFFER, 0, 8, 0, (error) => {
+													if (error) reject(error);
+													const size = headerView.getBigUint64(0) & 0xffffffffffffn;
+													if (size > 0n || Date.now() - start > TIMEOUT) {
+														resolve();
+														clearInterval(timer);
+														watcher.close();
+													}
+												});
+											};
+											watcher = watch(filePath, { persistent: false }, tryAgain);
+											timer = setInterval(tryAgain, 100).unref();
+										});
+									return;
+								}
+								close(fd);
+								controller.close();
+								resolve();
+							});
+						}
+						offset += bytesRead;
+						controller.enqueue(buffer);
+						if (offset === size) {
+							close(fd);
+							controller.close();
+							resolve();
+						}
+					});
+				});
+			},
+			cancel: () => {},
+		});
 	}
 	get size(): number {
 		return statSync(getFilePathForBlob(this)).size - HEADER_SIZE;
@@ -300,7 +368,9 @@ function createBlobWithFile(): { filePath: string; blob: FileBackedBlob; ready: 
 		];
 		syncFileStorage = !envGet(CONFIG_PARAMS.STORAGE_WRITE_ASYNC);
 	}
-	const storageIndex = blobStoragePaths?.length > 1 ? Math.floor(blobStoragePaths.length * Math.random()) : 0;
+	const id = getNextFileId();
+	// get the storage index, which is the index of the blob storage path to use, distributed round-robin based on the id
+	const storageIndex = blobStoragePaths?.length > 1 ? id % blobStoragePaths.length : 0;
 	const fileId = getNextFileId().toString(16); // get the next file id
 	const storageInfo = { storageIndex, fileId };
 	const filePath = getFilePath(storageInfo);
