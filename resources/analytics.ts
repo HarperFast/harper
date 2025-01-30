@@ -359,8 +359,8 @@ export class CachedResourceUsage {
 	contextSwitches(): ContextSwitches {
 		this.refresh();
 		return {
-			voluntary: this.resourceUsage.voluntaryContextSwitches,
-			involuntary: this.resourceUsage.involuntaryContextSwitches,
+			voluntary: this.resourceUsage.voluntaryContextSwitches - this.priorResourceUsage.voluntaryContextSwitches,
+			involuntary: this.resourceUsage.involuntaryContextSwitches - this.priorResourceUsage.involuntaryContextSwitches,
 		};
 	}
 }
