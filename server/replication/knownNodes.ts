@@ -206,6 +206,7 @@ export function* iterateRoutes(options: { routes: (Route | any)[] }) {
 			url,
 			subscription: route.subscriptions,
 			routes: route.routes,
+			start_time: route.startTime,
 		};
 	}
 }

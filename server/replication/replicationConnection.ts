@@ -989,6 +989,7 @@ export function replicateOverWS(ws, options, authorization) {
 									if (is_first && !closed) {
 										is_first = false;
 										const last_removed = getLastRemoved(audit_store);
+										// note that last_removed may be undefined, in which case we want the comparison to go into this branch (hence !(<=))
 										if (
 											!(last_removed <= current_sequence_id) &&
 											env.get(CONFIG_PARAMS.REPLICATION_COPY_TABLES_TO_CATCHUP) !== false
