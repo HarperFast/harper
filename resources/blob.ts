@@ -171,8 +171,8 @@ class FileBackedBlob extends Blob {
 		let watcher: any;
 		let timer: NodeJS.Timeout;
 		let totalContentRead = 0;
-		let pullResolve;
-		let pullReject;
+		let pullResolve: () => void;
+		let pullReject: (error: Error) => void;
 
 		return new ReadableStream({
 			start() {
@@ -193,23 +193,24 @@ class FileBackedBlob extends Blob {
 						read(fd, { position, length: CHUNK_SIZE }, (error, bytesRead, buffer) => {
 							// TODO: Implement support for decompression
 							totalContentRead += bytesRead;
-							if (error) return reject(error);
+							if (error) return pullReject(error);
 							if (position === 0) {
 								// for the first read, we need to read the header and skip it for the data
 								buffer.copy(HEADER, 0, 0, HEADER_SIZE);
 								const headerValue = headerView.getBigUint64(0);
 								if (HEADER[1] === 0) {
+									// indicates zero length blob
 									close(fd);
 									controller.close();
-									return resolve();
+									return pullResolve();
 								}
 								size = Number(headerValue & 0xffffffffffffn);
 								buffer = buffer.subarray(HEADER_SIZE, bytesRead);
 								totalContentRead -= HEADER_SIZE;
 							} else if (bytesRead === 0) {
 								const buffer = new Uint8Array(8);
-								return read(fd, buffer, 0, 8, 0, (error) => {
-									if (error) reject(error);
+								return read(fd, buffer, 0, HEADER_SIZE, 0, (error) => {
+									if (error) pullReject(error);
 									HEADER.set(buffer);
 									size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
 									if (size === 0 || size > totalContentRead) {
