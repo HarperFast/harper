@@ -89,11 +89,12 @@ addExtension({
 		}
 	},
 });
-// the header is 8 bytes, the first 6 bytes are the size of the file, the last 2 bytes are the compression type
+// the header is 8 bytes
 // this is a reusable buffer for reading and writing to the header (without having to create new allocations)
 const HEADER = new Uint8Array(8);
 const headerView = new DataView(HEADER.buffer);
-const TIMEOUT = 30000;
+const FILE_READ_TIMEOUT = 30000;
+const CHUNK_SIZE = 256 * 1024;
 /**
  * A blob that is backed by a file, and can be saved to the database as a reference
  */
@@ -128,7 +129,7 @@ class FileBackedBlob extends Blob {
 							const start = Date.now();
 							const tryAgain = () => {
 								readContents().then((result) => {
-									if (result || Date.now() - start > TIMEOUT) {
+									if (result || Date.now() - start > FILE_READ_TIMEOUT) {
 										resolve(result);
 										clearInterval(timer);
 										watcher.close();
@@ -182,7 +183,7 @@ class FileBackedBlob extends Blob {
 			pull: (controller) => {
 				let size = 0;
 				return new Promise((resolve, reject) => {
-					read(fd, { offset, length: 256 * 1024 }, (error, bytesRead, buffer) => {
+					read(fd, { offset, length: CHUNK_SIZE }, (error, bytesRead, buffer) => {
 						if (error) return reject(error);
 						if (offset === 0) {
 							// for the first read, we need to read the header and skip it for the data
@@ -202,7 +203,7 @@ class FileBackedBlob extends Blob {
 												read(fd, HEADER, 0, 8, 0, (error) => {
 													if (error) reject(error);
 													const size = headerView.getBigUint64(0) & 0xffffffffffffn;
-													if (size > 0n || Date.now() - start > TIMEOUT) {
+													if (size > 0n || Date.now() - start > FILE_READ_TIMEOUT) {
 														resolve();
 														clearInterval(timer);
 														watcher.close();
