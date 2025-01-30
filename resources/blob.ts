@@ -94,7 +94,7 @@ addExtension({
 const HEADER = new Uint8Array(8);
 const headerView = new DataView(HEADER.buffer);
 const FILE_READ_TIMEOUT = 30000;
-const CHUNK_SIZE = 256 * 1024;
+const CHUNK_SIZE = 16 * 1024;
 /**
  * A blob that is backed by a file, and can be saved to the database as a reference
  */
@@ -167,8 +167,12 @@ class FileBackedBlob extends Blob {
 	stream(): ReadableStream {
 		const filePath = getFilePathForBlob(this);
 		let fd: number;
-		let offset = 0;
-		let watcher, timer;
+		let position = 0;
+		let watcher: any;
+		let timer: NodeJS.Timeout;
+		let totalContentRead = 0;
+		let pullResolve;
+		let pullReject;
 
 		return new ReadableStream({
 			start() {
@@ -183,51 +187,60 @@ class FileBackedBlob extends Blob {
 			pull: (controller) => {
 				let size = 0;
 				return new Promise((resolve, reject) => {
-					read(fd, { offset, length: CHUNK_SIZE }, (error, bytesRead, buffer) => {
-						if (error) return reject(error);
-						if (offset === 0) {
-							// for the first read, we need to read the header and skip it for the data
-							buffer.copy(HEADER, 0, 0, HEADER_SIZE);
-							size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
-							buffer = buffer.subarray(HEADER_SIZE);
-						} else if (bytesRead === 0) {
-							read(fd, HEADER, 0, 8, 0, (error) => {
-								if (error) reject(error);
-								size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
-								if (size === 0) {
-									// the file is not finished being written, watch the file for changes to resume reading
-									if (!watcher)
-										return new Promise((resolve) => {
-											const start = Date.now();
-											const tryAgain = () => {
-												read(fd, HEADER, 0, 8, 0, (error) => {
-													if (error) reject(error);
-													const size = headerView.getBigUint64(0) & 0xffffffffffffn;
-													if (size > 0n || Date.now() - start > FILE_READ_TIMEOUT) {
-														resolve();
-														clearInterval(timer);
-														watcher.close();
-													}
-												});
-											};
-											watcher = watch(filePath, { persistent: false }, tryAgain);
-											timer = setInterval(tryAgain, 100).unref();
-										});
-									return;
+					pullResolve = resolve;
+					pullReject = reject;
+					const readMore = () => {
+						read(fd, { position, length: CHUNK_SIZE }, (error, bytesRead, buffer) => {
+							// TODO: Implement support for decompression
+							totalContentRead += bytesRead;
+							if (error) return reject(error);
+							if (position === 0) {
+								// for the first read, we need to read the header and skip it for the data
+								buffer.copy(HEADER, 0, 0, HEADER_SIZE);
+								const headerValue = headerView.getBigUint64(0);
+								if (HEADER[1] === 0) {
+									close(fd);
+									controller.close();
+									return resolve();
 								}
+								size = Number(headerValue & 0xffffffffffffn);
+								buffer = buffer.subarray(HEADER_SIZE, bytesRead);
+								totalContentRead -= HEADER_SIZE;
+							} else if (bytesRead === 0) {
+								const buffer = new Uint8Array(8);
+								return read(fd, buffer, 0, 8, 0, (error) => {
+									if (error) reject(error);
+									HEADER.set(buffer);
+									size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
+									if (size === 0 || size > totalContentRead) {
+										// the file is not finished being written, watch the file for changes to resume reading
+										if (!watcher) {
+											watcher = watch(filePath, { persistent: false }, readMore);
+											timer = setInterval(readMore, 100).unref();
+										}
+										return;
+									}
+									if (watcher) {
+										clearInterval(timer);
+										watcher.close();
+									}
+									close(fd);
+									controller.close();
+									pullResolve();
+								});
+							} else {
+								buffer = buffer.subarray(0, bytesRead);
+							}
+							position += bytesRead;
+							controller.enqueue(buffer);
+							if (totalContentRead === size) {
 								close(fd);
 								controller.close();
-								resolve();
-							});
-						}
-						offset += bytesRead;
-						controller.enqueue(buffer);
-						if (offset === size) {
-							close(fd);
-							controller.close();
-							resolve();
-						}
-					});
+							}
+							pullResolve();
+						});
+					};
+					readMore();
 				});
 			},
 			cancel: () => {},
@@ -262,7 +275,7 @@ export function setDeletionDelay(delay: number) {
 	deletion_delay = delay;
 }
 let blobStoragePaths: Array<string>;
-type BlobCreationOptions = {
+export type BlobCreationOptions = {
 	compress?: boolean; // compress the data with deflate
 	flush?: boolean; // flush to disk after writing and before resolving the finished promise
 	size?: number; // the size of the data, if known ahead of time

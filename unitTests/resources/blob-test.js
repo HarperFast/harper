@@ -38,7 +38,7 @@ describe('Blob test', () => {
 			// should not be able to use the blob in a different record
 			BlobTest.put({ id: 2, blob });
 		});
-		blob = await createBlob(Readable.from(testString));
+		blob = await createBlob(Readable.from(testString), { flush: true }); // create a new blob with flush
 		await BlobTest.put({ id: 1, blob });
 		record = await BlobTest.get(1);
 		assert.equal(record.id, 1);
@@ -101,11 +101,13 @@ describe('Blob test', () => {
 	});
 	it('slowly create a blob and save it before it is done', async () => {
 		let testString = 'this is a test string'.repeat(256);
+		let expectedResults = '';
 		let blob = await createBlob(
 			Readable.from(
 				(async function* () {
 					for (let i = 0; i < 5; i++) {
-						yield testString;
+						yield testString + i;
+						expectedResults += testString + i;
 						await delay(50);
 					}
 				})()
@@ -114,8 +116,17 @@ describe('Blob test', () => {
 		await BlobTest.put({ id: 1, blob });
 		let record = await BlobTest.get(1);
 		assert.equal(record.id, 1);
+		let stream = record.blob.stream(); // we are going to concurrently get the stream and the text to test both
+		let streamResults = (async () => {
+			let retrievedDataFromStream = [];
+			for await (const chunk of stream) {
+				retrievedDataFromStream.push(chunk);
+			}
+			return Buffer.concat(retrievedDataFromStream).toString();
+		})();
 		let retrievedText = await record.blob.text();
-		assert.equal(retrievedText, testString.repeat(5));
+		assert.equal(retrievedText, expectedResults);
+		assert.equal(await streamResults, expectedResults);
 	});
 	it('invalid blob attempts', async () => {
 		assert.throws(() => {
