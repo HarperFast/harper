@@ -7,6 +7,7 @@ const { setAuditRetention } = require('../../resources/auditStore');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
 const { getFilePathForBlob, setDeletionDelay } = require('../../resources/blob');
 const { existsSync } = require('fs');
+const { randomBytes } = require('crypto');
 
 // might want to enable an iteration with NATS being assigned as a source
 //const { setNATSReplicator } = require('../../server/nats/natsReplicator');
@@ -43,6 +44,24 @@ describe('Blob test', () => {
 		assert.equal(record.id, 1);
 		retrievedText = await record.blob.text();
 		assert.equal(retrievedText, testString);
+	});
+	it('create a blob from a buffer and save it', async () => {
+		let random = randomBytes(25000);
+		let blob = await createBlob(random);
+		await BlobTest.put({ id: 1, blob });
+		let record = await BlobTest.get(1);
+		assert.equal(record.id, 1);
+		let retrievedBytes = await record.blob.bytes();
+		assert(retrievedBytes.equals(random));
+	});
+	it('create a blob from an empty buffer and save it', async () => {
+		let empty = Buffer.alloc(0);
+		let blob = await createBlob(empty);
+		await BlobTest.put({ id: 1, blob });
+		let record = await BlobTest.get(1);
+		assert.equal(record.id, 1);
+		let retrievedBytes = await record.blob.bytes();
+		assert.equal(retrievedBytes.length, 0);
 	});
 	it('Save a blob and delete it', async () => {
 		setAuditRetention(0.01); // 10 ms audit log retention

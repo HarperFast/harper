@@ -1,3 +1,14 @@
+/**
+ * This module provides a Blob class that can be used to store binary data in the database, and can be used to store large binary data in a file
+ * on the server. The Blob class is a subclass of the global Blob class, and can be used in the same way.
+ * The Blob-backed files begin with an 8-byte header:
+ * - The first 2 bytes indicate the type of storage:
+ * 		- 0: Zero length blob
+ * 		- 1: Uncompressed
+ * 		- 2: Compressed with deflate
+ * - The next 6 bytes are the size of the file
+ */
+
 import { addExtension, pack, unpack } from 'msgpackr';
 import { stat, readFile, writeFile } from 'node:fs/promises';
 import {
@@ -14,7 +25,7 @@ import {
 	watch,
 	write,
 } from 'node:fs';
-import { createGzip, gunzip, createGunzip } from 'node:zlib';
+import { createDeflate, deflate, createInflate } from 'node:zlib';
 import { Readable } from 'node:stream';
 import { ensureDir } from 'fs-extra';
 import { get as envGet } from '../utility/environment/environmentManager';
@@ -24,10 +35,12 @@ import { join, dirname } from 'path';
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
 // We want to keep the file path private (but accessible to the extension)
 const HEADER_SIZE = 8;
+const UNCOMPRESSED_TYPE = 1;
+const DEFLATE_TYPE = 2;
 const DEFAULT_HEADER = new Uint8Array(HEADER_SIZE);
+DEFAULT_HEADER[1] = UNCOMPRESSED_TYPE;
 const COMPRESS_HEADER = new Uint8Array(HEADER_SIZE);
-const COMPRESSION_TYPE = 1;
-COMPRESS_HEADER[1] = 1;
+COMPRESS_HEADER[1] = DEFLATE_TYPE;
 const storageInfoForBlob = new WeakMap();
 export const Blob = global.Blob || class Blob {}; // use the global Blob class if it exists (it doesn't on Node v16)
 let encodeForStorageForRecordId: number = undefined; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
@@ -76,8 +89,10 @@ addExtension({
 		}
 	},
 });
-const REUSABLE_BUFFER = new Uint8Array(8);
-const headerView = new DataView(REUSABLE_BUFFER.buffer);
+// the header is 8 bytes, the first 6 bytes are the size of the file, the last 2 bytes are the compression type
+// this is a reusable buffer for reading and writing to the header (without having to create new allocations)
+const HEADER = new Uint8Array(8);
+const headerView = new DataView(HEADER.buffer);
 const TIMEOUT = 30000;
 /**
  * A blob that is backed by a file, and can be saved to the database as a reference
@@ -98,39 +113,44 @@ class FileBackedBlob extends Blob {
 
 	bytes(): Promise<Buffer> {
 		const filePath = getFilePathForBlob(this);
-		let watcher, timer;
+		let watcher: any;
+		let timer: NodeJS.Timeout;
 		async function readContents(): Promise<Buffer> {
 			const rawBytes = await readFile(filePath);
-			rawBytes.copy(REUSABLE_BUFFER, 0, 0, HEADER_SIZE);
-			const size = headerView.getBigUint64(0) & 0xffffffffffffn;
-			if (size === 0n) {
-				// the file is not finished being written, watch the file for changes to resume reading
-				if (!watcher)
-					return new Promise((resolve) => {
-						const start = Date.now();
-						const tryAgain = () => {
-							readContents().then((result) => {
-								if (result || Date.now() - start > TIMEOUT) {
-									resolve(result);
-									clearInterval(timer);
-									watcher.close();
-								}
-							});
-						};
-						watcher = watch(filePath, { persistent: false }, tryAgain);
-						timer = setInterval(tryAgain, 100).unref();
-					});
-				return;
+			rawBytes.copy(HEADER, 0, 0, HEADER_SIZE);
+			if (rawBytes[1] === 0) return Buffer.alloc(0);
+			const size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
+			function checkCompletion(rawBytes: Buffer): Buffer | Promise<Buffer> {
+				if (size === 0 || size > rawBytes.length) {
+					// the file is not finished being written, watch the file for changes to resume reading
+					if (!watcher)
+						return new Promise((resolve) => {
+							const start = Date.now();
+							const tryAgain = () => {
+								readContents().then((result) => {
+									if (result || Date.now() - start > TIMEOUT) {
+										resolve(result);
+										clearInterval(timer);
+										watcher.close();
+									}
+								});
+							};
+							watcher = watch(filePath, { persistent: false }, tryAgain);
+							timer = setInterval(tryAgain, 100).unref();
+						});
+					return;
+				}
+				return rawBytes;
 			}
-			if (rawBytes[1] === COMPRESSION_TYPE) {
+			if (rawBytes[1] === DEFLATE_TYPE) {
 				return new Promise<Buffer>((resolve, reject) => {
-					gunzip(rawBytes.subarray(HEADER_SIZE), (error, result) => {
+					deflate(rawBytes.subarray(HEADER_SIZE), (error, result) => {
 						if (error) reject(error);
-						else resolve(result);
+						else resolve(checkCompletion(result));
 					});
 				});
 			}
-			return rawBytes.subarray(HEADER_SIZE);
+			return checkCompletion(rawBytes.subarray(HEADER_SIZE));
 		}
 		return readContents();
 	}
@@ -166,11 +186,11 @@ class FileBackedBlob extends Blob {
 						if (error) return reject(error);
 						if (offset === 0) {
 							// for the first read, we need to read the header and skip it for the data
-							buffer.copy(REUSABLE_BUFFER, 0, 0, HEADER_SIZE);
+							buffer.copy(HEADER, 0, 0, HEADER_SIZE);
 							size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
 							buffer = buffer.subarray(HEADER_SIZE);
 						} else if (bytesRead === 0) {
-							read(fd, REUSABLE_BUFFER, 0, 8, 0, (error) => {
+							read(fd, HEADER, 0, 8, 0, (error) => {
 								if (error) reject(error);
 								size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
 								if (size === 0) {
@@ -179,7 +199,7 @@ class FileBackedBlob extends Blob {
 										return new Promise((resolve) => {
 											const start = Date.now();
 											const tryAgain = () => {
-												read(fd, REUSABLE_BUFFER, 0, 8, 0, (error) => {
+												read(fd, HEADER, 0, 8, 0, (error) => {
 													if (error) reject(error);
 													const size = headerView.getBigUint64(0) & 0xffffffffffffn;
 													if (size > 0n || Date.now() - start > TIMEOUT) {
@@ -242,8 +262,9 @@ export function setDeletionDelay(delay: number) {
 }
 let blobStoragePaths: Array<string>;
 type BlobCreationOptions = {
-	compress?: boolean;
-	flush?: boolean;
+	compress?: boolean; // compress the data with deflate
+	flush?: boolean; // flush to disk after writing and before resolving the finished promise
+	size?: number; // the size of the data, if known ahead of time
 };
 /**
  * Create a blob from a readable stream or a buffer by creating a file in the blob storage path with a new unique internal id, that
@@ -283,41 +304,63 @@ function createBlobFromStream(stream: NodeJS.ReadableStream, options: any): Prom
 					if (error) reject(error);
 					else resolve(blob);
 				};
+				let wroteSize = false;
+				if (options?.size !== undefined) {
+					// if we know the size, we can write the header immediately
+					writeStream.write(createHeader(options.size), writeCallback); // write the default header
+					wroteSize = true;
+				}
+				let compressedStream: NodeJS.Stream;
 				if (options?.compress) {
-					writeStream.write(COMPRESS_HEADER, writeCallback); // write the default header to the file
-					const gzipStream = createGzip();
-					stream.pipe(gzipStream).pipe(writeStream);
+					if (!wroteSize) writeStream.write(COMPRESS_HEADER, writeCallback); // write the default header to the file
+					compressedStream = createDeflate();
+					stream.pipe(compressedStream).pipe(writeStream);
 				} else {
-					writeStream.write(DEFAULT_HEADER, writeCallback); // write the default header to the file
+					if (!wroteSize) writeStream.write(DEFAULT_HEADER, writeCallback); // write the default header to the file
 					stream.pipe(writeStream);
 				}
-				writeStream
-					.on('error', (error) => {
+				function createHeader(size: number): Uint8Array {
+					let headerValue = BigInt(size);
+					const header = new Uint8Array(HEADER_SIZE);
+					const headerView = new DataView(header.buffer);
+					if (size > 0) headerValue |= BigInt(options?.compress ? DEFLATE_TYPE : UNCOMPRESSED_TYPE) << 48n;
+					headerView.setBigInt64(0, headerValue);
+					return header;
+				}
+				// when the stream is finished, we may need to flush, and then close the handle and resolve the promise
+				function finished(error?: Error) {
+					const fd = writeStream.fd;
+					if (error) {
+						close(fd);
 						const storageInfo = storageInfoForBlob.get(blob);
-						close(writeStream.fd);
 						unlink(storageInfo.path, () => {}); // if there's an error, delete the file
-						finishedReject(error); // if there's an error, reject the promise
-					})
-					.on('finish', () => {
-						const fd = writeStream.fd;
-						// now we need to indicate that the file is ready for reading by setting the size in the header, in case any other threads were waiting for this to complete
-						let headerValue = BigInt(writeStream.bytesWritten);
-						if (options?.compress) headerValue |= BigInt(COMPRESSION_TYPE) << 48n;
-						headerView.setBigInt64(0, headerValue);
-						write(fd, REUSABLE_BUFFER, 0, 8, 0, (error) => {
+						finishedReject(error);
+					}
+					if (options?.flush) {
+						// we just use fdatasync because we really aren't that concerned with flushing file metadata
+						fdatasync(fd, (error) => {
 							if (error) finishedReject(error);
-							if (options?.flush) {
-								fdatasync(fd, (error) => {
-									if (error) finishedReject(error);
-									finishedResolve();
-									close(fd);
-								});
-							} else {
-								finishedResolve();
-								close(fd);
-							}
+							finishedResolve();
+							close(fd);
 						});
-					});
+					} else {
+						finishedResolve();
+						close(fd);
+					}
+				}
+				writeStream.on('error', finished).on('finish', () => {
+					if (wroteSize) finished();
+					// now that we know the size, we can write it, in case any other threads were waiting for this to complete
+					else
+						write(
+							writeStream.fd,
+							createHeader(compressedStream ? compressedStream.bytesWritten : writeStream.bytesWritten - HEADER_SIZE),
+							0,
+							HEADER_SIZE,
+							0,
+							finished
+						);
+				});
 			})
 	);
 }
@@ -351,6 +394,9 @@ function createBlobFromDirectBuffer(buffer: NodeJS.Buffer): FileBackedBlob {
  * @param buffer
  */
 function createBlobFromBuffer(buffer: NodeJS.Buffer, options?: BlobCreationOptions): Promise<FileBackedBlob> {
+	// we know the size, so we can create the header immediately
+	if (options) options.size = buffer.length;
+	else options = { size: buffer.length };
 	return createBlobFromStream(Readable.from([buffer]), options);
 }
 
