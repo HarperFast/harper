@@ -55,18 +55,48 @@ describe('Blob test', () => {
 		await BlobTest.delete(3);
 		assert(existsSync(filePath)); // should not immediately be deleted
 		BlobTest.auditStore.scheduleAuditCleanup(1); // prune audit log, so the blob is actually deleted
-		await new Promise((resolve) => setTimeout(resolve, 60)); // wait for audit log removal and deletion
+		await delay(60); // wait for audit log removal and deletion
 		assert(!existsSync(filePath));
+
 		blob = await createBlob(Readable.from(testString));
 		await BlobTest.put({ id: 4, blob });
 		assert.notEqual(filePath, getFilePathForBlob(blob)); // it should be a new file path
 		filePath = getFilePathForBlob(blob);
 		BlobTest.auditStore.scheduleAuditCleanup(1); // prune audit log, so the blob is actually deleted
-		await new Promise((resolve) => setTimeout(resolve, 50)); // wait for audit log removal and deletion
+		await delay(50); // wait for audit log removal and deletion
 		assert(existsSync(filePath)); // should still exist because it isn't deleted yet
 		await BlobTest.delete(4);
-		await new Promise((resolve) => setTimeout(resolve, 50)); // wait for deletion
+		await delay(50); // wait for deletion
 		assert(!existsSync(filePath));
+
+		blob = await createBlob(Readable.from(testString));
+		await BlobTest.put({ id: 4, blob });
+		assert.notEqual(filePath, getFilePathForBlob(blob)); // it should be a new file path
+		filePath = getFilePathForBlob(blob);
+		BlobTest.auditStore.scheduleAuditCleanup(1); // prune audit log, so the blob is actually deleted
+		await delay(50); // wait for audit log removal and deletion
+		assert(existsSync(filePath)); // should still exist because it isn't replaced yet
+		await BlobTest.put({ id: 4, blob: null });
+		await delay(50); // wait for deletion
+		assert(!existsSync(filePath));
+	});
+	it('slowly create a blob and save it before it is done', async () => {
+		let testString = 'this is a test string'.repeat(256);
+		let blob = await createBlob(
+			Readable.from(
+				(async function* () {
+					for (let i = 0; i < 5; i++) {
+						yield testString;
+						await delay(50);
+					}
+				})()
+			)
+		);
+		await BlobTest.put({ id: 1, blob });
+		let record = await BlobTest.get(1);
+		assert.equal(record.id, 1);
+		let retrievedText = await record.blob.text();
+		assert.equal(retrievedText, testString.repeat(5));
 	});
 	it('invalid blob attempts', async () => {
 		assert.throws(() => {
@@ -78,3 +108,6 @@ describe('Blob test', () => {
 		setDeletionDelay(500);
 	});
 });
+function delay(ms) {
+	return new Promise((resolve) => setTimeout(resolve, ms)); // wait for audit log removal and deletion
+}

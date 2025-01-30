@@ -106,7 +106,7 @@ describe('Replication', () => {
 		await TestTable.put({
 			id: '10',
 			name,
-			blob: await server.createBlob('this is a test'.repeat(100)),
+			blob: await createBlob('this is a test'.repeat(100)),
 		});
 		let retries = 10;
 		do {
