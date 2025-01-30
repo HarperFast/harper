@@ -232,6 +232,7 @@ function createBlobFromStream(stream: NodeJS.ReadableStream, options: any): Prom
 					})
 					.on('finish', () => {
 						const fd = writeStream.fd;
+						// now we need to indicate that the file is ready for reading by setting the size in the header, in case any other threads were waiting for this to complete
 						let headerValue = BigInt(writeStream.bytesWritten);
 						if (options?.compress) headerValue |= BigInt(COMPRESSION_TYPE) << 48n;
 						headerView.setBigInt64(0, headerValue);
@@ -373,13 +374,22 @@ export function decodeBlobsWithWrites(callback: () => void) {
 	} finally {
 		const finished = promisedWrites.length < 2 ? promisedWrites[0] : Promise.all(promisedWrites);
 		promisedWrites = undefined;
+		// eslint-disable-next-line no-unsafe-finally
 		return finished;
 	}
 }
+
+/**
+ * Delete blobs in an object, recursively searching for blobs
+ * @param object
+ */
 export function deleteBlobsInObject(object) {
 	if (object instanceof Blob) {
+		// eslint-disable-next-line
+		// @ts-ignore
 		deleteBlob(object);
 	} else if (object.constructor === Object || Array.isArray(object)) {
+		// recursively find and delete blobs in the object
 		for (const key in object) {
 			const value = object[key];
 			if (typeof value === 'object') deleteBlobsInObject(object[key]);

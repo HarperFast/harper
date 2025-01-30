@@ -117,7 +117,7 @@ describe('Replication', () => {
 				continue;
 			}
 			assert.equal(result.name, name);
-			result = await test_stores[1].get('2')?.value;
+			result = await test_stores[1].get('10')?.value;
 			assert.equal(result.name, name);
 			assert.equal(await result.blob.text(), 'this is a test'.repeat(100));
 			break;
