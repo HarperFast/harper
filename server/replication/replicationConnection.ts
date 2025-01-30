@@ -992,7 +992,7 @@ export function replicateOverWS(ws, options, authorization) {
 										// note that last_removed may be undefined, in which case we want the comparison to go into this branch (hence !(<=))
 										if (
 											!(last_removed <= current_sequence_id) &&
-											env.get(CONFIG_PARAMS.REPLICATION_COPY_TABLES_TO_CATCHUP) !== false
+											env.get(CONFIG_PARAMS.REPLICATION_COPYTABLESTOCATCHUP) !== false
 										) {
 											// This means the audit log doesn't extend far enough back, so we need to replicate all the tables
 											// This should only be done on a single node, we don't want full table replication from all the
