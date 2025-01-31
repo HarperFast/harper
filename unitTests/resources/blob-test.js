@@ -81,9 +81,11 @@ describe('Blob test', () => {
 		await BlobTest.put({ id: 1, blob });
 		let record = await BlobTest.get(1);
 		assert.equal(record.id, 1);
+		let streamResults = streamToBuffer(record.blob.stream());
 		let retrievedBytes = await record.blob.bytes();
 		assert.equal(retrievedBytes.length, 0);
 		assert.equal(record.blob.size, 0);
+		assert.equal(await streamResults, '');
 	});
 	it('Save a blob and delete it', async () => {
 		setAuditRetention(0.01); // 10 ms audit log retention
@@ -139,13 +141,7 @@ describe('Blob test', () => {
 		let record = await BlobTest.get(1);
 		assert.equal(record.id, 1);
 		let stream = record.blob.stream(); // we are going to concurrently get the stream and the text to test both
-		let streamResults = (async () => {
-			let retrievedDataFromStream = [];
-			for await (const chunk of stream) {
-				retrievedDataFromStream.push(chunk);
-			}
-			return Buffer.concat(retrievedDataFromStream).toString();
-		})();
+		let streamResults = streamToBuffer(stream);
 		let retrievedText = await record.blob.text();
 		assert.equal(retrievedText, expectedResults);
 		assert.equal(await streamResults, expectedResults);
@@ -172,4 +168,11 @@ describe('Blob test', () => {
 });
 function delay(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms)); // wait for audit log removal and deletion
+}
+async function streamToBuffer(stream) {
+	let retrievedDataFromStream = [];
+	for await (const chunk of stream) {
+		retrievedDataFromStream.push(chunk);
+	}
+	return Buffer.concat(retrievedDataFromStream).toString();
 }
