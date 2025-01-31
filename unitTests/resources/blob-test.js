@@ -135,6 +135,15 @@ describe('Blob test', () => {
 		assert.throws(() => {
 			createBlob(undefined);
 		});
+		assert.throws(() => {
+			BlobTest.put({ id: 1, blob: 'not actually a blob' });
+		});
+		let record = await BlobTest.get(1);
+		if (record) {
+			assert.throws(() => {
+				record.blob = 'not a blob either';
+			});
+		}
 	});
 	afterEach(function () {
 		setAuditRetention(60000);
