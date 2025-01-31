@@ -202,7 +202,7 @@ function sendAnalytics() {
 	}, ANALYTICS_DELAY).unref();
 }
 
-class CPUMetrics {
+export class CPUMetrics {
 	lastUpdateTime: number;
 	lastCPUTimes: NodeJS.CpuUsage;
 
