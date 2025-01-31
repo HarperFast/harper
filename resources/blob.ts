@@ -16,12 +16,13 @@ import {
 	createWriteStream,
 	fdatasync,
 	open,
+	openSync,
 	readFileSync,
 	read,
 	unlink,
 	readdirSync,
 	existsSync,
-	statSync,
+	readSync,
 	watch,
 	write,
 } from 'node:fs';
@@ -116,6 +117,7 @@ class FileBackedBlob extends Blob {
 		const filePath = getFilePathForBlob(this);
 		let watcher: any;
 		let timer: NodeJS.Timeout;
+		let watchReject: (error: Error) => void;
 		async function readContents(): Promise<Buffer> {
 			const rawBytes = await readFile(filePath);
 			rawBytes.copy(HEADER, 0, 0, HEADER_SIZE);
@@ -124,10 +126,15 @@ class FileBackedBlob extends Blob {
 			function checkCompletion(rawBytes: Buffer): Buffer | Promise<Buffer> {
 				if (size === 0 || size > rawBytes.length) {
 					// the file is not finished being written, watch the file for changes to resume reading
+					timer = setTimeout(() => {
+						watchReject(new Error('File read timed out'));
+					}, FILE_READ_TIMEOUT);
 					if (!watcher)
-						return new Promise((resolve) => {
+						return new Promise((resolve, reject) => {
 							const start = Date.now();
+							watchReject = reject;
 							const tryAgain = () => {
+								clearTimeout(timer);
 								readContents().then((result) => {
 									if (result || Date.now() - start > FILE_READ_TIMEOUT) {
 										resolve(result);
@@ -168,11 +175,7 @@ class FileBackedBlob extends Blob {
 		const filePath = getFilePathForBlob(this);
 		let fd: number;
 		let position = 0;
-		let watcher: any;
-		let timer: NodeJS.Timeout;
 		let totalContentRead = 0;
-		let pullResolve: () => void;
-		let pullReject: (error: Error) => void;
 
 		return new ReadableStream({
 			start() {
@@ -186,69 +189,74 @@ class FileBackedBlob extends Blob {
 			},
 			pull: (controller) => {
 				let size = 0;
-				return new Promise((resolve, reject) => {
-					pullResolve = resolve;
-					pullReject = reject;
-					const readMore = () => {
-						read(fd, { position, length: CHUNK_SIZE }, (error, bytesRead, buffer) => {
-							// TODO: Implement support for decompression
-							totalContentRead += bytesRead;
-							if (error) return pullReject(error);
-							if (position === 0) {
-								// for the first read, we need to read the header and skip it for the data
-								buffer.copy(HEADER, 0, 0, HEADER_SIZE);
-								const headerValue = headerView.getBigUint64(0);
-								if (HEADER[1] === 0) {
-									// indicates zero length blob
-									close(fd);
-									controller.close();
-									return pullResolve();
-								}
-								size = Number(headerValue & 0xffffffffffffn);
-								buffer = buffer.subarray(HEADER_SIZE, bytesRead);
-								totalContentRead -= HEADER_SIZE;
-							} else if (bytesRead === 0) {
-								const buffer = new Uint8Array(8);
-								return read(fd, buffer, 0, HEADER_SIZE, 0, (error) => {
-									if (error) pullReject(error);
-									HEADER.set(buffer);
-									size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
-									if (size === 0 || size > totalContentRead) {
-										// the file is not finished being written, watch the file for changes to resume reading
-										if (!watcher) {
-											watcher = watch(filePath, { persistent: false }, readMore);
-											timer = setInterval(readMore, 100).unref();
-										}
-										return;
-									}
-									if (watcher) {
-										clearInterval(timer);
-										watcher.close();
-									}
-									close(fd);
-									controller.close();
-									pullResolve();
-								});
-							} else {
-								buffer = buffer.subarray(0, bytesRead);
-							}
-							position += bytesRead;
-							controller.enqueue(buffer);
-							if (totalContentRead === size) {
+				return new Promise(function readMore(resolve, reject) {
+					read(fd, { position, length: CHUNK_SIZE }, (error, bytesRead, buffer) => {
+						// TODO: Implement support for decompression
+						totalContentRead += bytesRead;
+						if (error) return reject(error);
+						if (position === 0) {
+							// for the first read, we need to read the header and skip it for the data
+							buffer.copy(HEADER, 0, 0, HEADER_SIZE);
+							const headerValue = headerView.getBigUint64(0);
+							if (HEADER[1] === 0) {
+								// indicates zero length blob
 								close(fd);
 								controller.close();
+								return resolve();
 							}
-							pullResolve();
-						});
-					};
-					readMore();
+							size = Number(headerValue & 0xffffffffffffn);
+							buffer = buffer.subarray(HEADER_SIZE, bytesRead);
+							totalContentRead -= HEADER_SIZE;
+						} else if (bytesRead === 0) {
+							const buffer = new Uint8Array(8);
+							return read(fd, buffer, 0, HEADER_SIZE, 0, (error) => {
+								if (error) reject(error);
+								HEADER.set(buffer);
+								size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
+								if (size === 0 || size > totalContentRead) {
+									// the file is not finished being written, watch the file for changes to resume reading
+									let watcher: any;
+									const timer = setTimeout(() => {
+										reject(new Error('File read timed out'));
+										watcher.close();
+									}, FILE_READ_TIMEOUT).unref();
+									watcher = watch(filePath, { persistent: false }, () => {
+										clearTimeout(timer);
+										watcher.close();
+										readMore(resolve, reject);
+									});
+									return;
+								}
+								close(fd);
+								controller.close();
+								resolve();
+							});
+						} else {
+							buffer = buffer.subarray(0, bytesRead);
+						}
+						position += bytesRead;
+						controller.enqueue(buffer);
+						if (totalContentRead === size) {
+							close(fd);
+							controller.close();
+						}
+						resolve();
+					});
 				});
 			},
 			cancel: () => {},
 		});
 	}
 	get size(): number {
-		return statSync(getFilePathForBlob(this)).size - HEADER_SIZE;
+		const filePath = getFilePathForBlob(this);
+		const fd = openSync(filePath, 'r');
+		readSync(fd, HEADER, 0, HEADER_SIZE, 0);
+		close(fd);
+		const headerValue = headerView.getBigUint64(0);
+		if (HEADER[1] === 0) return 0;
+		const size = Number(headerValue & 0xffffffffffffn);
+		if (size) return size;
+		// else return undefined to indicate that the file is not finished being written, so we don't know the size yet
 	}
 	slice() {
 		throw new Error('Not implemented');

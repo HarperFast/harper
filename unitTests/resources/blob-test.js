@@ -53,6 +53,7 @@ describe('Blob test', () => {
 		assert.equal(record.id, 1);
 		let retrievedBytes = await record.blob.bytes();
 		assert(retrievedBytes.equals(random));
+		assert.equal(record.blob.size, random.length);
 	});
 	it('create a blob from an empty buffer and save it', async () => {
 		let empty = Buffer.alloc(0);
@@ -62,6 +63,7 @@ describe('Blob test', () => {
 		assert.equal(record.id, 1);
 		let retrievedBytes = await record.blob.bytes();
 		assert.equal(retrievedBytes.length, 0);
+		assert.equal(record.blob.size, 0);
 	});
 	it('Save a blob and delete it', async () => {
 		setAuditRetention(0.01); // 10 ms audit log retention
@@ -127,6 +129,7 @@ describe('Blob test', () => {
 		let retrievedText = await record.blob.text();
 		assert.equal(retrievedText, expectedResults);
 		assert.equal(await streamResults, expectedResults);
+		assert.equal(record.blob.size, expectedResults.length);
 	});
 	it('invalid blob attempts', async () => {
 		assert.throws(() => {
