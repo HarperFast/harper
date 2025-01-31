@@ -6,7 +6,9 @@
  * 		- 0: Zero length blob
  * 		- 1: Uncompressed
  * 		- 2: Compressed with deflate
- * - The next 6 bytes are the size of the file
+ * - The next 6 bytes are the size of the content
+ *   - While the file is being written, 0xffffffffffff is used as a placeholder to indicate that the file is not finished being written (this nicely matches the logic that if the written content size is less than the indicated content size, it is not finished)
+ *   - Note that for compressed data, the size is the uncompressed size, and the compressed size in the file
  */
 
 import { addExtension, pack, unpack } from 'msgpackr';
