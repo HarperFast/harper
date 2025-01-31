@@ -89,6 +89,14 @@ addExtension({
 		}
 	},
 });
+// with Blobs, it is easy to forget to await the creation, make sure that the blob is created before continuing
+addExtension({
+	Class: Promise,
+	type: 12, // not actually used, but we need to define a type
+	pack() {
+		throw new Error('Cannot encode a promise');
+	},
+});
 // the header is 8 bytes
 // this is a reusable buffer for reading and writing to the header (without having to create new allocations)
 const HEADER = new Uint8Array(8);
