@@ -3,9 +3,8 @@
  * on the server. The Blob class is a subclass of the global Blob class, and can be used in the same way.
  * The Blob-backed files begin with an 8-byte header:
  * - The first 2 bytes indicate the type of storage:
- * 		- 0: Zero length blob
- * 		- 1: Uncompressed
- * 		- 2: Compressed with deflate
+ * 		- 0: Uncompressed
+ * 		- 1: Compressed with deflate
  * - The next 6 bytes are the size of the content
  *   - While the file is being written, 0xffffffffffff is used as a placeholder to indicate that the file is not finished being written (this nicely matches the logic that if the written content size is less than the indicated content size, it is not finished)
  *   - Note that for compressed data, the size is the uncompressed size, and the compressed size in the file
@@ -38,8 +37,8 @@ import { join, dirname } from 'path';
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
 // We want to keep the file path private (but accessible to the extension)
 const HEADER_SIZE = 8;
-const UNCOMPRESSED_TYPE = 1;
-const DEFLATE_TYPE = 2;
+const UNCOMPRESSED_TYPE = 0;
+const DEFLATE_TYPE = 1;
 const DEFAULT_HEADER = new Uint8Array([0, UNCOMPRESSED_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const COMPRESS_HEADER = new Uint8Array([0, DEFLATE_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const storageInfoForBlob = new WeakMap();
@@ -130,7 +129,6 @@ class FileBackedBlob extends Blob {
 		async function readContents(): Promise<Buffer> {
 			const rawBytes = await readFile(filePath);
 			rawBytes.copy(HEADER, 0, 0, HEADER_SIZE);
-			if (rawBytes[1] === 0) return Buffer.alloc(0);
 			const size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
 			if (lastRead) lastRead = Date.now();
 			function checkCompletion(rawBytes: Buffer): Buffer | Promise<Buffer> {
@@ -208,12 +206,6 @@ class FileBackedBlob extends Blob {
 							// for the first read, we need to read the header and skip it for the data
 							buffer.copy(HEADER, 0, 0, HEADER_SIZE);
 							const headerValue = headerView.getBigUint64(0);
-							if (HEADER[1] === 0) {
-								// indicates zero length blob
-								close(fd);
-								controller.close();
-								return resolve();
-							}
 							size = Number(headerValue & 0xffffffffffffn);
 							buffer = buffer.subarray(HEADER_SIZE, bytesRead);
 							totalContentRead -= HEADER_SIZE;
@@ -263,7 +255,6 @@ class FileBackedBlob extends Blob {
 		readSync(fd, HEADER, 0, HEADER_SIZE, 0);
 		close(fd);
 		const headerValue = headerView.getBigUint64(0);
-		if (HEADER[1] === 0) return 0;
 		const size = Number(headerValue & 0xffffffffffffn);
 		if (size < 0xffffffffffff) return size;
 		// else return undefined to indicate that the file is not finished being written, so we don't know the size yet
@@ -362,7 +353,7 @@ function createBlobFromStream(stream: NodeJS.ReadableStream, options: any): Prom
 					let headerValue = BigInt(size);
 					const header = new Uint8Array(HEADER_SIZE);
 					const headerView = new DataView(header.buffer);
-					if (size > 0) headerValue |= BigInt(options?.compress ? DEFLATE_TYPE : UNCOMPRESSED_TYPE) << 48n;
+					headerValue |= BigInt(options?.compress ? DEFLATE_TYPE : UNCOMPRESSED_TYPE) << 48n;
 					headerView.setBigInt64(0, headerValue);
 					return header;
 				}
@@ -448,7 +439,7 @@ function createBlobFromBuffer(buffer: NodeJS.Buffer, options?: BlobCreationOptio
 	if (size < FILE_STORAGE_THRESHOLD) {
 		// if the buffer is small enough, just store it in memory
 		const blob = new Blob([buffer]);
-		headerView.setBigInt64(0, BigInt(size) | (BigInt(UNCOMPRESSED_TYPE) << 48n));
+		headerView.setBigInt64(0, BigInt(size));
 		blob.buffer = Buffer.concat([HEADER, buffer]);
 		return Promise.resolve(blob);
 	}

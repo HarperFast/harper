@@ -628,6 +628,7 @@ const CONFIG_PARAMS = {
 	STORAGE_ENCRYPTION: 'storage_encryption',
 	STORAGE_MAXTRANSACTIONQUEUETIME: 'storage_maxTransactionQueueTime',
 	STORAGE_PATH: 'storage_path',
+	STORAGE_BLOBPATHS: 'storage_blobPaths',
 	STORAGE_AUDIT_PATH: 'storage_audit_path',
 	STORAGE_MAXFREESPACETOLOAD: 'storage_maxFreeSpaceToLoad',
 	STORAGE_MAXFREESPACETORETAIN: 'storage_maxFreeSpaceToRetain',
