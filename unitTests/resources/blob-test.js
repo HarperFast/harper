@@ -55,6 +55,26 @@ describe('Blob test', () => {
 		assert(retrievedBytes.equals(random));
 		assert.equal(record.blob.size, random.length);
 	});
+	it('create a small blob from a buffer and save it', async () => {
+		let random = randomBytes(250);
+		let blob = await createBlob(random);
+		await BlobTest.put({ id: 1, blob });
+		let record = await BlobTest.get(1);
+		assert.equal(record.id, 1);
+		let retrievedBytes = await record.blob.bytes();
+		assert(random.equals(retrievedBytes));
+		assert.equal(record.blob.size, random.length);
+	});
+	it('create a small blob from a stream and save it', async () => {
+		let random = randomBytes(250);
+		let blob = await createBlob(Readable.from(random), { size: 250 });
+		await BlobTest.put({ id: 1, blob });
+		let record = await BlobTest.get(1);
+		assert.equal(record.id, 1);
+		let retrievedBytes = await record.blob.bytes();
+		assert(random.equals(retrievedBytes));
+		assert.equal(record.blob.size, random.length);
+	});
 	it('create a blob from an empty buffer and save it', async () => {
 		let empty = Buffer.alloc(0);
 		let blob = await createBlob(empty);
