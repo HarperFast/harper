@@ -29,8 +29,8 @@ import {
 import { createDeflate, deflate, createInflate } from 'node:zlib';
 import { Readable } from 'node:stream';
 import { ensureDir } from 'fs-extra';
-import { get as envGet } from '../utility/environment/environmentManager';
-import { CONFIG_PARAMS, getHdbBasePath, DATABASES_DIR_NAME } from '../utility/hdbTerms';
+import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager';
+import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { join, dirname } from 'path';
 
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
@@ -397,6 +397,10 @@ export function getFilePathForBlob(blob: FileBackedBlob): string {
 	return getFilePath(storageInfoForBlob.get(blob));
 }
 function getFilePath(storageInfo: any): string {
+	if (!blobStoragePaths) {
+		// initialize paths if not already done
+		blobStoragePaths = envGet(CONFIG_PARAMS.STORAGE_BLOBPATHS) || [join(getHdbBasePath(), 'blobs')];
+	}
 	return join(
 		blobStoragePaths[storageInfo.storageIndex],
 		storageInfo.fileId.slice(0, -6) || '0',
@@ -449,12 +453,7 @@ function createBlobFromBuffer(buffer: NodeJS.Buffer, options?: BlobCreationOptio
 function createBlobWithFile(): { filePath: string; blob: FileBackedBlob; ready: Promise<void> } {
 	if (!blobStoragePaths) {
 		// initialize paths if not already done
-		blobStoragePaths = envGet(CONFIG_PARAMS.STORAGE_BLOBPATHS) || [
-			join(
-				process.env.STORAGE_PATH || envGet(CONFIG_PARAMS.STORAGE_PATH) || join(getHdbBasePath(), DATABASES_DIR_NAME),
-				'blobs'
-			),
-		];
+		getFilePath({ storageIndex: 0, fileId: '0' }); // just to initialize the paths
 	}
 	const id = getNextFileId();
 	// get the storage index, which is the index of the blob storage path to use, distributed round-robin based on the id
