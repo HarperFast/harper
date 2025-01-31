@@ -18,7 +18,7 @@ import {
 } from './auditStore';
 import * as harper_logger from '../utility/logging/harper_logger';
 import './blob';
-import { blobsWereEncoded, encodeBlobsWithFilePath } from './blob';
+import { blobsWereEncoded, deleteBlobsInObject, encodeBlobsWithFilePath } from './blob';
 
 // these are matched by lmdb-js for timestamp replacement. the first byte here is used to xor with the first byte of the date as a double so that it ends up less than 32 for easier identification (otherwise dates start with 66)
 export const TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 4, 0x40, 0, 0]);
@@ -290,7 +290,7 @@ setInterval(() => {
 		}
 	}
 }, 15000).unref();
-export function getUpdateRecord(store, table_id, audit_store) {
+export function recordUpdater(store, table_id, audit_store) {
 	return function (
 		id,
 		record,
@@ -343,14 +343,13 @@ export function getUpdateRecord(store, table_id, audit_store) {
 			if (options?.originatingOperation) extended_type |= HAS_ORIGINATING_OPERATION;
 			// we use resolve_record outside of transaction, so must explicitly make it conditional
 			if (resolve_record) put_options.ifVersion = if_version = existing_entry?.version ?? null;
-			let record_blobs_to_delete;
-			if (existing_entry && existing_entry.metadataFlags & HAS_BLOBS) {
+			if (existing_entry && existing_entry.value && existing_entry.metadataFlags & HAS_BLOBS) {
 				if (!audit_store.getBinaryFast(existing_entry.localTime)) {
 					// if it used to have blobs, and it doesn't exist in the audit store, we need to delete the old blobs
-					record_blobs_to_delete = existing_entry.value;
+					deleteBlobsInObject(existing_entry.value);
 				}
 			}
-			const result = encodeBlobsWithFilePath(() => store.put(id, record, put_options), id, record_blobs_to_delete);
+			const result = encodeBlobsWithFilePath(() => store.put(id, record, put_options), id);
 			if (blobsWereEncoded) {
 				extended_type |= HAS_BLOBS;
 			}
@@ -424,4 +423,14 @@ export function getUpdateRecord(store, table_id, audit_store) {
 			throw error;
 		}
 	};
+}
+export function removeEntry(store: any, entry: any, existing_version?: number) {
+	if (!entry) return;
+	if (entry.value && entry.metadataFlags & HAS_BLOBS) {
+		if (!store.auditStore.getBinaryFast(entry.localTime)) {
+			// if it used to have blobs, and it doesn't exist in the audit store, we need to delete the old blobs
+			deleteBlobsInObject(entry.value);
+		}
+	}
+	return store.remove(entry.key, existing_version);
 }

@@ -161,10 +161,12 @@ export function removeAuditEntry(audit_store: any, key: number, value: any): Pro
 
 	if ((type & 15) === DELETE) {
 		// if this is a delete, we remove the delete entry from the primary table
-		// at the same time so the audit table the primary table are in sync
+		// at the same time so the audit table the primary table are in sync, assuming the entry matches this audit record version
 		audit_record = audit_record || readAuditEntry(value);
 		const table_id = audit_record.tableId;
-		audit_store.deleteCallbacks?.[table_id]?.(audit_record.recordId);
+		const primary_store = audit_store.tableStores[audit_record.tableId];
+		if (primary_store.getEntry(audit_record.recordId).version === audit_record.version)
+			audit_store.deleteCallbacks?.[table_id]?.(audit_record.recordId, audit_record.version);
 	}
 	return audit_store.remove(key);
 }

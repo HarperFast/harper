@@ -489,11 +489,8 @@ function getNextFileId(): number {
  * @param encodingId
  * @param objectToClear
  */
-export function encodeBlobsWithFilePath<T>(callback: () => T, encodingId: number, objectToClear?: any) {
+export function encodeBlobsWithFilePath<T>(callback: () => T, encodingId: number) {
 	encodeForStorageForRecordId = encodingId;
-	if (objectToClear) {
-		deleteBlobsInObject(objectToClear);
-	}
 	blobsWereEncoded = false;
 	try {
 		return callback();
