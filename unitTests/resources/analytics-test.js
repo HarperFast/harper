@@ -11,7 +11,7 @@ describe('CachedResourceUsage', () => {
 	});
 
 	afterEach(() => {
-		sinon.reset();
+		sinon.restore();
 	})
 
 	describe('page faults', () => {
