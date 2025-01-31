@@ -264,7 +264,7 @@ export class CPUMetrics {
 		const cpuTime = user + system;
 		log.debug?.(`getCPUUsage: cpuTime: ${cpuTime}`);
 
-		const cpuUsage = (cpuTime / timeElapsed).toFixed(2);
+		const cpuUsage = Math.round((cpuTime / timeElapsed) * 1e2) / 1e2;
 		log.debug?.(`getCPUUsage: cpuUsage: ${cpuUsage}`);
 
 		return {
