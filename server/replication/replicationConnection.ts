@@ -18,26 +18,22 @@ import {
 	urlToNodeName,
 	getThisNodeId,
 	enabled_databases,
-	lastTimeInAuditStore,
 } from './replicator';
-import env from '../../utility/environment/environmentManager';
-import { getUpdateRecord, HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
-import { CERT_PREFERENCE_REP } from '../../utility/terms/certificates';
+import { HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
 import { decode, encode, Packr } from 'msgpackr';
 import { WebSocket } from 'ws';
-import { readFileSync } from 'fs';
 import { threadId } from 'worker_threads';
 import * as logger from '../../utility/logging/logger';
 import { disconnectedFromNode, connectedToNode, ensureNode } from './subscriptionManager';
 import { EventEmitter } from 'events';
 import { createTLSSelector } from '../../security/keys';
-import * as https from 'node:https';
 import * as tls from 'node:tls';
 import { getHDBNodeTable } from './knownNodes';
 import * as process from 'node:process';
 import { isIP } from 'node:net';
 import { recordAction } from '../../resources/analytics';
-import { decodeBlobsWithWrites } from '../../resources/blob';
+import { decodeBlobsWithWrites, decodeWithBlobCallback, getFileId } from '../../resources/blob';
+import { PassThrough } from 'node:stream';
 
 // these are the codes we use for the different commands
 const SUBSCRIPTION_REQUEST = 129;
@@ -45,7 +41,6 @@ const NODE_NAME = 140;
 const NODE_NAME_TO_ID_MAP = 141;
 const DISCONNECT = 142;
 const RESIDENCY_LIST = 130;
-const TABLE_STRUCTURE = 131;
 const TABLE_FIXED_STRUCTURE = 132;
 const GET_RECORD = 133; // request a specific record
 const GET_RECORD_RESPONSE = 134; // request a specific record
@@ -54,6 +49,7 @@ const OPERATION_RESPONSE = 137;
 const SEQUENCE_ID_UPDATE = 143;
 const COMMITTED_UPDATE = 144;
 const DB_SCHEMA = 145;
+const BLOB_CHUNK = 146;
 export const table_update_listeners = new Map();
 // This a map of the database name to the subscription object, for the subscriptions from our tables to the replication module
 // when we receive messages from other nodes, we then forward them on to as a notification on these subscriptions
@@ -302,6 +298,8 @@ export function replicateOverWS(ws, options, authorization) {
 	// track bytes read and written so we can verify if a connection is really dead on pings
 	let bytes_read = 0;
 	let bytes_written = 0;
+	const blobs_in_flight = new Map();
+	const outstanding_blobs_to_finish: Promise<void>[] = [];
 	if (options.url) {
 		const send_ping = () => {
 			// if we have not received a message in the last ping interval, we should terminate the connection (but check to make sure we aren't just waiting for other data to flow)
@@ -548,6 +546,18 @@ export function replicateOverWS(ws, options, authorization) {
 							remoteNodeIds: receiving_data_from_node_ids,
 						});
 						break;
+					case BLOB_CHUNK: {
+						// this is a blob chunk, we need to write it to the blob store
+						const blob_info = message[1];
+						const { fileId, size, finished } = blob_info;
+						const stream = blobs_in_flight.get(fileId);
+						if (!stream) logger.warn?.('Can not find stream for blob id', fileId);
+						else if (finished) {
+							stream.end(message[2]);
+							blobs_in_flight.delete(fileId);
+						} else stream.write(message[2]);
+						break;
+					}
 					case GET_RECORD: {
 						// this is a request for a record, we need to send it back
 						const request_id = data;
@@ -625,6 +635,8 @@ export function replicateOverWS(ws, options, authorization) {
 					}
 					case SUBSCRIPTION_REQUEST: {
 						node_subscriptions = data;
+						let when_next_audit_sent: Promise<void>;
+						let next_audit_sent: () => void;
 						// permission check to make sure that this node is allowed to subscribe to this database, that is that
 						// we have publish permission for this node/database
 						let subscription_to_hdb_nodes, when_subscribed_to_hdb_nodes;
@@ -908,21 +920,68 @@ export function replicateOverWS(ws, options, authorization) {
 								writeInt(invalidation_entry.length);
 								writeBytes(invalidation_entry);
 							} else {
-								// directly write the audit record. If it starts with the previous local time, we omit that
-								let encoded = audit_record.getEncoded();
+								// directly write the audit record.
+								const encoded = audit_record.encoded;
 								if (audit_record.extendedType & HAS_BLOBS) {
-									// if there are blobs, we need to decode and send them
-									encoded = Buffer.concat([
-										audit_record.getEncoded(true),
-										primary_store.encoder.encode(audit_record.getValue(primary_store)),
-									]);
+									// if there are blobs, we need to find them and send their contents
+									decodeWithBlobCallback(
+										() => audit_record.getValue(primary_store),
+										async (blob) => {
+											// found a blob, start sending it
+											try {
+												const id = getFileId(blob);
+												if (!when_next_audit_sent)
+													when_next_audit_sent = new Promise((resolve) => {
+														next_audit_sent = resolve;
+													});
+												await when_next_audit_sent;
+												let last_buffer: Buffer;
+												for await (const buffer of blob.stream()) {
+													if (last_buffer)
+														// do the previous buffer so we know if it is the last one or not
+														ws.send(
+															encode([
+																BLOB_CHUNK,
+																{
+																	fileId: id,
+																	size: blob.size,
+																},
+																last_buffer,
+															])
+														);
+													last_buffer = buffer;
+													if (closed) return;
+													if (ws._socket.writableNeedDrain) {
+														await new Promise((resolve) => ws._socket.once('drain', resolve));
+													}
+												}
+												ws.send(
+													encode([
+														BLOB_CHUNK,
+														{
+															fileId: id,
+															size: blob.size,
+															finished: true,
+														},
+														last_buffer,
+													])
+												);
+											} catch (error) {
+												logger.debug?.('Error sending blob', error);
+											}
+										}
+									);
 								}
+								// If it starts with the previous local time, we omit that
 								const start = encoded[0] === 66 ? 8 : 0;
 								writeInt(encoded.length - start);
 								writeBytes(encoded, start);
+								logger.info?.('wrote record', audit_record.recordId, 'length:', encoded.length);
 							}
 						};
 						const sendQueuedData = () => {
+							next_audit_sent?.();
+							when_next_audit_sent = null;
 							if (position - encoding_start > 8) {
 								// if we have more than just a txn time, send it
 								ws.send(encoding_buffer.subarray(encoding_start, position));
@@ -1116,21 +1175,48 @@ export function replicateOverWS(ws, options, authorization) {
 					);
 				}
 				try {
-					const finished = decodeBlobsWithWrites(() => {
-						event = {
-							table: table_decoder.name,
-							id: audit_record.recordId,
-							type: audit_record.type,
-							nodeId: remote_short_id_to_local_id.get(audit_record.nodeId),
-							residencyList: residency_list,
-							timestamp: audit_record.version,
-							value: audit_record.getValue(table_decoder),
-							user: audit_record.user,
-							beginTxn: begin_txn,
-							expiresAt: audit_record.expiresAt,
-						};
-					});
-					event.finished = finished;
+					const blob_promises = [];
+
+					const finished = decodeBlobsWithWrites(
+						() => {
+							event = {
+								table: table_decoder.name,
+								id: audit_record.recordId,
+								type: audit_record.type,
+								nodeId: remote_short_id_to_local_id.get(audit_record.nodeId),
+								residencyList: residency_list,
+								timestamp: audit_record.version,
+								value: audit_record.getValue(table_decoder),
+								user: audit_record.user,
+								beginTxn: begin_txn,
+								expiresAt: audit_record.expiresAt,
+							};
+						},
+						(remote_blob) => {
+							// write the blob to the blob store
+							const blob_id = getFileId(remote_blob);
+							const stream = new PassThrough();
+							let local_blob: Blob;
+							const promise = createBlob(stream, {
+								forBlob(blob: Blob) {
+									// synchronous get the blob, before it is ready
+									local_blob = blob;
+								},
+							});
+							blob_promises.push(promise);
+							logger.warn('starting blob transfer', blob_id);
+							blobs_in_flight.set(blob_id, stream);
+							const finished = local_blob.finished;
+							if (finished) {
+								outstanding_blobs_to_finish.push(finished);
+								finished.finally(() => {
+									outstanding_blobs_to_finish.splice(outstanding_blobs_to_finish.indexOf(finished), 1);
+								});
+							}
+							return local_blob;
+						}
+					);
+					event.finished = blob_promises.length > 0 ? [...blob_promises, finished] : finished;
 				} catch (error) {
 					error.message += 'typed structures for current decoder' + JSON.stringify(table_decoder.decoder.typedStructs);
 					throw error;
@@ -1170,7 +1256,11 @@ export function replicateOverWS(ws, options, authorization) {
 				type: 'end_txn',
 				localTime: last_sequence_id_received,
 				remoteNodeIds: receiving_data_from_node_ids,
-				onCommit() {
+				async onCommit() {
+					// if there are outstanding blobs to finish writing, delay commit receipts until they are finished (so that if we are interrupting
+					// we correctly resend the blobs)
+					console.error('outstanding_blobs_to_finish.length', outstanding_blobs_to_finish.length);
+					if (outstanding_blobs_to_finish.length > 0) await Promise.all(outstanding_blobs_to_finish);
 					if (event) {
 						const latency = Date.now() - event.timestamp;
 						recordAction(

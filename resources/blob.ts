@@ -33,6 +33,7 @@ import { ensureDir } from 'fs-extra';
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { join, dirname } from 'path';
+import logger from '../utility/logging/logger';
 
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
 // We want to keep the file path private (but accessible to the extension)
@@ -42,6 +43,7 @@ const DEFLATE_TYPE = 1;
 const DEFAULT_HEADER = new Uint8Array([0, UNCOMPRESSED_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const COMPRESS_HEADER = new Uint8Array([0, DEFLATE_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const storageInfoForBlob = new WeakMap();
+let currentBlobCallback: (blob: Blob) => void;
 export const Blob = global.Blob || polyfillBlob(); // use the global Blob class if it exists (it doesn't on Node v16)
 let encodeForStorageForRecordId: number = undefined; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
 let promisedWrites: Array<Promise<void>>;
@@ -54,14 +56,16 @@ addExtension({
 			// this was encoded as reference to a file path, so we can decode it as msgpack and create the referencing blob
 			const data = unpack(buffer);
 			// this is a file backed blob, so we need to create a new blob object with the storage info
-			return new FileBackedBlob({
+			const blob = new FileBackedBlob({
 				storageIndex: data[0],
 				fileId: data[1],
 			});
+			if (currentBlobCallback) return currentBlobCallback(blob) ?? blob;
+			return blob;
 		} else {
 			// this directly encoded as a buffer, so we need to create a new blob object backed by a file, with the buffer
 			const blob = createBlobFromDirectBuffer(buffer);
-			if (blob.finished) promisedWrites.push(blob.finished);
+			if (blob.finished && promisedWrites) promisedWrites.push(blob.finished);
 			return blob;
 		}
 	},
@@ -220,7 +224,9 @@ class FileBackedBlob extends Blob {
 									let watcher: any;
 									const timer = setTimeout(() => {
 										reject(new Error('File read timed out'));
-										watcher.close();
+										close(fd);
+										controller.close();
+										if (watcher) watcher.close();
 									}, FILE_READ_TIMEOUT).unref();
 									watcher = watch(filePath, { persistent: false }, () => {
 										clearTimeout(timer);
@@ -237,7 +243,15 @@ class FileBackedBlob extends Blob {
 							buffer = buffer.subarray(0, bytesRead);
 						}
 						position += bytesRead;
-						controller.enqueue(buffer);
+						try {
+							controller.enqueue(buffer);
+						} catch (error) {
+							// we need to catch the error here, because if the controller is closed, it will throw an error
+							// but we still want to resolve the promise
+							logger.debug?.('Error enqueuing chunk', error);
+							close(fd);
+							return resolve();
+						}
 						if (totalContentRead === size) {
 							close(fd);
 							controller.close();
@@ -246,7 +260,6 @@ class FileBackedBlob extends Blob {
 					});
 				});
 			},
-			cancel: () => {},
 		});
 	}
 	get size(): number {
@@ -262,6 +275,9 @@ class FileBackedBlob extends Blob {
 	slice() {
 		throw new Error('Not implemented');
 	}
+	get type(): string {
+		return '';
+	}
 }
 let deletion_delay = 500;
 /**
@@ -270,16 +286,13 @@ let deletion_delay = 500;
  */
 export function deleteBlob(blob: Blob): Promise<void> {
 	// do we even need to check for completion here?
-	return new Promise((resolve, reject) => {
-		const filePath = getFilePathForBlob(blob);
-		setTimeout(() => {
-			// TODO: we need to determine when any read transaction are done with the file, and then delete it, this is a hack to just give it some time for that
-			unlink(filePath, (error) => {
-				if (error) reject(error);
-				else resolve();
-			});
-		}, deletion_delay);
-	});
+	const filePath = getFilePathForBlob(blob);
+	setTimeout(() => {
+		// TODO: we need to determine when any read transaction are done with the file, and then delete it, this is a hack to just give it some time for that
+		unlink(filePath, (error) => {
+			if (error) logger.debug?.('Error trying to remove blob file', error);
+		});
+	}, deletion_delay);
 }
 export function setDeletionDelay(delay: number) {
 	deletion_delay = delay;
@@ -289,6 +302,7 @@ export type BlobCreationOptions = {
 	compress?: boolean; // compress the data with deflate
 	flush?: boolean; // flush to disk after writing and before resolving the finished promise
 	size?: number; // the size of the data, if known ahead of time
+	forBlob: (blob: Blob) => any; // provides synchronous access to the blob that is created
 };
 /**
  * Create a blob from a readable stream or a buffer by creating a file in the blob storage path with a new unique internal id, that
@@ -324,6 +338,7 @@ function createBlobFromStream(stream: NodeJS.ReadableStream, options: any): Prom
 		finishedResolve = resolve;
 		finishedReject = reject;
 	});
+	if (options?.forBlob) options?.forBlob(blob);
 	return ready.then(
 		() =>
 			new Promise((resolve, reject) => {
@@ -362,9 +377,8 @@ function createBlobFromStream(stream: NodeJS.ReadableStream, options: any): Prom
 					const fd = writeStream.fd;
 					if (error) {
 						close(fd);
-						const storageInfo = storageInfoForBlob.get(blob);
-						unlink(storageInfo.path, () => {}); // if there's an error, delete the file
 						finishedReject(error);
+						unlink(getFilePathForBlob(blob), () => {}); // if there's an error, delete the file
 					}
 					if (options?.flush) {
 						// we just use fdatasync because we really aren't that concerned with flushing file metadata
@@ -393,6 +407,10 @@ function createBlobFromStream(stream: NodeJS.ReadableStream, options: any): Prom
 				});
 			})
 	);
+}
+
+export function getFileId(blob: Blob): string {
+	return storageInfoForBlob.get(blob)?.fileId;
 }
 export function getFilePathForBlob(blob: FileBackedBlob): string {
 	return getFilePath(storageInfoForBlob.get(blob));
@@ -475,11 +493,12 @@ function getNextFileId(): number {
 	// and initialize it with the starting id
 	if (!idIncrementer) {
 		// get the last id by checking the highest id in all the blob storage paths
-		let lastId = 0;
+		let highestId = 0;
 		for (let path of blobStoragePaths) {
+			let id = 0;
 			// we need to get the highest id in the directory structure, so we need to iterate through all the directories to find the highest byte sequence
 			for (let i = 0; i < 3; i++) {
-				lastId = lastId * 0x1000;
+				id = id * 0x1000;
 				let highest = 0;
 				if (existsSync(path)) {
 					for (const entry of readdirSync(path)) {
@@ -489,11 +508,12 @@ function getNextFileId(): number {
 						}
 					}
 				}
-				lastId += highest;
+				id += highest;
 				path = join(path, highest.toString(16));
 			}
+			highestId = Math.max(highestId, id);
 		}
-		idIncrementer = new BigInt64Array([BigInt(lastId) + 1n]);
+		idIncrementer = new BigInt64Array([BigInt(highestId) + 1n]);
 		// now get the selected incrementer buffer, this is the shared buffer was first registered and that all threads will use
 		idIncrementer = new BigInt64Array(
 			databases.system.hdb_info.primaryStore.getUserSharedBuffer('blob-file-id', idIncrementer.buffer)
@@ -519,18 +539,33 @@ export function encodeBlobsWithFilePath<T>(callback: () => T, encodingId: number
 }
 
 /**
- * Decode blobs, creating local storage to holde the blogs and returning a promise that resolves when all the blobs are written to disk
+ * Decode blobs, creating local storage to hold the blogs and returning a promise that resolves when all the blobs are written to disk
  * @param callback
  */
-export function decodeBlobsWithWrites(callback: () => void) {
+export function decodeBlobsWithWrites(callback: () => void, blobCallback?: (blob: Blob) => void) {
 	try {
 		promisedWrites = [];
+		currentBlobCallback = blobCallback;
 		return callback();
 	} finally {
+		currentBlobCallback = undefined;
 		const finished = promisedWrites.length < 2 ? promisedWrites[0] : Promise.all(promisedWrites);
 		promisedWrites = undefined;
 		// eslint-disable-next-line no-unsafe-finally
 		return finished;
+	}
+}
+
+/**
+ * Decode with a callback for when blobs are encountered, allowing for detecting of blobs
+ * @param callback
+ */
+export function decodeWithBlobCallback(callback: () => void, blobCallback: (blob: Blob) => void) {
+	try {
+		currentBlobCallback = blobCallback;
+		return callback();
+	} finally {
+		currentBlobCallback = undefined;
 	}
 }
 
