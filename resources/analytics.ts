@@ -202,174 +202,14 @@ function sendAnalytics() {
 	}, ANALYTICS_DELAY).unref();
 }
 
-export class CPUMetrics {
-	lastUpdateTime: number;
-	lastCPUTimes: NodeJS.CpuUsage;
-
-	constructor() {
-		this.lastUpdateTime = Number(process.hrtime.bigint() / 1000n); // normalize to microseconds
-		this.lastCPUTimes = process.cpuUsage();
-	}
-
-	toJSON(key: string) {
-		if (key === "lastScrapeTime") {
-			return this.lastUpdateTime;
-		}
-		if (key === "lastCPUTimes") {
-			return this.lastCPUTimes;
-		}
-		return { lastScrapeTime: this.lastUpdateTime, lastCPUTimes: this.lastCPUTimes };
-	}
-
-	getLastUpdateTime() {
-		log.debug?.(`getLastUpdateTime: ${this.lastUpdateTime}`);
-		return this.lastUpdateTime;
-	}
-
-	getLastCPUTimes() {
-		log.debug?.(`getLastCPUTimes: ${JSON.stringify(this.lastCPUTimes)}`);
-		return this.lastCPUTimes;
-	}
-
-	setLastUpdateTime(lastUpdateTime: number) {
-		log.debug?.(`setLastUpdateTime: ${lastUpdateTime}`);
-		this.lastUpdateTime = lastUpdateTime;
-	}
-
-	setLastCPUTimes(cpuTimes: NodeJS.CpuUsage) {
-		log.debug?.(`setLastCPUTimes: ${JSON.stringify(cpuTimes)}`);
-		this.lastCPUTimes = cpuTimes;
-	}
-
-	/**
-	 * getCPUUsage returns an object with the following keys:
-	 * utilization: a number between 0 and 1 signifying how much CPU time we used
-	 *              since the last time this function was called or since this
-	 *              instance was created
-	 * period:      the wall clock time elapsed in microseconds since the last time
-	 *              this function was called or since the instance was created
-	 * user:        user CPU time in microseconds
-	 * system:      system CPU time in microseconds
-	 */
-	getCPUUsage() {
-		const now = Number(process.hrtime.bigint() / 1000n); // normalize to microseconds
-		const timeElapsed = now - this.getLastUpdateTime();
-		log.debug?.(`getCPUUsage: timeElapsed: ${timeElapsed}`);
-		const cpuTimes = process.cpuUsage(this.getLastCPUTimes());
-
-		this.setLastUpdateTime(now);
-		this.setLastCPUTimes(cpuTimes);
-
-		const { user, system } = cpuTimes;
-		const cpuTime = user + system;
-		log.debug?.(`getCPUUsage: cpuTime: ${cpuTime}`);
-
-		const cpuUsage = Math.round((cpuTime / timeElapsed) * 100) / 100;
-		log.debug?.(`getCPUUsage: cpuUsage: ${cpuUsage}`);
-
-		return {
-			utilization: cpuUsage,
-			period: timeElapsed,
-			user,
-			system,
-		};
-	}
+interface Metric {
+	[key: string]: any;
 }
 
-let cpuMetricsSingleton: CPUMetrics;
-function getCPUMetrics() {
-	if (cpuMetricsSingleton === undefined) {
-		cpuMetricsSingleton = new CPUMetrics();
-	}
-	return cpuMetricsSingleton;
-}
-
-let cachedResourceUsageSingleton: CachedResourceUsage;
-function getCachedResourceUsage(refreshIntervalSecs: number) {
-	if (cachedResourceUsageSingleton === undefined) {
-		cachedResourceUsageSingleton = new CachedResourceUsage(refreshIntervalSecs);
-	} else if (cachedResourceUsageSingleton.refreshInterval !== refreshIntervalSecs) {
-		log.warn?.(`CachedResourceUsage instance already created with refresh internal of ${cachedResourceUsageSingleton.refreshInterval}s but different internal requested: ${refreshIntervalSecs}s`);
-	}
-	return cachedResourceUsageSingleton;
-}
-
-interface Metric {}
-
-interface PageFaults extends Metric {
-	major: number;
-	minor: number;
-}
-
-interface ContextSwitches extends Metric {
-	voluntary: number;
-	involuntary: number;
-}
-
-export class CachedResourceUsage {
-	refreshInterval: number;
-	lastRefreshed: number;
-	resourceUsage: NodeJS.ResourceUsage;
-	priorResourceUsage: NodeJS.ResourceUsage;
-
-	constructor(refreshIntervalSecs: number) {
-		this.refreshInterval = refreshIntervalSecs;
-		this.lastRefreshed = 0;
-		this.priorResourceUsage = {
-			fsRead: 0,
-			fsWrite: 0,
-			involuntaryContextSwitches: 0,
-			ipcReceived: 0,
-			ipcSent: 0,
-			maxRSS: 0,
-			sharedMemorySize: 0,
-			signalsCount: 0,
-			swappedOut: 0,
-			systemCPUTime: 0,
-			unsharedDataSize: 0,
-			unsharedStackSize: 0,
-			userCPUTime: 0,
-			voluntaryContextSwitches: 0,
-			majorPageFault: 0,
-			minorPageFault: 0
-		}
-	}
-
-	private refresh() {
-		const nextRefresh = this.lastRefreshed + this.refreshInterval;
-		if (Date.now() > nextRefresh) {
-			if (this.resourceUsage) {
-				this.priorResourceUsage = this.resourceUsage;
-			}
-			this.resourceUsage = process.resourceUsage();
-			this.lastRefreshed = Date.now();
-		}
-		log.debug?.(`refresh priorResourceUsage: ${JSON.stringify(this.priorResourceUsage)}`);
-		log.debug?.(`refresh resourceUsage: ${JSON.stringify(this.resourceUsage)}`);
-	}
-
-	pageFaults(): PageFaults {
-		this.refresh();
-		return {
-			major: this.resourceUsage.majorPageFault - this.priorResourceUsage.majorPageFault,
-			minor: this.resourceUsage.minorPageFault - this.priorResourceUsage.minorPageFault,
-		};
-	}
-
-	contextSwitches(): ContextSwitches {
-		this.refresh();
-		return {
-			voluntary: this.resourceUsage.voluntaryContextSwitches - this.priorResourceUsage.voluntaryContextSwitches,
-			involuntary: this.resourceUsage.involuntaryContextSwitches - this.priorResourceUsage.involuntaryContextSwitches,
-		};
-	}
-}
-
-function storeMetric(table: any, metricName: string, metric: Metric, time: number) {
+function storeMetric(table: any, metricName: string, metric: Metric) {
 	const metricValue = {
 		id: getNextMonotonicTime(),
 		metric: metricName,
-		time,
 		...metric,
 	};
 	table.primaryStore.put(metricValue.id, metricValue, { append: true }).then((success: boolean) => {
@@ -379,10 +219,42 @@ function storeMetric(table: any, metricName: string, metric: Metric, time: numbe
 	});
 }
 
-async function aggregation(from_period, to_period = 60000) {
-	const cpuMetrics = getCPUMetrics();
-	const resourceUsage = getCachedResourceUsage(to_period / 1000);
+interface ResourceUsage extends Partial<NodeJS.ResourceUsage> {
+	time?: number;
+	period?: number;
+	cpuUtilization?: number;
+}
 
+/** calculateCPUUtilization takes a ResourceUsage with at least userCPUTime & systemCPUTime set
+ *  with millisecond values (NB: Node's process.resourceUsage returns values in microseconds for
+ *  these fields so divide them by 1000 to get milliseconds) and a time period in milliseconds
+ *  and returns the percentage of that time the CPU was being utilized as a decimal value
+ *  between 0 and 1. So for example, 50% utilization will be returned as 0.5.
+ */
+export function calculateCPUUtilization(resourceUsage: ResourceUsage, period: number): number {
+	const cpuTime = resourceUsage.userCPUTime + resourceUsage.systemCPUTime;
+	return (Math.round((cpuTime / period) * 100) / 100);
+}
+
+/** diffResourceUsage takes a ResourceUsage representing the last time we stored them and a new
+ *  process.resourceUsage() return value and normalizes and diffs the two values to return the
+ *  new values for this time period.
+ */
+export function diffResourceUsage(lastResourceUsage: ResourceUsage, resourceUsage: NodeJS.ResourceUsage): ResourceUsage {
+	return {
+		// Node returns userCPUTime & systemCPUTime as microseconds, so normalize to milliseconds first
+		userCPUTime: (resourceUsage.userCPUTime / 1000) - (lastResourceUsage?.userCPUTime ?? 0),
+		systemCPUTime: (resourceUsage.systemCPUTime / 1000) - (lastResourceUsage?.systemCPUTime ?? 0),
+		minorPageFault: resourceUsage.minorPageFault - (lastResourceUsage?.minorPageFault ?? 0),
+		majorPageFault: resourceUsage.majorPageFault - (lastResourceUsage?.majorPageFault ?? 0),
+		fsRead: resourceUsage.fsRead - (lastResourceUsage?.fsRead ?? 0),
+		fsWrite: resourceUsage.fsWrite - (lastResourceUsage?.fsWrite ?? 0),
+		voluntaryContextSwitches: resourceUsage.voluntaryContextSwitches - (lastResourceUsage?.voluntaryContextSwitches ?? 0),
+		involuntaryContextSwitches: resourceUsage.involuntaryContextSwitches - (lastResourceUsage?.involuntaryContextSwitches ?? 0),
+	}
+}
+
+async function aggregation(from_period, to_period = 60000) {
 	const raw_analytics_table = getRawAnalyticsTable();
 	const analytics_table = getAnalyticsTable();
 	const task_queue_latency = new Promise((resolve) => {
@@ -559,20 +431,17 @@ async function aggregation(from_period, to_period = 60000) {
 	last_idle = idle;
 	last_active = active;
 
-	const cpuUtilization = cpuMetrics.getCPUUsage();
-	log.debug?.(`CPU Utilization: ${JSON.stringify(cpuUtilization)}`);
-	storeMetric(analytics_table, 'cpu', cpuUtilization, now);
-
-	const pageFaults = resourceUsage.pageFaults();
-	log.debug?.(`Page Faults: ${JSON.stringify(pageFaults)}`);
-	storeMetric(analytics_table, 'page-faults', pageFaults, now);
-
-	const contextSwitches = resourceUsage.contextSwitches();
-	log.debug?.(`Context switches: ${JSON.stringify(contextSwitches)}`);
-	storeMetric(analytics_table, 'context-switches', contextSwitches, now);
+	const resourceUsage = process.resourceUsage();
+	const currentResourceUsage = diffResourceUsage(lastResourceUsage, resourceUsage);
+	currentResourceUsage.time = now;
+	currentResourceUsage.period = lastResourceUsage.time ? now - lastResourceUsage.time : to_period;
+	currentResourceUsage.cpuUtilization = calculateCPUUtilization(lastResourceUsage, currentResourceUsage.period);
+	storeMetric(analytics_table, 'resource-usage', currentResourceUsage);
+	lastResourceUsage = currentResourceUsage;
 }
 let last_idle = 0;
 let last_active = 0;
+let lastResourceUsage: ResourceUsage = {};
 
 const rest = () => new Promise(setImmediate);
 
