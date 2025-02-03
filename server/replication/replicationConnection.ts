@@ -41,6 +41,7 @@ const NODE_NAME = 140;
 const NODE_NAME_TO_ID_MAP = 141;
 const DISCONNECT = 142;
 const RESIDENCY_LIST = 130;
+const FLOW_DIRECTIVE = 131;
 const TABLE_FIXED_STRUCTURE = 132;
 const GET_RECORD = 133; // request a specific record
 const GET_RECORD_RESPONSE = 134; // request a specific record
@@ -50,6 +51,7 @@ const SEQUENCE_ID_UPDATE = 143;
 const COMMITTED_UPDATE = 144;
 const DB_SCHEMA = 145;
 const BLOB_CHUNK = 146;
+
 export const table_update_listeners = new Map();
 // This a map of the database name to the subscription object, for the subscriptions from our tables to the replication module
 // when we receive messages from other nodes, we then forward them on to as a notification on these subscriptions
@@ -291,6 +293,7 @@ export function replicateOverWS(ws, options, authorization) {
 	if (remote_node_name && options.connection) options.connection.nodeName = remote_node_name;
 	let last_sequence_id_received, last_sequence_id_committed;
 	let send_ping_interval, receive_ping_timer, last_ping_time, skipped_message_sequence_update_timer;
+	let blobs_timer;
 	const DELAY_CLOSE_TIME = 1000;
 	let delayed_close: NodeJS.Timeout;
 	let last_message_time = 0;
@@ -317,6 +320,7 @@ export function replicateOverWS(ws, options, authorization) {
 	} else {
 		resetPingTimer();
 	}
+	ws._socket.setMaxListeners(100); // we should allow a lot of drain listeners for concurrent blob streams
 	function resetPingTimer() {
 		clearTimeout(receive_ping_timer);
 		bytes_read = ws._socket?.bytesRead;
@@ -342,7 +346,9 @@ export function replicateOverWS(ws, options, authorization) {
 	const MAX_OUTSTANDING_COMMITS = 150;
 	let outstanding_commits = 0;
 	let last_structure_length = 0;
-	let replication_paused;
+	let sending_flow_level = Infinity; // no restriction on commit flow, but this indicates if we have requested the other node to restrict flow
+	let receiving_flow_level = Infinity; // no restriction on commit flow, but this indicates the other node's desired commit flow level
+	let flow_level_listeners: (() => void)[] = [];
 	let subscription_request, audit_subscription;
 	let node_subscriptions;
 	let remote_short_id_to_local_id: Map<number, number>;
@@ -546,15 +552,37 @@ export function replicateOverWS(ws, options, authorization) {
 							remoteNodeIds: receiving_data_from_node_ids,
 						});
 						break;
+					case FLOW_DIRECTIVE:
+						receiving_flow_level = message[1]; // a floating point value of 0 to Infinity
+						for (const listener of flow_level_listeners) listener();
+						break;
 					case BLOB_CHUNK: {
 						// this is a blob chunk, we need to write it to the blob store
 						const blob_info = message[1];
 						const { fileId, size, finished } = blob_info;
-						const stream = blobs_in_flight.get(fileId);
-						if (!stream) logger.warn?.('Can not find stream for blob id', fileId);
-						else if (finished) {
+						let stream = blobs_in_flight.get(fileId);
+						logger.debug?.(
+							'Received blob',
+							fileId,
+							'has stream',
+							!!stream,
+							'connectedToBlob',
+							!!stream?.connectedToBlob,
+							'length',
+							message[2].length,
+							'finished',
+							finished
+						);
+
+						if (!stream) {
+							stream = new PassThrough();
+							stream.expectedSize = size;
+							blobs_in_flight.set(fileId, stream);
+						}
+						stream.lastChunk = Date.now();
+						if (finished) {
 							stream.end(message[2]);
-							blobs_in_flight.delete(fileId);
+							if (stream.connectedToBlob) blobs_in_flight.delete(fileId);
 						} else stream.write(message[2]);
 						break;
 					}
@@ -635,8 +663,6 @@ export function replicateOverWS(ws, options, authorization) {
 					}
 					case SUBSCRIPTION_REQUEST: {
 						node_subscriptions = data;
-						let when_next_audit_sent: Promise<void>;
-						let next_audit_sent: () => void;
 						// permission check to make sure that this node is allowed to subscribe to this database, that is that
 						// we have publish permission for this node/database
 						let subscription_to_hdb_nodes, when_subscribed_to_hdb_nodes;
@@ -930,14 +956,10 @@ export function replicateOverWS(ws, options, authorization) {
 											// found a blob, start sending it
 											try {
 												const id = getFileId(blob);
-												if (!when_next_audit_sent)
-													when_next_audit_sent = new Promise((resolve) => {
-														next_audit_sent = resolve;
-													});
-												await when_next_audit_sent;
 												let last_buffer: Buffer;
 												for await (const buffer of blob.stream()) {
-													if (last_buffer)
+													if (last_buffer) {
+														logger.debug?.('Sending blob chunk', id, 'length', last_buffer.length);
 														// do the previous buffer so we know if it is the last one or not
 														ws.send(
 															encode([
@@ -949,12 +971,16 @@ export function replicateOverWS(ws, options, authorization) {
 																last_buffer,
 															])
 														);
+													}
 													last_buffer = buffer;
 													if (closed) return;
 													if (ws._socket.writableNeedDrain) {
+														logger.debug?.('draining', id);
 														await new Promise((resolve) => ws._socket.once('drain', resolve));
+														logger.debug?.('drained', id);
 													}
 												}
+												logger.debug?.('Sending final blob chunk', id, 'length', last_buffer.length);
 												ws.send(
 													encode([
 														BLOB_CHUNK,
@@ -976,12 +1002,10 @@ export function replicateOverWS(ws, options, authorization) {
 								const start = encoded[0] === 66 ? 8 : 0;
 								writeInt(encoded.length - start);
 								writeBytes(encoded, start);
-								logger.info?.('wrote record', audit_record.recordId, 'length:', encoded.length);
+								logger.trace?.('wrote record', audit_record.recordId, 'length:', encoded.length);
 							}
 						};
 						const sendQueuedData = () => {
-							next_audit_sent?.();
-							when_next_audit_sent = null;
 							if (position - encoding_start > 8) {
 								// if we have more than just a txn time, send it
 								ws.send(encoding_buffer.subarray(encoding_start, position));
@@ -1095,6 +1119,7 @@ export function replicateOverWS(ws, options, authorization) {
 																	version: entry.version,
 																	residencyId: entry.residencyId,
 																	nodeId: node_id,
+																	extendedType: entry.metadataFlags,
 																},
 																entry.localTime
 															);
@@ -1115,8 +1140,20 @@ export function replicateOverWS(ws, options, authorization) {
 										const audit_record = readAuditEntry(audit_entry);
 										sendAuditRecord(audit_record, key);
 										// wait if there is back-pressure
-										if (ws._socket.writableNeedDrain) {
-											await new Promise((resolve) => ws._socket.once('drain', resolve));
+										if (ws._socket.writableNeedDrain || receiving_flow_level === 0) {
+											await new Promise<void>((resolve) => {
+												logger.debug?.(
+													`Waiting for remote node ${remote_node_name} to allow more commits ${ws._socket.writableNeedDrain ? 'due to network backlog' : 'due to requested flow directive'}`
+												);
+												if (ws._socket.writableNeedDrain) ws._socket.once('drain', resolve);
+												else {
+													flow_level_listeners = [
+														() => {
+															resolve();
+														},
+													];
+												}
+											});
 										} else await new Promise(setImmediate); // yield on each turn for fairness and letting other things run
 										audit_subscription.startTime = key; // update so don't double send
 										queued_entries = true;
@@ -1195,21 +1232,40 @@ export function replicateOverWS(ws, options, authorization) {
 						(remote_blob) => {
 							// write the blob to the blob store
 							const blob_id = getFileId(remote_blob);
-							const stream = new PassThrough();
+							let stream = blobs_in_flight.get(blob_id);
+							logger.debug?.(
+								'Received transaction with blob',
+								blob_id,
+								'has stream',
+								!!stream,
+								'ended',
+								!!stream?.writableEnded
+							);
+							if (stream) {
+								if (stream.writableEnded) {
+									blobs_in_flight.delete(blob_id);
+								}
+							} else {
+								stream = new PassThrough();
+								blobs_in_flight.set(blob_id, stream);
+							}
+							stream.connectedToBlob = true;
 							let local_blob: Blob;
 							const promise = createBlob(stream, {
 								forBlob(blob: Blob) {
 									// synchronous get the blob, before it is ready
 									local_blob = blob;
 								},
+								size: stream.expectedSize,
 							});
 							blob_promises.push(promise);
-							logger.warn('starting blob transfer', blob_id);
-							blobs_in_flight.set(blob_id, stream);
+
 							const finished = local_blob.finished;
 							if (finished) {
+								finished.blobId = blob_id;
 								outstanding_blobs_to_finish.push(finished);
 								finished.finally(() => {
+									logger.debug?.(`Finished receiving blob stream ${blob_id}`);
 									outstanding_blobs_to_finish.splice(outstanding_blobs_to_finish.indexOf(finished), 1);
 								});
 							}
@@ -1248,9 +1304,12 @@ export function replicateOverWS(ws, options, authorization) {
 				'replication',
 				'ingest'
 			);
-			if (outstanding_commits > MAX_OUTSTANDING_COMMITS && !replication_paused) {
-				replication_paused = true;
-				ws.pause();
+			if (outstanding_commits > MAX_OUTSTANDING_COMMITS && sending_flow_level > 0) {
+				logger.warn?.(
+					`Commit backlog causing replication back-pressure, requesting that ${remote_node_name} pause replication`
+				);
+				ws.send(encode([FLOW_DIRECTIVE, 0]));
+				sending_flow_level = 0;
 			}
 			table_subscription_to_replicator.send({
 				type: 'end_txn',
@@ -1259,8 +1318,19 @@ export function replicateOverWS(ws, options, authorization) {
 				async onCommit() {
 					// if there are outstanding blobs to finish writing, delay commit receipts until they are finished (so that if we are interrupting
 					// we correctly resend the blobs)
-					console.error('outstanding_blobs_to_finish.length', outstanding_blobs_to_finish.length);
+					logger.debug?.(
+						'outstanding_blobs_to_finish.length',
+						outstanding_blobs_to_finish.map((p) => p.blobId)
+					);
+					const timer = setInterval(() => {
+						logger.debug?.(
+							'(waiting) outstanding_blobs_to_finish.length',
+							outstanding_blobs_to_finish.map((p) => p.blobId)
+						);
+					}, 1000).unref();
 					if (outstanding_blobs_to_finish.length > 0) await Promise.all(outstanding_blobs_to_finish);
+					clearInterval(timer);
+					logger.debug?.('All blobs finished');
 					if (event) {
 						const latency = Date.now() - event.timestamp;
 						recordAction(
@@ -1272,9 +1342,10 @@ export function replicateOverWS(ws, options, authorization) {
 						);
 					}
 					outstanding_commits--;
-					if (replication_paused) {
-						replication_paused = false;
-						ws.resume();
+					if (sending_flow_level === 0) {
+						logger.info?.(`Replication resuming ${remote_node_name}`);
+						ws.send(encode([FLOW_DIRECTIVE, Infinity]));
+						sending_flow_level = Infinity;
 					}
 					if (!last_sequence_id_committed && sequence_id_received) {
 						logger.trace?.(connection_id, 'queuing confirmation of a commit at', sequence_id_received);
@@ -1311,6 +1382,7 @@ export function replicateOverWS(ws, options, authorization) {
 		// cleanup
 		clearInterval(send_ping_interval);
 		clearTimeout(receive_ping_timer);
+		clearInterval(blobs_timer);
 		if (audit_subscription) audit_subscription.emit('close');
 		if (subscription_request) subscription_request.end();
 		for (const [id, { reject }] of awaiting_response) {
@@ -1531,6 +1603,14 @@ export function replicateOverWS(ws, options, authorization) {
 
 		ws.send(encode([DB_SCHEMA, tables, database_name]));
 	}
+	blobs_timer = setInterval(() => {
+		for (const [blob_id, stream] of blobs_in_flight) {
+			if (stream.lastChunk + 30000 < Date.now()) {
+				logger.warn?.(`Timeout waiting for blob stream to finish ${blob_id} from ${remote_node_name}`);
+			}
+		}
+	}, 30000).unref();
+
 	let next_id = 1;
 	const sent_table_names = [];
 	return {
