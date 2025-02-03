@@ -483,7 +483,7 @@ function createBlobWithFile(): { filePath: string; blob: FileBackedBlob; ready: 
 	const id = getNextFileId();
 	// get the storage index, which is the index of the blob storage path to use, distributed round-robin based on the id
 	const storageIndex = blobStoragePaths?.length > 1 ? id % blobStoragePaths.length : 0;
-	const fileId = getNextFileId().toString(16); // get the next file id
+	const fileId = id.toString(16); // get the next file id
 	const storageInfo = { storageIndex, fileId };
 	const filePath = getFilePath(storageInfo);
 	const fileDir = dirname(filePath);
