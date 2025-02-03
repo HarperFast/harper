@@ -284,8 +284,91 @@ function getCPUMetrics() {
 	return cpuMetricsSingleton;
 }
 
+let cachedResourceUsageSingleton: CachedResourceUsage;
+function getCachedResourceUsage(refreshIntervalSecs: number) {
+	if (cachedResourceUsageSingleton === undefined) {
+		cachedResourceUsageSingleton = new CachedResourceUsage(refreshIntervalSecs);
+	} else if (cachedResourceUsageSingleton.refreshInterval !== refreshIntervalSecs) {
+		log.warn?.(`CachedResourceUsage instance already created with refresh internal of ${cachedResourceUsageSingleton.refreshInterval}s but different internal requested: ${refreshIntervalSecs}s`);
+	}
+	return cachedResourceUsageSingleton;
+}
+
+interface Metric {}
+
+interface PageFaults extends Metric {
+	major: number;
+	minor: number;
+}
+
+export class CachedResourceUsage {
+	refreshInterval: number;
+	lastRefreshed: number;
+	resourceUsage: NodeJS.ResourceUsage;
+	priorResourceUsage: NodeJS.ResourceUsage;
+
+	constructor(refreshIntervalSecs: number) {
+		this.refreshInterval = refreshIntervalSecs;
+		this.lastRefreshed = 0;
+		this.priorResourceUsage = {
+			fsRead: 0,
+			fsWrite: 0,
+			involuntaryContextSwitches: 0,
+			ipcReceived: 0,
+			ipcSent: 0,
+			maxRSS: 0,
+			sharedMemorySize: 0,
+			signalsCount: 0,
+			swappedOut: 0,
+			systemCPUTime: 0,
+			unsharedDataSize: 0,
+			unsharedStackSize: 0,
+			userCPUTime: 0,
+			voluntaryContextSwitches: 0,
+			majorPageFault: 0,
+			minorPageFault: 0
+		}
+	}
+
+	private refresh() {
+		const nextRefresh = this.lastRefreshed + this.refreshInterval;
+		if (Date.now() > nextRefresh) {
+			if (this.resourceUsage) {
+				this.priorResourceUsage = this.resourceUsage;
+			}
+			this.resourceUsage = process.resourceUsage();
+			this.lastRefreshed = Date.now();
+		}
+		log.debug?.(`refresh priorResourceUsage: ${JSON.stringify(this.priorResourceUsage)}`);
+		log.debug?.(`refresh resourceUsage: ${JSON.stringify(this.resourceUsage)}`);
+	}
+
+	pageFaults(): PageFaults {
+		this.refresh();
+		return {
+			major: this.resourceUsage.majorPageFault - this.priorResourceUsage.majorPageFault,
+			minor: this.resourceUsage.minorPageFault - this.priorResourceUsage.minorPageFault,
+		};
+	}
+}
+
+function storeMetric(table: any, metricName: string, metric: Metric, time: number) {
+	const metricValue = {
+		id: getNextMonotonicTime(),
+		metric: metricName,
+		time,
+		...metric,
+	};
+	table.primaryStore.put(metricValue.id, metricValue, { append: true }).then((success: boolean) => {
+		if (!success) {
+			table.primaryStore.put(metricValue.id, metricValue);
+		}
+	});
+}
+
 async function aggregation(from_period, to_period = 60000) {
 	const cpuMetrics = getCPUMetrics();
+	const resourceUsage = getCachedResourceUsage(to_period / 1000);
 
 	const raw_analytics_table = getRawAnalyticsTable();
 	const analytics_table = getAnalyticsTable();
@@ -465,21 +548,11 @@ async function aggregation(from_period, to_period = 60000) {
 
 	const cpuUtilization = cpuMetrics.getCPUUsage();
 	log.debug?.(`CPU Utilization: ${JSON.stringify(cpuUtilization)}`);
-	const { period, user, system, utilization } = cpuUtilization;
-	const value = {
-		id: getNextMonotonicTime(),
-		metric: 'cpu',
-		period,
-		user,
-		system,
-		utilization,
-		time: now,
-	}
-	analytics_table.primaryStore.put(value.id, value, { append: true }).then((success: boolean) => {
-		if (!success) {
-			analytics_table.primaryStore.put(value.id, value);
-		}
-	});
+	storeMetric(analytics_table, 'cpu', cpuUtilization, now);
+
+	const pageFaults = resourceUsage.pageFaults();
+	log.debug?.(`Page Faults: ${JSON.stringify(pageFaults)}`);
+	storeMetric(analytics_table, 'page-faults', pageFaults, now);
 }
 let last_idle = 0;
 let last_active = 0;
