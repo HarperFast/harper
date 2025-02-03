@@ -147,6 +147,15 @@ describe('Blob test', () => {
 		assert.equal(await streamResults, expectedResults);
 		assert.equal(record.blob.size, expectedResults.length);
 	});
+	it('Abort reading a blob', async () => {
+		let testString = 'this is a test string for deletion'.repeat(800);
+		let blob = await createBlob(Readable.from(testString));
+		await BlobTest.put({ id: 3, blob });
+		for await (let entry of blob.stream()) {
+			break;
+		}
+		// just make sure there is no error
+	});
 	it('invalid blob attempts', async () => {
 		assert.throws(() => {
 			createBlob(undefined);

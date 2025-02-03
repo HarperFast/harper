@@ -188,6 +188,8 @@ class FileBackedBlob extends Blob {
 		let fd: number;
 		let position = 0;
 		let totalContentRead = 0;
+		let watcher: any;
+		let timer: any;
 
 		return new ReadableStream({
 			start() {
@@ -221,8 +223,7 @@ class FileBackedBlob extends Blob {
 								size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
 								if (size > totalContentRead) {
 									// the file is not finished being written, watch the file for changes to resume reading
-									let watcher: any;
-									const timer = setTimeout(() => {
+									timer = setTimeout(() => {
 										reject(new Error('File read timed out'));
 										close(fd);
 										controller.close();
@@ -259,6 +260,11 @@ class FileBackedBlob extends Blob {
 						resolve();
 					});
 				});
+			},
+			cancel() {
+				close(fd);
+				clearTimeout(timer);
+				if (watcher) watcher.close();
 			},
 		});
 	}
@@ -379,8 +385,7 @@ function createBlobFromStream(stream: NodeJS.ReadableStream, options: any): Prom
 						close(fd);
 						finishedReject(error);
 						unlink(getFilePathForBlob(blob), () => {}); // if there's an error, delete the file
-					}
-					if (options?.flush) {
+					} else if (options?.flush) {
 						// we just use fdatasync because we really aren't that concerned with flushing file metadata
 						fdatasync(fd, (error) => {
 							if (error) finishedReject(error);
@@ -415,16 +420,17 @@ export function getFileId(blob: Blob): string {
 export function getFilePathForBlob(blob: FileBackedBlob): string {
 	return getFilePath(storageInfoForBlob.get(blob));
 }
-function getFilePath(storageInfo: any): string {
+function getFilePath({ storageIndex, fileId }: { storageIndex: number; fileId: string }): string {
 	if (!blobStoragePaths) {
 		// initialize paths if not already done
 		blobStoragePaths = envGet(CONFIG_PARAMS.STORAGE_BLOBPATHS) || [join(getHdbBasePath(), 'blobs')];
 	}
 	return join(
-		blobStoragePaths[storageInfo.storageIndex],
-		storageInfo.fileId.slice(0, -6) || '0',
-		storageInfo.fileId.slice(-6, -3) || '0',
-		storageInfo.fileId.slice(-3)
+		// Use a hierarchy of directories to store the file by id, to avoid to many entries in a single directory. This uses 4096 files or directories per parent directory
+		blobStoragePaths[storageIndex],
+		fileId.slice(-9, -6) || '0',
+		fileId.slice(-6, -3) || '0',
+		fileId.length <= 9 ? fileId.slice(-3) : fileId.slice(0, -9) + fileId.slice(-3) // after 68 billion entries, we effectively wrap around and start reusing directories again, assuming the most the entries have been deleted
 	);
 }
 
