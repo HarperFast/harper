@@ -1,115 +1,81 @@
 require('../test_utils');
-const sinon = require('sinon');
 const chai = require('chai');
 const expect = chai.expect;
-const { CachedResourceUsage, CPUMetrics } = require('../../resources/analytics');
+const { diffResourceUsage, calculateCPUUtilization } = require('../../resources/analytics');
 
 describe('analytics', () => {
-	describe('CachedResourceUsage', () => {
-		let cru;
-		beforeEach(() => {
-			cru = new CachedResourceUsage(0);
-		});
+	describe('diffResourceUsage', () => {
+		it('diffs all counters', () => {
+			const lastResourceUsage = {
+				userCPUTime: 100,
+				systemCPUTime: 200,
+				minorPageFault: 300,
+				majorPageFault: 400,
+				fsRead: 500,
+				fsWrite: 600,
+				voluntaryContextSwitches: 700,
+				involuntaryContextSwitches: 800,
+			};
 
-		afterEach(() => {
-			sinon.restore();
-		});
+			const resourceUsage = {
+				// Node returns microseconds for these values but diffResourceUsage normalizes them
+				userCPUTime: 1000000,
+				systemCPUTime: 2000000,
+				minorPageFault: 3000,
+				majorPageFault: 4000,
+				fsRead: 5000,
+				fsWrite: 6000,
+				voluntaryContextSwitches: 7000,
+				involuntaryContextSwitches: 8000,
+			};
 
-		describe('page faults', () => {
-			it('diffs page faults between refreshes', () => {
-				sinon.stub(process, 'resourceUsage').returns({
-					majorPageFault: 1000,
-					minorPageFault: 2000,
-				});
+			const diffed = diffResourceUsage(lastResourceUsage, resourceUsage);
 
-				cru.priorResourceUsage = {
-					majorPageFault: 100,
-					minorPageFault: 200,
-				}
-
-				const pageFaults = cru.pageFaults();
-
-				expect(pageFaults).to.have.property('major').equal(900);
-				expect(pageFaults).to.have.property('minor').equal(1800);
-			});
-
-			it('uses current page faults as prior on refresh', () => {
-				cru.resourceUsage = {
-					majorPageFault: 100,
-					minorPageFault: 200,
-				};
-
-				cru.refresh();
-
-				expect(cru.priorResourceUsage).to.have.property('majorPageFault').equal(100);
-				expect(cru.priorResourceUsage).to.have.property('minorPageFault').equal(200);
+			expect(diffed).to.deep.equal({
+				userCPUTime: 900,
+				systemCPUTime: 1800,
+				minorPageFault: 2700,
+				majorPageFault: 3600,
+				fsRead: 4500,
+				fsWrite: 5400,
+				voluntaryContextSwitches: 6300,
+				involuntaryContextSwitches: 7200,
 			});
 		});
 
-		describe('context switches', () => {
-			it('diffs context switches between refreshes', () => {
-				sinon.stub(process, 'resourceUsage').returns({
-					voluntaryContextSwitches: 1000,
-					involuntaryContextSwitches: 2000,
-				});
+		it('treats missing params as zeroes', () => {
+			const resourceUsage = {
+				// Node returns microseconds for these values but diffResourceUsage normalizes them
+				userCPUTime: 1000000,
+				systemCPUTime: 2000000,
+				minorPageFault: 3000,
+				majorPageFault: 4000,
+				fsRead: 5000,
+				fsWrite: 6000,
+				voluntaryContextSwitches: 7000,
+				involuntaryContextSwitches: 8000,
+			};
 
-				cru.priorResourceUsage = {
-					voluntaryContextSwitches: 100,
-					involuntaryContextSwitches: 200,
-				}
+			const diffed = diffResourceUsage({}, resourceUsage);
 
-				const pageFaults = cru.contextSwitches();
-
-				expect(pageFaults).to.have.property('voluntary').equal(900);
-				expect(pageFaults).to.have.property('involuntary').equal(1800);
-			});
-
-			it('uses current context switches as prior on refresh', () => {
-				cru.resourceUsage = {
-					voluntaryContextSwitches: 100,
-					involuntaryContextSwitches: 200,
-				};
-
-				cru.refresh();
-
-				expect(cru.priorResourceUsage).to.have.property('voluntaryContextSwitches').equal(100);
-				expect(cru.priorResourceUsage).to.have.property('involuntaryContextSwitches').equal(200);
-			});
+			expect(diffed).to.deep.equal({
+				...resourceUsage,
+				userCPUTime: 1000,
+				systemCPUTime: 2000,
+			})
 		});
 	});
 
-	describe('CPUMetrics', () => {
-		afterEach(() => {
-			sinon.restore();
-		});
+	describe('calculateCPUUtilization', () => {
+		it('computes utilization based on user + system over period', () => {
+			const ru = {
+				userCPUTime: 10000,
+				systemCPUTime: 20000,
+			};
 
-		it('computes utilization based user + system over interval', () => {
-			const startCPUUsageStub = sinon.stub(process, 'cpuUsage').returns({
-				user: 100,
-				system: 200,
-			});
-			const startTime = process.hrtime.bigint();
-			const startTimeStub = sinon.stub(process.hrtime, 'bigint').returns(startTime);
+			const cpuUtilization = calculateCPUUtilization(ru, 60000);
 
-			const cpu = new CPUMetrics();
-
-			cpu.getCPUUsage(); // establish starting point
-			startCPUUsageStub.restore();
-			startTimeStub.restore();
-
-			sinon.stub(process, 'cpuUsage').returns({
-				user: 1000,
-				system: 2000,
-			});
-
-			const endTime = startTime + 30000000n;
-			sinon.stub(process.hrtime, 'bigint').returns(endTime);
-
-			const end = cpu.getCPUUsage();
-
-			expect(end).to.have.property('user').equal(1000);
-			expect(end).to.have.property('system').equal(2000);
-			expect(end).to.have.property('utilization').equal(0.1);
+			expect(cpuUtilization).to.equal(0.5);
 		});
 	});
 });
