@@ -202,7 +202,7 @@ function sendAnalytics() {
 	}, ANALYTICS_DELAY).unref();
 }
 
-class CPUMetrics {
+export class CPUMetrics {
 	lastUpdateTime: number;
 	lastCPUTimes: NodeJS.CpuUsage;
 
@@ -264,7 +264,7 @@ class CPUMetrics {
 		const cpuTime = user + system;
 		log.debug?.(`getCPUUsage: cpuTime: ${cpuTime}`);
 
-		const cpuUsage = (cpuTime / timeElapsed).toFixed(2);
+		const cpuUsage = Math.round((cpuTime / timeElapsed) * 100) / 100;
 		log.debug?.(`getCPUUsage: cpuUsage: ${cpuUsage}`);
 
 		return {
