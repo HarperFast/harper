@@ -343,7 +343,8 @@ export function replicateOverWS(ws, options, authorization) {
 	const residency_map = [];
 	const sent_residency_lists = [];
 	const received_residency_lists = [];
-	const MAX_OUTSTANDING_COMMITS = 150;
+	const MAX_OUTSTANDING_COMMITS = 150; // maximum before requesting that other nodes pause
+	const RESUME_OUTSTANDING_COMMITS = 50; // minimum before requesting that other nodes resume
 	let outstanding_commits = 0;
 	let last_structure_length = 0;
 	let sending_flow_level = Infinity; // no restriction on commit flow, but this indicates if we have requested the other node to restrict flow
@@ -1138,6 +1139,7 @@ export function replicateOverWS(ws, options, authorization) {
 										if (closed) return;
 										last_audit_sent = key;
 										const audit_record = readAuditEntry(audit_entry);
+										logger.debug?.('sending audit record', new Date(key));
 										sendAuditRecord(audit_record, key);
 										// wait if there is back-pressure
 										if (ws._socket.writableNeedDrain || receiving_flow_level === 0) {
@@ -1279,20 +1281,17 @@ export function replicateOverWS(ws, options, authorization) {
 				}
 				begin_txn = false;
 				// TODO: Once it is committed, also record the localtime in the table with symbol metadata, so we can resume from that point
-				if (DEBUG_MODE)
-					logger.trace?.(
-						connection_id,
-						'received replication message',
-						audit_record.type,
-						'id',
-						event.id,
-						'version',
-						audit_record.version,
-						'nodeId',
-						event.nodeId,
-						'value',
-						event.value
-					);
+				logger.trace?.(
+					connection_id,
+					'received replication message',
+					audit_record.type,
+					'id',
+					event.id,
+					'version',
+					new Date(audit_record.version),
+					'nodeId',
+					event.nodeId
+				);
 				table_subscription_to_replicator.send(event);
 				decoder.position = start + event_length;
 			} while (decoder.position < body.byteLength);
@@ -1342,8 +1341,8 @@ export function replicateOverWS(ws, options, authorization) {
 						);
 					}
 					outstanding_commits--;
-					if (sending_flow_level === 0) {
-						logger.info?.(`Replication resuming ${remote_node_name}`);
+					if (sending_flow_level === 0 && outstanding_commits <= RESUME_OUTSTANDING_COMMITS) {
+						logger.debug?.(`Replication resuming ${remote_node_name}`);
 						ws.send(encode([FLOW_DIRECTIVE, Infinity]));
 						sending_flow_level = Infinity;
 					}
@@ -1356,6 +1355,7 @@ export function replicateOverWS(ws, options, authorization) {
 						}, COMMITTED_UPDATE_DELAY);
 					}
 					last_sequence_id_committed = sequence_id_received;
+					logger.trace?.('last sequence committed', new Date(sequence_id_received), database_name);
 				},
 			});
 		} catch (error) {
@@ -1460,7 +1460,8 @@ export function replicateOverWS(ws, options, authorization) {
 				database_name,
 				sequence_entry?.seqId,
 				'start time:',
-				start_time
+				start_time,
+				new Date(start_time)
 			);
 			if (connected_node !== node) {
 				// indirect connection through a proxying node
@@ -1607,6 +1608,8 @@ export function replicateOverWS(ws, options, authorization) {
 		for (const [blob_id, stream] of blobs_in_flight) {
 			if (stream.lastChunk + 30000 < Date.now()) {
 				logger.warn?.(`Timeout waiting for blob stream to finish ${blob_id} from ${remote_node_name}`);
+				blobs_in_flight.delete(blob_id);
+				stream.end();
 			}
 		}
 	}, 30000).unref();

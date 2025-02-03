@@ -414,7 +414,13 @@ export function makeTable(options) {
 												}
 											}
 											const seq_id = Math.max(existing_seq?.seqId ?? 1, event.localTime);
-											logger.trace?.('Received txn', database_name, seq_id, event.localTime, event.remoteNodeIds);
+											logger.trace?.(
+												'Received txn',
+												database_name,
+												new Date(seq_id),
+												new Date(event.localTime),
+												event.remoteNodeIds
+											);
 											dbis_db.put(seq_key, {
 												seqId: seq_id,
 												nodes: node_states,
