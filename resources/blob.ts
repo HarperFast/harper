@@ -250,7 +250,6 @@ class FileBackedBlob extends Blob {
 							// we need to catch the error here, because if the controller is closed, it will throw an error
 							// but we still want to resolve the promise
 							logger.debug?.('Error enqueuing chunk', error);
-							close(fd);
 							return resolve();
 						}
 						if (totalContentRead === size) {
