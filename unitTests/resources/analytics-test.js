@@ -11,35 +11,68 @@ describe('CachedResourceUsage', () => {
 	});
 
 	afterEach(() => {
-		sinon.reset();
+		sinon.restore();
 	})
 
-	it('Diffs page faults between refreshes', () => {
-		sinon.stub(process, 'resourceUsage').returns({
-			majorPageFault: 1000,
-			minorPageFault: 2000,
+	describe('page faults', () => {
+		it('Diffs page faults between refreshes', () => {
+			sinon.stub(process, 'resourceUsage').returns({
+				majorPageFault: 1000,
+				minorPageFault: 2000,
+			});
+
+			cru.priorResourceUsage = {
+				majorPageFault: 100,
+				minorPageFault: 200,
+			}
+
+			const pageFaults = cru.pageFaults();
+
+			expect(pageFaults).to.have.property('major').equal(900);
+			expect(pageFaults).to.have.property('minor').equal(1800);
 		});
 
-		cru.priorResourceUsage = {
-			majorPageFault: 100,
-			minorPageFault: 200,
-		}
+		it('Uses current page faults as prior on refresh', () => {
+			cru.resourceUsage = {
+				majorPageFault: 100,
+				minorPageFault: 200,
+			};
 
-		const pageFaults = cru.pageFaults();
+			cru.refresh();
 
-		expect(pageFaults).to.have.property('major').equal(900);
-		expect(pageFaults).to.have.property('minor').equal(1800);
+			expect(cru.priorResourceUsage).to.have.property('majorPageFault').equal(100);
+			expect(cru.priorResourceUsage).to.have.property('minorPageFault').equal(200);
+		});
 	});
 
-	it('Uses current page faults as prior on refresh', () => {
-		cru.resourceUsage = {
-			majorPageFault: 100,
-			minorPageFault: 200,
-		};
+	describe('context switches', () => {
+		it('Diffs context switches between refreshes', () => {
+			sinon.stub(process, 'resourceUsage').returns({
+				voluntaryContextSwitches:   1000,
+				involuntaryContextSwitches: 2000,
+			});
 
-		cru.refresh();
+			cru.priorResourceUsage = {
+				voluntaryContextSwitches:   100,
+				involuntaryContextSwitches: 200,
+			}
 
-		expect(cru.priorResourceUsage).to.have.property('majorPageFault').equal(100);
-		expect(cru.priorResourceUsage).to.have.property('minorPageFault').equal(200);
+			const pageFaults = cru.contextSwitches();
+
+			expect(pageFaults).to.have.property('voluntary').equal(900);
+			expect(pageFaults).to.have.property('involuntary').equal(1800);
+		});
+
+		it('Uses current context switches as prior on refresh', () => {
+			cru.resourceUsage = {
+				voluntaryContextSwitches:   100,
+				involuntaryContextSwitches: 200,
+			};
+
+			cru.refresh();
+
+			expect(cru.priorResourceUsage).to.have.property('voluntaryContextSwitches').equal(100);
+			expect(cru.priorResourceUsage).to.have.property('involuntaryContextSwitches').equal(200);
+		});
 	});
 })
