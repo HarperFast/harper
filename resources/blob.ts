@@ -210,10 +210,12 @@ class FileBackedBlob extends Blob {
 			start() {
 				return new Promise((resolve, reject) => {
 					open(filePath, 'r', (error, openedFd) => {
-						if (error) reject(error);
+						if (error) {
+							reject(error);
+							blob.onError?.forEach((callback) => callback(error));
+						}
 						fd = openedFd;
 						resolve(openedFd);
-						blob.onError?.forEach((callback) => callback(error));
 					});
 				});
 			},
@@ -224,6 +226,7 @@ class FileBackedBlob extends Blob {
 						close(fd);
 						if (watcher) watcher.close();
 						reject(error);
+						blob.onError?.forEach((callback) => callback(error));
 					}
 					// allocate a buffer for reading. Note that we could do a stat to get the size, but that is a little more complicated, and might be a little extra overhead
 					const buffer = Buffer.allocUnsafe(0x40000);
@@ -390,6 +393,7 @@ function createBlobFromStream(stream: NodeJS.ReadableStream, options: any): Prom
 					if (!wroteSize) writeStream.write(DEFAULT_HEADER, writeCallback); // write the default header to the file
 					stream.pipe(writeStream);
 				}
+				stream.on('error', finished);
 				function createHeader(size: number): Uint8Array {
 					let headerValue = BigInt(size);
 					const header = new Uint8Array(HEADER_SIZE);
@@ -402,7 +406,7 @@ function createBlobFromStream(stream: NodeJS.ReadableStream, options: any): Prom
 				function finished(error?: Error) {
 					const fd = writeStream.fd;
 					if (error) {
-						close(fd);
+						if (fd) close(fd);
 						finishedReject(error);
 						unlink(getFilePathForBlob(blob), () => {}); // if there's an error, delete the file
 					} else if (options?.flush) {

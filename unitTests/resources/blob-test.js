@@ -156,6 +156,48 @@ describe('Blob test', () => {
 		}
 		// just make sure there is no error
 	});
+	it('Abort writing a blob', async () => {
+		let testString = 'this is a test string'.repeat(256);
+		class BadStream extends Readable {
+			_read() {
+				if (!this.sentAString) {
+					this.push(testString);
+					this.sentAString = true;
+				} else {
+					throw new Error('test error');
+				}
+			}
+		}
+		let blob = await createBlob(new BadStream());
+		await BlobTest.put({ id: 5, blob });
+		let eventError, thrownError;
+		blob.on('error', (err) => {
+			eventError = err;
+		});
+		try {
+			for await (let entry of blob.stream()) {
+			}
+		} catch (err) {
+			thrownError = err;
+		}
+		assert(thrownError);
+		assert(eventError);
+		thrownError = null;
+		eventError = null;
+
+		let record = await BlobTest.get(5);
+		record.blob.on('error', (err) => {
+			eventError = err;
+		});
+		try {
+			for await (let entry of record.blob.stream()) {
+			}
+		} catch (err) {
+			thrownError = err;
+		}
+		assert(thrownError);
+		assert(eventError);
+	});
 	it('invalid blob attempts', async () => {
 		assert.throws(() => {
 			createBlob(undefined);
