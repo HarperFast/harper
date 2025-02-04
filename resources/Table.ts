@@ -42,10 +42,11 @@ import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads';
 import { readAuditEntry, removeAuditEntry } from './auditStore';
 import { autoCast, convertToMS } from '../utility/common_utils';
-import { getUpdateRecord, PENDING_LOCAL_TIME } from './RecordEncoder';
+import { recordUpdater, removeEntry, PENDING_LOCAL_TIME } from './RecordEncoder';
 import { recordAction, recordActionBinary } from './analytics';
 import { rebuildUpdateBefore } from './crdt';
 import { appendHeader } from '../server/serverHelpers/Headers';
+import { Blob } from './blob';
 type Attribute = {
 	name: string;
 	type: string;
@@ -137,7 +138,7 @@ export function makeTable(options) {
 	let { expirationMS: expiration_ms, evictionMS: eviction_ms, audit, trackDeletes: track_deletes } = options;
 	let { attributes } = options;
 	if (!attributes) attributes = [];
-	const updateRecord = getUpdateRecord(primary_store, table_id, audit_store);
+	const updateRecord = recordUpdater(primary_store, table_id, audit_store);
 	let source_load: any; // if a source has a load function (replicator), record it here
 	let has_source_get: any;
 	let primary_key_attribute: Attribute = {};
@@ -327,6 +328,7 @@ export function makeTable(options) {
 						nodeId: event.nodeId,
 					};
 					const resource: TableResource = await Table.getResource(event.id, context, options);
+					if (event.finished) await event.finished;
 					switch (event.type) {
 						case 'put':
 							return should_revalidate_events
@@ -412,7 +414,13 @@ export function makeTable(options) {
 												}
 											}
 											const seq_id = Math.max(existing_seq?.seqId ?? 1, event.localTime);
-											logger.trace?.('Received txn', database_name, seq_id, event.localTime, event.remoteNodeIds);
+											logger.trace?.(
+												'Received txn',
+												database_name,
+												new Date(seq_id),
+												new Date(event.localTime),
+												event.remoteNodeIds
+											);
 											dbis_db.put(seq_key, {
 												seqId: seq_id,
 												nodes: node_states,
@@ -1224,7 +1232,7 @@ export function makeTable(options) {
 			}
 			// if no timestamps for audit, just remove
 			else {
-				return primary_store.remove(id, existing_version);
+				removeEntry(primary_store, entry ?? primary_store.getEntry(id), existing_version);
 			}
 		}
 		/**
@@ -1491,7 +1499,7 @@ export function makeTable(options) {
 			transaction.addWrite({
 				key: id,
 				store: primary_store,
-				resource: this,
+				entry: this[ENTRY_PROPERTY],
 				nodeName: context?.nodeName,
 				before: apply_to_sources.delete?.bind(this, context, id),
 				beforeIntermediate: apply_to_sources_intermediate.delete?.bind(this, context, id),
@@ -1518,7 +1526,7 @@ export function makeTable(options) {
 						);
 						if (!audit) scheduleCleanup();
 					} else {
-						primary_store.remove(this[ID_PROPERTY]);
+						removeEntry(primary_store, existing_entry);
 					}
 				},
 			});
@@ -2488,6 +2496,12 @@ export function makeTable(options) {
 										`Value ${stringify(value)} in property ${name} must be a Buffer or Uint8Array`
 									);
 								break;
+							case 'Blob':
+								if (!(value instanceof Blob))
+									(validation_errors || (validation_errors = [])).push(
+										`Value ${stringify(value)} in property ${name} must be a Blob`
+									);
+								break;
 							case 'array':
 								if (Array.isArray(value)) {
 									if (attribute.elements) {
@@ -2777,10 +2791,11 @@ export function makeTable(options) {
 			if (cleanup_deleted_records) {
 				// this is separate procedure we can do if the records are not being cleaned up by the audit log. This shouldn't
 				// ever happen, but if there are cleanup failures for some reason, we can run this to clean up the records
-				for (const { key, value, localTime } of primary_store.getRange({ start: 0, versions: true })) {
+				for (const entry of primary_store.getRange({ start: 0, versions: true })) {
+					const { key, value, localTime } = entry;
 					await rest(); // yield to other async operations
 					if (value === null && localTime < end_time) {
-						completion = primary_store.remove(key);
+						completion = removeEntry(primary_store, entry);
 					}
 				}
 			}
@@ -3420,7 +3435,7 @@ export function makeTable(options) {
 										Boolean(invalidated)
 									);
 								} else {
-									primary_store.remove(id, existing_version);
+									removeEntry(primary_store, existing_entry, existing_version);
 								}
 							}
 						},
@@ -3488,18 +3503,19 @@ export function makeTable(options) {
 							try {
 								let count = 0;
 								// iterate through all entries to find expired records and deleted records
-								for (const { key, value: record, version, expiresAt } of primary_store.getRange({
+								for (const entry of primary_store.getRange({
 									start: false,
 									snapshot: false, // we don't want to keep read transaction snapshots open
 									versions: true,
 									lazy: true, // only want to access metadata most of the time
 								})) {
+									const { key, value: record, version, expiresAt } = entry;
 									// if there is no auditing and we are tracking deletion, need to do cleanup of
 									// these deletion entries (audit has its own scheduled job for this)
 									let resolution;
 									if (record === null && !audit && version + DELETED_RECORD_EXPIRATION < Date.now()) {
 										// make sure it is still deleted when we do the removal
-										resolution = primary_store.remove(key, version);
+										resolution = removeEntry(primary_store, entry, version);
 									} else if (expiresAt != undefined && expiresAt + eviction_ms < Date.now()) {
 										// evict!
 										resolution = TableResource.evict(key, record, version);
@@ -3526,13 +3542,13 @@ export function makeTable(options) {
 		}
 	}
 	function addDeleteRemoval() {
-		delete_callback_handle = audit_store?.addDeleteRemovalCallback(table_id, (id) => {
-			const entry = primary_store.getEntry(id);
-			// make sure it is still deleted when we do the removal
-			if (entry?.value === null) {
-				primary_store.remove(id, entry.version);
+		delete_callback_handle = audit_store?.addDeleteRemovalCallback(
+			table_id,
+			primary_store,
+			(id: Id, version: number) => {
+				primary_store.remove(id, version);
 			}
-		});
+		);
 	}
 	function runRecordExpirationEviction() {
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now

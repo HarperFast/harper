@@ -101,6 +101,6 @@ export function getIdOfRemoteNode(remote_node_name, audit_store) {
 		name_to_id[remote_node_name] = id;
 		audit_store.putSync(REMOTE_NODE_IDS, pack(id_mapping_record));
 	}
-	logger.info?.('The remote node name map', remote_node_name, name_to_id, id);
+	logger.trace?.('The remote node name map', remote_node_name, name_to_id, id);
 	return id;
 }
