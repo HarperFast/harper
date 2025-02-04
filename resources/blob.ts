@@ -408,7 +408,6 @@ function createBlobFromStream(stream: NodeJS.ReadableStream, options: any): Prom
 					if (error) {
 						if (fd) close(fd);
 						finishedReject(error);
-						unlink(getFilePathForBlob(blob), () => {}); // if there's an error, delete the file
 					} else if (options?.flush) {
 						// we just use fdatasync because we really aren't that concerned with flushing file metadata
 						fdatasync(fd, (error) => {
