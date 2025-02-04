@@ -225,7 +225,9 @@ class FileBackedBlob extends Blob {
 						if (watcher) watcher.close();
 						reject(error);
 					}
-					read(fd, { position, length: CHUNK_SIZE }, (error, bytesRead, buffer) => {
+					// allocate a buffer for reading. Note that we could do a stat to get the size, but that is a little more complicated, and might be a little extra overhead
+					const buffer = Buffer.allocUnsafe(0x40000);
+					read(fd, buffer, 0, buffer.length, position, (error, bytesRead, buffer) => {
 						// TODO: Implement support for decompression
 						totalContentRead += bytesRead;
 						if (error) return onError(error);
@@ -237,7 +239,7 @@ class FileBackedBlob extends Blob {
 							buffer = buffer.subarray(HEADER_SIZE, bytesRead);
 							totalContentRead -= HEADER_SIZE;
 						} else if (bytesRead === 0) {
-							const buffer = new Uint8Array(8);
+							const buffer = Buffer.allocUnsafe(8);
 							return read(fd, buffer, 0, HEADER_SIZE, 0, (error) => {
 								if (error) onError(error);
 								HEADER.set(buffer);
