@@ -113,12 +113,26 @@ const CHUNK_SIZE = 16 * 1024;
  */
 class FileBackedBlob extends Blob {
 	finished: Promise<void>;
+	onError: ((error: Error) => void)[];
 	constructor(options?: FilePropertyBag) {
 		super([], options);
 		storageInfoForBlob.set(this, {
 			storageIndex: options?.storageIndex,
 			fileId: options?.fileId,
 		});
+	}
+
+	on(type: string, callback: (error: Error) => void) {
+		if (type !== 'error') throw new Error('Only error events are supported');
+		if (!this.onError) this.onError = [];
+		this.onError.push(callback);
+	}
+
+	toJSON() {
+		return {
+			description:
+				'Blob can not be directly serialized as JSON, use as the body of a response or convert to another type',
+		};
 	}
 
 	async text(): Promise<string> {
@@ -190,6 +204,7 @@ class FileBackedBlob extends Blob {
 		let totalContentRead = 0;
 		let watcher: any;
 		let timer: any;
+		const blob = this;
 
 		return new ReadableStream({
 			start() {
@@ -198,16 +213,22 @@ class FileBackedBlob extends Blob {
 						if (error) reject(error);
 						fd = openedFd;
 						resolve(openedFd);
+						blob.onError?.forEach((callback) => callback(error));
 					});
 				});
 			},
 			pull: (controller) => {
 				let size = 0;
 				return new Promise(function readMore(resolve, reject) {
+					function onError(error) {
+						close(fd);
+						if (watcher) watcher.close();
+						reject(error);
+					}
 					read(fd, { position, length: CHUNK_SIZE }, (error, bytesRead, buffer) => {
 						// TODO: Implement support for decompression
 						totalContentRead += bytesRead;
-						if (error) return reject(error);
+						if (error) return onError(error);
 						if (position === 0) {
 							// for the first read, we need to read the header and skip it for the data
 							buffer.copy(HEADER, 0, 0, HEADER_SIZE);
@@ -218,16 +239,14 @@ class FileBackedBlob extends Blob {
 						} else if (bytesRead === 0) {
 							const buffer = new Uint8Array(8);
 							return read(fd, buffer, 0, HEADER_SIZE, 0, (error) => {
-								if (error) reject(error);
+								if (error) onError(error);
 								HEADER.set(buffer);
 								size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
 								if (size > totalContentRead) {
 									// the file is not finished being written, watch the file for changes to resume reading
 									timer = setTimeout(() => {
-										reject(new Error('File read timed out'));
-										close(fd);
+										onError(new Error('File read timed out'));
 										controller.close();
-										if (watcher) watcher.close();
 									}, FILE_READ_TIMEOUT).unref();
 									watcher = watch(filePath, { persistent: false }, () => {
 										clearTimeout(timer);
