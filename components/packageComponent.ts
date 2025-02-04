@@ -10,7 +10,7 @@ import { createGzip } from 'node:zlib';
 export function packageDirectory(
 	directory: string,
 	options: { skip_node_modules?: boolean; hidden_folders?: boolean }
-): Promise<string> {
+): Promise<Buffer> {
 	const { skip_node_modules, hidden_folders } = options;
 	return new Promise((resolve, reject) => {
 		// for deploy_component to a remote server, we need to tar the local directory

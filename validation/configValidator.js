@@ -164,6 +164,7 @@ function configValidator(config_json, skip_fs_validation = false) {
 			routes: array.optional().empty(null),
 			databases: Joi.alternatives(string, array),
 			enableRootCAs: boolean.optional(),
+			copyTablesToCatchUp: boolean.optional(),
 		}).optional(),
 		componentsRoot: root_constraints.optional(),
 		clustering: clustering_validation_schema,

@@ -74,7 +74,6 @@ export function start(options) {
 		ws.on('error', (error) => {
 			if (error.code !== 'ECONNREFUSED') logger.error('Error in connection to ' + this.url, error.message);
 		});
-
 	}, options);
 	options.runFirst = true;
 	// now setup authentication for the replication server, authorizing by certificate
@@ -124,7 +123,6 @@ export function start(options) {
 		return next_handler(request);
 	}, options);
 
-
 	// we need to keep track of the servers so we can update the secure contexts
 	// @ts-expect-error
 	for (const ws_server of ws_servers) {
@@ -154,6 +152,10 @@ export function start(options) {
 			ws_server.secureContextsListeners.push(updateContexts);
 			// we need to stay up-to-date with any CAs that have been replicated across the cluster
 			monitorNodeCAs(updateContexts);
+			if (env.get(CONFIG_PARAMS.REPLICATION_ENABLEROOTCAS) !== false) {
+				// if we are using root CAs, then we need to at least update the contexts for this even if none of the nodes have (explicit) CAs
+				updateContexts();
+			}
 		}
 	}
 }
@@ -167,9 +169,6 @@ export function monitorNodeCAs(listener) {
 			if (replication_certificate_authorities.size !== last_ca_count) {
 				last_ca_count = replication_certificate_authorities.size;
 				listener?.();
-			} else if (env.get(CONFIG_PARAMS.REPLICATION_ENABLEROOTCAS) !== false) {
-				// if there is no CA for the node, then we default to using the root CAs, unless it is explicitly disabled
-				for (const cert of tls.rootCertificates) replication_certificate_authorities.add(cert);
 			}
 		}
 	});
