@@ -83,6 +83,10 @@ const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
 module.exports = { cliOperations, buildRequest };
 const PREPARE_OPERATION = {
 	deploy_component: async (req) => {
+		if (req.package) {
+			return;
+		}
+
 		const project_path = process.cwd();
 		req.payload = await packageDirectory(project_path, { skip_node_modules: true, ...req });
 		req.cborEncode = true;

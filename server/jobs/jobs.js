@@ -23,7 +23,7 @@ const hdb_sql = require('../../sqlTranslator');
 const file_load_validator = require('../../validation/fileLoadValidator');
 const bulkDeleteValidator = require('../../validation/bulkDeleteValidator');
 const { deleteTransactionLogsBeforeValidator } = require('../../validation/transactionLogValidator');
-const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
+const { handleHDBError, hdb_errors, ClientError } = require('../../utility/errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
 //Promisified functions
@@ -42,21 +42,16 @@ module.exports = {
 };
 
 async function handleGetJob(json_body) {
-	try {
-		let result = await getJobById(json_body.id);
-		if (!hdb_util.isEmptyOrZeroLength(result)) {
-			result[0] = { ...result[0] };
-			if (result[0].request !== undefined) delete result[0].request;
-			delete result[0]['__createdtime__'];
-			delete result[0]['__updatedtime__'];
-		}
-
-		return result;
-	} catch (err) {
-		let message = `There was an error getting job: ${err}`;
-		log.error('There was an error getting job', err);
-		throw new Error(message);
+	if (json_body.id === undefined) throw new ClientError("'id' is required");
+	let result = await getJobById(json_body.id);
+	if (!hdb_util.isEmptyOrZeroLength(result)) {
+		result[0] = { ...result[0] };
+		if (result[0].request !== undefined) delete result[0].request;
+		delete result[0]['__createdtime__'];
+		delete result[0]['__updatedtime__'];
 	}
+
+	return result;
 }
 
 async function handleGetJobsByStartDate(json_body) {

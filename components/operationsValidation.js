@@ -239,7 +239,7 @@ function deployComponentValidator(req) {
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		package: Joi.string().optional(),
-		restart: Joi.boolean().optional(),
+		restart: Joi.alternatives().try(Joi.boolean(), Joi.string().valid('rolling')).optional(),
 	});
 
 	return validator.validateBySchema(req, deploy_proj_schema);
