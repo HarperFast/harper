@@ -1,6 +1,7 @@
 import { parentPort, threadId } from 'worker_threads';
 import { setChildListenerByType } from '../server/threads/manageThreads';
-import { table } from './databases';
+import { getDatabases, table } from './databases';
+import type { Databases, Table, Tables } from './databases';
 import { getLogFilePath } from '../utility/logging/harper_logger';
 import { loggerWithTag } from '../utility/logging/logger';
 import { dirname, join } from 'path';
@@ -9,6 +10,7 @@ import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { get as env_get, initSync } from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { server } from '../server/Server';
+import { promises as fs } from 'node:fs';
 
 const log = loggerWithTag('analytics');
 
@@ -254,6 +256,44 @@ export function diffResourceUsage(lastResourceUsage: ResourceUsage, resourceUsag
 	}
 }
 
+/** storeTableSizeMetrics returns the cumulative size of the tables
+ */
+function storeTableSizeMetrics(analyticsTable: Table, dbName: string, tables: Tables): number {
+	let dbUsedSize = 0;
+	for (const [tableName, table] of Object.entries(tables)) {
+		const fullTableName = `${dbName}.${tableName}`;
+		const tableSize = table.getSize();
+		const auditSize = table.getAuditSize();
+		const metric = {
+			database: dbName,
+			table: tableName,
+			size: tableSize,
+			audit: auditSize,
+		}
+		log.debug?.(`table ${fullTableName} size metric: ${JSON.stringify(metric)}`);
+		storeMetric(analyticsTable, 'table-size', metric);
+		dbUsedSize += tableSize;
+	}
+	return dbUsedSize;
+}
+
+async function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
+	for (const [db, tables] of Object.entries(databases)) {
+		const [ , table] = Object.entries(tables)[0];
+		const dbTotalSize = (await fs.stat(table.primaryStore.env.path)).size;
+		const dbUsedSize = storeTableSizeMetrics(analyticsTable, db, tables);
+		const dbFree = dbTotalSize - dbUsedSize;
+		const metric = {
+			database: db,
+			size: dbTotalSize,
+			used: dbUsedSize,
+			free: dbFree,
+		}
+		log.debug?.(`database ${db} size metric: ${JSON.stringify(metric)}`);
+		storeMetric(analyticsTable, 'database-size', metric);
+	}
+}
+
 async function aggregation(from_period, to_period = 60000) {
 	const raw_analytics_table = getRawAnalyticsTable();
 	const analytics_table = getAnalyticsTable();
@@ -431,6 +471,7 @@ async function aggregation(from_period, to_period = 60000) {
 	last_idle = idle;
 	last_active = active;
 
+	// resource-usage metrics
 	const resourceUsage = process.resourceUsage();
 	const currentResourceUsage = diffResourceUsage(lastResourceUsage, resourceUsage);
 	currentResourceUsage.time = now;
@@ -438,6 +479,11 @@ async function aggregation(from_period, to_period = 60000) {
 	currentResourceUsage.cpuUtilization = calculateCPUUtilization(lastResourceUsage, currentResourceUsage.period);
 	storeMetric(analytics_table, 'resource-usage', currentResourceUsage);
 	lastResourceUsage = currentResourceUsage;
+
+	// database-size & table-size metrics
+	const databases = getDatabases();
+	await storeDBSizeMetrics(analytics_table, databases);
+	await storeDBSizeMetrics(analytics_table, {system: databases.system});
 }
 let last_idle = 0;
 let last_active = 0;

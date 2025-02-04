@@ -27,10 +27,11 @@ const DEFINED_TABLES = Symbol('defined-tables');
 const DEFAULT_COMPRESSION_THRESHOLD = (env_get(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
 initSync();
 
-interface Tables {
-	[table_name: string]: ReturnType<typeof makeTable>;
+export type Table = ReturnType<typeof makeTable>;
+export interface Tables {
+	[table_name: string]: Table;
 }
-interface Databases {
+export interface Databases {
 	[database_name: string]: Tables;
 }
 
