@@ -16781,8 +16781,7 @@
 											"pm.test('Add node success message', () => {",
 											"    const response = pm.response.json();",
 											"    const node_host = pm.environment.get(\"NODE1_HOST\");",
-											"    const port = pm.environment.get(\"HDB_PORT\");",
-											"console.log('response' ,response);",
+											"    const port = pm.environment.get(\"REPLICATION_PORT\");",
 											"    pm.expect(response.message).to.equal(`Successfully added 'wss://${node_host}:${port}' to cluster`);",
 											"});",
 											"",
@@ -16818,7 +16817,7 @@
 								"header": [],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n    \"operation\": \"add_node\",\n    \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    }\n}\n\n",
+									"raw": "{\n    \"operation\": \"add_node\",\n    \"url\": \"wss://{{NODE1_HOST}}:{{REPLICATION_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    }\n}\n\n",
 									"options": {
 										"raw": {
 											"language": "json"
@@ -16850,7 +16849,7 @@
 											"pm.test('Add node success message', () => {",
 											"    const response = pm.response.json();",
 											"    const node_host = pm.environment.get(\"NODE2_HOST\");",
-											"    const port = pm.environment.get(\"HDB_PORT\");",
+											"    const port = pm.environment.get(\"REPLICATION_PORT\");",
 											"    pm.expect(response.message).to.eql(`Successfully added 'wss://${node_host}:${port}' to cluster`);",
 											"});",
 											"",
@@ -16886,7 +16885,7 @@
 								"header": [],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n    \"operation\": \"add_node\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    }\n}\n\n",
+									"raw": "{\n    \"operation\": \"add_node\",\n    \"url\": \"wss://{{NODE2_HOST}}:{{REPLICATION_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    }\n}\n\n",
 									"options": {
 										"raw": {
 											"language": "json"
@@ -16918,7 +16917,7 @@
 											"pm.test('Add node success message', () => {",
 											"    const response = pm.response.json();",
 											"    const node_host = pm.environment.get(\"NODE1_HOST\");",
-											"    const port = pm.environment.get(\"HDB_PORT\");",
+											"    const port = pm.environment.get(\"REPLICATION_PORT\");",
 											"    pm.expect(response.message).to.equal(`Successfully added 'wss://${node_host}:${port}' to cluster`);",
 											"});",
 											"",
@@ -16954,7 +16953,7 @@
 								"header": [],
 								"body": {
 									"mode": "raw",
-									"raw": "{\n    \"operation\": \"add_node\",\n    \"url\": \"wss://{{NODE1_HOST}}:{{HDB_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    }\n}\n\n",
+									"raw": "{\n    \"operation\": \"add_node\",\n    \"url\": \"wss://{{NODE1_HOST}}:{{REPLICATION_PORT}}\",\n    \"verify_tls\": false,\n    \"authorization\": {\n        \"username\": \"{{USERNAME}}\",\n        \"password\": \"{{PASSWORD}}\"\n    }\n}\n\n",
 									"options": {
 										"raw": {
 											"language": "json"
