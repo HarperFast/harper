@@ -208,7 +208,7 @@ interface Metric {
 	[key: string]: any;
 }
 
-function storeMetric(table: any, metricName: string, metric: Metric) {
+function storeMetric(table: Table, metricName: string, metric: Metric) {
 	const metricValue = {
 		id: getNextMonotonicTime(),
 		metric: metricName,
