@@ -297,7 +297,6 @@ export function replicateOverWS(ws, options, authorization) {
 	const DELAY_CLOSE_TIME = 1000;
 	let delayed_close: NodeJS.Timeout;
 	let last_message_time = 0;
-	let last_audit_sent = 0;
 	// track bytes read and written so we can verify if a connection is really dead on pings
 	let bytes_read = 0;
 	let bytes_written = 0;
@@ -1137,7 +1136,6 @@ export function replicateOverWS(ws, options, authorization) {
 										snapshot: false, // don't want to use a snapshot, and we want to see new entries
 									})) {
 										if (closed) return;
-										last_audit_sent = key;
 										const audit_record = readAuditEntry(audit_entry);
 										logger.debug?.('sending audit record', new Date(key));
 										sendAuditRecord(audit_record, key);
@@ -1168,7 +1166,6 @@ export function replicateOverWS(ws, options, authorization) {
 											current_sequence_id
 										);
 
-									last_audit_sent = 0; // indicate that we have sent all the audit log entries, we are not catching up right now
 									await whenNextTransaction(audit_store);
 								} while (!closed);
 							})
@@ -1355,7 +1352,7 @@ export function replicateOverWS(ws, options, authorization) {
 						}, COMMITTED_UPDATE_DELAY);
 					}
 					last_sequence_id_committed = sequence_id_received;
-					logger.trace?.('last sequence committed', new Date(sequence_id_received), database_name);
+					logger.debug?.('last sequence committed', new Date(sequence_id_received), database_name);
 				},
 			});
 		} catch (error) {
@@ -1372,7 +1369,7 @@ export function replicateOverWS(ws, options, authorization) {
 				name: remote_node_name,
 				database: database_name,
 				url: options.url,
-				lastSendTime: last_audit_sent,
+				lastReceivedTime: last_sequence_id_received,
 				latency: options.connection.latency,
 			});
 		}
