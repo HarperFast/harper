@@ -18543,6 +18543,7 @@
 											"",
 											"pm.test('valid response', () => {",
 											"    const response = pm.response.json();",
+											"console.log(response)",
 											"    const componentName = 'my-git-component';",
 											"    pm.expect(response.message).to.include(`Successfully deployed: ${componentName}`);",
 											"    pm.expect(response.replicated.length).to.equal(3);",
