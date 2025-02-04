@@ -433,6 +433,23 @@ function updateConfigValue(
 	const config_doc = parseYamlDoc(old_config_path);
 	let schemas_args;
 
+	// Don't do the update if the values are the same.
+	if (parsed_args && flat_config_obj) {
+		let doUpdate = false;
+		for (const arg in parsed_args) {
+			// Using no-strict here because we might need to compare string to number
+			if (parsed_args[arg] != flat_config_obj[arg.toLowerCase()]) {
+				doUpdate = true;
+				break;
+			}
+		}
+
+		if (!doUpdate) {
+			logger.trace(`No changes detected in config parameters, skipping update`);
+			return;
+		}
+	}
+
 	if (parsed_args === undefined && param.toLowerCase() === CONFIG_PARAMS.DATABASES) {
 		schemas_args = value;
 	} else if (parsed_args === undefined) {

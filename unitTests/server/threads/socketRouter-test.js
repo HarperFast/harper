@@ -1,4 +1,3 @@
-require('../../../utility/devops/tsBuild');
 const {
 	startHTTPThreads,
 	startSocketServer,

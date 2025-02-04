@@ -22,6 +22,7 @@ authentication:
 analytics:
   aggregatePeriod: 60
 replication:
+  securePort: 9933
   enableRootCAs: true
   hostname: null
   databases: '*' # Database name or list of database names to replicate, * defaults to all databases

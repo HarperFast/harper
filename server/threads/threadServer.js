@@ -1,5 +1,5 @@
 'use strict';
-
+require('../../bin/dev');
 const { isMainThread, parentPort, threadId, workerData } = require('node:worker_threads');
 const { Socket, createServer: createSocketServer } = require('node:net');
 const { createServer, IncomingMessage } = require('node:http');
