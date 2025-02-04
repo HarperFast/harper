@@ -53,8 +53,8 @@ export async function authentication(request, next_handler) {
 					? operations_cors_accesslist
 					: []
 				: apps_cors
-				? apps_cors_accesslist
-				: [];
+					? apps_cors_accesslist
+					: [];
 			if (access_list.includes(origin) || access_list.includes('*')) {
 				if (request.method === 'OPTIONS') {
 					// preflight request
@@ -125,7 +125,7 @@ export async function authentication(request, next_handler) {
 				// null means no user is defined from certificate, need regular authentication as well
 				if (username === undefined || username === 'Common Name' || username === 'CN')
 					username = request.peerCertificate.subject.CN;
-				request.user = await server.getUser(username, null, null);
+				request.user = await server.getUser(username, null, request);
 				authAuditLog(username, AUTH_AUDIT_STATUS.SUCCESS, 'mTLS');
 			} else {
 				debug('HTTPS/WSS mTLS authorized connection (mTLS did not authorize a user)', 'from', request.ip);
@@ -269,8 +269,8 @@ export async function authentication(request, next_handler) {
 	}
 }
 let started;
-export function start({ server, port }) {
-	server.http(authentication, { port: port || 'all' });
+export function start({ server, port, securePort }) {
+	server.http(authentication, port || securePort ? { port, securePort } : { port: 'all' });
 	// keep it cleaned out periodically
 	if (!started) {
 		started = true;

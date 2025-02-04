@@ -3,7 +3,6 @@ const validator = require('./validationWrapper');
 const constraints = {
 	username: {
 		presence: true,
-		format: '[\\w\\-\\_]+',
 		exclusion: {
 			within: ['system'],
 			message: 'You cannot create tables within the system schema',

@@ -475,4 +475,30 @@ describe('test REST calls', () => {
 		assert.equal(response.status, 500);
 		assert(response.data.includes('Conflicting paths'));
 	});
+
+	it('handles async iterator content type handler', async () => {
+		// arbitrary rest request that will return multiple things to the content type handlers
+		const response = await axios.get('http://localhost:9926/FourProp/', {
+			headers: {
+				// specify the special content type that will always return 'one' then 'two'
+				Accept: 'application/custom-async-iterator',
+			}
+		});
+		// Assert everything works as expected
+		assert.equal(response.status, 200);
+		assert.equal(response.data, 'onetwo');
+	});
+
+	it('handles iterator content type handler', async () => {
+		// arbitrary rest request that will return multiple things to the content type handlers
+		const response = await axios.get('http://localhost:9926/FourProp/', {
+			headers: {
+				// specify the special content type that will always return 'one' then 'two'
+				Accept: 'application/custom-iterator',
+			}
+		});
+		// Assert everything works as expected
+		assert.equal(response.status, 200);
+		assert.equal(response.data, 'onetwo');
+	});
 });

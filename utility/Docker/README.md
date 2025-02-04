@@ -46,7 +46,7 @@ Containers created from this image will store all data and HarperDB configuratio
 
 ### Examples
 
-Run a HarperDB container in the background, with the ROOTPATH directory mounted to the container host, and expose the HarperDB Operations API and HTTP ports on the container host:
+To run a HarperDB container in the background, with the ROOTPATH directory mounted to the container host, and expose the HarperDB Operations API and HTTP ports on the container host:
 
 ```
 docker run -d \
@@ -59,7 +59,24 @@ docker run -d \
   harperdb/harperdb
 ```
 
-Enable HTTPS, enable HarperDB clustering, and expose the HarperDB clustering port on the container host:
+To enable HTTPS and replication:
+
+```
+docker run -d \
+  -v <host directory>:/home/harperdb/hdb \
+  -e HDB_ADMIN_USERNAME=HDB_ADMIN \
+  -e HDB_ADMIN_PASSWORD=password \
+  -e THREADS=4 \
+  -e OPERATIONSAPI_NETWORK_PORT=null \
+  -e OPERATIONSAPI_NETWORK_SECUREPORT=9925 \
+  -e HTTP_SECUREPORT=9926 \
+  -e REPLICATION_HOSTNAME=server-one \
+  -p 9925:9925 \
+  -p 9926:9926 \
+  harperdb/harperdb
+```
+
+To enable HTTPS, enable HarperDB replication via NATS (NATS is the legacy replication, the replication above is recommended), and expose the HarperDB clustering port on the container host:
 
 ```
 docker run -d \
@@ -80,7 +97,7 @@ docker run -d \
   harperdb/harperdb
 ```
 
-Execute the `harperdb version` command, and remove the container when finished:
+To execute the `harperdb version` command, and remove the container when finished:
 
 ```
 docker run --rm harperdb/harperdb /bin/bash -c "harperdb version"

@@ -3,8 +3,8 @@
  * this is simply meant to allow a developer to create their own license file & gets stripped out on release
  * @type {{validateLicense, generateFingerPrint, generateLicense}|*}
  */
+require('../../bin/dev');
 
-const license = require('../registration/hdb_license');
 const license_generator = require('./licenseGenerator');
 const reg_handler = require('../registration/registrationHandler');
 
@@ -23,6 +23,7 @@ const LICENSE_FILE = path.join(LICENSE_PATH, terms.LICENSE_FILE_NAME);
 const ARGS = minimist(process.argv.slice(2));
 let RESET_SUCCESS_MSG = 'successfully reset license';
 async function register() {
+	const license = require('../registration/hdb_license');
 	if (ARGS.help || (ARGS.ram_allocation === undefined && ARGS.reset_license === undefined)) {
 		console.log(
 			'available arguments reset_license.  All can be used in conjunction with each other\n' +

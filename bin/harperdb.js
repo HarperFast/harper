@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
+require('./dev');
+
 const run_clone = process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL');
 if (run_clone) {
 	const env_mgr = require('../utility/environment/environmentManager');
@@ -27,7 +29,7 @@ Commands:
 copy-db <source> <target>       - Copies a database from source path to target path
 dev <path>                      - Run the application in dev mode with debugging, foreground logging, no auth
 install                         - Install harperdb
-operation <op> <param>=<value>  - Run an API operation and return result to the CLI, not all operations are supported
+<api-operation> <param>=<value> - Run an API operation and return result to the CLI, not all operations are supported
 register                        - Register harperdb
 renew-certs                     - Generate a new set of self-signed certificates
 restart                         - Restart the harperdb background process
@@ -65,11 +67,8 @@ async function harperdb() {
 		service = process.argv[2].toLowerCase();
 	}
 
-	let cli_api_op;
-	if (!run_clone) {
-		cli_api_op = cli_operations.buildRequest();
-		if (cli_api_op.operation) service = SERVICE_ACTIONS_ENUM.OPERATION;
-	}
+	const cli_api_op = cli_operations.buildRequest();
+	if (cli_api_op.operation) service = SERVICE_ACTIONS_ENUM.OPERATION;
 
 	switch (service) {
 		case SERVICE_ACTIONS_ENUM.OPERATION:
@@ -78,9 +77,7 @@ async function harperdb() {
 		case SERVICE_ACTIONS_ENUM.START:
 			return run_clone ? require('../utility/cloneNode/cloneNode')(true) : require('./run').launch();
 		case SERVICE_ACTIONS_ENUM.INSTALL:
-			return require('./install')().then(() => {
-				return require('./run').main(true);
-			});
+			return require('./install')();
 		case SERVICE_ACTIONS_ENUM.REGISTER:
 			return require('./register').register();
 		case SERVICE_ACTIONS_ENUM.STOP:

@@ -39,6 +39,11 @@ on:
         default: false
         required: false
         type: boolean
+      nodeVersion:
+        description: 'NodeJS version to use, such as 16, 18, 20, etc. Either -slim or -minimal will be appended appropriately for the Dockerfile. Changing this will negate latest tag. defaults to 22'
+        required: false
+        default: '22'
+        type: string
 
 jobs:
   ####################
@@ -57,6 +62,7 @@ jobs:
     uses: ./.github/workflows/docker-build.yaml
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      nodeVersion: ${{ inputs.nodeVersion }}
       container: ${{ inputs.container }}
       file: ${{ inputs.file }}
       latest: ${{ inputs.latest }}
@@ -80,6 +86,7 @@ jobs:
     uses: ./.github/workflows/docker-build.yaml
     with:
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+      nodeVersion: ${{  inputs.nodeVersion }}
       container: ${{ matrix.container }}
       file: ${{ matrix.file }}
       latest: ${{ inputs.latest }}

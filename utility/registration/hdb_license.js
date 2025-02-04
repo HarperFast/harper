@@ -62,7 +62,7 @@ async function generateFingerPrint() {
 
 async function writeFingerprint() {
 	let hash = uuidV4();
-	let hashed_hash = password.hash(hash);
+	let hashed_hash = password.hash(hash, password.HASH_FUNCTION.MD5);
 	const finger_print_file = getFingerPrintFilePath();
 
 	try {
@@ -169,7 +169,13 @@ function validateLicense(license_key, company) {
 			license_validation_object.valid_date = false;
 		}
 
-		if (!password.validate(license_tokens[1], `${LICENSE_HASH_PREFIX}${fingerprint}${company}`)) {
+		if (
+			!password.validate(
+				license_tokens[1],
+				`${LICENSE_HASH_PREFIX}${fingerprint}${company}`,
+				password.HASH_FUNCTION.MD5
+			)
+		) {
 			license_validation_object.valid_license = false;
 		}
 	} else {
@@ -217,7 +223,7 @@ function licenseSearch() {
 
 	try {
 		let file_licenses = fs.readFileSync(getLicenseFilePath(), 'utf-8');
-		licenses = file_licenses.split(terms.NEW_LINE);
+		licenses = file_licenses.split('\r\n');
 	} catch (e) {
 		if (e.code === 'ENOENT') {
 			log.debug('no license file found');

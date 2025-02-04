@@ -25,7 +25,8 @@ const { isMainThread } = require('worker_threads');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const manage_threads = require('../server/threads/manageThreads');
 const { replicateOperation } = require('../server/replication/replicator');
-
+const { packageDirectory } = require('../components/packageComponent');
+const npm_utils = require('../utility/npmUtilities');
 const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
 const TMP_PATH = path.join(env.get(terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY), 'tmp');
 const root_dir = env.get(terms.CONFIG_PARAMS.ROOTPATH);
@@ -337,29 +338,7 @@ async function packageComponent(req) {
 		}
 	}
 
-	await fs.ensureDir(TMP_PATH);
-	const file = path.join(TMP_PATH, `${project}.tar`);
-	let tar_opts = {};
-	if (req.skip_node_modules === true || req.skip_node_modules === 'true') {
-		// Create options for tar module that will exclude the CF projects node_modules directory.
-		tar_opts = {
-			ignore: (name) => {
-				return name.includes(path.join(path_to_project, 'node_modules'));
-			},
-		};
-	}
-
-	// pack the directory
-	tar.pack(path_to_project, tar_opts).pipe(fs.createWriteStream(file, { overwrite: true }));
-
-	// wait for a second
-	// eslint-disable-next-line no-magic-numbers
-	await new Promise((resolve) => setTimeout(resolve, 2000));
-
-	// read the output into base64
-	const payload = fs.readFileSync(file, { encoding: 'base64' });
-
-	await fs.remove(file);
+	const payload = (await packageDirectory(path_to_project, req)).toString('base64');
 
 	// return the package payload as base64-encoded string
 	return { project, payload };
@@ -383,7 +362,7 @@ async function deployComponent(req) {
 	}
 
 	const cf_dir = env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
-	let { project, payload, package: pkg } = req;
+	let { project, payload, package: pkg, install_command } = req;
 	log.trace(`deploying component`, project);
 
 	if (!payload && !pkg) {
@@ -397,7 +376,7 @@ async function deployComponent(req) {
 		await fs.emptyDir(path_to_project);
 
 		// extract the reconstituted file to the proper project directory
-		const stream = Readable.from(Buffer.from(payload, 'base64'));
+		const stream = Readable.from(payload instanceof Buffer ? payload : Buffer.from(payload, 'base64'));
 		await new Promise((resolve, reject) => {
 			stream
 				.pipe(gunzip())
@@ -410,21 +389,33 @@ async function deployComponent(req) {
 			await fs.copy(path.join(path_to_project, 'package'), path_to_project);
 			await fs.remove(path.join(path_to_project, 'package'));
 		}
+		const node_modules_path = path.join(path_to_project, 'node_modules');
+		if (install_command) {
+			// if the user provided an install command, we run that instead of npm install at the root
+			// TODO: When we support untrusted packages in a secure mode, we will need to deny this
+			await npm_utils.runCommand(install_command, path_to_project);
+		}
+		// if we have a node_modules folder, we assume we have our own modules, and we don't need to npm install them
+		else if (!fs.existsSync(node_modules_path)) {
+			// if the package came with node_modules, we don't need to npm install
+			// them, but otherwise we do
+			await npm_utils.installAllRootModules(false, path_to_project);
+		}
+	} else {
+		// Adds package to harperdb-config and then relies on restart to call install on the new app
+		await config_utils.addConfig(project, { package: pkg });
+
+		// The main thread can install the components, but we do it here and now so that if it fails, we can immediately
+		// know about it and report it.
+		await installComponents();
+		const root_path = eng_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
+		path_to_project = path.join(root_path, 'node_modules', project);
 	}
-
-	// Adds package to harperdb-config and then relies on restart to call install on the new app
-	await config_utils.addConfig(project, { package: pkg });
-
-	// The main thread can install the components, but we do it here and now so that if it fails, we can immediately
-	// know about it and report it.
-	await installComponents();
-	// now we attempt to actually load the component in case there is
-	// an error we can immediately detect and report
-	const root_path = eng_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
-	path_to_project = path.join(root_path, 'node_modules', project);
 
 	// the main thread should never actually load component, just do a deploy
 	if (isMainThread) return;
+	// now we attempt to actually load the component in case there is
+	// an error we can immediately detect and report
 	const pseudo_resources = new Map();
 	pseudo_resources.isWorker = true;
 	const component_loader = require('./componentLoader');
@@ -453,38 +444,26 @@ async function deployComponent(req) {
  * @returns {Promise<*>}
  */
 async function getComponents() {
-	const all_config = config_utils.getConfiguration();
-	let comps = [];
-	for (const element in all_config) {
-		if (all_config[element]?.package) {
-			// Do not return packages that are file paths.
-			if (all_config[element].package.startsWith('file:')) {
-				continue;
-			}
-			comps.push({ ...all_config[element], name: element });
-		}
-	}
-
 	// Recursive function that will traverse the components dir and build json
 	// directory tree as it goes.
-	const walk_dir = async (dir, result) => {
+	const walkDir = async (dir, result) => {
 		try {
 			const list = await fs.readdir(dir, { withFileTypes: true });
 			for (let item of list) {
-				const item_name = item.name;
-				if (item_name.startsWith('.') || item_name === 'node_modules') continue;
-				const item_path = path.join(dir, item_name);
+				const itemName = item.name;
+				if (itemName.startsWith('.') || itemName === 'node_modules') continue;
+				const itemPath = path.join(dir, itemName);
 				if (item.isDirectory() || item.isSymbolicLink()) {
 					let res = {
-						name: item_name,
+						name: itemName,
 						entries: [],
 					};
 					result.entries.push(res);
-					await walk_dir(item_path, res);
+					await walkDir(itemPath, res);
 				} else {
-					const stats = await fs.stat(item_path);
+					const stats = await fs.stat(itemPath);
 					const res = {
-						name: path.basename(item_name),
+						name: path.basename(itemName),
 						mtime: stats.mtime,
 						size: stats.size,
 					};
@@ -498,27 +477,17 @@ async function getComponents() {
 		}
 	};
 
-	const results = await walk_dir(env.get(terms.CONFIG_PARAMS.COMPONENTSROOT), {
+	const results = await walkDir(env.get(terms.CONFIG_PARAMS.COMPONENTSROOT), {
 		name: env.get(terms.CONFIG_PARAMS.COMPONENTSROOT).split(path.sep).slice(-1).pop(),
-		entries: comps,
+		entries: [],
 	});
 
-	for (const c of results.entries) {
-		if (c.package) {
-			const c_dir = await walk_dir(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), 'node_modules', c.name), {
-				name: c.name,
-				entries: [],
-			});
-			Object.assign(c, c_dir);
-		}
-	}
-
-	const component_loader = require('./componentLoader');
-	const component_errors = component_loader.component_errors;
-	for (const component of comps) {
-		const error = component_errors.get(component.name);
+	const componentLoader = require('./componentLoader');
+	const componentErrors = componentLoader.component_errors;
+	for (const component of results.entries) {
+		const error = componentErrors.get(component.name);
 		// if it is loaded properly, this should be false
-		if (error) component.error = component_errors.get(component.name);
+		if (error) component.error = componentErrors.get(component.name);
 		else if (error === undefined) component.error = 'The component has not been loaded yet (may need a restart)';
 	}
 	return results;
@@ -594,16 +563,35 @@ async function dropComponent(req) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	const project_path = req.file ? path.join(req.project, req.file) : req.project;
-	const path_to_comp = path.join(env.get(terms.CONFIG_PARAMS.COMPONENTSROOT), project_path);
+	const { project, file } = req;
+	const projectPath = req.file ? path.join(project, file) : project;
+	const pathToComponent = path.join(env.get(terms.CONFIG_PARAMS.COMPONENTSROOT), projectPath);
 
-	if (await fs.pathExists(path_to_comp)) {
-		await fs.remove(path_to_comp);
+	const componentSymlink = path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
+	if (await fs.pathExists(componentSymlink)) {
+		await fs.unlink(componentSymlink);
 	}
 
-	config_utils.deleteConfigFromFile([req.project]);
+	if (await fs.pathExists(pathToComponent)) {
+		await fs.remove(pathToComponent);
+	}
+
+	// Remove the component from the package.json file
+	const packageJsonPath = path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), 'package.json');
+	if (await fs.pathExists(packageJsonPath)) {
+		const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
+		if (packageJson?.dependencies?.[project]) {
+			delete packageJson.dependencies[project];
+		}
+		await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
+	}
+
+	config_utils.deleteConfigFromFile([project]);
 	let response = await replicateOperation(req);
-	response.message = 'Successfully dropped: ' + project_path;
+	if (req.restart === true) {
+		manage_threads.restartWorkers('http');
+		response.message = `Successfully dropped: ${projectPath}, restarting HarperDB`;
+	} else response.message = `Successfully dropped: ${projectPath}`;
 	return response;
 }
 

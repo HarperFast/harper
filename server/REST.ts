@@ -44,7 +44,7 @@ async function http(request: Context & Request, next_handler) {
 			resource_request.async = true;
 			resource = entry.Resource;
 		}
-		if (resource.isCaching) {
+		if (resource?.isCaching) {
 			const cache_control = headers_object['cache-control'];
 			if (cache_control) {
 				const cache_control_parts = parseHeaderValue(cache_control);
@@ -245,6 +245,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 		if (request.isWebSocket) return;
 		return http(request, next_handler);
 	}, options);
+	if (options.webSocket === false) return;
 	options.server.ws(async (ws, request, chain_completion) => {
 		connection_count++;
 		const incoming_messages = new IterableEventQueue();
@@ -334,30 +335,37 @@ const HTTP_TO_WEBSOCKET_CLOSE_CODES = {
 };
 
 /**
- * Parse a header value into a list of objects with name and value properties
+ * This parser is used to parse header values.
+ *
+ * It is used within this file for parsing the `Cache-Control` and `X-Replicate-To` headers.
+ *
  * @param value
  */
-function parseHeaderValue(value) {
-	const parts = value.split(/\s*,\s*/);
-	return parts.map((part) => {
-		let parsed;
-		const components = part.split(/\s*;\s*/);
-		let component;
-		while ((component = components.pop())) {
-			if (component.includes('=')) {
-				const [name, value] = component.split(/\s*=\s*/);
-				parsed = {
-					name: name.toLowerCase(),
-					value,
-					next: parsed,
-				};
-			} else {
-				parsed = {
-					name: component.toLowerCase(),
-					next: parsed,
-				};
+export function parseHeaderValue(value: string) {
+	return value
+		.trim()
+		.split(',')
+		.map((part) => {
+			let parsed;
+			const components = part.trim().split(';');
+			let component;
+			while ((component = components.pop())) {
+				if (component.includes('=')) {
+					let [name, value] = component.trim().split('=');
+					name = name.trim();
+					if (value) value = value.trim();
+					parsed = {
+						name: name.toLowerCase(),
+						value,
+						next: parsed,
+					};
+				} else {
+					parsed = {
+						name: component.toLowerCase(),
+						next: parsed,
+					};
+				}
 			}
-		}
-		return parsed;
-	});
+			return parsed;
+		});
 }

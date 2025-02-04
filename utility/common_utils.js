@@ -698,7 +698,7 @@ function checkTableExists(schema, table) {
  * @returns {number}
  */
 function getStartOfTomorrowInSeconds() {
-	let tomorow_seconds = moment().utc().add(1, terms.MOMENT_DAYS_TAG).startOf(terms.MOMENT_DAYS_TAG).unix();
+	let tomorow_seconds = moment().utc().add(1, 'd').startOf('d').unix();
 	let now_seconds = moment().utc().unix();
 	return tomorow_seconds - now_seconds;
 }
@@ -866,18 +866,14 @@ function httpRequest(options, data) {
 	if (options.protocol === 'http:') client = http;
 	else client = https;
 	return new Promise((resolve, reject) => {
-		const req = client.request(options, (res) => {
-			res.setEncoding('utf8');
-			let response = {
-				body: '',
-				headers: res.headers,
-			};
-
-			res.on('data', (chunk) => {
+		const req = client.request(options, (response) => {
+			response.setEncoding('utf8');
+			response.body = '';
+			response.on('data', (chunk) => {
 				response.body += chunk;
 			});
 
-			res.on('end', () => {
+			response.on('end', () => {
 				resolve(response);
 			});
 		});
@@ -886,7 +882,7 @@ function httpRequest(options, data) {
 			reject(err);
 		});
 
-		req.write(JSON.stringify(data));
+		req.write(data instanceof Buffer ? data : JSON.stringify(data));
 		req.end();
 	});
 }

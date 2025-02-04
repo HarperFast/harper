@@ -116,6 +116,7 @@ export class ResourceBridge extends LMDBBridge {
 			attributes,
 			schemaDefined: schema_defined,
 			expiration: table_create_obj.expiration,
+			audit: table_create_obj.audit,
 		});
 	}
 	async createAttribute(create_attribute_obj) {
@@ -410,7 +411,7 @@ export class ResourceBridge extends LMDBBridge {
 							value,
 							comparator,
 						},
-				  ];
+					];
 
 		return table.search(
 			{
@@ -450,7 +451,7 @@ export class ResourceBridge extends LMDBBridge {
 	}
 	async deleteAuditLogsBefore(delete_obj) {
 		const table = getTable(delete_obj);
-		return table.deleteHistory(delete_obj.timestamp);
+		return table.deleteHistory(delete_obj.timestamp, delete_obj.cleanup_deleted_records);
 	}
 
 	async readAuditLog(read_audit_log_obj) {

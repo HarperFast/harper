@@ -20,5 +20,6 @@
 		"../unitTests/utility/logging/*.js",
 		"../unitTests/security/**/*.js",
 		"../unitTests/server/replication/**/*.js"
-	]
+	],
+	"require": ["../bin/dev.js"]
 }

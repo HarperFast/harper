@@ -14,7 +14,7 @@ const validator = require('../validation/validationWrapper');
 const harper_logger = require('./logging/harper_logger');
 env.initSync();
 const CF_ROUTES_DIR = env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
-const NPM_INSTALL_COMMAND = 'npm install --omit=dev --json';
+const NPM_INSTALL_COMMAND = 'npm install --force --omit=dev --json';
 const NPM_INSTALL_DRY_RUN_COMMAND = `${NPM_INSTALL_COMMAND} --dry-run`;
 const root_dir = env.get(terms.CONFIG_PARAMS.ROOTPATH);
 const ssh_dir = path.join(root_dir, 'ssh');
@@ -25,6 +25,7 @@ module.exports = {
 	installAllRootModules,
 	uninstallRootModule,
 	linkHarperdb,
+	runCommand,
 };
 
 /**
@@ -32,7 +33,7 @@ module.exports = {
  * @param ignore_scripts - tell npm to not run any scripts that might exist in a package.json
  * @returns {Promise<void>}
  */
-async function installAllRootModules(ignore_scripts = false) {
+async function installAllRootModules(ignore_scripts = false, working_dir = env.get(terms.CONFIG_PARAMS.ROOTPATH)) {
 	await checkNPMInstalled();
 	let ssh_key_added = false;
 	let env_vars = process.env;
@@ -49,9 +50,24 @@ async function installAllRootModules(ignore_scripts = false) {
 		});
 	}
 
+	// When the user running HarperDB does not have write permissions to the global node_modules directory npm install will fail due to the symlink
+	try {
+		const root_path = env.get(terms.CONFIG_PARAMS.ROOTPATH);
+		const harper_module = path.join(root_path, 'node_modules', 'harperdb');
+
+		if (fs.lstatSync(harper_module).isSymbolicLink()) {
+			fs.unlinkSync(harper_module);
+		}
+	} catch (err) {
+		if (err.code !== 'ENOENT'){
+			harper_logger.error('Error removing symlink:', err);
+		}
+	}
+	
+
 	await runCommand(
-		ignore_scripts ? 'npm install --ignore-scripts' : 'npm install',
-		env.get(terms.CONFIG_PARAMS.ROOTPATH),
+		ignore_scripts ? 'npm install --force --ignore-scripts' : 'npm install --force',
+		working_dir,
 		env_vars
 	);
 }
@@ -88,7 +104,7 @@ async function runCommand(command, cwd = undefined, env = process.env) {
 		throw new Error(err.stderr.replace('\n', ''));
 	}
 
-	if (stderr && !stderr.includes('Debugger listening')) {
+	if (stderr && !stderr.includes('Debugger listening') && !stderr.includes('warn using --force')) {
 		harper_logger.error('Error running NPM command:', command, stderr);
 	}
 

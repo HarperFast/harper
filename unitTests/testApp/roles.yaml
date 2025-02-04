@@ -1,0 +1,16 @@
+declared-role:
+  super_user: false
+  data: # basically same structure as role object that we use in hdb_role and comes through the operations API
+    SimpleRecord:
+      read: true
+      insert: true
+    FourProp:
+      read: true
+      insert: false
+      update: true
+      delete: true
+      attributes:
+        name:
+          read: true
+          insert: false
+          update: true

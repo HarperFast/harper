@@ -127,6 +127,9 @@ export function searchByIndex(
 	let attribute_name = search_condition[0] ?? search_condition.attribute;
 	let value = search_condition[1] ?? search_condition.value;
 	const comparator = search_condition.comparator;
+	if (value === undefined && comparator !== 'sort') {
+		throw new ClientError(`Search condition for ${attribute_name} must have a value`);
+	}
 	if (Array.isArray(attribute_name)) {
 		const first_attribute_name = attribute_name[0];
 		// get the potential relationship attribute
@@ -328,11 +331,11 @@ export function searchByIndex(
 								}
 							})
 						);
-				  }
+					}
 				: (entry) => {
 						if (entry.value == null && !(entry.metadataFlags & (INVALIDATED | EVICTED))) return SKIP;
 						return entry;
-				  }
+					}
 		);
 		results.hasEntries = true;
 		return results;
@@ -357,7 +360,7 @@ export function searchByIndex(
 								}
 							})
 						);
-				  }
+					}
 				: ({ value }) => value
 		);
 	} else {
@@ -384,9 +387,9 @@ export function findAttribute(attributes, attribute_name) {
 	if (Array.isArray(attribute_name)) {
 		if (attribute_name.length > 1) {
 			const first_attribute = findAttribute(attributes, attribute_name[0]);
-			const next_attributes = (
-				first_attribute?.definition?.tableClass || first_attribute?.elements.definition?.tableClass
-			)?.attributes;
+			const next_attributes =
+				(first_attribute?.definition?.tableClass || first_attribute?.elements?.definition?.tableClass)?.attributes ??
+				first_attribute?.properties;
 			if (next_attributes) return findAttribute(next_attributes, attribute_name.slice(1));
 			return;
 		} else attribute_name = attribute_name.toString();
@@ -688,15 +691,20 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 		case 'le':
 			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) <= 0);
 		case 'ne':
-			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) !== 0);
+			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) !== 0, false, true);
 		case 'sort':
 			return () => true;
 		default:
 			throw new ClientError(`Unknown query comparator "${comparator}"`);
 	}
 	/** Create a comparison function that can take the record and check the attribute's value with the filter function */
-	function attributeComparator(attribute, filter, can_use_index?, allow_object_matching?) {
-		let threshold_remaining_misses;
+	function attributeComparator(
+		attribute: string,
+		filter: (record: any) => boolean,
+		can_use_index?: boolean,
+		allow_object_matching?: boolean
+	) {
+		let threshold_remaining_misses: number;
 		can_use_index =
 			can_use_index && // is it a comparator that makes sense to use index
 			!is_primary_key && // no need to use index for primary keys, since we will be iterating over the primary keys
@@ -711,9 +719,9 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 		}
 		let misses = 0;
 		let filtered_so_far = 3; // what we use to calculate miss rate; we give some buffer so we don't jump to indexed retrieval too quickly
-		function recordFilter(record) {
+		function recordFilter(record: any) {
 			const value = record[attribute];
-			let matches;
+			let matches: boolean;
 			if (typeof value !== 'object' || !value || allow_object_matching) matches = filter(value);
 			else if (Array.isArray(value)) matches = value.some(filter);
 			else if (value instanceof Date) matches = filter(value.getTime());
@@ -794,7 +802,7 @@ export function estimateCondition(table) {
 						estimate +
 						(from_index
 							? (estimate * estimatedEntryCount(table.indices[attribute.relationship.from])) /
-							  (estimatedEntryCount(related_table.primaryStore) || 1)
+								(estimatedEntryCount(related_table.primaryStore) || 1)
 							: estimate);
 				} else {
 					// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)

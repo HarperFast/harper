@@ -119,7 +119,7 @@ async function createTokens(auth_object) {
 		{ expiresIn: REFRESH_TOKEN_TIMEOUT, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.REFRESH }
 	);
 
-	let hashed_token = password.hash(refresh_token);
+	let hashed_token = password.hash(refresh_token, password.HASH_FUNCTION.SHA256);
 	//update the user.refresh_token
 	let update_user_object = new UpdateObject(terms.SYSTEM_SCHEMA_NAME, terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME, [
 		{ username: auth_object.username, refresh_token: hashed_token },
@@ -266,7 +266,7 @@ async function validateRefreshToken(token) {
 		throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}
 
-	if (!password.validate(user.refresh_token, token)) {
+	if (!password.validate(user.refresh_token, token, password.HASH_FUNCTION.SHA256)) {
 		throw handleHDBError(new Error(), AUTHENTICATION_ERROR_MSGS.INVALID_TOKEN, HTTP_STATUS_CODES.UNAUTHORIZED);
 	}
 	return user;

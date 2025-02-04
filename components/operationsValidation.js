@@ -238,7 +238,6 @@ function deployComponentValidator(req) {
 			.pattern(PROJECT_FILE_NAME_REGEX)
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
-		payload: Joi.string().optional().messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PACKAGE }),
 		package: Joi.string().optional(),
 		restart: Joi.boolean().optional(),
 	});

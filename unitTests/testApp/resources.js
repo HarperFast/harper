@@ -132,3 +132,18 @@ server.getUser = function (username, password) {
 	}
 	return superGetUser(username, password);
 };
+
+// These are for the "handles iterator content type handler" tests in unitTests/apiTests/basicREST-test.mjs
+server.contentTypes.set('application/custom-async-iterator', {
+	async * serializeStream (data) {
+		yield 'one';
+		yield 'two';
+	},
+});
+
+server.contentTypes.set('application/custom-iterator', {
+	* serializeStream (data) {
+		yield 'one';
+		yield 'two';
+	},
+});

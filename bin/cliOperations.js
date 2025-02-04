@@ -7,6 +7,8 @@ const { httpRequest } = require('../utility/common_utils');
 const path = require('path');
 const fs = require('fs-extra');
 const YAML = require('yaml');
+const { packageDirectory } = require('../components/packageComponent');
+const { encode } = require('cbor-x');
 
 const SUPPORTED_OPS = [
 	'describe_table',
@@ -27,6 +29,9 @@ const SUPPORTED_OPS = [
 	'create_attribute',
 	'drop_attribute',
 	'search_by_id',
+	'insert',
+	'update',
+	'upsert',
 	'delete',
 	'search_by_value',
 	'csv_file_load',
@@ -73,7 +78,17 @@ const SUPPORTED_OPS = [
 	'get_ssh_known_hosts',
 ];
 
+const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
+
 module.exports = { cliOperations, buildRequest };
+const PREPARE_OPERATION = {
+	deploy_component: async (req) => {
+		const project_path = process.cwd();
+		req.payload = await packageDirectory(project_path, { skip_node_modules: true, ...req });
+		req.cborEncode = true;
+		if (!req.project) req.project = path.basename(project_path);
+	},
+};
 
 /**
  * Builds an Op-API request object from CLI args
@@ -83,6 +98,8 @@ function buildRequest() {
 	for (const arg of process.argv.slice(2)) {
 		if (SUPPORTED_OPS.includes(arg)) {
 			req.operation = arg;
+		} else if (OP_ALIASES.hasOwnProperty(arg)) {
+			req.operation = OP_ALIASES[arg];
 		} else if (arg.includes('=')) {
 			let [first, ...rest] = arg.split('=');
 			rest = rest.join('=');
@@ -107,33 +124,71 @@ function buildRequest() {
  * @returns {Promise<void>}
  */
 async function cliOperations(req) {
-	if (!fs.existsSync(path.join(env_mgr.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE))) {
-		console.error('HarperDB must be running to perform this operation');
-		process.exit();
+	if (!req.target) {
+		req.target = process.env.CLI_TARGET;
 	}
+	let target;
+	if (req.target) {
+		try {
+			target = new URL(req.target);
+		} catch (error) {
+			try {
+				target = new URL(`https://${req.target}:9925`);
+			} catch (asHostError) {
+				throw error; // throw the original error
+			}
+		}
+		target = {
+			protocol: target.protocol,
+			hostname: target.hostname,
+			port: target.port,
+			username: req.username || target.username || process.env.CLI_TARGET_USERNAME,
+			password: req.password || target.password || process.env.CLI_TARGET_PASSWORD,
+			rejectUnauthorized: req.rejectUnauthorized,
+		};
+	} else {
+		if (!fs.existsSync(path.join(env_mgr.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE))) {
+			console.error('HarperDB must be running to perform this operation');
+			process.exit();
+		}
 
-	if (!fs.existsSync(env_mgr.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET))) {
-		console.error('No domain socket found, unable to perform this operation');
-		process.exit();
+		if (!fs.existsSync(env_mgr.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET))) {
+			console.error('No domain socket found, unable to perform this operation');
+			process.exit();
+		}
 	}
-
+	await PREPARE_OPERATION[req.operation]?.(req);
 	try {
-		let res = await httpRequest(
-			{
-				method: 'POST',
-				protocol: 'http:',
-				socketPath: env_mgr.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET),
-				headers: { 'Content-Type': 'application/json' },
-			},
-			req
-		);
+		let options = target ?? {
+			protocol: 'http:',
+			socketPath: env_mgr.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET),
+		};
+		options.method = 'POST';
+		options.headers = { 'Content-Type': 'application/json' };
+		if (target?.username) {
+			options.headers.Authorization = `Basic ${Buffer.from(`${target.username}:${target.password}`).toString('base64')}`;
+		}
+		if (req.cborEncode) {
+			options.headers['Content-Type'] = 'application/cbor';
+			req = encode(req);
+		}
+		let response = await httpRequest(options, req);
 
-		res = JSON.parse(res.body);
+		let responseData;
+		try {
+			responseData = JSON.parse(response.body);
+			// eslint-disable-next-line sonarjs/no-ignored-exceptions
+		} catch (e) {
+			responseData = {
+				status: response.statusCode + ' ' + (response.statusMessage || 'Unknown'),
+				body: response.body,
+			};
+		}
 
 		if (req.json) {
-			console.log(JSON.stringify(res, null, 2));
+			console.log(JSON.stringify(responseData, null, 2));
 		} else {
-			console.log(YAML.stringify(res).trim());
+			console.log(YAML.stringify(responseData).trim());
 		}
 	} catch (err) {
 		let err_msg = 'Error: ';
@@ -142,7 +197,7 @@ async function cliOperations(req) {
 		} else if (err?.response?.data) {
 			err_msg += err?.response?.data;
 		} else {
-			err_msg += err.message;
+			return console.error(err);
 		}
 		console.error(err_msg);
 	}

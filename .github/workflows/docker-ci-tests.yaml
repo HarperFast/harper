@@ -47,7 +47,7 @@ jobs:
     needs:
       - dockerBuild
       - build
-    timeout-minutes: 20
+    timeout-minutes: 30
     strategy:
       fail-fast: false
       matrix:
@@ -71,12 +71,13 @@ jobs:
         with:
           node-version: ${{ needs.build.outputs.nodeVersion }}
       - name: Run Tests
+        timeout-minutes: 20
         run: |
           pushd utility/Docker
           docker load -i ${{ matrix.tarName }}
           docker image inspect harperdb/harperdb:${{ needs.build.outputs.harperdbVersion }} > /dev/null || exit 1
           popd
-          containerId=$(docker run -d --restart=no -p 9925:9925 -p 9926:9926 -e HARPERDB_FINGERPRINT="4sADRM2e7dd501d7db58bb02d35bd0745146423a1" -e HARPERDB_LICENSE='{"license_key":"1373969b4cabd39e8b29c3c16e419c6abef4437d48168b4721e575610dcf656cf57016bd037cf1107f8232a1e94b7352c05b7c069560ac0e54ca156d3babc966289c664e5fb163e3429158a2f57afd39854ca51fa885abbca62f7e063a334498cd5ef0a038cbea80c6e063d174bbcc189a81dc4f2771ad90c9022cf20a322043ec4213fdef1d1e9eba36117c865acb6a13be3be218513ee80385e78bda0b9e27e7ec6532ac6e5416bc020f4f4be91cf6mofi25eYMW6aiRf6bd3d9b691699749569f6acd34a93e61","company":"harperdb.io"}' -e CUSTOM_FUNCTIONS=true -e LOG_TO_STDSTREAMS=true -e LOG_TO_FILE=true -e HDB_ADMIN_USERNAME="admin" -e HDB_ADMIN_PASSWORD="Abc1234!" -e OPERATIONSAPI_NETWORK_PORT=9925 -e HTTP_PORT=9926 harperdb/harperdb:${{ needs.build.outputs.harperdbVersion }})
+          containerId=$(docker run -d --name harperdb --restart=no -p 9925:9925 -p 9926:9926 -e HARPERDB_FINGERPRINT="4sADRM2e7dd501d7db58bb02d35bd0745146423a1" -e HARPERDB_LICENSE='{"license_key":"1373969b4cabd39e8b29c3c16e419c6abef4437d48168b4721e575610dcf656cf57016bd037cf1107f8232a1e94b7352c05b7c069560ac0e54ca156d3babc966289c664e5fb163e3429158a2f57afd39854ca51fa885abbca62f7e063a334498cd5ef0a038cbea80c6e063d174bbcc189a81dc4f2771ad90c9022cf20a322043ec4213fdef1d1e9eba36117c865acb6a13be3be218513ee80385e78bda0b9e27e7ec6532ac6e5416bc020f4f4be91cf6mofi25eYMW6aiRf6bd3d9b691699749569f6acd34a93e61","company":"harperdb.io"}' -e CUSTOM_FUNCTIONS=true -e LOG_TO_STDSTREAMS=true -e LOG_TO_FILE=true -e HDB_ADMIN_USERNAME="admin" -e HDB_ADMIN_PASSWORD="Abc1234!" -e OPERATIONSAPI_NETWORK_PORT=9925 -e HTTP_PORT=9926 harperdb/harperdb:${{ needs.build.outputs.harperdbVersion }})
           sleep 30s
 
           echo "DEBUG"
@@ -94,23 +95,27 @@ jobs:
           docker cp test/data/integrationTestsCsvs/ $containerId:/home/harperdb/
           cd ./integrationTests/
           newman run HarperDB_Integration_Tests.json -e Int_test_env_var.json --reporters cli,html,htmlextra --reporter-cli-show-timestamps --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --env-var "files_location=/home/harperdb/integrationTestsCsvs/" --env-var "username=admin" --env-var "password=Abc1234!"
-          cd ../
 
+      - name: Create artifact
+        if: always()
+        run: |
           mkdir -p artifact
 
           # Capture hdb_log.log from container
-          docker cp $containerId:/home/harperdb/hdb/log/ artifact
+          docker cp harperdb:/home/harperdb/hdb/log/ artifact
 
           # Capture harperdb-config.yaml
-          docker cp $containerId:/home/harperdb/hdb/harperdb-config.yaml artifact
+          docker cp harperdb:/home/harperdb/hdb/harperdb-config.yaml artifact
 
           # Capture docker log
-          docker logs $containerId > artifact/docker_log.log
+          docker logs harperdb > artifact/docker_log.log
 
           # Capture newman reports
           cp integrationTests/newman/report.html artifact
           cp integrationTests/newman/extra_report.html artifact
+          
       - name: 'Upload Artifact'
+        if: always()
         uses: actions/upload-artifact@v4
         with:
           name: logs-${{ matrix.name }}

@@ -22,6 +22,11 @@ on:
       harperdbVersion:
         required: true
         type: string
+      nodeVersion:
+        description: 'NodeJS version to use, such as 16, 18, 20, etc. Either -slim or -minimal will be appended appropriately for the Dockerfile. Changing this will negate latest tag. defaults to 22'
+        required: false
+        type: string
+        default: '22'
       container:
         description: 'Which container to build, harperdb/private, harperdb/harperdb, harperdb/fabric, harperdb/harperdb-openshift, tar, or public for both harperdb and openshift'
         default: 'tar'
@@ -65,6 +70,7 @@ permissions:
 
 env:
   TRIVY_SEVERITY: 'CRITICAL,HIGH'
+  NODE_VERSION_DEFAULT: '22'
 
 jobs:
   ##########################
@@ -107,7 +113,8 @@ jobs:
             type=raw,enable=${{ inputs.container != 'harperdb/private'}},value=${{ inputs.harperdbVersion }}
             type=raw,enable=${{ inputs.container == 'harperdb/private'}},value=${{ inputs.harperdbVersion }}-${{ github.run_number }}
             type=raw,enable=${{ inputs.container == 'tar'}},value=${{ inputs.harperdbVersion }}-${{ github.run_number }}
-            type=raw,value=latest,enable=${{ inputs.latest }}
+            type=raw,enable=${{ inputs.nodeVersion != env.NODE_VERSION_DEFAULT }},value=${{ inputs.harperdbVersion }}_node-${{ inputs.nodeVersion }}
+            type=raw,value=latest,enable=${{ inputs.nodeVersion == env.NODE_VERSION_DEFAULT && inputs.latest || false }}
             type=raw,value=${{ github.sha }}
 
       # build containers
@@ -128,6 +135,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
             HARPERDB_VERSION=${{ inputs.harperdbVersion }}
+            NODE_VERSION=${{ inputs.nodeVersion }}
             HARPERDB_TARBALL=harperdb-${{ inputs.harperdbVersion }}.tgz
             VCS_REF=`git rev-parse HEAD`
             BUILD_DATE=`date -u +%FT%T`
@@ -160,6 +168,7 @@ jobs:
           tags: ${{ steps.meta.outputs.tags }}
           build-args: |
             HARPERDB_VERSION=${{ inputs.harperdbVersion }}
+            NODE_VERSION=${{ inputs.nodeVersion }}
             HARPERDB_TARBALL=harperdb-${{ inputs.harperdbVersion }}.tgz
             VCS_REF=`git rev-parse HEAD`
             BUILD_DATE=`date -u +%FT%T`
@@ -171,6 +180,8 @@ jobs:
         if: inputs.container == 'tar'
         env:
           harperdbVersion: ${{ inputs.harperdbVersion }}
+          nodeVersion: ${{ inputs.nodeVersion }}
+          nodeVersionDefault: ${{ env.NODE_VERSION_DEFAULT }}
           runNumber: ${{ github.run_number }}
           containerFile: ${{ inputs.file }}
           platform: ${{ inputs.platforms }}
@@ -180,8 +191,9 @@ jobs:
           if [[ "${containerTarball}" == "default" ]]; then
             base="docker-harperdb_${harperdbVersion}-"
             [[ "${containerFile}" == *"-openshift" ]] && flavor='-openshift' || flavor=''
+            [[ "${nodeVersion}" == "${nodeVersionDefault}" ]] && nodeFlavor='' || nodeFlavor="-node-${nodeVersion}"
             arch="-${platform##*/}"
-            echo "tarName=${base}${runNumber}${flavor}${arch}.tar" >> "${GITHUB_OUTPUT}"
+            echo "tarName=${base}${nodeFlavor}${runNumber}${flavor}${arch}.tar" >> "${GITHUB_OUTPUT}"
           else
             echo "tarName=${containerTarball}" >> "${GITHUB_OUTPUT}"
           fi
@@ -200,6 +212,7 @@ jobs:
           outputs: type=docker,dest=${{ steps.set-tar-name.outputs.tarName }}
           build-args: |
             HARPERDB_VERSION=${{ inputs.harperdbVersion }}
+            NODE_VERSION=${{ inputs.nodeVersion }}
             HARPERDB_TARBALL=harperdb-${{ inputs.harperdbVersion }}.tgz
             VCS_REF=`git rev-parse HEAD`
             BUILD_DATE=`date -u +%FT%T`
@@ -256,6 +269,7 @@ jobs:
         env:
           SUMMARY: ${{ steps.trivy_summary.outputs.summary }}
         run: |
+          #!/usr/bin/env bash
           trivy_results=$(cat trivy.txt)
           delimiter="$(openssl rand -hex 8)"
           cat <<EOF >> "${GITHUB_STEP_SUMMARY}"
@@ -273,7 +287,7 @@ jobs:
       # If changes are detected, create a new issue
       - name: Manage Container Image Security Issue
         id: post_trivy_issue
-        if: ${{ ! contains(inputs.platforms, ',') }}
+        if: ${{ ! contains(inputs.platforms, ',') && inputs.nodeVersion == env.NODE_VERSION_DEFAULT }}
         uses: actions/github-script@v7
         env:
           SUMMARY: '${{ steps.trivy_summary.outputs.summary }}'
@@ -287,7 +301,7 @@ jobs:
             const title = '${{ steps.trivy_summary.outputs.imageName }} ${{ inputs.platforms }} Security Scan';
             const creator = 'github-actions[bot]'
 
-            // Look to see if there is an existing drift issue
+            // Look to see if there is an existing issue
             const issues = await github.rest.issues.listForRepo({
               owner: context.repo.owner,
               repo: context.repo.repo,
@@ -318,7 +332,7 @@ jobs:
               } 
 
             } else {
-              console.log('Drift Detected: Creating new issue')
+              console.log('Creating new issue')
               const result = await github.rest.issues.create({
                 owner: context.repo.owner,
                 repo: context.repo.repo,

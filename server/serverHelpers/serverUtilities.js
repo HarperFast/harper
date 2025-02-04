@@ -85,7 +85,7 @@ async function processLocalTransaction(req, operation_function) {
 			// Need to remove auth variables, but we don't want to create an object unless
 			// the logging is actually going to happen.
 			// eslint-disable-next-line no-unused-vars
-			const { hdb_user, hdb_auth_header, password, ...clean_body } = req.body;
+			const { hdb_user, hdb_auth_header, password, payload, ...clean_body } = req.body;
 			operation_log.info(clean_body);
 		}
 	} catch (e) {

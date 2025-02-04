@@ -218,7 +218,7 @@ function loadCertificates() {
 								let record_timestamp =
 									!cert_record || cert_record.is_self_signed
 										? 1
-										: (cert_record.file_timestamp ?? cert_record.__updatedtime__);
+										: cert_record.file_timestamp ?? cert_record.__updatedtime__;
 								if (cert_record && file_timestamp <= record_timestamp) {
 									if (file_timestamp < record_timestamp)
 										hdb_logger.info(
@@ -562,7 +562,7 @@ async function getCertAuthority() {
 	hdb_logger.trace('No CA found with matching private key');
 }
 
-async function generateCertAuthority(private_key, public_key) {
+async function generateCertAuthority(private_key, public_key, write_key = true) {
 	const ca_cert = pki.createCertificate();
 
 	ca_cert.publicKey = public_key;
@@ -594,7 +594,9 @@ async function generateCertAuthority(private_key, public_key) {
 
 	const keys_path = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
 	const private_path = path.join(keys_path, certificates_terms.PRIVATEKEY_PEM_NAME);
-	await fs.writeFile(private_path, pki.privateKeyToPem(private_key));
+	if (write_key) {
+		await fs.writeFile(private_path, pki.privateKeyToPem(private_key));
+	}
 
 	return ca_cert;
 }
@@ -672,7 +674,7 @@ async function reviewSelfSignedCert() {
 			await fs.writeFile(path.join(keys_path, key_name), pki.privateKeyToPem(private_key));
 		}
 
-		const hdb_ca = await generateCertAuthority(private_key, pki.setRsaPublicKey(private_key.n, private_key.e));
+		const hdb_ca = await generateCertAuthority(private_key, pki.setRsaPublicKey(private_key.n, private_key.e), false);
 
 		await setCertTable({
 			name: hdb_ca.subject.getField('CN').value,
@@ -799,7 +801,7 @@ TLSSocket.prototype._init = function (socket, wrap) {
 	this._handle.oncertcb = function (info) {
 		const servername = info.servername;
 		tls_socket._SNICallback(servername, (err, context) => {
-			this.sni_context = context.context || context;
+			this.sni_context = context?.context || context;
 			// note that this skips the checks for multiple callbacks and entirely skips OCSP, so if we ever need that, we
 			// need to call the original oncertcb
 			this.certCbDone();
@@ -976,7 +978,7 @@ function createTLSSelector(type, mtls_options) {
 			} else break;
 		}
 		if (servername) harper_logger.debug('No certificate found to match', servername, 'using the default certificate');
-		else harper_logger.debug('No SNI, using the default certificate', default_context.name);
+		else harper_logger.debug('No SNI, using the default certificate', default_context?.name);
 		// no matches, return the first/default one
 		let context = default_context;
 		if (!context) harper_logger.info('No default certificate found');
@@ -1176,7 +1178,7 @@ function hostnamesFromCert(cert /*X509Certificate*/) {
 				})
 				.filter((part) => part) // filter out any empty names
 		: // finally we fall back to the common name
-			[extractCommonName(cert)];
+		  [extractCommonName(cert)];
 }
 
 async function getKey(req) {

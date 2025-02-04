@@ -15,7 +15,7 @@ module.exports = stop;
 async function stop() {
 	console.log(STOP_MSG);
 	hdb_logger.notify(STOP_MSG);
-	const is_pm2_mode = await process_man.isServiceRegistered(hdb_terms.HDB_PROC_DESCRIPTOR);
+	const is_pm2_mode = await process_man.isServiceRegistered(hdb_terms.PROCESS_DESCRIPTORS.HDB);
 	if (is_pm2_mode) {
 		process_man.enterPM2Mode();
 		const services = await process_man.getUniqueServicesList();
