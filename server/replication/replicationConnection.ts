@@ -43,7 +43,6 @@ const NODE_NAME = 140;
 const NODE_NAME_TO_ID_MAP = 141;
 const DISCONNECT = 142;
 const RESIDENCY_LIST = 130;
-const FLOW_DIRECTIVE = 131;
 const TABLE_FIXED_STRUCTURE = 132;
 const GET_RECORD = 133; // request a specific record
 const GET_RECORD_RESPONSE = 134; // request a specific record
@@ -345,12 +344,9 @@ export function replicateOverWS(ws, options, authorization) {
 	const sent_residency_lists = [];
 	const received_residency_lists = [];
 	const MAX_OUTSTANDING_COMMITS = 150; // maximum before requesting that other nodes pause
-	const RESUME_OUTSTANDING_COMMITS = 50; // minimum before requesting that other nodes resume
 	let outstanding_commits = 0;
 	let last_structure_length = 0;
-	let sending_flow_level = Infinity; // no restriction on commit flow, but this indicates if we have requested the other node to restrict flow
-	let receiving_flow_level = Infinity; // no restriction on commit flow, but this indicates the other node's desired commit flow level
-	let flow_level_listeners: (() => void)[] = [];
+	let replication_paused = false;
 	let subscription_request, audit_subscription;
 	let node_subscriptions;
 	let remote_short_id_to_local_id: Map<number, number>;
@@ -553,10 +549,6 @@ export function replicateOverWS(ws, options, authorization) {
 							localTime: last_sequence_id_received,
 							remoteNodeIds: receiving_data_from_node_ids,
 						});
-						break;
-					case FLOW_DIRECTIVE:
-						receiving_flow_level = message[1]; // a floating point value of 0 to Infinity
-						for (const listener of flow_level_listeners) listener();
 						break;
 					case BLOB_CHUNK: {
 						// this is a blob chunk, we need to write it to the blob store
@@ -1147,19 +1139,12 @@ export function replicateOverWS(ws, options, authorization) {
 										logger.debug?.('sending audit record', new Date(key));
 										sendAuditRecord(audit_record, key);
 										// wait if there is back-pressure
-										if (ws._socket.writableNeedDrain || receiving_flow_level === 0) {
+										if (ws._socket.writableNeedDrain) {
 											await new Promise<void>((resolve) => {
 												logger.debug?.(
 													`Waiting for remote node ${remote_node_name} to allow more commits ${ws._socket.writableNeedDrain ? 'due to network backlog' : 'due to requested flow directive'}`
 												);
-												if (ws._socket.writableNeedDrain) ws._socket.once('drain', resolve);
-												else {
-													flow_level_listeners = [
-														() => {
-															resolve();
-														},
-													];
-												}
+												ws._socket.once('drain', resolve);
 											});
 										} else await new Promise(setImmediate); // yield on each turn for fairness and letting other things run
 										audit_subscription.startTime = key; // update so don't double send
@@ -1307,33 +1292,18 @@ export function replicateOverWS(ws, options, authorization) {
 				'replication',
 				'ingest'
 			);
-			if (outstanding_commits > MAX_OUTSTANDING_COMMITS && sending_flow_level > 0) {
-				logger.warn?.(
+			if (outstanding_commits > MAX_OUTSTANDING_COMMITS && !replication_paused) {
+				replication_paused = true;
+				ws.pause();
+				logger.debug?.(
 					`Commit backlog causing replication back-pressure, requesting that ${remote_node_name} pause replication`
 				);
-				ws.send(encode([FLOW_DIRECTIVE, 0]));
-				sending_flow_level = 0;
 			}
 			table_subscription_to_replicator.send({
 				type: 'end_txn',
 				localTime: last_sequence_id_received,
 				remoteNodeIds: receiving_data_from_node_ids,
 				async onCommit() {
-					// if there are outstanding blobs to finish writing, delay commit receipts until they are finished (so that if we are interrupting
-					// we correctly resend the blobs)
-					logger.debug?.(
-						'outstanding_blobs_to_finish.length',
-						outstanding_blobs_to_finish.map((p) => p.blobId)
-					);
-					const timer = setInterval(() => {
-						logger.debug?.(
-							'(waiting) outstanding_blobs_to_finish.length',
-							outstanding_blobs_to_finish.map((p) => p.blobId)
-						);
-					}, 1000).unref();
-					if (outstanding_blobs_to_finish.length > 0) await Promise.all(outstanding_blobs_to_finish);
-					clearInterval(timer);
-					logger.debug?.('All blobs finished');
 					if (event) {
 						const latency = Date.now() - event.timestamp;
 						recordAction(
@@ -1345,11 +1315,15 @@ export function replicateOverWS(ws, options, authorization) {
 						);
 					}
 					outstanding_commits--;
-					if (sending_flow_level === 0 && outstanding_commits <= RESUME_OUTSTANDING_COMMITS) {
+					if (replication_paused) {
+						replication_paused = false;
+						ws.resume();
 						logger.debug?.(`Replication resuming ${remote_node_name}`);
-						ws.send(encode([FLOW_DIRECTIVE, Infinity]));
-						sending_flow_level = Infinity;
 					}
+					// if there are outstanding blobs to finish writing, delay commit receipts until they are finished (so that if we are interrupting
+					// we correctly resend the blobs)
+					if (outstanding_blobs_to_finish.length > 0) await Promise.all(outstanding_blobs_to_finish);
+					logger.trace?.('All blobs finished');
 					if (!last_sequence_id_committed && sequence_id_received) {
 						logger.trace?.(connection_id, 'queuing confirmation of a commit at', sequence_id_received);
 						setTimeout(() => {
