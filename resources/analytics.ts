@@ -24,10 +24,10 @@ interface Action {
 	count?: number;
 	callback?: ActionCallback;
 	description?: {
-		metric: string,
-		path: string,
-		method: string,
-		type: string,
+		metric: string;
+		path: string;
+		method: string;
+		type: string;
 	};
 }
 
@@ -235,25 +235,30 @@ interface ResourceUsage extends Partial<NodeJS.ResourceUsage> {
  */
 export function calculateCPUUtilization(resourceUsage: ResourceUsage, period: number): number {
 	const cpuTime = resourceUsage.userCPUTime + resourceUsage.systemCPUTime;
-	return (Math.round((cpuTime / period) * 100) / 100);
+	return Math.round((cpuTime / period) * 100) / 100;
 }
 
 /** diffResourceUsage takes a ResourceUsage representing the last time we stored them and a new
  *  process.resourceUsage() return value and normalizes and diffs the two values to return the
  *  new values for this time period.
  */
-export function diffResourceUsage(lastResourceUsage: ResourceUsage, resourceUsage: NodeJS.ResourceUsage): ResourceUsage {
+export function diffResourceUsage(
+	lastResourceUsage: ResourceUsage,
+	resourceUsage: NodeJS.ResourceUsage
+): ResourceUsage {
 	return {
 		// Node returns userCPUTime & systemCPUTime as microseconds, so normalize to milliseconds first
-		userCPUTime: (resourceUsage.userCPUTime / 1000) - (lastResourceUsage?.userCPUTime ?? 0),
-		systemCPUTime: (resourceUsage.systemCPUTime / 1000) - (lastResourceUsage?.systemCPUTime ?? 0),
+		userCPUTime: resourceUsage.userCPUTime / 1000 - (lastResourceUsage?.userCPUTime ?? 0),
+		systemCPUTime: resourceUsage.systemCPUTime / 1000 - (lastResourceUsage?.systemCPUTime ?? 0),
 		minorPageFault: resourceUsage.minorPageFault - (lastResourceUsage?.minorPageFault ?? 0),
 		majorPageFault: resourceUsage.majorPageFault - (lastResourceUsage?.majorPageFault ?? 0),
 		fsRead: resourceUsage.fsRead - (lastResourceUsage?.fsRead ?? 0),
 		fsWrite: resourceUsage.fsWrite - (lastResourceUsage?.fsWrite ?? 0),
-		voluntaryContextSwitches: resourceUsage.voluntaryContextSwitches - (lastResourceUsage?.voluntaryContextSwitches ?? 0),
-		involuntaryContextSwitches: resourceUsage.involuntaryContextSwitches - (lastResourceUsage?.involuntaryContextSwitches ?? 0),
-	}
+		voluntaryContextSwitches:
+			resourceUsage.voluntaryContextSwitches - (lastResourceUsage?.voluntaryContextSwitches ?? 0),
+		involuntaryContextSwitches:
+			resourceUsage.involuntaryContextSwitches - (lastResourceUsage?.involuntaryContextSwitches ?? 0),
+	};
 }
 
 /** storeTableSizeMetrics returns the cumulative size of the tables
@@ -483,7 +488,7 @@ async function aggregation(from_period, to_period = 60000) {
 	// database-size & table-size metrics
 	const databases = getDatabases();
 	storeDBSizeMetrics(analytics_table, databases);
-	storeDBSizeMetrics(analytics_table, {system: databases.system});
+	storeDBSizeMetrics(analytics_table, { system: databases.system });
 }
 let last_idle = 0;
 let last_active = 0;
@@ -561,11 +566,14 @@ function startScheduledTasks() {
 	scheduled_tasks_running = true;
 	const AGGREGATE_PERIOD = env_get(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1000;
 	if (AGGREGATE_PERIOD) {
-		setInterval(async () => {
-			await aggregation(ANALYTICS_DELAY, AGGREGATE_PERIOD);
-			await cleanup(getRawAnalyticsTable(), RAW_EXPIRATION);
-			await cleanup(getAnalyticsTable(), AGGREGATE_EXPIRATION);
-		}, Math.min(AGGREGATE_PERIOD / 2, 0x7fffffff)).unref();
+		setInterval(
+			async () => {
+				await aggregation(ANALYTICS_DELAY, AGGREGATE_PERIOD);
+				await cleanup(getRawAnalyticsTable(), RAW_EXPIRATION);
+				await cleanup(getAnalyticsTable(), AGGREGATE_EXPIRATION);
+			},
+			Math.min(AGGREGATE_PERIOD / 2, 0x7fffffff)
+		).unref();
 	}
 }
 
