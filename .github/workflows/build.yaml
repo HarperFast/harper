@@ -3,10 +3,16 @@ name: Build
 on:
   workflow_call:
     outputs:
-      nodeVersion: 
+      nodeVersion:
         value: ${{jobs.getNodeVersion.outputs.nodeVersion}}
-      harperdbVersion: 
+      harperdbVersion:
         value: ${{jobs.getNodeVersion.outputs.harperdbVersion}}
+    inputs:
+      artifactVersionOverride:
+        description: 'Override the version in the harperdb build artifact (to support forcedVersion in release_on_tag.yaml)'
+        type: string
+        required: false
+        default: 'default'
   workflow_dispatch:
 
 jobs:
@@ -16,58 +22,63 @@ jobs:
       nodeVersion: ${{ steps.getNode.outputs.NODE_VERSION }}
       harperdbVersion: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-node@v4
-      with:
-        node-version: 18
-    - id: getnode
-      name: Get node version
-      run: |
-        pwd
-        NODE_VERSION="$(node --version)"
-        NODE_VERSION="${NODE_VERSION:1}"
-        HARPERDB_VERSION=$(cat package.json | jq -r '.version')
-        echo "NODE_VERSION=$NODE_VERSION" >> $GITHUB_OUTPUT
-        echo "HARPERDB_VERSION=$HARPERDB_VERSION" >> $GITHUB_OUTPUT
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 18
+      - id: getnode
+        name: Get node version
+        run: |
+          pwd
+          NODE_VERSION="$(node --version)"
+          NODE_VERSION="${NODE_VERSION:1}"
+          HARPERDB_VERSION=$(cat package.json | jq -r '.version')
+          echo "NODE_VERSION=$NODE_VERSION" >> $GITHUB_OUTPUT
+          echo "HARPERDB_VERSION=$HARPERDB_VERSION" >> $GITHUB_OUTPUT
 
   build:
     runs-on: ubuntu-latest
     needs: getNodeVersion
     timeout-minutes: 10
     steps:
-    - uses: actions/checkout@v4
-    - uses: actions/setup-node@v4
-      with:
-        node-version: ${{ needs.getNodeVersion.outputs.nodeVersion }}
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ needs.getNodeVersion.outputs.nodeVersion }}
 
-    ####################################
-    #  Build HarperDB
-    ####################################
-    - name: Build artifact
-      run: |
-        #!/bin/bash
-        ./utility/devops/build/build.sh
-    - name: 'Upload Artifact'
-      uses: actions/upload-artifact@v4
-      with:
-        name: harperdb-${{ needs.getNodeVersion.outputs.harperdbVersion }}.tgz
-        path: harperdb-${{ needs.getNodeVersion.outputs.harperdbVersion }}.tgz
-        retention-days: 1
+      ####################################
+      #  Build HarperDB
+      ####################################
+      - name: Build artifact
+        run: |
+          #!/bin/bash
+          ./utility/devops/build/build.sh
 
-    ####################################
-    #  Get License Files for Container
-    ####################################
-    - name: "Get Latest License Files"
-      run: .github/scripts/get-license-files.sh
-    - name: "Generate license files"
-      continue-on-error: true
-      uses: apache/skywalking-eyes/dependency@main
-      with:
-        mode: 'resolve'
-        flags: '--output=utility/Docker/licenses/dependencies'
-    - name: 'Upload Artifact'
-      uses: actions/upload-artifact@v4
-      with:
-        name: "licenses"
-        path: "utility/Docker/licenses/"
-        retention-days: 1
+      - name: 'Rename Tarball'
+        if: ${{ needs.getNodeVersion.outputs.harperdbVersion != inputs.artifactVersionOverride && inputs.artifactVersionOverride != 'default' }}
+        run: ln "harperdb-${{ needs.getNodeVersion.outputs.harperdbVersion }}.tgz" "harperdb-${{ inputs.artifactVersionOverride }}.tgz"
+
+      - name: 'Upload Artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: harperdb-${{ inputs.artifactVersionOverride == 'default' && needs.getNodeVersion.outputs.harperdbVersion || inputs.artifactVersionOverride }}.tgz
+          path: harperdb-${{ inputs.artifactVersionOverride == 'default' && needs.getNodeVersion.outputs.harperdbVersion || inputs.artifactVersionOverride }}.tgz
+          retention-days: 1
+
+      ####################################
+      #  Get License Files for Container
+      ####################################
+      - name: 'Get Latest License Files'
+        run: .github/scripts/get-license-files.sh
+      - name: 'Generate license files'
+        continue-on-error: true
+        uses: apache/skywalking-eyes/dependency@main
+        with:
+          mode: 'resolve'
+          flags: '--output=utility/Docker/licenses/dependencies'
+      - name: 'Upload Artifact'
+        uses: actions/upload-artifact@v4
+        with:
+          name: 'licenses'
+          path: 'utility/Docker/licenses/'
+          retention-days: 1
