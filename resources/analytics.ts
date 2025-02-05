@@ -269,7 +269,7 @@ function storeTableSizeMetrics(analyticsTable: Table, dbName: string, tables: Ta
 			table: tableName,
 			size: tableSize,
 			audit: auditSize,
-		}
+		};
 		log.debug?.(`table ${fullTableName} size metric: ${JSON.stringify(metric)}`);
 		storeMetric(analyticsTable, 'table-size', metric);
 		dbUsedSize += tableSize;
