@@ -28,6 +28,7 @@ describe('Blob test', () => {
 	it('create a blob and save it', async () => {
 		let testString = 'this is a test string'.repeat(256);
 		let blob = await createBlob(Readable.from(testString));
+		assert(blob instanceof Blob);
 		await BlobTest.put({ id: 1, blob });
 		let record = await BlobTest.get(1);
 		assert.equal(record.id, 1);
@@ -174,6 +175,7 @@ describe('Blob test', () => {
 		blob.on('error', (err) => {
 			eventError = err;
 		});
+
 		try {
 			for await (let entry of blob.stream()) {
 			}

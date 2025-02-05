@@ -303,6 +303,17 @@ export function replicateOverWS(ws, options, authorization) {
 	let bytes_written = 0;
 	const blobs_in_flight = new Map();
 	const outstanding_blobs_to_finish: Promise<void>[] = [];
+	if (database_name === 'cache')
+		setInterval(() => {
+			logger.warn?.(
+				'outstanding_blobs_to_finish',
+				outstanding_blobs_to_finish.length,
+				'outstanding_commits',
+				outstanding_commits,
+				'blobs_in_flight',
+				blobs_in_flight.size
+			);
+		}, 1000).unref();
 	if (options.url) {
 		const send_ping = () => {
 			// if we have not received a message in the last ping interval, we should terminate the connection (but check to make sure we aren't just waiting for other data to flow)
@@ -948,8 +959,8 @@ export function replicateOverWS(ws, options, authorization) {
 										() => audit_record.getValue(primary_store),
 										async (blob) => {
 											// found a blob, start sending it
+											const id = getFileId(blob);
 											try {
-												const id = getFileId(blob);
 												let last_buffer: Buffer;
 												for await (const buffer of blob.stream()) {
 													if (last_buffer) {
@@ -988,6 +999,16 @@ export function replicateOverWS(ws, options, authorization) {
 												);
 											} catch (error) {
 												logger.debug?.('Error sending blob', error);
+												ws.send(
+													encode([
+														BLOB_CHUNK,
+														{
+															fileId: id,
+															finished: true,
+														},
+														Buffer.alloc(0),
+													])
+												);
 											}
 										}
 									);
@@ -1205,7 +1226,7 @@ export function replicateOverWS(ws, options, authorization) {
 				try {
 					const blob_promises = [];
 
-					const finished = decodeBlobsWithWrites(
+					decodeBlobsWithWrites(
 						() => {
 							event = {
 								table: table_decoder.name,
@@ -1241,21 +1262,20 @@ export function replicateOverWS(ws, options, authorization) {
 								blobs_in_flight.set(blob_id, stream);
 							}
 							stream.connectedToBlob = true;
-							let local_blob: Blob;
-							const promise = createBlob(stream, {
-								forBlob(blob: Blob) {
-									// synchronous get the blob, before it is ready
-									local_blob = blob;
-								},
+							stream.lastChunk = Date.now();
+							const local_blob = createBlob(stream, {
 								size: stream.expectedSize,
 							});
-							blob_promises.push(promise);
 
 							const finished = local_blob.finished;
 							if (finished) {
 								finished.blobId = blob_id;
 								outstanding_blobs_to_finish.push(finished);
+								const timer = setTimeout(() => {
+									logger.warn?.(`Blob ${blob_id} was not received within ${5000}ms`);
+								}, 5000).unref();
 								finished.finally(() => {
+									clearTimeout(timer);
 									logger.debug?.(`Finished receiving blob stream ${blob_id}`);
 									outstanding_blobs_to_finish.splice(outstanding_blobs_to_finish.indexOf(finished), 1);
 								});
@@ -1263,7 +1283,6 @@ export function replicateOverWS(ws, options, authorization) {
 							return local_blob;
 						}
 					);
-					event.finished = blob_promises.length > 0 ? [...blob_promises, finished] : finished;
 				} catch (error) {
 					error.message += 'typed structures for current decoder' + JSON.stringify(table_decoder.decoder.typedStructs);
 					throw error;
