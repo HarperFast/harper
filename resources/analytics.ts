@@ -299,6 +299,19 @@ function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 	}
 }
 
+function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
+	for (const [db, tables] of Object.entries(databases)) {
+		const [firstTable] = Object.values(tables);
+		const storageStats = firstTable.getStorageStats();
+		const metric = {
+			database: db,
+			...storageStats,
+		};
+		log.debug?.(`db ${db} storage volume metrics: ${JSON.stringify(metric)}`);
+		storeMetric(analyticsTable, 'storage-volume', metric);
+	}
+}
+
 async function aggregation(from_period, to_period = 60000) {
 	const raw_analytics_table = getRawAnalyticsTable();
 	const analytics_table = getAnalyticsTable();
@@ -489,6 +502,10 @@ async function aggregation(from_period, to_period = 60000) {
 	const databases = getDatabases();
 	storeDBSizeMetrics(analytics_table, databases);
 	storeDBSizeMetrics(analytics_table, { system: databases.system });
+
+	// database storage volume metrics
+	storeVolumeMetrics(analytics_table, databases);
+	storeVolumeMetrics(analytics_table, { system: databases.system });
 }
 let last_idle = 0;
 let last_active = 0;
