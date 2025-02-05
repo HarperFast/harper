@@ -10,7 +10,7 @@ import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { get as env_get, initSync } from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { server } from '../server/Server';
-import { promises as fs } from 'node:fs';
+import fs from 'node:fs';
 
 const log = loggerWithTag('analytics');
 
@@ -277,10 +277,10 @@ function storeTableSizeMetrics(analyticsTable: Table, dbName: string, tables: Ta
 	return dbUsedSize;
 }
 
-async function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
+function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 	for (const [db, tables] of Object.entries(databases)) {
 		const [table] = Object.values(tables);
-		const dbTotalSize = (await fs.stat(table.primaryStore.env.path)).size;
+		const dbTotalSize = fs.statSync(table.primaryStore.env.path).size;
 		const dbUsedSize = storeTableSizeMetrics(analyticsTable, db, tables);
 		const dbFree = dbTotalSize - dbUsedSize;
 		const metric = {
@@ -482,8 +482,8 @@ async function aggregation(from_period, to_period = 60000) {
 
 	// database-size & table-size metrics
 	const databases = getDatabases();
-	await storeDBSizeMetrics(analytics_table, databases);
-	await storeDBSizeMetrics(analytics_table, {system: databases.system});
+	storeDBSizeMetrics(analytics_table, databases);
+	storeDBSizeMetrics(analytics_table, {system: databases.system});
 }
 let last_idle = 0;
 let last_active = 0;
