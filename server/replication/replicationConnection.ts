@@ -321,7 +321,7 @@ export function replicateOverWS(ws, options, authorization) {
 	} else {
 		resetPingTimer();
 	}
-	ws._socket.setMaxListeners(100); // we should allow a lot of drain listeners for concurrent blob streams
+	ws._socket?.setMaxListeners(200); // we should allow a lot of drain listeners for concurrent blob streams
 	function resetPingTimer() {
 		clearTimeout(receive_ping_timer);
 		bytes_read = ws._socket?.bytesRead;
