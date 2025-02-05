@@ -279,7 +279,7 @@ function storeTableSizeMetrics(analyticsTable: Table, dbName: string, tables: Ta
 
 async function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 	for (const [db, tables] of Object.entries(databases)) {
-		const [ , table] = Object.entries(tables)[0];
+		const [table] = Object.values(tables);
 		const dbTotalSize = (await fs.stat(table.primaryStore.env.path)).size;
 		const dbUsedSize = storeTableSizeMetrics(analyticsTable, db, tables);
 		const dbFree = dbTotalSize - dbUsedSize;
