@@ -57,7 +57,7 @@ media_types.set('application/cbor', {
 	q: 1,
 });
 media_types.set('application/x-msgpack', {
-	serializeStream(data) {
+	serializeStream(data: any) {
 		if ((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) && !Array.isArray(data)) {
 			return Readable.from(encodeIter(data, PUBLIC_ENCODE_OPTIONS));
 		}
@@ -68,11 +68,11 @@ media_types.set('application/x-msgpack', {
 	q: 0.9,
 });
 media_types.set('text/csv', {
-	serializeStream(data, response) {
+	serializeStream(data: any, response: Response) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
 		return toCsvStream(data, data?.getColumns?.());
 	},
-	serialize(data, response) {
+	serialize(data: any, response: Response) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
 		if (data && !data[Symbol.iterator]) data = [data.toJSON ? data.toJSON() : data];
 		return toCsvStream(data, data?.getColumns?.());
@@ -80,13 +80,13 @@ media_types.set('text/csv', {
 	q: 0.1,
 });
 media_types.set('text/plain', {
-	serialize(data) {
+	serialize(data: any) {
 		return data.toString();
 	},
-	serializeStream(data, response) {
+	serializeStream(data: any) {
 		return Readable.from(data.map ? data.map((d) => d.toString()) : data);
 	},
-	deserialize(data) {
+	deserialize(data: Buffer) {
 		return data.toString();
 	},
 	q: 0.2,
