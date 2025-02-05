@@ -268,12 +268,10 @@ function storeTableSizeMetrics(analyticsTable: Table, dbName: string, tables: Ta
 	for (const [tableName, table] of Object.entries(tables)) {
 		const fullTableName = `${dbName}.${tableName}`;
 		const tableSize = table.getSize();
-		const auditSize = table.getAuditSize();
 		const metric = {
 			database: dbName,
 			table: tableName,
 			size: tableSize,
-			audit: auditSize,
 		};
 		log.debug?.(`table ${fullTableName} size metric: ${JSON.stringify(metric)}`);
 		storeMetric(analyticsTable, 'table-size', metric);
@@ -284,8 +282,9 @@ function storeTableSizeMetrics(analyticsTable: Table, dbName: string, tables: Ta
 
 function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 	for (const [db, tables] of Object.entries(databases)) {
-		const [table] = Object.values(tables);
-		const dbTotalSize = fs.statSync(table.primaryStore.env.path).size;
+		const [firstTable] = Object.values(tables);
+		const dbAuditSize = firstTable.getAuditSize();
+		const dbTotalSize = fs.statSync(firstTable.primaryStore.env.path).size;
 		const dbUsedSize = storeTableSizeMetrics(analyticsTable, db, tables);
 		const dbFree = dbTotalSize - dbUsedSize;
 		const metric = {
@@ -293,7 +292,8 @@ function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 			size: dbTotalSize,
 			used: dbUsedSize,
 			free: dbFree,
-		}
+			audit: dbAuditSize,
+		};
 		log.debug?.(`database ${db} size metric: ${JSON.stringify(metric)}`);
 		storeMetric(analyticsTable, 'database-size', metric);
 	}
