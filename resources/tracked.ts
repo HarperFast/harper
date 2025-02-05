@@ -1,5 +1,6 @@
 import { ClientError } from '../utility/errors/hdbError';
 import * as crdtOperations from './crdt';
+import { Blob } from './blob';
 // perhaps we want these in the global registry, not sure:
 const record_class_cache = {}; // we cache the WritableRecord classes because they are pretty expensive to create
 
@@ -143,6 +144,13 @@ export function assignTrackedAccessors(Target, type_def) {
 					set = function (value) {
 						if (!(value instanceof Uint8Array || (value == null && attribute.nullable !== false)))
 							throw new ClientError(`${name} must be a Buffer or Uint8Array, attempt to assign ${value}`);
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'Blob':
+					set = function (value) {
+						if (!(value instanceof Blob || (value == null && attribute.nullable !== false)))
+							throw new ClientError(`${name} must be a Blob, attempt to assign ${value}`);
 						getChanges(this)[name] = value;
 					};
 					break;
@@ -418,7 +426,7 @@ export function updateAndFreeze(target, changes = target.getChanges?.()) {
 			}
 		}
 	}
-	return merged_updated_object ? Object.freeze(merged_updated_object) : target.getRecord?.() ?? target;
+	return merged_updated_object ? Object.freeze(merged_updated_object) : (target.getRecord?.() ?? target);
 }
 /**
  * Determine if any changes have been made to this tracked object

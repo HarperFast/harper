@@ -5,6 +5,7 @@ const { Socket, createServer: createSocketServer } = require('node:net');
 const { createServer, IncomingMessage } = require('node:http');
 const { createServer: createSecureServerHttp1 } = require('node:https');
 const { createSecureServer } = require('node:http2');
+const { Blob } = require('../../resources/blob');
 const { unlinkSync, existsSync } = require('fs');
 const harper_logger = require('../../utility/logging/harper_logger');
 const env = require('../../utility/environment/environmentManager');
@@ -510,6 +511,9 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 							if (typeof body === 'string') headers.set('Content-Length', Buffer.byteLength(body));
 							else headers.set('Content-Length', body.length);
 							sent_body = true;
+						} else if (body instanceof Blob) {
+							headers.set('Content-Length', body.size);
+							body = body.stream();
 						}
 						let server_timing = `hdb;dur=${execution_time.toFixed(2)}`;
 						if (response.wasCacheMiss) {

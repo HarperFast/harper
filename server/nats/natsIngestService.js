@@ -16,6 +16,7 @@ const { ConsumerEvents } = require('nats');
 const search = require('../../dataLayer/search');
 
 const { promisify } = require('util');
+const { decodeBlobsWithWrites } = require('../../resources/blob');
 const sleep = promisify(setTimeout);
 
 // Max delay between attempts to connect to remote node
@@ -285,7 +286,10 @@ async function ingestConsumer(stream_name, js, jsm, domain) {
  * @returns {Promise<{}>}
  */
 async function messageProcessor(msg) {
-	const entry = decode(msg.data);
+	let entry;
+	await decodeBlobsWithWrites(() => {
+		entry = decode(msg.data);
+	});
 	recordAction(msg.data.length, 'bytes-received', msg.subject, entry.operation, 'ingest');
 	harper_logger.trace('Nats message processor message size:', msg?.msg?._msg?.size, 'bytes');
 	// If the msg origin header matches this node the msg can be ignored because it would have already been processed.

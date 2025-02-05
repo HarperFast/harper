@@ -3,7 +3,7 @@ import { Script } from 'node:vm';
 import { table } from './databases';
 import { getWorkerIndex } from '../server/threads/manageThreads';
 
-const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt'];
+const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt', 'Blob'];
 
 if (server.knownGraphQLDirectives) {
 	server.knownGraphQLDirectives = [
