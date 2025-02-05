@@ -8,7 +8,7 @@ import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME 
 import { Database, SKIP } from 'lmdb';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { sortBy } from 'lodash';
-import {
+import type {
 	Query,
 	ResourceInterface,
 	SubscriptionRequest,
