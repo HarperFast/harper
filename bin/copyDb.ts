@@ -36,8 +36,14 @@ export async function compactOnStart() {
 
 			const backup_dest = join(root_path, 'backup', database_name + '.mdb');
 			const copy_dest = join(root_path, DATABASES_DIR_NAME, database_name + '-copy.mdb');
-			const record_count = await getTotalDBRecordCount(database_name);
-			console.log('Database', database_name, 'before compact has a total record count of', record_count);
+			let record_count = 0;
+			try {
+				record_count = await getTotalDBRecordCount(database_name);
+				console.log('Database', database_name, 'before compact has a total record count of', record_count);
+			} catch (error) {
+				hdb_logger.error('Error getting record count for database', database_name, error);
+				console.error('Error getting record count for database', database_name, error);
+			}
 			compacted_db.set(database_name, {
 				db_path,
 				copy_dest,
@@ -50,9 +56,12 @@ export async function compactOnStart() {
 			console.log('Backing up', database_name, 'to', backup_dest);
 			await move(db_path, backup_dest, { overwrite: true });
 		}
-
-		resetDatabases();
-
+		try {
+			resetDatabases();
+		} catch (err) {
+			hdb_logger.error('Error resetting databases after backup', err);
+			console.error('Error resetting databases after backup', err);
+		}
 		// Move compacted DB to back to original DB path
 		for (const [db, { db_path, copy_dest }] of compacted_db) {
 			console.log('Moving copy compacted', db, 'to', db_path);
@@ -60,7 +69,13 @@ export async function compactOnStart() {
 			await remove(join(root_path, DATABASES_DIR_NAME, `${db}-copy.mdb-lock`));
 		}
 
-		resetDatabases();
+		try {
+			resetDatabases();
+		} catch (err) {
+			hdb_logger.error('Error resetting databases after backup', err);
+			console.error('Error resetting databases after backup', err);
+			process.exit(0); // just let the process restart
+		}
 	} catch (err) {
 		hdb_logger.error('Error compacting database, rolling back operation', err);
 		console.error('Error compacting database, rolling back operation', err);
@@ -153,6 +168,8 @@ export async function copyDb(source_database: string, target_database_path: stri
 			//dbi_init.keyEncoding = 'binary';
 			const source_dbi = root_store.openDB(key, dbi_init);
 			source_dbi.decoder = null;
+			source_dbi.decoderCopies = false;
+			source_dbi.encoding = 'binary';
 			dbi_init.compression = new_compression;
 			const target_dbi = target_env.openDB(key, dbi_init);
 			target_dbi.encoder = null;
@@ -166,18 +183,48 @@ export async function copyDb(source_database: string, target_database_path: stri
 		async function copyDbi(source_dbi, target_dbi, is_primary, transaction) {
 			let records_copied = 0;
 			let bytes_copied = 0;
-			for (const { key, value, version } of source_dbi.getRange({ start: null, versions: is_primary, transaction })) {
-				written = target_dbi.put(key, value, version);
-				records_copied++;
-				if (transaction.openTimer) transaction.openTimer = 0; // reset the timer, don't want it to time out
-				bytes_copied += (key?.length || 10) + value.length;
-				if (outstanding_writes++ > 5000) {
-					await written;
-					console.log('copied', records_copied, 'entries', bytes_copied, 'bytes');
-					outstanding_writes = 0;
+			let retries = 10000000;
+			let start = null;
+			while (retries-- > 0) {
+				try {
+					for (const key of source_dbi.getKeys({ start, transaction })) {
+						try {
+							start = key;
+							const { value, version } = source_dbi.getEntry(key, { transaction });
+							written = target_dbi.put(key, value, is_primary ? version : undefined);
+							records_copied++;
+							if (transaction.openTimer) transaction.openTimer = 0; // reset the timer, don't want it to time out
+							bytes_copied += (key?.length || 10) + value.length;
+							if (outstanding_writes++ > 5000) {
+								await written;
+								console.log('copied', records_copied, 'entries', bytes_copied, 'bytes');
+								outstanding_writes = 0;
+							}
+						} catch (error) {
+							console.error(
+								'Error copying record',
+								typeof key === 'symbol' ? 'symbol' : key,
+								'from',
+								source_database,
+								'to',
+								target_database_path,
+								error
+							);
+						}
+					}
+					console.log('finish copying, copied', records_copied, 'entries', bytes_copied, 'bytes');
+					return;
+				} catch (error) {
+					// try to resume with a bigger key
+					if (typeof start === 'string') {
+						if (start === 'z') {
+							return console.error('Reached end of dbi', start, 'for', source_database, 'to', target_database_path);
+						}
+						start = start.slice(0, -2) + 'z';
+					} else if (typeof start === 'number') start++;
+					else return console.error('Unknown key type', start, 'for', source_database, 'to', target_database_path);
 				}
 			}
-			console.log('finish copying, copied', records_copied, 'entries', bytes_copied, 'bytes');
 		}
 
 		await written;
