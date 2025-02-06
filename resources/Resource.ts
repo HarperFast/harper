@@ -4,15 +4,8 @@ import { Transaction } from './DatabaseTransaction';
 import { IterableEventQueue } from './IterableEventQueue';
 import { _assignPackageExport } from '../globals';
 import { ClientError } from '../utility/errors/hdbError';
-import { OWN_DATA } from './tracked';
 import { transaction } from './transaction';
 import { parseQuery, SimpleURLQuery } from './search';
-import * as harper_logger from '../utility/logging/harper_logger';
-
-export const CONTEXT = Symbol.for('context');
-export const ID_PROPERTY = Symbol.for('primary-key');
-export const IS_COLLECTION = Symbol('is-collection');
-export const RECORD_PROPERTY = Symbol('stored-record');
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -34,11 +27,14 @@ const EXTENSION_TYPES = {
  * methods can be overriden to provide specific implementations of actions like get, put, post, delete, and subscribe.
  */
 export class Resource implements ResourceInterface {
+	readonly #id: Id;
+	readonly #context: Context;
+	#isCollection: boolean;
 	static transactions: Transaction[] & { timestamp: number };
 	constructor(identifier: Id, source: any) {
-		this[ID_PROPERTY] = identifier;
-		const context = source?.[CONTEXT];
-		this[CONTEXT] = context !== undefined ? context : source || null;
+		this.#id = identifier;
+		const context = source?.getContext ? source.getContext() ?? null : undefined;
+		this.#context = context !== undefined ? context : source || null;
 	}
 
 	/**
@@ -78,7 +74,7 @@ export class Resource implements ResourceInterface {
 	 */
 	static put = transactional(
 		function (resource: Resource, query?: Map, request: Context, data?: any) {
-			if (Array.isArray(data) && resource[IS_COLLECTION]) {
+			if (Array.isArray(data) && resource.#isCollection) {
 				const results = [];
 				const authorize = request.authorize;
 				for (const element of data) {
@@ -159,7 +155,7 @@ export class Resource implements ResourceInterface {
 
 	static post = transactional(
 		function (resource: Resource, query?: Map, request: Context, data?: any) {
-			if (resource[ID_PROPERTY] != null) resource.update?.(); // save any changes made during post
+			if (resource.#id != null) resource.update?.(); // save any changes made during post
 			return resource.post(data, query);
 		},
 		{ hasContent: true, type: 'create' }
@@ -182,7 +178,7 @@ export class Resource implements ResourceInterface {
 
 	static publish = transactional(
 		function (resource: Resource, query?: Map, request: Context, data?: any) {
-			if (resource[ID_PROPERTY] != null) resource.update?.(); // save any changes made during publish
+			if (resource.#id != null) resource.update?.(); // save any changes made during publish
 			return resource.publish ? resource.publish(data, query) : missingMethod(resource, 'publish');
 		},
 		{ hasContent: true, type: 'create' }
@@ -223,15 +219,18 @@ export class Resource implements ResourceInterface {
 	);
 
 	async post(new_record) {
-		if (this[IS_COLLECTION]) {
-			const resource = await this.constructor.create(this[ID_PROPERTY], new_record, this[CONTEXT]);
-			return resource[ID_PROPERTY];
+		if (this.#isCollection) {
+			const resource = await this.constructor.create(this.#id, new_record, this.#context);
+			return resource.#id;
 		}
 		missingMethod(this, 'post');
 	}
 
 	static isCollection(resource) {
-		return resource?.[IS_COLLECTION];
+		return resource && resource.#isCollection;
+	}
+	get isCollection() {
+		return this.#isCollection;
 	}
 	static coerceId(id: string): number | string {
 		return id;
@@ -272,7 +271,7 @@ export class Resource implements ResourceInterface {
 	 */
 	static getResource(id: Id, request: Context, options?: any): Resource | Promise<Resource> {
 		let resource;
-		let context = request[CONTEXT];
+		let context = request.getContext?.();
 		let is_collection;
 		if (typeof request.isCollection === 'boolean' && request.hasOwnProperty('isCollection'))
 			is_collection = request.isCollection;
@@ -298,16 +297,14 @@ export class Resource implements ResourceInterface {
 				cache_for_id.push((resource = new constructor(id, context)));
 			} else {
 				// for small caches, this is probably fastest
-				resource = resource_cache.find(
-					(resource) => resource[ID_PROPERTY] === id && resource.constructor === constructor
-				);
+				resource = resource_cache.find((resource) => resource.#id === id && resource.constructor === constructor);
 				if (resource) return resource;
 				resource_cache.push((resource = new constructor(id, context)));
 				if (resource_cache.length > 10) {
 					// if it gets too big, upgrade to a Map
 					const cache_map = new Map();
 					for (const resource of resource_cache) {
-						const id = resource[ID_PROPERTY];
+						const id = resource.#id;
 						const cache_for_id = cache_map.get(id);
 						if (cache_for_id) cache_for_id.push(resource);
 						else cache_map.set(id, [resource]);
@@ -317,7 +314,7 @@ export class Resource implements ResourceInterface {
 				}
 			}
 		} else resource = new constructor(id, context); // outside of a transaction, just create an instance
-		if (is_collection) resource[IS_COLLECTION] = true;
+		if (is_collection) resource.#isCollection = true;
 		return resource;
 	}
 
@@ -359,17 +356,17 @@ export class Resource implements ResourceInterface {
 	 * @returns primary key
 	 */
 	getId() {
-		return this[ID_PROPERTY];
+		return this.#id;
 	}
 	/**
 	 * Get the context for this resource
 	 * @returns context object with information about the current transaction, user, and more
 	 */
 	getContext(): Context {
-		return this[CONTEXT];
+		return this.#context;
 	}
 }
-Resource.prototype[CONTEXT] = null;
+
 _assignPackageExport('Resource', Resource);
 
 export function snake_case(camelCase: string) {
@@ -450,7 +447,7 @@ function transactional(action, options) {
 			if (context) {
 				// if there are three arguments, it is id, data, context
 				data = data_or_context;
-				context = context[CONTEXT] || context;
+				context = context.getContext?.() || context;
 			} else if (data_or_context) {
 				// two arguments, more possibilities:
 				if (
@@ -461,7 +458,7 @@ function transactional(action, options) {
 					// (data, context) form
 					data = id_or_query;
 					id = data[this.primaryKey] ?? null;
-					context = data_or_context[CONTEXT] || data_or_context;
+					context = data_or_context.getContext?.() || data_or_context;
 				} else {
 					// (id, data) form
 					data = data_or_context;
@@ -470,14 +467,14 @@ function transactional(action, options) {
 				// single argument form, just data
 				data = id_or_query;
 				id_or_query = undefined;
-				id = data[ID_PROPERTY] ?? data[this.primaryKey];
+				id = data.getId?.() ?? data[this.primaryKey];
 			}
 			if (id === null) is_collection = true;
 			// otherwise handle methods for get, delete, etc.
 			// first, check to see if it is two argument
 		} else if (data_or_context) {
 			// (id, context), preferred form used for methods without a body
-			context = data_or_context[CONTEXT] || data_or_context;
+			context = data_or_context.getContext?.() || data_or_context;
 		} else if (id_or_query && typeof id_or_query === 'object' && !Array.isArray(id_or_query)) {
 			// (request) a structured id/query, which we will use as the context
 			context = id_or_query;
@@ -609,9 +606,9 @@ function missingMethod(resource, method) {
  */
 function selectFromObject(object, property_resolvers, context) {
 	// TODO: eventually we will do aggregate functions here
-	const record = object[RECORD_PROPERTY];
+	const record = object.getRecord?.();
 	if (record) {
-		const own_data = object[OWN_DATA];
+		const own_data = object.getChanges?.();
 		return (property) => {
 			let value, resolver;
 			if (object.hasOwnProperty(property) && typeof (value = object[property]) !== 'function') {
@@ -631,8 +628,8 @@ function selectFromObject(object, property_resolvers, context) {
 	} else return (property) => object[property];
 }
 export function transformForSelect(select, resource) {
-	const property_resolvers = resource?.propertyResolvers;
-	const context = resource[CONTEXT];
+	const property_resolvers = resource.propertyResolvers;
+	const context = resource.getContext?.();
 	let sub_transforms;
 	if (typeof select === 'string')
 		// if select is a single string then return property value

@@ -1,6 +1,5 @@
-import path from 'path';
+import { join } from 'path';
 import tar from 'tar-fs';
-import { lstatSync } from 'node:fs';
 import { createGzip } from 'node:zlib';
 
 /**
@@ -9,31 +8,24 @@ import { createGzip } from 'node:zlib';
  */
 export function packageDirectory(
 	directory: string,
-	options: { skip_node_modules?: boolean; hidden_folders?: boolean }
+	options: { skip_node_modules?: boolean, skip_symlinks?: boolean } = { skip_node_modules: false, skip_symlinks: false }
 ): Promise<Buffer> {
-	const { skip_node_modules, hidden_folders } = options;
 	return new Promise((resolve, reject) => {
 		// for deploy_component to a remote server, we need to tar the local directory
-		const tar_opts = skip_node_modules
-			? {
-					ignore: (name: string) => {
-						return name.includes(path.join('node_modules')) || name.includes(path.join('cache', 'webpack'));
-					},
-				}
-			: {};
 		const chunks = [];
 		// pack the directory
 		tar
-			.pack(directory, tar_opts)
+			.pack(directory, {
+				dereference: !options.skip_symlinks,
+				ignore: options.skip_node_modules ? (name: string) => {
+					return name.includes('node_modules') || name.includes(join('cache', 'webpack'));
+				} : undefined,
+			})
 			.pipe(createGzip())
 			.on('data', (chunk: Buffer) => chunks.push(chunk))
 			.on('end', () => {
-				const tarball = Buffer.concat(chunks);
-				resolve(tarball);
+				resolve(Buffer.concat(chunks));
 			})
 			.on('error', reject);
 	});
-}
-function isDirectory(path) {
-	return lstatSync(path).isDirectory();
 }
