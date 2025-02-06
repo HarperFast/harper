@@ -1516,7 +1516,7 @@ export function makeTable(options) {
 			transaction.addWrite({
 				key: id,
 				store: primary_store,
-				entry: this[ENTRY_PROPERTY],
+				entry: this.#entry,
 				nodeName: context?.nodeName,
 				before: apply_to_sources.delete?.bind(this, context, id),
 				beforeIntermediate: apply_to_sources_intermediate.delete?.bind(this, context, id),
