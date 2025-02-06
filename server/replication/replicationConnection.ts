@@ -303,6 +303,8 @@ export function replicateOverWS(ws, options, authorization) {
 	let bytes_written = 0;
 	const blobs_in_flight = new Map();
 	const outstanding_blobs_to_finish: Promise<void>[] = [];
+	let outstanding_blobs_being_sent = 0;
+	let blob_sent_callback: () => void;
 	if (database_name === 'cache')
 		setInterval(() => {
 			logger.warn?.(
@@ -355,6 +357,7 @@ export function replicateOverWS(ws, options, authorization) {
 	const sent_residency_lists = [];
 	const received_residency_lists = [];
 	const MAX_OUTSTANDING_COMMITS = 150; // maximum before requesting that other nodes pause
+	const MAX_OUTSTANDING_BLOBS_BEING_SENT = 25;
 	let outstanding_commits = 0;
 	let last_structure_length = 0;
 	let replication_paused = false;
@@ -564,7 +567,7 @@ export function replicateOverWS(ws, options, authorization) {
 					case BLOB_CHUNK: {
 						// this is a blob chunk, we need to write it to the blob store
 						const blob_info = message[1];
-						const { fileId, size, finished } = blob_info;
+						const { fileId, size, finished, error } = blob_info;
 						let stream = blobs_in_flight.get(fileId);
 						logger.debug?.(
 							'Received blob',
@@ -586,7 +589,8 @@ export function replicateOverWS(ws, options, authorization) {
 						}
 						stream.lastChunk = Date.now();
 						if (finished) {
-							stream.end(message[2]);
+							if (error) stream.destroy(new Error('Blob error: ' + error));
+							else stream.end(message[2]);
 							if (stream.connectedToBlob) blobs_in_flight.delete(fileId);
 						} else stream.write(message[2]);
 						break;
@@ -962,6 +966,7 @@ export function replicateOverWS(ws, options, authorization) {
 											const id = getFileId(blob);
 											try {
 												let last_buffer: Buffer;
+												outstanding_blobs_being_sent++;
 												for await (const buffer of blob.stream()) {
 													if (last_buffer) {
 														logger.debug?.('Sending blob chunk', id, 'length', last_buffer.length);
@@ -1005,10 +1010,14 @@ export function replicateOverWS(ws, options, authorization) {
 														{
 															fileId: id,
 															finished: true,
+															error: error.toString(),
 														},
 														Buffer.alloc(0),
 													])
 												);
+											} finally {
+												outstanding_blobs_being_sent--;
+												if (outstanding_blobs_being_sent < MAX_OUTSTANDING_BLOBS_BEING_SENT) blob_sent_callback?.();
 											}
 										}
 									);
@@ -1166,6 +1175,10 @@ export function replicateOverWS(ws, options, authorization) {
 													`Waiting for remote node ${remote_node_name} to allow more commits ${ws._socket.writableNeedDrain ? 'due to network backlog' : 'due to requested flow directive'}`
 												);
 												ws._socket.once('drain', resolve);
+											});
+										} else if (outstanding_blobs_being_sent > MAX_OUTSTANDING_BLOBS_BEING_SENT) {
+											await new Promise((resolve) => {
+												blob_sent_callback = resolve;
 											});
 										} else await new Promise(setImmediate); // yield on each turn for fairness and letting other things run
 										audit_subscription.startTime = key; // update so don't double send
