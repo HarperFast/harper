@@ -568,12 +568,12 @@ function transactional(action, options) {
 					options.type === 'read'
 						? resource.allowRead(context.user, query, context)
 						: options.type === 'update'
-						? resource.doesExist?.() === false
-							? resource.allowCreate(context.user, data, context)
-							: resource.allowUpdate(context.user, data, context)
-						: options.type === 'create'
-						? resource.allowCreate(context.user, data, context)
-						: resource.allowDelete(context.user, query, context);
+							? resource.doesExist?.() === false
+								? resource.allowCreate(context.user, data, context)
+								: resource.allowUpdate(context.user, data, context)
+							: options.type === 'create'
+								? resource.allowCreate(context.user, data, context)
+								: resource.allowDelete(context.user, query, context);
 				if (allowed?.then) {
 					return allowed.then((allowed) => {
 						if (!allowed) {

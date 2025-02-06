@@ -5,9 +5,14 @@ export { server } from './server/Server';
 import { server as server_import } from './server/Server';
 export { tables, databases } from './resources/databases';
 import { tables as db_tables, databases as db_databases } from './resources/databases';
+import { BlobCreationOptions } from './resources/blob';
 declare global {
 	const tables: typeof db_tables;
 	const databases: typeof db_databases;
 	const server: typeof server_import;
 	const Resource: typeof Resource_import;
+	const createBlob: (
+		source: Uint8Array | NodeJS.ReadableStream | string | Iterable<Uint8Array> | AsyncIterator<Uint8Array>,
+		options?: BlobCreationOptions
+	) => Promise<Blob>;
 }

@@ -8,6 +8,7 @@ import { PREVIOUS_TIMESTAMP_PLACEHOLDER, LAST_TIMESTAMP_PLACEHOLDER } from './Re
 import * as harper_logger from '../utility/logging/harper_logger';
 import { getRecordAtTime } from './crdt';
 import { isMainThread } from 'worker_threads';
+import { deleteBlobsInObject } from './blob';
 
 /**
  * This module is responsible for the binary representation of audit records in an efficient form.
@@ -77,9 +78,11 @@ export function openAuditStore(root_store) {
 		updateLastRemoved(audit_store, 1);
 	}
 	audit_store.rootStore = root_store;
+	audit_store.tableStores = [];
 	const delete_callbacks = [];
-	audit_store.addDeleteRemovalCallback = function (table_id, callback) {
+	audit_store.addDeleteRemovalCallback = function (table_id, table, callback) {
 		delete_callbacks[table_id] = callback;
+		audit_store.tableStores[table_id] = table;
 		audit_store.deleteCallbacks = delete_callbacks;
 		return {
 			remove() {
@@ -144,12 +147,26 @@ export function openAuditStore(root_store) {
 }
 
 export function removeAuditEntry(audit_store: any, key: number, value: any): Promise<void> {
-	if ((readAction(value) & 15) === DELETE) {
+	const type = readAction(value);
+	let audit_record;
+	if (type & HAS_BLOBS) {
+		// if it has blobs, and isn't in use from the main record, we need to delete them as well
+		audit_record = readAuditEntry(value);
+		const primary_store = audit_store.tableStores[audit_record.tableId];
+		if (primary_store.getEntry(audit_record.recordId).version !== audit_record.version) {
+			// if the versions don't match, then this should be the only/last reference to any blob
+			deleteBlobsInObject(audit_record.getValue(primary_store));
+		}
+	}
+
+	if ((type & 15) === DELETE) {
 		// if this is a delete, we remove the delete entry from the primary table
-		// at the same time so the audit table the primary table are in sync
-		const audit_record = readAuditEntry(value);
+		// at the same time so the audit table the primary table are in sync, assuming the entry matches this audit record version
+		audit_record = audit_record || readAuditEntry(value);
 		const table_id = audit_record.tableId;
-		audit_store.deleteCallbacks?.[table_id]?.(audit_record.recordId);
+		const primary_store = audit_store.tableStores[audit_record.tableId];
+		if (primary_store.getEntry(audit_record.recordId).version === audit_record.version)
+			audit_store.deleteCallbacks?.[table_id]?.(audit_record.recordId, audit_record.version);
 	}
 	return audit_store.remove(key);
 }
@@ -179,6 +196,8 @@ const MESSAGE = 3;
 const INVALIDATE = 4;
 const PATCH = 5;
 const RELOCATE = 6;
+export const ACTION_32_BIT = 14;
+export const ACTION_64_BIT = 15;
 /** Used to indicate we have received a remote local time update */
 export const REMOTE_SEQUENCE_UPDATE = 11;
 const HAS_PREVIOUS_VERSION = 64;
@@ -187,6 +206,7 @@ export const HAS_CURRENT_RESIDENCY_ID = 512;
 export const HAS_PREVIOUS_RESIDENCY_ID = 1024;
 export const HAS_ORIGINATING_OPERATION = 2048;
 export const HAS_EXPIRATION_EXTENDED_TYPE = 0x1000;
+export const HAS_BLOBS = 0x2000;
 const EVENT_TYPES = {
 	put: PUT | HAS_RECORD,
 	[PUT]: 'put',
@@ -250,8 +270,8 @@ export function createAuditEntry(
 		position = 9;
 	}
 	if (extended_type) {
-		if (extended_type & 0xffc0ff) throw new Error('Illegal extended type');
-		position++;
+		if (extended_type & 0xff) throw new Error('Illegal extended type');
+		position += 3;
 	}
 
 	writeInt(node_id);
@@ -271,7 +291,7 @@ export function createAuditEntry(
 
 	if (username) writeValue(username);
 	else ENTRY_HEADER[position++] = 0;
-	if (extended_type) ENTRY_DATAVIEW.setUint16(previous_local_time ? 8 : 0, action | extended_type | 0x8000);
+	if (extended_type) ENTRY_DATAVIEW.setUint32(previous_local_time ? 8 : 0, action | extended_type | 0xc0000000);
 	else ENTRY_HEADER[previous_local_time ? 8 : 0] = action;
 	const header = ENTRY_HEADER.subarray(0, position);
 	if (encoded_record) {

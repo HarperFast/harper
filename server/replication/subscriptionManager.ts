@@ -339,7 +339,7 @@ export async function startOnMainThread(options) {
 		}
 		main_worker_entry.connected = true;
 		main_worker_entry.latency = connection.latency;
-		main_worker_entry.catchingUpFrom = connection.lastSendTime;
+		main_worker_entry.catchingUpFrom = connection.lastReceivedTime;
 		if (main_worker_entry.redirectingTo) {
 			const { worker, nodes } = main_worker_entry.redirectingTo;
 			const subscription_to_remove = nodes.find((node) => node.name === connection.name);

@@ -218,7 +218,7 @@ function loadCertificates() {
 								let record_timestamp =
 									!cert_record || cert_record.is_self_signed
 										? 1
-										: cert_record.file_timestamp ?? cert_record.__updatedtime__;
+										: (cert_record.file_timestamp ?? cert_record.__updatedtime__);
 								if (cert_record && file_timestamp <= record_timestamp) {
 									if (file_timestamp < record_timestamp)
 										hdb_logger.info(
@@ -678,7 +678,7 @@ async function reviewSelfSignedCert() {
 
 		await setCertTable({
 			name: hdb_ca.subject.getField('CN').value,
-			uses: ['https', 'wss'],
+			uses: ['https'],
 			certificate: pki.certificateToPem(hdb_ca),
 			private_key_name: key_name,
 			is_authority: true,
@@ -834,7 +834,6 @@ function createTLSSelector(type, mtls_options) {
 					ca_certs.clear();
 					let best_quality = 0;
 					for await (const cert of databases.system.hdb_certificate.search([])) {
-						if (type !== 'operations-api' && cert.uses?.includes?.('operations')) continue;
 						const certificate = cert.certificate;
 						const cert_parsed = new X509Certificate(certificate);
 						if (cert.is_authority) {
@@ -849,19 +848,9 @@ function createTLSSelector(type, mtls_options) {
 								continue;
 							}
 							let is_operations = type === 'operations-api';
-							if (!is_operations && cert.uses?.includes?.('operations')) {
-								harper_logger.trace(
-									'Skipping cert',
-									cert.name,
-									'for',
-									type,
-									server.ports || 'client',
-									'because it is for operations'
-								);
-								continue;
-							}
-
 							let quality = cert.is_self_signed ? 1 : 2;
+							// prefer operations certificates for operations API
+							if (is_operations && cert.uses?.includes?.('operations')) quality += 1;
 
 							const private_key = await getPrivateKeyByName(cert.private_key_name);
 
@@ -1178,7 +1167,7 @@ function hostnamesFromCert(cert /*X509Certificate*/) {
 				})
 				.filter((part) => part) // filter out any empty names
 		: // finally we fall back to the common name
-		  [extractCommonName(cert)];
+			[extractCommonName(cert)];
 }
 
 async function getKey(req) {

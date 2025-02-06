@@ -1,6 +1,7 @@
 import { CONTEXT, ID_PROPERTY, RECORD_PROPERTY } from './Resource';
 import { ClientError } from '../utility/errors/hdbError';
 import * as crdtOperations from './crdt';
+import { Blob } from './blob';
 // perhaps we want these in the global registry, not sure:
 export const OWN_DATA = Symbol('own-data'); // property that references an object with any changed properties or cloned/writable sub-objects
 const record_class_cache = {}; // we cache the WritableRecord classes because they are pretty expensive to create
@@ -140,6 +141,13 @@ export function assignTrackedAccessors(Target, type_def) {
 					set = function (value) {
 						if (!(value instanceof Uint8Array || (value == null && attribute.nullable !== false)))
 							throw new ClientError(`${name} must be a Buffer or Uint8Array, attempt to assign ${value}`);
+						getChanges(this)[name] = value;
+					};
+					break;
+				case 'Blob':
+					set = function (value) {
+						if (!(value instanceof Blob || (value == null && attribute.nullable !== false)))
+							throw new ClientError(`${name} must be a Blob, attempt to assign ${value}`);
 						getChanges(this)[name] = value;
 					};
 					break;
@@ -351,8 +359,8 @@ export function updateAndFreeze(target, changes = target[OWN_DATA]) {
 	return copied_source
 		? Object.freeze(copied_source)
 		: hasOwnProperty.call(target, RECORD_PROPERTY)
-		? target[RECORD_PROPERTY]
-		: target;
+			? target[RECORD_PROPERTY]
+			: target;
 }
 /**
  * Determine if any changes have been made to this tracked object

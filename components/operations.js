@@ -354,6 +354,8 @@ async function packageComponent(req) {
 async function deployComponent(req) {
 	if (req.project) {
 		req.project = path.parse(req.project).name;
+	} else if (req.package) {
+		req.project = getProjectNameFromPackage(req.package);
 	}
 
 	const validation = validator.deployComponentValidator(req);
@@ -431,12 +433,51 @@ async function deployComponent(req) {
 	}
 	if (last_error) throw last_error;
 	log.info('Installed component');
+
+	const rollingRestart = req.restart === 'rolling';
+	// if doing a rolling restart set restart to false so that other nodes don't also restart.
+	req.restart = rollingRestart ? false : req.restart;
 	let response = await replicateOperation(req);
 	if (req.restart === true) {
 		manage_threads.restartWorkers('http');
 		response.message = `Successfully deployed: ${project}, restarting HarperDB`;
+	} else if (rollingRestart) {
+		const serverUtilities = require('../server/serverHelpers/serverUtilities');
+		const jobResponse = await serverUtilities.executeJob({
+			operation: 'restart_service',
+			service: 'http',
+			replicated: true,
+		});
+
+		response.restartJobId = jobResponse.job_id;
+		response.message = `Successfully deployed: ${project}, restarting HarperDB`;
 	} else response.message = `Successfully deployed: ${project}`;
+
 	return response;
+}
+
+/**
+ * Extracts a project name from the specified package name or URL
+ * @param {string} pkg - Package name or URL
+ * @returns {string} The project name
+ */
+function getProjectNameFromPackage(pkg) {
+	if (pkg.startsWith('git+ssh://')) {
+		return path.basename(pkg.split('#')[0].replace(/\.git$/, ''));
+	}
+
+	if (pkg.startsWith('http://') || pkg.startsWith('https://')) {
+		return path.basename(new URL(pkg.replace(/\.git$/, '')).pathname);
+	}
+
+	if (pkg.startsWith('file://')) {
+		try {
+			const { name } = JSON.parse(fs.readFileSync(path.join(pkg, 'package.json'), 'utf8'));
+			return path.basename(name);
+		} catch {}
+	}
+
+	return path.basename(pkg);
 }
 
 /**
