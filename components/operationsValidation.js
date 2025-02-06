@@ -222,6 +222,7 @@ function packageComponentValidator(req) {
 			.required()
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 		skip_node_modules: Joi.boolean(),
+		skip_symlinks: Joi.boolean(),
 	});
 
 	return validator.validateBySchema(req, package_proj_schema);
