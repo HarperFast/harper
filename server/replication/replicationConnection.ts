@@ -305,17 +305,6 @@ export function replicateOverWS(ws, options, authorization) {
 	const outstanding_blobs_to_finish: Promise<void>[] = [];
 	let outstanding_blobs_being_sent = 0;
 	let blob_sent_callback: () => void;
-	if (database_name === 'cache')
-		setInterval(() => {
-			logger.warn?.(
-				'outstanding_blobs_to_finish',
-				outstanding_blobs_to_finish.length,
-				'outstanding_commits',
-				outstanding_commits,
-				'blobs_in_flight',
-				blobs_in_flight.size
-			);
-		}, 1000).unref();
 	if (options.url) {
 		const send_ping = () => {
 			// if we have not received a message in the last ping interval, we should terminate the connection (but check to make sure we aren't just waiting for other data to flow)
@@ -1284,11 +1273,7 @@ export function replicateOverWS(ws, options, authorization) {
 							if (finished) {
 								finished.blobId = blob_id;
 								outstanding_blobs_to_finish.push(finished);
-								const timer = setTimeout(() => {
-									logger.warn?.(`Blob ${blob_id} was not received within ${5000}ms`);
-								}, 5000).unref();
 								finished.finally(() => {
-									clearTimeout(timer);
 									logger.debug?.(`Finished receiving blob stream ${blob_id}`);
 									outstanding_blobs_to_finish.splice(outstanding_blobs_to_finish.indexOf(finished), 1);
 								});

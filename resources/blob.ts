@@ -174,7 +174,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 					open(filePath, 'r', (error, openedFd) => {
 						if (error) {
 							if (error.code === 'ENOENT' && isBeingWritten !== false) {
-								logger.info?.('File does not exist yet, waiting for it to be created', filePath, retries);
+								logger.debug?.('File does not exist yet, waiting for it to be created', filePath, retries);
 								// the file doesn't exist, so we need to wait for it to be created
 								if (retries-- > 0)
 									return setTimeout(() => {
@@ -215,10 +215,10 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 								// didn't read any bytes, have to try again
 								if (retries-- > 0 && isBeingWritten !== false) {
 									checkIfIsBeingWritten();
-									logger.warn?.('File was empty, waiting for data to be written', filePath, retries);
+									logger.debug?.('File was empty, waiting for data to be written', filePath, retries);
 									setTimeout(() => readMore(resolve, reject), 20).unref();
 								} else {
-									logger.warn?.('File was empty, throwing error', filePath, retries);
+									logger.debug?.('File was empty, throwing error', filePath, retries);
 									reject(new Error(`Blob ${storageInfo.fileId} was empty`));
 								}
 								// else throw new Error();
