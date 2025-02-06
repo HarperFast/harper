@@ -1,6 +1,7 @@
 import { parentPort, threadId } from 'worker_threads';
 import { setChildListenerByType } from '../server/threads/manageThreads';
-import { table } from './databases';
+import { getDatabases, table } from './databases';
+import type { Databases, Table, Tables } from './databases';
 import { getLogFilePath } from '../utility/logging/harper_logger';
 import { loggerWithTag } from '../utility/logging/logger';
 import { dirname, join } from 'path';
@@ -9,6 +10,7 @@ import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { get as env_get, initSync } from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { server } from '../server/Server';
+import fs from 'node:fs';
 
 const log = loggerWithTag('analytics');
 
@@ -22,10 +24,10 @@ interface Action {
 	count?: number;
 	callback?: ActionCallback;
 	description?: {
-		metric: string,
-		path: string,
-		method: string,
-		type: string,
+		metric: string;
+		path: string;
+		method: string;
+		type: string;
 	};
 }
 
@@ -206,7 +208,7 @@ interface Metric {
 	[key: string]: any;
 }
 
-function storeMetric(table: any, metricName: string, metric: Metric) {
+function storeMetric(table: Table, metricName: string, metric: Metric) {
 	const metricValue = {
 		id: getNextMonotonicTime(),
 		metric: metricName,
@@ -233,24 +235,80 @@ interface ResourceUsage extends Partial<NodeJS.ResourceUsage> {
  */
 export function calculateCPUUtilization(resourceUsage: ResourceUsage, period: number): number {
 	const cpuTime = resourceUsage.userCPUTime + resourceUsage.systemCPUTime;
-	return (Math.round((cpuTime / period) * 100) / 100);
+	return Math.round((cpuTime / period) * 100) / 100;
 }
 
 /** diffResourceUsage takes a ResourceUsage representing the last time we stored them and a new
  *  process.resourceUsage() return value and normalizes and diffs the two values to return the
  *  new values for this time period.
  */
-export function diffResourceUsage(lastResourceUsage: ResourceUsage, resourceUsage: NodeJS.ResourceUsage): ResourceUsage {
+export function diffResourceUsage(
+	lastResourceUsage: ResourceUsage,
+	resourceUsage: NodeJS.ResourceUsage
+): ResourceUsage {
 	return {
 		// Node returns userCPUTime & systemCPUTime as microseconds, so normalize to milliseconds first
-		userCPUTime: (resourceUsage.userCPUTime / 1000) - (lastResourceUsage?.userCPUTime ?? 0),
-		systemCPUTime: (resourceUsage.systemCPUTime / 1000) - (lastResourceUsage?.systemCPUTime ?? 0),
+		userCPUTime: resourceUsage.userCPUTime / 1000 - (lastResourceUsage?.userCPUTime ?? 0),
+		systemCPUTime: resourceUsage.systemCPUTime / 1000 - (lastResourceUsage?.systemCPUTime ?? 0),
 		minorPageFault: resourceUsage.minorPageFault - (lastResourceUsage?.minorPageFault ?? 0),
 		majorPageFault: resourceUsage.majorPageFault - (lastResourceUsage?.majorPageFault ?? 0),
 		fsRead: resourceUsage.fsRead - (lastResourceUsage?.fsRead ?? 0),
 		fsWrite: resourceUsage.fsWrite - (lastResourceUsage?.fsWrite ?? 0),
-		voluntaryContextSwitches: resourceUsage.voluntaryContextSwitches - (lastResourceUsage?.voluntaryContextSwitches ?? 0),
-		involuntaryContextSwitches: resourceUsage.involuntaryContextSwitches - (lastResourceUsage?.involuntaryContextSwitches ?? 0),
+		voluntaryContextSwitches:
+			resourceUsage.voluntaryContextSwitches - (lastResourceUsage?.voluntaryContextSwitches ?? 0),
+		involuntaryContextSwitches:
+			resourceUsage.involuntaryContextSwitches - (lastResourceUsage?.involuntaryContextSwitches ?? 0),
+	};
+}
+
+/** storeTableSizeMetrics returns the cumulative size of the tables
+ */
+function storeTableSizeMetrics(analyticsTable: Table, dbName: string, tables: Tables): number {
+	let dbUsedSize = 0;
+	for (const [tableName, table] of Object.entries(tables)) {
+		const fullTableName = `${dbName}.${tableName}`;
+		const tableSize = table.getSize();
+		const metric = {
+			database: dbName,
+			table: tableName,
+			size: tableSize,
+		};
+		log.debug?.(`table ${fullTableName} size metric: ${JSON.stringify(metric)}`);
+		storeMetric(analyticsTable, 'table-size', metric);
+		dbUsedSize += tableSize;
+	}
+	return dbUsedSize;
+}
+
+function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
+	for (const [db, tables] of Object.entries(databases)) {
+		const [firstTable] = Object.values(tables);
+		const dbAuditSize = firstTable.getAuditSize();
+		const dbTotalSize = fs.statSync(firstTable.primaryStore.env.path).size;
+		const dbUsedSize = storeTableSizeMetrics(analyticsTable, db, tables);
+		const dbFree = dbTotalSize - dbUsedSize;
+		const metric = {
+			database: db,
+			size: dbTotalSize,
+			used: dbUsedSize,
+			free: dbFree,
+			audit: dbAuditSize,
+		};
+		log.debug?.(`database ${db} size metric: ${JSON.stringify(metric)}`);
+		storeMetric(analyticsTable, 'database-size', metric);
+	}
+}
+
+function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
+	for (const [db, tables] of Object.entries(databases)) {
+		const [firstTable] = Object.values(tables);
+		const storageStats = firstTable.getStorageStats();
+		const metric = {
+			database: db,
+			...storageStats,
+		};
+		log.debug?.(`db ${db} storage volume metrics: ${JSON.stringify(metric)}`);
+		storeMetric(analyticsTable, 'storage-volume', metric);
 	}
 }
 
@@ -431,6 +489,7 @@ async function aggregation(from_period, to_period = 60000) {
 	last_idle = idle;
 	last_active = active;
 
+	// resource-usage metrics
 	const resourceUsage = process.resourceUsage();
 	const currentResourceUsage = diffResourceUsage(lastResourceUsage, resourceUsage);
 	currentResourceUsage.time = now;
@@ -438,6 +497,15 @@ async function aggregation(from_period, to_period = 60000) {
 	currentResourceUsage.cpuUtilization = calculateCPUUtilization(lastResourceUsage, currentResourceUsage.period);
 	storeMetric(analytics_table, 'resource-usage', currentResourceUsage);
 	lastResourceUsage = currentResourceUsage;
+
+	// database-size & table-size metrics
+	const databases = getDatabases();
+	storeDBSizeMetrics(analytics_table, databases);
+	storeDBSizeMetrics(analytics_table, { system: databases.system });
+
+	// database storage volume metrics
+	storeVolumeMetrics(analytics_table, databases);
+	storeVolumeMetrics(analytics_table, { system: databases.system });
 }
 let last_idle = 0;
 let last_active = 0;
@@ -515,11 +583,14 @@ function startScheduledTasks() {
 	scheduled_tasks_running = true;
 	const AGGREGATE_PERIOD = env_get(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1000;
 	if (AGGREGATE_PERIOD) {
-		setInterval(async () => {
-			await aggregation(ANALYTICS_DELAY, AGGREGATE_PERIOD);
-			await cleanup(getRawAnalyticsTable(), RAW_EXPIRATION);
-			await cleanup(getAnalyticsTable(), AGGREGATE_EXPIRATION);
-		}, Math.min(AGGREGATE_PERIOD / 2, 0x7fffffff)).unref();
+		setInterval(
+			async () => {
+				await aggregation(ANALYTICS_DELAY, AGGREGATE_PERIOD);
+				await cleanup(getRawAnalyticsTable(), RAW_EXPIRATION);
+				await cleanup(getAnalyticsTable(), AGGREGATE_EXPIRATION);
+			},
+			Math.min(AGGREGATE_PERIOD / 2, 0x7fffffff)
+		).unref();
 	}
 }
 

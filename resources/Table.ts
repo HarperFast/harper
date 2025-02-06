@@ -46,7 +46,9 @@ import { recordUpdater, removeEntry, PENDING_LOCAL_TIME } from './RecordEncoder'
 import { recordAction, recordActionBinary } from './analytics';
 import { rebuildUpdateBefore } from './crdt';
 import { appendHeader } from '../server/serverHelpers/Headers';
+import fs from 'node:fs';
 import { Blob } from './blob';
+
 type Attribute = {
 	name: string;
 	type: string;
@@ -2590,6 +2592,15 @@ export function makeTable(options) {
 		static getAuditSize() {
 			const stats = audit_store?.getStats();
 			return stats && (stats.treeBranchPageCount + stats.treeLeafPageCount + stats.overflowPages) * stats.pageSize;
+		}
+		static getStorageStats() {
+			const storePath = primary_store.env.path;
+			const stats = fs.statfsSync(storePath);
+			return {
+				available: stats.bavail * stats.bsize,
+				free: stats.bfree * stats.bsize,
+				size: stats.blocks * stats.bsize,
+			};
 		}
 		static getRecordCount(options) {
 			// iterate through the metadata entries to exclude their count and exclude the deletion counts
