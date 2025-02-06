@@ -240,7 +240,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 			pull: (controller) => {
 				let size = 0;
 				let retries = 100;
-				return new Promise(function readMore(resolve, reject) {
+				return new Promise(function readMore(resolve: () => void, reject: (error: Error) => void) {
 					function onError(error) {
 						close(fd);
 						if (watcher) watcher.close();
@@ -258,7 +258,8 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 							// but first check to see if we read anything
 							if (bytesRead < HEADER_SIZE) {
 								// didn't read any bytes, have to try again
-								if (retries-- > 0 && checkIfIsBeingWritten()) {
+								if (retries-- > 0 && isBeingWritten !== false) {
+									checkIfIsBeingWritten();
 									logger.warn?.('File was empty, waiting for data to be written', filePath, retries);
 									setTimeout(() => readMore(resolve, reject), 20).unref();
 								} else {
@@ -436,6 +437,7 @@ function createBlobFromStream(stream: NodeJS.ReadableStream, options: any): Blob
 		// when the stream is finished, we may need to flush, and then close the handle and resolve the promise
 		function finished(error?: Error) {
 			store.unlock(lockKey, 0);
+			//			logger.info?.('unlocked blob', lockKey);
 			const fd = writeStream.fd;
 			if (error) {
 				if (fd) close(fd);
@@ -561,7 +563,12 @@ function getNextFileId(): number {
 				let highest = 0;
 				if (existsSync(path)) {
 					for (const entry of readdirSync(path)) {
-						const n = parseInt(entry, 16);
+						let n = parseInt(entry, 16);
+						if (i === 2 && entry.length > 3) {
+							// the last iteration is filenames, and if they are longer than 3 characters then the last 3 characters of the id, and the preceding characters are the highest value
+							n = parseInt(entry.slice(-3), 16);
+							n += parseInt(entry.slice(0, -3), 16) * 0x1000000000;
+						}
 						if (n > highest) {
 							highest = n;
 						}
