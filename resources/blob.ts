@@ -11,7 +11,7 @@
  */
 
 import { addExtension, pack, unpack } from 'msgpackr';
-import { stat, readFile, writeFile } from 'node:fs/promises';
+import { readFile, writeFile } from 'node:fs/promises';
 import {
 	close,
 	createWriteStream,
@@ -27,7 +27,7 @@ import {
 	watch,
 	write,
 } from 'node:fs';
-import { createDeflate, deflate, createInflate } from 'node:zlib';
+import { createDeflate, deflate } from 'node:zlib';
 import { Readable } from 'node:stream';
 import { ensureDirSync } from 'fs-extra';
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager';
@@ -48,65 +48,11 @@ const DEFLATE_TYPE = 1;
 const DEFAULT_HEADER = new Uint8Array([0, UNCOMPRESSED_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const COMPRESS_HEADER = new Uint8Array([0, DEFLATE_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const storageInfoForBlob = new WeakMap<Blob, StorageInfo>();
-let currentBlobCallback: (blob: Blob) => void;
+let currentBlobCallback: (blob: Blob) => Blob | void;
 export const Blob = global.Blob || polyfillBlob(); // use the global Blob class if it exists (it doesn't on Node v16)
 let encodeForStorageForRecordId: number = undefined; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
 let promisedWrites: Array<Promise<void>>;
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
-addExtension({
-	Class: Blob,
-	type: 11,
-	unpack: function (buffer) {
-		if (buffer[0] > 1) {
-			// this was encoded as reference to a file path, so we can decode it as msgpack and create the referencing blob
-			const data = unpack(buffer);
-			// this is a file backed blob, so we need to create a new blob object with the storage info
-			const blob = new FileBackedBlob({
-				storageIndex: data[0],
-				fileId: data[1],
-			});
-			if (currentBlobCallback) return currentBlobCallback(blob) ?? blob;
-			return blob;
-		} else {
-			// this directly encoded as a buffer, so we need to create a new blob object backed by a file, with the buffer
-			const blob = createBlobFromDirectBuffer(buffer);
-			if (blob.finished && promisedWrites) promisedWrites.push(blob.finished);
-			return blob;
-		}
-	},
-	pack: function (blob) {
-		const storageInfo = storageInfoForBlob.get(blob);
-		if (storageInfo) {
-			if (encodeForStorageForRecordId !== undefined) {
-				// this is used when we are encoding the data for storage in the database, referencing the (local) file storage
-				blobsWereEncoded = true;
-				if (storageInfo.recordId && storageInfo.recordId !== encodeForStorageForRecordId) {
-					throw new Error('Cannot use the same blob in two different records');
-				}
-				storageInfo.recordId = encodeForStorageForRecordId;
-				return pack([storageInfo.storageIndex, storageInfo.fileId, {}]);
-			} else {
-				// if we want to encode as binary (necessary for replication), we need to encode as a buffer, not sure if we should always do that
-				// also, for replication, we would presume that this is most likely in OS cache, and sync will be fast. For other situations, a large sync call could be
-				// unpleasant
-				// we include the headers, as the receiving end will need them, and this differentiates from a reference
-				return readFileSync(getFilePath(storageInfo));
-			}
-		} else if (blob.buffer) {
-			return blob.buffer;
-		} else {
-			throw new Error('Blob has no storage info or buffer attached to it');
-		}
-	},
-});
-// with Blobs, it is easy to forget to await the creation, make sure that the blob is created before continuing
-addExtension({
-	Class: Promise,
-	type: 12, // not actually used, but we need to define a type
-	pack() {
-		throw new Error('Cannot encode a promise');
-	},
-});
 // the header is 8 bytes
 // this is a reusable buffer for reading and writing to the header (without having to create new allocations)
 const HEADER = new Uint8Array(8);
@@ -149,39 +95,43 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 	}
 
 	bytes(): Promise<Buffer> {
-		const filePath = getFilePathForBlob(this);
+		const storageInfo = storageInfoForBlob.get(this);
+		const filePath = getFilePath(storageInfo);
 		let watcher: any;
 		let timer: NodeJS.Timeout;
-		let lastRead = 0;
+		let writeFinished;
 		async function readContents(): Promise<Buffer> {
-			const rawBytes = await readFile(filePath);
-			rawBytes.copy(HEADER, 0, 0, HEADER_SIZE);
-			const size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
-			if (lastRead) lastRead = Date.now();
+			let rawBytes: Buffer;
+			let size = HEADER_SIZE;
+			try {
+				rawBytes = await readFile(filePath);
+				if (rawBytes.length >= HEADER_SIZE) {
+					rawBytes.copy(HEADER, 0, 0, HEADER_SIZE);
+					size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
+				}
+			} catch (error) {
+				if (error.code !== 'ENOENT') throw error;
+				rawBytes = Buffer.alloc(0);
+			}
 			function checkCompletion(rawBytes: Buffer): Buffer | Promise<Buffer> {
 				if (size > rawBytes.length) {
-					// the file is not finished being written, watch the file for changes to resume reading
-					if (!watcher)
-						return new Promise((resolve, reject) => {
-							lastRead = Date.now();
-							const tryAgain = () => {
-								clearTimeout(timer);
-								readContents().then((result) => {
-									if (result) {
-										resolve(result);
-										clearInterval(timer);
-										watcher.close();
-									}
-									if (Date.now() - lastRead > FILE_READ_TIMEOUT) {
-										reject(new Error('File read timed out'));
-									}
-								});
-							};
-							watcher = watch(filePath, { persistent: false }, tryAgain);
-							// we also just repeatedly check the file, watch isn't necessarily reliable; there could be a race condition with getting the watch in place in time with other threads
-							timer = setInterval(tryAgain, 100).unref();
-						});
-					return;
+					// the file is not finished being written, wait for the write lock to complete
+					const store = databases.system.hdb_temp.primaryStore;
+					const lockKey = storageInfo.fileId + ':blob';
+					if (writeFinished) throw new Error('Incomplete blob');
+					return new Promise((resolve, reject) => {
+						if (
+							store.attemptLock(lockKey, 0, () => {
+								writeFinished = true;
+								store.unlock(lockKey, 0);
+								return resolve(readContents());
+							})
+						) {
+							writeFinished = true;
+							store.unlock(lockKey, 0);
+							return resolve(readContents());
+						}
+					});
 				}
 				return rawBytes;
 			}
@@ -220,19 +170,24 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 		return new ReadableStream({
 			start() {
 				let retries = 1000;
-				const openFile = (resolve, reject) => {
+				const openFile = (resolve: (value: any) => void, reject: (error: Error) => void) => {
 					open(filePath, 'r', (error, openedFd) => {
 						if (error) {
-							if (error.code === 'ENOENT' && checkIfIsBeingWritten()) {
+							if (error.code === 'ENOENT' && isBeingWritten !== false) {
 								logger.info?.('File does not exist yet, waiting for it to be created', filePath, retries);
 								// the file doesn't exist, so we need to wait for it to be created
-								if (retries-- > 0) return setTimeout(() => openFile(resolve, reject), 20).unref();
+								if (retries-- > 0)
+									return setTimeout(() => {
+										checkIfIsBeingWritten();
+										openFile(resolve, reject);
+									}, 20).unref();
 							}
 							reject(error);
 							blob.onError?.forEach((callback) => callback(error));
+						} else {
+							fd = openedFd;
+							resolve(openedFd);
 						}
-						fd = openedFd;
-						resolve(openedFd);
 					});
 				};
 				return new Promise(openFile);
@@ -281,7 +236,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 								HEADER.set(buffer);
 								size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
 								if (size > totalContentRead) {
-									if (checkIfIsBeingWritten()) {
+									if (isBeingWritten !== false) {
 										// the file is not finished being written, watch the file for changes to resume reading
 										timer = setTimeout(() => {
 											onError(new Error('File read timed out'));
@@ -289,6 +244,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 										watcher = watch(filePath, { persistent: false }, () => {
 											clearTimeout(timer);
 											watcher.close();
+											checkIfIsBeingWritten();
 											readMore(resolve, reject);
 										});
 									} else {
@@ -600,7 +556,25 @@ export function encodeBlobsWithFilePath<T>(callback: () => T, encodingId: number
 	try {
 		return callback();
 	} finally {
-		encodeForStorageForRecordId = 0;
+		encodeForStorageForRecordId = undefined;
+	}
+}
+/**
+ * Encode blobs as buffers, so they can be transferred remotely
+ * @param callback
+ * @param encodingId
+ * @param objectToClear
+ */
+export function encodeBlobsAsBuffers<T>(callback: () => T): Promise<T> {
+	promisedWrites = [];
+	let result: any;
+	try {
+		result = callback();
+	} finally {
+		const finished = promisedWrites.length < 2 ? promisedWrites[0] : Promise.all(promisedWrites);
+		promisedWrites = undefined;
+		// eslint-disable-next-line no-unsafe-finally
+		return finished ? finished.then(() => callback()) : result;
 	}
 }
 
@@ -652,6 +626,77 @@ export function deleteBlobsInObject(object) {
 		}
 	}
 }
+
+addExtension({
+	Class: Blob,
+	type: 11,
+	unpack: function (buffer) {
+		if (buffer[0] > 1) {
+			// this was encoded as reference to a file path, so we can decode it as msgpack and create the referencing blob
+			const data = unpack(buffer);
+			// this is a file backed blob, so we need to create a new blob object with the storage info
+			const blob = new FileBackedBlob({
+				storageIndex: data[0],
+				fileId: data[1],
+			});
+			if (currentBlobCallback) return currentBlobCallback(blob) ?? blob;
+			return blob;
+		} else {
+			// this directly encoded as a buffer, so we need to create a new blob object backed by a file, with the buffer
+			const blob = createBlobFromDirectBuffer(buffer);
+			if (blob.finished && promisedWrites) promisedWrites.push(blob.finished);
+			return blob;
+		}
+	},
+	pack: function (blob) {
+		const storageInfo = storageInfoForBlob.get(blob);
+		if (storageInfo) {
+			if (encodeForStorageForRecordId !== undefined) {
+				// this is used when we are encoding the data for storage in the database, referencing the (local) file storage
+				blobsWereEncoded = true;
+				if (storageInfo.recordId && storageInfo.recordId !== encodeForStorageForRecordId) {
+					throw new Error('Cannot use the same blob in two different records');
+				}
+				storageInfo.recordId = encodeForStorageForRecordId;
+				return pack([storageInfo.storageIndex, storageInfo.fileId, {}]);
+			} else {
+				// if we want to encode as binary (necessary for replication), we need to encode as a buffer, not sure if we should always do that
+				// also, for replication, we would presume that this is most likely in OS cache, and sync will be fast. For other situations, a large sync call could be
+				// unpleasant
+				// we include the headers, as the receiving end will need them, and this differentiates from a reference
+				try {
+					const buffer = readFileSync(getFilePath(storageInfo));
+					if (buffer.length >= HEADER_SIZE) {
+						buffer.copy(HEADER, 0, 0, HEADER_SIZE);
+						const size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
+						if (size === buffer.length - HEADER_SIZE) return buffer;
+					}
+					if (promisedWrites) promisedWrites.push(blob.bytes());
+					else throw new Error('Incomplete blob');
+					return buffer;
+				} catch (error) {
+					if (error.code === 'ENOENT' && promisedWrites) {
+						promisedWrites.push(blob.bytes());
+						return Buffer.alloc(0);
+					} else throw error;
+				}
+			}
+		} else if (blob.buffer) {
+			return blob.buffer;
+		} else {
+			throw new Error('Blob has no storage info or buffer attached to it');
+		}
+	},
+});
+// with Blobs, it is easy to forget to await the creation, make sure that the blob is created before continuing
+addExtension({
+	Class: Promise,
+	type: 12, // not actually used, but we need to define a type
+	pack() {
+		throw new Error('Cannot encode a promise');
+	},
+});
+
 function polyfillBlob() {
 	// polyfill Blob for older Node, it has just enough to handle a single Buffer
 	return class Blob {
@@ -686,12 +731,4 @@ function polyfillBlob() {
 			return '';
 		}
 	};
-}
-function streamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
-	return new Promise((resolve, reject) => {
-		const buffers = [];
-		stream.on('data', (data) => buffers.push(data));
-		stream.on('end', () => resolve(Buffer.concat(buffers)));
-		stream.on('error', reject);
-	});
 }

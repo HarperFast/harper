@@ -61,6 +61,7 @@ const { PACKAGE_ROOT } = require('../../../utility/hdbTerms');
 
 const pkg_json = require('../../../package.json');
 const { recordAction } = require('../../../resources/analytics');
+const { encodeBlobsAsBuffers } = require('../../../resources/blob');
 
 const jc = JSONCodec();
 const HDB_CLUSTERING_FOLDER = 'clustering';
@@ -536,10 +537,11 @@ async function publishToStream(subject_name, stream_name, msg_header, message) {
 	const { js } = await getNATSReferences();
 	const nats_server = await getJsmServerName();
 	const subject = `${subject_name}.${nats_server}`;
-	let encoded_message =
+	let encoded_message = await encodeBlobsAsBuffers(() =>
 		message instanceof Uint8Array
 			? message // already encoded
-			: encoder.encode(message);
+			: encoder.encode(message)
+	);
 
 	try {
 		hdb_logger.trace(`publishToStream publishing to subject: ${subject}`);

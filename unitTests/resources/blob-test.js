@@ -5,8 +5,9 @@ const { table } = require('../../resources/databases');
 const { Readable } = require('node:stream');
 const { setAuditRetention } = require('../../resources/auditStore');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
-const { getFilePathForBlob, setDeletionDelay } = require('../../resources/blob');
+const { getFilePathForBlob, setDeletionDelay, encodeBlobsAsBuffers } = require('../../resources/blob');
 const { existsSync } = require('fs');
+const { pack } = require('msgpackr');
 const { randomBytes } = require('crypto');
 
 // might want to enable an iteration with NATS being assigned as a source
@@ -143,10 +144,15 @@ describe('Blob test', () => {
 		assert.equal(record.id, 1);
 		let stream = record.blob.stream(); // we are going to concurrently get the stream and the text to test both
 		let streamResults = streamToBuffer(stream);
+		let packResult = encodeBlobsAsBuffers(() => {
+			return pack(record);
+		});
+		assert(packResult.then); // shouldn't be resolved yet
 		let retrievedText = await record.blob.text();
 		assert.equal(retrievedText, expectedResults);
 		assert.equal(await streamResults, expectedResults);
 		assert.equal(record.blob.size, expectedResults.length);
+		assert((await packResult).toString().includes(testString));
 	});
 	it('Abort reading a blob', async () => {
 		let testString = 'this is a test string for deletion'.repeat(800);
