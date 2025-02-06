@@ -10,7 +10,7 @@
  */
 
 import { databases, getDatabases, onUpdatedTable, onRemovedDB } from '../../resources/databases';
-import { ID_PROPERTY, Resource } from '../../resources/Resource';
+import { Resource } from '../../resources/Resource';
 import { IterableEventQueue } from '../../resources/IterableEventQueue';
 import {
 	NodeReplicationConnection,
