@@ -104,9 +104,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 		if (storageInfo.contentBuffer) return Promise.resolve(storageInfo.contentBuffer);
 		if (storageInfo.storageBuffer) return Promise.resolve(storageInfo.storageBuffer.subarray(HEADER_SIZE));
 		const filePath = getFilePath(storageInfo);
-		let watcher: any;
-		let timer: NodeJS.Timeout;
-		let writeFinished;
+		let writeFinished: boolean;
 		async function readContents(): Promise<Buffer> {
 			let rawBytes: Buffer;
 			let size = HEADER_SIZE;
@@ -344,7 +342,7 @@ export function deleteBlob(blob: Blob): Promise<void> {
 	// do we even need to check for completion here?
 	const filePath = getFilePathForBlob(blob);
 	if (!filePath) {
-		logger.warn?.('No file path for blob, can not delete');
+		logger.debug?.('No file path for blob, can not delete');
 		return Promise.resolve();
 	}
 	setTimeout(() => {
