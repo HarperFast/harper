@@ -939,7 +939,7 @@ function createTLSSelector(type, mtls_options) {
 				}
 			}
 			databases.system.hdb_certificate.subscribe({
-				listener: updateTLS,
+				listener: () => setTimeout(() => updateTLS(), 1500).unref(),
 				omitCurrent: true,
 			});
 			updateTLS();
