@@ -40,14 +40,14 @@ import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges } from '.
 import { transaction } from './transaction';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads';
-import { readAuditEntry, removeAuditEntry } from './auditStore';
+import { HAS_BLOBS, readAuditEntry, removeAuditEntry } from './auditStore';
 import { autoCast, convertToMS } from '../utility/common_utils';
 import { recordUpdater, removeEntry, PENDING_LOCAL_TIME } from './RecordEncoder';
 import { recordAction, recordActionBinary } from './analytics';
 import { rebuildUpdateBefore } from './crdt';
 import { appendHeader } from '../server/serverHelpers/Headers';
 import fs from 'node:fs';
-import { Blob } from './blob';
+import { Blob, deleteBlobsInObject } from './blob';
 
 type Attribute = {
 	name: string;
@@ -861,6 +861,11 @@ export function makeTable(options) {
 
 		static async dropTable() {
 			delete databases[database_name][table_name];
+			for (const entry of primary_store.getRange({ versions: true, snapshot: false, lazy: true })) {
+				if (entry.metadataFlags & HAS_BLOBS && entry.value) {
+					deleteBlobsInObject(entry.value);
+				}
+			}
 			if (database_name === database_path) {
 				// part of a database
 				for (const attribute of attributes) {

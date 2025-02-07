@@ -679,6 +679,9 @@ export function decodeWithBlobCallback(callback: () => void, blobCallback: (blob
  */
 export function decodeFromDatabase(callback: () => void, store: LMDBStore) {
 	try {
+		if (!store) {
+			throw new Error('No store specified, can not decode blobs from database');
+		}
 		currentStore = store;
 		return callback();
 	} finally {
@@ -713,6 +716,7 @@ addExtension({
 			const data = unpack(buffer);
 			// this is a file backed blob, so we need to create a new blob object with the storage info
 			const blob = new FileBackedBlob();
+			if (!currentStore) throw new Error('No store specified, can not load blob from storage');
 			storageInfoForBlob.set(blob, {
 				storageIndex: data[0],
 				fileId: data[1],

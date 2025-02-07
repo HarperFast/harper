@@ -192,10 +192,12 @@ function getTimestamp() {
 	return TIMESTAMP_VIEW.getFloat64(0);
 }
 
-export function handleLocalTimeForGets(store) {
+export function handleLocalTimeForGets(store, root_store) {
 	const storeGetEntry = store.getEntry;
 	store.readCount = 0;
 	store.cachePuts = false;
+	store.rootStore = root_store;
+	store.encoder.rootStore = root_store;
 	store.getEntry = function (id, options) {
 		store.readCount++;
 		const entry = storeGetEntry.call(this, id, options);

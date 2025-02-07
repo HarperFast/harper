@@ -314,17 +314,14 @@ export function readMetaDb(
 					dbis_store.putSync(primary_attribute.key, primary_attribute);
 				}
 				const dbi_init = new OpenDBIObject(!primary_attribute.is_hash_attribute, primary_attribute.is_hash_attribute);
-				dbi_init.encoder.rootStore = root_store;
 				dbi_init.compression = primary_attribute.compression;
 				if (dbi_init.compression) {
 					const compression_threshold =
 						env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD) || DEFAULT_COMPRESSION_THRESHOLD; // this is the only thing that can change;
 					dbi_init.compression.threshold = compression_threshold;
 				}
-				primary_store = handleLocalTimeForGets(root_store.openDB(primary_attribute.key, dbi_init));
+				primary_store = handleLocalTimeForGets(root_store.openDB(primary_attribute.key, dbi_init), root_store);
 				root_store.databaseName = database_name;
-				primary_store.encoder.rootStore = root_store;
-				primary_store.rootStore = root_store;
 				primary_store.tableId = table_id;
 			}
 			for (const attribute of attributes) {
@@ -334,7 +331,6 @@ export function readMetaDb(
 					if (!attribute.is_hash_attribute && (attribute.indexed || (attribute.attribute && !attribute.name))) {
 						if (!indices[attribute.name]) {
 							const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
-							if (dbi_init.encoder) dbi_init.encoder.rootStore = root_store;
 							indices[attribute.name] = root_store.openDB(attribute.key, dbi_init);
 							indices[attribute.name].indexNulls = attribute.indexNulls;
 						}
@@ -592,7 +588,6 @@ export function table(table_definition: TableDefinition) {
 		}
 		harper_logger.trace(`${table_name} table loading, opening primary store`);
 		const dbi_init = new OpenDBIObject(false, true);
-		dbi_init.encoder.rootStore = root_store;
 		dbi_init.compression = primary_key_attribute.compression;
 		const dbi_name = table_name + '/';
 		attributes_dbi = root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
@@ -603,9 +598,8 @@ export function table(table_definition: TableDefinition) {
 			resetDatabases();
 			return table(table_definition);
 		}
-		const primary_store = handleLocalTimeForGets(root_store.openDB(dbi_name, dbi_init));
+		const primary_store = handleLocalTimeForGets(root_store.openDB(dbi_name, dbi_init), root_store);
 		root_store.databaseName = database_name;
-		primary_store.rootStore = root_store;
 		primary_store.tableId = attributes_dbi.get(NEXT_TABLE_ID);
 		harper_logger.trace(`Assigning new table id ${primary_store.tableId} for ${table_name}`);
 		if (!primary_store.tableId) primary_store.tableId = 1;
