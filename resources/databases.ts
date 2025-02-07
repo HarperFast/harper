@@ -21,6 +21,7 @@ import * as harper_logger from '../utility/logging/harper_logger';
 import * as manage_threads from '../server/threads/manageThreads';
 import { openAuditStore, transactionKeyEncoder } from './auditStore';
 import { handleLocalTimeForGets } from './RecordEncoder';
+import { deleteRootBlobPathsForDB } from './blob';
 
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
@@ -43,7 +44,7 @@ const NEXT_TABLE_ID = Symbol.for('next-table-id');
 const table_listeners = [];
 const db_removal_listeners = [];
 let loaded_databases; // indicates if we have loaded databases from the file system yet
-const database_envs = new Map<string, any>();
+export const database_envs = new Map<string, any>();
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
 // can be removed:
 let defined_databases;
@@ -319,9 +320,8 @@ export function readMetaDb(
 						env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD) || DEFAULT_COMPRESSION_THRESHOLD; // this is the only thing that can change;
 					dbi_init.compression.threshold = compression_threshold;
 				}
-				primary_store = handleLocalTimeForGets(root_store.openDB(primary_attribute.key, dbi_init));
+				primary_store = handleLocalTimeForGets(root_store.openDB(primary_attribute.key, dbi_init), root_store);
 				root_store.databaseName = database_name;
-				primary_store.rootStore = root_store;
 				primary_store.tableId = table_id;
 			}
 			for (const attribute of attributes) {
@@ -501,6 +501,7 @@ export async function dropDatabase(database_name) {
 	}
 	delete databases[database_name];
 	db_removal_listeners.forEach((listener) => listener(database_name));
+	await deleteRootBlobPathsForDB(root_store);
 }
 
 /**
@@ -597,9 +598,8 @@ export function table(table_definition: TableDefinition) {
 			resetDatabases();
 			return table(table_definition);
 		}
-		const primary_store = handleLocalTimeForGets(root_store.openDB(dbi_name, dbi_init));
+		const primary_store = handleLocalTimeForGets(root_store.openDB(dbi_name, dbi_init), root_store);
 		root_store.databaseName = database_name;
-		primary_store.rootStore = root_store;
 		primary_store.tableId = attributes_dbi.get(NEXT_TABLE_ID);
 		harper_logger.trace(`Assigning new table id ${primary_store.tableId} for ${table_name}`);
 		if (!primary_store.tableId) primary_store.tableId = 1;

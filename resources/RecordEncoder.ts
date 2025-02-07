@@ -18,7 +18,7 @@ import {
 } from './auditStore';
 import * as harper_logger from '../utility/logging/harper_logger';
 import './blob';
-import { blobsWereEncoded, deleteBlobsInObject, encodeBlobsWithFilePath } from './blob';
+import { blobsWereEncoded, decodeFromDatabase, deleteBlobsInObject, encodeBlobsWithFilePath } from './blob';
 
 // these are matched by lmdb-js for timestamp replacement. the first byte here is used to xor with the first byte of the date as a double so that it ends up less than 32 for easier identification (otherwise dates start with 66)
 export const TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 4, 0x40, 0, 0]);
@@ -164,9 +164,14 @@ export class RecordEncoder extends Encoder {
 						position += 4;
 					}
 				}
-				const value = options?.valueAsBuffer
-					? buffer.subarray(position, end)
-					: super.decode(buffer.subarray(position, end), end - position);
+
+				const value = decodeFromDatabase(
+					() =>
+						options?.valueAsBuffer
+							? buffer.subarray(position, end)
+							: super.decode(buffer.subarray(position, end), end - position),
+					this.rootStore
+				);
 				return {
 					localTime: local_time,
 					value,
@@ -175,7 +180,7 @@ export class RecordEncoder extends Encoder {
 					residencyId: residency_id,
 				};
 			} // else a normal entry
-			return options?.valueAsBuffer ? buffer : super.decode(buffer, options);
+			return options?.valueAsBuffer ? buffer : decodeFromDatabase(() => super.decode(buffer, options), this.rootStore);
 		} catch (error) {
 			error.message += ', data: ' + buffer.slice(0, 40).toString('hex');
 			throw error;
@@ -187,10 +192,12 @@ function getTimestamp() {
 	return TIMESTAMP_VIEW.getFloat64(0);
 }
 
-export function handleLocalTimeForGets(store) {
+export function handleLocalTimeForGets(store, root_store) {
 	const storeGetEntry = store.getEntry;
 	store.readCount = 0;
 	store.cachePuts = false;
+	store.rootStore = root_store;
+	store.encoder.rootStore = root_store;
 	store.getEntry = function (id, options) {
 		store.readCount++;
 		const entry = storeGetEntry.call(this, id, options);
@@ -349,7 +356,7 @@ export function recordUpdater(store, table_id, audit_store) {
 					deleteBlobsInObject(existing_entry.value);
 				}
 			}
-			const result = encodeBlobsWithFilePath(() => store.put(id, record, put_options), id);
+			const result = encodeBlobsWithFilePath(() => store.put(id, record, put_options), id, store.rootStore);
 			if (blobsWereEncoded) {
 				extended_type |= HAS_BLOBS;
 			}
@@ -362,7 +369,8 @@ export function recordUpdater(store, table_id, audit_store) {
 			*/
 			if (audit) {
 				const username = options?.user?.username;
-				if (audit_record) last_value_encoding = encodeBlobsWithFilePath(() => store.encoder.encode(audit_record), id);
+				if (audit_record)
+					last_value_encoding = encodeBlobsWithFilePath(() => store.encoder.encode(audit_record), id, store.rootStore);
 				if (store.encoder.hasStructureUpdate) {
 					extended_type |= HAS_STRUCTURE_UPDATE;
 					store.encoder.hasStructureUpdate = false;

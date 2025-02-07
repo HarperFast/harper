@@ -14,5 +14,5 @@ declare global {
 	const createBlob: (
 		source: Uint8Array | NodeJS.ReadableStream | string | Iterable<Uint8Array> | AsyncIterator<Uint8Array>,
 		options?: BlobCreationOptions
-	) => Promise<Blob>;
+	) => Blob;
 }

@@ -13,6 +13,13 @@ const { parentPort } = require('worker_threads');
 const { onMessageByType } = require('../../server/threads/manageThreads');
 const { getThisNodeName } = require('../../server/replication/replicator');
 const { requestClusterStatus } = require('../../server/replication/subscriptionManager');
+const { getReplicationSharedStatus } = require('../../server/replication/knownNodes');
+const {
+	CONFIRMATION_STATUS_POSITION,
+	RECEIVED_VERSION_POSITION,
+	RECEIVED_TIME_POSITION,
+	SENDING_TIME_POSITION,
+} = require('../../server/replication/replicationConnection');
 
 const clustering_enabled = env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
 const this_node_name = env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
@@ -43,6 +50,23 @@ async function clusterStatus() {
 			response = await new Promise((resolve) => {
 				cluster_status_resolve = resolve;
 			});
+			for (let connection of response.connections) {
+				const remote_node_name = connection.name;
+				for (let socket of connection.database_sockets) {
+					const database_name = socket.database;
+					let audit_store;
+					for (let table of Object.values(databases[database_name] || {})) {
+						audit_store = table.auditStore;
+						if (audit_store) break;
+					}
+					if (!audit_store) continue;
+					let replication_shared_status = getReplicationSharedStatus(audit_store, database_name, remote_node_name);
+					socket.lastCommitConfirmed = asDate(replication_shared_status[CONFIRMATION_STATUS_POSITION]);
+					socket.lastReceivedRemoteTime = asDate(replication_shared_status[RECEIVED_VERSION_POSITION]);
+					socket.lastReceivedLocalTime = asDate(replication_shared_status[RECEIVED_TIME_POSITION]);
+					socket.sendingMessage = asDate(replication_shared_status[SENDING_TIME_POSITION]);
+				}
+			}
 		} else {
 			response = requestClusterStatus();
 		}
@@ -74,6 +98,9 @@ async function clusterStatus() {
 	await Promise.allSettled(promises);
 
 	return response;
+}
+function asDate(date) {
+	return date ? (date === 1 ? 'Copying' : new Date(date).toUTCString()) : undefined;
 }
 
 async function buildNodeStatus(node_record, connections) {
