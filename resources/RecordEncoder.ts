@@ -180,7 +180,7 @@ export class RecordEncoder extends Encoder {
 					residencyId: residency_id,
 				};
 			} // else a normal entry
-			return options?.valueAsBuffer ? buffer : super.decode(buffer, options);
+			return options?.valueAsBuffer ? buffer : decodeFromDatabase(() => super.decode(buffer, options), this.rootStore);
 		} catch (error) {
 			error.message += ', data: ' + buffer.slice(0, 40).toString('hex');
 			throw error;

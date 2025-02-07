@@ -423,7 +423,10 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined) {
 			},
 			getValue(store, full_record?, audit_time?) {
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !full_record))
-					return store.decoder.decode(buffer.subarray(decoder.position, end));
+					return decodeFromDatabase(
+						() => store.decoder.decode(buffer.subarray(decoder.position, end)),
+						store.rootStore
+					);
 				if (action & HAS_PARTIAL_RECORD && audit_time) {
 					return getRecordAtTime(store.getEntry(this.recordId), audit_time, store);
 				} // TODO: If we store a partial and full record, may need to read both sequentially

@@ -677,13 +677,10 @@ export function decodeWithBlobCallback(callback: () => void, blobCallback: (blob
  * Decode with a callback for when blobs are encountered, allowing for detecting of blobs
  * @param callback
  */
-export function decodeFromDatabase(callback: () => void, store: LMDBStore) {
-	try {
-		currentStore = store;
-		return callback();
-	} finally {
-		currentStore = undefined;
-	}
+export function decodeFromDatabase(callback: () => void, rootStore: LMDBStore) {
+	// note that this is actually called recursively (but always the same root store), so we don't clear afterwards
+	currentStore = rootStore;
+	return callback();
 }
 
 /**
@@ -713,7 +710,9 @@ addExtension({
 			const data = unpack(buffer);
 			// this is a file backed blob, so we need to create a new blob object with the storage info
 			const blob = new FileBackedBlob();
-			if (!currentStore) throw new Error('No store specified, can not load blob from storage');
+			if (!currentStore) {
+				throw new Error('No store specified, can not load blob from storage');
+			}
 			storageInfoForBlob.set(blob, {
 				storageIndex: data[0],
 				fileId: data[1],
