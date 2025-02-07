@@ -8,7 +8,7 @@ import { PREVIOUS_TIMESTAMP_PLACEHOLDER, LAST_TIMESTAMP_PLACEHOLDER } from './Re
 import * as harper_logger from '../utility/logging/harper_logger';
 import { getRecordAtTime } from './crdt';
 import { isMainThread } from 'worker_threads';
-import { deleteBlobsInObject } from './blob';
+import { decodeFromDatabase, deleteBlobsInObject } from './blob';
 
 /**
  * This module is responsible for the binary representation of audit records in an efficient form.
@@ -105,7 +105,11 @@ export function openAuditStore(root_store) {
 					snapshot: false,
 					end: Date.now() - audit_retention,
 				})) {
-					committed = removeAuditEntry(audit_store, key, value);
+					try {
+						committed = removeAuditEntry(audit_store, key, value);
+					} catch (error) {
+						harper_logger.warn('Error removing audit entry', error);
+					}
 					last_key = key;
 					await new Promise(setImmediate);
 					if (++deleted >= MAX_DELETES_PER_CLEANUP) {
@@ -155,7 +159,7 @@ export function removeAuditEntry(audit_store: any, key: number, value: any): Pro
 		const primary_store = audit_store.tableStores[audit_record.tableId];
 		if (primary_store.getEntry(audit_record.recordId).version !== audit_record.version) {
 			// if the versions don't match, then this should be the only/last reference to any blob
-			deleteBlobsInObject(audit_record.getValue(primary_store));
+			decodeFromDatabase(() => deleteBlobsInObject(audit_record.getValue(primary_store)), primary_store.rootStore);
 		}
 	}
 

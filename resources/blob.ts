@@ -34,11 +34,17 @@ import { get as envGet, getHdbBasePath } from '../utility/environment/environmen
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { join, dirname } from 'path';
 import logger from '../utility/logging/logger';
+import type { LMDBStore } from 'lmdb';
 
 type StorageInfo = {
 	storageIndex: number;
 	fileId: string;
+	store?: any;
+	filePath?: string;
 	recordId?: number;
+	contentBuffer?: Buffer;
+	source?: NodeJS.ReadableStream;
+	storageBuffer?: Buffer;
 };
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
 // We want to keep the file path private (but accessible to the extension)
@@ -52,6 +58,7 @@ let currentBlobCallback: (blob: Blob) => Blob | void;
 export const Blob = global.Blob || polyfillBlob(); // use the global Blob class if it exists (it doesn't on Node v16)
 let encodeForStorageForRecordId: number = undefined; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
 let promisedWrites: Array<Promise<void>>;
+let currentStore: any; // the root store of the database we are currently encoding for
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
 // the header is 8 bytes
 // this is a reusable buffer for reading and writing to the header (without having to create new allocations)
@@ -69,12 +76,10 @@ InstanceOfBlobWithNoConstructor.prototype = Blob.prototype;
 class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 	finished: Promise<void>;
 	onError: ((error: Error) => void)[];
-	constructor(options?: StorageInfo) {
-		super([], options);
-		storageInfoForBlob.set(this, {
-			storageIndex: options?.storageIndex,
-			fileId: options?.fileId,
-		});
+	options?: StorageInfo;
+	constructor(options?: BlobCreationOptions) {
+		super();
+		this.options = options;
 	}
 
 	on(type: string, callback: (error: Error) => void) {
@@ -96,6 +101,8 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 
 	bytes(): Promise<Buffer> {
 		const storageInfo = storageInfoForBlob.get(this);
+		if (storageInfo.contentBuffer) return Promise.resolve(storageInfo.contentBuffer);
+		if (storageInfo.storageBuffer) return Promise.resolve(storageInfo.storageBuffer.subarray(HEADER_SIZE));
 		const filePath = getFilePath(storageInfo);
 		let watcher: any;
 		let timer: NodeJS.Timeout;
@@ -116,7 +123,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 			function checkCompletion(rawBytes: Buffer): Buffer | Promise<Buffer> {
 				if (size > rawBytes.length) {
 					// the file is not finished being written, wait for the write lock to complete
-					const store = databases.system.hdb_temp.primaryStore;
+					const store = storageInfo.store;
 					const lockKey = storageInfo.fileId + ':blob';
 					if (writeFinished) throw new Error('Incomplete blob');
 					return new Promise((resolve, reject) => {
@@ -158,6 +165,17 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 
 	stream(): ReadableStream {
 		const storageInfo = storageInfoForBlob.get(this);
+		let buffer = storageInfo.contentBuffer;
+		if (storageInfo.storageBuffer && !buffer) buffer = storageInfo.storageBuffer.subarray(HEADER_SIZE);
+		if (buffer) {
+			return new ReadableStream({
+				pull(controller) {
+					controller.enqueue(buffer);
+					controller.close();
+				},
+			});
+		}
+
 		const filePath = getFilePath(storageInfo);
 		let fd: number;
 		let position = 0;
@@ -285,7 +303,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 		});
 		function checkIfIsBeingWritten() {
 			if (isBeingWritten === undefined) {
-				const store = databases.system.hdb_temp.primaryStore;
+				const store = storageInfo.store;
 				const lockKey = storageInfo.fileId + ':blob';
 				isBeingWritten = !store.attemptLock(lockKey, 0, () => {
 					isBeingWritten = false;
@@ -297,6 +315,10 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 		}
 	}
 	get size(): number {
+		const storageInfo = storageInfoForBlob.get(this);
+		if (storageInfo.contentBuffer) return storageInfo.contentBuffer.length;
+		if (storageInfo.storageBuffer) return storageInfo.storageBuffer.length - HEADER_SIZE;
+
 		const filePath = getFilePathForBlob(this);
 		const fd = openSync(filePath, 'r');
 		readSync(fd, HEADER, 0, HEADER_SIZE, 0);
@@ -321,6 +343,10 @@ let deletion_delay = 500;
 export function deleteBlob(blob: Blob): Promise<void> {
 	// do we even need to check for completion here?
 	const filePath = getFilePathForBlob(blob);
+	if (!filePath) {
+		logger.warn?.('No file path for blob, can not delete');
+		return Promise.resolve();
+	}
 	setTimeout(() => {
 		// TODO: we need to determine when any read transaction are done with the file, and then delete it, this is a hack to just give it some time for that
 		unlink(filePath, (error) => {
@@ -331,12 +357,10 @@ export function deleteBlob(blob: Blob): Promise<void> {
 export function setDeletionDelay(delay: number) {
 	deletion_delay = delay;
 }
-let blobStoragePaths: Array<string>;
 export type BlobCreationOptions = {
 	compress?: boolean; // compress the data with deflate
 	flush?: boolean; // flush to disk after writing and before resolving the finished promise
 	size?: number; // the size of the data, if known ahead of time
-	forBlob: (blob: Blob) => any; // provides synchronous access to the blob that is created
 };
 /**
  * Create a blob from a readable stream or a buffer by creating a file in the blob storage path with a new unique internal id, that
@@ -344,22 +368,42 @@ export type BlobCreationOptions = {
  * @param source
  */
 global.createBlob = function (source: NodeJS.ReadableStream | NodeJS.Buffer, options?: BlobCreationOptions): Blob {
-	if (source instanceof Uint8Array) return createBlobFromBuffer(source, options);
-	else if (source instanceof Readable) return createBlobFromStream(source, options);
-	else if (typeof source === 'string') return createBlobFromBuffer(Buffer.from(source), options);
-	else if (source?.[Symbol.asyncIterator] || source?.[Symbol.iterator])
-		return createBlobFromStream(Readable.from(source), options);
+	const blob = new FileBackedBlob(options);
+	const storageInfo = { storageIndex: 0, fileId: null };
+	storageInfoForBlob.set(blob, storageInfo);
+	if (source instanceof Uint8Array) {
+		storageInfo.contentBuffer = source;
+	} else if (source instanceof Readable) {
+		storageInfo.source = source;
+	} else if (typeof source === 'string') storageInfo.contentBuffer = Buffer.from(source);
+	else if (source?.[Symbol.asyncIterator] || source?.[Symbol.iterator]) storageInfo.source = Readable.from(source);
 	else throw new Error('Invalid source type');
+	return blob;
 };
+
+function saveBlob(blob: FileBackedBlob) {
+	let storageInfo = storageInfoForBlob.get(blob);
+	if (!storageInfo) {
+		storageInfo = { storageIndex: 0, fileId: null, store: currentStore };
+		storageInfoForBlob.set(blob, storageInfo);
+	} else {
+		storageInfo.store = currentStore;
+	}
+
+	generateFilePath(storageInfo);
+	if (storageInfo.source) writeBlobWithStream(blob, storageInfo.source, storageInfo, blob.options);
+	else if (storageInfo.contentBuffer) writeBlobWithBuffer(blob, storageInfo, blob.options);
+	else writeBlobWithStream(blob, Readable.from(blob.stream()), storageInfo, blob.options); // for native blobs, we have to read them from the stream
+	return storageInfo;
+}
+
 /**
  * Create a blob from a readable stream
  */
-function createBlobFromStream(stream: NodeJS.ReadableStream, options: any): Blob {
-	const results = createBlobWithFile();
-	const { filePath, blob, fileId } = results;
+function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageInfo: StorageInfo, options: any): Blob {
+	const { filePath, fileId, store } = storageInfo;
 	blob.finished = new Promise((resolve, reject) => {
 		// pipe the stream to the file
-		const store = databases.system.hdb_temp.primaryStore;
 		const lockKey = fileId + ':blob';
 		if (!store.attemptLock(lockKey, 0)) {
 			throw new Error(`Unable to get lock for blob file ${fileId}`);
@@ -431,13 +475,29 @@ export function getFileId(blob: Blob): string {
 	return storageInfoForBlob.get(blob)?.fileId;
 }
 export function getFilePathForBlob(blob: FileBackedBlob): string {
-	return getFilePath(storageInfoForBlob.get(blob));
+	const storageInfo = storageInfoForBlob.get(blob);
+	return storageInfo?.fileId && getFilePath(storageInfo);
 }
-function getFilePath({ storageIndex, fileId }: { storageIndex: number; fileId: string }): string {
-	if (!blobStoragePaths) {
-		// initialize paths if not already done
-		blobStoragePaths = envGet(CONFIG_PARAMS.STORAGE_BLOBPATHS) || [join(getHdbBasePath(), 'blobs')];
+export const databasePaths = new Map<LMDBStore, string[]>();
+export function getRootBlobPathsForDB(store: LMDBStore) {
+	if (!store) {
+		throw new Error('No store specified, can not determine blob storage path');
 	}
+	let paths: string[] = databasePaths.get(store);
+	if (!paths) {
+		if (!store.databaseName) throw new Error('No database name specified, can not determine blob storage path');
+		const blobPaths: string[] = envGet(CONFIG_PARAMS.STORAGE_BLOBPATHS);
+		if (blobPaths) {
+			paths = blobPaths.map((path) => join(path, store.databaseName));
+		} else {
+			paths = [join(getHdbBasePath(), 'blobs', store.databaseName)];
+		}
+		databasePaths.set(store, paths);
+	}
+	return paths;
+}
+function getFilePath({ storageIndex, fileId, store }: StorageInfo): string {
+	const blobStoragePaths = getRootBlobPathsForDB(store);
 	return join(
 		// Use a hierarchy of directories to store the file by id, to avoid to many entries in a single directory. This uses 4096 files or directories per parent directory
 		blobStoragePaths[storageIndex],
@@ -452,15 +512,9 @@ function getFilePath({ storageIndex, fileId }: { storageIndex: number; fileId: s
  * @param buffer
  */
 function createBlobFromDirectBuffer(buffer: NodeJS.Buffer): Blob {
-	if (buffer.length < FILE_STORAGE_THRESHOLD) {
-		// if the buffer is small enough, just store it in memory
-		const blob: Blob = new Blob([buffer.subarray(HEADER_SIZE)]);
-		blob.buffer = buffer;
-		return blob;
-	}
-	const results = createBlobWithFile();
-	const { blob, filePath } = results;
-	blob.finished = writeFile(filePath, buffer);
+	const blob = new FileBackedBlob();
+	const storageInfo = { storageIndex: 0, fileId: null, storageBuffer: buffer };
+	storageInfoForBlob.set(blob, storageInfo);
 	return blob;
 }
 
@@ -468,49 +522,48 @@ function createBlobFromDirectBuffer(buffer: NodeJS.Buffer): Blob {
  * Create a blob from a buffer
  * @param buffer
  */
-function createBlobFromBuffer(buffer: NodeJS.Buffer, options?: BlobCreationOptions): Blob {
+function writeBlobWithBuffer(blob: Blob, storageInfo: StorageInfo, options?: BlobCreationOptions): Blob {
 	// we know the size, so we can create the header immediately
+	const buffer = storageInfo.contentBuffer;
 	const size = buffer.length;
 	if (size < FILE_STORAGE_THRESHOLD) {
 		// if the buffer is small enough, just store it in memory
-		const blob = new Blob([buffer]);
 		headerView.setBigInt64(0, BigInt(size));
-		blob.buffer = Buffer.concat([HEADER, buffer]);
+		blob.storageInfo = Buffer.concat([HEADER, buffer]);
 		return blob;
 	}
 	if (options) options.size = size;
 	else options = { size };
-	return createBlobFromStream(Readable.from([buffer]), options);
+	return writeBlobWithStream(blob, Readable.from([buffer]), storageInfo, options);
 }
 
 /**
  * Create a blob that is backed by a *new* file with a new unique internal id, so it can be filled with data and saved to the database
  */
-function createBlobWithFile(): { filePath: string; blob: FileBackedBlob; fileId: string } {
-	if (!blobStoragePaths) {
-		// initialize paths if not already done
-		getFilePath({ storageIndex: 0, fileId: '0' }); // just to initialize the paths
-	}
+function generateFilePath(storageInfo: StorageInfo) {
+	const blobStoragePaths = getRootBlobPathsForDB(storageInfo.store);
 	const id = getNextFileId();
 	// get the storage index, which is the index of the blob storage path to use, distributed round-robin based on the id
 	const storageIndex = blobStoragePaths?.length > 1 ? id % blobStoragePaths.length : 0;
 	const fileId = id.toString(16); // get the next file id
-	const storageInfo = { storageIndex, fileId };
+	storageInfo.storageIndex = storageIndex;
+	storageInfo.fileId = fileId;
 	const filePath = getFilePath(storageInfo);
 	const fileDir = dirname(filePath);
-	const blob = new FileBackedBlob({ storageIndex, fileId });
 	// ensure the directory structure exists
 	if (!existsSync(fileDir)) ensureDirSync(fileDir);
-	return { filePath, blob, fileId };
+	storageInfo.filePath = filePath;
 }
-let idIncrementer: BigInt64Array;
+const idIncrementers = new Map<LMDBStore, BigInt64Array>();
 function getNextFileId(): number {
 	// all threads will use a shared buffer to atomically increment the id
 	// first, we create our proposed incrementer buffer that will be used if we are the first thread to get here
 	// and initialize it with the starting id
+	let idIncrementer = idIncrementers.get(currentStore);
 	if (!idIncrementer) {
 		// get the last id by checking the highest id in all the blob storage paths
 		let highestId = 0;
+		const blobStoragePaths = getRootBlobPathsForDB(currentStore);
 		for (let path of blobStoragePaths) {
 			let id = 0;
 			// we need to get the highest id in the directory structure, so we need to iterate through all the directories to find the highest byte sequence
@@ -537,9 +590,8 @@ function getNextFileId(): number {
 		}
 		idIncrementer = new BigInt64Array([BigInt(highestId) + 1n]);
 		// now get the selected incrementer buffer, this is the shared buffer was first registered and that all threads will use
-		idIncrementer = new BigInt64Array(
-			databases.system.hdb_info.primaryStore.getUserSharedBuffer('blob-file-id', idIncrementer.buffer)
-		);
+		idIncrementer = new BigInt64Array(currentStore.getUserSharedBuffer('blob-file-id', idIncrementer.buffer));
+		idIncrementers.set(currentStore, idIncrementer);
 	}
 	return Number(Atomics.add(idIncrementer, 0, 1n));
 }
@@ -550,13 +602,15 @@ function getNextFileId(): number {
  * @param encodingId
  * @param objectToClear
  */
-export function encodeBlobsWithFilePath<T>(callback: () => T, encodingId: number) {
+export function encodeBlobsWithFilePath<T>(callback: () => T, encodingId: number, store: LMDBStore): T {
 	encodeForStorageForRecordId = encodingId;
+	currentStore = store;
 	blobsWereEncoded = false;
 	try {
 		return callback();
 	} finally {
 		encodeForStorageForRecordId = undefined;
+		currentStore = undefined;
 	}
 }
 /**
@@ -608,6 +662,18 @@ export function decodeWithBlobCallback(callback: () => void, blobCallback: (blob
 		currentBlobCallback = undefined;
 	}
 }
+/**
+ * Decode with a callback for when blobs are encountered, allowing for detecting of blobs
+ * @param callback
+ */
+export function decodeFromDatabase(callback: () => void, store: LMDBStore) {
+	try {
+		currentStore = store;
+		return callback();
+	} finally {
+		currentStore = undefined;
+	}
+}
 
 /**
  * Delete blobs in an object, recursively searching for blobs
@@ -635,9 +701,11 @@ addExtension({
 			// this was encoded as reference to a file path, so we can decode it as msgpack and create the referencing blob
 			const data = unpack(buffer);
 			// this is a file backed blob, so we need to create a new blob object with the storage info
-			const blob = new FileBackedBlob({
+			const blob = new FileBackedBlob();
+			storageInfoForBlob.set(blob, {
 				storageIndex: data[0],
 				fileId: data[1],
+				store: currentStore,
 			});
 			if (currentBlobCallback) return currentBlobCallback(blob) ?? blob;
 			return blob;
@@ -649,40 +717,53 @@ addExtension({
 		}
 	},
 	pack: function (blob) {
-		const storageInfo = storageInfoForBlob.get(blob);
-		if (storageInfo) {
-			if (encodeForStorageForRecordId !== undefined) {
-				// this is used when we are encoding the data for storage in the database, referencing the (local) file storage
-				blobsWereEncoded = true;
-				if (storageInfo.recordId && storageInfo.recordId !== encodeForStorageForRecordId) {
-					throw new Error('Cannot use the same blob in two different records');
-				}
-				storageInfo.recordId = encodeForStorageForRecordId;
-				return pack([storageInfo.storageIndex, storageInfo.fileId, {}]);
-			} else {
-				// if we want to encode as binary (necessary for replication), we need to encode as a buffer, not sure if we should always do that
-				// also, for replication, we would presume that this is most likely in OS cache, and sync will be fast. For other situations, a large sync call could be
-				// unpleasant
-				// we include the headers, as the receiving end will need them, and this differentiates from a reference
-				try {
-					const buffer = readFileSync(getFilePath(storageInfo));
-					if (buffer.length >= HEADER_SIZE) {
-						buffer.copy(HEADER, 0, 0, HEADER_SIZE);
-						const size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
-						if (size === buffer.length - HEADER_SIZE) return buffer;
-					}
-					if (promisedWrites) promisedWrites.push(blob.bytes());
-					else throw new Error('Incomplete blob');
-					return buffer;
-				} catch (error) {
-					if (error.code === 'ENOENT' && promisedWrites) {
-						promisedWrites.push(blob.bytes());
-						return Buffer.alloc(0);
-					} else throw error;
-				}
+		let storageInfo = storageInfoForBlob.get(blob);
+		if (encodeForStorageForRecordId !== undefined) {
+			blobsWereEncoded = true;
+			if (storageInfo?.recordId !== undefined && storageInfo.recordId !== encodeForStorageForRecordId) {
+				throw new Error('Cannot use the same blob in two different records');
 			}
-		} else if (blob.buffer) {
-			return blob.buffer;
+		}
+		if (storageInfo) {
+			if (storageInfo.storageBuffer) {
+				return storageInfo.storageBuffer;
+			}
+			if (storageInfo.contentBuffer?.length < FILE_STORAGE_THRESHOLD) {
+				headerView.setBigInt64(0, BigInt(storageInfo.contentBuffer.length));
+				return Buffer.concat([HEADER, storageInfo.contentBuffer]);
+			}
+		}
+		if (encodeForStorageForRecordId !== undefined) {
+			storageInfo = saveBlob(blob);
+			if (!storageInfo.fileId) {
+				throw new Error('Unable to save blob without file id');
+			}
+			storageInfo.recordId = encodeForStorageForRecordId;
+			return pack([storageInfo.storageIndex, storageInfo.fileId, {}]);
+		}
+		if (storageInfo) {
+			// if we want to encode as binary (necessary for replication), we need to encode as a buffer, not sure if we should always do that
+			// also, for replication, we would presume that this is most likely in OS cache, and sync will be fast. For other situations, a large sync call could be
+			// unpleasant
+			// we include the headers, as the receiving end will need them, and this differentiates from a reference
+			try {
+				const buffer = readFileSync(getFilePath(storageInfo));
+				if (buffer.length >= HEADER_SIZE) {
+					buffer.copy(HEADER, 0, 0, HEADER_SIZE);
+					const size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
+					if (size === buffer.length - HEADER_SIZE) return buffer;
+				}
+				if (promisedWrites) promisedWrites.push(blob.bytes());
+				else {
+					throw new Error('Incomplete blob');
+				}
+				return buffer;
+			} catch (error) {
+				if (error.code === 'ENOENT' && promisedWrites) {
+					promisedWrites.push(blob.bytes());
+					return Buffer.alloc(0);
+				} else throw error;
+			}
 		} else {
 			throw new Error('Blob has no storage info or buffer attached to it');
 		}

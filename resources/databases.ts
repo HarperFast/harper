@@ -43,7 +43,7 @@ const NEXT_TABLE_ID = Symbol.for('next-table-id');
 const table_listeners = [];
 const db_removal_listeners = [];
 let loaded_databases; // indicates if we have loaded databases from the file system yet
-const database_envs = new Map<string, any>();
+export const database_envs = new Map<string, any>();
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
 // can be removed:
 let defined_databases;
@@ -313,6 +313,7 @@ export function readMetaDb(
 					dbis_store.putSync(primary_attribute.key, primary_attribute);
 				}
 				const dbi_init = new OpenDBIObject(!primary_attribute.is_hash_attribute, primary_attribute.is_hash_attribute);
+				dbi_init.encoder.rootStore = root_store;
 				dbi_init.compression = primary_attribute.compression;
 				if (dbi_init.compression) {
 					const compression_threshold =
@@ -321,6 +322,7 @@ export function readMetaDb(
 				}
 				primary_store = handleLocalTimeForGets(root_store.openDB(primary_attribute.key, dbi_init));
 				root_store.databaseName = database_name;
+				primary_store.encoder.rootStore = root_store;
 				primary_store.rootStore = root_store;
 				primary_store.tableId = table_id;
 			}
@@ -331,6 +333,7 @@ export function readMetaDb(
 					if (!attribute.is_hash_attribute && (attribute.indexed || (attribute.attribute && !attribute.name))) {
 						if (!indices[attribute.name]) {
 							const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
+							if (dbi_init.encoder) dbi_init.encoder.rootStore = root_store;
 							indices[attribute.name] = root_store.openDB(attribute.key, dbi_init);
 							indices[attribute.name].indexNulls = attribute.indexNulls;
 						}
@@ -587,6 +590,7 @@ export function table(table_definition: TableDefinition) {
 		}
 		harper_logger.trace(`${table_name} table loading, opening primary store`);
 		const dbi_init = new OpenDBIObject(false, true);
+		dbi_init.encoder.rootStore = root_store;
 		dbi_init.compression = primary_key_attribute.compression;
 		const dbi_name = table_name + '/';
 		attributes_dbi = root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
