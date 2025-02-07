@@ -1,0 +1,9 @@
+/.git/
+/.github/
+/node_modules/
+/dependencies/
+/test/
+/unitTests/
+/npm_pack/
+/studio/
+/logs/

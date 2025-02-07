@@ -69,7 +69,9 @@
 		"format": "prettier .",
 		"format:fix": "npm run format -- --write",
 		"lint": "eslint .",
-		"lint:fix": "npm run lint -- --fix"
+		"lint:fix": "npm run lint -- --fix",
+		"cluster:local": "docker compose -f utility/dev/docker-compose.yml --project-directory . build && docker compose -f utility/dev/docker-compose.yml --project-directory . up",
+		"cluster:latest": "docker compose -f utility/dev/docker-compose.yml --project-directory . pull && docker compose -f utility/dev/docker-compose.yml --project-directory . up"
 	},
 	"dependencies": {
 		"@aws-sdk/client-s3": "3.717.0",
