@@ -30,7 +30,7 @@ import { disconnectedFromNode, connectedToNode, ensureNode } from './subscriptio
 import { EventEmitter } from 'events';
 import { createTLSSelector } from '../../security/keys';
 import * as tls from 'node:tls';
-import { getHDBNodeTable } from './knownNodes';
+import { getHDBNodeTable, getReplicationSharedStatus } from './knownNodes';
 import * as process from 'node:process';
 import { isIP } from 'node:net';
 import { recordAction } from '../../resources/analytics';
@@ -52,6 +52,10 @@ const SEQUENCE_ID_UPDATE = 143;
 const COMMITTED_UPDATE = 144;
 const DB_SCHEMA = 145;
 const BLOB_CHUNK = 146;
+export const CONFIRMATION_STATUS_POSITION = 0;
+export const RECEIVED_VERSION_POSITION = 1;
+export const RECEIVED_TIME_POSITION = 2;
+export const SENDING_TIME_POSITION = 3;
 
 export const table_update_listeners = new Map();
 // This a map of the database name to the subscription object, for the subscriptions from our tables to the replication module
@@ -274,7 +278,7 @@ export function replicateOverWS(ws, options, authorization) {
 	let database_name = options.database;
 	const db_subscriptions = options.databaseSubscriptions || database_subscriptions;
 	let audit_store;
-	let replication_confirmation_float64;
+	let replication_shared_status: Float64Array;
 	// this is the subscription that the local table makes to this replicator, and incoming messages
 	// are sent to this subscription queue:
 	let subscribed = false;
@@ -304,7 +308,7 @@ export function replicateOverWS(ws, options, authorization) {
 	const blobs_in_flight = new Map();
 	const outstanding_blobs_to_finish: Promise<void>[] = [];
 	let outstanding_blobs_being_sent = 0;
-	let blob_sent_callback: () => void;
+	let blob_sent_callback: (v?: any) => void;
 	if (options.url) {
 		const send_ping = () => {
 			// if we have not received a message in the last ping interval, we should terminate the connection (but check to make sure we aren't just waiting for other data to flow)
@@ -334,6 +338,11 @@ export function replicateOverWS(ws, options, authorization) {
 				ws.terminate();
 			}
 		}, PING_INTERVAL * 2).unref();
+	}
+	function getSharedStatus() {
+		if (!replication_shared_status)
+			replication_shared_status = getReplicationSharedStatus(audit_store, database_name, remote_node_name);
+		return replication_shared_status;
 	}
 	if (database_name) {
 		setDatabase(database_name);
@@ -535,14 +544,9 @@ export function replicateOverWS(ws, options, authorization) {
 						break;
 					case COMMITTED_UPDATE:
 						// we need to record the sequence number that the remote node has received
-						const replication_key = ['replicated', database_name, remote_node_name];
-						if (!replication_confirmation_float64)
-							replication_confirmation_float64 = new Float64Array(
-								audit_store.getUserSharedBuffer(replication_key, new ArrayBuffer(8))
-							);
-						replication_confirmation_float64[0] = data;
+						getSharedStatus()[CONFIRMATION_STATUS_POSITION] = data;
 						logger.trace?.(connection_id, 'received and broadcasting committed update', data);
-						replication_confirmation_float64.buffer.notify();
+						getSharedStatus().buffer.notify();
 						break;
 					case SEQUENCE_ID_UPDATE:
 						// we need to record the sequence number that the remote node has received
@@ -747,7 +751,6 @@ export function replicateOverWS(ws, options, authorization) {
 						let current_sequence_id = Infinity; // the last sequence number in the audit log that we have processed, set this with a finite number from the subscriptions
 						let sent_sequence_id; // the last sequence number we have sent
 						const sendAuditRecord = (audit_record, local_time) => {
-							current_sequence_id = local_time;
 							if (audit_record.type === 'end_txn') {
 								if (current_transaction.txnTime) {
 									if (encoding_buffer[encoding_start] !== 66) {
@@ -1124,6 +1127,7 @@ export function replicateOverWS(ws, options, authorization) {
 															);
 															last_sequence_id = Math.max(entry.localTime, last_sequence_id);
 															queued_entries = true;
+															getSharedStatus()[SENDING_TIME_POSITION] = 1;
 															sendAuditRecord(
 																{
 																	// make it look like an audit record
@@ -1156,6 +1160,8 @@ export function replicateOverWS(ws, options, authorization) {
 										if (closed) return;
 										const audit_record = readAuditEntry(audit_entry);
 										logger.debug?.('sending audit record', new Date(key));
+										getSharedStatus()[SENDING_TIME_POSITION] = key;
+										current_sequence_id = key;
 										sendAuditRecord(audit_record, key);
 										// wait if there is back-pressure
 										if (ws._socket.writableNeedDrain) {
@@ -1180,7 +1186,7 @@ export function replicateOverWS(ws, options, authorization) {
 											},
 											current_sequence_id
 										);
-
+									getSharedStatus()[SENDING_TIME_POSITION] = 0;
 									await whenNextTransaction(audit_store);
 								} while (!closed);
 							})
@@ -1201,10 +1207,13 @@ export function replicateOverWS(ws, options, authorization) {
 			let event; // could also get txn_time from decoder.getFloat64(0);
 			let sequence_id_received;
 			do {
+				getSharedStatus();
 				const event_length = decoder.readInt();
 				if (event_length === 9 && decoder.getUint8(decoder.position) == REMOTE_SEQUENCE_UPDATE) {
 					decoder.position++;
 					last_sequence_id_received = sequence_id_received = decoder.readFloat64();
+					replication_shared_status[RECEIVED_VERSION_POSITION] = last_sequence_id_received;
+					replication_shared_status[RECEIVED_TIME_POSITION] = Date.now();
 					logger.trace?.('received remote sequence update', last_sequence_id_received, database_name);
 					break;
 				}
@@ -1226,8 +1235,6 @@ export function replicateOverWS(ws, options, authorization) {
 					);
 				}
 				try {
-					const blob_promises = [];
-
 					decodeBlobsWithWrites(
 						() => {
 							event = {
@@ -1298,6 +1305,9 @@ export function replicateOverWS(ws, options, authorization) {
 					'nodeId',
 					event.nodeId
 				);
+				replication_shared_status[RECEIVED_VERSION_POSITION] = audit_record.version;
+				replication_shared_status[RECEIVED_TIME_POSITION] = Date.now();
+
 				table_subscription_to_replicator.send(event);
 				decoder.position = start + event_length;
 			} while (decoder.position < body.byteLength);
@@ -1367,7 +1377,6 @@ export function replicateOverWS(ws, options, authorization) {
 				name: remote_node_name,
 				database: database_name,
 				url: options.url,
-				lastReceivedTime: last_sequence_id_received,
 				latency: options.connection.latency,
 			});
 		}

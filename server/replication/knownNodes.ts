@@ -56,6 +56,20 @@ export function getHDBNodeTable() {
 		}))
 	);
 }
+export function getReplicationSharedStatus(
+	audit_store: any,
+	database_name: string,
+	node_name: string,
+	callback?: () => void
+) {
+	return new Float64Array(
+		audit_store.getUserSharedBuffer(
+			['replicated', database_name, node_name],
+			new ArrayBuffer(32),
+			callback && { callback }
+		)
+	);
+}
 export function subscribeToNodeUpdates(listener) {
 	getHDBNodeTable()
 		.subscribe({})
@@ -139,20 +153,16 @@ function startSubscriptionToReplications() {
 				if (audit_store) break;
 			}
 			if (audit_store) {
-				const replicated_time = new Float64Array(
-					audit_store.getUserSharedBuffer(['replicated', database_name, node_name], new ArrayBuffer(8), {
-						callback: () => {
-							const updated_time = replicated_time[0];
-							const last_time = replicated_time.lastTime;
-							for (const { txnTime, onConfirm } of commits_awaiting_replication.get(database_name) || []) {
-								if (txnTime > last_time && txnTime <= updated_time) {
-									onConfirm();
-								}
-							}
-							replicated_time.lastTime = updated_time;
-						},
-					})
-				);
+				const replicated_time = getReplicationSharedStatus(audit_store, database_name, node_name, () => {
+					const updated_time = replicated_time[0];
+					const last_time = replicated_time.lastTime;
+					for (const { txnTime, onConfirm } of commits_awaiting_replication.get(database_name) || []) {
+						if (txnTime > last_time && txnTime <= updated_time) {
+							onConfirm();
+						}
+					}
+					replicated_time.lastTime = updated_time;
+				});
 				replicated_time.lastTime = 0;
 				confirmations_for_node.set(database_name, replicated_time);
 			}
