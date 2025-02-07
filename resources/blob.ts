@@ -11,7 +11,7 @@
  */
 
 import { addExtension, pack, unpack } from 'msgpackr';
-import { readFile, writeFile } from 'node:fs/promises';
+import { readFile } from 'node:fs/promises';
 import {
 	close,
 	createWriteStream,
@@ -29,7 +29,7 @@ import {
 } from 'node:fs';
 import { createDeflate, deflate } from 'node:zlib';
 import { Readable } from 'node:stream';
-import { ensureDirSync } from 'fs-extra';
+import { ensureDirSync, remove } from 'fs-extra';
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { join, dirname } from 'path';
@@ -495,6 +495,17 @@ export function getRootBlobPathsForDB(store: LMDBStore) {
 		databasePaths.set(store, paths);
 	}
 	return paths;
+}
+export function deleteRootBlobPathsForDB(store: LMDBStore): Promise<any[]> {
+	const paths = databasePaths.get(store);
+	const deletions = [];
+	if (paths) {
+		for (const path of paths) {
+			deletions.push(remove(path));
+		}
+		databasePaths.delete(store);
+	}
+	return Promise.all(deletions);
 }
 function getFilePath({ storageIndex, fileId, store }: StorageInfo): string {
 	const blobStoragePaths = getRootBlobPathsForDB(store);

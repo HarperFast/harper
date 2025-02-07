@@ -21,6 +21,7 @@ import * as harper_logger from '../utility/logging/harper_logger';
 import * as manage_threads from '../server/threads/manageThreads';
 import { openAuditStore, transactionKeyEncoder } from './auditStore';
 import { handleLocalTimeForGets } from './RecordEncoder';
+import { deleteRootBlobPathsForDB } from './blob';
 
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
@@ -504,6 +505,7 @@ export async function dropDatabase(database_name) {
 	}
 	delete databases[database_name];
 	db_removal_listeners.forEach((listener) => listener(database_name));
+	await deleteRootBlobPathsForDB(root_store);
 }
 
 /**
