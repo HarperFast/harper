@@ -163,7 +163,7 @@ runs:
         container_registry: 'registry.hub.docker.com'
         container_image: ${{ inputs.dockerImage }}
         container_tag: ${{ inputs.harperdbVersion }}
-        push: ${{ inputs.pushRedhatConnect }}
+        push: ${{ inputs.push }}
       shell: bash
       run: |
         #!/usr/bin/env bash

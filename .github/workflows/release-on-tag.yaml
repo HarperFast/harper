@@ -132,7 +132,7 @@ jobs:
             current_latest_image_tag_minor="${current_latest_image_tag#*.}"
             current_latest_image_tag_minor="${current_latest_image_tag_minor%.*}"
             current_latest_image_tag_patch="${current_latest_image_tag##*.}"
-          
+            
             if [ "${version_major}" -gt "${current_latest_image_tag_major}" ]; then
           
               npm_extra_tags='latest+stable'
@@ -146,7 +146,7 @@ jobs:
           
             elif [ "${version_major}" -eq "${current_latest_image_tag_major}" ] \
               && [ "${version_minor}" -eq "${current_latest_image_tag_minor}" ] \
-              && [ "${version_patch}" -gt "${current_latest_image_tag_patch}" ]; then
+              && [ "${version_patch}" -ge "${current_latest_image_tag_patch}" ]; then
           
               npm_extra_tags='latest+stable'
               dockerhub_tag_latest=true
@@ -506,6 +506,7 @@ jobs:
           tagLatest: ${{ needs.meta.outputs.dockerhub_tag_latest == 'true' && true || false }}
           buildPlatforms: 'linux/amd64,linux/arm64'
           push: ${{ needs.meta.outputs.push == 'true' && 'true' || 'false' }}
+          pushRedhatConnect: ${{ matrix.nodeVersion == 22 && 'true' || 'false' }} # only checking node version here, docker-build action will check if harperdb/harperdb-openshift
           dockerUsername: ${{ secrets.DOCKER_USERNAME }}
           dockerPassword: ${{ secrets.DOCKER_PASSWORD }}
 
