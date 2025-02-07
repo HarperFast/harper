@@ -679,9 +679,6 @@ export function decodeWithBlobCallback(callback: () => void, blobCallback: (blob
  */
 export function decodeFromDatabase(callback: () => void, store: LMDBStore) {
 	try {
-		if (!store) {
-			throw new Error('No store specified, can not decode blobs from database');
-		}
 		currentStore = store;
 		return callback();
 	} finally {
