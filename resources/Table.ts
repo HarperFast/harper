@@ -3006,7 +3006,13 @@ export function makeTable(options) {
 				context?.replicateFrom !== false
 			) {
 				// load from other node
-				return source_load(entry).then((entry) => with_entry(entry, id));
+				return source_load(entry).then(
+					(entry) => with_entry(entry, id),
+					(error) => {
+						logger.error?.('Error loading remote record', id, entry, options, error);
+						return with_entry(null, id);
+					}
+				);
 			}
 			if (entry && context) {
 				if (entry?.version > (context.lastModified || 0)) context.lastModified = entry.version;

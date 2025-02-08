@@ -17,13 +17,11 @@ import {
 	createWriteStream,
 	fdatasync,
 	open,
-	openSync,
 	readFileSync,
 	read,
 	unlink,
 	readdirSync,
 	existsSync,
-	readSync,
 	watch,
 	write,
 } from 'node:fs';
@@ -45,6 +43,8 @@ type StorageInfo = {
 	contentBuffer?: Buffer;
 	source?: NodeJS.ReadableStream;
 	storageBuffer?: Buffer;
+	compress?: boolean;
+	flush?: boolean;
 };
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
 // We want to keep the file path private (but accessible to the extension)
@@ -53,6 +53,7 @@ const UNCOMPRESSED_TYPE = 0;
 const DEFLATE_TYPE = 1;
 const DEFAULT_HEADER = new Uint8Array([0, UNCOMPRESSED_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const COMPRESS_HEADER = new Uint8Array([0, DEFLATE_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
+const UNKNOWN_SIZE = 0xffffffffffff;
 const storageInfoForBlob = new WeakMap<Blob, StorageInfo>();
 let currentBlobCallback: (blob: Blob) => Blob | void;
 export const Blob = global.Blob || polyfillBlob(); // use the global Blob class if it exists (it doesn't on Node v16)
@@ -74,18 +75,21 @@ InstanceOfBlobWithNoConstructor.prototype = Blob.prototype;
  * A blob that is backed by a file, and can be saved to the database as a reference
  */
 class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
-	finished: Promise<void>;
-	onError: ((error: Error) => void)[];
-	options?: StorageInfo;
+	type = '';
+	size: number;
+	declare finished: Promise<void>;
+	#onError: ((error: Error) => void)[];
+	#options?: BlobCreationOptions;
 	constructor(options?: BlobCreationOptions) {
 		super();
-		this.options = options;
+		if (options?.type) this.type = options.type;
+		if (options?.size != undefined) this.size = options.size;
 	}
 
 	on(type: string, callback: (error: Error) => void) {
 		if (type !== 'error') throw new Error('Only error events are supported');
-		if (!this.onError) this.onError = [];
-		this.onError.push(callback);
+		if (!this.#onError) this.#onError = [];
+		this.#onError.push(callback);
 	}
 
 	toJSON() {
@@ -102,10 +106,9 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 	bytes(): Promise<Buffer> {
 		const storageInfo = storageInfoForBlob.get(this);
 		if (storageInfo.contentBuffer) return Promise.resolve(storageInfo.contentBuffer);
-		if (storageInfo.storageBuffer) return Promise.resolve(storageInfo.storageBuffer.subarray(HEADER_SIZE));
 		const filePath = getFilePath(storageInfo);
 		let writeFinished: boolean;
-		async function readContents(): Promise<Buffer> {
+		const readContents = async () => {
 			let rawBytes: Buffer;
 			let size = HEADER_SIZE;
 			try {
@@ -113,6 +116,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 				if (rawBytes.length >= HEADER_SIZE) {
 					rawBytes.copy(HEADER, 0, 0, HEADER_SIZE);
 					size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
+					if (size < UNKNOWN_SIZE) this.size = size;
 				}
 			} catch (error) {
 				if (error.code !== 'ENOENT') throw error;
@@ -149,7 +153,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 				});
 			}
 			return checkCompletion(rawBytes.subarray(HEADER_SIZE));
-		}
+		};
 		return readContents();
 	}
 
@@ -163,8 +167,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 
 	stream(): ReadableStream {
 		const storageInfo = storageInfoForBlob.get(this);
-		let buffer = storageInfo.contentBuffer;
-		if (storageInfo.storageBuffer && !buffer) buffer = storageInfo.storageBuffer.subarray(HEADER_SIZE);
+		const buffer = storageInfo.contentBuffer;
 		if (buffer) {
 			return new ReadableStream({
 				pull(controller) {
@@ -199,7 +202,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 									}, 20).unref();
 							}
 							reject(error);
-							blob.onError?.forEach((callback) => callback(error));
+							blob.#onError?.forEach((callback) => callback(error));
 						} else {
 							fd = openedFd;
 							resolve(openedFd);
@@ -216,7 +219,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 						close(fd);
 						if (watcher) watcher.close();
 						reject(error);
-						blob.onError?.forEach((callback) => callback(error));
+						blob.#onError?.forEach((callback) => callback(error));
 					}
 					// allocate a buffer for reading. Note that we could do a stat to get the size, but that is a little more complicated, and might be a little extra overhead
 					const buffer = Buffer.allocUnsafe(0x40000);
@@ -243,6 +246,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 							buffer.copy(HEADER, 0, 0, HEADER_SIZE);
 							const headerValue = headerView.getBigUint64(0);
 							size = Number(headerValue & 0xffffffffffffn);
+							if (size < UNKNOWN_SIZE) blob.size = size;
 							buffer = buffer.subarray(HEADER_SIZE, bytesRead);
 							totalContentRead -= HEADER_SIZE;
 						} else if (bytesRead === 0) {
@@ -312,25 +316,8 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 			return isBeingWritten;
 		}
 	}
-	get size(): number {
-		const storageInfo = storageInfoForBlob.get(this);
-		if (storageInfo.contentBuffer) return storageInfo.contentBuffer.length;
-		if (storageInfo.storageBuffer) return storageInfo.storageBuffer.length - HEADER_SIZE;
-
-		const filePath = getFilePathForBlob(this);
-		const fd = openSync(filePath, 'r');
-		readSync(fd, HEADER, 0, HEADER_SIZE, 0);
-		close(fd);
-		const headerValue = headerView.getBigUint64(0);
-		const size = Number(headerValue & 0xffffffffffffn);
-		if (size < 0xffffffffffff) return size;
-		// else return undefined to indicate that the file is not finished being written, so we don't know the size yet
-	}
 	slice() {
 		throw new Error('Not implemented');
-	}
-	get type(): string {
-		return '';
 	}
 }
 let deletion_delay = 500;
@@ -338,12 +325,12 @@ let deletion_delay = 500;
  * Delete the file for the blob
  * @param blob
  */
-export function deleteBlob(blob: Blob): Promise<void> {
+export function deleteBlob(blob: Blob): void {
 	// do we even need to check for completion here?
 	const filePath = getFilePathForBlob(blob);
 	if (!filePath) {
 		logger.debug?.('No file path for blob, can not delete');
-		return Promise.resolve();
+		return;
 	}
 	setTimeout(() => {
 		// TODO: we need to determine when any read transaction are done with the file, and then delete it, this is a hack to just give it some time for that
@@ -356,6 +343,7 @@ export function setDeletionDelay(delay: number) {
 	deletion_delay = delay;
 }
 export type BlobCreationOptions = {
+	type?: string; // the MIME type of the blob
 	compress?: boolean; // compress the data with deflate
 	flush?: boolean; // flush to disk after writing and before resolving the finished promise
 	size?: number; // the size of the data, if known ahead of time
@@ -367,7 +355,7 @@ export type BlobCreationOptions = {
  */
 global.createBlob = function (source: NodeJS.ReadableStream | NodeJS.Buffer, options?: BlobCreationOptions): Blob {
 	const blob = new FileBackedBlob(options);
-	const storageInfo = { storageIndex: 0, fileId: null };
+	const storageInfo = { storageIndex: 0, fileId: null, flush: options?.flush, compress: options?.compress };
 	storageInfoForBlob.set(blob, storageInfo);
 	if (source instanceof Uint8Array) {
 		storageInfo.contentBuffer = source;
@@ -389,17 +377,17 @@ function saveBlob(blob: FileBackedBlob) {
 	}
 
 	generateFilePath(storageInfo);
-	if (storageInfo.source) writeBlobWithStream(blob, storageInfo.source, storageInfo, blob.options);
-	else if (storageInfo.contentBuffer) writeBlobWithBuffer(blob, storageInfo, blob.options);
-	else writeBlobWithStream(blob, Readable.from(blob.stream()), storageInfo, blob.options); // for native blobs, we have to read them from the stream
+	if (storageInfo.source) writeBlobWithStream(blob, storageInfo.source, storageInfo);
+	else if (storageInfo.contentBuffer) writeBlobWithBuffer(blob, storageInfo);
+	else writeBlobWithStream(blob, Readable.from(blob.stream()), storageInfo); // for native blobs, we have to read them from the stream
 	return storageInfo;
 }
 
 /**
  * Create a blob from a readable stream
  */
-function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageInfo: StorageInfo, options: any): Blob {
-	const { filePath, fileId, store } = storageInfo;
+function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageInfo: StorageInfo): Blob {
+	const { filePath, fileId, store, compress, flush } = storageInfo;
 	blob.finished = new Promise((resolve, reject) => {
 		// pipe the stream to the file
 		const lockKey = fileId + ':blob';
@@ -409,13 +397,13 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 		const writeStream = createWriteStream(filePath, { autoClose: false, flags: 'w' });
 
 		let wroteSize = false;
-		if (options?.size !== undefined) {
+		if (blob.size !== undefined) {
 			// if we know the size, we can write the header immediately
-			writeStream.write(createHeader(options.size)); // write the default header
+			writeStream.write(createHeader(blob.size)); // write the default header
 			wroteSize = true;
 		}
 		let compressedStream: NodeJS.Stream;
-		if (options?.compress) {
+		if (compress) {
 			if (!wroteSize) writeStream.write(COMPRESS_HEADER); // write the default header to the file
 			compressedStream = createDeflate();
 			stream.pipe(compressedStream).pipe(writeStream);
@@ -428,7 +416,7 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 			let headerValue = BigInt(size);
 			const header = new Uint8Array(HEADER_SIZE);
 			const headerView = new DataView(header.buffer);
-			headerValue |= BigInt(options?.compress ? DEFLATE_TYPE : UNCOMPRESSED_TYPE) << 48n;
+			headerValue |= BigInt(compress ? DEFLATE_TYPE : UNCOMPRESSED_TYPE) << 48n;
 			headerView.setBigInt64(0, headerValue);
 			return header;
 		}
@@ -440,7 +428,7 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 			if (error) {
 				if (fd) close(fd);
 				reject(error);
-			} else if (options?.flush) {
+			} else if (flush) {
 				// we just use fdatasync because we really aren't that concerned with flushing file metadata
 				fdatasync(fd, (error) => {
 					if (error) reject(error);
@@ -517,21 +505,10 @@ function getFilePath({ storageIndex, fileId, store }: StorageInfo): string {
 }
 
 /**
- * Create a blob from a buffer that already has a header
- * @param buffer
- */
-function createBlobFromDirectBuffer(buffer: NodeJS.Buffer): Blob {
-	const blob = new FileBackedBlob();
-	const storageInfo = { storageIndex: 0, fileId: null, storageBuffer: buffer };
-	storageInfoForBlob.set(blob, storageInfo);
-	return blob;
-}
-
-/**
  * Create a blob from a buffer
  * @param buffer
  */
-function writeBlobWithBuffer(blob: Blob, storageInfo: StorageInfo, options?: BlobCreationOptions): Blob {
+function writeBlobWithBuffer(blob: Blob, storageInfo: StorageInfo): Blob {
 	// we know the size, so we can create the header immediately
 	const buffer = storageInfo.contentBuffer;
 	const size = buffer.length;
@@ -541,9 +518,8 @@ function writeBlobWithBuffer(blob: Blob, storageInfo: StorageInfo, options?: Blo
 		blob.storageInfo = Buffer.concat([HEADER, buffer]);
 		return blob;
 	}
-	if (options) options.size = size;
-	else options = { size };
-	return writeBlobWithStream(blob, Readable.from([buffer]), storageInfo, options);
+	blob.size = size;
+	return writeBlobWithStream(blob, Readable.from([buffer]), storageInfo);
 }
 
 /**
@@ -703,27 +679,29 @@ addExtension({
 	Class: Blob,
 	type: 11,
 	unpack: function (buffer) {
-		if (buffer[0] > 1) {
-			// this was encoded as reference to a file path, so we can decode it as msgpack and create the referencing blob
-			const data = unpack(buffer);
-			// this is a file backed blob, so we need to create a new blob object with the storage info
-			const blob = new FileBackedBlob();
+		const blobInfo = unpack(buffer);
+		const blob = new FileBackedBlob();
+		Object.assign(blob, blobInfo[0]); // copy any properties
+		if (typeof blobInfo[1] !== 'object') {
+			// this is a reference, not followed by any buffer
 			if (!currentStore) {
 				throw new Error('No store specified, can not load blob from storage');
 			}
 			storageInfoForBlob.set(blob, {
-				storageIndex: data[0],
-				fileId: data[1],
+				storageIndex: blobInfo[1],
+				fileId: blobInfo[2],
 				store: currentStore,
 			});
 			if (currentBlobCallback) return currentBlobCallback(blob) ?? blob;
-			return blob;
 		} else {
-			// this directly encoded as a buffer, so we need to create a new blob object backed by a file, with the buffer
-			const blob = createBlobFromDirectBuffer(buffer);
-			if (blob.finished && promisedWrites) promisedWrites.push(blob.finished);
-			return blob;
+			storageInfoForBlob.set(blob, {
+				storageIndex: 0,
+				fileId: null,
+				storageBuffer: buffer,
+				contentBuffer: blobInfo[1],
+			});
 		}
+		return blob;
 	},
 	pack: function (blob) {
 		let storageInfo = storageInfoForBlob.get(blob);
@@ -733,13 +711,17 @@ addExtension({
 				throw new Error('Cannot use the same blob in two different records');
 			}
 		}
+		const options = { ...blob };
+		if (blob.type) options.type = blob.type;
+		if (blob.size !== undefined) options.size = blob.size;
+		delete options.finished;
 		if (storageInfo) {
 			if (storageInfo.storageBuffer) {
 				return storageInfo.storageBuffer;
 			}
 			if (storageInfo.contentBuffer?.length < FILE_STORAGE_THRESHOLD) {
-				headerView.setBigInt64(0, BigInt(storageInfo.contentBuffer.length));
-				return Buffer.concat([HEADER, storageInfo.contentBuffer]);
+				options.size = storageInfo.contentBuffer.length;
+				return pack([options, storageInfo.contentBuffer]);
 			}
 		}
 		if (encodeForStorageForRecordId !== undefined) {
@@ -748,7 +730,7 @@ addExtension({
 				throw new Error('Unable to save blob without file id');
 			}
 			storageInfo.recordId = encodeForStorageForRecordId;
-			return pack([storageInfo.storageIndex, storageInfo.fileId, {}]);
+			return pack([options, storageInfo.storageIndex, storageInfo.fileId]);
 		}
 		if (storageInfo) {
 			// if we want to encode as binary (necessary for replication), we need to encode as a buffer, not sure if we should always do that
@@ -760,13 +742,17 @@ addExtension({
 				if (buffer.length >= HEADER_SIZE) {
 					buffer.copy(HEADER, 0, 0, HEADER_SIZE);
 					const size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
-					if (size === buffer.length - HEADER_SIZE) return buffer;
+					if (size === buffer.length - HEADER_SIZE) {
+						// the file is there and complete, we can return the encoding
+						return Buffer.concat([pack([options]), buffer]);
+					}
 				}
+				// declare it as being fulfilled
 				if (promisedWrites) promisedWrites.push(blob.bytes());
 				else {
 					throw new Error('Incomplete blob');
 				}
-				return buffer;
+				return Buffer.alloc(0);
 			} catch (error) {
 				if (error.code === 'ENOENT' && promisedWrites) {
 					promisedWrites.push(blob.bytes());

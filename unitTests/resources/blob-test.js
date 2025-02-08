@@ -28,13 +28,16 @@ describe('Blob test', () => {
 	});
 	it('create a blob and save it', async () => {
 		let testString = 'this is a test string'.repeat(256);
-		let blob = await createBlob(Readable.from(testString));
+		let blob = await createBlob(Readable.from(testString), { type: 'text/plain' });
+		blob.extraProperty = 'this is an extra property';
 		assert(blob instanceof Blob);
 		await BlobTest.put({ id: 1, blob });
 		let record = await BlobTest.get(1);
 		assert.equal(record.id, 1);
 		let retrievedText = await record.blob.text();
 		assert.equal(retrievedText, testString);
+		assert.equal(record.blob.type, 'text/plain');
+		assert.equal(record.blob.extraProperty, 'this is an extra property');
 		testString += testString; // modify the string
 		assert.throws(() => {
 			// should not be able to use the blob in a different record
@@ -69,10 +72,11 @@ describe('Blob test', () => {
 	});
 	it('create a small blob from a stream and save it', async () => {
 		let random = randomBytes(250);
-		let blob = await createBlob(Readable.from(random), { size: 250 });
+		let blob = await createBlob(Readable.from(random), { size: 250, type: 'application/octet-stream' });
 		await BlobTest.put({ id: 1, blob });
 		let record = await BlobTest.get(1);
 		assert.equal(record.id, 1);
+		assert.equal(record.blob.type, 'application/octet-stream');
 		let retrievedBytes = await record.blob.bytes();
 		assert(random.equals(retrievedBytes));
 		assert.equal(record.blob.size, random.length);

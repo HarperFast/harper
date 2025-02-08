@@ -182,8 +182,8 @@ export class RecordEncoder extends Encoder {
 			} // else a normal entry
 			return options?.valueAsBuffer ? buffer : decodeFromDatabase(() => super.decode(buffer, options), this.rootStore);
 		} catch (error) {
-			error.message += ', data: ' + buffer.slice(0, 40).toString('hex');
-			throw error;
+			harper_logger.error('Error decoding record', error, 'data: ' + buffer.slice(0, 40).toString('hex'));
+			return null;
 		}
 	}
 }
