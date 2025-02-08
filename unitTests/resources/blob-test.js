@@ -2,7 +2,7 @@ require('../test_utils');
 const assert = require('assert');
 const { getMockLMDBPath } = require('../test_utils');
 const { table } = require('../../resources/databases');
-const { Readable } = require('node:stream');
+const { Readable, PassThrough } = require('node:stream');
 const { setAuditRetention } = require('../../resources/auditStore');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
 const { getFilePathForBlob, setDeletionDelay, encodeBlobsAsBuffers } = require('../../resources/blob');
@@ -194,6 +194,41 @@ describe('Blob test', () => {
 		eventError = null;
 
 		let record = await BlobTest.get(5);
+		record.blob.on('error', (err) => {
+			eventError = err;
+		});
+		try {
+			for await (let entry of record.blob.stream()) {
+			}
+		} catch (err) {
+			thrownError = err;
+		}
+		assert(thrownError);
+		assert(eventError);
+	});
+	it('Error before streaming', async () => {
+		let pt = new PassThrough();
+		pt.on('error', () => {}); // ignore the uncaught error
+		pt.destroy(new Error('test error'));
+		let blob = createBlob(pt);
+		await BlobTest.put({ id: 6, blob });
+		let eventError, thrownError;
+		blob.on('error', (err) => {
+			eventError = err;
+		});
+
+		try {
+			for await (let entry of blob.stream()) {
+			}
+		} catch (err) {
+			thrownError = err;
+		}
+		assert(thrownError);
+		assert(eventError);
+		thrownError = null;
+		eventError = null;
+
+		let record = await BlobTest.get(6);
 		record.blob.on('error', (err) => {
 			eventError = err;
 		});
