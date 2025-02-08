@@ -45,6 +45,8 @@ type StorageInfo = {
 	storageBuffer?: Buffer;
 	compress?: boolean;
 	flush?: boolean;
+	start?: number;
+	end?: number;
 };
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
 // We want to keep the file path private (but accessible to the extension)
@@ -105,7 +107,13 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 
 	bytes(): Promise<Buffer> {
 		const storageInfo = storageInfoForBlob.get(this);
-		if (storageInfo.contentBuffer) return Promise.resolve(storageInfo.contentBuffer);
+		let { start, end, contentBuffer } = storageInfo;
+		if (contentBuffer) {
+			if (end != undefined || start != undefined) {
+				contentBuffer = contentBuffer.subarray(start ?? 0, end ?? storageInfo.contentBuffer.length);
+			}
+			return Promise.resolve(contentBuffer);
+		}
 		const filePath = getFilePath(storageInfo);
 		let writeFinished: boolean;
 		const readContents = async () => {
@@ -116,6 +124,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 				if (rawBytes.length >= HEADER_SIZE) {
 					rawBytes.copy(HEADER, 0, 0, HEADER_SIZE);
 					size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
+					if (size < end) size = end;
 					if (size < UNKNOWN_SIZE) this.size = size;
 				}
 			} catch (error) {
@@ -142,6 +151,9 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 						}
 					});
 				}
+				if (end != undefined || start != undefined) {
+					rawBytes = rawBytes.subarray(start ?? 0, end ?? rawBytes.length);
+				}
 				return rawBytes;
 			}
 			if (rawBytes[1] === DEFLATE_TYPE) {
@@ -167,11 +179,14 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 
 	stream(): ReadableStream {
 		const storageInfo = storageInfoForBlob.get(this);
-		const buffer = storageInfo.contentBuffer;
-		if (buffer) {
+		let { contentBuffer, start, end } = storageInfo;
+		if (contentBuffer) {
+			if (end != undefined || start != undefined) {
+				contentBuffer = contentBuffer.subarray(start ?? 0, end ?? storageInfo.contentBuffer.length);
+			}
 			return new ReadableStream({
 				pull(controller) {
-					controller.enqueue(buffer);
+					controller.enqueue(contentBuffer);
 					controller.close();
 				},
 			});
@@ -280,6 +295,22 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 						} else {
 							buffer = buffer.subarray(0, bytesRead);
 						}
+						if (start != undefined || end != undefined) {
+							if (start && totalContentRead < start) {
+								// we are before the start of the slice, so we need to read more
+								position += bytesRead;
+								return readMore(resolve, reject);
+							}
+							if (end && totalContentRead >= end) {
+								// we are past or reached the end of the slice, so we have reached the end, indicate
+								if (totalContentRead > end) buffer = buffer.subarray(0, end - position);
+								totalContentRead = size = end;
+							}
+							if (start && start > position) {
+								// we need to skip ahead to the start of the slice
+								buffer = buffer.subarray(start - position);
+							}
+						}
 						position += bytesRead;
 						try {
 							controller.enqueue(buffer);
@@ -316,8 +347,30 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 			return isBeingWritten;
 		}
 	}
-	slice() {
-		throw new Error('Not implemented');
+	slice(start: number, end: number) {
+		const sourceStorageInfo = storageInfoForBlob.get(this);
+		const slicedBlob = new FileBackedBlob();
+		if (sourceStorageInfo?.fileId) {
+			const slicedStorageInfo = {
+				...sourceStorageInfo,
+				start,
+				end,
+			};
+			storageInfoForBlob.set(slicedBlob, slicedStorageInfo);
+			if (this.size != undefined)
+				slicedBlob.size = (end == undefined ? this.size : Math.min(end, this.size)) - (start ?? 0);
+		} else if (sourceStorageInfo?.contentBuffer && !sourceStorageInfo.storageBuffer) {
+			const slicedStorageInfo = {
+				...sourceStorageInfo,
+				contentBuffer: sourceStorageInfo.contentBuffer.subarray(start, end),
+			};
+			storageInfoForBlob.set(slicedBlob, slicedStorageInfo);
+			slicedBlob.size = (end ?? this.size) - start;
+		} else {
+			// TODO: Implement this
+			throw new Error('Can not slice a streaming blob that is not backed by a file');
+		}
+		return slicedBlob;
 	}
 }
 let deletion_delay = 500;
@@ -797,7 +850,7 @@ function polyfillBlob() {
 		get size() {
 			return this.content.length;
 		}
-		slice() {
+		slice(): Blob {
 			throw new Error('Not implemented');
 		}
 		bytes() {

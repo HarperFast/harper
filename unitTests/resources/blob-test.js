@@ -49,6 +49,8 @@ describe('Blob test', () => {
 		assert.equal(record.id, 1);
 		retrievedText = await record.blob.text();
 		assert.equal(retrievedText, testString);
+		let slicedText = await record.blob.slice(0, 100).text();
+		assert.equal(slicedText, testString.slice(0, 100));
 	});
 	it('create a blob from a buffer and save it', async () => {
 		let random = randomBytes(25000);
@@ -59,6 +61,10 @@ describe('Blob test', () => {
 		let retrievedBytes = await record.blob.bytes();
 		assert(retrievedBytes.equals(random));
 		assert.equal(record.blob.size, random.length);
+		let sliced = record.blob.slice(300, 400);
+		assert.equal(sliced.size, 100);
+		retrievedBytes = await sliced.bytes();
+		assert(retrievedBytes.equals(random.slice(300, 400)));
 	});
 	it('create a small blob from a buffer and save it', async () => {
 		let random = randomBytes(250);
@@ -92,6 +98,16 @@ describe('Blob test', () => {
 		assert.equal(retrievedBytes.length, 0);
 		assert.equal(record.blob.size, 0);
 		assert.equal(await streamResults, '');
+	});
+	it('save a native Blob and retrieve the data', async () => {
+		let source = Buffer.alloc(25000, 7);
+		let blob = new Blob([source]);
+		await BlobTest.put({ id: 1, blob });
+		let record = await BlobTest.get(1);
+		assert.equal(record.id, 1);
+		let retrievedBytes = await record.blob.bytes();
+		assert(source.equals(retrievedBytes));
+		assert.equal(record.blob.size, source.length);
 	});
 	it('Save a blob and delete it', async () => {
 		setAuditRetention(0.01); // 10 ms audit log retention
@@ -148,6 +164,8 @@ describe('Blob test', () => {
 		assert.equal(record.id, 1);
 		let stream = record.blob.stream(); // we are going to concurrently get the stream and the text to test both
 		let streamResults = streamToBuffer(stream);
+		let slicedStream = record.blob.slice(100, 200).stream(); // we are going to concurrently get the stream and the
+		let slicedStreamResults = streamToBuffer(slicedStream);
 		let packResult = encodeBlobsAsBuffers(() => {
 			return pack(record);
 		});
@@ -155,8 +173,15 @@ describe('Blob test', () => {
 		let retrievedText = await record.blob.text();
 		assert.equal(retrievedText, expectedResults);
 		assert.equal(await streamResults, expectedResults);
+		assert.equal(await slicedStreamResults, expectedResults.slice(100, 200));
 		assert.equal(record.blob.size, expectedResults.length);
 		assert((await packResult).toString().includes(testString));
+		slicedStream = record.blob.slice(6000).stream(); // we are going to concurrently get the stream and the
+		slicedStreamResults = streamToBuffer(slicedStream);
+		assert.equal(await slicedStreamResults, expectedResults.slice(6000));
+		slicedStream = record.blob.slice(1000, 11000).stream(); // we are going to concurrently get the stream and the
+		slicedStreamResults = streamToBuffer(slicedStream);
+		assert.equal(await slicedStreamResults, expectedResults.slice(1000, 11000));
 	});
 	it('Abort reading a blob', async () => {
 		let testString = 'this is a test string for deletion'.repeat(800);
@@ -185,7 +210,7 @@ describe('Blob test', () => {
 		blob.on('error', (err) => {
 			eventError = err;
 		});
-
+		console.log('testing stream of aborted blob');
 		try {
 			for await (let entry of blob.stream()) {
 			}
@@ -196,7 +221,7 @@ describe('Blob test', () => {
 		assert(eventError);
 		thrownError = null;
 		eventError = null;
-
+		console.log('testing retrieval of aborted blob');
 		let record = await BlobTest.get(5);
 		record.blob.on('error', (err) => {
 			eventError = err;
