@@ -5,6 +5,7 @@
  * - The first 2 bytes indicate the type of storage:
  * 		- 0: Uncompressed
  * 		- 1: Compressed with deflate
+ * 	  - 0xff: Error state (followed by error message). A record can be saved prior to an error in saving a blob, so we must be capable of tracking and even replicating that state
  * - The next 6 bytes are the size of the content
  *   - While the file is being written, 0xffffffffffff is used as a placeholder to indicate that the file is not finished being written (this nicely matches the logic that if the written content size is less than the indicated content size, it is not finished)
  *   - Note that for compressed data, the size is the uncompressed size, and the compressed size in the file
@@ -47,6 +48,7 @@ type StorageInfo = {
 	flush?: boolean;
 	start?: number;
 	end?: number;
+	saving?: Promise<void>;
 };
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
 // We want to keep the file path private (but accessible to the extension)
@@ -75,6 +77,11 @@ InstanceOfBlobWithNoConstructor.prototype = Blob.prototype;
 // @ts-ignore
 /**
  * A blob that is backed by a file, and can be saved to the database as a reference
+ * Note that this is used instead of the native Blob class for a few reasons:
+ * 1. This has the built-in functionality for reading from the file-based storage
+ * 2. This support for streams and asynchronous access to data that may not have a known size ahead of time
+ * 3. This also avoids the Blob constructor which is expensive due to the transferred setup
+ * Harper still supports saving native Blobs, but when they blobs are retrieved from storage, they always use this class.
  */
 class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 	type = '';
@@ -347,9 +354,9 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 			return isBeingWritten;
 		}
 	}
-	slice(start: number, end: number) {
+	slice(start: number, end: number, type?: string): Blob {
 		const sourceStorageInfo = storageInfoForBlob.get(this);
-		const slicedBlob = new FileBackedBlob();
+		const slicedBlob = new FileBackedBlob(type && { type });
 		if (sourceStorageInfo?.fileId) {
 			const slicedStorageInfo = {
 				...sourceStorageInfo,
@@ -371,6 +378,11 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 			throw new Error('Can not slice a streaming blob that is not backed by a file');
 		}
 		return slicedBlob;
+	}
+	save(targetTable: any): Promise<void> {
+		const store = targetTable?.primaryStore?.rootStore;
+		if (!store) throw new Error('No target table specified');
+		return saveBlob(this).saving ?? Promise.resolve();
 	}
 }
 let deletion_delay = 500;
@@ -426,6 +438,7 @@ function saveBlob(blob: FileBackedBlob) {
 		storageInfo = { storageIndex: 0, fileId: null, store: currentStore };
 		storageInfoForBlob.set(blob, storageInfo);
 	} else {
+		if (storageInfo.saving) return storageInfo;
 		storageInfo.store = currentStore;
 	}
 
@@ -441,7 +454,7 @@ function saveBlob(blob: FileBackedBlob) {
  */
 function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageInfo: StorageInfo): Blob {
 	const { filePath, fileId, store, compress, flush } = storageInfo;
-	blob.finished = new Promise((resolve, reject) => {
+	storageInfo.saving = new Promise((resolve, reject) => {
 		// pipe the stream to the file
 		const lockKey = fileId + ':blob';
 		if (!store.attemptLock(lockKey, 0)) {
@@ -567,9 +580,7 @@ function writeBlobWithBuffer(blob: Blob, storageInfo: StorageInfo): Blob {
 	const size = buffer.length;
 	if (size < FILE_STORAGE_THRESHOLD) {
 		// if the buffer is small enough, just store it in memory
-		headerView.setBigInt64(0, BigInt(size));
-		blob.storageInfo = Buffer.concat([HEADER, buffer]);
-		return blob;
+		return;
 	}
 	blob.size = size;
 	return writeBlobWithStream(blob, Readable.from([buffer]), storageInfo);
@@ -767,7 +778,6 @@ addExtension({
 		const options = { ...blob };
 		if (blob.type) options.type = blob.type;
 		if (blob.size !== undefined) options.size = blob.size;
-		delete options.finished;
 		if (storageInfo) {
 			if (storageInfo.storageBuffer) {
 				return storageInfo.storageBuffer;

@@ -66,6 +66,17 @@ describe('Blob test', () => {
 		retrievedBytes = await sliced.bytes();
 		assert(retrievedBytes.equals(random.slice(300, 400)));
 	});
+	it('create a blob from a buffer and save it before committing it', async () => {
+		let random = randomBytes(25000);
+		let blob = createBlob(random);
+		await blob.save(BlobTest);
+		await BlobTest.put({ id: 1, blob });
+		let record = await BlobTest.get(1);
+		assert.equal(record.id, 1);
+		let retrievedBytes = await record.blob.bytes();
+		assert(retrievedBytes.equals(random));
+		assert.equal(record.blob.size, random.length);
+	});
 	it('create a small blob from a buffer and save it', async () => {
 		let random = randomBytes(250);
 		let blob = await createBlob(random);
@@ -213,6 +224,7 @@ describe('Blob test', () => {
 		console.log('testing stream of aborted blob');
 		try {
 			for await (let entry of blob.stream()) {
+				console.log('got entry');
 			}
 		} catch (err) {
 			thrownError = err;
