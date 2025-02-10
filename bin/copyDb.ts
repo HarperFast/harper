@@ -21,9 +21,12 @@ export async function compactOnStart() {
 	const compacted_db = new Map();
 	const databases = getDatabases();
 
+	updateConfigValue(CONFIG_PARAMS.STORAGE_COMPACTONSTART, false); // don't run this again, and update it before starting so that it fails we don't just keep retrying over and over
+
 	try {
 		for (const database_name in databases) {
 			if (database_name === 'system') continue;
+			if (database_name.endsWith('-copy')) continue; // don't copy the copy
 			let db_path;
 			for (const table_name in databases[database_name]) {
 				db_path = databases[database_name][table_name].primaryStore.path;
@@ -112,8 +115,6 @@ export async function compactOnStart() {
 		console.log('Removing backup', backup_dest);
 		await remove(backup_dest);
 	}
-
-	updateConfigValue(CONFIG_PARAMS.STORAGE_COMPACTONSTART, false);
 }
 
 async function getTotalDBRecordCount(database: string) {
