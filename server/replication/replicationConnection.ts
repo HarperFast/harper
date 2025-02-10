@@ -1275,7 +1275,8 @@ export function replicateOverWS(ws, options, authorization) {
 								size: stream.expectedSize,
 							});
 
-							const finished = local_blob.finished;
+							// start the save immediately
+							const finished = local_blob.save({ primaryStore: table_subscription_to_replicator.auditStore }); // need to pass in the table, but this is table-like enough for it to get the root store
 							if (finished) {
 								finished.blobId = blob_id;
 								outstanding_blobs_to_finish.push(finished);
