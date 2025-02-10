@@ -273,8 +273,8 @@ function storeTableSizeMetrics(analyticsTable: Table, dbName: string, tables: Ta
 			table: tableName,
 			size: tableSize,
 		};
-		log.debug?.(`table ${fullTableName} size metric: ${JSON.stringify(metric)}`);
 		storeMetric(analyticsTable, 'table-size', metric);
+		log.trace?.(`table ${fullTableName} size metric: ${JSON.stringify(metric)}`);
 		dbUsedSize += tableSize;
 	}
 	return dbUsedSize;
@@ -294,8 +294,8 @@ function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 			free: dbFree,
 			audit: dbAuditSize,
 		};
-		log.debug?.(`database ${db} size metric: ${JSON.stringify(metric)}`);
 		storeMetric(analyticsTable, 'database-size', metric);
+		log.trace?.(`database ${db} size metric: ${JSON.stringify(metric)}`);
 	}
 }
 
@@ -307,8 +307,8 @@ function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
 			database: db,
 			...storageStats,
 		};
-		log.debug?.(`db ${db} storage volume metrics: ${JSON.stringify(metric)}`);
 		storeMetric(analyticsTable, 'storage-volume', metric);
+		log.trace?.(`db ${db} storage volume metrics: ${JSON.stringify(metric)}`);
 	}
 }
 
