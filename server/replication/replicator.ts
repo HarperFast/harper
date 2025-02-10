@@ -143,7 +143,7 @@ export function start(options) {
 							// make sure we use the overriden tls.createSecureContext
 							// create a new security context with the extra CAs
 							{ ...context.options, ca };
-						context.replicationContext = tls.createSecureContext(tls_options);
+						context.updatedContext = tls.createSecureContext(tls_options);
 					} catch (error) {
 						logger.error('Error creating replication TLS config', error);
 					}

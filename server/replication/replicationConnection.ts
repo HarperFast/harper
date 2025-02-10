@@ -111,7 +111,6 @@ export async function createWebSocket(
 		noDelay: true, // we want to send the data immediately
 		// we set this very high (2x times the v22 default) because it performs better
 		highWaterMark: 128 * 1024,
-		ALPNProtocols: ['http/1.1', 'harperdb-replication'],
 		rejectUnauthorized: rejectUnauthorized !== false,
 		secureContext: undefined,
 	};
