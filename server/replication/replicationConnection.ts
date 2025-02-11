@@ -581,8 +581,10 @@ export function replicateOverWS(ws, options, authorization) {
 						}
 						stream.lastChunk = Date.now();
 						if (finished) {
-							if (error) stream.destroy(new Error('Blob error: ' + error));
-							else stream.end(message[2]);
+							if (error) {
+								stream.on('error', () => {}); // don't treat this as an uncaught error
+								stream.destroy(new Error('Blob error: ' + error));
+							} else stream.end(message[2]);
 							if (stream.connectedToBlob) blobs_in_flight.delete(fileId);
 						} else stream.write(message[2]);
 						break;

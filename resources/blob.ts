@@ -55,6 +55,7 @@ const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will 
 const HEADER_SIZE = 8;
 const UNCOMPRESSED_TYPE = 0;
 const DEFLATE_TYPE = 1;
+const ERROR_TYPE = 0xff;
 const DEFAULT_HEADER = new Uint8Array([0, UNCOMPRESSED_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const COMPRESS_HEADER = new Uint8Array([0, DEFLATE_TYPE, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff]);
 const UNKNOWN_SIZE = 0xffffffffffff;
@@ -130,7 +131,12 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 				rawBytes = await readFile(filePath);
 				if (rawBytes.length >= HEADER_SIZE) {
 					rawBytes.copy(HEADER, 0, 0, HEADER_SIZE);
-					size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
+					const headerValue = headerView.getBigUint64(0);
+					if (Number(headerValue >> 48n) === ERROR_TYPE) {
+						throw new Error('Error in blob: ' + buffer.subarray(HEADER_SIZE));
+					}
+
+					size = Number(headerValue & 0xffffffffffffn);
 					if (size < end) size = end;
 					if (size < UNKNOWN_SIZE) this.size = size;
 				}
@@ -267,6 +273,9 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 							}
 							buffer.copy(HEADER, 0, 0, HEADER_SIZE);
 							const headerValue = headerView.getBigUint64(0);
+							if (Number(headerValue >> 48n) === ERROR_TYPE) {
+								return onError(new Error('Error in blob: ' + buffer.subarray(HEADER_SIZE)));
+							}
 							size = Number(headerValue & 0xffffffffffffn);
 							if (size < UNKNOWN_SIZE) blob.size = size;
 							buffer = buffer.subarray(HEADER_SIZE, bytesRead);
@@ -461,7 +470,12 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 			throw new Error(`Unable to get lock for blob file ${fileId}`);
 		}
 		const writeStream = createWriteStream(filePath, { autoClose: false, flags: 'w' });
-
+		if (stream.errored) {
+			// if starts in an error state, record that immediately
+			const error = Buffer.from(stream.errored.toString());
+			writeStream.end(Buffer.concat([createHeader(BigInt(error.length) + 0xff000000000000n), error]));
+			return;
+		}
 		let wroteSize = false;
 		if (blob.size !== undefined) {
 			// if we know the size, we can write the header immediately
@@ -478,7 +492,7 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 			stream.pipe(writeStream);
 		}
 		stream.on('error', finished);
-		function createHeader(size: number): Uint8Array {
+		function createHeader(size: number | bigint): Uint8Array {
 			let headerValue = BigInt(size);
 			const header = new Uint8Array(HEADER_SIZE);
 			const headerView = new DataView(header.buffer);
