@@ -65,7 +65,7 @@ async function installAllRootModules(ignore_scripts = false, working_dir = env.g
 	}
 
 	await runCommand(
-		ignore_scripts ? 'npm install --force --ignore-scripts' : 'npm install --force',
+		ignore_scripts ? 'npm install --force --ignore-scripts --no-bin-links' : 'npm install --force --no-bin-links',
 		working_dir,
 		env_vars
 	);
