@@ -59,11 +59,10 @@ async function installAllRootModules(ignore_scripts = false, working_dir = env.g
 			fs.unlinkSync(harper_module);
 		}
 	} catch (err) {
-		if (err.code !== 'ENOENT'){
+		if (err.code !== 'ENOENT') {
 			harper_logger.error('Error removing symlink:', err);
 		}
 	}
-	
 
 	await runCommand(
 		ignore_scripts ? 'npm install --force --ignore-scripts' : 'npm install --force',
