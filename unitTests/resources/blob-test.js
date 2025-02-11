@@ -219,6 +219,7 @@ describe('Blob test', () => {
 		await BlobTest.put({ id: 5, blob });
 		let eventError, thrownError;
 		blob.on('error', (err) => {
+			console.log('received error event');
 			eventError = err;
 		});
 		console.log('testing stream of aborted blob');

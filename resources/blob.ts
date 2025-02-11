@@ -687,12 +687,15 @@ export function encodeBlobsAsBuffers<T>(callback: () => T): Promise<T> {
 	let result: any;
 	try {
 		result = callback();
-	} finally {
-		const finished = promisedWrites.length < 2 ? promisedWrites[0] : Promise.all(promisedWrites);
+	} catch (error) {
+		// if anything throws, we want to make sure we clear the promise aggregator
 		promisedWrites = undefined;
-		// eslint-disable-next-line no-unsafe-finally
-		return finished ? finished.then(() => callback()) : result;
+		throw error;
 	}
+	const finished = promisedWrites.length < 2 ? promisedWrites[0] : Promise.all(promisedWrites);
+	promisedWrites = undefined;
+	// eslint-disable-next-line no-unsafe-finally
+	return finished ? finished.then(() => callback()) : result;
 }
 
 /**
@@ -703,14 +706,18 @@ export function decodeBlobsWithWrites(callback: () => void, blobCallback?: (blob
 	try {
 		promisedWrites = [];
 		currentBlobCallback = blobCallback;
-		return callback();
-	} finally {
+		callback();
+	} catch (error) {
+		// if anything throws, we want to make sure we clear the promise aggregator
 		currentBlobCallback = undefined;
-		const finished = promisedWrites.length < 2 ? promisedWrites[0] : Promise.all(promisedWrites);
 		promisedWrites = undefined;
-		// eslint-disable-next-line no-unsafe-finally
-		return finished;
+		throw error;
 	}
+	currentBlobCallback = undefined;
+	const finished = promisedWrites.length < 2 ? promisedWrites[0] : Promise.all(promisedWrites);
+	promisedWrites = undefined;
+	// eslint-disable-next-line no-unsafe-finally
+	return finished;
 }
 
 /**
