@@ -116,7 +116,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 		const storageInfo = storageInfoForBlob.get(this);
 		let { start, end, contentBuffer } = storageInfo;
 		if (contentBuffer) {
-			if (end != undefined || start != undefined) {
+			if (end !== undefined || start !== undefined) {
 				contentBuffer = contentBuffer.subarray(start ?? 0, end ?? storageInfo.contentBuffer.length);
 			}
 			return Promise.resolve(contentBuffer);
@@ -302,7 +302,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 						} else {
 							buffer = buffer.subarray(0, bytesRead);
 						}
-						if (start != undefined || end != undefined) {
+						if (start !== undefined || end !== undefined) {
 							if (start && totalContentRead < start) {
 								// we are before the start of the slice, so we need to read more
 								position += bytesRead;
