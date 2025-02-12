@@ -101,7 +101,6 @@ const TRUSTED_RESOURCE_LOADERS = {
 
 const DEFAULT_CONFIG = {
 	rest: true,
-	graphql: true,
 	graphqlSchema: {
 		files: '*.graphql',
 		//path: '/', // from root path by default, like http://server/query
