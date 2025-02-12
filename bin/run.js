@@ -117,7 +117,7 @@ async function initialize(called_by_install = false, called_by_main = false) {
 
 	const pidFile = path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE);
 	const hdbPid = readPidFile(pidFile);
-	if (hdbPid && isProcessRunning(hdbPid)) {
+	if (hdbPid && hdbPid !== 1 && isProcessRunning(hdbPid)) {
 		if (!service_clustering) {
 			console.error(`Error: HarperDB is already running (pid: ${hdbPid})`);
 			process.exit(4);
