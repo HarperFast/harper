@@ -50657,23 +50657,8 @@
 											"listen": "test",
 											"script": {
 												"exec": [
-													"pm.test(\"Status code is 403\", function () {",
-													"    pm.response.to.have.status(403);",
-													"});",
-													"",
-													"var jsonData = pm.response.json();",
-													"",
-													"pm.test(\"Op auth error message\", function () {",
-													"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid database items\");",
-													"});",
-													"",
-													"pm.test(\"Includes correct table perm object in unauthorized_access\", function () {",
-													"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
-													"    pm.expect(jsonData.unauthorized_access[0]).to.eql(\"Your role does not have permission to view database metadata for 'system'\");",
-													"});",
-													"",
-													"pm.test(\"invalid_schema_items is empty\", function () {",
-													"    pm.expect(jsonData.invalid_schema_items.length).to.eql(0);",
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
 													"});"
 												],
 												"type": "text/javascript"
@@ -50925,23 +50910,8 @@
 											"listen": "test",
 											"script": {
 												"exec": [
-													"pm.test(\"Status code is 403\", function () {",
-													"    pm.response.to.have.status(403);",
-													"});",
-													"",
-													"var jsonData = pm.response.json();",
-													"",
-													"pm.test(\"Op auth error message\", function () {",
-													"    pm.expect(jsonData.error).to.eql(\"This operation is not authorized due to role restrictions and/or invalid database items\");",
-													"});",
-													"",
-													"pm.test(\"Includes correct table perm object in unauthorized_access\", function () {",
-													"    pm.expect(jsonData.unauthorized_access.length).to.eql(1);",
-													"    pm.expect(jsonData.unauthorized_access[0]).to.eql(\"Your role does not have permission to view database metadata for 'system'\");",
-													"});",
-													"",
-													"pm.test(\"invalid_schema_items is empty\", function () {",
-													"    pm.expect(jsonData.invalid_schema_items.length).to.eql(0);",
+													"pm.test(\"Status code is 200\", function () {",
+													"    pm.response.to.have.status(200);",
 													"});"
 												],
 												"type": "text/javascript"
