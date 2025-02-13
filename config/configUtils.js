@@ -128,6 +128,7 @@ function createConfigFile(args, skip_fs_validation = false) {
 	const hdb_root = config_doc.getIn(['rootPath']);
 	const config_file_path = path.join(hdb_root, hdb_terms.HDB_CONFIG_FILE);
 	fs.createFileSync(config_file_path);
+	if (config_doc.errors?.length > 0) throw new Error(`Error parsing harperdb-config.yaml ${config_doc.errors}`);
 	fs.writeFileSync(config_file_path, String(config_doc));
 	logger.trace(`Config file written to ${config_file_path}`);
 }
@@ -329,6 +330,7 @@ function checkForUpdatedConfig(config_doc, config_file_path) {
 
 	if (update_file) {
 		logger.trace('Updating config file with missing config params');
+		if (config_doc.errors?.length > 0) throw new Error(`Error parsing harperdb-config.yaml ${config_doc.errors}`);
 		fs.writeFileSync(config_file_path, String(config_doc));
 	}
 }
@@ -541,6 +543,7 @@ function updateConfigValue(
 		backupConfigFile(old_config_path, hdb_root);
 	}
 
+	if (config_doc.errors?.length > 0) throw new Error(`Error parsing harperdb-config.yaml ${config_doc.errors}`);
 	fs.writeFileSync(config_file_location, String(config_doc));
 	if (update_config_obj) {
 		flat_config_obj = flattenConfig(config_doc.toJSON());
@@ -810,6 +813,7 @@ async function addConfig(top_level_element, values) {
 	config_doc.hasIn([top_level_element])
 		? config_doc.setIn([top_level_element], values)
 		: config_doc.addIn([top_level_element], values);
+	if (config_doc.errors?.length > 0) throw new Error(`Error parsing harperdb-config.yaml ${config_doc.errors}`);
 	await fs.writeFile(getConfigFilePath(), String(config_doc));
 }
 
