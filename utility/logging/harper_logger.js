@@ -9,7 +9,7 @@ const PropertiesReader = require('properties-reader');
 const hdb_terms = require('../hdbTerms');
 const assignCMDENVVariables = require('../assignCmdEnvVariables');
 const os = require('os');
-const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
+const { PACKAGE_ROOT } = require('../../utility/packageUtils');
 const { _assignPackageExport } = require('../../globals');
 // store the native write function so we can call it after we write to the log file (and store it on process.stdout
 // because unit tests will create multiple instances of this module)

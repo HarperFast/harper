@@ -13,10 +13,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const logger = require('../utility/logging/harper_logger');
 const cli_operations = require('./cliOperations');
-const version = require('./version');
+const { packageJson, PACKAGE_ROOT } = require('../utility/packageUtils');
 const check_node = require('../launchServiceScripts/utility/checkNodeVersion');
 const hdb_terms = require('../utility/hdbTerms');
-const { SERVICE_ACTIONS_ENUM, PACKAGE_ROOT } = hdb_terms;
+const { SERVICE_ACTIONS_ENUM } = hdb_terms;
 
 const HELP = `
 Usage: harperdb [command]
@@ -87,7 +87,7 @@ async function harperdb() {
 		case SERVICE_ACTIONS_ENUM.RESTART:
 			return require('./restart').restart({});
 		case SERVICE_ACTIONS_ENUM.VERSION:
-			return version.version();
+			return packageJson.version;
 		case SERVICE_ACTIONS_ENUM.UPGRADE:
 			logger.setLogLevel(hdb_terms.LOG_LEVELS.INFO);
 			// The require is here to better control the flow of imports when this module is called.

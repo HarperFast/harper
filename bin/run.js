@@ -4,15 +4,16 @@ const env = require('../utility/environment/environmentManager');
 env.initSync();
 
 // This unused restart require is here so that main thread loads ITC event listener defined in restart file. Do not remove.
-const restart = require('./restart');
+require('./restart');
 const terms = require('../utility/hdbTerms');
+const { CONFIG_PARAMS } = terms;
 const hdb_logger = require('../utility/logging/harper_logger');
 const fs = require('fs-extra');
 const path = require('path');
 const check_jwt_tokens = require('../utility/install/checkJWTTokensExist');
 const { install } = require('../utility/install/installer');
 const chalk = require('chalk');
-const pjson = require('../package.json');
+const { packageJson, PACKAGE_ROOT } = require('../utility/packageUtils');
 const hdb_utils = require('../utility/common_utils');
 const config_utils = require('../config/configUtils');
 const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
@@ -22,12 +23,8 @@ const log_rotator = require('../utility/logging/logRotator');
 const { compactOnStart } = require('./copyDb');
 const minimist = require('minimist');
 const keys = require('../security/keys');
-const { PACKAGE_ROOT, CONFIG_PARAMS } = require('../utility/hdbTerms');
 const {
 	startHTTPThreads,
-	startSocketServer,
-	mostIdleRouting,
-	remoteAffinityRouting,
 } = require('../server/threads/socketRouter');
 
 const hdbInfoController = require('../dataLayer/hdbInfoController');
@@ -228,7 +225,7 @@ async function main(called_by_install = false) {
 function started() {
 	// Console log Harper dog logo
 	hdb_logger.suppressLogging(() => {
-		console.log(chalk.magenta(`HarperDB ${pjson.version} successfully started`));
+		console.log(chalk.magenta(`HarperDB ${packageJson.version} successfully started`));
 	});
 	hdb_logger.notify(HDB_STARTED);
 }

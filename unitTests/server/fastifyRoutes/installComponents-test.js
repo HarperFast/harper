@@ -60,7 +60,7 @@ describe('Test installApps module', () => {
 
 	before(() => {
 		env_mgr.setProperty('rootPath', 'unit-test');
-		install_components.__set__('hdb_terms.PACKAGE_ROOT', 'comps/unit/tests');
+		install_components.__set__('PACKAGE_ROOT', 'comps/unit/tests');
 		read_json_stub = sandbox.stub(fs, 'readJsonSync').returns(fake_installed_package_json);
 		get_config_stub = sandbox.stub(config_utils, 'getConfiguration').returns(fake_components);
 		install_root_mod_stub = sandbox.stub(npm_utils, 'installAllRootModules');

@@ -3,6 +3,7 @@
 const { mkdirpSync, copySync } = require('fs-extra');
 const path = require('path');
 const terms = require('../utility/hdbTerms');
+const { PACKAGE_ROOT } = require('../utility/packageUtils');
 const hdb_logger = require('../utility/logging/harper_logger');
 const bridge = require('../dataLayer/harperBridge/harperBridge');
 const system_schema = require('../json/systemSchema');
@@ -20,7 +21,7 @@ async function mountHdb(hdb_path) {
 	makeDirectory(path.join(hdb_path, 'log'));
 	makeDirectory(path.join(hdb_path, 'database'));
 	makeDirectory(path.join(hdb_path, 'components'));
-	copySync(path.resolve(terms.PACKAGE_ROOT, './utility/install/README.md'), path.join(hdb_path, 'README.md'));
+	copySync(path.resolve(PACKAGE_ROOT, './utility/install/README.md'), path.join(hdb_path, 'README.md'));
 
 	await createLMDBTables();
 }

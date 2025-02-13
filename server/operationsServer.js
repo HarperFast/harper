@@ -4,32 +4,26 @@ const cluster = require('cluster');
 const env = require('../utility/environment/environmentManager');
 env.initSync();
 const terms = require('../utility/hdbTerms');
-const util = require('util');
 const harper_logger = require('../utility/logging/harper_logger');
-const fs = require('fs');
 const fastify = require('fastify');
 
-const pjson = require('../package.json');
 const fastify_cors = require('@fastify/cors');
 const fastify_compress = require('@fastify/compress');
 const fastify_static = require('@fastify/static');
 const request_time_plugin = require('./serverHelpers/requestTimePlugin');
 const guidePath = require('path');
-const { PACKAGE_ROOT } = require('../utility/hdbTerms');
+const { PACKAGE_ROOT } = require('../utility/packageUtils');
 const global_schema = require('../utility/globalSchema');
 const common_utils = require('../utility/common_utils');
 const user_schema = require('../security/user');
 const hdb_license = require('../utility/registration/hdb_license');
 const { server: server_registration } = require('../server/Server');
-const { node_request_key } = require('./serverHelpers/Request');
-
 const {
 	authHandler,
 	handlePostRequest,
 	serverErrorHandler,
 	reqBodyValidationHandler,
 } = require('./serverHelpers/serverHandlers');
-const net = require('net');
 const { registerContentHandlers } = require('./serverHelpers/contentTypes');
 
 const DEFAULT_HEADERS_TIMEOUT = 60000;

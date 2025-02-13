@@ -7,7 +7,7 @@ import { IterableEventQueue } from '../../resources/IterableEventQueue';
 import { setSubscription as natsSetSubscription } from './natsIngestService';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility';
 import env from '../../utility/environment/environmentManager';
-import hdb_terms from '../../utility/hdbTerms';
+import * as hdb_terms from '../../utility/hdbTerms';
 import * as harper_logger from '../../utility/logging/harper_logger';
 import { Context } from '../../resources/ResourceInterface';
 

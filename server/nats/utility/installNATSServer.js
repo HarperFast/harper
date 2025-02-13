@@ -11,15 +11,13 @@ const util = require('util');
 const child_process = require('child_process');
 const { platform } = require('os');
 const exec = util.promisify(child_process.exec);
-const { PACKAGE_ROOT } = require('../../../utility/hdbTerms');
+const { packageJson, PACKAGE_ROOT } = require('../../../utility/packageUtils');
 
 const DEPENDENCIES_PATH = path.join(PACKAGE_ROOT, 'dependencies');
 const ZIP_PATH = path.join(DEPENDENCIES_PATH, nats_terms.NATS_SERVER_ZIP);
 
-let pkg_json = require('../../../package.json');
-
-const REQUIRED_GO_VERSION = pkg_json.engines['go-lang'];
-const REQUIRED_NATS_SERVER_VERSION = pkg_json.engines[nats_terms.NATS_SERVER_NAME];
+const REQUIRED_GO_VERSION = packageJson.engines['go-lang'];
+const REQUIRED_NATS_SERVER_VERSION = packageJson.engines[nats_terms.NATS_SERVER_NAME];
 const PLATFORM_ARCHITECTURE = `${process.platform}-${process.arch}`;
 const NATS_SERVER_BINARY_PATH = path.join(DEPENDENCIES_PATH, PLATFORM_ARCHITECTURE, `${nats_terms.NATS_BINARY_NAME}`);
 const NATS_SERVER_DOWNLOAD_URL = `https://github.com/nats-io/nats-server/releases/download/v${REQUIRED_NATS_SERVER_VERSION}/nats-server-v${REQUIRED_NATS_SERVER_VERSION}-`;

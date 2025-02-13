@@ -13,13 +13,15 @@ const _ = require('lodash');
 const { handleHDBError } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = require('../utility/errors/commonErrors');
 const { server } = require('../server/Server');
+const { PACKAGE_ROOT } = require('../utility/packageUtils');
+
 const { DATABASES_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdb_terms;
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
 const CONFIG_INIT_MSG = 'Config successfully initialized';
 const BACKUP_ERR = 'Error backing up config file';
 const EMPTY_GET_VALUE = 'Empty parameter sent to getConfigValue';
-const DEFAULT_CONFIG_FILE_PATH = path.join(hdb_terms.PACKAGE_ROOT, 'config', 'yaml', hdb_terms.HDB_DEFAULT_CONFIG_FILE);
-const DEFAULT_NATS_CONFIG_FILE_PATH = path.join(hdb_terms.PACKAGE_ROOT, 'config', 'yaml', 'defaultNatsConfig.yaml');
+const DEFAULT_CONFIG_FILE_PATH = path.join(PACKAGE_ROOT, 'config', 'yaml', hdb_terms.HDB_DEFAULT_CONFIG_FILE);
+const DEFAULT_NATS_CONFIG_FILE_PATH = path.join(PACKAGE_ROOT, 'config', 'yaml', 'defaultNatsConfig.yaml');
 const CONFIGURE_SUCCESS_RESPONSE =
 	'Configuration successfully set. You must restart HarperDB for new config settings to take effect.';
 

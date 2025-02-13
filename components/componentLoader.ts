@@ -3,11 +3,9 @@ import { join, relative, basename, dirname } from 'path';
 import { isMainThread } from 'worker_threads';
 import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager';
+import { PACKAGE_ROOT } from '../utility/packageUtils';
 import {
-	PACKAGE_ROOT,
 	CONFIG_PARAMS,
-	HDB_CONFIG_FILE,
-	HDB_COMPONENT_CONFIG_FILE,
 	HDB_ROOT_DIR_NAME,
 } from '../utility/hdbTerms';
 import * as graphql_handler from '../resources/graphql';

@@ -6,7 +6,7 @@ if (__filename.endsWith('dev.js')) {
 	const { isMainThread } = require('node:worker_threads');
 	const { spawnSync, spawn } = require('node:child_process');
 
-	const { PACKAGE_ROOT } = require('../utility/hdbTerms');
+	const { PACKAGE_ROOT } = require('../utility/packageUtils');
 
 	const SRC_DIRECTORIES = ['bin', 'components', 'dataLayer', 'resources', 'server', 'sqlTranslator', 'upgrade', 'utility', 'validation'];
 	const TS_DIRECTORY = 'ts-build';

@@ -15,7 +15,7 @@ const env_manager = require('../environment/environmentManager');
 const hdb_utils = require('../common_utils');
 const assignCMDENVVariables = require('../../utility/assignCmdEnvVariables');
 const hdb_info_controller = require('../../dataLayer/hdbInfoController');
-const version = require('../../bin/version');
+const { packageJson } = require('../packageUtils');
 const hdb_terms = require('../hdbTerms');
 const { CONFIG_PARAM_MAP, CONFIG_PARAMS } = hdb_terms;
 const install_validator = require('../../validation/installValidator');
@@ -473,7 +473,7 @@ async function checkForExistingInstall() {
 		// getVersionUpdateInfo will only return an obj if there is an upgrade directive for the new version.
 		const upgrade_obj = await hdb_info_controller.getVersionUpdateInfo();
 		if (upgrade_obj) {
-			const upgrade_to_ver_msg = `Please use \`harperdb upgrade\` to update to ${version.version()}. Exiting install...`;
+			const upgrade_to_ver_msg = `Please use \`harperdb upgrade\` to update to ${packageJson.version}. Exiting install...`;
 			console.log(LINE_BREAK + chalk.magenta.bold(UPGRADE_MSG));
 			console.log(chalk.magenta.bold(upgrade_to_ver_msg));
 			hdb_logger.error(upgrade_to_ver_msg);
@@ -754,7 +754,7 @@ async function createClusterUser(install_params) {
  * @returns {Promise<void>}
  */
 async function insertHdbVersionInfo() {
-	const vers = version.version();
+	const vers = packageJson.version;
 	if (vers) {
 		await hdb_info_controller.insertHdbInstallInfo(vers);
 	} else {

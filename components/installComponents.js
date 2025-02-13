@@ -4,6 +4,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const hdb_log = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
+const { PACKAGE_ROOT } = require('../utility/packageUtils');
 const hdb_terms = require('../utility/hdbTerms');
 const eng_mgr = require('../utility/environment/environmentManager');
 const config_utils = require('../config/configUtils');
@@ -22,7 +23,7 @@ async function installComponents() {
 	const pkg_json_path = path.join(root_path, 'package.json');
 	const pkg_json = {
 		dependencies: {
-			harperdb: 'file:' + hdb_terms.PACKAGE_ROOT,
+			harperdb: 'file:' + PACKAGE_ROOT,
 		},
 	};
 

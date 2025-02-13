@@ -25,7 +25,7 @@ const { main, launch } = require('../../bin/run');
 const { install, updateConfigEnv, setIgnoreExisting } = require('../install/installer');
 const mount = require('../mount_hdb');
 const hdb_terms = require('../hdbTerms');
-const version = require('../../bin/version');
+const { packageJson } = require('../packageUtils');
 const hdb_info_controller = require('../../dataLayer/hdbInfoController');
 const { sendOperationToNode } = require('../../server/replication/replicator');
 const { updateConfigCert } = require('../../security/keys');
@@ -824,7 +824,7 @@ async function leaderHttpStream(data, stream) {
 }
 
 async function insertHdbVersionInfo() {
-	const vers = version.version();
+	const vers = packageJson.version;
 	if (vers) {
 		await hdb_info_controller.insertHdbInstallInfo(vers);
 	} else {

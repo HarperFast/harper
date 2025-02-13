@@ -75,7 +75,7 @@ spawnSync(
 	],
 	{ cwd: PACKAGE_ROOT }
 );*/
-let result = exec('tsc entry.ts --outDir npm_pack --declaration --emitDeclarationOnly', async (error, result) => {
+let result = exec('npx tsc entry.ts --outDir npm_pack --declaration --emitDeclarationOnly', async (error, result) => {
 	if (error) {
 		if (error.code !== 2) console.error(error);
 	} else {

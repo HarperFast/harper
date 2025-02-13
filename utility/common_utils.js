@@ -7,6 +7,7 @@ const os = require('os');
 const net = require('net');
 const RecursiveIterator = require('recursive-iterator');
 const terms = require('./hdbTerms');
+const { PACKAGE_ROOT } = require('./packageUtils');
 const ps_list = require('./psList');
 const papa_parse = require('papaparse');
 const moment = require('moment');
@@ -92,7 +93,7 @@ module.exports = {
 	httpRequest,
 	transformReq,
 	convertToMS,
-	PACKAGE_ROOT: terms.PACKAGE_ROOT,
+	PACKAGE_ROOT,
 };
 
 /**

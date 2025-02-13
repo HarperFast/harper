@@ -7,6 +7,7 @@ const { exec } = require('child_process');
 const util = require('util');
 const p_exec = util.promisify(exec);
 const terms = require('./hdbTerms');
+const { PACKAGE_ROOT } = require('./packageUtils');
 const { handleHDBError, hdb_errors } = require('./errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 const env = require('./environment/environmentManager');
@@ -87,7 +88,7 @@ async function uninstallRootModule(pkg_name) {
  */
 async function linkHarperdb() {
 	await checkNPMInstalled();
-	await runCommand(`npm link ${terms.PACKAGE_ROOT}`, env.get(terms.CONFIG_PARAMS.ROOTPATH));
+	await runCommand(`npm link ${PACKAGE_ROOT}`, env.get(terms.CONFIG_PARAMS.ROOTPATH));
 }
 
 /**

@@ -14,6 +14,7 @@ const exec = util.promisify(child_process.exec);
 const spawn = child_process.spawn;
 const nats_terms = require('./natsTerms');
 const hdb_terms = require('../../../utility/hdbTerms');
+const { packageJson, PACKAGE_ROOT } = require('../../../utility/packageUtils');
 const hdb_utils = require('../../../utility/common_utils');
 const hdb_logger = require('../../../utility/logging/harper_logger');
 const crypto_hash = require('../../../security/cryptoHash');
@@ -57,15 +58,13 @@ const {
 	headers,
 	ErrorCode,
 } = require('nats');
-const { PACKAGE_ROOT } = require('../../../utility/hdbTerms');
 
-const pkg_json = require('../../../package.json');
 const { recordAction } = require('../../../resources/analytics');
 const { encodeBlobsAsBuffers } = require('../../../resources/blob');
 
 const jc = JSONCodec();
 const HDB_CLUSTERING_FOLDER = 'clustering';
-const REQUIRED_NATS_SERVER_VERSION = pkg_json.engines[nats_terms.NATS_SERVER_NAME];
+const REQUIRED_NATS_SERVER_VERSION = packageJson.engines[nats_terms.NATS_SERVER_NAME];
 const DEPENDENCIES_PATH = path.join(PACKAGE_ROOT, 'dependencies');
 const NATS_SERVER_PATH = path.join(
 	DEPENDENCIES_PATH,

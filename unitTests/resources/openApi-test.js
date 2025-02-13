@@ -1,6 +1,6 @@
 const { expect } = require('chai');
 require('../test_utils');
-const { version } = require('../../bin/version');
+const { packageJson } = require('../../utility/packageUtils');
 const { generateJsonApi } = require('../../resources/openApi');
 
 describe('test openApi module', () => {
@@ -20,7 +20,7 @@ describe('test openApi module', () => {
 		const result = generateJsonApi(resources);
 		expect(result).to.eql({
 			openapi: '3.0.3',
-			info: { title: 'HarperDB HTTP REST interface', version: version() },
+			info: { title: 'HarperDB HTTP REST interface', version: packageJson.version },
 			paths: {
 				'/VariedProps/': {
 					post: {

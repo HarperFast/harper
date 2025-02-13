@@ -1,3 +1,4 @@
+require('../../../bin/dev');
 const { parentPort, isMainThread } = require('worker_threads');
 const itc = require('../../../server/threads/itc');
 const server_handlers = require('../../../server/itc/serverHandlers');
