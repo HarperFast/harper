@@ -694,7 +694,6 @@ export function encodeBlobsAsBuffers<T>(callback: () => T): Promise<T> {
 	}
 	const finished = promisedWrites.length < 2 ? promisedWrites[0] : Promise.all(promisedWrites);
 	promisedWrites = undefined;
-	// eslint-disable-next-line no-unsafe-finally
 	return finished ? finished.then(() => callback()) : result;
 }
 
