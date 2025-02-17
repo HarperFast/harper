@@ -93,7 +93,7 @@ describe('Types Validation', () => {
 		);
 		assert.throws(() =>
 			ValidationTest.put(42, {
-				bytes: 'wrong type',
+				bytes: { name: 'wrong type' },
 			})
 		);
 		assert.throws(() =>
