@@ -287,7 +287,7 @@ describe('Blob test', () => {
 			createBlob(undefined);
 		});
 		assert.throws(() => {
-			BlobTest.put({ id: 1, blob: 'not actually a blob' });
+			BlobTest.put({ id: 1, blob: { name: 'not actually a blob' } });
 		});
 		let record = await BlobTest.get(1);
 		if (record) {
