@@ -55,7 +55,6 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 				ws.on('error', (error) => {
 					mqtt_log.info?.('WebSocket error', error);
 				});
-
 			},
 			{ ...webSocket }
 		); // if there is no port, we are piggy-backing off of default app http server
@@ -282,7 +281,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						reasonCode: 0,
 						returnCode: 0, // success
 					});
-					session.setListener((topic, message, message_id, subscription) => {
+					const listener = async (topic, message, message_id, subscription) => {
 						try {
 							if (disconnected) throw new Error('Session disconnected while trying to send message to', topic);
 							const slash_index = topic.indexOf('/', 1);
@@ -291,7 +290,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 								{
 									cmd: 'publish',
 									topic,
-									payload: serialize(message),
+									payload: await serialize(message),
 									messageId: message_id || Math.floor(Math.random() * 100000000),
 									qos: subscription.qos,
 								},
@@ -309,7 +308,8 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 							mqtt_settings.sessions.delete(session);
 							return false;
 						}
-					});
+					};
+					session.setListener(listener);
 					if (session.sessionWasPresent) await session.resume();
 					break;
 				case 'subscribe':
@@ -321,8 +321,8 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 							granted_qos = granted_subscription
 								? granted_subscription.qos || 0
 								: mqtt_options.protocolVersion < 5
-								? 0x80 // only error code in v3.1.1
-								: 0x8f; // invalid topic indicated
+									? 0x80 // only error code in v3.1.1
+									: 0x8f; // invalid topic indicated
 						} catch (error) {
 							mqtt_settings.events.emit('error', error, socket, subscription, session);
 							if (error.statusCode) {
@@ -333,10 +333,10 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 								mqtt_options.protocolVersion < 5
 									? 0x80 // the only error code in v3.1.1
 									: error.statusCode === 403
-									? 0x87 // unauthorized
-									: error.statusCode === 404
-									? 0x8f // invalid topic
-									: 0x80; // generic failure
+										? 0x87 // unauthorized
+										: error.statusCode === 404
+											? 0x8f // invalid topic
+											: 0x80; // generic failure
 						}
 						granted.push(granted_qos);
 					}

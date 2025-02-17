@@ -1,7 +1,7 @@
 'use strict';
 const env_mngr = require('../environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
-const { RecordEncoder } = require('../../resources/RecordEncoder');
+const encoder = require('../../resources/RecordEncoder');
 const fs = require('fs');
 env_mngr.initSync();
 
@@ -24,7 +24,7 @@ class OpenDBIObject {
 			this.cache = LMDB_CACHING && { validated: true };
 			this.randomAccessStructure = true;
 			this.freezeData = true;
-			this.encoder = { Encoder: RecordEncoder };
+			this.encoder = { Encoder: encoder.RecordEncoder };
 		}
 	}
 }

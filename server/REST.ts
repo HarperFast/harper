@@ -310,7 +310,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 
 				let result;
 				while (!(result = await iterator.next()).done) {
-					const message_binary = serializeMessage(result.value, request);
+					const message_binary = await serializeMessage(result.value, request);
 					ws.send(message_binary);
 					recordAction(message_binary.length, 'bytes-sent', request.handlerPath, 'message', 'ws');
 				}

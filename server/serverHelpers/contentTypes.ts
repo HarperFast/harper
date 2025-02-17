@@ -1,10 +1,9 @@
 import { streamAsJSON, stringify, parse } from './JSONStream';
-import { toCsvStream } from '../../dataLayer/export';
 import { pack, unpack, encodeIter } from 'msgpackr';
 import { decode, Encoder, EncoderStream } from 'cbor-x';
 import { createBrotliCompress, brotliCompress, constants } from 'zlib';
 import { ClientError } from '../../utility/errors/hdbError';
-import { Readable } from 'stream';
+import stream, { Readable } from 'stream';
 import { server } from '../Server';
 import { _assignPackageExport } from '../../globals';
 import env_mgr from '../../utility/environment/environmentManager';
@@ -12,6 +11,7 @@ import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 import * as YAML from 'yaml';
 import logger from '../../utility/logging/logger';
 import { Blob } from '../../resources/blob';
+const { Transform } = require('json2csv');
 const SERIALIZATION_BIGINT = env_mgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
 const JSONStringify = SERIALIZATION_BIGINT ? stringify : JSON.stringify;
 const JSONParse = SERIALIZATION_BIGINT ? parse : JSON.parse;
@@ -404,22 +404,44 @@ export function serialize(response_data, request, response_object) {
 	return response_body;
 }
 
+let asyncSerializations;
 /**
  * Serialize a message, may be use multiple times (like with WebSockets)
  * @param message
  * @param request
  * @returns {*}
  */
-export function serializeMessage(message, request) {
+export function serializeMessage(
+	message: any,
+	request?: Request,
+	inAsyncContinuation?: boolean
+): Buffer | string | Promise<Buffer | string> {
 	if (message?.contentType != null && message.data != null) return message.data;
-	if (!request) {
-		return JSONStringify(message);
+	asyncSerializations = inAsyncContinuation ? undefined : [];
+	try {
+		let serialized: Buffer | string;
+		if (request) {
+			let serialize = request.serialize;
+			if (serialize) serialized = serialize(message);
+			const serializer = findBestSerializer(request);
+			serialize = request.serialize = serializer.serializer.serialize;
+			serialized = serialize(message);
+		} else {
+			serialized = JSONStringify(message);
+		}
+		if (asyncSerializations?.length > 0)
+			return (asyncSerializations.length === 1 ? asyncSerializations[0] : Promise.all(asyncSerializations)).then(() =>
+				serializeMessage(message, request, true)
+			);
+		return serialized;
+	} finally {
+		asyncSerializations = undefined;
 	}
-	let serialize = request.serialize;
-	if (serialize) return serialize(message);
-	const serializer = findBestSerializer(request);
-	serialize = request.serialize = serializer.serializer.serialize;
-	return serialize(message);
+}
+
+export function asyncSerialization(promiseToSerialize: Promise<any>) {
+	if (asyncSerializations) asyncSerializations.push(promiseToSerialize);
+	else throw new Error('Unable to serialize asynchronously');
 }
 
 function streamToBuffer(stream: Readable): Promise<Buffer> {
@@ -568,4 +590,25 @@ function transformIterable(iterable, transform) {
 			};
 		},
 	};
+}
+
+/**
+ * Converts JS objects/arrays/iterators to a CSV stream. Should support iterators with full backpressure handling
+ * @param data
+ * @returns stream
+ */
+export function toCsvStream(data, columns) {
+	// ensure that we pass it an iterable
+	const read_stream = stream.Readable.from(data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data]);
+	const options = {};
+	if (columns)
+		options.fields = columns.map((column) => ({
+			label: column,
+			value: column,
+		}));
+	const transform_options = { objectMode: true };
+	// Create a json2csv stream transform.
+	const json2csv = new Transform(options, transform_options);
+	// Pipe the data read stream through json2csv which converts it to CSV
+	return read_stream.pipe(json2csv);
 }

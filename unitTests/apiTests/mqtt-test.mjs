@@ -1210,6 +1210,31 @@ describe('test MQTT connections and commands', () => {
 		assert.equal(messages.length, 4);
 		assert.equal(FourPropWithHistory.acknowledgements, 2);
 	});
+	it('publish and receive blob data', async function () {
+		const topic = `SimpleRecord/52`;
+		const testString = 'this is a test of blobs'.repeat(1000);
+		await new Promise((resolve, reject) => {
+			client2.subscribe(topic, function (err) {
+				if (err) return reject(err);
+				client2.publish(topic, JSON.stringify({ name: 'testBlob', blobData: testString }), {
+					qos: 1,
+					retain: false,
+				});
+			});
+
+			client2.once('message', function (topic, payload) {
+				try {
+					let data = JSON.parse(payload);
+					// message is Buffer
+					assert.equal(data.blobData, testString);
+					resolve();
+				} catch (error) {
+					reject(error);
+				}
+			});
+		});
+	});
+
 	after(() => {
 		client?.end();
 		client2?.end();

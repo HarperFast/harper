@@ -6,6 +6,7 @@ type VariedProps @table @export {
 type SimpleRecord @table @export {
 	id: ID @primaryKey
 	name: String @indexed
+	blobData: Blob
 }
 type FourProp @table(audit: "1d", replicated: false) @export {
 	id: ID @primaryKey
