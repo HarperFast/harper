@@ -2515,16 +2515,21 @@ export function makeTable(options) {
 								}
 								break;
 							case 'Bytes':
-								if (!(value instanceof Uint8Array))
-									(validation_errors || (validation_errors = [])).push(
-										`Value ${stringify(value)} in property ${name} must be a Buffer or Uint8Array`
-									);
+								if (!(value instanceof Uint8Array)) if (typeof value === 'string') return Buffer.from(value);
+								(validation_errors || (validation_errors = [])).push(
+									`Value ${stringify(value)} in property ${name} must be a Buffer or Uint8Array`
+								);
 								break;
 							case 'Blob':
-								if (!(value instanceof Blob))
+								if (!(value instanceof Blob)) {
+									if (typeof value === 'string') value = Buffer.from(value);
+									if (value instanceof Buffer) {
+										return createBlob(value, { type: 'text/plain' });
+									}
 									(validation_errors || (validation_errors = [])).push(
 										`Value ${stringify(value)} in property ${name} must be a Blob`
 									);
+								}
 								break;
 							case 'array':
 								if (Array.isArray(value)) {

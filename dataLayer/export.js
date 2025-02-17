@@ -1,9 +1,8 @@
 'use strict';
 
 const search = require('./search');
-const sql = require('../sqlTranslator/index');
 const AWSConnector = require('../utility/AWS/AWSConnector');
-const { AsyncParser, Transform } = require('json2csv');
+const { AsyncParser } = require('json2csv');
 const stream = require('stream');
 const hdb_utils = require('../utility/common_utils');
 const fs = require('fs-extra');
@@ -15,6 +14,7 @@ const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const { streamAsJSON } = require('../server/serverHelpers/JSONStream');
 const { Upload } = require('@aws-sdk/lib-storage');
+const { toCsvStream } = require('../server/serverHelpers/contentTypes');
 
 const VALID_SEARCH_OPERATIONS = ['search_by_value', 'search_by_hash', 'sql', 'search_by_conditions'];
 const VALID_EXPORT_FORMATS = ['json', 'csv'];
@@ -29,13 +29,11 @@ const LOCAL_JSON_EXPORT_SIZE = 1000;
 // Promisified function
 const p_search_by_hash = search.searchByHash;
 const p_search_by_value = search.searchByValue;
-const p_sql = promisify(sql.evaluateSQL);
 const stream_finished = promisify(stream.finished);
 
 module.exports = {
 	export_to_s3: export_to_s3,
 	export_local: export_local,
-	toCsvStream,
 };
 
 /**
@@ -315,27 +313,6 @@ async function export_to_s3(export_object) {
 }
 
 /**
- * Converts JS objects/arrays/iterators to a CSV stream. Should support iterators with full backpressure handling
- * @param data
- * @returns stream
- */
-function toCsvStream(data, columns) {
-	// ensure that we pass it an iterable
-	let read_stream = stream.Readable.from(data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data]);
-	let options = {};
-	if (columns)
-		options.fields = columns.map((column) => ({
-			label: column,
-			value: column,
-		}));
-	let transform_options = { objectMode: true };
-	// Create a json2csv stream transform.
-	const json2csv = new Transform(options, transform_options);
-	// Pipe the data read stream through json2csv which converts it to CSV
-	return read_stream.pipe(json2csv);
-}
-
-/**
  * handles the core validation of the export_object variable
  * @param export_object
  * @returns {string}
@@ -384,9 +361,11 @@ async function getRecords(export_object) {
 		case 'search_by_conditions':
 			operation = search.searchByConditions;
 			break;
-		case 'sql':
-			operation = p_sql;
+		case 'sql': {
+			const sql = require('../sqlTranslator/index');
+			operation = promisify(sql.evaluateSQL);
 			break;
+		}
 		default:
 			err_msg = `Operation ${export_object.search_operation.operation} is not support by export.`;
 			hdb_logger.error(err_msg);

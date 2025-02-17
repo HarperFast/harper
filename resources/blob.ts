@@ -25,15 +25,17 @@ import {
 	existsSync,
 	watch,
 	write,
+	rmSync,
 } from 'node:fs';
 import { createDeflate, deflate } from 'node:zlib';
 import { Readable } from 'node:stream';
-import { ensureDirSync, remove } from 'fs-extra';
+import { ensureDirSync } from 'fs-extra';
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { join, dirname } from 'path';
 import logger from '../utility/logging/logger';
 import type { LMDBStore } from 'lmdb';
+import { asyncSerialization } from '../server/serverHelpers/contentTypes';
 
 type StorageInfo = {
 	storageIndex: number;
@@ -64,6 +66,7 @@ let currentBlobCallback: (blob: Blob) => Blob | void;
 export const Blob = global.Blob || polyfillBlob(); // use the global Blob class if it exists (it doesn't on Node v16)
 let encodeForStorageForRecordId: number = undefined; // only enable encoding of the file path if we are saving to the DB, not for serialization to external clients, and only for one record
 let promisedWrites: Array<Promise<void>>;
+let promisedReads: Array<Promise<void>>;
 let currentStore: any; // the root store of the database we are currently encoding for
 export let blobsWereEncoded = false; // keep track of whether blobs were encoded with file paths
 // the header is 8 bytes
@@ -103,16 +106,26 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 	}
 
 	toJSON() {
+		if (this.type?.startsWith('text')) {
+			const storageInfo = storageInfoForBlob.get(this);
+			let { start, end, contentBuffer } = storageInfo;
+			if (contentBuffer && (end !== undefined || start !== undefined)) {
+				contentBuffer = contentBuffer.subarray(start ?? 0, end ?? storageInfo.contentBuffer.length);
+			}
+			// if we have a content buffer we can return
+			if (contentBuffer) return contentBuffer.toString();
+			asyncSerialization(this.bytes().then((buffer) => (storageInfo.contentBuffer = buffer)));
+			return '';
+		}
 		return {
 			description:
-				'Blob can not be directly serialized as JSON, use as the body of a response or convert to another type',
+				'Blobs that are not of type text/* can not be directly serialized as JSON, use as the body of a response or convert to another type',
 		};
 	}
 
 	async text(): Promise<string> {
 		return (await this.bytes()).toString();
 	}
-
 	bytes(): Promise<Buffer> {
 		const storageInfo = storageInfoForBlob.get(this);
 		let { start, end, contentBuffer } = storageInfo;
@@ -562,16 +575,16 @@ export function getRootBlobPathsForDB(store: LMDBStore) {
 	}
 	return paths;
 }
-export function deleteRootBlobPathsForDB(store: LMDBStore): Promise<any[]> {
+export async function deleteRootBlobPathsForDB(store: LMDBStore): Promise<any[]> {
 	const paths = databasePaths.get(store);
 	const deletions = [];
 	if (paths) {
 		for (const path of paths) {
-			deletions.push(remove(path));
+			// do this synchronously because we can run out of memory if we try to do this asynchronously, because node gather file paths and queue them for deletion, without any reasonable constraints.
+			rmSync(path, { recursive: true, force: true });
+			await new Promise(setImmediate); // allow other events to be processed
 		}
-		databasePaths.delete(store);
 	}
-	return Promise.all(deletions);
 }
 function getFilePath({ storageIndex, fileId, store }: StorageInfo): string {
 	const blobStoragePaths = getRootBlobPathsForDB(store);
