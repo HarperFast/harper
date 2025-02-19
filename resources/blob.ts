@@ -442,9 +442,15 @@ export type BlobCreationOptions = {
  */
 global.createBlob = function (source: NodeJS.ReadableStream | NodeJS.Buffer, options?: BlobCreationOptions): Blob {
 	const blob = new FileBackedBlob(options);
-	const storageInfo = { storageIndex: 0, fileId: null, flush: options?.flush, compress: options?.compress };
+	const storageInfo: StorageInfo = {
+		storageIndex: 0,
+		fileId: null,
+		flush: options?.flush,
+		compress: options?.compress,
+	};
 	storageInfoForBlob.set(blob, storageInfo);
 	if (source instanceof Uint8Array) {
+		blob.size = source.length;
 		storageInfo.contentBuffer = source;
 	} else if (source instanceof Readable) {
 		storageInfo.source = source;
@@ -536,15 +542,11 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 		writeStream.on('error', finished).on('finish', () => {
 			if (wroteSize) finished();
 			// now that we know the size, we can write it, in case any other threads were waiting for this to complete
-			else
-				write(
-					writeStream.fd,
-					createHeader(compressedStream ? compressedStream.bytesWritten : writeStream.bytesWritten - HEADER_SIZE),
-					0,
-					HEADER_SIZE,
-					0,
-					finished
-				);
+			else {
+				const size = compressedStream ? compressedStream.bytesWritten : writeStream.bytesWritten - HEADER_SIZE;
+				blob.size = size;
+				write(writeStream.fd, createHeader(size), 0, HEADER_SIZE, 0, finished);
+			}
 		});
 	});
 	return blob;
@@ -797,6 +799,7 @@ addExtension({
 				storageBuffer: buffer,
 				contentBuffer: blobInfo[1],
 			});
+			blob.size = blobInfo[1]?.length;
 		}
 		return blob;
 	},

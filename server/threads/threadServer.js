@@ -502,7 +502,7 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 							else headers.set('Content-Length', body.length);
 							sent_body = true;
 						} else if (body instanceof Blob) {
-							headers.set('Content-Length', body.size);
+							if (body.size) headers.set('Content-Length', body.size);
 							body = body.stream();
 						}
 						let server_timing = `hdb;dur=${execution_time.toFixed(2)}`;
