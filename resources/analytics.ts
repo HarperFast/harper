@@ -282,33 +282,43 @@ function storeTableSizeMetrics(analyticsTable: Table, dbName: string, tables: Ta
 
 function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 	for (const [db, tables] of Object.entries(databases)) {
-		const [firstTable] = Object.values(tables);
-		const dbAuditSize = firstTable.getAuditSize();
-		const dbTotalSize = fs.statSync(firstTable.primaryStore.env.path).size;
-		const dbUsedSize = storeTableSizeMetrics(analyticsTable, db, tables);
-		const dbFree = dbTotalSize - dbUsedSize;
-		const metric = {
-			database: db,
-			size: dbTotalSize,
-			used: dbUsedSize,
-			free: dbFree,
-			audit: dbAuditSize,
-		};
-		storeMetric(analyticsTable, 'database-size', metric);
-		log.trace?.(`database ${db} size metric: ${JSON.stringify(metric)}`);
+		try {
+			const [firstTable] = Object.values(tables);
+			const dbAuditSize = firstTable.getAuditSize();
+			const dbTotalSize = fs.statSync(firstTable.primaryStore.env.path).size;
+			const dbUsedSize = storeTableSizeMetrics(analyticsTable, db, tables);
+			const dbFree = dbTotalSize - dbUsedSize;
+			const metric = {
+				database: db,
+				size: dbTotalSize,
+				used: dbUsedSize,
+				free: dbFree,
+				audit: dbAuditSize,
+			};
+			storeMetric(analyticsTable, 'database-size', metric);
+			log.trace?.(`database ${db} size metric: ${JSON.stringify(metric)}`);
+		} catch (error) {
+			// a table or db was deleted, could get an error here
+			log.warn?.(`Error getting DB size metrics`, error);
+		}
 	}
 }
 
 function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
 	for (const [db, tables] of Object.entries(databases)) {
-		const [firstTable] = Object.values(tables);
-		const storageStats = firstTable.getStorageStats();
-		const metric = {
-			database: db,
-			...storageStats,
-		};
-		storeMetric(analyticsTable, 'storage-volume', metric);
-		log.trace?.(`db ${db} storage volume metrics: ${JSON.stringify(metric)}`);
+		try {
+			const [firstTable] = Object.values(tables);
+			const storageStats = firstTable.getStorageStats();
+			const metric = {
+				database: db,
+				...storageStats,
+			};
+			storeMetric(analyticsTable, 'storage-volume', metric);
+			log.trace?.(`db ${db} storage volume metrics: ${JSON.stringify(metric)}`);
+		} catch (error) {
+			// a table or db was deleted, could get an error here
+			log.warn?.(`Error getting DB volumne metrics`, error);
+		}
 	}
 }
 
