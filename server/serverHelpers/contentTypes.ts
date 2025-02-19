@@ -430,6 +430,7 @@ export function serializeMessage(
 			serialized = JSONStringify(message);
 		}
 		if (asyncSerializations?.length > 0)
+			// if there were any serialization attempts that must wait for async work to be done, we wait now and then retry the serialization
 			return (asyncSerializations.length === 1 ? asyncSerializations[0] : Promise.all(asyncSerializations)).then(() =>
 				serializeMessage(message, request, true)
 			);
@@ -439,6 +440,11 @@ export function serializeMessage(
 	}
 }
 
+/**
+ * This can be called during serialization indicating that an object requires asynchronous serialization (or async completion of a task prior to serialization) to be properly serialized.
+ * A promise for when the object is ready to be serialized. Typically serialization will be re-executed and this object should be ready to be synchronously serialized
+ * @param promiseToSerialize
+ */
 export function asyncSerialization(promiseToSerialize: Promise<any>) {
 	if (asyncSerializations) asyncSerializations.push(promiseToSerialize);
 	else throw new Error('Unable to serialize asynchronously');
