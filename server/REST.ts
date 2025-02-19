@@ -271,6 +271,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 			if (!deserializer)
 				deserializer = getDeserializer(request.requestedContentType ?? request.headers.asObject['content-type'], false);
 			const data = deserializer(body);
+			recordAction(body.length, 'bytes-received', request.handlerPath, 'message', 'ws');
 			incoming_messages.push(data);
 		});
 		let iterator;
