@@ -62195,7 +62195,7 @@
 									"",
 									"pm.test(\"check error message\", function () {    ",
 									"    var jsonData = pm.response.json();    ",
-									"    pm.expect(jsonData['error'] === 'username is required').to.eql(true);    ",
+									"    pm.expect(jsonData['error'] === \"'username' is required\").to.eql(true);    ",
 									"    ",
 									"});"
 								],
@@ -62242,7 +62242,7 @@
 									"",
 									"pm.test(\"check error message\", function () {    ",
 									"    var jsonData = pm.response.json();    ",
-									"    pm.expect(jsonData['error'] === 'password is required').to.eql(true);    ",
+									"    pm.expect(jsonData['error'] === \"'password' is required\").to.eql(true);    ",
 									"    ",
 									"});"
 								],
