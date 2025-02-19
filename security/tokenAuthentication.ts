@@ -58,12 +58,17 @@ interface JWTTokens {
  */
 export async function getJWTRSAKeys(): Promise<JWTRSAKeys> {
 	if (rsaKeys) return rsaKeys;
-	const keysDir: string = path.join(env.getHdbBasePath(), LICENSE_KEY_DIR_NAME);
-	const passphrase: string = await fs.readFile(path.join(keysDir, JWT_ENUM.JWT_PASSPHRASE_NAME), 'utf8');
-	const privateKey: string = await fs.readFile(path.join(keysDir, JWT_ENUM.JWT_PRIVATE_KEY_NAME), 'utf8');
-	const publicKey: string = await fs.readFile(path.join(keysDir, JWT_ENUM.JWT_PUBLIC_KEY_NAME), 'utf8');
-	rsaKeys = { publicKey, privateKey, passphrase };
-	return rsaKeys;
+	try {
+		const keysDir: string = path.join(env.getHdbBasePath(), LICENSE_KEY_DIR_NAME);
+		const passphrase: string = await fs.readFile(path.join(keysDir, JWT_ENUM.JWT_PASSPHRASE_NAME), 'utf8');
+		const privateKey: string = await fs.readFile(path.join(keysDir, JWT_ENUM.JWT_PRIVATE_KEY_NAME), 'utf8');
+		const publicKey: string = await fs.readFile(path.join(keysDir, JWT_ENUM.JWT_PUBLIC_KEY_NAME), 'utf8');
+		rsaKeys = { publicKey, privateKey, passphrase };
+		return rsaKeys;
+	} catch (err) {
+		logger.error(err);
+		throw new ClientError(AUTHENTICATION_ERROR_MSGS.NO_ENCRYPTION_KEYS, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+	}
 }
 
 export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {

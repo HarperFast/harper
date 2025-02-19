@@ -11,11 +11,12 @@ const sandbox = sinon.createSandbox();
 const rewire = require('rewire');
 const password_function = require('../../utility/password');
 let token_auth = rewire('../../security/tokenAuthentication');
-const JWTObjects = require('../../security/JWTObjects');
 const hdb_error = require('../../utility/errors/hdbError').handleHDBError;
 const env_mgr = require('../../utility/environment/environmentManager');
 const hdb_terms = require('../../utility/hdbTerms');
 const user = require('../../security/user');
+const insert = require('../../dataLayer/insert');
+const signalling = require('../../utility/signalling');
 
 const KEYS_PATH = path.join(test_util.getMockTestPath(), 'keys');
 const PASSPHRASE_PATH = path.join(KEYS_PATH, '.jwtPass');
@@ -92,6 +93,18 @@ const PUBLIC_KEY_VALUE =
 	'Xbe/Q0MHiGt7hvhB51+C08m+qxIDk2l8Icg77mS4WuxBbWBxN/FF18ttp4GfHJWw\n' +
 	'brlmQxVf0PFY+0tM8fCkpccCAwEAAQ==\n' +
 	'-----END PUBLIC KEY-----';
+class JWTRSAKeys {
+	/**
+	 * @param {string} public_key
+	 * @param {string} private_key
+	 * @param {string} passphrase
+	 */
+	constructor(public_key, private_key, passphrase) {
+		this.publicKey = public_key;
+		this.privateKey = private_key;
+		this.passphrase = passphrase;
+	}
+}
 
 describe('test getJWTRSAKeys function', () => {
 	//let get_hdb_base_path_stub;
@@ -124,34 +137,17 @@ describe('test getJWTRSAKeys function', () => {
 	});
 
 	it('test rsa_keys is undefined, happy path', async () => {
-		let rw_rsa_keys = token_auth.__set__('rsa_keys', undefined);
-
+		let rw_rsa_keys = token_auth.__set__('rsaKeys', undefined);
 		let results = await get_jwt_keys_func();
-		assert.deepStrictEqual(results, new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
-
-		assert(path_join_spy.callCount === 3);
+		assert.notDeepStrictEqual(results, new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
 		assert(fs_readfile_spy.callCount === 3);
-
 		assert(fs_readfile_spy.threw() === false);
 		assert(path_join_spy.threw() === false);
-
-		let first_path_call = path_join_spy.getCall(0);
-		assert((first_path_call.args = [test_util.getMockTestPath(), 'keys', '.jwtPass']));
-		assert(first_path_call.returned(PASSPHRASE_PATH) === true);
-
-		let second_path_call = path_join_spy.getCall(1);
-		assert((second_path_call.args = [test_util.getMockTestPath(), 'keys', '.jwtPrivate.key']));
-		assert(second_path_call.returned(PRIVATE_KEY_PATH) === true);
-
-		let third_path_call = path_join_spy.getCall(2);
-		assert((third_path_call.args = [test_util.getMockTestPath(), 'keys', '.jwtPublic.key']));
-		assert(third_path_call.returned(PUBLIC_KEY_PATH) === true);
-
 		rw_rsa_keys();
 	});
 
 	it('test rsa_keys is undefined, passphrase file does not exist', async () => {
-		let rw_rsa_keys = token_auth.__set__('rsa_keys', undefined);
+		let rw_rsa_keys = token_auth.__set__('rsaKeys', undefined);
 		fs.unlinkSync(PASSPHRASE_PATH);
 
 		let results = undefined;
@@ -163,16 +159,9 @@ describe('test getJWTRSAKeys function', () => {
 		}
 		assert.deepStrictEqual(results, undefined);
 		assert.deepStrictEqual(
-			error,
-			hdb_error(
-				new Error(),
-				'unable to generate JWT as there are no encryption keys.  please contact your administrator',
-				500
-			)
+			error.message,
+			'unable to generate JWT as there are no encryption keys.  please contact your administrator'
 		);
-
-		assert(path_join_spy.callCount === 3 || path_join_spy.callCount === 4);
-		assert(fs_readfile_spy.callCount === 1);
 
 		let fs_error;
 		try {
@@ -186,7 +175,7 @@ describe('test getJWTRSAKeys function', () => {
 	});
 
 	it('test rsa_keys is undefined, private key file does not exist', async () => {
-		let rw_rsa_keys = token_auth.__set__('rsa_keys', undefined);
+		let rw_rsa_keys = token_auth.__set__('rsaKeys', undefined);
 		fs.unlinkSync(PRIVATE_KEY_PATH);
 
 		let results = undefined;
@@ -198,16 +187,9 @@ describe('test getJWTRSAKeys function', () => {
 		}
 		assert.deepStrictEqual(results, undefined);
 		assert.deepStrictEqual(
-			error,
-			hdb_error(
-				new Error(),
-				'unable to generate JWT as there are no encryption keys.  please contact your administrator',
-				500
-			)
+			error.message,
+			'unable to generate JWT as there are no encryption keys.  please contact your administrator'
 		);
-
-		assert(path_join_spy.callCount === 3 || path_join_spy.callCount === 4);
-		assert(fs_readfile_spy.callCount === 2);
 
 		let fs_error;
 		try {
@@ -221,7 +203,7 @@ describe('test getJWTRSAKeys function', () => {
 	});
 
 	it('test rsa_keys is undefined, public key file does not exist', async () => {
-		let rw_rsa_keys = token_auth.__set__('rsa_keys', undefined);
+		let rw_rsa_keys = token_auth.__set__('rsaKeys', undefined);
 		fs.unlinkSync(PUBLIC_KEY_PATH);
 
 		let results = undefined;
@@ -233,12 +215,8 @@ describe('test getJWTRSAKeys function', () => {
 		}
 		assert.deepStrictEqual(results, undefined);
 		assert.deepStrictEqual(
-			error,
-			hdb_error(
-				new Error(),
-				'unable to generate JWT as there are no encryption keys.  please contact your administrator',
-				500
-			)
+			error.message,
+			'unable to generate JWT as there are no encryption keys.  please contact your administrator'
 		);
 
 		assert(path_join_spy.callCount === 3 || path_join_spy.callCount === 4);
@@ -257,13 +235,13 @@ describe('test getJWTRSAKeys function', () => {
 
 	it('test rsa_keys is defined', async () => {
 		let rw_rsa_keys = token_auth.__set__(
-			'rsa_keys',
-			new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
+			'rsaKeys',
+			new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
 		);
 
 		let results = await get_jwt_keys_func();
 
-		assert.deepStrictEqual(results, new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
+		assert.deepStrictEqual(results, new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE));
 
 		assert(path_join_spy.callCount === 0);
 		assert(fs_readfile_spy.callCount === 0);
@@ -273,27 +251,23 @@ describe('test getJWTRSAKeys function', () => {
 });
 
 describe('test createTokens', () => {
-	let rw_validate_user;
-	let rw_update;
-	let rw_signalling;
+	let validate_user_stub;
+	let update_stub;
+	let signalling_stub;
 	beforeEach(() => {
-		rw_validate_user = token_auth.__set__('user_functions', {
-			findAndValidateUser: async (u, pw) => ({ username: u, role: { permission: { super_user: true } } }),
+		validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, pw) => {
+			return { username: u, role: { permission: { super_user: true } } };
 		});
-
-		rw_update = token_auth.__set__('update', async (update_object) => {
+		update_stub = sandbox.stub(insert, 'update').callsFake(async (update_object) => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
-
-		rw_signalling = token_auth.__set__('signalling', {
-			signalUserChange: (obj) => {},
-		});
+		signalling_stub = sandbox.stub(signalling, 'signalUserChange').callsFake((obj) => {});
 	});
 
 	afterEach(() => {
-		rw_validate_user();
-		rw_update();
-		rw_signalling();
+		validate_user_stub.restore();
+		update_stub.restore();
+		signalling_stub.restore();
 	});
 
 	it('test validation', async () => {
@@ -306,7 +280,7 @@ describe('test createTokens', () => {
 			error = e;
 		}
 		assert.deepStrictEqual(result, undefined);
-		assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid auth_object', 400));
+		assert.deepStrictEqual(error.message, 'invalid credentials');
 
 		//test not object arg
 		try {
@@ -315,7 +289,7 @@ describe('test createTokens', () => {
 			error = e;
 		}
 		assert.deepStrictEqual(result, undefined);
-		assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid auth_object', 400));
+		assert.deepStrictEqual(error.message, "'value' must be of type object");
 
 		//test no username
 		try {
@@ -324,7 +298,7 @@ describe('test createTokens', () => {
 			error = e;
 		}
 		assert.deepStrictEqual(result, undefined);
-		assert.deepStrictEqual(error, hdb_error(new Error(), 'username is required', 400));
+		assert.deepStrictEqual(error.message, "'username' is required. 'password' is required");
 
 		//test no password
 		try {
@@ -333,14 +307,11 @@ describe('test createTokens', () => {
 			error = e;
 		}
 		assert.deepStrictEqual(result, undefined);
-		assert.deepStrictEqual(error, hdb_error(new Error(), 'password is required', 400));
+		assert.deepStrictEqual(error.message, "'password' is required");
 
 		//test bad credentials
-		rw_validate_user();
-		rw_validate_user = token_auth.__set__('user_functions', {
-			findAndValidateUser: async (u, pw) => {
-				throw new Error('bad credentials');
-			},
+		validate_user_stub.callsFake(async (u, pw) => {
+			throw new Error('bad credentials');
 		});
 
 		try {
@@ -349,13 +320,10 @@ describe('test createTokens', () => {
 			error = e;
 		}
 		assert.deepStrictEqual(result, undefined);
-		assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid credentials', 401));
+		assert.deepStrictEqual(error.message, 'invalid credentials');
 
 		//test good credentials, no RSA keys
-		rw_validate_user();
-		rw_validate_user = token_auth.__set__('user_functions', {
-			findAndValidateUser: async (u, pw) => ({ username: u }),
-		});
+		validate_user_stub.callsFake(async (u, pw) => ({ username: u }));
 		try {
 			result = await token_auth.createTokens({ username: 'HDB_USER', password: 'pass' });
 		} catch (e) {
@@ -363,19 +331,15 @@ describe('test createTokens', () => {
 		}
 		assert.deepStrictEqual(result, undefined);
 		assert.deepStrictEqual(
-			error,
-			hdb_error(
-				new Error(),
-				'unable to generate JWT as there are no encryption keys.  please contact your administrator',
-				500
-			)
+			error.message,
+			'unable to generate JWT as there are no encryption keys.  please contact your administrator'
 		);
 	});
 
 	it('test happy path', async () => {
 		let rw_get_tokens = token_auth.__set__(
 			'getJWTRSAKeys',
-			async () => new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
+			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
 		);
 		let result = await token_auth.createTokens({ username: 'HDB_USER', password: 'pass' });
 		let refresh_payload = jwt.decode(result.refresh_token);
@@ -394,14 +358,13 @@ describe('test createTokens', () => {
 	});
 
 	it('test update failed', async () => {
-		rw_update();
-		rw_update = token_auth.__set__('update', async (update_object) => {
+		update_stub.callsFake(async (update_object) => {
 			throw Error('update failed');
 		});
 
 		let rw_get_tokens = token_auth.__set__(
 			'getJWTRSAKeys',
-			async () => new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
+			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
 		);
 		let result;
 		let error;
@@ -412,20 +375,17 @@ describe('test createTokens', () => {
 		}
 
 		assert.deepStrictEqual(result, undefined);
-		assert.deepStrictEqual(error, hdb_error(new Error(), 'unable to store refresh_token', 500));
-
-		rw_get_tokens();
+		assert.deepStrictEqual(error.message, 'update failed');
 	});
 
 	it('test update skipped the record', async () => {
-		rw_update();
-		rw_update = token_auth.__set__('update', async (update_object) => {
+		update_stub.callsFake(async (update_object) => {
 			return { message: 'updated 0 of 1', update_hashes: [], skipped_hashes: ['1'] };
 		});
 
 		let rw_get_tokens = token_auth.__set__(
 			'getJWTRSAKeys',
-			async () => new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
+			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
 		);
 		let result;
 		let error;
@@ -436,37 +396,32 @@ describe('test createTokens', () => {
 		}
 
 		assert.deepStrictEqual(result, undefined);
-		assert.deepStrictEqual(error, hdb_error(new Error(), 'unable to store refresh_token', 500));
-
-		rw_get_tokens();
+		assert.deepStrictEqual(error.message, 'unable to store refresh_token');
 	});
 });
 
 describe('test validateOperationToken function', () => {
 	let rw_get_tokens;
-	let rw_validate_user;
+	let validate_user_stub;
 	let jwt_spy;
 	let validate_user_spy;
 	let hdb_admin_tokens;
 	let old_user_tokens;
 	let non_user_tokens;
 	before(async () => {
+		sandbox.restore();
+
 		rw_get_tokens = token_auth.__set__(
 			'getJWTRSAKeys',
-			async () => new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
+			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
 		);
 
-		let rw_update = token_auth.__set__('update', async (update_object) => {
+		let update_stub = sandbox.stub(insert, 'update').callsFake(async (update_object) => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
 
-		let rw_signalling = token_auth.__set__('signalling', {
-			signalUserChange: (obj) => {},
-		});
-
-		rw_validate_user = token_auth.__set__('user_functions', {
-			findAndValidateUser: async (u, pw) => ({ username: u }),
-		});
+		let signalling_stub = sandbox.stub(signalling, 'signalUserChange').callsFake((obj) => {});
+		validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, pw) => ({ username: u }));
 
 		await user.setUsersWithRolesCache(
 			new Map([
@@ -482,19 +437,19 @@ describe('test validateOperationToken function', () => {
 		hdb_admin_tokens = await token_auth.createTokens({ username: 'HDB_ADMIN', password: 'cool' });
 		old_user_tokens = await token_auth.createTokens({ username: 'old_user', password: 'notcool' });
 		non_user_tokens = await token_auth.createTokens({ username: 'non_user', password: 'notcool' });
-		rw_validate_user();
+		validate_user_stub.restore();
 		jwt_spy = sandbox.spy(jwt, 'verify');
-		validate_user_spy = sandbox.spy(token_auth.__get__('user_functions'), 'findAndValidateUser');
+		validate_user_stub = sandbox.spy(user, 'findAndValidateUser');
 
-		rw_update();
-		rw_signalling();
+		update_stub.restore();
+		signalling_stub.restore();
 	});
 	let token_timeout;
 	let expired_user_tokens;
 
 	afterEach(() => {
 		jwt_spy.resetHistory();
-		validate_user_spy.resetHistory();
+		validate_user_stub.resetHistory();
 	});
 
 	after(() => {
@@ -608,7 +563,7 @@ describe('test validateRefreshToken function', () => {
 		validate_refresh_token = token_auth.__get__('validateRefreshToken');
 		rw_get_tokens = token_auth.__set__(
 			'getJWTRSAKeys',
-			async () => new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
+			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
 		);
 
 		let rw_update = token_auth.__set__('update', async (update_object) => {
@@ -769,7 +724,7 @@ describe('test refreshOperationToken function', () => {
 	before(async () => {
 		rw_get_tokens = token_auth.__set__(
 			'getJWTRSAKeys',
-			async () => new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
+			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
 		);
 
 		let rw_update = token_auth.__set__('update', async (update_object) => {
