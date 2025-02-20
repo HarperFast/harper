@@ -12,7 +12,7 @@
  */
 
 import { addExtension, pack, unpack } from 'msgpackr';
-import { readFile } from 'node:fs/promises';
+import { readFile, statfs } from 'node:fs/promises';
 import {
 	close,
 	createWriteStream,
@@ -26,7 +26,6 @@ import {
 	watch,
 	write,
 	rmSync,
-	statfs,
 } from 'node:fs';
 import { createDeflate, deflate } from 'node:zlib';
 import { Readable } from 'node:stream';
@@ -637,7 +636,7 @@ function generateFilePath(storageInfo: StorageInfo) {
 	const blobStoragePaths = getRootBlobPathsForDB(storageInfo.store);
 	const id = getNextFileId();
 	// get the storage index, which is the index of the blob storage path to use, distributed round-robin based on the id
-	const storageIndex = blobStoragePaths?.length > 1 ? getNextStorageIndex(blobStoragePaths) : 0;
+	const storageIndex = blobStoragePaths?.length > 1 ? getNextStorageIndex(blobStoragePaths, id) : 0;
 	const fileId = id.toString(16); // get the next file id
 	storageInfo.storageIndex = storageIndex;
 	storageInfo.fileId = fileId;
@@ -689,49 +688,62 @@ function getNextFileId(): number {
 	return Number(Atomics.add(idIncrementer, 0, 1n));
 }
 
+const FREQUENCY_TABLE_SIZE = 128;
 /**
  * Select the next index from the storage paths, where the frequency of selecting each storage path is proportional to the available space (which is occasionally updated)
  * @param blobStoragePaths
  */
-function getNextStorageIndex(blobStoragePaths) {
+function getNextStorageIndex(blobStoragePaths: string[], fileId: number) {
 	const now = Date.now();
-	if (!blobStoragePaths.availableSpaces) {
+	if (!blobStoragePaths.frequencyTable) {
 		blobStoragePaths.lastUpdated = 0;
-		blobStoragePaths.pathPeriods = new Array(blobStoragePaths.length).fill(0);
-		blobStoragePaths.availableSpaces = new Array(blobStoragePaths.length).fill(10000000);
+		// setup default frequency table with even distribution
+		const frequencyTable = new Array(FREQUENCY_TABLE_SIZE);
+		for (let i = 0; i < frequencyTable.length; i++) {
+			frequencyTable[i] = i % blobStoragePaths.length;
+		}
+		blobStoragePaths.frequencyTable = frequencyTable;
 	}
 	if ((blobStoragePaths.lastUpdated ?? 0) + 60000 < now) {
 		blobStoragePaths.lastUpdated = now;
-		function getFreeSpace() {
-			blobStoragePaths.map((path, index) => {
-				statfs?.(path, (err, stats) => {
-					if (err) logger.warn?.('Unable to get free space for volume', err);
-					else {
-						blobStoragePaths.availableSpaces[index] = stats.bavail * stats.bsize;
-					}
-				});
-			});
-		}
-		getFreeSpace();
-		setInterval(getFreeSpace, 60000).unref();
+		// create a new frequency table based on the available space
+		createFrequencyTableForStoragePaths(blobStoragePaths);
 	}
-	const pathPeriods = blobStoragePaths.pathPeriods;
-	let nextScore = Infinity;
-	let nextIndex = 0;
-	// find the next storage path to use, based on the lowest remaining period for each path
-	for (let i = 0; i < pathPeriods.length; i++) {
-		if (pathPeriods[i] < nextScore) {
-			nextIndex = i;
-			nextScore = pathPeriods[i];
-		}
-	}
-	// adjust back to zero basis
-	for (let i = 0; i < pathPeriods.length; i++) {
-		pathPeriods[i] -= nextScore;
-	}
-	// increment the period that we used, inversely proportional to the available space
-	pathPeriods[nextIndex] += 1 / blobStoragePaths.availableSpaces[nextIndex];
+	const nextIndex = blobStoragePaths.frequencyTable[fileId % FREQUENCY_TABLE_SIZE];
 	return nextIndex;
+}
+
+/**
+ * Create a frequency table for the storage paths, based on the available space, that allocates storage paths with more space more often
+ * and can be assigned quickly and consistently across threads (all threads will usually incrementing assign ids to the same alternating set of storage paths)
+ * @param blobStoragePaths
+ */
+async function createFrequencyTableForStoragePaths(blobStoragePaths) {
+	if (!statfs) return; // statfs is not available on all older node versions
+	const availableSpaces = await Promise.all(
+		blobStoragePaths.map(async (path, index) => {
+			const stats = await statfs(path);
+			const availableSpace = stats.bavail * stats.bsize;
+			return Math.pow(availableSpace, 0.8); // we don't want this to be quite linear, so we use a power function to reduce the impact of large differences in available space
+		})
+	);
+	const frequencyTable = new Array(FREQUENCY_TABLE_SIZE);
+	const pathPeriods = availableSpaces.map((space) => 1 / space);
+	for (let i = 0; i < FREQUENCY_TABLE_SIZE; i++) {
+		let nextScore = Infinity;
+		let nextIndex = 0;
+		// find the next storage path to use, based on the lowest remaining period for each path
+		for (let i = 0; i < pathPeriods.length; i++) {
+			if (pathPeriods[i] < nextScore) {
+				nextIndex = i;
+				nextScore = pathPeriods[i];
+			}
+		}
+		// increment the period that we used, inversely proportional to the available space
+		pathPeriods[nextIndex] += 1 / availableSpaces[nextIndex];
+		frequencyTable[i] = nextIndex;
+	}
+	blobStoragePaths.frequencyTable = frequencyTable;
 }
 
 /**
