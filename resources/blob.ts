@@ -12,7 +12,7 @@
  */
 
 import { addExtension, pack, unpack } from 'msgpackr';
-import { readFile } from 'node:fs/promises';
+import { readFile, readdir, rmdir, unlink as unlinkPromised } from 'node:fs/promises';
 import {
 	close,
 	createWriteStream,
@@ -25,7 +25,6 @@ import {
 	existsSync,
 	watch,
 	write,
-	rmSync,
 } from 'node:fs';
 import { createDeflate, deflate } from 'node:zlib';
 import { Readable } from 'node:stream';
@@ -579,13 +578,32 @@ export function getRootBlobPathsForDB(store: LMDBStore) {
 }
 export async function deleteRootBlobPathsForDB(store: LMDBStore): Promise<any[]> {
 	const paths = databasePaths.get(store);
-	const deletions = [];
 	if (paths) {
-		for (const path of paths) {
-			// do this synchronously because we can run out of memory if we try to do this asynchronously, because node gather file paths and queue them for deletion, without any reasonable constraints.
-			rmSync(path, { recursive: true, force: true });
-			await new Promise(setImmediate); // allow other events to be processed
+		await Promise.all(paths.map((path) => rimrafSteadily(path)));
+	}
+}
+
+/**
+ * recursively delete a directory and all of its contents, but do it one at a time, so that we don't run out of memory and hog resources
+ * @param path
+ */
+async function rimrafSteadily(path: string) {
+	for (const entry of await readdir(path, { withFileTypes: true })) {
+		if (entry.isDirectory()) {
+			await rimrafSteadily(join(path, entry.name));
+		} else {
+			try {
+				await unlinkPromised(join(path, entry.name));
+			} catch (error) {
+				logger.warn?.('Error deleting file', error);
+			}
 		}
+	}
+	try {
+		console.log();
+		await rmdir(path);
+	} catch (error) {
+		logger.warn?.('Error deleting directory', error);
 	}
 }
 function getFilePath({ storageIndex, fileId, store }: StorageInfo): string {
