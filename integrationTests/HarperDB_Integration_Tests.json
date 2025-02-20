@@ -62189,17 +62189,18 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 400\", function () {",
-									"    pm.response.to.have.status(400);",
+									"pm.test(\"Status code is 401\", function () {",
+									"    pm.response.to.have.status(401);",
 									"});",
 									"",
 									"pm.test(\"check error message\", function () {    ",
 									"    var jsonData = pm.response.json();    ",
-									"    pm.expect(jsonData['error'] === \"'username' is required\").to.eql(true);    ",
+									"    pm.expect(jsonData['error'] === \"Must login\").to.eql(true);    ",
 									"    ",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -62242,11 +62243,12 @@
 									"",
 									"pm.test(\"check error message\", function () {    ",
 									"    var jsonData = pm.response.json();    ",
-									"    pm.expect(jsonData['error'] === \"'password' is required\").to.eql(true);    ",
+									"    pm.expect(jsonData['error'] === \"'value' contains [username] without its required peers [password]\").to.eql(true);    ",
 									"    ",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -62616,6 +62618,71 @@
 						"body": {
 							"mode": "raw",
 							"raw": "{\n  \"operation\":\"refresh_operation_token\"\n}"
+						},
+						"url": {
+							"raw": "{{host}}:{{port}}",
+							"host": [
+								"{{host}}"
+							],
+							"port": "{{port}}"
+						},
+						"description": "We first need to create a Schema.  A Schema can be thought of as a container of tables that are independent from tables in other schemas.  An example might be the Schema dev with a table called dog.  The Schema prod may also have a table dog. \n\nNote that if you see the error response \"Cannot complete request: User 'admin' not found\", you need to set the basic auth to the user and password you entered during the install process.  What the heck is basic auth?  Read our article on it here: https://harperdbhelp.zendesk.com/hc/en-us/articles/115010250207-Basic-Auth-with-Postman"
+					},
+					"response": []
+				},
+				{
+					"name": "Create token with current user",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"pm.test(\"Status code is 200\", function () {",
+									"    pm.response.to.have.status(200);",
+									"});",
+									"",
+									"pm.test(\"tokens created\", function () {    ",
+									"    const jsonData = pm.response.json();    ",
+									"    pm.expect(jsonData).to.haveOwnProperty('operation_token');",
+									"    pm.expect(jsonData).to.haveOwnProperty('refresh_token');",
+									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "username",
+									"value": "{{username}}",
+									"type": "string"
+								},
+								{
+									"key": "password",
+									"value": "{{password}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [
+							{
+								"key": "Content-Type",
+								"value": "application/json"
+							}
+						],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n\t\"operation\":\"create_authentication_tokens\"\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",

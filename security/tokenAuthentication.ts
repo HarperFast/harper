@@ -75,20 +75,23 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 	const validation: any = validateBySchema(
 		authObj,
 		Joi.object({
-			username: Joi.string().required(),
-			password: Joi.when('role', {
-				is: Joi.exist(),
-				then: Joi.string().optional(),
-				otherwise: Joi.string().required(),
-			}),
+			username: Joi.string(),
+			password: Joi.string(),
 			role: Joi.string().optional(),
-		})
+		}).and('username', 'password')
 	);
 	if (validation) throw new ClientError(validation.message);
 
 	let user: any;
 	try {
-		user = await findAndValidateUser(authObj.username, authObj.password);
+		let validatePassword: boolean = true;
+		if (!authObj.username && !authObj.password) {
+			// if the username and password are not provided, use the hdb_user making the request
+			authObj.username = authObj.hdb_user?.username;
+			// the password would have been checked by authHandler
+			validatePassword = false;
+		}
+		user = await findAndValidateUser(authObj.username, authObj.password, validatePassword);
 	} catch (err) {
 		logger.error(err);
 		throw new ClientError(AUTHENTICATION_ERROR_MSGS.INVALID_CREDENTIALS, HTTP_STATUS_CODES.UNAUTHORIZED);

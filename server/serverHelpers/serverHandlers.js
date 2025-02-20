@@ -15,6 +15,12 @@ const p_authorize = util.promisify(auth.authorize);
 const server_utilities = require('./serverUtilities');
 const { createGzip, constants } = require('zlib');
 
+const NO_AUTH_OPERATIONS = [
+	terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS,
+	terms.OPERATIONS_ENUM.LOGIN,
+	terms.OPERATIONS_ENUM.LOGOUT,
+];
+
 function handleServerUncaughtException(err) {
 	let message = `Found an uncaught exception with message: ${err.message}. ${os.EOL}Stack: ${err.stack} ${
 		os.EOL
@@ -58,11 +64,13 @@ function reqBodyValidationHandler(req, resp, done) {
 function authHandler(req, resp, done) {
 	let user;
 
-	//create_authorization_tokens needs to not authorize
+	const isAuthOperation = !NO_AUTH_OPERATIONS.includes(req.body.operation);
 	if (
-		req.body.operation !== terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS &&
-		req.body.operation !== terms.OPERATIONS_ENUM.LOGIN &&
-		req.body.operation !== terms.OPERATIONS_ENUM.LOGOUT
+		// If create token is called without username/password in the body it needs to be authorized
+		(req.body.operation === terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS &&
+			!req.body.username &&
+			!req.body.password) ||
+		isAuthOperation
 	) {
 		p_authorize(req, resp)
 			.then((user_data) => {
