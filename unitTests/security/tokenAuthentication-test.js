@@ -404,7 +404,6 @@ describe('test validateOperationToken function', () => {
 	let rw_get_tokens;
 	let validate_user_stub;
 	let jwt_spy;
-	let validate_user_spy;
 	let hdb_admin_tokens;
 	let old_user_tokens;
 	let non_user_tokens;
@@ -470,8 +469,8 @@ describe('test validateOperationToken function', () => {
 		assert.deepStrictEqual(user, { active: true, username: 'HDB_ADMIN' });
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === false);
-		assert(validate_user_spy.callCount === 1);
-		assert(validate_user_spy.threw() === false);
+		assert(validate_user_stub.callCount === 1);
+		assert(validate_user_stub.threw() === false);
 	});
 
 	it('test old_user token', async () => {
@@ -483,14 +482,14 @@ describe('test validateOperationToken function', () => {
 			error = e;
 		}
 
-		assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid token', 401));
+		assert.deepStrictEqual(error.message, 'invalid token');
 		assert.deepStrictEqual(user, undefined);
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === false);
-		assert(validate_user_spy.callCount === 1);
+		assert(validate_user_stub.callCount === 1);
 		let validate_error;
 		try {
-			await validate_user_spy.firstCall.returnValue;
+			await validate_user_stub.firstCall.returnValue;
 		} catch (e) {
 			validate_error = e;
 		}
@@ -510,10 +509,10 @@ describe('test validateOperationToken function', () => {
 		assert.deepStrictEqual(user, { username: 'non_user' });
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === false);
-		assert(validate_user_spy.callCount === 1);
+		assert(validate_user_stub.callCount === 1);
 		let validate_error;
 		try {
-			await validate_user_spy.firstCall.returnValue;
+			await validate_user_stub.firstCall.returnValue;
 		} catch (e) {
 			validate_error = e;
 		}
@@ -527,10 +526,10 @@ describe('test validateOperationToken function', () => {
 		} catch (e) {
 			error = e;
 		}
-		assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid token', 401));
+		assert.deepStrictEqual(error.message, 'invalid token');
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === true);
-		assert(validate_user_spy.callCount === 0);
+		assert(validate_user_stub.callCount === 0);
 	});
 
 	it('test expired token', async () => {
@@ -540,10 +539,11 @@ describe('test validateOperationToken function', () => {
 		} catch (e) {
 			error = e;
 		}
-		assert.deepStrictEqual(error, hdb_error(new Error(), 'token expired', 403));
+		assert.deepStrictEqual(error.message, 'token expired');
+		assert.deepStrictEqual(error.statusCode, 403);
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === true);
-		assert(validate_user_spy.callCount === 0);
+		assert(validate_user_stub.callCount === 0);
 	});
 });
 
@@ -566,19 +566,13 @@ describe('test validateRefreshToken function', () => {
 			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
 		);
 
-		let rw_update = token_auth.__set__('update', async (update_object) => {
+		let update_stub = sandbox.stub(insert, 'update').callsFake(async (update_object) => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
 
-		let rw_signalling = token_auth.__set__('signalling', {
-			signalUserChange: (obj) => {},
-		});
+		let signalling_stub = sandbox.stub(signalling, 'signalUserChange').callsFake((obj) => {});
 
-		rw_validate_user = token_auth.__set__('user_functions', {
-			findAndValidateUser: async (u, pw) => {
-				return { username: u };
-			},
-		});
+		const validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, pw) => ({ username: u }));
 
 		token_timeout = token_auth.__set__('REFRESH_TOKEN_TIMEOUT', '-1');
 		expired_user_tokens = await token_auth.createTokens({ username: 'EXPIRED', password: 'cool' });
@@ -600,11 +594,11 @@ describe('test validateRefreshToken function', () => {
 		]);
 		await user.setUsersWithRolesCache(user_map);
 
-		rw_validate_user();
+		validate_user_stub.restore();
 		jwt_spy = sandbox.spy(jwt, 'verify');
-		validate_user_spy = sandbox.spy(token_auth.__get__('user_functions'), 'findAndValidateUser');
-		rw_update();
-		rw_signalling();
+		validate_user_spy = sandbox.spy(user, 'findAndValidateUser');
+		update_stub.restore();
+		signalling_stub.restore();
 	});
 
 	afterEach(() => {
@@ -647,7 +641,8 @@ describe('test validateRefreshToken function', () => {
 			error = e;
 		}
 
-		assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid token', 401));
+		assert.deepStrictEqual(error.message, 'invalid token');
+		assert.deepStrictEqual(error.statusCode, 401);
 		assert.deepStrictEqual(user, undefined);
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === false);
@@ -671,7 +666,7 @@ describe('test validateRefreshToken function', () => {
 			error = e;
 		}
 
-		assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid token', 401));
+		assert.deepStrictEqual(error.message, 'invalid token');
 		assert.deepStrictEqual(user, undefined);
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === false);
@@ -692,7 +687,7 @@ describe('test validateRefreshToken function', () => {
 		} catch (e) {
 			error = e;
 		}
-		assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid token', 401));
+		assert.deepStrictEqual(error.message, 'invalid token');
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === true);
 		assert(validate_user_spy.callCount === 0);
@@ -705,7 +700,8 @@ describe('test validateRefreshToken function', () => {
 		} catch (e) {
 			error = e;
 		}
-		assert.deepStrictEqual(error, hdb_error(new Error(), 'token expired', 403));
+		assert.deepStrictEqual(error.message, 'token expired');
+		assert.deepStrictEqual(error.statusCode, 403);
 		assert(jwt_spy.callCount === 1);
 		assert(jwt_spy.threw() === true);
 		assert(validate_user_spy.callCount === 0);
@@ -714,7 +710,6 @@ describe('test validateRefreshToken function', () => {
 
 describe('test refreshOperationToken function', () => {
 	let rw_get_tokens;
-	let rw_validate_user;
 	let jwt_spy;
 	let validate_user_spy;
 
@@ -727,22 +722,18 @@ describe('test refreshOperationToken function', () => {
 			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
 		);
 
-		let rw_update = token_auth.__set__('update', async (update_object) => {
+		let update_stub = sandbox.stub(insert, 'update').callsFake(async (update_object) => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
 
-		let rw_signalling = token_auth.__set__('signalling', {
-			signalUserChange: (obj) => {},
-		});
+		let signalling_stub = sandbox.stub(signalling, 'signalUserChange').callsFake((obj) => {});
 
-		rw_validate_user = token_auth.__set__('user_functions', {
-			findAndValidateUser: async (u, pw) => ({ username: u }),
-		});
+		let validate_user_stub = sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, pw) => ({ username: u }));
 
 		hdb_admin_tokens = await token_auth.createTokens({ username: 'HDB_ADMIN', password: 'cool' });
 		old_user_tokens = await token_auth.createTokens({ username: 'old_user', password: 'notcool' });
 		non_user_tokens = await token_auth.createTokens({ username: 'non_user', password: 'notcool' });
-		rw_validate_user();
+		validate_user_stub.restore();
 
 		await user.setUsersWithRolesCache(
 			new Map([
@@ -763,10 +754,10 @@ describe('test refreshOperationToken function', () => {
 		);
 
 		jwt_spy = sandbox.spy(jwt, 'verify');
-		validate_user_spy = sandbox.spy(token_auth.__get__('user_functions'), 'findAndValidateUser');
+		validate_user_spy = sandbox.spy(user, 'findAndValidateUser');
 
-		rw_update();
-		rw_signalling();
+		update_stub.restore();
+		signalling_stub.restore();
 	});
 
 	afterEach(() => {
@@ -788,7 +779,7 @@ describe('test refreshOperationToken function', () => {
 			error = e;
 		}
 
-		assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid body', 400));
+		assert.deepStrictEqual(error.message, "'value' is required");
 		assert.deepStrictEqual(token, undefined);
 
 		assert.deepStrictEqual(jwt_spy.callCount, 0);
@@ -806,7 +797,7 @@ describe('test refreshOperationToken function', () => {
 			error = e;
 		}
 
-		assert.deepStrictEqual(error, hdb_error(new Error(), 'refresh_token is required', 400));
+		assert.deepStrictEqual(error.message, "'refresh_token' is required");
 		assert.deepStrictEqual(token, undefined);
 
 		assert.deepStrictEqual(jwt_spy.callCount, 0);
@@ -850,7 +841,7 @@ describe('test refreshOperationToken function', () => {
 			error = e;
 		}
 
-		assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid token', 401));
+		assert.deepStrictEqual(error.message, 'invalid token');
 		assert.deepStrictEqual(token, undefined);
 
 		assert.deepStrictEqual(jwt_spy.callCount, 1);
@@ -876,7 +867,7 @@ describe('test refreshOperationToken function', () => {
 			error = e;
 		}
 
-		assert.deepStrictEqual(error, hdb_error(new Error(), 'invalid token', 401));
+		assert.deepStrictEqual(error.message, 'invalid token');
 		assert.deepStrictEqual(token, undefined);
 		assert.deepStrictEqual(jwt_spy.callCount, 1);
 		assert.deepStrictEqual(jwt_spy.threw(), false);

@@ -143,7 +143,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 }
 
 export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTTokens> {
-	const validation: any = validateBySchema(tokenObj, Joi.object({ refresh_token: Joi.string().required() }));
+	const validation: any = validateBySchema(tokenObj, Joi.object({ refresh_token: Joi.string().required() }).required());
 	if (validation) throw new ClientError(validation.message);
 	const { refresh_token } = tokenObj;
 	await validateRefreshToken(refresh_token);
