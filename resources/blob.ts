@@ -690,7 +690,7 @@ function getNextFileId(): number {
 
 const FREQUENCY_TABLE_SIZE = 128;
 /**
- * Select the next index from the storage paths, where the frequency of selecting each storage path is proportional to the available space (which is occasionally updated)
+ * Select the next index from the storage paths, where the frequency of selecting each storage path is (mostly) proportional to the available space (which is occasionally updated)
  * @param blobStoragePaths
  */
 function getNextStorageIndex(blobStoragePaths: string[], fileId: number) {
@@ -715,7 +715,7 @@ function getNextStorageIndex(blobStoragePaths: string[], fileId: number) {
 
 /**
  * Create a frequency table for the storage paths, based on the available space, that allocates storage paths with more space more often
- * and can be assigned quickly and consistently across threads (all threads will usually incrementing assign ids to the same alternating set of storage paths)
+ * and can be assigned quickly and consistently across threads (all threads will usually incrementally assign ids to the same alternating set of storage paths)
  * @param blobStoragePaths
  */
 async function createFrequencyTableForStoragePaths(blobStoragePaths) {
