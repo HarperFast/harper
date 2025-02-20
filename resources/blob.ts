@@ -26,6 +26,7 @@ import {
 	watch,
 	write,
 	rmSync,
+	statfs,
 } from 'node:fs';
 import { createDeflate, deflate } from 'node:zlib';
 import { Readable } from 'node:stream';
@@ -73,7 +74,7 @@ export let blobsWereEncoded = false; // keep track of whether blobs were encoded
 // this is a reusable buffer for reading and writing to the header (without having to create new allocations)
 const HEADER = new Uint8Array(8);
 const headerView = new DataView(HEADER.buffer);
-const FILE_READ_TIMEOUT = 30000;
+const FILE_READ_TIMEOUT = 60000;
 // We want FileBackedBlob instances to be an instanceof Blob, but we don't want to actually extend the class and call Blob's constructor, which is quite expensive because it has to set it up as a transferrable.
 function InstanceOfBlobWithNoConstructor() {}
 InstanceOfBlobWithNoConstructor.prototype = Blob.prototype;
@@ -92,7 +93,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 	size: number;
 	declare finished: Promise<void>;
 	#onError: ((error: Error) => void)[];
-	#options?: BlobCreationOptions;
+	#onSize: ((size: number) => void)[];
 	constructor(options?: BlobCreationOptions) {
 		super();
 		if (options?.type) this.type = options.type;
@@ -100,9 +101,13 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 	}
 
 	on(type: string, callback: (error: Error) => void) {
-		if (type !== 'error') throw new Error('Only error events are supported');
-		if (!this.#onError) this.#onError = [];
-		this.#onError.push(callback);
+		if (type === 'error') {
+			if (!this.#onError) this.#onError = [];
+			this.#onError.push(callback);
+		} else if (type === 'size') {
+			if (!this.#onSize) this.#onSize = [];
+			this.#onSize.push(callback);
+		} else throw new Error("Only 'error' and 'size' events are supported");
 	}
 
 	toJSON() {
@@ -151,7 +156,12 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 
 					size = Number(headerValue & 0xffffffffffffn);
 					if (size < end) size = end;
-					if (size < UNKNOWN_SIZE) this.size = size;
+					if (size < UNKNOWN_SIZE) {
+						this.size = size;
+						if (this.#onSize) {
+							for (const callback of this.#onSize) callback(size);
+						}
+					}
 				}
 			} catch (error) {
 				if (error.code !== 'ENOENT') throw error;
@@ -290,7 +300,12 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 								return onError(new Error('Error in blob: ' + buffer.subarray(HEADER_SIZE)));
 							}
 							size = Number(headerValue & 0xffffffffffffn);
-							if (size < UNKNOWN_SIZE) blob.size = size;
+							if (size < UNKNOWN_SIZE && blob.size !== size) {
+								blob.size = size;
+								if (blob.#onSize) {
+									for (const callback of blob.#onSize) callback(size);
+								}
+							}
 							buffer = buffer.subarray(HEADER_SIZE, bytesRead);
 							totalContentRead -= HEADER_SIZE;
 						} else if (bytesRead === 0) {
@@ -622,7 +637,7 @@ function generateFilePath(storageInfo: StorageInfo) {
 	const blobStoragePaths = getRootBlobPathsForDB(storageInfo.store);
 	const id = getNextFileId();
 	// get the storage index, which is the index of the blob storage path to use, distributed round-robin based on the id
-	const storageIndex = blobStoragePaths?.length > 1 ? id % blobStoragePaths.length : 0;
+	const storageIndex = blobStoragePaths?.length > 1 ? getNextStorageIndex(blobStoragePaths) : 0;
 	const fileId = id.toString(16); // get the next file id
 	storageInfo.storageIndex = storageIndex;
 	storageInfo.fileId = fileId;
@@ -672,6 +687,51 @@ function getNextFileId(): number {
 		idIncrementers.set(currentStore, idIncrementer);
 	}
 	return Number(Atomics.add(idIncrementer, 0, 1n));
+}
+
+/**
+ * Select the next index from the storage paths, where the frequency of selecting each storage path is proportional to the available space (which is occasionally updated)
+ * @param blobStoragePaths
+ */
+function getNextStorageIndex(blobStoragePaths) {
+	const now = Date.now();
+	if (!blobStoragePaths.availableSpaces) {
+		blobStoragePaths.lastUpdated = 0;
+		blobStoragePaths.pathPeriods = new Array(blobStoragePaths.length).fill(0);
+		blobStoragePaths.availableSpaces = new Array(blobStoragePaths.length).fill(10000000);
+	}
+	if ((blobStoragePaths.lastUpdated ?? 0) + 60000 < now) {
+		blobStoragePaths.lastUpdated = now;
+		function getFreeSpace() {
+			blobStoragePaths.map((path, index) => {
+				statfs?.(path, (err, stats) => {
+					if (err) logger.warn?.('Unable to get free space for volume', err);
+					else {
+						blobStoragePaths.availableSpaces[index] = stats.bavail * stats.bsize;
+					}
+				});
+			});
+		}
+		getFreeSpace();
+		setInterval(getFreeSpace, 60000).unref();
+	}
+	const pathPeriods = blobStoragePaths.pathPeriods;
+	let nextScore = Infinity;
+	let nextIndex = 0;
+	// find the next storage path to use, based on the lowest remaining period for each path
+	for (let i = 0; i < pathPeriods.length; i++) {
+		if (pathPeriods[i] < nextScore) {
+			nextIndex = i;
+			nextScore = pathPeriods[i];
+		}
+	}
+	// adjust back to zero basis
+	for (let i = 0; i < pathPeriods.length; i++) {
+		pathPeriods[i] -= nextScore;
+	}
+	// increment the period that we used, inversely proportional to the available space
+	pathPeriods[nextIndex] += 1 / blobStoragePaths.availableSpaces[nextIndex];
+	return nextIndex;
 }
 
 /**

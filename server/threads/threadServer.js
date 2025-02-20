@@ -492,6 +492,7 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 					const execution_time = end_time - start_time;
 					let body = response.body;
 					let sent_body;
+					let deferWriteHead = false;
 					if (!response.handlesHeaders) {
 						const headers = response.headers || new Headers();
 						if (!body) {
@@ -502,7 +503,17 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 							else headers.set('Content-Length', body.length);
 							sent_body = true;
 						} else if (body instanceof Blob) {
+							// if the size is available now, immediately set it
 							if (body.size) headers.set('Content-Length', body.size);
+							else if (body.on) {
+								deferWriteHead = true;
+								body.on('size', (size) => {
+									// we can also try to set the Content-Length once the header is read and
+									// the size available. but if writeHead is called, this will have no effect. So we
+									// need to defer writeHead if we are going to set this
+									if (!node_response.headersSent) node_response.setHeader('Content-Length', size);
+								});
+							}
 							body = body.stream();
 						}
 						let server_timing = `hdb;dur=${execution_time.toFixed(2)}`;
@@ -510,8 +521,19 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 							server_timing += ', miss';
 						}
 						appendHeader(headers, 'Server-Timing', server_timing, true);
-						if (!node_response.headersSent)
-							node_response.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
+						if (!node_response.headersSent) {
+							if (deferWriteHead) {
+								// if we are deferring, we need to set the statusCode and headers, let any other headers be set later
+								// until the first write
+								node_response.statusCode = status;
+								if (headers) {
+									if (headers[Symbol.iterator]) for (let [name, value] of headers) node_response.setHeader(name, value);
+									else for (let name in headers) node_response.setHeader(name, headers[name]);
+								}
+							} // else the fast path, if we don't have to defer
+							else
+								node_response.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
+						}
 						if (sent_body) node_response.end(body);
 					}
 					const handler_path = request.handlerPath;
