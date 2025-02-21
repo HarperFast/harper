@@ -56,6 +56,7 @@ export const CONFIRMATION_STATUS_POSITION = 0;
 export const RECEIVED_VERSION_POSITION = 1;
 export const RECEIVED_TIME_POSITION = 2;
 export const SENDING_TIME_POSITION = 3;
+const run_clone = process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL');
 
 export const table_update_listeners = new Map();
 // This a map of the database name to the subscription object, for the subscriptions from our tables to the replication module
@@ -162,7 +163,8 @@ export class NodeReplicationConnection extends EventEmitter {
 		logger.debug?.(`Connecting to ${this.url}, db: ${this.databaseName}, process ${process.pid}`);
 		this.socket.on('open', () => {
 			this.socket._socket.unref();
-			logger.info?.(`Connected to ${this.url}, db: ${this.databaseName}`);
+			// in normal startup, just use info, but adjust log level to warn if we were previously disconnected, because there was a warn message on the disconnect and we want to keep symmetry
+			logger[this.isConnected ? 'info' : 'warn']?.(`Connected to ${this.url}, db: ${this.databaseName}`);
 			this.retries = 0;
 			this.retryTime = INITIAL_RETRY_TIME;
 			// if we have already connected, we need to send a reconnected event
@@ -527,9 +529,7 @@ export function replicateOverWS(ws, options, authorization) {
 						break;
 					case NODE_NAME_TO_ID_MAP:
 						// this is the mapping of node names to short local ids. if there is no audit_store (yet), just make an empty map, but not sure why that would happen.
-						remote_short_id_to_local_id = audit_store
-							? remoteToLocalNodeId(remote_node_name, data, audit_store)
-							: new Map();
+						remote_short_id_to_local_id = audit_store ? remoteToLocalNodeId(data, audit_store) : new Map();
 						receiving_data_from_node_names = message[2];
 						logger.debug?.(
 							connection_id,
@@ -1100,7 +1100,7 @@ export function replicateOverWS(ws, options, authorization) {
 										// note that last_removed may be undefined, in which case we want the comparison to go into this branch (hence !(<=))
 										if (
 											!(last_removed <= current_sequence_id) &&
-											env.get(CONFIG_PARAMS.REPLICATION_COPYTABLESTOCATCHUP) !== false
+											(env.get(CONFIG_PARAMS.REPLICATION_COPYTABLESTOCATCHUP) ?? run_clone)
 										) {
 											// This means the audit log doesn't extend far enough back, so we need to replicate all the tables
 											// This should only be done on a single node, we don't want full table replication from all the
@@ -1471,7 +1471,6 @@ export function replicateOverWS(ws, options, authorization) {
 			);
 			if (connected_node !== node) {
 				// indirect connection through a proxying node
-				if (start_time > 5000) start_time -= 5000; // first, decrement the start time to cover some clock drift between nodes (5 seconds)
 				// if there is a last sequence id we received through the proxying node that is newer, we can start from there
 				const connected_node_id = audit_store && getIdOfRemoteNode(connected_node.name, audit_store);
 				const sequence_entry =
