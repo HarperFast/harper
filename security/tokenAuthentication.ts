@@ -1,7 +1,7 @@
 import jwt from 'jsonwebtoken';
 import fs from 'fs-extra';
 import path from 'node:path';
-const Joi = require('joi');
+import Joi from 'joi';
 import { validateBySchema } from '../validation/validationWrapper';
 import {
 	CONFIG_PARAMS,
@@ -36,11 +36,11 @@ interface JWTRSAKeys {
 	privateKey: string;
 	passphrase: string;
 }
-let rsaKeys: JWTRSAKeys | undefined = undefined;
 
 interface AuthObject {
-	username: string;
+	username?: string;
 	password?: string;
+	role?: string;
 }
 
 interface TokenObject {
@@ -53,9 +53,10 @@ interface JWTTokens {
 }
 
 /**
- * fetches the rsa keys from disk
+ * fetches the rsa keys from cache var or disk
  * @returns {Promise<JWTRSAKeys>}
  */
+let rsaKeys: JWTRSAKeys | undefined = undefined;
 export async function getJWTRSAKeys(): Promise<JWTRSAKeys> {
 	if (rsaKeys) return rsaKeys;
 	try {
@@ -75,20 +76,20 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 	const validation: any = validateBySchema(
 		authObj,
 		Joi.object({
-			username: Joi.string(),
-			password: Joi.string(),
+			username: Joi.string().optional(),
+			password: Joi.string().optional(),
 			role: Joi.string().optional(),
-		}).and('username', 'password')
+		})
 	);
 	if (validation) throw new ClientError(validation.message);
 
 	let user: any;
 	try {
-		let validatePassword: boolean = true;
+		let validatePassword: boolean = authObj.bypass_auth !== true;
 		if (!authObj.username && !authObj.password) {
-			// if the username and password are not provided, use the hdb_user making the request
+			// if the username and password are not provided, use the hdb_user making the request.
 			authObj.username = authObj.hdb_user?.username;
-			// the password would have been checked by authHandler
+			// the password would have been checked by authHandler before getting here
 			validatePassword = false;
 		}
 		user = await findAndValidateUser(authObj.username, authObj.password, validatePassword);
@@ -100,7 +101,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 
 	let superUser: boolean = false;
 	let clusterUser: boolean = false;
-	if (user.role && user.role.permission) {
+	if (user.role?.permission) {
 		superUser = user.role.permission.super_user === true;
 		clusterUser = user.role.permission.cluster_user === true;
 	}
@@ -111,7 +112,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		cluster_user: boolean;
 		role?: any;
 	} = { username: authObj.username, super_user: superUser, cluster_user: clusterUser };
-	if (user.role) payload.role = user.role.name;
+	if (authObj.role) payload.role = authObj.role;
 
 	const keys: JWTRSAKeys = await getJWTRSAKeys();
 	const operationToken = await jwt.sign(
@@ -177,6 +178,12 @@ async function validateToken(token: string, tokenType: TOKEN_TYPE_ENUM): Promise
 			algorithms: RSA_ALGORITHM,
 			subject: tokenType,
 		});
+
+		// If a role is present, it means the token is not an operation token. The validation of
+		// the token will happen in the respective function/component that uses the token.
+		if (tokenVerified.role) {
+			throw new Error('Invalid token');
+		}
 
 		const user: any = await findAndValidateUser(tokenVerified.username, undefined, false);
 		if (tokenType === TOKEN_TYPE_ENUM.REFRESH && !password.validate(user.refresh_token, token)) {

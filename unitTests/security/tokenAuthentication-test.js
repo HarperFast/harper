@@ -293,21 +293,21 @@ describe('test createTokens', () => {
 
 		//test no username
 		try {
-			result = await token_auth.createTokens({});
+			result = await token_auth.createTokens({ username: 'bad-guy' });
 		} catch (e) {
 			error = e;
 		}
 		assert.deepStrictEqual(result, undefined);
-		assert.deepStrictEqual(error.message, "'username' is required. 'password' is required");
+		assert.deepStrictEqual(error.message, "'value' contains [username] without its required peers [password]");
 
 		//test no password
 		try {
-			result = await token_auth.createTokens({ username: 'HDB_ADMIN' });
+			result = await token_auth.createTokens({ password: 'HDB_ADMIN' });
 		} catch (e) {
 			error = e;
 		}
 		assert.deepStrictEqual(result, undefined);
-		assert.deepStrictEqual(error.message, "'password' is required");
+		assert.deepStrictEqual(error.message, "'value' contains [password] without its required peers [username]");
 
 		//test bad credentials
 		validate_user_stub.callsFake(async (u, pw) => {
