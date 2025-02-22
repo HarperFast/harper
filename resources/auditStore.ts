@@ -28,8 +28,8 @@ import { isMainThread } from 'worker_threads';
  */
 initSync();
 
-const ENTRY_HEADER = Buffer.alloc(1024); // enough room for all usernames?
-const ENTRY_DATAVIEW = new DataView(ENTRY_HEADER.buffer, ENTRY_HEADER.byteOffset, 1024);
+const ENTRY_HEADER = Buffer.alloc(0xb00); // enough room for all usernames?
+const ENTRY_DATAVIEW = new DataView(ENTRY_HEADER.buffer, ENTRY_HEADER.byteOffset, 0xb00);
 export const transactionKeyEncoder = {
 	writeKey(key, buffer, position) {
 		if (key === LAST_TIMESTAMP_PLACEHOLDER) {
