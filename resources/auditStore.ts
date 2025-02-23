@@ -29,8 +29,8 @@ import { decodeFromDatabase, deleteBlobsInObject } from './blob';
  */
 initSync();
 
-const ENTRY_HEADER = Buffer.alloc(0xb00); // enough room for all usernames?
-const ENTRY_DATAVIEW = new DataView(ENTRY_HEADER.buffer, ENTRY_HEADER.byteOffset, 0xb00);
+const ENTRY_HEADER = Buffer.alloc(2816); // this is sized to be large enough for the maximum key size (1976) plus large usernames. We may want to consider some limits on usernames to ensure this all fits
+const ENTRY_DATAVIEW = new DataView(ENTRY_HEADER.buffer, ENTRY_HEADER.byteOffset, 2816);
 export const transactionKeyEncoder = {
 	writeKey(key, buffer, position) {
 		if (key === LAST_TIMESTAMP_PLACEHOLDER) {
