@@ -33,7 +33,7 @@ export class Resource implements ResourceInterface {
 	static transactions: Transaction[] & { timestamp: number };
 	constructor(identifier: Id, source: any) {
 		this.#id = identifier;
-		const context = source?.getContext ? source.getContext() ?? null : undefined;
+		const context = source?.getContext ? (source.getContext() ?? null) : undefined;
 		this.#context = context !== undefined ? context : source || null;
 	}
 
@@ -241,21 +241,27 @@ export class Resource implements ResourceInterface {
 	static parsePath(path, context, query) {
 		const dot_index = path.indexOf('.');
 		if (dot_index > -1) {
+			// handle paths of the form /path/id.property
 			const property = path.slice(dot_index + 1);
-			path = path.slice(0, dot_index);
 			const requested_content_type = context?.headers && EXTENSION_TYPES[property];
 			if (requested_content_type) {
+				// handle path.json, path.cbor, etc. for requesting a specific content type using just the URL
 				context.requestedContentType = requested_content_type;
-			} else if (query) query.property = property;
-			else {
-				return {
-					query: { property },
-					id: pathToId(path, this),
-					isCollection: id_was_collection,
-				};
+				path = path.slice(0, dot_index); // remove the property from the path
+			} else if (this.attributes?.find((attribute) => attribute.name === property)) {
+				// handle path.attribute for requesting a specific attribute using just the URL
+				path = path.slice(0, dot_index); // remove the property from the path
+				if (query) query.property = property;
+				else {
+					return {
+						query: { property },
+						id: pathToId(path, this),
+						isCollection: id_was_collection,
+					};
+				}
 			}
 		}
-		// convert paths to arrays like /nested/path/4 -> ['nested', 'path', 4]
+		// convert paths to arrays like /nested/path/4 -> ['nested', 'path', 4] if splitSegments is enabled
 		const id = pathToId(path, this);
 		if (id_was_collection) {
 			return { id, isCollection: true };

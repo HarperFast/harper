@@ -37,11 +37,19 @@ describe('test REST with property updates', () => {
 			id: '5',
 			subObject: { name: 'a sub-object' },
 			subArray: [{ name: 'a sub-object of an array' }],
+			extraProperty: 'this is not in the schema',
 		});
 		assert.equal(response.status, 204);
 		response = await axios.get('http://localhost:9926/namespace/SubObject/6.subObject');
 		assert.equal(response.status, 200);
 		assert.equal(response.data.name, 'a sub-object');
+		// this should return 404 because the property is not in the schema (and should be treated as a full id)
+		response = await axios.get('http://localhost:9926/namespace/SubObject/6.extraProperty', {
+			validateStatus: function () {
+				return true;
+			},
+		});
+		assert.equal(response.status, 404);
 	});
 	it('get with sub-property access via ?select', async () => {
 		let response = await axios.put('http://localhost:9926/namespace/SubObject/6', {
