@@ -600,7 +600,6 @@ async function rimrafSteadily(path: string) {
 		}
 	}
 	try {
-		console.log();
 		await rmdir(path);
 	} catch (error) {
 		logger.warn?.('Error deleting directory', error);
