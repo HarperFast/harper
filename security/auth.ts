@@ -289,7 +289,7 @@ export async function login(login_object) {
 	login_object.baseResponse.headers.set = (name, value) => {
 		login_object.fastifyResponse.header(name, value);
 	};
-	await login_object.baseRequest.login(login_object.username, login_object.password);
+	await login_object.baseRequest.login(login_object.username, login_object.password ?? '');
 	return 'Login successful';
 }
 
