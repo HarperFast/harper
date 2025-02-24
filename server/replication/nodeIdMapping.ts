@@ -57,7 +57,7 @@ export function exportIdMapping(audit_store) {
 /**
  * Take the remote node's long id to short id mapping and create a map from the remote node's short id to the local node short id.
  */
-export function remoteToLocalNodeId(remote_node_name, remote_mapping, audit_store) {
+export function remoteToLocalNodeId(remote_mapping: any, audit_store: any) {
 	const id_mapping_record = getIdMappingRecord(audit_store);
 	const name_to_id = id_mapping_record.remoteNameToId;
 	const remote_to_local_id = new Map();
