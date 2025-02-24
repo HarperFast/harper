@@ -101,7 +101,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 
 	on(type: string, callback: (error: Error) => void) {
 		if (type === 'error') {
-			if (!this.#onError) this.#onError = [];
+			this.#onError ??= [];
 			this.#onError.push(callback);
 		} else if (type === 'size') {
 			if (!this.#onSize) this.#onSize = [];
