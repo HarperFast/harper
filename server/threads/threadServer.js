@@ -527,8 +527,15 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 								// until the first write
 								node_response.statusCode = status;
 								if (headers) {
-									if (headers[Symbol.iterator]) for (let [name, value] of headers) node_response.setHeader(name, value);
-									else for (let name in headers) node_response.setHeader(name, headers[name]);
+									if (headers[Symbol.iterator]) {
+										for (let [name, value] of headers) {
+											node_response.setHeader(name, value);
+										}
+									} else {
+										for (let name in headers) {
+											node_response.setHeader(name, headers[name]);
+										}
+									}
 								}
 							} // else the fast path, if we don't have to defer
 							else
