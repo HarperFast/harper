@@ -3,7 +3,7 @@
 import { assert, expect } from 'chai';
 import axios from 'axios';
 import { pack, unpack } from 'msgpackr';
-import EventSource from 'eventsource';
+import { EventSource } from 'eventsource';
 import { getVariables, callOperation } from './utility.js';
 import { WebSocket } from 'ws';
 import { setupTestApp } from './setupTestApp.mjs';
