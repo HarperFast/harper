@@ -236,7 +236,7 @@ export async function authentication(request, next_handler) {
 				if (validatePassword) {
 					user = request.user = await server.authenticateUser(username, password, request);
 				} else {
-					user = request.user = await server.getUser(username, password, request);
+					user = request.user = await server.getUser(username, undefined, request);
 				}
 
 				request.session.update({ user: user && (user.getId?.() ?? user.username) });
