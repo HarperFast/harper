@@ -506,7 +506,8 @@ jobs:
           tagLatest: ${{ needs.meta.outputs.dockerhub_tag_latest == 'true' && true || false }}
           buildPlatforms: 'linux/amd64,linux/arm64'
           push: ${{ needs.meta.outputs.push == 'true' && 'true' || 'false' }}
-          pushRedhatConnect: ${{ matrix.nodeVersion == 22 && 'true' || 'false' }} # only checking node version here, docker-build action will check if harperdb/harperdb-openshift
+          #pushRedhatConnect: ${{ matrix.nodeVersion == 22 && 'true' || 'false' }} # only checking node version here, docker-build action will check if harperdb/harperdb-openshift
+          pushRedhatConnect: false # temporarily disabled
           dockerUsername: ${{ secrets.DOCKER_USERNAME }}
           dockerPassword: ${{ secrets.DOCKER_PASSWORD }}
 
