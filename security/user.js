@@ -50,6 +50,10 @@ server.getUser = (username, password) => {
 	return findAndValidateUser(username, password, password != null);
 };
 
+server.authenticateUser = (username, password) => {
+	return findAndValidateUser(username, password);
+};
+
 const USER_ATTRIBUTE_ALLOWLIST = {
 	username: true,
 	active: true,
