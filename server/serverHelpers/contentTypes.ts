@@ -404,7 +404,7 @@ export function serialize(response_data, request, response_object) {
 	return response_body;
 }
 
-let asyncSerializations;
+let asyncSerializations: Promise<void>;
 /**
  * Serialize a message, may be use multiple times (like with WebSockets)
  * @param message

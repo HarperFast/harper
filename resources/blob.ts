@@ -12,7 +12,7 @@
  */
 
 import { addExtension, pack, unpack } from 'msgpackr';
-import { readFile } from 'node:fs/promises';
+import { readFile, statfs } from 'node:fs/promises';
 import {
 	close,
 	createWriteStream,
@@ -73,7 +73,7 @@ export let blobsWereEncoded = false; // keep track of whether blobs were encoded
 // this is a reusable buffer for reading and writing to the header (without having to create new allocations)
 const HEADER = new Uint8Array(8);
 const headerView = new DataView(HEADER.buffer);
-const FILE_READ_TIMEOUT = 30000;
+const FILE_READ_TIMEOUT = 60000;
 // We want FileBackedBlob instances to be an instanceof Blob, but we don't want to actually extend the class and call Blob's constructor, which is quite expensive because it has to set it up as a transferrable.
 function InstanceOfBlobWithNoConstructor() {}
 InstanceOfBlobWithNoConstructor.prototype = Blob.prototype;
@@ -92,7 +92,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 	size: number;
 	declare finished: Promise<void>;
 	#onError: ((error: Error) => void)[];
-	#options?: BlobCreationOptions;
+	#onSize: ((size: number) => void)[];
 	constructor(options?: BlobCreationOptions) {
 		super();
 		if (options?.type) this.type = options.type;
@@ -100,9 +100,13 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 	}
 
 	on(type: string, callback: (error: Error) => void) {
-		if (type !== 'error') throw new Error('Only error events are supported');
-		if (!this.#onError) this.#onError = [];
-		this.#onError.push(callback);
+		if (type === 'error') {
+			this.#onError ??= [];
+			this.#onError.push(callback);
+		} else if (type === 'size') {
+			this.#onSize ??= [];
+			this.#onSize.push(callback);
+		} else throw new Error("Only 'error' and 'size' events are supported");
 	}
 
 	toJSON() {
@@ -151,7 +155,12 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 
 					size = Number(headerValue & 0xffffffffffffn);
 					if (size < end) size = end;
-					if (size < UNKNOWN_SIZE) this.size = size;
+					if (size < UNKNOWN_SIZE) {
+						this.size = size;
+						if (this.#onSize) {
+							for (const callback of this.#onSize) callback(size);
+						}
+					}
 				}
 			} catch (error) {
 				if (error.code !== 'ENOENT') throw error;
@@ -290,7 +299,12 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 								return onError(new Error('Error in blob: ' + buffer.subarray(HEADER_SIZE)));
 							}
 							size = Number(headerValue & 0xffffffffffffn);
-							if (size < UNKNOWN_SIZE) blob.size = size;
+							if (size < UNKNOWN_SIZE && blob.size !== size) {
+								blob.size = size;
+								if (blob.#onSize) {
+									for (const callback of blob.#onSize) callback(size);
+								}
+							}
 							buffer = buffer.subarray(HEADER_SIZE, bytesRead);
 							totalContentRead -= HEADER_SIZE;
 						} else if (bytesRead === 0) {
@@ -622,7 +636,7 @@ function generateFilePath(storageInfo: StorageInfo) {
 	const blobStoragePaths = getRootBlobPathsForDB(storageInfo.store);
 	const id = getNextFileId();
 	// get the storage index, which is the index of the blob storage path to use, distributed round-robin based on the id
-	const storageIndex = blobStoragePaths?.length > 1 ? id % blobStoragePaths.length : 0;
+	const storageIndex = blobStoragePaths?.length > 1 ? getNextStorageIndex(blobStoragePaths, id) : 0;
 	const fileId = id.toString(16); // get the next file id
 	storageInfo.storageIndex = storageIndex;
 	storageInfo.fileId = fileId;
@@ -672,6 +686,64 @@ function getNextFileId(): number {
 		idIncrementers.set(currentStore, idIncrementer);
 	}
 	return Number(Atomics.add(idIncrementer, 0, 1n));
+}
+
+const FREQUENCY_TABLE_SIZE = 128;
+/**
+ * Select the next index from the storage paths, where the frequency of selecting each storage path is (mostly) proportional to the available space (which is occasionally updated)
+ * @param blobStoragePaths
+ */
+function getNextStorageIndex(blobStoragePaths: string[], fileId: number) {
+	const now = Date.now();
+	if (!blobStoragePaths.frequencyTable) {
+		blobStoragePaths.lastUpdated = 0;
+		// setup default frequency table with even distribution
+		const frequencyTable = new Array(FREQUENCY_TABLE_SIZE);
+		for (let i = 0; i < frequencyTable.length; i++) {
+			frequencyTable[i] = i % blobStoragePaths.length;
+		}
+		blobStoragePaths.frequencyTable = frequencyTable;
+	}
+	if ((blobStoragePaths.lastUpdated ?? 0) + 60000 < now) {
+		blobStoragePaths.lastUpdated = now;
+		// create a new frequency table based on the available space
+		createFrequencyTableForStoragePaths(blobStoragePaths);
+	}
+	const nextIndex = blobStoragePaths.frequencyTable[fileId % FREQUENCY_TABLE_SIZE];
+	return nextIndex;
+}
+
+/**
+ * Create a frequency table for the storage paths, based on the available space, that allocates storage paths with more space more often
+ * and can be assigned quickly and consistently across threads (all threads will usually incrementally assign ids to the same alternating set of storage paths)
+ * @param blobStoragePaths
+ */
+async function createFrequencyTableForStoragePaths(blobStoragePaths) {
+	if (!statfs) return; // statfs is not available on all older node versions
+	const availableSpaces = await Promise.all(
+		blobStoragePaths.map(async (path, index) => {
+			const stats = await statfs(path);
+			const availableSpace = stats.bavail * stats.bsize;
+			return Math.pow(availableSpace, 0.8); // we don't want this to be quite linear, so we use a power function to reduce the impact of large differences in available space
+		})
+	);
+	const frequencyTable = new Array(FREQUENCY_TABLE_SIZE);
+	const pathPeriods = availableSpaces.map((space) => 1 / space);
+	for (let i = 0; i < FREQUENCY_TABLE_SIZE; i++) {
+		let nextScore = Infinity;
+		let nextIndex = 0;
+		// find the next storage path to use, based on the lowest remaining period for each path
+		for (let i = 0; i < pathPeriods.length; i++) {
+			if (pathPeriods[i] < nextScore) {
+				nextIndex = i;
+				nextScore = pathPeriods[i];
+			}
+		}
+		// increment the period that we used, inversely proportional to the available space
+		pathPeriods[nextIndex] += 1 / availableSpaces[nextIndex];
+		frequencyTable[i] = nextIndex;
+	}
+	blobStoragePaths.frequencyTable = frequencyTable;
 }
 
 /**
