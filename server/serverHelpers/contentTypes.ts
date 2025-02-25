@@ -423,9 +423,11 @@ export function serializeMessage(
 		if (request) {
 			let serialize = request.serialize;
 			if (serialize) serialized = serialize(message);
-			const serializer = findBestSerializer(request);
-			serialize = request.serialize = serializer.serializer.serialize;
-			serialized = serialize(message);
+			else {
+				const serializer = findBestSerializer(request);
+				serialize = request.serialize = serializer.serializer.serialize;
+				serialized = serialize(message);
+			}
 		} else {
 			serialized = JSONStringify(message);
 		}
