@@ -31,6 +31,7 @@ export class Resource implements ResourceInterface {
 	readonly #context: Context;
 	#isCollection: boolean;
 	static transactions: Transaction[] & { timestamp: number };
+	static directURLMapping = false;
 	constructor(identifier: Id, source: any) {
 		this.#id = identifier;
 		const context = source?.getContext ? (source.getContext() ?? null) : undefined;
@@ -490,25 +491,29 @@ function transactional(action, options) {
 				// it is a query
 				query = id_or_query;
 				if (typeof (id = id_or_query.url) === 'string') {
-					// handle queries in local URLs like /path/?name=value
-					const search_index = id.indexOf('?');
-					if (search_index > -1) {
-						const parsed_query = this.parseQuery(id.slice(search_index + 1));
-						if (query) {
-							if (parsed_query) query = Object.assign(parsed_query, query);
-						} else query = parsed_query;
-						id = id.slice(0, search_index);
-					}
-					// handle paths of the form /path/id.property
-					const parsed_id = this.parsePath(id, context, query);
-					if (parsed_id?.id !== undefined) {
-						if (parsed_id.query) {
-							if (query) query = Object.assign(parsed_id.query, query);
-							else query = parsed_id.query;
+					if (this.directURLMapping) {
+						id = id.slice(1); // remove the leading slash
+					} else {
+						// handle queries in local URLs like /path/?name=value
+						const search_index = id.indexOf('?');
+						if (search_index > -1) {
+							const parsed_query = this.parseQuery(id.slice(search_index + 1));
+							if (query) {
+								if (parsed_query) query = Object.assign(parsed_query, query);
+							} else query = parsed_query;
+							id = id.slice(0, search_index);
 						}
-						is_collection = parsed_id.isCollection;
-						id = parsed_id.id;
-					} else id = parsed_id;
+						// handle paths of the form /path/id.property
+						const parsed_id = this.parsePath(id, context, query);
+						if (parsed_id?.id !== undefined) {
+							if (parsed_id.query) {
+								if (query) query = Object.assign(parsed_id.query, query);
+								else query = parsed_id.query;
+							}
+							is_collection = parsed_id.isCollection;
+							id = parsed_id.id;
+						} else id = parsed_id;
+					}
 				} else if (id_or_query[Symbol.iterator]) {
 					// get the id part from an iterable query
 					id = [];

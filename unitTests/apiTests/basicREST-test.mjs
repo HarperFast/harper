@@ -437,6 +437,23 @@ describe('test REST calls', () => {
 		assert.equal(response.headers['x-custom-header'], 'custom value');
 		assert.equal(response.data.property, 'custom response');
 	});
+	describe('direct URL mapping', function () {
+		before(() => {
+			tables.SimpleCache.directURLMapping = true;
+		});
+		it('direct URL mapping', async () => {
+			let response = await axios.put('http://localhost:9926/SimpleCache/with-query?query=string', {
+				name: 'hello world',
+			});
+			response = await axios('http://localhost:9926/SimpleCache/with-query?query=string');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.id, 'with-query?query=string');
+			assert.equal(response.data.name, 'hello world');
+		});
+		after(() => {
+			tables.SimpleCache.directURLMapping = false;
+		});
+	});
 	describe('BigInt', function () {
 		let bigint64BitAsString = '12345678901234567890';
 		let json = `{"anotherBigint":-12345678901234567890,"id":12345678901234567890,"name":"new record with a bigint"}`;
@@ -492,7 +509,7 @@ describe('test REST calls', () => {
 			headers: {
 				// specify the special content type that will always return 'one' then 'two'
 				Accept: 'application/custom-async-iterator',
-			}
+			},
 		});
 		// Assert everything works as expected
 		assert.equal(response.status, 200);
@@ -505,7 +522,7 @@ describe('test REST calls', () => {
 			headers: {
 				// specify the special content type that will always return 'one' then 'two'
 				Accept: 'application/custom-iterator',
-			}
+			},
 		});
 		// Assert everything works as expected
 		assert.equal(response.status, 200);
