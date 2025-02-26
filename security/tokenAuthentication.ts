@@ -41,6 +41,7 @@ interface AuthObject {
 	username?: string;
 	password?: string;
 	role?: string;
+	expires_in?: string | number;
 }
 
 interface TokenObject {
@@ -79,6 +80,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 			username: Joi.string().optional(),
 			password: Joi.string().optional(),
 			role: Joi.string().optional(),
+			expires_in: Joi.alternatives(Joi.string(), Joi.number()).optional(),
 		})
 	);
 	if (validation) throw new ClientError(validation.message);
@@ -118,7 +120,11 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 	const operationToken = await jwt.sign(
 		payload,
 		{ key: keys.privateKey, passphrase: keys.passphrase },
-		{ expiresIn: OPERATION_TOKEN_TIMEOUT, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.OPERATION }
+		{
+			expiresIn: authObj.expires_in ?? OPERATION_TOKEN_TIMEOUT,
+			algorithm: RSA_ALGORITHM,
+			subject: TOKEN_TYPE_ENUM.OPERATION,
+		}
 	);
 
 	const refreshToken = await jwt.sign(
