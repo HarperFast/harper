@@ -26,7 +26,7 @@ const OPERATION_TOKEN_TIMEOUT: string = env.get(CONFIG_PARAMS.AUTHENTICATION_OPE
 const REFRESH_TOKEN_TIMEOUT: string = env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
 const RSA_ALGORITHM: string = 'RS256';
 
-enum TOKEN_TYPE_ENUM {
+enum TOKEN_TYPE {
 	OPERATION = 'operation',
 	REFRESH = 'refresh',
 }
@@ -73,6 +73,13 @@ export async function getJWTRSAKeys(): Promise<JWTRSAKeys> {
 	}
 }
 
+/**
+ * Creates a new operation token and refresh token.
+ * If there is no username and password, the hdb_user making the request is used in the token.
+ * An optional role can be provided which will be saved in the token payload.
+ * The token expires in the time specified in the expires_in field or the default time.
+ * @param authObj
+ */
 export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 	const validation: any = validateBySchema(
 		authObj,
@@ -87,6 +94,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 
 	let user: any;
 	try {
+		// bypass_auth will be set to true if this is called from a component
 		let validatePassword: boolean = authObj.bypass_auth !== true;
 		if (!authObj.username && !authObj.password) {
 			// if the username and password are not provided, use the hdb_user making the request.
@@ -123,14 +131,14 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 		{
 			expiresIn: authObj.expires_in ?? OPERATION_TOKEN_TIMEOUT,
 			algorithm: RSA_ALGORITHM,
-			subject: TOKEN_TYPE_ENUM.OPERATION,
+			subject: TOKEN_TYPE.OPERATION,
 		}
 	);
 
 	const refreshToken = await jwt.sign(
 		payload,
 		{ key: keys.privateKey, passphrase: keys.passphrase },
-		{ expiresIn: REFRESH_TOKEN_TIMEOUT, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.REFRESH }
+		{ expiresIn: REFRESH_TOKEN_TIMEOUT, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE.REFRESH }
 	);
 
 	// update the user refresh token
@@ -152,6 +160,10 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 	};
 }
 
+/**
+ * Refreshes the operation token using the refresh token.
+ * @param tokenObj
+ */
 export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTTokens> {
 	const validation: any = validateBySchema(tokenObj, Joi.object({ refresh_token: Joi.string().required() }).required());
 	if (validation) throw new ClientError(validation.message);
@@ -163,21 +175,21 @@ export async function refreshOperationToken(tokenObj: TokenObject): Promise<JWTT
 	const operationToken = await jwt.sign(
 		{ username: decodedJWT.username, super_user: decodedJWT.super_user, cluster_user: decodedJWT.cluster_user },
 		{ key: keys.privateKey, passphrase: keys.passphrase },
-		{ expiresIn: OPERATION_TOKEN_TIMEOUT, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE_ENUM.OPERATION }
+		{ expiresIn: OPERATION_TOKEN_TIMEOUT, algorithm: RSA_ALGORITHM, subject: TOKEN_TYPE.OPERATION }
 	);
 
 	return { operation_token: operationToken };
 }
 
 export async function validateOperationToken(token: string): Promise<any> {
-	return validateToken(token, TOKEN_TYPE_ENUM.OPERATION);
+	return validateToken(token, TOKEN_TYPE.OPERATION);
 }
 
 export async function validateRefreshToken(token: string): Promise<any> {
-	return validateToken(token, TOKEN_TYPE_ENUM.REFRESH);
+	return validateToken(token, TOKEN_TYPE.REFRESH);
 }
 
-async function validateToken(token: string, tokenType: TOKEN_TYPE_ENUM): Promise<any> {
+async function validateToken(token: string, tokenType: TOKEN_TYPE): Promise<any> {
 	try {
 		const keys: JWTRSAKeys = await getJWTRSAKeys();
 		const tokenVerified: any = await jwt.verify(token, keys.publicKey, {
@@ -192,7 +204,7 @@ async function validateToken(token: string, tokenType: TOKEN_TYPE_ENUM): Promise
 		}
 
 		const user: any = await findAndValidateUser(tokenVerified.username, undefined, false);
-		if (tokenType === TOKEN_TYPE_ENUM.REFRESH && !password.validate(user.refresh_token, token)) {
+		if (tokenType === TOKEN_TYPE.REFRESH && !password.validate(user.refresh_token, token)) {
 			throw new Error('Invalid token');
 		}
 
