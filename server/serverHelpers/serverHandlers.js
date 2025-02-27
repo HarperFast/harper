@@ -66,11 +66,11 @@ function authHandler(req, resp, done) {
 
 	const isAuthOperation = !NO_AUTH_OPERATIONS.includes(req.body.operation);
 	if (
+		isAuthOperation ||
 		// If create token is called without username/password in the body it needs to be authorized
 		(req.body.operation === terms.OPERATIONS_ENUM.CREATE_AUTHENTICATION_TOKENS &&
 			!req.body.username &&
-			!req.body.password) ||
-		isAuthOperation
+			!req.body.password)
 	) {
 		p_authorize(req, resp)
 			.then((user_data) => {

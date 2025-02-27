@@ -304,6 +304,8 @@ describe('Test serverHandlers.js module ', () => {
 
 		it('Should pass auth for valid request for create auth tokens operation', () => {
 			const test_req = test_utils.deepClone(TEST_AUTH_REQ);
+			test_req.body.username = 'norm';
+			test_req.body.password = 'let-me-in';
 
 			serverHandlers_rw.authHandler(test_req, {}, (err, data) => {
 				assert.ok(data === undefined, 'Should not return anything for valid auth');
