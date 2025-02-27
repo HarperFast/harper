@@ -231,14 +231,8 @@ export async function authentication(request, next_handler) {
 				updated_session.id = session_id;
 				return session_table.put(updated_session);
 			};
-			request.login = async function (username: string, password: string, validatePassword: boolean = true) {
-				let user: any;
-				if (validatePassword) {
-					user = request.user = await server.authenticateUser(username, password, request);
-				} else {
-					user = request.user = await server.getUser(username, undefined, request);
-				}
-
+			request.login = async function (username: string, password: string) {
+				const user: any = (request.user = await server.authenticateUser(username, password, request));
 				request.session.update({ user: user && (user.getId?.() ?? user.username) });
 			};
 		}
