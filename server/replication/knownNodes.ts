@@ -47,6 +47,9 @@ export function getHDBNodeTable() {
 					attribute: 'replicates',
 				},
 				{
+					attribute: 'revoked_certificates',
+				},
+				{
 					attribute: '__createdtime__',
 				},
 				{

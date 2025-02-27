@@ -24,6 +24,7 @@ const validation_schema = Joi.object({
 	verify_tls: Joi.boolean(),
 	replicates: Joi.boolean(),
 	subscriptions: Joi.array(),
+	revoked_certificates: Joi.array(),
 });
 
 /**
@@ -175,6 +176,7 @@ export async function setNode(req: object) {
 		node_record.start_time = typeof req.start_time === 'string' ? new Date(req.start_time).getTime() : req.start_time;
 	}
 	if (req.retain_authorization) node_record.authorization = req.authorization;
+	if (req.revoked_certificates) node_record.revoked_certificates = req.revoked_certificates;
 
 	if (node_record.replicates) {
 		const this_node = {
@@ -183,6 +185,7 @@ export async function setNode(req: object) {
 			replicates: true,
 			subscriptions: null,
 		};
+
 		if (req.retain_authorization) this_node.authorization = req.authorization;
 		if (req.start_time) this_node.start_time = req.start_time;
 		await ensureNode(getThisNodeName(), this_node);

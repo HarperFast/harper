@@ -471,6 +471,12 @@ export async function ensureNode(name: string, node) {
 				break;
 			}
 		}
+
+		if (Array.isArray(node.revoked_certificates)) {
+			const existing_revoked = existing.revoked_certificates || [];
+			node.revoked_certificates = [...new Set([...existing_revoked, ...node.revoked_certificates])];
+		}
+
 		logger.info(`Updating node ${name} at ${node.url}`);
 		await table.patch(node);
 	}
