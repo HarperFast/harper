@@ -62237,14 +62237,13 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 400\", function () {",
-									"    pm.response.to.have.status(400);",
+									"pm.test(\"Status code is 401\", function () {",
+									"    pm.response.to.have.status(401);",
 									"});",
 									"",
 									"pm.test(\"check error message\", function () {    ",
 									"    var jsonData = pm.response.json();    ",
-									"    pm.expect(jsonData['error'] === \"'value' contains [username] without its required peers [password]\").to.eql(true);    ",
-									"    ",
+									"    pm.expect(jsonData['error'] === \"invalid credentials\").to.eql(true);    ",
 									"});"
 								],
 								"type": "text/javascript",
@@ -62295,7 +62294,8 @@
 									"    ",
 									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -62312,7 +62312,7 @@
 						],
 						"body": {
 							"mode": "raw",
-							"raw": "{\n\t\"operation\":\"create_authentication_tokens\",\n    \"username\": \"baduser\",\n    \"password\":\"bad\"\n}"
+							"raw": "{\n\t\"operation\":\"create_authentication_tokens\",\n    \"username\": \"baduser\",\n    \"password\":\"bad\",\n    \"bypass_auth\": true\n}"
 						},
 						"url": {
 							"raw": "{{host}}:{{port}}",
@@ -73566,13 +73566,13 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 401\", function () {\r",
-									"    pm.response.to.have.status(401);\r",
+									"pm.test(\"Status code is 400\", function () {\r",
+									"    pm.response.to.have.status(400);\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Check response\", function () {\r",
 									"    var response = JSON.stringify(pm.response.json());\r",
-									"    pm.expect(response).to.include(\"invalid credentials\");\r",
+									"    pm.expect(response).to.include(\"'password' is not allowed to be empty\");\r",
 									"});"
 								],
 								"type": "text/javascript",
@@ -73613,13 +73613,13 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 401\", function () {\r",
-									"    pm.response.to.have.status(401);\r",
+									"pm.test(\"Status code is 400\", function () {\r",
+									"    pm.response.to.have.status(400);\r",
 									"});\r",
 									"\r",
 									"pm.test(\"Check response\", function () {\r",
 									"    var response = JSON.stringify(pm.response.json());\r",
-									"    pm.expect(response).to.include(\"invalid credentials\");\r",
+									"    pm.expect(response).to.include(\"'username' is not allowed to be empty\");\r",
 									"});"
 								],
 								"type": "text/javascript",
@@ -73713,7 +73713,7 @@
 									"\r",
 									"pm.test(\"Check response\", function () {\r",
 									"    var response = JSON.stringify(pm.response.json());\r",
-									"    pm.expect(response).to.include(\"invalid credentials\");\r",
+									"    pm.expect(response).to.include(\"Must login\");\r",
 									"});"
 								],
 								"type": "text/javascript",
