@@ -13,13 +13,15 @@ const _ = require('lodash');
 const { handleHDBError } = require('../utility/errors/hdbError');
 const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = require('../utility/errors/commonErrors');
 const { server } = require('../server/Server');
+const { PACKAGE_ROOT } = require('../utility/packageUtils');
+
 const { DATABASES_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdb_terms;
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
 const CONFIG_INIT_MSG = 'Config successfully initialized';
 const BACKUP_ERR = 'Error backing up config file';
 const EMPTY_GET_VALUE = 'Empty parameter sent to getConfigValue';
-const DEFAULT_CONFIG_FILE_PATH = path.join(hdb_terms.PACKAGE_ROOT, 'config', 'yaml', hdb_terms.HDB_DEFAULT_CONFIG_FILE);
-const DEFAULT_NATS_CONFIG_FILE_PATH = path.join(hdb_terms.PACKAGE_ROOT, 'config', 'yaml', 'defaultNatsConfig.yaml');
+const DEFAULT_CONFIG_FILE_PATH = path.join(PACKAGE_ROOT, 'config', 'yaml', hdb_terms.HDB_DEFAULT_CONFIG_FILE);
+const DEFAULT_NATS_CONFIG_FILE_PATH = path.join(PACKAGE_ROOT, 'config', 'yaml', 'defaultNatsConfig.yaml');
 const CONFIGURE_SUCCESS_RESPONSE =
 	'Configuration successfully set. You must restart HarperDB for new config settings to take effect.';
 
@@ -128,6 +130,7 @@ function createConfigFile(args, skip_fs_validation = false) {
 	const hdb_root = config_doc.getIn(['rootPath']);
 	const config_file_path = path.join(hdb_root, hdb_terms.HDB_CONFIG_FILE);
 	fs.createFileSync(config_file_path);
+	if (config_doc.errors?.length > 0) throw new Error(`Error parsing harperdb-config.yaml ${config_doc.errors}`);
 	fs.writeFileSync(config_file_path, String(config_doc));
 	logger.trace(`Config file written to ${config_file_path}`);
 }
@@ -329,6 +332,7 @@ function checkForUpdatedConfig(config_doc, config_file_path) {
 
 	if (update_file) {
 		logger.trace('Updating config file with missing config params');
+		if (config_doc.errors?.length > 0) throw new Error(`Error parsing harperdb-config.yaml ${config_doc.errors}`);
 		fs.writeFileSync(config_file_path, String(config_doc));
 	}
 }
@@ -433,6 +437,23 @@ function updateConfigValue(
 	const config_doc = parseYamlDoc(old_config_path);
 	let schemas_args;
 
+	// Don't do the update if the values are the same.
+	if (parsed_args && flat_config_obj) {
+		let doUpdate = false;
+		for (const arg in parsed_args) {
+			// Using no-strict here because we might need to compare string to number
+			if (parsed_args[arg] != flat_config_obj[arg.toLowerCase()]) {
+				doUpdate = true;
+				break;
+			}
+		}
+
+		if (!doUpdate) {
+			logger.trace(`No changes detected in config parameters, skipping update`);
+			return;
+		}
+	}
+
 	if (parsed_args === undefined && param.toLowerCase() === CONFIG_PARAMS.DATABASES) {
 		schemas_args = value;
 	} else if (parsed_args === undefined) {
@@ -524,6 +545,7 @@ function updateConfigValue(
 		backupConfigFile(old_config_path, hdb_root);
 	}
 
+	if (config_doc.errors?.length > 0) throw new Error(`Error parsing harperdb-config.yaml ${config_doc.errors}`);
 	fs.writeFileSync(config_file_location, String(config_doc));
 	if (update_config_obj) {
 		flat_config_obj = flattenConfig(config_doc.toJSON());
@@ -793,6 +815,7 @@ async function addConfig(top_level_element, values) {
 	config_doc.hasIn([top_level_element])
 		? config_doc.setIn([top_level_element], values)
 		: config_doc.addIn([top_level_element], values);
+	if (config_doc.errors?.length > 0) throw new Error(`Error parsing harperdb-config.yaml ${config_doc.errors}`);
 	await fs.writeFile(getConfigFilePath(), String(config_doc));
 }
 

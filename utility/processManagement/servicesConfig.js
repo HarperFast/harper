@@ -5,7 +5,7 @@ const hdb_license = require('../../utility/registration/hdb_license');
 const hdb_terms = require('../hdbTerms');
 const nats_terms = require('../../server/nats/utility/natsTerms');
 const path = require('path');
-const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
+const { PACKAGE_ROOT } = require('../../utility/packageUtils');
 const env_manager = require('../environment/environmentManager');
 const hdb_utils = require('../common_utils');
 

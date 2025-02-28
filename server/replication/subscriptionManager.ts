@@ -339,7 +339,6 @@ export async function startOnMainThread(options) {
 		}
 		main_worker_entry.connected = true;
 		main_worker_entry.latency = connection.latency;
-		main_worker_entry.catchingUpFrom = connection.lastSendTime;
 		if (main_worker_entry.redirectingTo) {
 			const { worker, nodes } = main_worker_entry.redirectingTo;
 			const subscription_to_remove = nodes.find((node) => node.name === connection.name);
@@ -375,12 +374,11 @@ export function requestClusterStatus(message, port) {
 			logger.info('Getting cluster status for', node_name, node.url, 'has dbs', db_replication_map?.size);
 			const databases = [];
 			if (db_replication_map) {
-				for (const [database, { worker, connected, nodes, latency, catchingUpFrom }] of db_replication_map) {
+				for (const [database, { worker, connected, nodes, latency }] of db_replication_map) {
 					databases.push({
 						database,
 						connected,
 						latency,
-						catching_up_from: catchingUpFrom ? new Date(catchingUpFrom).toISOString() : 'up-to-date',
 						thread_id: worker?.threadId,
 						nodes: nodes.map((node) => node.name),
 					});

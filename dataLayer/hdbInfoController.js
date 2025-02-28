@@ -16,7 +16,7 @@ const BinObjects = require('../bin/BinObjects');
 const DataLayerObjects = require('./DataLayerObjects');
 const { UpgradeObject } = require('../upgrade/UpgradeObjects');
 const { forceDowngradePrompt } = require('../upgrade/upgradePrompt');
-const version = require('../bin/version');
+const { packageJson } = require('../utility/packageUtils');
 const log = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
 const global_schema = require('../utility/globalSchema');
@@ -161,7 +161,10 @@ async function getLatestHdbInfoRecord() {
 async function getVersionUpdateInfo() {
 	log.info('Checking if HDB software has been updated');
 	try {
-		const upgrade_version = version.version();
+		const upgrade_version = packageJson.version;
+		if (!upgrade_version) {
+			throw new Error('Could not find the version number in the package.json file');
+		}
 		const latest_info_record = await getLatestHdbInfoRecord();
 
 		let data_version;

@@ -13,13 +13,13 @@ const chalk = require('chalk');
 const fs = require('fs-extra');
 const hdb_logger = require('../utility/logging/harper_logger');
 const hdb_terms = require('../utility/hdbTerms');
-const version = require('./version');
 const directivesManager = require('../upgrade/directivesManager');
 const hdb_utils = require('../utility/common_utils');
 const hdbInfoController = require('../dataLayer/hdbInfoController');
 const upgradePrompt = require('../upgrade/upgradePrompt');
 const ps_list = require('../utility/psList');
 const global_schema = require('../utility/globalSchema');
+const { packageJson } = require('../utility/packageUtils');
 const promisify = require('util').promisify;
 const p_schema_to_global = promisify(global_schema.setSchemaDataToGlobal);
 let pm2_utils;
@@ -65,11 +65,11 @@ async function upgrade(upgrade_obj) {
 		}
 	}
 
-	printToLogAndConsole(`This version of HarperDB is ${version.version()}`, hdb_terms.LOG_LEVELS.INFO);
+	printToLogAndConsole(`This version of HarperDB is ${packageJson.version}`, hdb_terms.LOG_LEVELS.INFO);
 
 	//The upgrade version should always be included in the hdb_upgrade_info object returned from the getVersion function
 	// above but testing for it and using the version from package.json just in case it is not
-	let current_hdb_version = hdb_upgrade_info[UPGRADE_VERSION] ? hdb_upgrade_info[UPGRADE_VERSION] : version.version();
+	const current_hdb_version = hdb_upgrade_info[UPGRADE_VERSION] ?? packageJson.version;
 	if (!current_hdb_version) {
 		console.log(
 			`Current Version field missing from the package.json file.  Cannot continue with upgrade.  If you need support, please contact ${hdb_terms.HDB_SUPPORT_ADDRESS}`

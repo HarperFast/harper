@@ -288,6 +288,7 @@ class SubscriptionsSession {
 			})();
 			return subscription;
 		});
+		if (!subscription) return;
 		subscription.topic = topic;
 		subscription.qos = subscription_request.qos;
 		this.subscriptions.push(subscription);
@@ -413,7 +414,7 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 				subscription.acks
 					? (update) => {
 							return !subscription.acks.includes(update.localTime);
-					  }
+						}
 					: null
 			);
 		}

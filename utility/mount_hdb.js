@@ -3,6 +3,7 @@
 const { mkdirpSync, copySync } = require('fs-extra');
 const path = require('path');
 const terms = require('../utility/hdbTerms');
+const { PACKAGE_ROOT } = require('../utility/packageUtils');
 const hdb_logger = require('../utility/logging/harper_logger');
 const bridge = require('../dataLayer/harperBridge/harperBridge');
 const system_schema = require('../json/systemSchema');
@@ -20,7 +21,7 @@ async function mountHdb(hdb_path) {
 	makeDirectory(path.join(hdb_path, 'log'));
 	makeDirectory(path.join(hdb_path, 'database'));
 	makeDirectory(path.join(hdb_path, 'components'));
-	copySync(path.resolve(terms.PACKAGE_ROOT, './utility/install/README.md'), path.join(hdb_path, 'README.md'));
+	copySync(path.resolve(PACKAGE_ROOT, './utility/install/README.md'), path.join(hdb_path, 'README.md'));
 
 	await createLMDBTables();
 }
@@ -44,6 +45,9 @@ async function createLMDBTables() {
 			create_table.attributes = system_schema[table_name].attributes;
 			let primary_key_attribute = create_table.attributes.find(({ attribute }) => attribute === hash_attribute);
 			primary_key_attribute.isPrimaryKey = true;
+
+			// Array of tables to enable audit store, config file doesn't exist yet so we need to manually set which tables to audit
+			if (['hdb_user', 'hdb_role'].includes(table_name)) create_table.audit = true;
 			await bridge.createTable(table_name, create_table);
 		} catch (e) {
 			hdb_logger.error(`issue creating environment for ${terms.SYSTEM_SCHEMA_NAME}.${table_name}: ${e}`);

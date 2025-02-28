@@ -4,6 +4,7 @@ const fs = require('fs-extra');
 const path = require('path');
 const hdb_log = require('../utility/logging/harper_logger');
 const hdb_utils = require('../utility/common_utils');
+const { PACKAGE_ROOT } = require('../utility/packageUtils');
 const hdb_terms = require('../utility/hdbTerms');
 const eng_mgr = require('../utility/environment/environmentManager');
 const config_utils = require('../config/configUtils');
@@ -22,7 +23,7 @@ async function installComponents() {
 	const pkg_json_path = path.join(root_path, 'package.json');
 	const pkg_json = {
 		dependencies: {
-			harperdb: 'file:' + hdb_terms.PACKAGE_ROOT,
+			harperdb: 'file:' + PACKAGE_ROOT,
 		},
 	};
 
@@ -50,6 +51,7 @@ async function installComponents() {
 		if (!pkg_json_exists) {
 			hdb_log.notify('Installing components');
 			await installPackages(pkg_json_path, pkg_json, null);
+			await moveModuleToComponents(root_path, components);
 			return;
 		}
 
@@ -87,7 +89,23 @@ async function installComponents() {
 		hdb_log.notify('Updating components.');
 		// Write package.json, call npm install
 		await installPackages(pkg_json_path, pkg_json, install_pkg_json);
+
+		await moveModuleToComponents(root_path, components);
 	}
+}
+
+function moveModuleToComponents(root_path, components) {
+	return Promise.all(
+		components.map(({ name }) => {
+			const mod_path = path.join(root_path, 'node_modules', name);
+			const comp_path = path.join(root_path, 'components', name);
+			if (fs.existsSync(mod_path) && fs.lstatSync(mod_path).isDirectory()) {
+				return fs.move(mod_path, comp_path, { overwrite: true }).then(() => {
+					fs.symlink(comp_path, mod_path);
+				});
+			}
+		})
+	);
 }
 
 /**

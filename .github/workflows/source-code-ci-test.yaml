@@ -71,7 +71,7 @@ jobs:
           for public_dns_name in ${public_dns_names[@]}
           do 
             echo "Starting work on: $public_dns_name"
-            ssh -i private_key -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
+            ssh -i private_key -o ConnectTimeout=30 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
               "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/source-code-unit-tests.sh && /home/ubuntu/harperdb/test/ci-tests/source-code-unit-tests.sh"
             echo "Ending work on: $public_dns_name"
           done

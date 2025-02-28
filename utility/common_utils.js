@@ -7,6 +7,7 @@ const os = require('os');
 const net = require('net');
 const RecursiveIterator = require('recursive-iterator');
 const terms = require('./hdbTerms');
+const { PACKAGE_ROOT } = require('./packageUtils');
 const ps_list = require('./psList');
 const papa_parse = require('papaparse');
 const moment = require('moment');
@@ -92,7 +93,7 @@ module.exports = {
 	httpRequest,
 	transformReq,
 	convertToMS,
-	PACKAGE_ROOT: terms.PACKAGE_ROOT,
+	PACKAGE_ROOT,
 };
 
 /**
@@ -866,18 +867,14 @@ function httpRequest(options, data) {
 	if (options.protocol === 'http:') client = http;
 	else client = https;
 	return new Promise((resolve, reject) => {
-		const req = client.request(options, (res) => {
-			res.setEncoding('utf8');
-			let response = {
-				body: '',
-				headers: res.headers,
-			};
-
-			res.on('data', (chunk) => {
+		const req = client.request(options, (response) => {
+			response.setEncoding('utf8');
+			response.body = '';
+			response.on('data', (chunk) => {
 				response.body += chunk;
 			});
 
-			res.on('end', () => {
+			response.on('end', () => {
 				resolve(response);
 			});
 		});

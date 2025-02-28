@@ -7,8 +7,7 @@ const path = require('path');
 const child_process = require('child_process');
 const streamPipeline = util.promisify(require('stream').pipeline);
 const exec = util.promisify(child_process.exec);
-const package_json = require('../../../package.json');
-const { PACKAGE_ROOT } = require('../../hdbTerms');
+const { packageJson, PACKAGE_ROOT } = require('../../packageUtils');
 process.chdir(PACKAGE_ROOT);
 
 const TMP_FOLDER_NAME = 'tmp';
@@ -26,7 +25,7 @@ const DEPENDENCIES_PATH = path.resolve(PACKAGE_ROOT, 'dependencies');
 const DEPENDENCIES_NATS_SERVER_ZIP_PATH = path.join(DEPENDENCIES_PATH, NATS_SERVER_ZIP_NAME);
 
 //YOU MUST make sure the nats-server version in package json matches the  new version you want.
-const NATS_SERVER_VERSION = package_json.engines[NATS_SERVER_NAME];
+const NATS_SERVER_VERSION = packageJson.engines[NATS_SERVER_NAME];
 
 (async () => {
 	console.log('downloading nats server source');

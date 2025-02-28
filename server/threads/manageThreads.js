@@ -1,7 +1,7 @@
 'use strict';
-
+require('../../bin/dev');
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
-const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
+const { PACKAGE_ROOT } = require('../../utility/packageUtils');
 const { join, isAbsolute, extname } = require('path');
 const { server } = require('../Server');
 const { watch, readdir } = require('fs/promises');
@@ -11,7 +11,6 @@ const env_mgr = require('../../utility/environment/environmentManager');
 const harper_logger = require('../../utility/logging/harper_logger');
 const { randomBytes } = require('crypto');
 const { _assignPackageExport } = require('../../globals');
-const terms = require('../../utility/hdbTerms');
 const MB = 1024 * 1024;
 const workers = []; // these are our child workers that we are managing
 const connected_ports = []; // these are all known connected worker ports (siblings, children, parents)
@@ -260,7 +259,7 @@ async function restartWorkers(
 				let new_worker = worker.startCopy();
 				let when_started = new Promise((resolve) => {
 					const startListener = (message) => {
-						if (message.type === terms.ITC_EVENT_TYPES.CHILD_STARTED) {
+						if (message.type === hdb_terms.ITC_EVENT_TYPES.CHILD_STARTED) {
 							harper_logger.trace('Worker has started', new_worker.threadId);
 							resolve();
 							waiting_to_start.splice(waiting_to_start.indexOf(when_started));

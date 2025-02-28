@@ -243,7 +243,11 @@ describe('Test configUtils module', () => {
 
 	after(() => {
 		sandbox.restore();
-		fs.rmdirSync(TEST_DIR);
+		try {
+			fs.rmdirSync(TEST_DIR);
+		} catch (err) {
+			console.log('Error cleaning up after test:', err);
+		}
 	});
 
 	describe('Test createConfigFile function', () => {
@@ -322,9 +326,11 @@ describe('Test configUtils module', () => {
 					user: 'test_user',
 				},
 				replication: {
+					securePort: 9933,
 					databases: '*',
 					hostname: null,
 					routes: null,
+					enableRootCAs: true,
 				},
 				componentsRoot: path.join(DIRNAME, '/test_custom_functions'),
 				localStudio: {
@@ -484,6 +490,8 @@ describe('Test configUtils module', () => {
 				replication_databases: '*',
 				replication_hostname: null,
 				replication_routes: null,
+				replication_enablerootcas: true,
+				replication_secureport: 9933,
 				rootpath: path.join(DIRNAME, '/yaml'),
 				storage_writeasync: true,
 				storage_caching: false,
@@ -574,6 +582,8 @@ describe('Test configUtils module', () => {
 			replication_databases: '*',
 			replication_hostname: null,
 			replication_routes: null,
+			replication_enablerootcas: true,
+			replication_secureport: 9933,
 			rootpath: null,
 			storage_writeasync: false,
 			storage_caching: true,
@@ -1023,6 +1033,23 @@ describe('Test configUtils module', () => {
 			);
 
 			expect(init_config_spy.callCount).to.equal(1);
+		});
+
+		it('Test config not updated if values are the same', () => {
+			config_utils_rw.__set__('flat_config_obj', {
+				http_cors: false,
+				logging_stdstreams: false,
+				operationsapi_network_port: 9925,
+			});
+
+			config_utils_rw.updateConfigValue(undefined, undefined, {
+				http_cors: false,
+				logging_stdStreams: false,
+				operationsapi_network_port: 9925,
+			});
+
+			expect(logger_trace_stub.called).to.be.true;
+			expect(logger_trace_stub.args[0][0]).to.equal('No changes detected in config parameters, skipping update');
 		});
 	});
 

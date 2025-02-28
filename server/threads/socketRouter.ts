@@ -13,6 +13,8 @@ import { unlinkSync, existsSync } from 'fs';
 import { recordAction } from '../../resources/analytics';
 import { isMainThread } from 'worker_threads';
 import { checkMemoryLimit } from '../../utility/registration/hdb_license';
+import { packageJson } from '../../utility/packageUtils';
+
 const workers = [];
 let queued_sockets = [];
 const handle_socket = [];
@@ -198,8 +200,7 @@ export function startSocketServer(port = 0, session_affinity_identifier?) {
 				recordAction(true, 'socket-routed');
 			});
 		};
-		const pjson = require('../../package.json');
-		harper_logger.info(`HarperDB ${pjson.version} Server running on port ${port}`);
+		harper_logger.info(`HarperDB ${packageJson.version} Server running on port ${port}`);
 	}
 	server.on('error', (error) => {
 		console.error('Error in socket server', error);

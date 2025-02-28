@@ -16,7 +16,7 @@ const { handleHDBError, hdb_errors } = require('../errors/hdbError');
 const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = hdb_errors;
 const SearchObject = require('../../dataLayer/SearchObject');
 const system_information = require('../environment/systemInformation');
-const version = require('../../bin/version');
+const { packageJson } = require('../packageUtils');
 const { getDatabases } = require('../../resources/databases');
 
 //Promisified functions
@@ -182,7 +182,7 @@ async function getAllNodeRecords() {
 async function getSystemInfo() {
 	const sys_info = await system_information.getSystemInformation();
 	return {
-		hdb_version: version.version(),
+		hdb_version: packageJson.version,
 		node_version: sys_info.node_version,
 		platform: sys_info.platform,
 	};

@@ -1,10 +1,11 @@
 'use strict';
-
+require('../../bin/dev');
 const { isMainThread, parentPort, threadId, workerData } = require('node:worker_threads');
 const { Socket, createServer: createSocketServer } = require('node:net');
 const { createServer, IncomingMessage } = require('node:http');
 const { createServer: createSecureServerHttp1 } = require('node:https');
 const { createSecureServer } = require('node:http2');
+const { Blob } = require('../../resources/blob');
 const { unlinkSync, existsSync } = require('fs');
 const harper_logger = require('../../utility/logging/harper_logger');
 const env = require('../../utility/environment/environmentManager');
@@ -81,12 +82,10 @@ server.http = httpServer;
 server.request = onRequest;
 server.socket = onSocket;
 server.ws = onWebSocket;
-let ws_listeners = {},
-	ws_servers = {},
-	ws_chain;
+server.upgrade = onUpgrade;
+const websocket_servers = {};
 let http_servers = {},
 	http_chain = {},
-	request_listeners = [],
 	http_responders = [];
 
 function startServers() {
@@ -362,6 +361,7 @@ function registerServer(server, port, check_port = true) {
 	}
 	server.on('unhandled', defaultNotFound);
 }
+
 function getPorts(options) {
 	let ports = [];
 	let port = options?.securePort;
@@ -392,7 +392,7 @@ function httpServer(listener, options) {
 	const servers = [];
 
 	for (let { port, secure } of getPorts(options)) {
-		servers.push(getHTTPServer(port, secure, options?.isOperationsServer));
+		servers.push(getHTTPServer(port, secure, options?.isOperationsServer, options?.mtls));
 		if (typeof listener === 'function') {
 			http_responders[options?.runFirst ? 'unshift' : 'push']({ listener, port: options?.port || port });
 		} else {
@@ -400,7 +400,6 @@ function httpServer(listener, options) {
 			registerServer(listener, port, false);
 		}
 		http_chain[port] = makeCallbackChain(http_responders, port);
-		ws_chain = makeCallbackChain(request_listeners, port);
 	}
 
 	return servers;
@@ -411,14 +410,17 @@ function setPortServerMap(port, server) {
 	port_server.set(port, [...port_entry, server]);
 }
 
-function getHTTPServer(port, secure, is_operations_server) {
+function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 	setPortServerMap(port, { protocol_name: secure ? 'HTTPS' : 'HTTP', name: getComponentName() });
 	if (!http_servers[port]) {
 		let server_prefix = is_operations_server ? 'operationsApi_network' : 'http';
+		let keepAliveTimeout = env.get(server_prefix + '_keepAliveTimeout');
+		let requestTimeout = env.get(server_prefix + '_timeout');
+		let headersTimeout = env.get(server_prefix + '_headersTimeout');
 		let options = {
-			keepAliveTimeout: env.get(server_prefix + '_keepAliveTimeout'),
-			headersTimeout: env.get(server_prefix + '_headersTimeout'),
-			requestTimeout: env.get(server_prefix + '_timeout'),
+			keepAliveTimeout,
+			headersTimeout,
+			requestTimeout,
 			// we set this higher (2x times the default in v22, 8x times the default in v20) because it can help with
 			// performance
 			highWaterMark: 128 * 1024,
@@ -443,19 +445,9 @@ function getHTTPServer(port, secure, is_operations_server) {
 			Object.assign(options, {
 				allowHTTP1: true,
 				rejectUnauthorized: Boolean(mtls_required),
-				requestCert: Boolean(mtls || is_operations_server),
+				requestCert: Boolean(mtls || is_mtls),
 				ticketKeys: getTicketKeys(),
 				SNICallback: createTLSSelector(is_operations_server ? 'operations-api' : 'server', mtls),
-				ALPNCallback: http2
-					? undefined
-					: function (connection) {
-							// we use this as an indicator that the connection is a replication connection and that
-							// we should use the full set of replication CAs. Loading all of them for each connection
-							// is expensive
-							if (connection.protocols.includes('harperdb-replication')) this.isReplicationConnection = true;
-							return 'http/1.1';
-						},
-				ALPNProtocols: null,
 			});
 		}
 		let license_warning = checkMemoryLimit();
@@ -500,6 +492,7 @@ function getHTTPServer(port, secure, is_operations_server) {
 					const execution_time = end_time - start_time;
 					let body = response.body;
 					let sent_body;
+					let deferWriteHead = false;
 					if (!response.handlesHeaders) {
 						const headers = response.headers || new Headers();
 						if (!body) {
@@ -509,13 +502,45 @@ function getHTTPServer(port, secure, is_operations_server) {
 							if (typeof body === 'string') headers.set('Content-Length', Buffer.byteLength(body));
 							else headers.set('Content-Length', body.length);
 							sent_body = true;
+						} else if (body instanceof Blob) {
+							// if the size is available now, immediately set it
+							if (body.size) headers.set('Content-Length', body.size);
+							else if (body.on) {
+								deferWriteHead = true;
+								body.on('size', (size) => {
+									// we can also try to set the Content-Length once the header is read and
+									// the size available. but if writeHead is called, this will have no effect. So we
+									// need to defer writeHead if we are going to set this
+									if (!node_response.headersSent) node_response.setHeader('Content-Length', size);
+								});
+							}
+							body = body.stream();
 						}
 						let server_timing = `hdb;dur=${execution_time.toFixed(2)}`;
 						if (response.wasCacheMiss) {
 							server_timing += ', miss';
 						}
 						appendHeader(headers, 'Server-Timing', server_timing, true);
-						node_response.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
+						if (!node_response.headersSent) {
+							if (deferWriteHead) {
+								// if we are deferring, we need to set the statusCode and headers, let any other headers be set later
+								// until the first write
+								node_response.statusCode = status;
+								if (headers) {
+									if (headers[Symbol.iterator]) {
+										for (let [name, value] of headers) {
+											node_response.setHeader(name, value);
+										}
+									} else {
+										for (let name in headers) {
+											node_response.setHeader(name, headers[name]);
+										}
+									}
+								}
+							} // else the fast path, if we don't have to defer
+							else
+								node_response.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
+						}
 						if (sent_body) node_response.end(body);
 					}
 					const handler_path = request.handlerPath;
@@ -574,6 +599,12 @@ function getHTTPServer(port, secure, is_operations_server) {
 				}
 			}
 		));
+
+		// Node v16 and earlier required setting this as a property; but carefully, we must only set if it is actually a
+		// number or it will actually crash the server
+		if (keepAliveTimeout >= 0) server.keepAliveTimeout = keepAliveTimeout;
+		if (headersTimeout >= 0) server.headersTimeout = headersTimeout;
+
 		/* Should we use HTTP2 on upgrade?:
 		http_servers[port].on('upgrade', function upgrade(request, socket, head) {
 			wss.handleUpgrade(request, socket, head, function done(ws) {
@@ -604,9 +635,9 @@ function makeCallbackChain(responders, port_num) {
 		let { listener, port } = responders[--i];
 		if (port === port_num || port === 'all') {
 			let callback = next_callback;
-			next_callback = (request) => {
+			next_callback = (...args) => {
 				// for listener only layers, the response through
-				return listener(request, callback);
+				return listener(...args, callback);
 			};
 		}
 	}
@@ -673,71 +704,111 @@ Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
 	},
 	set(v) {},
 });
+
+/**
+ * @typedef {Object} OnUpgradeOptions
+ * @property {number=} port
+ * @property {number=} securePort
+ */
+
+/**
+ * @typedef {(request: unknown, next: Listener) => void | Promise<void>} Listener
+ */
+
+let upgrade_listeners = [],
+	upgrade_chains = {};
+
+/**
+ *
+ * @param {Listener} listener
+ * @param {OnUpgradeOptions} options
+ * @returns
+ */
+function onUpgrade(listener, options) {
+	for (const { port } of getPorts(options)) {
+		upgrade_listeners[options?.runFirst ? 'unshift' : 'push']({ listener, port });
+		upgrade_chains[port] = makeCallbackChain(upgrade_listeners, port);
+	}
+}
+
+/**
+ * @typedef {Object} OnWebSocketOptions
+ * @property {number=} port
+ * @property {number=} securePort
+ * @property {number=} maxPayload - The maximum size of a message that can be received. Defaults to 100MB
+ */
+
+let websocket_listeners = [],
+	websocket_chains = {};
+/**
+ *
+ * @param {Listener} listener
+ * @param {OnWebSocketOptions} options
+ * @returns
+ */
 function onWebSocket(listener, options) {
-	let servers = [];
-	for (let { port: port_num, secure } of getPorts(options)) {
-		setPortServerMap(port_num, {
+	const servers = [];
+
+	for (let { port, secure } of getPorts(options)) {
+		setPortServerMap(port, {
 			protocol_name: secure ? 'WSS' : 'WS',
 			name: getComponentName(),
 		});
-		if (!ws_servers[port_num]) {
-			let http_server;
-			ws_servers[port_num] = new WebSocketServer({
-				server: (http_server = getHTTPServer(port_num, secure, options?.isOperationsServer)),
-			});
-			http_server._ws = ws_servers[port_num];
-			servers.push(http_server);
-			ws_servers[port_num].on('connection', async (ws, node_request) => {
-				try {
-					let request = new Request(node_request);
-					request.isWebSocket = true;
-					let chain_completion = http_chain[port_num](request);
-					let protocol = node_request.headers['sec-websocket-protocol'];
-					let ws_listeners_for_port = ws_listeners[port_num];
-					let found_handler;
-					if (protocol) {
-						// first we try to match on WS handlers that match the specified protocol
-						for (let i = 0; i < ws_listeners_for_port.length; i++) {
-							let handler = ws_listeners_for_port[i];
-							if (handler.protocol === protocol) {
-								// if we have a handler for a specific protocol, allow it to select on that protocol
-								// to the exclusion of other handlers
-								found_handler = true;
-								handler.listener(ws, request, chain_completion);
-							}
-						}
-						if (found_handler) return;
-					}
-					// now let generic WS handlers handle the connection
-					for (let i = 0; i < ws_listeners_for_port.length; i++) {
-						let handler = ws_listeners_for_port[i];
-						if (!handler.protocol) {
-							// generic handlers don't have a protocol
-							handler.listener(ws, request, chain_completion);
-							found_handler = true;
-						}
-					}
-					if (!found_handler) {
-						// if we have no handlers, we close the connection
-						ws.close(1008, 'No handler for protocol');
-					}
-				} catch (error) {
-					harper_logger.warn('Error handling WebSocket connection', error);
-				}
+
+		const server = getHTTPServer(port, secure, options?.isOperationsServer, options?.mtls);
+
+		if (!websocket_servers[port]) {
+			websocket_servers[port] = new WebSocketServer({
+				noServer: true,
+				// TODO: this should be a global config and not per ws listener
+				maxPayload: options.maxPayload ?? 100 * 1024 * 1024, // The ws library has a default of 100MB
 			});
 
-			ws_servers[port_num].on('error', (error) => {
-				console.log('Error in setting up WebSocket server', error);
+			websocket_servers[port].on('connection', (ws, incomingMessage) => {
+				const request = new Request(incomingMessage);
+				request.isWebSocket = true;
+				const chain_completion = http_chain[port](request);
+				websocket_chains[port](ws, request, chain_completion);
+			});
+
+			// Add the default upgrade handler if it doesn't exist.
+			onUpgrade(
+				(request, socket, head, next) => {
+					// If the request has already been upgraded, continue without upgrading
+					if (request.__harperdb_request_upgraded) {
+						return next(request, socket, head);
+					}
+
+					// Otherwise, upgrade the socket and then continue
+					return websocket_servers[port].handleUpgrade(request, socket, head, (ws) => {
+						request.__harperdb_request_upgraded = true;
+						next(request, socket, head);
+						websocket_servers[port].emit('connection', ws, request);
+					});
+				},
+				{ port }
+			);
+
+			// Call the upgrade middleware chain
+			server.on('upgrade', (request, socket, head) => {
+				if (upgrade_chains[port]) {
+					upgrade_chains[port](request, socket, head);
+				}
 			});
 		}
-		let protocol = options?.subProtocol || '';
-		let ws_listeners_for_port = ws_listeners[port_num];
-		if (!ws_listeners_for_port) ws_listeners_for_port = ws_listeners[port_num] = [];
-		ws_listeners_for_port.push({ listener, protocol });
-		http_chain[port_num] = makeCallbackChain(http_responders, port_num);
+
+		servers.push(server);
+
+		websocket_listeners[options?.runFirst ? 'unshift' : 'push']({ listener, port });
+		websocket_chains[port] = makeCallbackChain(websocket_listeners, port);
+
+		// mqtt doesn't invoke the http handler so this needs to be here to load up the http chains.
+		http_chain[port] = makeCallbackChain(http_responders, port);
 	}
+
 	return servers;
 }
+
 function defaultNotFound(request, response) {
 	response.writeHead(404);
 	response.end('Not found\n');

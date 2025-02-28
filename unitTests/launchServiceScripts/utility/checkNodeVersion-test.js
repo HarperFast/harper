@@ -3,18 +3,13 @@
 const rewire = require('rewire');
 const check_node = rewire('../../../launchServiceScripts/utility/checkNodeVersion');
 
-const sinon = require('sinon');
 const chai = require('chai');
-const pjson = require('../../../package.json');
 const { expect } = chai;
 
 describe('test checkNodeVersion', () => {
 	it('test node versions match', () => {
-		let rw_json = check_node.__set__('jsonData', { engines: { 'minimum-node': process.versions.node } });
 		let result = check_node();
 		expect(result).to.eq(undefined);
-
-		rw_json();
 	});
 
 	it('test node version is not in range', () => {

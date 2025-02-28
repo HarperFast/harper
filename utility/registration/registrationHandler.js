@@ -7,7 +7,7 @@ const terms = require('../hdbTerms');
 const fs = require('fs-extra');
 const path = require('path');
 const hdb_utils = require('../common_utils');
-const version = require('../../bin/version');
+const { packageJson } = require('../packageUtils');
 const env_utility = require('../environment/environmentManager');
 env_utility.initSync();
 
@@ -170,7 +170,7 @@ async function getRegistrationInfo() {
 	}
 
 	reg_info_obj.registered = license.enterprise;
-	reg_info_obj.version = version.version();
+	reg_info_obj.version = packageJson.version;
 	reg_info_obj.ram_allocation = license.ram_allocation;
 	if (isNaN(license.exp_date)) {
 		reg_info_obj.license_expiration_date = license.enterprise ? license.exp_date : null;

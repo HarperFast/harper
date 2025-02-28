@@ -3,7 +3,11 @@ import { join, relative, basename, dirname } from 'path';
 import { isMainThread } from 'worker_threads';
 import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager';
-import { PACKAGE_ROOT, CONFIG_PARAMS, HDB_CONFIG_FILE, HDB_COMPONENT_CONFIG_FILE, HDB_ROOT_DIR_NAME } from '../utility/hdbTerms';
+import { PACKAGE_ROOT } from '../utility/packageUtils';
+import {
+	CONFIG_PARAMS,
+	HDB_ROOT_DIR_NAME,
+} from '../utility/hdbTerms';
 import * as graphql_handler from '../resources/graphql';
 import * as graphql_query_handler from '../server/graphqlQuerying';
 import * as roles from '../resources/roles';
@@ -95,7 +99,6 @@ const TRUSTED_RESOURCE_LOADERS = {
 
 const DEFAULT_CONFIG = {
 	rest: true,
-	graphql: true,
 	graphqlSchema: {
 		files: '*.graphql',
 		//path: '/', // from root path by default, like http://server/query
@@ -162,9 +165,12 @@ export async function loadComponent(
 	try {
 		let config;
 		if (is_root) component_errors = new Map();
-		const config_path = join(folder, is_root ? HDB_CONFIG_FILE : HDB_COMPONENT_CONFIG_FILE );
+		let config_path = join(folder, 'harperdb-config.yaml'); // look for the specific harperdb-config.yaml first
 		if (existsSync(config_path)) {
 			config = is_root ? getConfigObj() : parseDocument(readFileSync(config_path, 'utf8')).toJSON();
+			// if not found, look for the generic config.yaml, the config filename we have historically used, but only if not the root
+		} else if (!is_root && existsSync((config_path = join(folder, 'config.yaml')))) {
+			config = parseDocument(readFileSync(config_path, 'utf8')).toJSON();
 		} else {
 			config = DEFAULT_CONFIG;
 		}
@@ -325,7 +331,10 @@ export async function loadComponent(
 					if (resources.isWorker && extension_module.handleDirectory) {
 						directory_handled = await extension_module.handleDirectory?.(base_url_path, root_file_path, resources);
 					}
-					if (directory_handled) continue;
+					if (directory_handled) {
+						has_functionality = true;
+						continue;
+					}
 					for (const entry of await fg(files, { onlyFiles: false, objectMode: true })) {
 						const { path, dirent } = entry;
 						has_functionality = true;

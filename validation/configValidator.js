@@ -144,23 +144,28 @@ function configValidator(config_json, skip_fs_validation = false) {
 	}
 
 	const config_schema = Joi.object({
-		authentication: Joi.object({
-			authorizeLocal: boolean,
-			cacheTTL: number.required(),
-			enableSessions: boolean,
-		}),
+		authentication: Joi.alternatives(
+			Joi.object({
+				authorizeLocal: boolean,
+				cacheTTL: number.required(),
+				enableSessions: boolean,
+        hashFunction: string.valid('md5', 'sha256', 'argon2id').optional().empty(null),
+      }),
+			boolean
+		).optional(),
 		analytics: Joi.object({
 			aggregatePeriod: number,
 		}),
 		replication: Joi.object({
 			hostname: Joi.alternatives(string, number).optional().empty(null),
 			url: string.optional().empty(null),
-			port: number.optional().empty(null),
-			securePort: number.optional().empty(null),
+			port: port_constraints,
+			securePort: port_constraints,
 			routes: array.optional().empty(null),
 			databases: Joi.alternatives(string, array),
 			enableRootCAs: boolean.optional(),
-		}),
+			copyTablesToCatchUp: boolean.optional(),
+		}).optional(),
 		componentsRoot: root_constraints.optional(),
 		clustering: clustering_validation_schema,
 		localStudio: Joi.object({

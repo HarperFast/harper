@@ -29,6 +29,9 @@ const SUPPORTED_OPS = [
 	'create_attribute',
 	'drop_attribute',
 	'search_by_id',
+	'insert',
+	'update',
+	'upsert',
 	'delete',
 	'search_by_value',
 	'csv_file_load',
@@ -80,6 +83,10 @@ const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };
 module.exports = { cliOperations, buildRequest };
 const PREPARE_OPERATION = {
 	deploy_component: async (req) => {
+		if (req.package) {
+			return;
+		}
+
 		const project_path = process.cwd();
 		req.payload = await packageDirectory(project_path, { skip_node_modules: true, ...req });
 		req.cborEncode = true;
@@ -126,13 +133,22 @@ async function cliOperations(req) {
 	}
 	let target;
 	if (req.target) {
-		target = new URL(req.target);
+		try {
+			target = new URL(req.target);
+		} catch (error) {
+			try {
+				target = new URL(`https://${req.target}:9925`);
+			} catch (asHostError) {
+				throw error; // throw the original error
+			}
+		}
 		target = {
 			protocol: target.protocol,
 			hostname: target.hostname,
 			port: target.port,
 			username: req.username || target.username || process.env.CLI_TARGET_USERNAME,
 			password: req.password || target.password || process.env.CLI_TARGET_PASSWORD,
+			rejectUnauthorized: req.rejectUnauthorized,
 		};
 	} else {
 		if (!fs.existsSync(path.join(env_mgr.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE))) {
@@ -160,14 +176,23 @@ async function cliOperations(req) {
 			options.headers['Content-Type'] = 'application/cbor';
 			req = encode(req);
 		}
-		let res = await httpRequest(options, req);
+		let response = await httpRequest(options, req);
 
-		res = JSON.parse(res.body);
+		let responseData;
+		try {
+			responseData = JSON.parse(response.body);
+			// eslint-disable-next-line sonarjs/no-ignored-exceptions
+		} catch (e) {
+			responseData = {
+				status: response.statusCode + ' ' + (response.statusMessage || 'Unknown'),
+				body: response.body,
+			};
+		}
 
 		if (req.json) {
-			console.log(JSON.stringify(res, null, 2));
+			console.log(JSON.stringify(responseData, null, 2));
 		} else {
-			console.log(YAML.stringify(res).trim());
+			console.log(YAML.stringify(responseData).trim());
 		}
 	} catch (err) {
 		let err_msg = 'Error: ';
@@ -176,7 +201,7 @@ async function cliOperations(req) {
 		} else if (err?.response?.data) {
 			err_msg += err?.response?.data;
 		} else {
-			err_msg += err.message;
+			return console.error(err);
 		}
 		console.error(err_msg);
 	}

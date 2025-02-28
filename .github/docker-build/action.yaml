@@ -115,7 +115,7 @@ runs:
         images: ${{ inputs.dockerImage }}
         # generate Docker tags based on the following events/attributes
         tags: |
-          type=raw,enable=${{ inputs.dockerImage != 'harperdb/private'}},value=${{ inputs.harperdbVersion }}
+          type=raw,enable=${{ inputs.dockerImage != 'harperdb/private' && inputs.nodeVersion == inputs.latestNodeVersion }},value=${{ inputs.harperdbVersion }}
           type=raw,enable=${{ inputs.dockerImage == 'harperdb/private'}},value=${{ inputs.harperdbVersion }}-${{ github.run_number }}
           type=raw,enable=${{ inputs.dockerImage == 'tar'}},value=${{ inputs.harperdbVersion }}-${{ github.run_number }}
           type=raw,enable=${{ inputs.nodeVersion != inputs.latestNodeVersion }},value=${{ inputs.harperdbVersion }}_node-${{ inputs.nodeVersion }}
@@ -138,6 +138,7 @@ runs:
         build-args: |
           HARPERDB_VERSION=${{ inputs.harperdbVersion }}
           HARPERDB_TARBALL=harperdb-${{ inputs.harperdbVersion }}.tgz
+          NODE_VERSION=${{ inputs.nodeVersion }}
           VCS_REF=`git rev-parse HEAD`
           BUILD_DATE=`date -u +%FT%T`
         cache-from: type=gha
@@ -162,7 +163,7 @@ runs:
         container_registry: 'registry.hub.docker.com'
         container_image: ${{ inputs.dockerImage }}
         container_tag: ${{ inputs.harperdbVersion }}
-        push: ${{ inputs.pushRedhatConnect }}
+        push: ${{ inputs.push }}
       shell: bash
       run: |
         #!/usr/bin/env bash

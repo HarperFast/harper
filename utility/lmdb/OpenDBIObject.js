@@ -2,7 +2,6 @@
 const env_mngr = require('../environment/environmentManager');
 const terms = require('../../utility/hdbTerms');
 const { RecordEncoder } = require('../../resources/RecordEncoder');
-const fs = require('fs');
 env_mngr.initSync();
 
 const LMDB_CACHING = env_mngr.get(terms.CONFIG_PARAMS.STORAGE_CACHING) !== false;

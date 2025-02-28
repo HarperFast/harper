@@ -14,7 +14,7 @@ const hdbInfoController = require('../../dataLayer/hdbInfoController');
 const updatePrompt = require('../../upgrade/upgradePrompt');
 const directivesManager = require('../../upgrade/directivesManager');
 const chalk = require('chalk');
-const version = require('../../bin/version');
+const { packageJson } = require('../../utility/packageUtils');
 const { UpgradeObject } = require('../../upgrade/UpgradeObjects');
 const fs = require('fs-extra');
 const ps_list = require('../../utility/psList');
@@ -48,7 +48,7 @@ describe('Test upgrade.js', () => {
 		printToLogAndConsole_stub = sandbox.stub().returns();
 		upgrade_rw.__set__('printToLogAndConsole', printToLogAndConsole_stub);
 		processExit_stub = sandbox.stub(process, 'exit');
-		version_stub = sandbox.stub(version, 'version').returns(TEST_CURR_VERS);
+		version_stub = sandbox.stub(packageJson, 'version').get(() => TEST_CURR_VERS);
 	});
 
 	afterEach(() => {
@@ -223,7 +223,7 @@ describe('Test upgrade.js', () => {
 
 		it('Should exit process if no upgrade obj arg is passed AND there is an issue getting the current version', async () => {
 			getVersionUpdateInfo_stub.resolves(new UpgradeObject());
-			version_stub.returns(null);
+			version_stub.get(() => null);
 			try {
 				await upgrade_rw.upgrade();
 			} catch (e) {

@@ -55,10 +55,12 @@ describe('Test installApps module', () => {
 	let unlink_stub;
 	let ensure_sym_link;
 	let ensure_dir;
+	let symlink;
+	let move;
 
 	before(() => {
 		env_mgr.setProperty('rootPath', 'unit-test');
-		install_components.__set__('hdb_terms.PACKAGE_ROOT', 'comps/unit/tests');
+		install_components.__set__('PACKAGE_ROOT', 'comps/unit/tests');
 		read_json_stub = sandbox.stub(fs, 'readJsonSync').returns(fake_installed_package_json);
 		get_config_stub = sandbox.stub(config_utils, 'getConfiguration').returns(fake_components);
 		install_root_mod_stub = sandbox.stub(npm_utils, 'installAllRootModules');
@@ -66,6 +68,8 @@ describe('Test installApps module', () => {
 		unlink_stub = sandbox.stub(fs, 'unlinkSync');
 		ensure_sym_link = sandbox.stub(fs, 'ensureSymlink');
 		ensure_dir = sandbox.stub(fs, 'ensureDirSync');
+		symlink = sandbox.stub(fs, 'symlink').returns(Promise.resolve());;
+		move = sandbox.stub(fs, 'move').returns(Promise.resolve());;
 	});
 
 	beforeEach(() => {

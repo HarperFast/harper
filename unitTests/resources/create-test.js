@@ -68,6 +68,6 @@ describe('Create records', () => {
 		assert(Math.abs(id_before - id_after) > 1000000);
 	});
 	after(() => {
-		//		test_thread.terminate();
+		test_thread.terminate();
 	});
 });

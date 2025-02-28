@@ -459,7 +459,7 @@
 									"    pm.expect(jsonData.message).to.eql(\"Restarting http_workers\")",
 									"});",
 									"",
-									"setTimeout(() => {}, 30000) // wait for the restart to complete"
+									"setTimeout(() => {}, 80000) // waiting for 80 seconds for the restart to complete"
 								],
 								"type": "text/javascript",
 								"packages": {}

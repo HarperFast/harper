@@ -8,6 +8,7 @@ import { PREVIOUS_TIMESTAMP_PLACEHOLDER, LAST_TIMESTAMP_PLACEHOLDER } from './Re
 import * as harper_logger from '../utility/logging/harper_logger';
 import { getRecordAtTime } from './crdt';
 import { isMainThread } from 'worker_threads';
+import { decodeFromDatabase, deleteBlobsInObject } from './blob';
 
 /**
  * This module is responsible for the binary representation of audit records in an efficient form.
@@ -28,8 +29,8 @@ import { isMainThread } from 'worker_threads';
  */
 initSync();
 
-const ENTRY_HEADER = Buffer.alloc(1024); // enough room for all usernames?
-const ENTRY_DATAVIEW = new DataView(ENTRY_HEADER.buffer, ENTRY_HEADER.byteOffset, 1024);
+const ENTRY_HEADER = Buffer.alloc(2816); // this is sized to be large enough for the maximum key size (1976) plus large usernames. We may want to consider some limits on usernames to ensure this all fits
+const ENTRY_DATAVIEW = new DataView(ENTRY_HEADER.buffer, ENTRY_HEADER.byteOffset, 2816);
 export const transactionKeyEncoder = {
 	writeKey(key, buffer, position) {
 		if (key === LAST_TIMESTAMP_PLACEHOLDER) {
@@ -77,9 +78,12 @@ export function openAuditStore(root_store) {
 		updateLastRemoved(audit_store, 1);
 	}
 	audit_store.rootStore = root_store;
+	audit_store.tableStores = [];
 	const delete_callbacks = [];
-	audit_store.addDeleteRemovalCallback = function (table_id, callback) {
+	audit_store.addDeleteRemovalCallback = function (table_id, table, callback) {
 		delete_callbacks[table_id] = callback;
+		audit_store.tableStores[table_id] = table;
+		audit_store.deleteCallbacks = delete_callbacks;
 		return {
 			remove() {
 				delete delete_callbacks[table_id];
@@ -101,14 +105,11 @@ export function openAuditStore(root_store) {
 					snapshot: false,
 					end: Date.now() - audit_retention,
 				})) {
-					if ((value[0] & 15) === DELETE) {
-						// if this is a delete, we remove the delete entry from the primary table
-						// at the same time so the audit table the primary table are in sync
-						const audit_record = readAuditEntry(value);
-						const table_id = audit_record.tableId;
-						delete_callbacks[table_id]?.(audit_record.recordId);
+					try {
+						committed = removeAuditEntry(audit_store, key, value);
+					} catch (error) {
+						harper_logger.warn('Error removing audit entry', error);
 					}
-					committed = audit_store.remove(key);
 					last_key = key;
 					await new Promise(setImmediate);
 					if (++deleted >= MAX_DELETES_PER_CLEANUP) {
@@ -149,6 +150,31 @@ export function openAuditStore(root_store) {
 	return audit_store;
 }
 
+export function removeAuditEntry(audit_store: any, key: number, value: any): Promise<void> {
+	const type = readAction(value);
+	let audit_record;
+	if (type & HAS_BLOBS) {
+		// if it has blobs, and isn't in use from the main record, we need to delete them as well
+		audit_record = readAuditEntry(value);
+		const primary_store = audit_store.tableStores[audit_record.tableId];
+		if (primary_store.getEntry(audit_record.recordId).version !== audit_record.version) {
+			// if the versions don't match, then this should be the only/last reference to any blob
+			decodeFromDatabase(() => deleteBlobsInObject(audit_record.getValue(primary_store)), primary_store.rootStore);
+		}
+	}
+
+	if ((type & 15) === DELETE) {
+		// if this is a delete, we remove the delete entry from the primary table
+		// at the same time so the audit table the primary table are in sync, assuming the entry matches this audit record version
+		audit_record = audit_record || readAuditEntry(value);
+		const table_id = audit_record.tableId;
+		const primary_store = audit_store.tableStores[audit_record.tableId];
+		if (primary_store.getEntry(audit_record.recordId).version === audit_record.version)
+			audit_store.deleteCallbacks?.[table_id]?.(audit_record.recordId, audit_record.version);
+	}
+	return audit_store.remove(key);
+}
+
 function updateLastRemoved(audit_store, last_key) {
 	FLOAT_TARGET[0] = last_key;
 	audit_store.put(Symbol.for('last-removed'), FLOAT_BUFFER);
@@ -174,6 +200,8 @@ const MESSAGE = 3;
 const INVALIDATE = 4;
 const PATCH = 5;
 const RELOCATE = 6;
+export const ACTION_32_BIT = 14;
+export const ACTION_64_BIT = 15;
 /** Used to indicate we have received a remote local time update */
 export const REMOTE_SEQUENCE_UPDATE = 11;
 const HAS_PREVIOUS_VERSION = 64;
@@ -182,6 +210,7 @@ export const HAS_CURRENT_RESIDENCY_ID = 512;
 export const HAS_PREVIOUS_RESIDENCY_ID = 1024;
 export const HAS_ORIGINATING_OPERATION = 2048;
 export const HAS_EXPIRATION_EXTENDED_TYPE = 0x1000;
+export const HAS_BLOBS = 0x2000;
 const EVENT_TYPES = {
 	put: PUT | HAS_RECORD,
 	[PUT]: 'put',
@@ -245,8 +274,8 @@ export function createAuditEntry(
 		position = 9;
 	}
 	if (extended_type) {
-		if (extended_type & 0xffc0ff) throw new Error('Illegal extended type');
-		position++;
+		if (extended_type & 0xff) throw new Error('Illegal extended type');
+		position += 3;
 	}
 
 	writeInt(node_id);
@@ -266,7 +295,7 @@ export function createAuditEntry(
 
 	if (username) writeValue(username);
 	else ENTRY_HEADER[position++] = 0;
-	if (extended_type) ENTRY_DATAVIEW.setUint16(previous_local_time ? 8 : 0, action | extended_type | 0x8000);
+	if (extended_type) ENTRY_DATAVIEW.setUint32(previous_local_time ? 8 : 0, action | extended_type | 0xc0000000);
 	else ENTRY_HEADER[previous_local_time ? 8 : 0] = action;
 	const header = ENTRY_HEADER.subarray(0, position);
 	if (encoded_record) {
@@ -311,6 +340,35 @@ export function createAuditEntry(
 		}
 	}
 }
+
+/**
+ * Reads an action from an audit entry binary data, quickly
+ * @param buffer
+ */
+function readAction(buffer: Buffer) {
+	let position = 0;
+	if (buffer[0] == 66) {
+		// 66 is the first byte in a date double, so we need to skip it
+		position = 8;
+	}
+	const action = buffer[position];
+	if (action < 0x80) {
+		// simple case of a single byte
+		return action;
+	}
+	// otherwise, we need to decode the number
+	const decoder =
+		buffer.dataView || (buffer.dataView = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
+	decoder.position = position;
+	return decoder.readInt();
+}
+
+/**
+ * Reads a audit entry from binary data
+ * @param buffer
+ * @param start
+ * @param end
+ */
 export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined) {
 	try {
 		const decoder =
@@ -365,7 +423,10 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined) {
 			},
 			getValue(store, full_record?, audit_time?) {
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !full_record))
-					return store.decoder.decode(buffer.subarray(decoder.position, end));
+					return decodeFromDatabase(
+						() => store.decoder.decode(buffer.subarray(decoder.position, end)),
+						store.rootStore
+					);
 				if (action & HAS_PARTIAL_RECORD && audit_time) {
 					return getRecordAtTime(store.getEntry(this.recordId), audit_time, store);
 				} // TODO: If we store a partial and full record, may need to read both sequentially
@@ -389,11 +450,7 @@ export class Decoder extends DataView {
 	position = 0;
 	readInt() {
 		let number;
-		try {
-			number = this.getUint8(this.position++);
-		} catch (error) {
-			throw error;
-		}
+		number = this.getUint8(this.position++);
 		if (number >= 0x80) {
 			if (number >= 0xc0) {
 				if (number === 0xff) {
@@ -417,7 +474,8 @@ export class Decoder extends DataView {
 			this.position += 8;
 			return value;
 		} catch (error) {
-			debugger;
+			error.message = `Error reading float64: ${error.message} at position ${this.position}`;
+			throw error;
 		}
 	}
 }

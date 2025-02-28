@@ -1,5 +1,6 @@
 'use strict';
 
+require('../bin/dev');
 const fs = require('fs');
 const path = require('path');
 const installer = require('../server/nats/utility/installNATSServer');

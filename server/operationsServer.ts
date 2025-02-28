@@ -1,36 +1,27 @@
-'use strict';
-
-const cluster = require('cluster');
-const env = require('../utility/environment/environmentManager');
+import cluster from 'cluster';
+import env from '../utility/environment/environmentManager';
 env.initSync();
-const terms = require('../utility/hdbTerms');
-const util = require('util');
-const harper_logger = require('../utility/logging/harper_logger');
-const fs = require('fs');
-const fastify = require('fastify');
-
-const pjson = require('../package.json');
-const fastify_cors = require('@fastify/cors');
-const fastify_compress = require('@fastify/compress');
-const fastify_static = require('@fastify/static');
-const request_time_plugin = require('./serverHelpers/requestTimePlugin');
-const guidePath = require('path');
-const { PACKAGE_ROOT } = require('../utility/hdbTerms');
-const global_schema = require('../utility/globalSchema');
-const common_utils = require('../utility/common_utils');
-const user_schema = require('../security/user');
-const hdb_license = require('../utility/registration/hdb_license');
-const { server: server_registration } = require('../server/Server');
-const { node_request_key } = require('./serverHelpers/Request');
-
-const {
+import * as terms from '../utility/hdbTerms';
+import harper_logger from '../utility/logging/harper_logger';
+import fastify, { FastifyInstance, type FastifyServerOptions } from 'fastify';
+import fastify_cors, { type FastifyCorsOptions } from '@fastify/cors';
+import fastify_compress from '@fastify/compress';
+import fastify_static from '@fastify/static';
+import request_time_plugin from './serverHelpers/requestTimePlugin';
+import guidePath from 'path';
+import { PACKAGE_ROOT } from '../utility/packageUtils';
+import global_schema from '../utility/globalSchema';
+import common_utils from '../utility/common_utils';
+import user_schema from '../security/user';
+import hdb_license from '../utility/registration/hdb_license';
+import { server as server_registration, type ServerOptions } from '../server/Server';
+import {
 	authHandler,
 	handlePostRequest,
 	serverErrorHandler,
 	reqBodyValidationHandler,
-} = require('./serverHelpers/serverHandlers');
-const net = require('net');
-const { registerContentHandlers } = require('./serverHelpers/contentTypes');
+} from './serverHelpers/serverHandlers';
+import { registerContentHandlers } from './serverHelpers/contentTypes';
 
 const DEFAULT_HEADERS_TIMEOUT = 60000;
 const REQ_MAX_BODY_SIZE = 1024 * 1024 * 1024; //this is 1GB in bytes
@@ -43,11 +34,11 @@ module.exports = {
 	hdbServer: operationsServer,
 	start: operationsServer,
 };
+
 /**
  * Builds a HarperDB server.
- * @returns {Promise<void>}
  */
-async function operationsServer(options) {
+async function operationsServer(options: ServerOptions) {
 	try {
 		harper_logger.debug('In Fastify server' + process.cwd());
 		harper_logger.debug(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
@@ -92,24 +83,24 @@ async function operationsServer(options) {
 
 /**
  * Makes sure global values are set and that clustering connections are set/ready before server starts.
- * @returns {Promise<void>}
  */
 async function setUp() {
 	harper_logger.trace('Configuring HarperDB process.');
 	global_schema.setSchemaDataToGlobal();
-	await user_schema.setUsersToGlobal();
+	await user_schema.setUsersWithRolesCache();
 	await hdb_license.getLicense();
+}
+
+interface PostBody {
+	operation: string;
 }
 
 /**
  * This method configures and returns a Fastify server - for either HTTP or HTTPS  - based on the provided config settings
- *
- * @param is_https - <boolean> - type of communication protocol to build server for
- * @returns {FastifyInstance}
  */
-function buildServer(is_https) {
+function buildServer(is_https: boolean): FastifyInstance {
 	harper_logger.debug(`HarperDB process starting to build ${is_https ? 'HTTPS' : 'HTTP'} server.`);
-	let server_opts = getServerOptions(is_https);
+	const server_opts = getServerOptions(is_https);
 	/*
 	TODO: Eventually we may want to directly forward requests to fastify rather than having it create a
 	(pseudo) server.
@@ -148,7 +139,7 @@ function buildServer(is_https) {
 	app.register(fastify_static, { root: guidePath.join(PACKAGE_ROOT, 'studio/build-local') });
 	registerContentHandlers(app);
 
-	let studio_on = env.get(terms.HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON);
+	const studio_on = env.get(terms.HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON);
 	app.get('/', function (req, res) {
 		//if the local studio is enabled we will serve it, otherwise return 404
 		if (!common_utils.isEmpty(studio_on) && studio_on.toString().toLowerCase() === 'true') {
@@ -158,7 +149,7 @@ function buildServer(is_https) {
 	});
 
 	// This handles all POST requests
-	app.post(
+	app.post<{ Body: PostBody }>(
 		'/',
 		{
 			preValidation: [reqBodyValidationHandler, authHandler],
@@ -181,13 +172,14 @@ function buildServer(is_https) {
 	return app;
 }
 
+interface HttpServerOptions extends FastifyServerOptions {
+	https?: boolean;
+}
+
 /**
  * Builds server options object to pass to Fastify when using server factory.
- *
- * @param is_https
- * @returns {{keepAliveTimeout: *, bodyLimit: number, connectionTimeout: *}}
  */
-function getServerOptions(is_https) {
+function getServerOptions(is_https: boolean): HttpServerOptions {
 	const server_timeout = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT);
 	const keep_alive_timeout = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT);
 	return {
@@ -205,13 +197,11 @@ function getServerOptions(is_https) {
 
 /**
  * Builds CORS options object to pass to cors plugin when/if it needs to be registered with Fastify
- *
- * @returns {{credentials: boolean, origin: boolean, allowedHeaders: [string, string]}}
  */
-function getCORSOpts() {
-	let props_cors = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
-	let props_cors_accesslist = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
-	let cors_options;
+function getCORSOpts(): FastifyCorsOptions {
+	const props_cors = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
+	const props_cors_accesslist = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
+	let cors_options: FastifyCorsOptions;
 
 	if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
 		cors_options = {
@@ -235,9 +225,7 @@ function getCORSOpts() {
 
 /**
  * Returns header timeout value from config file or, if not entered, the default value
- *
- * @returns {*}
  */
-function getHeaderTimeoutConfig() {
+function getHeaderTimeoutConfig(): number {
 	return env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_HEADERSTIMEOUT) ?? DEFAULT_HEADERS_TIMEOUT;
 }

@@ -418,14 +418,12 @@ function verifyPerms(request_json, operation) {
 	const full_role_perms = permsTranslator.getRolePermissions(request_json.hdb_user?.role);
 	if (request_json.hdb_user?.role) request_json.hdb_user.role.permission = full_role_perms;
 
-	//check if user is trying to describe a system table and, if so, return schema perm error
 	if (op === DESCRIBE_SCHEMA_KEY || op === DESCRIBE_TABLE_KEY) {
-		if (operation_schema === terms.SYSTEM_SCHEMA_NAME) {
-			return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.SCHEMA_PERM_ERROR(operation_schema));
-		}
-
 		if (!full_role_perms.super_user) {
-			// eslint-disable-next-line radar/no-collapsible-if
+			if (operation_schema === terms.SYSTEM_SCHEMA_NAME) {
+				return permsResponse.handleUnauthorizedItem(HDB_ERROR_MSGS.SCHEMA_PERM_ERROR(operation_schema));
+			}
+
 			if (op === DESCRIBE_SCHEMA_KEY) {
 				if (!full_role_perms[operation_schema] || !full_role_perms[operation_schema][DESCRIBE_PERM]) {
 					return permsResponse.handleInvalidItem(HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(operation_schema));

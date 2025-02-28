@@ -53,8 +53,8 @@ export async function authentication(request, next_handler) {
 					? operations_cors_accesslist
 					: []
 				: apps_cors
-				? apps_cors_accesslist
-				: [];
+					? apps_cors_accesslist
+					: [];
 			if (access_list.includes(origin) || access_list.includes('*')) {
 				if (request.method === 'OPTIONS') {
 					// preflight request
@@ -231,9 +231,9 @@ export async function authentication(request, next_handler) {
 				updated_session.id = session_id;
 				return session_table.put(updated_session);
 			};
-			request.login = async function (user, password) {
-				request.user = await server.getUser(user, password, request);
-				request.session.update({ user: request.user && (request.user.getId?.() ?? request.user.username) });
+			request.login = async function (username: string, password: string) {
+				const user = (request.user = await server.getUser(username, password, request));
+				request.session.update({ user: user && (user.getId?.() ?? user.username) });
 			};
 		}
 		const response = await next_handler(request);
@@ -289,7 +289,7 @@ export async function login(login_object) {
 	login_object.baseResponse.headers.set = (name, value) => {
 		login_object.fastifyResponse.header(name, value);
 	};
-	await login_object.baseRequest.login(login_object.username, login_object.password);
+	await login_object.baseRequest.login(login_object.username, login_object.password ?? '');
 	return 'Login successful';
 }
 

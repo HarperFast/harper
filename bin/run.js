@@ -4,16 +4,16 @@ const env = require('../utility/environment/environmentManager');
 env.initSync();
 
 // This unused restart require is here so that main thread loads ITC event listener defined in restart file. Do not remove.
-const restart = require('./restart');
+require('./restart');
 const terms = require('../utility/hdbTerms');
+const { CONFIG_PARAMS } = terms;
 const hdb_logger = require('../utility/logging/harper_logger');
 const fs = require('fs-extra');
 const path = require('path');
-const si = require('systeminformation');
 const check_jwt_tokens = require('../utility/install/checkJWTTokensExist');
 const { install } = require('../utility/install/installer');
 const chalk = require('chalk');
-const pjson = require('../package.json');
+const { packageJson, PACKAGE_ROOT } = require('../utility/packageUtils');
 const hdb_utils = require('../utility/common_utils');
 const config_utils = require('../config/configUtils');
 const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
@@ -23,12 +23,8 @@ const log_rotator = require('../utility/logging/logRotator');
 const { compactOnStart } = require('./copyDb');
 const minimist = require('minimist');
 const keys = require('../security/keys');
-const { PACKAGE_ROOT, CONFIG_PARAMS } = require('../utility/hdbTerms');
 const {
 	startHTTPThreads,
-	startSocketServer,
-	mostIdleRouting,
-	remoteAffinityRouting,
 } = require('../server/threads/socketRouter');
 
 const hdbInfoController = require('../dataLayer/hdbInfoController');
@@ -116,23 +112,15 @@ async function initialize(called_by_install = false, called_by_main = false) {
 		process.exit(1);
 	}
 
-	try {
-		const hdb_pid = Number.parseInt(
-			await fs.readFile(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE), 'utf8')
-		);
-		let processes = await si.processes();
-		for (const p of processes.list) {
-			if (p.pid === hdb_pid) {
-				if (!service_clustering) {
-					console.log('HarperDB appears to be already running.');
-				} else {
-					is_hdb_running = true;
-				}
-				break;
-			}
+	const pidFile = path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE);
+	const hdbPid = readPidFile(pidFile);
+	if (hdbPid && hdbPid !== 1 && isProcessRunning(hdbPid)) {
+		if (!service_clustering) {
+			console.error(`Error: HarperDB is already running (pid: ${hdbPid})`);
+			process.exit(4);
+		} else {
+			is_hdb_running = true;
 		}
-	} catch (err) {
-		// Ignore error, If readFile finds no pid file we can assume that HDB is not already running
 	}
 
 	// Requiring the processManagement mod will create the .pm2 dir. This code is here to allow install to set
@@ -223,7 +211,7 @@ async function main(called_by_install = false) {
 		await startHTTPThreads(
 			process.env.DEV_MODE
 				? 1
-				: env.get(hdb_terms.CONFIG_PARAMS.THREADS_COUNT) ?? env.get(hdb_terms.CONFIG_PARAMS.THREADS)
+				: (env.get(hdb_terms.CONFIG_PARAMS.THREADS_COUNT) ?? env.get(hdb_terms.CONFIG_PARAMS.THREADS))
 		);
 
 		if (env.get(terms.CONFIG_PARAMS.LOGGING_ROTATION_ENABLED)) await log_rotator();
@@ -237,7 +225,7 @@ async function main(called_by_install = false) {
 function started() {
 	// Console log Harper dog logo
 	hdb_logger.suppressLogging(() => {
-		console.log(chalk.magenta(`HarperDB ${pjson.version} successfully started`));
+		console.log(chalk.magenta(`HarperDB ${packageJson.version} successfully started`));
 	});
 	hdb_logger.notify(HDB_STARTED);
 }
@@ -490,9 +478,9 @@ function startupLog(port_resolutions) {
 	// Build logs for all components
 	for (const c of components) {
 		if (comps[c]) {
-			log_msg += `${pad(c)}${comps[c].slice(0, -2)}\n`;
+			log_msg += `${pad(c + ': ')}${comps[c].slice(0, -2)}\n`;
 		} else {
-			log_msg += `${pad(c)}${app_ports_log}\n`;
+			log_msg += `${pad(c + ': ')}${app_ports_log}\n`;
 		}
 	}
 
@@ -503,5 +491,39 @@ function startupLog(port_resolutions) {
 				`Note that log messages are being sent to the console (stdout and stderr) in addition to the log file ${log_file_path}. This can be disabled by setting logging.stdStreams to false, and the log file can be directly monitored/tailed.`
 			);
 		});
+	}
+}
+
+/**
+ * Reads the HarperDB PID file and returns the PID as a number.
+ * @param {string} pidFile - The path to the HarperDB PID file
+ * @returns {number|null} - The PID as a number, or null if the file is not found or cannot be read
+ */
+function readPidFile(pidFile) {
+	try {
+		return Number.parseInt(fs.readFileSync(pidFile, 'utf8'), 10);
+	} catch (err) {
+		return null;
+	}
+}
+
+/**
+ * Checks if a process is running by attempting to send a signal 0 to the process.
+ * @param {number} pid - The process ID to check
+ * @returns {boolean} - True if the process is running, false otherwise
+ */
+function isProcessRunning(pid) {
+	try {
+		// process.kill with signal 0 tests if process exists
+		// throws error if process doesn't exist
+		process.kill(pid, 0);
+		return true;
+	} catch (err) {
+		// EPERM means process exists but we don't have permission
+		// which still indicates the process is running
+		if (err.code === 'EPERM') {
+			return true;
+		}
+		return false;
 	}
 }

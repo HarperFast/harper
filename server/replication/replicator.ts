@@ -10,7 +10,7 @@
  */
 
 import { databases, getDatabases, onUpdatedTable, onRemovedDB } from '../../resources/databases';
-import { ID_PROPERTY, Resource } from '../../resources/Resource';
+import { Resource } from '../../resources/Resource';
 import { IterableEventQueue } from '../../resources/IterableEventQueue';
 import {
 	NodeReplicationConnection,
@@ -41,7 +41,7 @@ export const servers = [];
 // This is the set of acceptable root certificates for replication, which includes the publicly trusted CAs if enabled
 // and any CAs that have been replicated across the cluster
 export const replication_certificate_authorities =
-	env.get(CONFIG_PARAMS.REPLICATION_ENABLEROOTCAS) === true ? new Set(tls.rootCertificates) : new Set();
+	env.get(CONFIG_PARAMS.REPLICATION_ENABLEROOTCAS) !== false ? new Set(tls.rootCertificates) : new Set();
 /**
  * Start the replication server. This will start a WebSocket server that will accept replication requests from other nodes.
  * @param options
@@ -57,14 +57,17 @@ export function start(options) {
 	assignReplicationSource(options);
 	options = {
 		// We generally expect this to use the operations API ports (9925)
-		subProtocol: 'harperdb-replication-v1',
 		mtls: true, // make sure that we request a certificate from the client
 		isOperationsServer: true, // we default to using the operations server ports
-
+		maxPayload: 10 * 1024 * 1024 * 1024, // 10 GB max payload, primarily to support replicating applications
 		...options,
 	};
 	// noinspection JSVoidFunctionReturnValueUsed
-	const ws_servers = server.ws(async (ws, request, chain_completion) => {
+	// @ts-expect-error
+	const ws_servers = server.ws(async (ws, request, chain_completion, next) => {
+		if (request.headers.get('sec-websocket-protocol') !== 'harperdb-replication-v1') {
+			return next(ws, request, chain_completion);
+		}
 		await chain_completion;
 		ws._socket.unref(); // we don't want the socket to keep the thread alive
 		replicateOverWS(ws, options, request?.user);
@@ -79,7 +82,7 @@ export function start(options) {
 		if (request.isWebSocket && request.headers.get('Sec-WebSocket-Protocol') === 'harperdb-replication-v1') {
 			if (!request.authorized && request._nodeRequest.socket.authorizationError) {
 				logger.error(
-					`Incoming client connection from ${request.ip} did not have valid certificate `,
+					`Incoming client connection from ${request.ip} did not have valid certificate, you may need turn on enableRootCAs in the config if you are using a publicly signed certificate, or add the CA to the server's trusted CAs`,
 					request._nodeRequest.socket.authorizationError
 				);
 			}
@@ -120,9 +123,9 @@ export function start(options) {
 		return next_handler(request);
 	}, options);
 
+	// we need to keep track of the servers so we can update the secure contexts
+	// @ts-expect-error
 	for (const ws_server of ws_servers) {
-		// we need to keep track of the servers so we can update the secure contexts
-		servers.push(ws_server);
 		if (ws_server.secureContexts) {
 			// we have secure contexts, so we can update the replication variants with the replication CAs
 			const updateContexts = () => {
@@ -140,7 +143,7 @@ export function start(options) {
 							// make sure we use the overriden tls.createSecureContext
 							// create a new security context with the extra CAs
 							{ ...context.options, ca };
-						context.replicationContext = tls.createSecureContext(tls_options);
+						context.updatedContext = tls.createSecureContext(tls_options);
 					} catch (error) {
 						logger.error('Error creating replication TLS config', error);
 					}
@@ -149,6 +152,10 @@ export function start(options) {
 			ws_server.secureContextsListeners.push(updateContexts);
 			// we need to stay up-to-date with any CAs that have been replicated across the cluster
 			monitorNodeCAs(updateContexts);
+			if (env.get(CONFIG_PARAMS.REPLICATION_ENABLEROOTCAS) !== false) {
+				// if we are using root CAs, then we need to at least update the contexts for this even if none of the nodes have (explicit) CAs
+				updateContexts();
+			}
 		}
 	}
 }
@@ -162,9 +169,6 @@ export function monitorNodeCAs(listener) {
 			if (replication_certificate_authorities.size !== last_ca_count) {
 				last_ca_count = replication_certificate_authorities.size;
 				listener?.();
-			} else if (env.get(CONFIG_PARAMS.REPLICATION_ENABLEROOTCAS) !== false) {
-				// if there is no CA for the node, then we default to using the root CAs, unless it is explicitly disabled
-				for (const cert of tls.rootCertificates) replication_certificate_authorities.add(cert);
 			}
 		}
 	});
@@ -321,7 +325,7 @@ const connections = new Map();
  * @param subscription
  * @param db_name
  */
-function getConnection(url, subscription, db_name) {
+function getConnection(url: string, subscription: any, db_name: string, node_name?: string, authorization?: string) {
 	let db_connections = connections.get(url);
 	if (!db_connections) {
 		connections.set(url, (db_connections = new Map()));
@@ -329,7 +333,10 @@ function getConnection(url, subscription, db_name) {
 	let connection = db_connections.get(db_name);
 	if (connection) return connection;
 	if (subscription) {
-		db_connections.set(db_name, (connection = new NodeReplicationConnection(url, subscription, db_name)));
+		db_connections.set(
+			db_name,
+			(connection = new NodeReplicationConnection(url, subscription, db_name, node_name, authorization))
+		);
 		connection.connect();
 		connection.once('finished', () => db_connections.delete(db_name));
 		return connection;
@@ -344,7 +351,7 @@ function getConnectionByName(node_name, subscription, db_name) {
 	if (connection) return connection;
 	const node = getHDBNodeTable().primaryStore.get(node_name);
 	if (node?.url) {
-		connection = getConnection(node.url, subscription, db_name);
+		connection = getConnection(node.url, subscription, db_name, node_name, node.authorization);
 		// cache the connection
 		node_name_to_db_connections.set(node_name, connections.get(node.url));
 	}
@@ -364,7 +371,7 @@ export async function sendOperationToNode(node, operation, options) {
 			reject(error);
 		});
 		socket.on('close', (error) => {
-			logger.error('Sending operation connection to ' + node.url + ' closed', error);
+			logger.info('Sending operation connection to ' + node.url + ' closed', error);
 		});
 	}).finally(() => {
 		socket.close();
@@ -395,8 +402,19 @@ export function subscribeToNode(request) {
 			subscription_to_table.ready = ready;
 			database_subscriptions.set(request.database, subscription_to_table);
 		}
-		const connection = getConnection(request.nodes[0].url, subscription_to_table, request.database);
-		if (request.nodes[0].name === undefined) connection.tentativeNode = request.nodes[0]; // we don't have the node name yet
+		const connection = getConnection(
+			request.nodes[0].url,
+			subscription_to_table,
+			request.database,
+			request.nodes[0].name,
+			request.nodes[0].authorization
+		);
+		if (request.nodes[0].name === undefined) {
+			// we don't have the node name yet
+			connection.tentativeNode = request.nodes[0];
+		} else {
+			connection.nodeName = request.nodes[0].name;
+		}
 		connection.subscribe(
 			request.nodes.filter((node) => {
 				return shouldReplicateToNode(node, request.database);
@@ -559,7 +577,7 @@ export async function replicateOperation(req) {
 		req.replicated = false; // don't send a replicated flag to the nodes we are sending to
 		logger.trace?.(
 			'Replicating operation',
-			req,
+			req.operation,
 			'to nodes',
 			server.nodes.map((node) => node.name)
 		);

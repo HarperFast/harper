@@ -1,7 +1,7 @@
 import { getMockLMDBPath } from '../test_utils.js';
 import { fileURLToPath } from 'url';
 import { setProperty } from '../../utility/environment/environmentManager.js';
-import terms from '../../utility/hdbTerms.js';
+import hdbTerms from '../../ts-build/utility/hdbTerms.js';
 import { join } from 'path';
 import axios from 'axios';
 import { encode } from 'cbor-x';
@@ -63,10 +63,10 @@ export async function setupTestApp() {
 	// exit if it is already setup or we are running in the browser
 	if (created_records || typeof process === 'undefined') return created_records;
 	let path = getMockLMDBPath();
-	setProperty(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET, join(path, 'operations-server'));
-	setProperty(terms.CONFIG_PARAMS.HTTP_SECUREPORT, null);
-	setProperty(terms.CONFIG_PARAMS.HTTP_PORT, 9926);
-	setProperty(terms.CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL, true);
+	setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET, join(path, 'operations-server'));
+	setProperty(hdbTerms.CONFIG_PARAMS.HTTP_SECUREPORT, null);
+	setProperty(hdbTerms.CONFIG_PARAMS.HTTP_PORT, 9926);
+	setProperty(hdbTerms.CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL, true);
 	process.env.SCHEMAS_DATA_PATH = path;
 	// make it easy to see what is going on when unit testing
 	process.env.LOGGING_STDSTREAMS = 'true';

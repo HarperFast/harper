@@ -1,6 +1,8 @@
 #!/usr/bin/env node
 'use strict';
 
+require('./dev');
+
 const run_clone = process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL');
 if (run_clone) {
 	const env_mgr = require('../utility/environment/environmentManager');
@@ -11,10 +13,10 @@ const fs = require('node:fs');
 const path = require('node:path');
 const logger = require('../utility/logging/harper_logger');
 const cli_operations = require('./cliOperations');
-const version = require('./version');
+const { packageJson, PACKAGE_ROOT } = require('../utility/packageUtils');
 const check_node = require('../launchServiceScripts/utility/checkNodeVersion');
 const hdb_terms = require('../utility/hdbTerms');
-const { SERVICE_ACTIONS_ENUM, PACKAGE_ROOT } = hdb_terms;
+const { SERVICE_ACTIONS_ENUM } = hdb_terms;
 
 const HELP = `
 Usage: harperdb [command]
@@ -27,7 +29,7 @@ Commands:
 copy-db <source> <target>       - Copies a database from source path to target path
 dev <path>                      - Run the application in dev mode with debugging, foreground logging, no auth
 install                         - Install harperdb
-operation <op> <param>=<value>  - Run an API operation and return result to the CLI, not all operations are supported
+<api-operation> <param>=<value> - Run an API operation and return result to the CLI, not all operations are supported
 register                        - Register harperdb
 renew-certs                     - Generate a new set of self-signed certificates
 restart                         - Restart the harperdb background process
@@ -65,11 +67,8 @@ async function harperdb() {
 		service = process.argv[2].toLowerCase();
 	}
 
-	let cli_api_op;
-	if (!run_clone) {
-		cli_api_op = cli_operations.buildRequest();
-		if (cli_api_op.operation) service = SERVICE_ACTIONS_ENUM.OPERATION;
-	}
+	const cli_api_op = cli_operations.buildRequest();
+	if (cli_api_op.operation) service = SERVICE_ACTIONS_ENUM.OPERATION;
 
 	switch (service) {
 		case SERVICE_ACTIONS_ENUM.OPERATION:
@@ -88,7 +87,7 @@ async function harperdb() {
 		case SERVICE_ACTIONS_ENUM.RESTART:
 			return require('./restart').restart({});
 		case SERVICE_ACTIONS_ENUM.VERSION:
-			return version.version();
+			return packageJson.version;
 		case SERVICE_ACTIONS_ENUM.UPGRADE:
 			logger.setLogLevel(hdb_terms.LOG_LEVELS.INFO);
 			// The require is here to better control the flow of imports when this module is called.

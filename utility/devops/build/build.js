@@ -2,8 +2,7 @@ const esbuild = require('esbuild');
 const fg = require('fast-glob');
 const fs = require('fs-extra');
 const path = require('path');
-const util = require('util');
-const { spawnSync, exec } = require('child_process');
+const { exec } = require('child_process');
 let cwd_path = path.resolve(__dirname, '../../../');
 process.chdir(cwd_path);
 // we define externals to ensure that we don't load packages (from node_modules)
@@ -76,7 +75,7 @@ spawnSync(
 	],
 	{ cwd: PACKAGE_ROOT }
 );*/
-let result = exec('tsc entry.ts --outDir npm_pack --declaration --emitDeclarationOnly', async (error, result) => {
+let result = exec('npx tsc entry.ts --outDir npm_pack --declaration --emitDeclarationOnly', async (error, result) => {
 	if (error) {
 		if (error.code !== 2) console.error(error);
 	} else {

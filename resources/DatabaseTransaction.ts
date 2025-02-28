@@ -2,7 +2,8 @@ import { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { ServerError } from '../utility/errors/hdbError';
 import * as harper_logger from '../utility/logging/harper_logger';
-import { CONTEXT } from './Resource';
+import type { Context } from './ResourceInterface';
+
 import * as env_mngr from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { convertToMS } from '../utility/common_utils';
@@ -22,6 +23,7 @@ export function replicationConfirmation(callback) {
 }
 
 export class DatabaseTransaction implements Transaction {
+	#context: Context;
 	writes = []; // the set of writes to commit if the conditions are met
 	lmdbDb: RootDatabase;
 	readTxn: LMDBTransaction;
@@ -277,6 +279,12 @@ export class DatabaseTransaction implements Transaction {
 		// reset the transaction
 		this.writes = [];
 	}
+	getContext() {
+		return this.#context;
+	}
+	setContext(context) {
+		this.#context = context;
+	}
 }
 interface CommitResolution {
 	txnTime: number;
@@ -306,7 +314,7 @@ function startMonitoringTxns() {
 	timer = setInterval(function () {
 		for (const txn of tracked_txns) {
 			if (txn.stale) {
-				const url = txn[CONTEXT]?.url;
+				const url = txn.getContext()?.url;
 				harper_logger.error(
 					`Transaction was open too long and has been aborted, from table: ${
 						txn.lmdbDb?.name + (url ? ' path: ' + url : '')

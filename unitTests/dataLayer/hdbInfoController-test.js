@@ -8,7 +8,7 @@ const assert = require('assert');
 // Need to rewire this since we have a promisified data member for search.  Remove rewire when search is asyncified.
 const hdb_info_controller_rw = rewire('../../dataLayer/hdbInfoController');
 const insert = require('../../dataLayer/insert');
-const version = require('../../bin/version');
+const { packageJson } = require('../../utility/packageUtils');
 const harper_logger = require('../../utility/logging/harper_logger');
 const hdb_terms = require('../../utility/hdbTerms');
 const directiveManager = require('../../upgrade/directives/directivesController');
@@ -221,7 +221,7 @@ describe('Test hdbInfoController module ', function () {
 		});
 
 		before(() => {
-			version_stub = sandbox.stub(version, 'version').returns('4.0.0');
+			version_stub = sandbox.stub(packageJson, 'version').get(() => '4.0.0');
 			hasUpgradesRequired_stub = sandbox.stub(directiveManager, 'hasUpgradesRequired').returns(true);
 			checkIfInstallIsSupported_stub = sandbox.stub().returns();
 			process.argv.push('--CONFIRM_DOWNGRADE', 'yes');
@@ -242,7 +242,7 @@ describe('Test hdbInfoController module ', function () {
 
 		it('getVersionUpdateInfo - no result returned if versions are the same', async () => {
 			const expected_result = null;
-			version_stub.returns(INFO_SEARCH_RESULT[1].hdb_version_num);
+			version_stub.get(() => INFO_SEARCH_RESULT[1].hdb_version_num);
 
 			let result;
 			try {
@@ -255,21 +255,21 @@ describe('Test hdbInfoController module ', function () {
 		});
 
 		it('getVersionUpdateInfo - pre-upgrade version newer than upgrade version, but only minor difference', async () => {
-			version_stub.returns(INFO_SEARCH_RESULT[0].hdb_version_num);
+			version_stub.get(() => INFO_SEARCH_RESULT[0].hdb_version_num);
 			await hdb_info_controller_rw.getVersionUpdateInfo();
 			// expect no error to be thrown
 		});
 
 		it('getVersionUpdateInfo nominal test, upgrade that does not require a directive', async () => {
-			version_stub.returns('4.2.0');
+			version_stub.get(() => '4.2.0');
 			hasUpgradesRequired_stub.returns(false);
 			await hdb_info_controller_rw.getVersionUpdateInfo();
 			assert.equal(insert_stub.called, true, 'expected insert to be called');
 		});
 
 		it('getVersionUpdateInfo - error thrown if downgrading major version', async () => {
-			const test_error = 'Trying to downgrade major HDB versions is not supported.';
-			version_stub.returns(OLD_VERSION_NUM);
+			const test_error ='Trying to downgrade major HDB versions is not supported.';
+			version_stub.get(() => OLD_VERSION_NUM);
 
 			let result;
 			try {
@@ -298,7 +298,7 @@ describe('Test hdbInfoController module ', function () {
 
 		it('getVersionUpdateInfo - error thrown if version is too old', async () => {
 			getLatestHdbInfoRecord_stub.resolves(undefined);
-			version_stub.returns(NEWER_VERSION_NUM);
+			version_stub.get(() => NEWER_VERSION_NUM);
 
 			let result;
 			try {
@@ -311,9 +311,8 @@ describe('Test hdbInfoController module ', function () {
 			assert.equal(result.message, OLD_VERSION_ERR, 'Expected error message to be thrown');
 		});
 
-		it('test getVersionUpdateInfo - version throws exception', async function () {
-			const test_error = 'Version error';
-			version_stub.throws(new Error(test_error));
+		it('test getVersionUpdateInfo - version does not exist', async function () {
+			version_stub.get(() => null);
 
 			let result;
 			try {
@@ -323,7 +322,7 @@ describe('Test hdbInfoController module ', function () {
 			}
 
 			assert.ok(result instanceof Error, 'Expected error to be thrown');
-			assert.equal(result.message, test_error, 'Expected error message to be re-thrown');
+			assert.equal(result.message, `Could not find the version number in the package.json file.`, 'Expected error message to be re-thrown');
 		});
 	});
 

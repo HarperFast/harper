@@ -24,6 +24,9 @@
 				"attribute": "refresh_token"
 			},
 			{
+				"attribute": "hash_function"
+			},
+			{
 				"attribute": "__createdtime__"
 			},
 			{

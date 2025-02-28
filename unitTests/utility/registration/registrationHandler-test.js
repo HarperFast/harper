@@ -11,7 +11,7 @@ const test_utils = require('../../test_utils');
 test_utils.preTestPrep();
 const reg = rewire('../../../utility/registration/registrationHandler');
 const hdb_license = require('../../../utility/registration/hdb_license');
-const version = require('../../../bin/version');
+const { packageJson } = require('../../../utility/packageUtils');
 const log = require('../../../utility/logging/harper_logger');
 
 const parse_orig = reg.__get__('parseLicense');
@@ -161,7 +161,7 @@ describe(`Test getRegistrationInfo`, function () {
 	beforeEach(() => {
 		sandbox = sinon.createSandbox();
 		getLicense_stub = sandbox.stub(hdb_license, 'getLicense').resolves(test_license);
-		version_stub = sandbox.stub(version, 'version').returns(test_version);
+		version_stub = sandbox.stub(packageJson, 'version').get(() => test_version);
 		log_spy = sandbox.spy(log, 'error');
 	});
 	afterEach(() => {

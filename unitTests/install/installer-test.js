@@ -13,7 +13,7 @@ const hdb_logger = require('../../utility/logging/harper_logger');
 const installer_mod_path = '../../utility/install/installer';
 const env_manager = require('../../utility/environment/environmentManager');
 const config_utils = require('../../config/configUtils');
-const version = require('../../bin/version');
+const { packageJson } = require('../../utility/packageUtils');
 const role_ops = require('../../security/role');
 const user_ops = require('../../security/user');
 const installer = rewire(installer_mod_path);
@@ -130,7 +130,7 @@ describe('Test installer module', () => {
 		sandbox.stub(hdb_utils, 'getPropsFilePath').returns('bootprop/file');
 		sandbox.stub(fs, 'pathExists').resolves(true);
 		sandbox.stub(hdb_info_controller, 'getVersionUpdateInfo').resolves({ upgrade: 'yes please' });
-		const version_stub = sandbox.stub(version, 'version').returns('100.2.3');
+		const version_stub = sandbox.stub(packageJson, 'version').get(() => '100.2.3');
 
 		const prop_reader_fake = {
 			get: () => {},
@@ -350,7 +350,7 @@ describe('Test installer module', () => {
 	});
 
 	it('Test insertHdbVersionInfo calls insert with correct param', async () => {
-		const version_stub = sandbox.stub(version, 'version').returns('100.1.1');
+		const version_stub = sandbox.stub(packageJson, 'version').get(() => '100.1.1');
 		const insert_hdb_stub = sandbox.stub(hdb_info_controller, 'insertHdbInstallInfo');
 		const insertHdbVersionInfo = installer.__get__('insertHdbVersionInfo');
 		await insertHdbVersionInfo();

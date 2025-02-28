@@ -1,5 +1,4 @@
 const { assert } = require('chai');
-require('../../utility/devops/tsBuild');
 const { parseHeaderValue } = require('../../server/REST');
 
 describe('REST - parseHeaderValue', function () {

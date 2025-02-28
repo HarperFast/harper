@@ -22,7 +22,6 @@ const { relative, join } = require('node:path');
 const { CERT_PREFERENCE_APP, CERTIFICATE_VALUES } = certificates_terms;
 const assign_cmdenv_vars = require('../utility/assignCmdEnvVariables');
 const config_utils = require('../config/configUtils');
-const broken_alpn_callback = parseInt(process.version.slice(1)) < 20;
 const { table, getDatabases, databases } = require('../resources/databases');
 const { getJWTRSAKeys } = require('./tokenAuthentication');
 
@@ -218,7 +217,7 @@ function loadCertificates() {
 								let record_timestamp =
 									!cert_record || cert_record.is_self_signed
 										? 1
-										: cert_record.file_timestamp ?? cert_record.__updatedtime__;
+										: (cert_record.file_timestamp ?? cert_record.__updatedtime__);
 								if (cert_record && file_timestamp <= record_timestamp) {
 									if (file_timestamp < record_timestamp)
 										hdb_logger.info(
@@ -562,7 +561,7 @@ async function getCertAuthority() {
 	hdb_logger.trace('No CA found with matching private key');
 }
 
-async function generateCertAuthority(private_key, public_key) {
+async function generateCertAuthority(private_key, public_key, write_key = true) {
 	const ca_cert = pki.createCertificate();
 
 	ca_cert.publicKey = public_key;
@@ -594,7 +593,9 @@ async function generateCertAuthority(private_key, public_key) {
 
 	const keys_path = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
 	const private_path = path.join(keys_path, certificates_terms.PRIVATEKEY_PEM_NAME);
-	await fs.writeFile(private_path, pki.privateKeyToPem(private_key));
+	if (write_key) {
+		await fs.writeFile(private_path, pki.privateKeyToPem(private_key));
+	}
 
 	return ca_cert;
 }
@@ -672,11 +673,11 @@ async function reviewSelfSignedCert() {
 			await fs.writeFile(path.join(keys_path, key_name), pki.privateKeyToPem(private_key));
 		}
 
-		const hdb_ca = await generateCertAuthority(private_key, pki.setRsaPublicKey(private_key.n, private_key.e));
+		const hdb_ca = await generateCertAuthority(private_key, pki.setRsaPublicKey(private_key.n, private_key.e), false);
 
 		await setCertTable({
 			name: hdb_ca.subject.getField('CN').value,
-			uses: ['https', 'wss'],
+			uses: ['https'],
 			certificate: pki.certificateToPem(hdb_ca),
 			private_key_name: key_name,
 			is_authority: true,
@@ -777,17 +778,6 @@ tls.createSecureContext = function (options) {
 	ctx.context.setKey(options.key, undefined);
 	return ctx;
 };
-const origTLSServer = tls.Server;
-// In node v18 (only in 18.20 and up) the node https module will set the ALPN protocols leading to an error, so we
-// have to null out of the protocols if there is a callback
-tls.Server = function (options, secureConnectionListener) {
-	if (options.ALPNCallback) {
-		options.ALPNProtocols = null;
-	}
-	return origTLSServer.call(this, options, secureConnectionListener);
-};
-// restore the original prototype, as it is used internally by Node.js
-tls.Server.prototype = origTLSServer.prototype;
 // Node.js SNI callbacks _add_ the certificate and don't replace it, and so we can't have a default certificate,
 // so we have to assign the default certificate during the cert callback, because the default SNI callback isn't
 // consistently called for all TLS connections (isn't called if no SNI server name is provided).
@@ -832,7 +822,6 @@ function createTLSSelector(type, mtls_options) {
 					ca_certs.clear();
 					let best_quality = 0;
 					for await (const cert of databases.system.hdb_certificate.search([])) {
-						if (type !== 'operations-api' && cert.uses?.includes?.('operations')) continue;
 						const certificate = cert.certificate;
 						const cert_parsed = new X509Certificate(certificate);
 						if (cert.is_authority) {
@@ -847,19 +836,9 @@ function createTLSSelector(type, mtls_options) {
 								continue;
 							}
 							let is_operations = type === 'operations-api';
-							if (!is_operations && cert.uses?.includes?.('operations')) {
-								harper_logger.trace(
-									'Skipping cert',
-									cert.name,
-									'for',
-									type,
-									server.ports || 'client',
-									'because it is for operations'
-								);
-								continue;
-							}
-
 							let quality = cert.is_self_signed ? 1 : 2;
+							// prefer operations certificates for operations API
+							if (is_operations && cert.uses?.includes?.('operations')) quality += 1;
 
 							const private_key = await getPrivateKeyByName(cert.private_key_name);
 
@@ -948,7 +927,7 @@ function createTLSSelector(type, mtls_options) {
 				}
 			}
 			databases.system.hdb_certificate.subscribe({
-				listener: updateTLS,
+				listener: () => setTimeout(() => updateTLS(), 1500).unref(),
 				omitCurrent: true,
 			});
 			updateTLS();
@@ -957,16 +936,15 @@ function createTLSSelector(type, mtls_options) {
 	return SNICallback;
 	function SNICallback(servername, cb) {
 		// find the matching server name, substituting wildcards for each part of the domain to find matches
-		harper_logger.info('TLS requested for', servername || '(no SNI)', this.isReplicationConnection);
+		harper_logger.info('TLS requested for', servername || '(no SNI)');
 		let matching_name = servername;
 		while (true) {
 			let context = secure_contexts.get(matching_name);
 			if (context) {
 				harper_logger.debug('Found certificate for', servername, context.certStart);
-				// check if this is a replication connection, based on ALPN, and if so, use the replication context
-				// if ALPN callbacks are broken (node 18), we need to always use the replication context if it exists
-				if (context.replicationContext && (this.isReplicationConnection || broken_alpn_callback))
-					context = context.replicationContext;
+				// check if there is a updated context, which is used by replication to replace the context with TLS with
+				// full set of CAs
+				if (context.updatedContext) context = context.updatedContext;
 				return cb(null, context);
 			}
 			if (has_wildcards && matching_name) {
@@ -980,8 +958,7 @@ function createTLSSelector(type, mtls_options) {
 		// no matches, return the first/default one
 		let context = default_context;
 		if (!context) harper_logger.info('No default certificate found');
-		else if (context.replicationContext && (this.isReplicationConnection || broken_alpn_callback))
-			context = context.replicationContext;
+		else if (context.updatedContext) context = context.updatedContext;
 		cb(null, context);
 	}
 }
@@ -1176,7 +1153,7 @@ function hostnamesFromCert(cert /*X509Certificate*/) {
 				})
 				.filter((part) => part) // filter out any empty names
 		: // finally we fall back to the common name
-		  [extractCommonName(cert)];
+			[extractCommonName(cert)];
 }
 
 async function getKey(req) {

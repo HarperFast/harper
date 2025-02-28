@@ -7,6 +7,7 @@ const { exec } = require('child_process');
 const util = require('util');
 const p_exec = util.promisify(exec);
 const terms = require('./hdbTerms');
+const { PACKAGE_ROOT } = require('./packageUtils');
 const { handleHDBError, hdb_errors } = require('./errors/hdbError');
 const { HTTP_STATUS_CODES } = hdb_errors;
 const env = require('./environment/environmentManager');
@@ -14,7 +15,7 @@ const validator = require('../validation/validationWrapper');
 const harper_logger = require('./logging/harper_logger');
 env.initSync();
 const CF_ROUTES_DIR = env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
-const NPM_INSTALL_COMMAND = 'npm install --omit=dev --json';
+const NPM_INSTALL_COMMAND = 'npm install --force --omit=dev --json';
 const NPM_INSTALL_DRY_RUN_COMMAND = `${NPM_INSTALL_COMMAND} --dry-run`;
 const root_dir = env.get(terms.CONFIG_PARAMS.ROOTPATH);
 const ssh_dir = path.join(root_dir, 'ssh');
@@ -25,6 +26,7 @@ module.exports = {
 	installAllRootModules,
 	uninstallRootModule,
 	linkHarperdb,
+	runCommand,
 };
 
 /**
@@ -49,7 +51,25 @@ async function installAllRootModules(ignore_scripts = false, working_dir = env.g
 		});
 	}
 
-	await runCommand(ignore_scripts ? 'npm install --ignore-scripts' : 'npm install', working_dir, env_vars);
+	// When the user running HarperDB does not have write permissions to the global node_modules directory npm install will fail due to the symlink
+	try {
+		const root_path = env.get(terms.CONFIG_PARAMS.ROOTPATH);
+		const harper_module = path.join(root_path, 'node_modules', 'harperdb');
+
+		if (fs.lstatSync(harper_module).isSymbolicLink()) {
+			fs.unlinkSync(harper_module);
+		}
+	} catch (err) {
+		if (err.code !== 'ENOENT') {
+			harper_logger.error('Error removing symlink:', err);
+		}
+	}
+
+	await runCommand(
+		ignore_scripts ? 'npm install --force --ignore-scripts --no-bin-links' : 'npm install --force --no-bin-links',
+		working_dir,
+		env_vars
+	);
 }
 
 /**
@@ -67,7 +87,7 @@ async function uninstallRootModule(pkg_name) {
  */
 async function linkHarperdb() {
 	await checkNPMInstalled();
-	await runCommand(`npm link ${terms.PACKAGE_ROOT}`, env.get(terms.CONFIG_PARAMS.ROOTPATH));
+	await runCommand(`npm link ${PACKAGE_ROOT}`, env.get(terms.CONFIG_PARAMS.ROOTPATH));
 }
 
 /**
@@ -84,7 +104,7 @@ async function runCommand(command, cwd = undefined, env = process.env) {
 		throw new Error(err.stderr.replace('\n', ''));
 	}
 
-	if (stderr && !stderr.includes('Debugger listening')) {
+	if (stderr && !stderr.includes('Debugger listening') && !stderr.includes('warn using --force')) {
 		harper_logger.error('Error running NPM command:', command, stderr);
 	}
 

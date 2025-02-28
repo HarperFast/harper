@@ -8,7 +8,7 @@ const path = require('path');
 const fs = require('fs-extra');
 const { once } = require('events');
 const { handleHDBError, hdb_errors } = require('../errors/hdbError');
-const { PACKAGE_ROOT } = require('../../utility/hdbTerms');
+const { PACKAGE_ROOT } = require('../../utility/packageUtils');
 
 // Install log is created in harperdb/logs because the hdb folder doesn't exist initially during the install process.
 const INSTALL_LOG_LOCATION = path.join(PACKAGE_ROOT, `logs`);

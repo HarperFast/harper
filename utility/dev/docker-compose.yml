@@ -1,0 +1,66 @@
+services:
+  harper1:
+    image: harperdb/harperdb
+    build:
+      dockerfile: utility/dev/Dockerfile
+      context: .
+    pull_policy: missing
+    networks:
+      harperdb:
+        ipv4_address: 10.99.25.10
+    environment:
+      HDB_ADMIN_USERNAME: admin
+      HDB_ADMIN_PASSWORD: admin
+      LOGGING_LEVEL: debug
+      REPLICATION_HOSTNAME: 10.99.25.10
+      REPLICATION_PORT: 10.99.25.10:9933
+      REPLICATION_ROUTES: '["ws://10.99.25.20:9933", "ws://10.99.25.30:9933"]'
+      HTTP_PORT: 9926
+    ports:
+      - "49925:9925"
+      - "49926:9926"
+  harper2:
+    image: harperdb/harperdb
+    build:
+      dockerfile: utility/dev/Dockerfile
+      context: .
+    pull_policy: missing
+    networks:
+      harperdb:
+        ipv4_address: 10.99.25.20
+    environment:
+      HDB_ADMIN_USERNAME: admin
+      HDB_ADMIN_PASSWORD: admin
+      LOGGING_LEVEL: debug
+      REPLICATION_HOSTNAME: 10.99.25.20
+      REPLICATION_PORT: 10.99.25.20:9933
+      REPLICATION_ROUTES: '["ws://10.99.25.10:9933", "ws://10.99.25.30:9933"]'
+      HTTP_PORT: 9926
+    ports:
+      - "49935:9925"
+      - "49936:9926"
+  harper3:
+    image: harperdb/harperdb
+    build:
+      dockerfile: utility/dev/Dockerfile
+      context: .
+    pull_policy: missing
+    networks:
+      harperdb:
+        ipv4_address: 10.99.25.30
+    environment:
+      HDB_ADMIN_USERNAME: admin
+      HDB_ADMIN_PASSWORD: admin
+      LOGGING_LEVEL: debug
+      REPLICATION_HOSTNAME: 10.99.25.30
+      REPLICATION_PORT: 10.99.25.30:9933
+      REPLICATION_ROUTES: '["ws://10.99.25.10:9933", "ws://10.99.25.20:9933"]'
+      HTTP_PORT: 9926
+    ports:
+      - "49945:9925"
+      - "49946:9926"
+networks:
+  harperdb:
+    ipam:
+      config:
+        - subnet: 10.99.25.0/24
