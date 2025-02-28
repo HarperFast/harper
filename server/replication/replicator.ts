@@ -92,7 +92,17 @@ export function start(options) {
 				const subject = request.peerCertificate.subject;
 				const node = subject && (hdb_nodes_store.get(subject.CN) || route_by_hostname.get(subject.CN));
 				if (node) {
-					request.user = node;
+					if (node?.revoked_certificates?.includes(request.peerCertificate.serialNumber)) {
+						logger.warn(
+							'Revoked certificate used in attempt to connect to node',
+							node.name,
+							'certificate serial number',
+							request.peerCertificate.serialNumber
+						);
+						return;
+					} else {
+						request.user = node;
+					}
 				} else {
 					// technically if there are credentials, we could still allow the connection, but give a warning, because we don't usually do that
 					logger.warn(

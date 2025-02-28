@@ -220,6 +220,7 @@ export function* iterateRoutes(options: { routes: (Route | any)[] }) {
 			subscription: route.subscriptions,
 			routes: route.routes,
 			start_time: route.startTime,
+			revoked_certificates: route.revokedCertificates,
 		};
 	}
 }

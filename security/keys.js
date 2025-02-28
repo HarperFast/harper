@@ -24,7 +24,6 @@ const assign_cmdenv_vars = require('../utility/assignCmdEnvVariables');
 const config_utils = require('../config/configUtils');
 const { table, getDatabases, databases } = require('../resources/databases');
 const { getJWTRSAKeys } = require('./tokenAuthentication');
-const { getHDBNodeTable } = require('../server/replication/knownNodes');
 
 Object.assign(exports, {
 	generateKeys,
@@ -831,14 +830,11 @@ function createTLSSelector(type, mtls_options) {
 						}
 					}
 
-					const hdb_nodes = getHDBNodeTable();
-
 					for await (const cert of databases.system.hdb_certificate.search([])) {
 						try {
 							if (cert.is_authority) {
 								continue;
 							}
-
 							let is_operations = type === 'operations-api';
 							let quality = cert.is_self_signed ? 1 : 2;
 							// prefer operations certificates for operations API
@@ -854,14 +850,6 @@ function createTLSSelector(type, mtls_options) {
 							if (!private_key || !certificate) {
 								throw new Error('Missing private key or certificate for secure server');
 							}
-
-							const cert_node = await hdb_nodes.get(cert.name);
-							if (cert_node && cert_node.revoked_certificates?.includes(cert_parsed.serialNumber)) {
-								console.log('Certificate', cert.name, 'is revoked');
-								harper_logger.warn('Certificate', cert.name, 'is revoked');
-								continue;
-							}
-
 							const secure_options = {
 								ciphers: cert.ciphers,
 								ticketKeys: getTicketKeys(),
