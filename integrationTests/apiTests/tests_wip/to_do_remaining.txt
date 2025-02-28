@@ -1,0 +1,41 @@
+Exemplu:
+
+pm.response.json() este jsonData sau response care este de fapt r.body
+let status = jsonData[0].status deci status e de fapt r.body[0].status
+sau poate fi si r.status (din supertest r.status si r.body)
+// Unmatched Postman assertion: pm.expect(jsonData.length).to.eql(1);
+.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'));
+// Unmatched Postman assertion: pm.expect\(jsonData.message\).to.eql\(.*\);
+// Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access.length).to.eql(1);
+.expect((r) => assert.ok(r.body.unauthorized_access.length == 1));
+.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0));
+.expect((r) => assert.ok(r.body.hasOwnProperty('4')));
+.expect((r) => assert.equal(r.body[0]['COUNT(*)'], 350, `${generic.csv_tb} count was not 350`));
+.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0));
+.expect((r) => assert.ok(r.body[0].status == 'ERROR'));
+.expect((r) => assert.ok(r.body.length == 1));
+.expect((r) => assert.ok(r.body.message.includes('inserted 1')))
+.expect((r) => assert.ok(Object.keys(obj).length == 3))
+//undefined null NaN empty string ("") false
+.expect((r) => assert.ok(!value))
+====================================================================================
+
+
+sa caut dupa pm.response.json(); 66 results
+
+sa ma uit la setTimeout( si sa pun await uri si inafara await request()
+
+sa inlocuiesc {{ de exemplu {{schema}}
+
+sa verific in .send() in json uri sa nu existe // adica commenturile din postman body, ca a pus comment uri ca si //
+
+The targeted final format would look like this: https://github.com/HarperDB/harperdb/pull/2351/files
+
+sa ma uit la setNextRequest
+
+sa fie expect(<<STATUS CODE>>) tot timpul ultimul expect din metoda, inainte de ult rand:
+});
+
+
+import {setTimeout} from 'node:timers/promises';
+//use always with async await setTimeout(x)

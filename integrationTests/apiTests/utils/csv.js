@@ -3,7 +3,7 @@ import assert from "node:assert";
 import {checkJobCompleted, getJobId} from "./jobs.js";
 import {envUrl, headers} from "../config/envConfig.js";
 
-export async function csvFileUpload(schemaName, tableName, filePath) {
+export async function csvFileUpload(schemaName, tableName, filePath, expectedErrorMessage, expectedCompletedMessage) {
     const response = await request(envUrl)
         .post('')
         .set(headers)
@@ -18,7 +18,7 @@ export async function csvFileUpload(schemaName, tableName, filePath) {
     const id = await getJobId(response.body);
     console.log(response.body);
     console.log(id);
-    await checkJobCompleted(id);
+    await checkJobCompleted(id, expectedErrorMessage, expectedCompletedMessage);
 }
 
 export async function csvUrlLoad(schemaName, tableName, fileUrl, expectedErrorMessage, expectedCompletedMessage) {

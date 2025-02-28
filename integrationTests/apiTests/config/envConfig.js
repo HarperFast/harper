@@ -51,9 +51,9 @@ export let generic = {
 }
 
 export const envUrl = generic.host + ':' + generic.port;
+export const envUrlRest = generic.host + ':' + generic.portRest;
 
 export const headers = {
     // Authorization: 'Basic ' + encodeCredentials(),
-    // No need to set header content-type as it comes from the server as application/json
     'Content-Type': 'application/json'
 }
