@@ -5,17 +5,17 @@ import {checkTableInSchema, createSchema, describeSchema, dropSchema} from "../u
 import {envUrl, generic, headers} from "../config/envConfig.js";
 import {createTable, dropTable} from "../utils/table.js";
 import {csvFileUpload, csvUrlLoad} from "../utils/csv.js";
-import { setTimeout as sleep } from 'node:timers/promises';
+import {setTimeout as sleep} from 'node:timers/promises';
 import * as path from "node:path";
-import { fileURLToPath } from 'url';
+import {fileURLToPath} from 'url';
 import {insert} from "../utils/insert.js";
-import longTextJson from '../json/longText.json' with { type: "json" };
-import dataBulkJson from '../json/dataBulk.json' with { type: "json" };
-import remarksJson from '../json/remarks.json' with { type: "json" };
-import dogJson from '../json/dog.json' with { type: "json" };
-import breedJson from '../json/breed.json' with { type: "json" };
-import ownerJson from '../json/owner.json' with { type: "json" };
-import ownerOnlyJson from '../json/ownerOnly.json' with { type: "json" };
+import longTextJson from '../json/longText.json' with {type: "json"};
+import dataBulkJson from '../json/dataBulk.json' with {type: "json"};
+import remarksJson from '../json/remarks.json' with {type: "json"};
+import dogJson from '../json/dog.json' with {type: "json"};
+import breedJson from '../json/breed.json' with {type: "json"};
+import ownerJson from '../json/owner.json' with {type: "json"};
+import ownerOnlyJson from '../json/ownerOnly.json' with {type: "json"};
 import {searchByHash} from "../utils/search.js";
 
 

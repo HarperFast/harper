@@ -1,10 +1,10 @@
 import request from "supertest";
 import assert from "node:assert";
-import { setTimeout as sleep } from 'node:timers/promises';
-import {envUrl} from "../config/envConfig.js";
+import {setTimeout as sleep} from 'node:timers/promises';
+import {envUrl, headers} from "../config/envConfig.js";
 
 
-export async function getJobId(jsonData){
+export async function getJobId(jsonData) {
     assert.ok(jsonData.hasOwnProperty('job_id'));
     assert.equal(jsonData.message.split(" ")[4], jsonData.job_id);
     let id_index = jsonData.message.indexOf("id ");
@@ -12,9 +12,10 @@ export async function getJobId(jsonData){
     return parsedId;
 }
 
-export async function checkJobCompleted(job_id, expectedErrorMessage, expectedCompletedMessage){
+export async function checkJobCompleted(job_id, expectedErrorMessage, expectedCompletedMessage) {
     const response = await request(envUrl)
         .post('')
+        .set(headers)
         .send({
             operation: 'get_job',
             id: job_id
@@ -25,20 +26,19 @@ export async function checkJobCompleted(job_id, expectedErrorMessage, expectedCo
     assert.equal(jsonData.length, 1);
     assert.ok(jsonData[0].hasOwnProperty('status'));
     let status = jsonData[0].status;
-    switch(status){
+    switch (status) {
         case 'ERROR':
-            if(expectedErrorMessage) {
+            if (expectedErrorMessage) {
                 console.log(status + " (AS EXPECTED) job id: " + job_id);
                 assert.ok(jsonData[0].message.includes(expectedErrorMessage));
-            }
-            else {
+            } else {
                 console.log(status + " job id: " + job_id);
                 assert.fail('Status was ERROR');
             }
             break;
         case 'COMPLETE':
             console.log(status + " job id: " + job_id);
-            if(expectedCompletedMessage)
+            if (expectedCompletedMessage)
                 assert.ok(jsonData[0].message.includes(expectedCompletedMessage));
             assert.equal(status, 'COMPLETE');
             break;

@@ -4,7 +4,7 @@ import request from 'supertest';
 import {checkTableInSchema, createSchema, describeSchema, dropSchema} from "../utils/schema.js";
 import {generic, headers, envUrl} from "../config/envConfig.js";
 import {createTable, dropTable} from "../utils/table.js";
-import { setTimeout as sleep } from 'node:timers/promises';
+import {setTimeout as sleep} from 'node:timers/promises';
 
 describe('1. Environment Setup', () => {
 
@@ -15,6 +15,7 @@ describe('1. Environment Setup', () => {
     it('Create schema confirm schema exists', async () => {
         await request(envUrl)
             .post('')
+            .set(headers)
             .set(headers)
             .send({
                 operation: 'describe_all'
@@ -59,9 +60,12 @@ describe('1. Environment Setup', () => {
     it('Search by hash empty table', async () => {
         await request(envUrl)
             .post('')
+            .set(headers)
             .send({
                 operation: 'sql',
-                sql: `select * from ${generic.schema}.${generic.cust_tb} where ${generic.cust_id} = 1`
+                sql: `select *
+                      from ${generic.schema}.${generic.cust_tb}
+                      where ${generic.cust_id} = 1`
             })
             .expect((r) => {
                 assert.equal(r.body.length, 0);
@@ -196,6 +200,7 @@ describe('1. Environment Setup', () => {
     it('Describe schema ${generic.schema_number_string}', async () => {
         await request(envUrl)
             .post('')
+            .set(headers)
             .send({
                 operation: 'describe_schema',
                 schema: generic.schema_number_string
@@ -211,6 +216,7 @@ describe('1. Environment Setup', () => {
     it('Describe table number "4"', async () => {
         await request(envUrl)
             .post('')
+            .set(headers)
             .send({
                 operation: 'describe_table',
                 schema: generic.schema_number_string,

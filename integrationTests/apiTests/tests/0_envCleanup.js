@@ -1,10 +1,10 @@
 import {describe, it, after, before} from 'node:test';
 import {createSchema, dropSchema} from "../utils/schema.js";
 import {dropTable} from "../utils/table.js";
-import { setTimeout as sleep } from 'node:timers/promises';
+import {setTimeout as sleep} from 'node:timers/promises';
 import request from "supertest";
 import assert from "node:assert";
-import {envUrl} from "../config/envConfig.js";
+import {envUrl, headers} from "../config/envConfig.js";
 
 
 describe('0. Environment Cleanup', () => {
@@ -12,6 +12,7 @@ describe('0. Environment Cleanup', () => {
     it('Environment Cleanup', async () => {
         await request(envUrl)
             .post('')
+            .set(headers)
             .send({
                 operation: 'describe_all'
             })
@@ -25,6 +26,7 @@ describe('0. Environment Cleanup', () => {
         await sleep(2000);
         await request(envUrl)
             .post('')
+            .set(headers)
             .send({
                 operation: 'describe_all'
             })

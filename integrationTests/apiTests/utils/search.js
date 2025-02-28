@@ -1,10 +1,11 @@
 import request from 'supertest';
 import assert from "node:assert";
-import {envUrl} from "../config/envConfig.js";
+import {envUrl, headers} from "../config/envConfig.js";
 
 export async function searchByHash(schemaName, tableName, hashAttribute, hashValues, getAttributes, expectedMessage) {
     await request(envUrl)
         .post('')
+        .set(headers)
         .send({
             operation: 'search_by_hash',
             schema: schemaName,
@@ -15,7 +16,7 @@ export async function searchByHash(schemaName, tableName, hashAttribute, hashVal
         })
         .expect((r) => {
             const body = JSON.stringify(r.body);
-            if(expectedMessage)
+            if (expectedMessage)
                 assert.ok(body.includes(expectedMessage));
         })
         .expect(200)

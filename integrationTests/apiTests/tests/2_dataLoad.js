@@ -5,9 +5,9 @@ import {checkTableInSchema, createSchema, describeSchema, dropSchema} from "../u
 import {envUrl, generic, headers} from "../config/envConfig.js";
 import {createTable, dropTable} from "../utils/table.js";
 import {csvFileUpload, csvUrlLoad} from "../utils/csv.js";
-import { setTimeout as sleep } from 'node:timers/promises';
+import {setTimeout as sleep} from 'node:timers/promises';
 import * as path from "node:path";
-import { fileURLToPath } from 'url';
+import {fileURLToPath} from 'url';
 
 describe('2. Data Load', () => {
 
@@ -110,9 +110,11 @@ describe('2. Data Load', () => {
     it('Confirm all CSV records loaded', async () => {
         await request(envUrl)
             .post('')
+            .set(headers)
             .send({
                 operation: 'sql',
-                sql: `select count(*) from ${generic.schema}.${generic.csv_tb}`
+                sql: `select count(*)
+                      from ${generic.schema}.${generic.csv_tb}`
             })
             .expect((r) => {
                 assert.equal(r.body[0]['COUNT(*)'], 350, `${generic.csv_tb} count was not 350`);
@@ -133,9 +135,11 @@ describe('2. Data Load', () => {
     it('Confirm 0 CSV records loaded', async () => {
         await request(envUrl)
             .post('')
+            .set(headers)
             .send({
                 operation: 'sql',
-                sql: `select count(*) from ${generic.schema}.${generic.csv_tb_empty}`
+                sql: `select count(*)
+                      from ${generic.schema}.${generic.csv_tb_empty}`
             })
             .expect((r) => {
                 assert.equal(r.body[0]['COUNT(*)'], 0, `${generic.csv_tb_empty} count was not 0`);
