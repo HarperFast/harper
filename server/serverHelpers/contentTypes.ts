@@ -139,8 +139,9 @@ media_types.set('text/event-stream', {
 //'multipart/form-data'
 media_types.set('application/x-www-form-urlencoded', {
 	deserialize(data) {
+		const stringData = data.toString('utf8');
 		const object = {};
-		for (const [key, value] of new URLSearchParams(data)) {
+		for (const [key, value] of new URLSearchParams(stringData)) {
 			if (object.hasOwnProperty(key)) {
 				// in case there are multiple query params with the same name, convert them to an array
 				const last = object[key];
@@ -148,6 +149,7 @@ media_types.set('application/x-www-form-urlencoded', {
 				else object.key = [last, value];
 			} else object[key] = value;
 		}
+		return object;
 	},
 	serialize(data) {
 		const usp = new URLSearchParams();
