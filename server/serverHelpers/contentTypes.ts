@@ -139,7 +139,7 @@ media_types.set('text/event-stream', {
 //'multipart/form-data'
 media_types.set('application/x-www-form-urlencoded', {
 	deserialize(data) {
-		const stringData = data.toString('utf8');
+		const stringData = Buffer.isBuffer(data) ? data.toString('utf8') : data;
 		const object: Record<string, string | string[]> = {};
 		for (const [key, value] of new URLSearchParams(stringData)) {
 			if (object.hasOwnProperty(key)) {
