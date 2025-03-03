@@ -174,6 +174,13 @@ export async function loadComponent(
 		} else {
 			config = DEFAULT_CONFIG;
 		}
+
+		if (config.loadEnv) {
+			const dotenv = require('dotenv');
+			const envPath = typeof config.loadEnv === 'string' ? config.loadEnv : '.env';
+			dotenv.config({ path: join(folder, envPath) });
+		}
+
 		const harperdb_module = join(folder, 'node_modules', 'harperdb');
 		try {
 			if (
