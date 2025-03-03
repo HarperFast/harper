@@ -16,6 +16,7 @@ import * as login from '../resources/login';
 import * as REST from '../server/REST';
 import * as fastify_routes_handler from '../server/fastifyRoutes';
 import * as staticFiles from '../server/static';
+import * as loadEnv from '../resources/loadEnv';
 import fg from 'fast-glob';
 import { watchDir, getWorkerIndex } from '../server/threads/manageThreads';
 import harper_logger from '../utility/logging/harper_logger';
@@ -91,6 +92,7 @@ const TRUSTED_RESOURCE_LOADERS = {
 	replication,
 	authentication: auth,
 	mqtt,
+	loadEnv,
 	/*
 	static: ...
 	login: ...
@@ -173,12 +175,6 @@ export async function loadComponent(
 			config = parseDocument(readFileSync(config_path, 'utf8')).toJSON();
 		} else {
 			config = DEFAULT_CONFIG;
-		}
-
-		if (config.loadEnv) {
-			const dotenv = require('dotenv');
-			const envPath = typeof config.loadEnv === 'string' ? config.loadEnv : '.env';
-			dotenv.config({ path: join(folder, envPath) });
 		}
 
 		const harperdb_module = join(folder, 'node_modules', 'harperdb');
