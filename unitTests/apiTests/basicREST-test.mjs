@@ -93,6 +93,16 @@ describe('test REST calls', () => {
 		response = await axios('http://localhost:9926/VariedProps/33');
 		assert.equal(response.data.name, 'new record');
 	});
+	it('POST with x-www-form-urlencoded data', async () => {
+		const headers = {
+			'content-type': 'application/x-www-form-urlencoded',
+		};
+		const params = new URLSearchParams({ id: 'www-form-urlencoded-unique-id', name: 'www-form-urlencoded' });
+		let response = await axios.post('http://localhost:9926/VariedProps/', params, { headers });
+		assert.equal(response.status, 201);
+		response = await axios('http://localhost:9926/VariedProps/www-form-urlencoded-unique-id');
+		assert.equal(response.data.name, 'www-form-urlencoded');
+	});
 	it('POST a new record', async () => {
 		const headers = {
 			//authorization,

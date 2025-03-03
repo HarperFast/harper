@@ -140,7 +140,7 @@ media_types.set('text/event-stream', {
 media_types.set('application/x-www-form-urlencoded', {
 	deserialize(data) {
 		const stringData = data.toString('utf8');
-		const object = {};
+		const object: Record<string, string | string[]> = {};
 		for (const [key, value] of new URLSearchParams(stringData)) {
 			if (object.hasOwnProperty(key)) {
 				// in case there are multiple query params with the same name, convert them to an array
