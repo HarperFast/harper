@@ -23,9 +23,19 @@ sau poate fi si r.status (din supertest r.status si r.body)
 
 sa caut dupa pm.response.json(); 66 results
 
+sa caut dupa pm.expect
+
+sa caut dupa (cu spatii in fata si fara spatii in fata randului):
+	Unmatched
+	Postman
+
+sa caut dupa // Unmatched Postman assertion:
+sa caut dupa //Unmatched Postman assertion
+sa caut dupa Unmatched Postman assertion
+
 sa ma uit la setTimeout( si sa pun await uri si inafara await request()
 
-sa inlocuiesc {{ de exemplu {{schema}}
+sa inlocuiesc tot ce e cu: {{ , ca de exemplu {{schema}}
 
 sa verific in .send() in json uri sa nu existe // adica commenturile din postman body, ca a pus comment uri ca si //
 
@@ -36,6 +46,30 @@ sa ma uit la setNextRequest
 sa fie expect(<<STATUS CODE>>) tot timpul ultimul expect din metoda, inainte de ult rand:
 });
 
-
 import {setTimeout} from 'node:timers/promises';
 //use always with async await setTimeout(x)
+
+I don’t think it should be one massive test file, I think it should be split into groups roughly like it is currently in postman,
+maybe something like - createDBandTable.js dataLoad.js sql.js noSql.js noSqlRole.js ……
+
+You are repeating a lot of code inside each test. I wonder if you could wrap that in a reusable function? something like this perhaps
+async function makeRequest(requestBody, expectedResponse, expectedStatus = 200) {
+	const response = await request(envUrl).post('').set(headers).send(requestBody).expect(expectedStatus);
+
+	if (expectedResponse) {
+		assert.deepStrictEqual(response.body, expectedResponse, "Response body does not match expected output"); // Compare full response body
+	}
+
+	return response; // Return response in case more assertions are needed
+}
+or maybe
+ 	if (expectedResponse) {
+ 		response.expect((r) => assert.ok(r.body == expectedResponse))
+ 	}
+Maybe use whatever assertions gives us the best error message when it fails? So that if we see it in the CI tests its clear what is wrong
+looking at more of the tests maybe make expectedResponse an array so you can send it multiple assertions
+
+
+
+
+

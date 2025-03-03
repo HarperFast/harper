@@ -389,15 +389,67 @@ const myPath = path.resolve(__dirname + '/..' + generic.files_location) + '/';
 //         })
 // });
 
-it('Confirm update record with nonexistant id dev.cat', async () => {
-    const response = await request(envUrl)
-        .post('')
-        .send({"operation":"sql","sql":"SELECT id FROM dev.cat WHERE id = 75"})
-        .expect(200)
-        .expect((r) => {
-            assert.deepEqual(r.body, []);
-            assert.ok(Array.isArray(r.body));
-            console.log('Length: ' + r.body.length);
-            assert.ok(r.body.length == 0);
-        });
+// it('Confirm update record with nonexistant id dev.cat', async () => {
+//     const response = await request(envUrl)
+//         .post('')
+//         .send({"operation":"sql","sql":"SELECT id,name FROM dev.cat WHERE id = 75"})
+//         .expect(200)
+//         .expect((r) => {
+//             // assert.deepEqual(r.body, []);
+//             assert.ok(Array.isArray(r.body));
+//             console.log('Length: ' + r.body.length);
+//             console.log(r.body[0]);
+//             console.log(r.body[0].id);
+//             console.log(r.body[0].name);
+//             assert.ok(r.body.length == 1);
+//           assert.ok(r.body[0].name === "miau");
+//         });
+// });
+
+
+// it('geoNear test 1', async () => {
+//   const response = await request(envUrl)
+//     .post('')
+//     .set(headers)
+//     .send({
+//       'operation': 'sql',
+//       'sql': 'SELECT id, name FROM data.geo WHERE geoNear(\'[-104.979127,39.761563]\', geo_point, 50, \'miles\')',
+//     })
+//     .expect(200)
+//     .expect((r) => assert.deepEqual(r.body, [
+//         {
+//           'id': 3,
+//           'name': 'Denver',
+//         },
+//       ],
+//     ));
+// });
+
+
+it('geoConvert test 1', async () => {
+  const response = await request(envUrl)
+    .post('')
+    .set(headers)
+    .send({
+      'operation': 'sql',
+      'sql': 'SELECT geoConvert(\'[-104.979127,39.761563]\',\'point\',\'{"name": "HarperDB Headquarters"}\')',
+    })
+    .expect(200)
+    .expect((r) => {
+      console.log(r.body);
+      assert.deepEqual(r.body, [
+        {
+          'geoConvert(\'[-104.979127,39.761563]\',\'point\',\'{"name": "HarperDB Headquarters"}\')': {
+            'type': 'Feature',
+            'properties': '{"name": "HarperDB Headquarters"}',
+            'geometry': {
+              'type': 'Point',
+              'coordinates': [
+                -104.979127,
+                39.761563,
+              ],
+            },
+          },
+        }])
+    })
 });
