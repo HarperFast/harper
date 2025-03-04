@@ -49,28 +49,32 @@ it('search for specific value from CSV load', async () => {
 			'hash_values': [10],
 			'get_attributes': ['supplierid', 'companyname', 'contactname'],
 		})
+		.expect((r) => {
+			assert.ok(r.body[0].companyname == 'Refrescos Americanas LTDA');
+			assert.ok(r.body[0].supplierid == 10);
+			assert.ok(r.body[0].contactname == 'Carlos Diaz');
+		})
 		.expect(200)
-	//Unmatched Postman assertion: pm.expect(jsonData[0].supplierid).to.eql(10)
-	//Unmatched Postman assertion: pm.expect(jsonData[0].contactname).to.eql("Carlos Diaz")
-		.expect((r) => assert.ok(r.body[0].companyname == 'Refrescos Americanas LTDA'))
 });
 
 it('search for random value from CSV load', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'SELECT * FROM {{schema}}.{{supp_tb}}' })
-		.expect(200)
-//Unmatched Postman assertion: var randomNumber = Math.floor(Math.random() * 29)
-//Unmatched Postman assertion: pm.expect(jsonData[randomNumber]).to.not.eql(null)
-//Unmatched Postman assertion: pm.expect(jsonData.length).to.eql(29)
-//Unmatched Postman assertion: let keys = Object.keys(jsonData[randomNumber])
-//Unmatched Postman assertion: //because helium has 2 extra keys we need to check for them
-//Unmatched Postman assertion: if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){
-//Unmatched Postman assertion: pm.expect(keys.length).to.eql(14)
-//Unmatched Postman assertion: } else{
-//Unmatched Postman assertion: pm.expect(keys.length).to.eql(12)
-//Unmatched Postman assertion: }
+		.send({ operation: 'sql', sql: `SELECT * FROM ${generic.schema}.${generic.supp_tb}` })
+		.expect((r) => {
+			let randomNumber = Math.floor(Math.random() * 29);
+			assert.ok(r.body[randomNumber] != null);
+			assert.ok(r.body.length == 29);
+			let keys = Object.keys(r.body[randomNumber]);
+			if (keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1) {
+				assert.ok(keys.length == 14);
+			} else {
+				assert.ok(keys.length == 12);
+
+			}
+		})
+		.expect(200);
 });
 
 it('check error on invalid file', async () => {
@@ -1191,6 +1195,7 @@ it('Drop table keywords', async () => {
 it('Create table dev.cat for Update', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ 'operation': 'create_table', 'schema': 'dev', 'table': 'cat', 'hash_attribute': 'id' })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'table \'dev.cat\' successfully created.'))
@@ -1199,6 +1204,7 @@ it('Create table dev.cat for Update', async () => {
 it('Insert data into dev.cat', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({
 			'operation': 'insert',
 			'schema': 'dev',
@@ -1276,17 +1282,17 @@ it('Insert data into dev.cat', async () => {
 it('Update record basic where dev.cat', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'UPDATE dev.cat SET cat_name = \'Bobby\' WHERE id = 9' })
 		.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records', 'Expected response message to eql "updated 1 of 1 records"'))
+		.expect((r) => assert.ok(r.body.update_hashes[0] == 9))
 		.expect(200)
-
-//Unmatched Postman assertion: var jsonData = pm.response.json(
-//Unmatched Postman assertion: pm.expect(jsonData.update_hashes[0]).to.eql(9))
 });
 
 it('Confirm update record basic where dev.cat', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'SELECT cat_name, weight_lbs, age, id FROM dev.cat WHERE id = 9' })
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].id == 9))
@@ -1298,6 +1304,7 @@ it('Confirm update record basic where dev.cat', async () => {
 it('Update record "where x != y" dev.cat', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'UPDATE dev.cat SET adorable = false WHERE owner_id != 2' })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'updated 5 of 5 records'))
@@ -1307,6 +1314,7 @@ it('Update record "where x != y" dev.cat', async () => {
 it('Confirm update record "where x != y" dev.cat', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'SELECT cat_name, adorable, id FROM dev.cat WHERE owner_id != 2' })
 		.expect(200)
 	//Unmatched Postman assertion: pm.expect(jsonData.length).to.equal(5)
@@ -1320,6 +1328,7 @@ it('Confirm update record "where x != y" dev.cat', async () => {
 it('Update record No where dev.cat', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'UPDATE dev.cat SET adorable = true' })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'updated 9 of 9 records'))
@@ -1330,6 +1339,7 @@ it('Update record No where dev.cat', async () => {
 it('Confirm update record No where dev.cat', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'SELECT cat_name, adorable, id FROM dev.cat' })
 		.expect(200)
 	//Unmatched Postman assertion: pm.expect(jsonData.length).equals(9)
@@ -1347,6 +1357,7 @@ it('Confirm update record No where dev.cat', async () => {
 it('Update record multiple wheres, multiple columns dev.cat', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({
 			'operation': 'sql',
 			'sql': 'UPDATE dev.cat SET outdoor_privilages = false, weight_lbs = 6 WHERE owner_id = 2 AND cat_name = \'Sophie\'',
@@ -1359,6 +1370,7 @@ it('Update record multiple wheres, multiple columns dev.cat', async () => {
 it('Confirm update record multiple wheres, multiple columns dev.cat', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({
 			'operation': 'sql',
 			'sql': 'SELECT cat_name, weight_lbs, owner_id, outdoor_privilages, id FROM dev.cat WHERE owner_id = 2 AND cat_name = \'Sophie\'',
@@ -1374,6 +1386,7 @@ it('Confirm update record multiple wheres, multiple columns dev.cat', async () =
 it('Update record "where x is NULL" dev.cat', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({
 			'operation': 'sql',
 			'sql': 'UPDATE dev.cat SET outdoor_privilages = true WHERE outdoor_privilages IS null',
@@ -1386,6 +1399,7 @@ it('Update record "where x is NULL" dev.cat', async () => {
 it('Confirm update record "where x is NULL" dev.cat', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({
 			'operation': 'sql',
 			'sql': 'SELECT cat_name, outdoor_privilages, id FROM dev.cat WHERE outdoor_privilages IS null',
@@ -1397,6 +1411,7 @@ it('Confirm update record "where x is NULL" dev.cat', async () => {
 it('Update record with nonexistant id dev.cat', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'UPDATE dev.cat SET cat_name = \'Garfield\' WHERE id = 75' })
 		.expect(200)
 		// @@@@@@@
@@ -1407,6 +1422,7 @@ it('Update record with nonexistant id dev.cat', async () => {
 it('Confirm update record with nonexistant id dev.cat', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'SELECT cat_name, weight_lbs, age FROM dev.cat WHERE id = 75' })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 0))
@@ -1415,6 +1431,7 @@ it('Confirm update record with nonexistant id dev.cat', async () => {
 it('Drop table cat from dev.cat', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ 'operation': 'drop_table', 'schema': 'dev', 'table': 'cat' })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'successfully deleted table \'dev.cat\''))
@@ -6069,10 +6086,11 @@ it('NoSQL Add non SU role', async () => {
 				}
 			},
 		})
+		.expect((r) => {
+			assert.ok(r.body.id == 'developer_test_5');
+			generic.role_id = r.body.id;
+		})
 		.expect(200)
-
-	//Unmatched Postman assertion: responseData = JSON.parse(responseBody);
-//Unmatched Postman assertion: postman.setEnvironmentVariable("role_id", responseData.id)})
 });
 
 it('NoSQL Add User with new Role', async () => {
@@ -10934,6 +10952,7 @@ it('Turn on log audit and custom functions', async () => {
 it('Restart for new settings', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "restart" })
 		.expect(200)
 
@@ -13390,16 +13409,16 @@ it('list_roles ensure role not changed', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "list_roles" })
+		.expect((r) => {
+			let found_role = undefined;
+			for(let role of r.body) {
+				if(role.role === "bad_user_2") {
+					 found_role = role;
+				}
+			}
+			assert.ok(found_role == undefined);
+		})
 		.expect(200)
-
-//Unmatched Postman assertion: pm.environment.set("found_role", undefined)
-//Unmatched Postman assertion: for(let role of pm.response.json()) {
-//Unmatched Postman assertion: if(role.role === "bad_user_2") {
-//Unmatched Postman assertion: pm.environment.set("found_role", role)
-//Unmatched Postman assertion: }
-//Unmatched Postman assertion: }
-
-//Unmatched Postman assertion: pm.expect(pm.environment.get("found_role")).to.eql(undefined))
 });
 
 it('alter_role good data', async () => {
@@ -13454,16 +13473,16 @@ it('list_roles ensure role was updated', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "list_roles" })
+		.expect((r) => {
+			let found_role = undefined;
+			for(let role of r.body) {
+				if(role.role === "user_role_update") {
+					found_role = role;
+				}
+			}
+			assert.ok(found_role.role == "user_role_update");
+		})
 		.expect(200)
-
-//Unmatched Postman assertion: pm.environment.set("found_role", undefined)
-//Unmatched Postman assertion: for(let role of pm.response.json()) {
-//Unmatched Postman assertion: if(role.role === "user_role_update") {
-//Unmatched Postman assertion: pm.environment.set("found_role", role)
-//Unmatched Postman assertion: }
-//Unmatched Postman assertion: }
-
-//Unmatched Postman assertion: pm.expect(pm.environment.get("found_role").role).to.eql("user_role_update"))
 });
 
 it('Drop_role nonexistent role', async () => {
@@ -13610,19 +13629,17 @@ it('Check for active=false', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "list_users" })
+		.expect((r) => {
+			let found_user = undefined;
+			for(let user of r.body) {
+				if(user.username === "test_user") {
+					found_user = user;
+				}
+			}
+			assert.ok(found_user.active == false);
+		})
 		.expect(200)
-
-//Unmatched Postman assertion: for (let user of pm.response.json()) {
-//Unmatched Postman assertion: if(user.username === "test_user") {
-//Unmatched Postman assertion: pm.environment.set("found_user", user)
-//Unmatched Postman assertion: }
-//Unmatched Postman assertion: }
-
-//Unmatched Postman assertion: let temp = pm.environment.get("found_user")
-//Unmatched Postman assertion: pm.expect(temp.active).to.eql(false))
-	}
-)
-	;
+});
 
 it('Drop test user', async () => {
 	const response = await request(envUrl)
@@ -13936,6 +13953,7 @@ it('Read log', async () => {
 it('Set Configuration', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "set_configuration", "logging_rotation_maxSize": "12M" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "Configuration successfully set. You must restart HarperDB for new config settings to take effect."))
@@ -13944,6 +13962,7 @@ it('Set Configuration', async () => {
 it('Confirm Configuration', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "get_configuration" })
 		.expect(200)
 //Unmatched Postman assertion: pm.expect(jsonData.logging.rotation.maxSize).to.equal("12M")
@@ -13952,6 +13971,7 @@ it('Confirm Configuration', async () => {
 it('Set Configuration Bad Data', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "set_configuration", "http_cors": "spinach" })
 		.expect(400)
 		.expect((r) => assert.ok(r.body.error == "HarperDB config file validation error: 'http.cors' must be a boolean"))
@@ -13985,6 +14005,7 @@ it('Add User with non-SU role', async () => {
 it('Configure Cluster non-SU', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "set_configuration", "clustering_port": 99999 })
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
@@ -13995,6 +14016,7 @@ it('Configure Cluster non-SU', async () => {
 it('Set Configuration non-SU', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "set_configuration", "clustering_port": 99999 })
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
@@ -14036,9 +14058,11 @@ it('Test local studio HTML is returned', async () => {
 		.get('')
 		.set(headers)
 		.expect(200)
-		.expect('header', 'text/html; charset=UTF-8', 'undefined')  //Unmatched Postman assertion: const response = pm.response.text()
-//Unmatched Postman assertion: pm.expect(response).to.include('<!doctype html>')
-//Unmatched Postman assertion: pm.expect(response).to.include('Studio :: HarperDB'))
+		.expect('content-type', 'text/html; charset=UTF-8')
+		.expect((r) => {
+			assert.ok(r.text.includes('<!doctype html>'));
+			assert.ok(r.text.includes('Studio :: HarperDB'));
+		})
 });
 
 it('Get all System Information', async () => {
@@ -14046,13 +14070,13 @@ it('Get all System Information', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "system_information" })
+		.expect((r) => {
+			let attributes = ['system', 'time', 'cpu', 'memory', 'disk', 'network', 'harperdb_processes', 'table_size'];
+			attributes.forEach((attribute) => {
+				assert.ok(r.body[attribute] != undefined);
+			})
+		})
 		.expect(200)
-
-	//Unmatched Postman assertion: let attributes = ['system', 'time', 'cpu', 'memory', 'disk', 'network', 'harperdb_processes', 'table_size'];
-
-	//Unmatched Postman assertion: attributes.forEach(attribute=>{
-		.expect((r) => assert.ok(r.body[attribute] != undefined))
-//Unmatched Postman assertion: }))
 });
 
 it('Get some System Information (time, memory)', async () => {
@@ -14184,6 +14208,7 @@ it('test refresh_operation_token with incorrect token', async () => {
 it('deploy_component github package', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({
 			"operation": "deploy_component",
 			"project": "deploy-test-gh",
@@ -14198,6 +14223,7 @@ it('deploy_component github package', async () => {
 it('deploy_component using tar payload', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({
 			"operation": "deploy_component",
 			"project": "deploy-test-payload",
@@ -14210,6 +14236,7 @@ it('deploy_component using tar payload', async () => {
 it('deploy_component using tar.gz payload', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({
 			"operation": "deploy_component",
 			"project": "deploy-test-payload-tar-gz",
@@ -14225,6 +14252,7 @@ it('deploy_component using tar.gz payload', async () => {
 it('call component tar payload', async () => {
 	const response = await request(envUrlRest)
 		.get('/GreetingTar')
+		.set(headers)
 		.expect(200)
 		.expect((r) => assert.ok(r.body.greeting == "Hello world from a test for deploying a component with tar payload"))
 });
@@ -14232,6 +14260,7 @@ it('call component tar payload', async () => {
 it('call component tar.gz payload', async () => {
 	const response = await request(envUrlRest)
 		.get('/GreetingTarGz')
+		.set(headers)
 		.expect(200)
 		.expect((r) => assert.ok(r.body.greeting == "Hello world from deploy test payload tar gz"))
 });
@@ -14239,6 +14268,7 @@ it('call component tar.gz payload', async () => {
 it('set_component_file', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({
 			"operation": "set_component_file",
 			"project": "set-test",
@@ -14253,6 +14283,7 @@ it('set_component_file', async () => {
 it('get_component_file', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "get_component_file", "project": "set-test", "file": "utils/test.js", "encoding": "utf8" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "I am from inside a JS file"))
@@ -14261,6 +14292,7 @@ it('get_component_file', async () => {
 it('add_component', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "add_component", "project": "add-test" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "Successfully added project: add-test"))
@@ -14269,6 +14301,7 @@ it('add_component', async () => {
 it('package_component', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "package_component", "project": "add-test" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.hasOwnProperty('project')))
@@ -14278,6 +14311,7 @@ it('package_component', async () => {
 it('get_components', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "get_components" })
 		.expect(200)
 		.expect((r) => {
@@ -14302,6 +14336,7 @@ it('get_components', async () => {
 it('drop_component', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "drop_component", "project": "add-test" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "Successfully dropped: add-test"))
@@ -14310,6 +14345,7 @@ it('drop_component', async () => {
 it('get_components after drop', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "get_components" })
 		.expect(200)
 		.expect((r) => {
@@ -14330,6 +14366,7 @@ it('get_components after drop', async () => {
 it('drop_component set-test', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "drop_component", "project": "set-test" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "Successfully dropped: set-test"))
@@ -14338,6 +14375,7 @@ it('drop_component set-test', async () => {
 it('add custom function project', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "add_custom_function_project", "project": "test_project" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "Successfully added project: test_project"))
@@ -14346,6 +14384,7 @@ it('add custom function project', async () => {
 it('restart service', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "restart_service", "service": "http_workers" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "Restarting http_workers"))
@@ -14356,6 +14395,7 @@ it('restart service', async () => {
 it('get custom function status', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "custom_functions_status" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.hasOwnProperty('port')))
@@ -14366,6 +14406,7 @@ it('get custom function status', async () => {
 it('call custom function', async () => {
 	const response = await request(envUrlRest)
 		.get('/Greeting')
+		.set(headers)
 		.expect(200)
 		.expect((r) => assert.ok(r.body.hasOwnProperty('greeting')))
 });
@@ -14373,6 +14414,7 @@ it('call custom function', async () => {
 it('set custom function', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({
 			"operation": "set_custom_function",
 			"project": "test_project",
@@ -14387,6 +14429,7 @@ it('set custom function', async () => {
 it('get custom function', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "get_custom_function", "project": "test_project", "type": "routes", "file": "test2" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "hello world"))
@@ -14395,6 +14438,7 @@ it('get custom function', async () => {
 it('drop custom function', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "drop_custom_function", "project": "test_project", "type": "routes", "file": "test2" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "Successfully deleted custom function: test2.js"))
@@ -14403,34 +14447,34 @@ it('drop custom function', async () => {
 it('confirm function was dropped', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "get_custom_function", "project": "test_project", "type": "routes", "file": "test2" })
-		.expect(400)  //Unmatched Postman assertion: const json_data = pm.response.json()
-//Unmatched Postman assertion: pm.expect(json_data.error).to.equal("File does not exist"))
+		.expect((r) => assert.ok(r.body.error == 'File does not exist'))
+		.expect(400)
 });
 
 it('get custom functions', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "get_custom_functions" })
+		.expect((r) => assert.ok(r.body.hasOwnProperty('test_project')))
 		.expect(200)
-
-//Unmatched Postman assertion: const json_data = pm.response.json()
-//Unmatched Postman assertion: pm.expect(json_data).to.have.property('test_project'))
 });
 
 it('drop custom functions project', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "drop_custom_function_project", "project": "test_project" })
-		.expect(200)
-
-	//Unmatched Postman assertion: const json_data = pm.response.json()
 		.expect((r) => assert.ok(r.body.message == "Successfully deleted project: test_project"))
+		.expect(200)
 });
 
 it('confirm project was dropped', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "get_custom_functions" })
 		.expect(200)
 		.expect((r) => assert.ok(JSON.stringify(r.body) == '{"deploy-test-payload":{"routes":[],"helpers":[]},"deploy-test-payload-tar-gz":{"routes":[],"helpers":[]}'))
@@ -14440,6 +14484,7 @@ it('confirm project was dropped', async () => {
 it('deploy custom function', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({
 			"operation": "deploy_custom_function_project",
 			"project": "test-deploy",
@@ -14448,62 +14493,58 @@ it('deploy custom function', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "Successfully deployed: test-deploy"))
-//Unmatched Postman assertion: // Deploy will restart, wait for that to complete.
-	await setTimeout(22000)
+	await setTimeout(22000);
 });
 
 it('confirm deploy worked', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "get_custom_functions" })
+		.expect((r) => {
+			assert.ok(r.body.hasOwnProperty('test-deploy'));
+			assert.ok(r.body["test-deploy"]["routes"] != undefined);
+			assert.ok(r.body["test-deploy"]["routes"][0] == 'examples');
+			assert.ok(r.body["test-deploy"]["helpers"] != undefined);
+			assert.ok(r.body["test-deploy"]["helpers"][0] == 'example');
+		})
 		.expect(200)
-
-//Unmatched Postman assertion: const json_data = pm.response.json()
-//Unmatched Postman assertion: pm.expect(json_data).to.haveOwnProperty("test-deploy")
-//Unmatched Postman assertion: pm.expect(json_data["test-deploy"]["routes"]).to.not.be.undefined;
-//Unmatched Postman assertion: pm.expect(json_data["test-deploy"]["routes"][0]).to.equal('examples')
-//Unmatched Postman assertion: pm.expect(json_data["test-deploy"]["helpers"]).to.not.be.undefined;
-//Unmatched Postman assertion: pm.expect(json_data["test-deploy"]["helpers"][0]).to.equal('example')})
 });
 
 it('drop custom functions project deploy', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "drop_custom_function_project", "project": "test-deploy" })
-		.expect(200)
-
-	//Unmatched Postman assertion: const json_data = pm.response.json()
 		.expect((r) => assert.ok(r.body.message == "Successfully deleted project: test-deploy"))
+		.expect(200)
 });
 
 it('drop deploy-test-payload', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "drop_component", "project": "deploy-test-payload" })
-		.expect(200)
-
-	//Unmatched Postman assertion: const json_data = pm.response.json()
 		.expect((r) => assert.ok(r.body.message == "Successfully dropped: deploy-test-payload"))
+		.expect(200)
 });
 
 it('drop test-deploy from config', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "drop_component", "project": "test-deploy" })
-		.expect(200)
-
-	//Unmatched Postman assertion: const json_data = pm.response.json()
 		.expect((r) => assert.ok(r.body.message == "Successfully dropped: test-deploy"))
+		.expect(200)
 });
 
 it('drop deploy-test-gh', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "drop_component", "project": "deploy-test-gh" })
-		.expect(200)
-
-	//Unmatched Postman assertion: const json_data = pm.response.json()
 		.expect((r) => assert.ok(r.body.message == "Successfully dropped: deploy-test-gh"))
+		.expect(200)
 });
 
 it('create_database', async () => {
@@ -14574,9 +14615,8 @@ it('describe_database with database', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "describe_database", "database": "tuckerdoodle" })
+		.expect((r) => assert.ok(r.body.hasOwnProperty('todo')))
 		.expect(200)
-
-//Unmatched Postman assertion: pm.expect(pm.response.json()).to.haveOwnProperty('todo'))
 });
 
 it('describe_database without database', async () => {
@@ -14584,9 +14624,8 @@ it('describe_database without database', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "describe_database" })
+		.expect((r) => assert.ok(r.body.hasOwnProperty('friends')))
 		.expect(200)
-
-//Unmatched Postman assertion: pm.expect(pm.response.json()).to.haveOwnProperty('friends'))
 });
 
 it('describe_table with database', async () => {
@@ -14594,10 +14633,9 @@ it('describe_table with database', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "describe_table", "database": "tuckerdoodle", "table": "todo" })
+		.expect((r) => assert.ok(r.body.schema == 'tuckerdoodle'))
+		.expect((r) => assert.ok(r.body.name == 'todo'))
 		.expect(200)
-
-//Unmatched Postman assertion: pm.expect(pm.response.json().schema).to.equal("tuckerdoodle")
-//Unmatched Postman assertion: pm.expect(pm.response.json().name).to.equal("todo"))
 });
 
 it('describe_table without database', async () => {
@@ -14605,9 +14643,9 @@ it('describe_table without database', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "describe_table", "table": "friends" })
+		.expect((r) => assert.ok(r.body.schema == "data"))
+		.expect((r) => assert.ok(r.body.name == "friends"))
 		.expect(200)
-		.expect((r) => assert.ok(pm.response.json().schema == "data"))
-//Unmatched Postman assertion: pm.expect(pm.response.json().name).to.equal("friends"))
 });
 
 it('insert with database', async () => {
@@ -14668,10 +14706,10 @@ it('describe_table frog confirm record count', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "describe_table", "table": "frogs" })
+		.expect((r) => assert.ok(r.body.schema == "data"))
+		.expect((r) => assert.ok(r.body.name == "frogs"))
+		.expect((r) => assert.ok(r.body.record_count == 3))
 		.expect(200)
-		.expect((r) => assert.ok(pm.response.json().schema == "data"))
-//Unmatched Postman assertion: pm.expect(pm.response.json().name).to.equal("frogs")
-//Unmatched Postman assertion: pm.expect(pm.response.json().record_count).to.equal(3))
 });
 
 it('search_by_id', async () => {
@@ -14975,8 +15013,8 @@ it('csv_file_load without database error', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "csv_file_load", "table": "todo", "file_path": "{{files_location}}Suppliers.csv" })
+		.expect((r) => assert.ok(r.body.error.includes("Table 'data.todo' does not exist")))
 		.expect(400)
-//Unmatched Postman assertion: pm.expect(pm.response.json().error).to.include("Table 'data.todo' does not exist")})
 });
 
 it('csv_file_load without database', async () => {
@@ -15216,6 +15254,7 @@ it('drop schema test_delete_before (disabled)', async () => {
 it('Add component', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "add_component", "project": "computed" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes('Successfully added project: computed')))
@@ -15224,6 +15263,7 @@ it('Add component', async () => {
 it('Set Component File schema.graphql', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({
 			"operation": "set_component_file",
 			"project": "computed",
@@ -15237,6 +15277,7 @@ it('Set Component File schema.graphql', async () => {
 it('Set Component File resources.js', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({
 			"operation": "set_component_file",
 			"project": "computed",
@@ -15250,6 +15291,7 @@ it('Set Component File resources.js', async () => {
 it('Restart service and wait', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "restart_service", "service": "http_workers" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes("Restarting")))
@@ -15263,6 +15305,7 @@ it('Restart service and wait', async () => {
 it('Insert data', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "insert", "table": "Product", "records": [{ "id": "1", "price": 100, "taxRate": 0.19 }] })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes('inserted 1 of 1 records')))
@@ -15271,6 +15314,7 @@ it('Insert data', async () => {
 it('Search for attribute', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({
 			"operation": "search_by_value",
 			"schema": "data",
@@ -15287,6 +15331,7 @@ it('Search for attribute', async () => {
 it('Search and get attributes', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({
 			"operation": "search_by_value",
 			"schema": "data",
@@ -15307,6 +15352,7 @@ it('Search and get attributes', async () => {
 it('Search REST id', async () => {
 	const response = await request(envUrlRest)
 		.get('/Product/1')
+		.set(headers)
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes("inserted 1 of 1 records")))
 		.expect((r) => assert.ok(r.body.price == 100))
@@ -15316,6 +15362,7 @@ it('Search REST id', async () => {
 it('Search REST id select', async () => {
 	const response = await request(envUrlRest)
 		.get('/Product/1?select(id,price,taxRate,totalPrice,notIndexedTotalPrice,jsTotalPrice)')
+		.set(headers)
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes("inserted 1 of 1 records")))
 		.expect((r) => assert.ok(r.body.price == 100))
@@ -15328,6 +15375,7 @@ it('Search REST id select', async () => {
 it('Search REST attribute select', async () => {
 	const response = await request(envUrlRest)
 		.get('/Product/?jsTotalPrice=119&select(id,price,taxRate,totalPrice,notIndexedTotalPrice,jsTotalPrice)')
+		.set(headers)
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].id == "1"))
 		.expect((r) => assert.ok(r.body[0].price == 100))
@@ -15340,6 +15388,7 @@ it('Search REST attribute select', async () => {
 it('Search REST attribute 2 select', async () => {
 	const response = await request(envUrlRest)
 		.get('/Product/?totalPrice=119&select(id,price,taxRate,totalPrice,notIndexedTotalPrice,jsTotalPrice)')
+		.set(headers)
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].id == "1"))
 		.expect((r) => assert.ok(r.body[0].price == 100))
@@ -15352,6 +15401,7 @@ it('Search REST attribute 2 select', async () => {
 it('Delete data', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "delete", "table": "Product", "ids": ["1"] })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes('1 of 1 record successfully deleted')))
@@ -15361,6 +15411,7 @@ it('Delete data', async () => {
 it('Delete table', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "drop_table", "table": "Product" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes(`successfully deleted table 'data.Product'`)))
@@ -15369,6 +15420,7 @@ it('Delete table', async () => {
 it('Delete schema', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "drop_schema", "schema": "data" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes(`successfully deleted 'data'`)))
@@ -15377,6 +15429,7 @@ it('Delete schema', async () => {
 it('Drop component', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "drop_component", "project": "computed" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes('Successfully dropped: computed')))
@@ -15385,6 +15438,7 @@ it('Drop component', async () => {
 it('Add component', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "add_component", "project": "appGraphQL" })
 		.expect((r) => {
 			const res = JSON.stringify(r.body);
@@ -15395,6 +15449,7 @@ it('Add component', async () => {
 it('Set Component File schema.graphql', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({
 			"operation": "set_component_file",
 			"project": "appGraphQL",
@@ -15408,6 +15463,7 @@ it('Set Component File schema.graphql', async () => {
 it('Set Component File config.yaml', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({
 			"operation": "set_component_file",
 			"project": "appGraphQL",
@@ -15421,6 +15477,7 @@ it('Set Component File config.yaml', async () => {
 it('Restart service and wait', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "restart_service", "service": "http_workers" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes("Restarting")))
@@ -15434,6 +15491,7 @@ it('Restart service and wait', async () => {
 it('Insert one null into SubObject', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "insert", "table": "SubObject", "records": [{ "id": "0", "relatedId": "1", "any": null }] })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes('inserted 1 of 1 records')))
@@ -15442,6 +15500,7 @@ it('Insert one null into SubObject', async () => {
 it('Insert into table Related', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({
 			"operation": "insert",
 			"table": "Related",
@@ -15464,6 +15523,7 @@ it('Insert into table Related', async () => {
 it('Insert into table SubObject', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({
 			"operation": "insert",
 			"table": "SubObject",
@@ -15484,6 +15544,7 @@ it('Insert into table SubObject', async () => {
 it('Shorthand query', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({ "query": "{ Related { id name } }" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.data.Related.length == 5))
@@ -15494,6 +15555,7 @@ it('Shorthand query', async () => {
 it('Named query', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({ "query": "query GetRelated { Related { id name } }" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.data.Related.length == 5))
@@ -15504,6 +15566,7 @@ it('Named query', async () => {
 it('Named query with operationName', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({ "query": "query GetRelated { Related { id, name } }", "operationName": "GetRelated" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.data.Related.length == 5))
@@ -15514,6 +15577,7 @@ it('Named query with operationName', async () => {
 it('Named query with operationName 2', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({
 			"query": "query GetRelated { Related { id, name } } query GetSubObject { SubObject { id relatedId } }",
 			"operationName": "GetSubObject"
@@ -15527,6 +15591,7 @@ it('Named query with operationName 2', async () => {
 it('Query by primary key field', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({ "query": "{ Related(id: \"1\") { id name } }" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.data.Related[0].id == "1"))
@@ -15535,6 +15600,7 @@ it('Query by primary key field', async () => {
 it('Multi resource query', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({ "query": "{ Related { id name } SubObject { id relatedId } }" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.data.Related.length == 5))
@@ -15549,6 +15615,7 @@ it('Multi resource query', async () => {
 it('Query by variable non null no default', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({ "query": "query Get($id: ID!) { Related(id: $id) { id name } }", "variables": { "id": "1" } })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.data.Related[0].id == "1"))
@@ -15557,6 +15624,7 @@ it('Query by variable non null no default', async () => {
 it('Query by variable non null with default with var', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({ "query": "query Get($id: ID! = \"1\") { Related(id: $id) { id name } }", "variables": { "id": "1" } })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.data.Related[0].id == "1"))
@@ -15565,6 +15633,7 @@ it('Query by variable non null with default with var', async () => {
 it('Query by var nullable no default no var', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({ "query": "query Get($any: Any) { SubObject(any: $any) { id any } }" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.data.SubObject[0].id == "0"))
@@ -15573,6 +15642,7 @@ it('Query by var nullable no default no var', async () => {
 it('Query by var nullable w default with var', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({
 			"query": "query Get($any: Any = \"any-1\") { SubObject(any: $any) { id any } }",
 			"variables": { "any": "any-2" }
@@ -15584,6 +15654,7 @@ it('Query by var nullable w default with var', async () => {
 it('Query by var w default with null var', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({
 			"query": "query Get($any: Any = \"any-1\") { SubObject(any: $any) { id any } }",
 			"variables": { "any": null }
@@ -15595,6 +15666,7 @@ it('Query by var w default with null var', async () => {
 it('Query by nested attribute', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({ "query": "{ SubObject(related: { name: \"name-2\" }) { id any } }" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.data.SubObject[0].id == "2"))
@@ -15603,6 +15675,7 @@ it('Query by nested attribute', async () => {
 it('Query by multiple nested attributes', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({ "query": "{ SubObject(any: \"any-1\", related: { name: \"name-1\" }) { id any } }" })
 		.expect(200)
 //Unmatched Postman assertion: pm.expect(jsonData.data.SubObject[0].id).to.eql("1"))
@@ -15611,6 +15684,7 @@ it('Query by multiple nested attributes', async () => {
 it('Query by nested attribute primary key', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({ "query": "{ SubObject(related: { id: \"2\" }) { id any } }" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.data.SubObject[0].id == "2"))
@@ -15619,6 +15693,7 @@ it('Query by nested attribute primary key', async () => {
 it('Query by doubly nested attribute', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({ "query": "{ SubObject(related: { subObject: { any: \"any-3\" } }) { id any } }" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.data.SubObject[0].id == "3"))
@@ -15627,6 +15702,7 @@ it('Query by doubly nested attribute', async () => {
 it('Query by doubly nested attribute as var sub level', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({
 			"query": "query Get($subObject: Any) { SubObject(related: { subObject: $subObject }) { id any } }",
 			"variables": { "subObject": { "any": "any-3" } }
@@ -15638,6 +15714,7 @@ it('Query by doubly nested attribute as var sub level', async () => {
 it('Query by doubly nested attribute as var top-level', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({
 			"query": "query Get($related: Any) { SubObject(related: $related) { id any } }",
 			"variables": { "related": { "subObject": { "any": "any-3" } } }
@@ -15649,6 +15726,7 @@ it('Query by doubly nested attribute as var top-level', async () => {
 it('Query by nested attribute as var sub level', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({
 			"query": "query Get($name: String) { SubObject(related: { name: $name }) { id any } }",
 			"variables": { "name": "name-2" }
@@ -15660,6 +15738,7 @@ it('Query by nested attribute as var sub level', async () => {
 it('Query by nested attribute as var top level', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({
 			"query": "query Get($related: Any) { SubObject(related: $related) { id any } }",
 			"variables": { "related": { "name": "name-2" } }
@@ -15671,6 +15750,7 @@ it('Query by nested attribute as var top level', async () => {
 it('Query with top level fragment', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({ "query": "query Get { ...related } fragment related on Any { Related { id name } }" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.data.Related.length == 5))
@@ -15681,6 +15761,7 @@ it('Query with top level fragment', async () => {
 it('Query with top level nested fragment', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({ "query": "query Get { ...related } fragment related on Any { ...nested } fragment nested on Any { Related { id name } }" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.data.Related.length == 5))
@@ -15691,6 +15772,7 @@ it('Query with top level nested fragment', async () => {
 it('Query w top level fragment multi resource', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({ "query": "query Get { ...multiResourceFragment } fragment multiResourceFragment on Any { Related { id name } SubObject { id relatedId } }" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.data.Related.length == 5))
@@ -15705,6 +15787,7 @@ it('Query w top level fragment multi resource', async () => {
 it('Query with inline fragment', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({ "query": "query Get { Related(id: \"1\") { ...on Related { id name } } }" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.data.Related[0].id == "1"))
@@ -15713,6 +15796,7 @@ it('Query with inline fragment', async () => {
 it('Query with nested fragments', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
+		.set(headers)
 		.send({ "query": "query Get { Related(id: \"2\") { ...relatedFields otherTable { ...id } } } fragment relatedFields on Related { ...id name } fragment id on Any { id }" })
 		.expect(200)
 //Unmatched Postman assertion: pm.expect(jsonData.data.Related[0].id).to.eql("2"))
@@ -15721,6 +15805,7 @@ it('Query with nested fragments', async () => {
 it('[rest] Named query Get Related', async () => {
 	const response = await request(envUrlRest)
 		.get('/Related/?select(id,name)')
+		.set(headers)
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 5))
 	//Unmatched Postman assertion: jsonData.forEach((row, i) => {
@@ -15730,6 +15815,7 @@ it('[rest] Named query Get Related', async () => {
 it('[rest] Named query Get SubObject', async () => {
 	const response = await request(envUrlRest)
 		.get('/SubObject/?select(id,relatedId)')
+		.set(headers)
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 6))
 //Unmatched Postman assertion: jsonData.forEach((row, i) => {
@@ -15739,6 +15825,7 @@ it('[rest] Named query Get SubObject', async () => {
 it('[rest] Query by primary key field', async () => {
 	const response = await request(envUrlRest)
 		.get('/Related/?id==1&select(id,name)')
+		.set(headers)
 		.expect(200)
 //Unmatched Postman assertion: pm.expect(jsonData[0].id).to.eql("1"))
 });
@@ -15746,6 +15833,7 @@ it('[rest] Query by primary key field', async () => {
 it('[rest] Query by variable non null', async () => {
 	const response = await request(envUrlRest)
 		.get('/Related/?id==2&select(id,name)')
+		.set(headers)
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].id == "2"))
 });
@@ -15753,6 +15841,7 @@ it('[rest] Query by variable non null', async () => {
 it('[rest] Query by var nullable', async () => {
 	const response = await request(envUrlRest)
 		.get('/SubObject/?any==any-2&select(id,any)')
+		.set(headers)
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].id == "2"))
 });
@@ -15760,6 +15849,7 @@ it('[rest] Query by var nullable', async () => {
 it('[rest] Query by var with null var', async () => {
 	const response = await request(envUrlRest)
 		.get('/SubObject/?any==null&select(id,any)')
+		.set(headers)
 		.expect(200)
 //Unmatched Postman assertion: pm.expect(jsonData[0].id).to.eql("0")
 //Unmatched Postman assertion: pm.expect(jsonData[0].any).to.be.null;})
@@ -15768,6 +15858,7 @@ it('[rest] Query by var with null var', async () => {
 it('[rest] Query by nested attribute', async () => {
 	const response = await request(envUrlRest)
 		.get('/SubObject/?related.name==name-2&select(id,any)')
+		.set(headers)
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].id == "2"))
 });
@@ -15775,6 +15866,7 @@ it('[rest] Query by nested attribute', async () => {
 it('[rest] Query by multiple nested attributes', async () => {
 	const response = await request(envUrlRest)
 		.get('/SubObject/?any==any-2&related.name==name-2&select(id,any)')
+		.set(headers)
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].id == "2"))
 });
@@ -15782,6 +15874,7 @@ it('[rest] Query by multiple nested attributes', async () => {
 it('[rest] Query by nested attribute primary key', async () => {
 	const response = await request(envUrlRest)
 		.get('/SubObject/?related.id==2&select(id,any)')
+		.set(headers)
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].id == "2"))
 });
@@ -15789,6 +15882,7 @@ it('[rest] Query by nested attribute primary key', async () => {
 it('[rest] Query by doubly nested attribute', async () => {
 	const response = await request(envUrlRest)
 		.get('/SubObject/?related.subObject.any==any-2&select(id,any)')
+		.set(headers)
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].id == "2"))
 });
@@ -15796,6 +15890,7 @@ it('[rest] Query by doubly nested attribute', async () => {
 it('[rest] Query with nested fragments', async () => {
 	const response = await request(envUrlRest)
 		.get('/Related/?id==3')
+		.set(headers)
 		.expect(200)
 //Unmatched Postman assertion: pm.expect(jsonData[0].id).to.eql("3"))
 });
@@ -15886,11 +15981,9 @@ it('Create auth token with invalid credentials', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "create_authentication_tokens", "username": "{{username}}", "password": "" })
+		.send({ "operation": "create_authentication_tokens", "username": `${generic.username}`, "password": "" })
+		.expect((r) => assert.ok(JSON.stringify(r.body).includes("invalid credentials")))
 		.expect(401)
-
-	//Unmatched Postman assertion: var response = JSON.stringify(pm.response.json())
-		.expect((r) => assert.ok(response.includes("invalid credentials")))
 });
 
 it('Create auth token with invalid credentials 2', async () => {
@@ -15898,10 +15991,8 @@ it('Create auth token with invalid credentials 2', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "create_authentication_tokens", "username": "", "password": "{{password}}" })
+		.expect((r) => assert.ok(JSON.stringify(r.body).includes("invalid credentials")))
 		.expect(401)
-
-	//Unmatched Postman assertion: var response = JSON.stringify(pm.response.json())
-		.expect((r) => assert.ok(response.includes("invalid credentials")))
 });
 
 it('Create auth token with invalid credentials 3', async () => {
@@ -15909,10 +16000,8 @@ it('Create auth token with invalid credentials 3', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "create_authentication_tokens", "username": "wrongusername", "password": "wrongpassword" })
+		.expect((r) => assert.ok(JSON.stringify(r.body).includes("invalid credentials")))
 		.expect(401)
-
-	//Unmatched Postman assertion: var response = JSON.stringify(pm.response.json())
-		.expect((r) => assert.ok(response.includes("invalid credentials")))
 });
 
 it('Create auth token with empty credentials', async () => {
@@ -15920,24 +16009,23 @@ it('Create auth token with empty credentials', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "create_authentication_tokens", "username": "", "password": "" })
+		.expect((r) => assert.ok(JSON.stringify(r.body).includes("invalid credentials")))
 		.expect(401)
-
-	//Unmatched Postman assertion: var response = JSON.stringify(pm.response.json())
-		.expect((r) => assert.ok(response.includes("invalid credentials")))
 });
 
 it('Add component', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ "operation": "add_component", "project": "myApp111" })
-
-//Unmatched Postman assertion: const response = JSON.stringify(pm.response.json())
-//Unmatched Postman assertion: pm.expect(response).to.contain.oneOf(['Successfully added project', 'Project already exists']))
+		.expect((r) => assert.ok(JSON.stringify(r.body).includes("Successfully added project") ||
+			JSON.stringify(r.body).includes("Project already exists")))
 });
 
 it('Restart service and wait', async () => {
 	const response = await request(envUrl)
 		.post('')
+		.set(headers)
 		.send({ operation: 'restart_service', service: 'http_workers' })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes('Restarting')));

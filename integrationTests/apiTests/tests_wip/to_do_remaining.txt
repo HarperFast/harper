@@ -21,21 +21,17 @@ sau poate fi si r.status (din supertest r.status si r.body)
 ====================================================================================
 
 
-sa caut dupa pm.response.json(); 66 results
-
 sa caut dupa pm.expect
-
-sa caut dupa (cu spatii in fata si fara spatii in fata randului):
-	Unmatched
-	Postman
 
 sa caut dupa // Unmatched Postman assertion:
 sa caut dupa //Unmatched Postman assertion
 sa caut dupa Unmatched Postman assertion
 
-sa ma uit la setTimeout( si sa pun await uri si inafara await request()
+sa ma uit la setTimeout( si sa pun await uri si sa fie inafara la await request()
 
-sa inlocuiesc tot ce e cu: {{ , ca de exemplu {{schema}}
+sa inlocuiesc tot ce e cu: {{ , ca de exemplu {{schema}}, de ex:
+{{username}} devine ${generic.username}
+si "{{username}}" devine `${generic.username}`
 
 sa verific in .send() in json uri sa nu existe // adica commenturile din postman body, ca a pus comment uri ca si //
 
