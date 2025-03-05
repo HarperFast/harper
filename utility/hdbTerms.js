@@ -605,6 +605,7 @@ const CONFIG_PARAMS = {
 	HTTP_COMPRESSIONTHRESHOLD: 'http_compressionThreshold',
 	HTTP_CORS: 'http_cors',
 	HTTP_CORSACCESSLIST: 'http_corsAccessList',
+	HTTP_CORSACCESSCONTROLALLOWHEADERS: 'http_corsAccessControlAllowHeaders',
 	HTTP_HEADERSTIMEOUT: 'http_headersTimeout',
 	HTTP_KEEPALIVETIMEOUT: 'http_keepAliveTimeout',
 	HTTP_MAXPARAMLENGTH: 'http_maxParamLength',

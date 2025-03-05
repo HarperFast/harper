@@ -57,10 +57,13 @@ export async function authentication(request, next_handler) {
 				: [];
 			if (access_list.includes(origin) || access_list.includes('*')) {
 				if (request.method === 'OPTIONS') {
+
+					const accessControlAllowHeaders = env.get(CONFIG_PARAMS.HTTP_CORSACCESSCONTROLALLOWHEADERS) ?? 'Accept, Content-Type, Authorization';
+
 					// preflight request
 					const headers = new Headers([
 						['Access-Control-Allow-Methods', 'POST, GET, PUT, DELETE, PATCH, OPTIONS'],
-						['Access-Control-Allow-Headers', 'Accept, Content-Type, Authorization'],
+						['Access-Control-Allow-Headers', accessControlAllowHeaders],
 						['Access-Control-Allow-Origin', origin],
 					]);
 					if (ENABLE_SESSIONS) headers.set('Access-Control-Allow-Credentials', 'true');
