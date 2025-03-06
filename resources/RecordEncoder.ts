@@ -25,6 +25,7 @@ export const TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 4, 0x40, 0, 0])
 // the first byte here indicates that we use the last timestamp
 export const LAST_TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 1, 0, 0, 0]);
 export const PREVIOUS_TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 3, 0x40, 0, 0]);
+export const NEW_TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 0, 0x40, 0, 0]);
 export const LOCAL_TIMESTAMP = Symbol('local-timestamp');
 export const METADATA = Symbol('metadata');
 const TIMESTAMP_HOLDER = new Uint8Array(8);
@@ -356,21 +357,24 @@ export function recordUpdater(store, table_id, audit_store) {
 					deleteBlobsInObject(existing_entry.value);
 				}
 			}
-			const result = encodeBlobsWithFilePath(() => store.put(id, record, put_options), id, store.rootStore);
-			if (blobsWereEncoded) {
-				extended_type |= HAS_BLOBS;
+			let result;
+			if (options?.omitLocalRecord) {
+				// if we aren't writing the local record (as is the case for sharding that doesn't include ourselves in the shard), we still need to write the audit record
+				audit_record ??= record;
+			} else {
+				result = encodeBlobsWithFilePath(() => store.put(id, record, put_options), id, store.rootStore);
+				if (blobsWereEncoded) {
+					extended_type |= HAS_BLOBS;
+				}
 			}
-			/**
-			 TODO: We will need to pass in the node id, whether that is locally generated from node name, or there is a global registory
-			let node_id = audit_information.nodeName ? node_ids.get(audit_information.nodeName) : 0;
-			if (node_id == undefined) {
-				// store the node name to node id mapping
-			}
-			*/
 			if (audit) {
 				const username = options?.user?.username;
-				if (audit_record)
-					last_value_encoding = encodeBlobsWithFilePath(() => store.encoder.encode(audit_record), id, store.rootStore);
+				if (audit_record) {
+					encodeBlobsWithFilePath(() => store.encoder.encode(audit_record), id, store.rootStore);
+					if (blobsWereEncoded) {
+						extended_type |= HAS_BLOBS;
+					}
+				}
 				if (store.encoder.hasStructureUpdate) {
 					extended_type |= HAS_STRUCTURE_UPDATE;
 					store.encoder.hasStructureUpdate = false;
@@ -380,7 +384,7 @@ export function recordUpdater(store, table_id, audit_store) {
 					const replacing_entry = audit_store.get(replacing_id);
 					if (replacing_entry) {
 						const previous_local_time = readAuditEntry(replacing_entry).previousLocalTime;
-						audit_store.put(
+						result = audit_store.put(
 							replacing_id,
 							createAuditEntry(
 								new_version,
@@ -401,8 +405,8 @@ export function recordUpdater(store, table_id, audit_store) {
 						return result;
 					}
 				}
-				audit_store.put(
-					LAST_TIMESTAMP_PLACEHOLDER,
+				result = audit_store.put(
+					options?.omitLocalRecord ? NEW_TIMESTAMP_PLACEHOLDER : LAST_TIMESTAMP_PLACEHOLDER,
 					createAuditEntry(
 						new_version,
 						table_id,
