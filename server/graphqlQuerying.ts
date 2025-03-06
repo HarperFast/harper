@@ -570,128 +570,131 @@ async function graphqlQueryingHandler(request: Request) {
 }
 
 export function start(options) {
-	options.server.http(async (request, nextLayer) => {
-		if (!request.url.startsWith('/graphql')) {
-			return nextLayer(request);
-		}
-
-		try {
-			// Await the `graphqlHandler` call here so that errors are caught.
-			return await graphqlQueryingHandler(request);
-		} catch (error) {
-			logger.error(error);
-
-			// Error Handling
-			// Based on the GraphQL specification, a GraphQL response (non-http) are a map with a `data` field and an `errors` field.
-			// In context of GraphQL Over HTTP, the GraphQL Response is used and will always be returned in the body of the response (regardless of status code).
-			// The status code changes based on the Accept header and the response contents.
-			// - In `application/json`, the status code is always 200, unless something is wrong with the http request itself (wrong method, invalid body, etc).
-			//   - Even if the query itself is invalid (like it doesn't parse), we still use 200, and include the parsing error in `errors`, and `data` is undefined
-			//   - It may be difficult to accomplish in our system, but the query can be partially successful, and we would still return 200 with `data` and `errors`.
-			// - In `application/graphql-response+json`, the status code will generally be 4xx if anything goes wrong. From HTTP issues to query parsing, and even query execution.
-			//   - Using 405 for method not allowed
-			//   - 403 for unauthorized
-			//   - 400 for bad request (we detect something is wrong, or the parsing step fails, or the operation is not found, or we don't support that piece of the spec)
-			//   - 500 for internal server error (like something is bugged in the code in this file).
-			//   - If the query is valid, and some part of it is successful, then and only then does the status code become 200.
-			//   - If the fails partially, we can include those errors in the `errors` field, and still return 200.
-			// "Partial success/failure" - GraphQL has two types of error concepts, Request and Field. Field errors are generally when a single field in a request has an error resolving. Request errors are not about HTTP semantics, but GraphQL semantics (like valid query)
-			// In a standard graphql system, that is okay. It can be null and things can continue. When something is specified as non-null, then it can provide an error.
-			// Since our system is a bit unique, and we are taking many liberties with the spec, we may not really support partial success.
-			// We don't really type check so there is little purpose in strictly validating the data coming out of a query.
-			// In general, we will behave as expected regarding request errors (like missing variables, or invalid query syntax).
-			// For now, we likely will not support partial failure. If a query fails, it will likely fail entirely. And as confusing as that might be for a `application/json` user, it is
-			// the most spec compliant and expected behavior. Furthermore, we will default to `application/graphql-response+json` so that the better UX (of receiving 4xx on any errors) will be the default experience.
-
-			const response_type = request.headers.get('accept') ?? 'application/graphql-response+json';
-
-			switch (response_type) {
-				case 'application/json': {
-					if (error instanceof HTTPError) {
-						return {
-							status: error.statusCode,
-							body: JSON.stringify({ errors: [{ message: error.message }] }),
-							headers: {
-								'Content-Type': 'application/json',
-								...error.headers,
-							},
-						};
-					} else if (error instanceof graphql.GraphQLError) {
-						// This error comes from graphql.parse
-						return {
-							status: 200,
-							body: JSON.stringify({ errors: [error] }),
-							headers: {
-								'Content-Type': 'application/json',
-							},
-						};
-					} else if (error instanceof GraphQLQueryingError) {
-						return {
-							status: 200,
-							body: JSON.stringify({ errors: [{ message: error.message }] }),
-							headers: {
-								'Content-Type': 'application/json',
-							},
-						};
-					} else if (error instanceof Error) {
-						return {
-							status: 500,
-							body: JSON.stringify({ errors: [{ message: error.message }] }),
-							headers: {
-								'Content-Type': 'application/json',
-							},
-						};
-					}
-
-					break;
-				}
-				// eslint-disable-next-line sonarjs/prefer-default-last, sonarjs/sonar-no-fallthrough
-				default:
-					logger.info(`Unsupported accept header, ${response_type}, defaulting to application/graphql-response+json`);
-				// eslint-disable-next-line no-fallthrough
-				case 'application/graphql-response+json': {
-					if (error instanceof HTTPError) {
-						return {
-							status: error.statusCode,
-							body: JSON.stringify({ errors: [{ message: error.message }] }),
-							headers: {
-								'Content-Type': 'application/graphql-response+json',
-								...error.headers,
-							},
-						};
-					} else if (error instanceof graphql.GraphQLError) {
-						// This error comes from graphql.parse
-						return {
-							status: 400,
-							body: JSON.stringify({ errors: [error] }),
-							headers: {
-								'Content-Type': 'application/graphql-response+json',
-							},
-						};
-					} else if (error instanceof GraphQLQueryingError) {
-						return {
-							status: 400,
-							body: JSON.stringify({ errors: [{ message: error.message }] }),
-							headers: {
-								'Content-Type': 'application/graphql-response+json',
-							},
-						};
-					} else if (error instanceof Error) {
-						return {
-							status: 500,
-							body: JSON.stringify({ errors: [{ message: error.message }] }),
-							headers: {
-								'Content-Type': 'application/graphql-response+json',
-							},
-						};
-					}
-
-					break;
-				}
+	options.server.http(
+		async (request, nextLayer) => {
+			if (!request.url.startsWith('/graphql')) {
+				return nextLayer(request);
 			}
 
-			// The handler should not throw anything but Errors, but rethrow anything else just in case.
-			throw error;
-		}
-	});
+			try {
+				// Await the `graphqlHandler` call here so that errors are caught.
+				return await graphqlQueryingHandler(request);
+			} catch (error) {
+				logger.error(error);
+
+				// Error Handling
+				// Based on the GraphQL specification, a GraphQL response (non-http) are a map with a `data` field and an `errors` field.
+				// In context of GraphQL Over HTTP, the GraphQL Response is used and will always be returned in the body of the response (regardless of status code).
+				// The status code changes based on the Accept header and the response contents.
+				// - In `application/json`, the status code is always 200, unless something is wrong with the http request itself (wrong method, invalid body, etc).
+				//   - Even if the query itself is invalid (like it doesn't parse), we still use 200, and include the parsing error in `errors`, and `data` is undefined
+				//   - It may be difficult to accomplish in our system, but the query can be partially successful, and we would still return 200 with `data` and `errors`.
+				// - In `application/graphql-response+json`, the status code will generally be 4xx if anything goes wrong. From HTTP issues to query parsing, and even query execution.
+				//   - Using 405 for method not allowed
+				//   - 403 for unauthorized
+				//   - 400 for bad request (we detect something is wrong, or the parsing step fails, or the operation is not found, or we don't support that piece of the spec)
+				//   - 500 for internal server error (like something is bugged in the code in this file).
+				//   - If the query is valid, and some part of it is successful, then and only then does the status code become 200.
+				//   - If the fails partially, we can include those errors in the `errors` field, and still return 200.
+				// "Partial success/failure" - GraphQL has two types of error concepts, Request and Field. Field errors are generally when a single field in a request has an error resolving. Request errors are not about HTTP semantics, but GraphQL semantics (like valid query)
+				// In a standard graphql system, that is okay. It can be null and things can continue. When something is specified as non-null, then it can provide an error.
+				// Since our system is a bit unique, and we are taking many liberties with the spec, we may not really support partial success.
+				// We don't really type check so there is little purpose in strictly validating the data coming out of a query.
+				// In general, we will behave as expected regarding request errors (like missing variables, or invalid query syntax).
+				// For now, we likely will not support partial failure. If a query fails, it will likely fail entirely. And as confusing as that might be for a `application/json` user, it is
+				// the most spec compliant and expected behavior. Furthermore, we will default to `application/graphql-response+json` so that the better UX (of receiving 4xx on any errors) will be the default experience.
+
+				const response_type = request.headers.get('accept') ?? 'application/graphql-response+json';
+
+				switch (response_type) {
+					case 'application/json': {
+						if (error instanceof HTTPError) {
+							return {
+								status: error.statusCode,
+								body: JSON.stringify({ errors: [{ message: error.message }] }),
+								headers: {
+									'Content-Type': 'application/json',
+									...error.headers,
+								},
+							};
+						} else if (error instanceof graphql.GraphQLError) {
+							// This error comes from graphql.parse
+							return {
+								status: 200,
+								body: JSON.stringify({ errors: [error] }),
+								headers: {
+									'Content-Type': 'application/json',
+								},
+							};
+						} else if (error instanceof GraphQLQueryingError) {
+							return {
+								status: 200,
+								body: JSON.stringify({ errors: [{ message: error.message }] }),
+								headers: {
+									'Content-Type': 'application/json',
+								},
+							};
+						} else if (error instanceof Error) {
+							return {
+								status: 500,
+								body: JSON.stringify({ errors: [{ message: error.message }] }),
+								headers: {
+									'Content-Type': 'application/json',
+								},
+							};
+						}
+
+						break;
+					}
+					// eslint-disable-next-line sonarjs/prefer-default-last, sonarjs/sonar-no-fallthrough
+					default:
+						logger.info(`Unsupported accept header, ${response_type}, defaulting to application/graphql-response+json`);
+					// eslint-disable-next-line no-fallthrough
+					case 'application/graphql-response+json': {
+						if (error instanceof HTTPError) {
+							return {
+								status: error.statusCode,
+								body: JSON.stringify({ errors: [{ message: error.message }] }),
+								headers: {
+									'Content-Type': 'application/graphql-response+json',
+									...error.headers,
+								},
+							};
+						} else if (error instanceof graphql.GraphQLError) {
+							// This error comes from graphql.parse
+							return {
+								status: 400,
+								body: JSON.stringify({ errors: [error] }),
+								headers: {
+									'Content-Type': 'application/graphql-response+json',
+								},
+							};
+						} else if (error instanceof GraphQLQueryingError) {
+							return {
+								status: 400,
+								body: JSON.stringify({ errors: [{ message: error.message }] }),
+								headers: {
+									'Content-Type': 'application/graphql-response+json',
+								},
+							};
+						} else if (error instanceof Error) {
+							return {
+								status: 500,
+								body: JSON.stringify({ errors: [{ message: error.message }] }),
+								headers: {
+									'Content-Type': 'application/graphql-response+json',
+								},
+							};
+						}
+
+						break;
+					}
+				}
+
+				// The handler should not throw anything but Errors, but rethrow anything else just in case.
+				throw error;
+			}
+		},
+		{ port: options.port, securePort: options.securePort }
+	);
 }
