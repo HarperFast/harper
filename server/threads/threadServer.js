@@ -698,7 +698,7 @@ Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
 		return (
 			'connection' in this.headers &&
 			'upgrade' in this.headers &&
-			this.headers.connection.includes('Upgrade') &&
+			this.headers.connection.toLowerCase().includes('upgrade') &&
 			this.headers.upgrade.toLowerCase() == 'websocket'
 		);
 	},

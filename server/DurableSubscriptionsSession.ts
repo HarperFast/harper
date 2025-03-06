@@ -216,8 +216,15 @@ class SubscriptionsSession {
 				}
 				if (needs_filter) {
 					filter = (update) => {
-						const update_path = update.id;
-						if (!Array.isArray(update_path)) return false;
+						let update_path = update.id;
+						if (!Array.isArray(update_path)) {
+							if (update_path?.indexOf?.('/') > -1) {
+								// if it is a string with slashes, we can split it into an array
+								update_path = update_path.split('/');
+							} else {
+								return false;
+							}
+						}
 						if (must_match_length && update_path.length !== matching_path.length) return false;
 						for (let i = 0; i < matching_path.length; i++) {
 							if (matching_path[i] !== '+' && matching_path[i] !== update_path[i]) return false;

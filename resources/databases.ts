@@ -579,7 +579,8 @@ export function table(table_definition: TableDefinition) {
 		audit = primary_key_attribute.audit = typeof audit === 'boolean' ? audit : env_get(CONFIG_PARAMS.LOGGING_AUDITLOG);
 		if (expiration) primary_key_attribute.expiration = expiration;
 		if (eviction) primary_key_attribute.eviction = eviction;
-		primary_key_attribute.splitSegments = false; // always default to not splitting segments going forward
+		split_segments ??= false;
+		primary_key_attribute.splitSegments = split_segments; // always default to not splitting segments going forward
 		if (typeof sealed === 'boolean') primary_key_attribute.sealed = sealed;
 		if (typeof replicate === 'boolean') primary_key_attribute.replicate = replicate;
 		if (origin) {
