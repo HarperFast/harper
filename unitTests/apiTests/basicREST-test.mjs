@@ -140,7 +140,7 @@ describe('test REST calls', () => {
 		it('table describe with root url', async () => {
 			let response = await axios('http://localhost:9926/FourProp');
 			assert.equal(response.status, 200);
-			assert(response.data.recordCount >= 10);
+			expect(response.data.recordCount).to.be.at.least(10);
 			assert.equal(response.data.attributes.length, 7);
 			assert.equal(response.data.name, 'FourProp');
 		});
@@ -510,5 +510,26 @@ describe('test REST calls', () => {
 		// Assert everything works as expected
 		assert.equal(response.status, 200);
 		assert.equal(response.data, 'onetwo');
+	});
+
+	it('routes requests with nested path structure to correct resource', async () => {
+		let response1 = await axios('http://localhost:9926/api/v1/resourceA');
+		assert.equal(response1.data.name, 'ResourceA');
+
+		let response2 = await axios('http://localhost:9926/api/v1/resourceA/?queryA=1&queryB=2');
+		assert.equal(response2.data.name, 'ResourceA');
+		assert.strictEqual(response2.data.params.url, '/?queryA=1&queryB=2');
+
+		let response3 = await axios('http://localhost:9926/api/v1/resourceA/resourceB/');
+		assert.equal(response3.data.name, 'ResourceB');
+		assert.strictEqual(response3.data.params.url, '/');
+
+		let response4 = await axios('http://localhost:9926/api/v1/resourceA/resourceB/subPath/ResourceC?queryA=2&queryB=3');
+		assert.equal(response4.data.name, 'ResourceC');
+		assert.strictEqual(response4.data.params.url, '?queryA=2&queryB=3');
+
+		let response5 = await axios('http://localhost:9926/api/v1/resourceA/resourceB/subPath/ResourceC/some/relative/path/?with=query.property');
+		assert.equal(response5.data.name, 'ResourceC');
+		assert.strictEqual(response5.data.params.url, '/some/relative/path/?with=query.property');
 	});
 });
