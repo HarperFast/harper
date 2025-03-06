@@ -335,7 +335,10 @@ describe('Replication', () => {
 			assert.equal(result.name, name);
 		});
 		describe('id sharding', function () {
-			before(() => {
+			before(async () => {
+				await test_stores[0].remove('10');
+				await test_stores[1].remove('10');
+				await test_stores[2].remove('10');
 				TestTable.setResidencyById((id) => {
 					return ['node-' + ((parseInt(id) % 3) + 1)];
 				});
@@ -345,6 +348,9 @@ describe('Replication', () => {
 			});
 			it('A write to table with id sharding defined and residency that does not include itself should replicate', async function () {
 				let name = 'name ' + Math.random();
+
+				let result = test_stores[0].getBinary('10');
+				assert(!result);
 
 				await TestTable.put({
 					id: '10', // should be forced to replicate and only store the record on node-2
@@ -368,7 +374,7 @@ describe('Replication', () => {
 					break;
 				} while (true);
 				// now verify that the record can be loaded on-demand here
-				let result = await TestTable.get('10');
+				result = await TestTable.get('10');
 				assert.equal(result.name, name);
 			});
 		});
