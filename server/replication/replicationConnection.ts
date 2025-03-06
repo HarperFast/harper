@@ -1316,7 +1316,7 @@ export function replicateOverWS(ws, options, authorization) {
 			recordAction(
 				body.byteLength,
 				'bytes-received',
-				remote_node_name + '.' + database_name + '.' + event?.table,
+				`${remote_node_name}.${database_name}.${event?.table || 'unknown_table'}`,
 				'replication',
 				'ingest'
 			);
