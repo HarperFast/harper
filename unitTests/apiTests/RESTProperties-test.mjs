@@ -92,7 +92,7 @@ describe('test REST with property updates', () => {
 		response = await axios.get('http://localhost:9926/namespace/SubObject/multi/part/id/3');
 		assert.equal(response.status, 200);
 		assert.equal(response.data.subObject.name, 'deeply nested');
-		assert.deepEqual(response.data.id, ['multi', 'part', 'id', '3']);
+		assert.deepEqual(response.data.id, 'multi/part/id/3');
 		assert.deepEqual(response.data.any, 'can be a string');
 		response = await axios.get('http://localhost:9926/namespace/SubObject/multi/');
 		assert.equal(response.status, 200);
