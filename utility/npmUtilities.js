@@ -225,19 +225,8 @@ async function auditModules(req) {
  */
 async function checkNPMInstalled() {
 	//verify npm is available on this machine
-	try {
-		await runCommand('npm -v');
-		return true;
-	} catch (e) {
-		throw handleHDBError(
-			new Error(),
-			`Unable to install project dependencies: npm is not installed on this instance of HarperDB.`,
-			HTTP_STATUS_CODES.BAD_REQUEST,
-			undefined,
-			undefined,
-			true
-		);
-	}
+	await runCommand('npm -v');
+	return true;
 }
 
 /**
