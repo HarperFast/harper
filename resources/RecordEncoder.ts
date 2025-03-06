@@ -108,7 +108,7 @@ export class RecordEncoder extends Encoder {
 					}
 				}
 				return encoded;
-			} else return super_encode.call(this, record, options);
+			} else return (last_value_encoding = super_encode.call(this, record, options));
 		};
 		const super_saveStructures = this.saveStructures;
 		this.saveStructures = function (structures, isCompatible) {
