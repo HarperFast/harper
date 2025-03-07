@@ -50,7 +50,8 @@ export async function startOnMainThread(options) {
 	// but don't await this because this start function has to finish before the threads can start
 	whenThreadsStarted.then(async () => {
 		const nodes = [];
-		for await (const node of databases.system.hdb_nodes.search([])) {
+		// if we are getting notified of system table updates, hdb_nodes could be absent
+		for await (const node of databases.system.hdb_nodes?.search([]) || []) {
 			nodes.push(node);
 		}
 		for (const route of iterateRoutes(options)) {

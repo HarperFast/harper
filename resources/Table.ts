@@ -47,7 +47,8 @@ import { recordAction, recordActionBinary } from './analytics';
 import { rebuildUpdateBefore } from './crdt';
 import { appendHeader } from '../server/serverHelpers/Headers';
 import fs from 'node:fs';
-import { Blob, deleteBlobsInObject } from './blob';
+import { Blob, deleteBlobsInObject, findBlobsInObject } from './blob';
+import { onStorageReclamation } from '../server/storageReclamation';
 
 type Attribute = {
 	name: string;
@@ -133,6 +134,7 @@ export function makeTable(options) {
 		replicate,
 	} = options;
 	let { expirationMS: expiration_ms, evictionMS: eviction_ms, audit, trackDeletes: track_deletes } = options;
+	eviction_ms ??= 0;
 	let { attributes } = options;
 	if (!attributes) attributes = [];
 	const updateRecord = recordUpdater(primary_store, table_id, audit_store);
@@ -155,7 +157,8 @@ export function makeTable(options) {
 	let apply_to_sources = {};
 	let apply_to_sources_intermediate = {};
 	let cleanup_interval = 86400000;
-	let last_cleanup_interval: NodeJS.Timeout;
+	let cleanup_priority = 0;
+	let last_cleanup_interval: number;
 	let cleanup_timer: NodeJS.Timeout;
 	let property_resolvers: any;
 	let has_relationships = false;
@@ -177,6 +180,10 @@ export function makeTable(options) {
 	const MAX_PREFETCH_SEQUENCE = 10;
 	const MAX_PREFETCH_BUNDLE = 6;
 	if (audit) addDeleteRemoval();
+	onStorageReclamation(primary_store.env.path, (priority: number) => {
+		if (has_source_get) return scheduleCleanup(priority);
+	});
+
 	class TableResource extends Resource {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
@@ -902,11 +909,8 @@ export function makeTable(options) {
 			}
 			if (this.getId() === null) {
 				if (query?.conditions) return this.search(query); // if there is a query, assume it was meant to be a root level query
-				const record_count = TableResource.getRecordCount();
 				return {
 					// basically a describe call
-					recordCount: record_count.recordCount,
-					estimatedRecordRange: record_count.estimatedRange,
 					records: './', // an href to the records themselves
 					name: table_name,
 					database: database_name,
@@ -1471,7 +1475,13 @@ export function makeTable(options) {
 								? ', replaces entry from: ' + new Date(existing_entry.version).toISOString()
 								: ', new entry'
 						}`,
-						record_to_store
+						(() => {
+							try {
+								return JSON.stringify(record_to_store).slice(0, 100);
+							} catch (e) {
+								return '';
+							}
+						})()
 					);
 					updateIndices(id, existing_record, record_to_store);
 					const type = full_update ? 'put' : 'patch';
@@ -2624,14 +2634,14 @@ export function makeTable(options) {
 		}
 		static getStorageStats() {
 			const storePath = primary_store.env.path;
-			const stats = fs.statfsSync(storePath);
+			const stats: any = fs.statfsSync?.(storePath) ?? {};
 			return {
 				available: stats.bavail * stats.bsize,
 				free: stats.bfree * stats.bsize,
 				size: stats.blocks * stats.bsize,
 			};
 		}
-		static getRecordCount(options) {
+		static async getRecordCount(options?: any) {
 			// iterate through the metadata entries to exclude their count and exclude the deletion counts
 			const entry_count = primary_store.getStats().entryCount;
 			const TIME_LIMIT = 1000 / 2; // one second time limit, enforced by seeing if we are halfway through at 500ms
@@ -2641,9 +2651,10 @@ export function makeTable(options) {
 			let record_count = 0;
 			let entries_scanned = 0;
 			let limit: number;
-			for (const { value } of primary_store.getRange({ start: true, lazy: true })) {
+			for (const { value } of primary_store.getRange({ start: true, lazy: true, snapshot: false })) {
 				if (value != null) record_count++;
 				entries_scanned++;
+				await rest();
 				if (!exact_count && entries_scanned < halfway && performance.now() - start > TIME_LIMIT) {
 					// it is taking too long, so we will just take this sample and a sample from the end to estimate
 					limit = entries_scanned;
@@ -2655,8 +2666,15 @@ export function makeTable(options) {
 				// entries and last thousand entries
 				const first_record_count = record_count;
 				record_count = 0;
-				for (const { value } of primary_store.getRange({ start: '\uffff', reverse: true, lazy: true, limit })) {
+				for (const { value } of primary_store.getRange({
+					start: '\uffff',
+					reverse: true,
+					lazy: true,
+					limit,
+					snapshot: false,
+				})) {
 					if (value != null) record_count++;
+					await rest();
 				}
 				const sample_size = limit * 2;
 				const record_rate = (record_count + first_record_count) / sample_size;
@@ -3512,79 +3530,115 @@ export function makeTable(options) {
 			throw new ClientError('Can not specify replication confirmation without super user permissions', 403);
 		return true;
 	}
-	function scheduleCleanup() {
+	function scheduleCleanup(priority?: number): Promise<void> | void {
+		let run_immediately = false;
+		if (priority) {
+			// run immediately if there is a big increase in priority
+			if (priority - cleanup_priority > 1) run_immediately = true;
+			cleanup_priority = priority;
+		}
 		// Periodically evict expired records and deleted records searching for records who expiresAt timestamp is before now
-		if (cleanup_interval === last_cleanup_interval) return;
+		if (cleanup_interval === last_cleanup_interval && !run_immediately) return;
 		last_cleanup_interval = cleanup_interval;
 		if (getWorkerIndex() === getWorkerCount() - 1) {
 			// run on the last thread so we aren't overloading lower-numbered threads
 			if (cleanup_timer) clearTimeout(cleanup_timer);
 			if (!cleanup_interval) return;
-			const start_of_year = new Date();
-			start_of_year.setMonth(0);
-			start_of_year.setDate(1);
-			start_of_year.setHours(0);
-			start_of_year.setMinutes(0);
-			start_of_year.setSeconds(0);
-			// find the next scheduled run based on regular cycles from the beginning of the year (if we restart, this enables a good continuation of scheduling)
-			const next_scheduled =
-				Math.ceil((Date.now() - start_of_year.getTime()) / cleanup_interval) * cleanup_interval +
-				start_of_year.getTime();
-			const startNextTimer = (next_scheduled) => {
-				logger.trace?.(`Scheduled next cleanup scan at ${new Date(next_scheduled)}ms`);
-				// noinspection JSVoidFunctionReturnValueUsed
-				cleanup_timer = setTimeout(
-					() =>
-						(last_eviction_completion = last_eviction_completion.then(async () => {
-							// schedule the next run for when the next cleanup interval should occur (or now if it is in the past)
-							startNextTimer(Math.max(next_scheduled + cleanup_interval, Date.now()));
-							if (primary_store.rootStore.status !== 'open') {
-								clearTimeout(cleanup_timer);
-								return;
-							}
-							const MAX_CLEANUP_CONCURRENCY = 50;
-							const outstanding_cleanup_operations = new Array(MAX_CLEANUP_CONCURRENCY);
-							let cleanup_index = 0;
-							logger.info?.(`Starting cleanup scan for ${table_name}`);
-							try {
-								let count = 0;
-								// iterate through all entries to find expired records and deleted records
-								for (const entry of primary_store.getRange({
-									start: false,
-									snapshot: false, // we don't want to keep read transaction snapshots open
-									versions: true,
-									lazy: true, // only want to access metadata most of the time
-								})) {
-									const { key, value: record, version, expiresAt } = entry;
-									// if there is no auditing and we are tracking deletion, need to do cleanup of
-									// these deletion entries (audit has its own scheduled job for this)
-									let resolution;
-									if (record === null && !audit && version + DELETED_RECORD_EXPIRATION < Date.now()) {
-										// make sure it is still deleted when we do the removal
-										resolution = removeEntry(primary_store, entry, version);
-									} else if (expiresAt != undefined && expiresAt + eviction_ms < Date.now()) {
-										// evict!
-										resolution = TableResource.evict(key, record, version);
-										count++;
-									}
-									if (resolution) {
-										await outstanding_cleanup_operations[cleanup_index];
-										outstanding_cleanup_operations[cleanup_index] = resolution.catch((error) => {
-											logger.error?.('Cleanup error', error);
-										});
-										if (++cleanup_index >= MAX_CLEANUP_CONCURRENCY) cleanup_index = 0;
-									}
-									await rest();
+			return new Promise((resolve) => {
+				const start_of_year = new Date();
+				start_of_year.setMonth(0);
+				start_of_year.setDate(1);
+				start_of_year.setHours(0);
+				start_of_year.setMinutes(0);
+				start_of_year.setSeconds(0);
+				const next_interval = cleanup_interval / (1 + cleanup_priority);
+				// find the next scheduled run based on regular cycles from the beginning of the year (if we restart, this enables a good continuation of scheduling)
+				const next_scheduled = run_immediately
+					? Date.now()
+					: Math.ceil((Date.now() - start_of_year.getTime()) / next_interval) * next_interval + start_of_year.getTime();
+				const startNextTimer = (next_scheduled) => {
+					logger.trace?.(`Scheduled next cleanup scan at ${new Date(next_scheduled)}`);
+					// noinspection JSVoidFunctionReturnValueUsed
+					cleanup_timer = setTimeout(
+						() =>
+							(last_eviction_completion = last_eviction_completion.then(async () => {
+								// schedule the next run for when the next cleanup interval should occur (or now if it is in the past)
+								startNextTimer(Math.max(next_scheduled + cleanup_interval, Date.now()));
+								if (primary_store.rootStore.status !== 'open') {
+									clearTimeout(cleanup_timer);
+									return;
 								}
-								logger.info?.(`Finished cleanup scan for ${table_name}, evicted ${count} entries`);
-							} catch (error) {
-								logger.warn?.(`Error in cleanup scan for ${table_name}:`, error);
-							}
-						})),
-					Math.min(next_scheduled - Date.now(), 0x7fffffff) // make sure it can fit in 32-bit signed number
-				).unref(); // don't let this prevent closing the thread
-			};
-			startNextTimer(next_scheduled);
+								const MAX_CLEANUP_CONCURRENCY = 50;
+								const outstanding_cleanup_operations = new Array(MAX_CLEANUP_CONCURRENCY);
+								let cleanup_index = 0;
+								const evict_threshold =
+									Math.pow(cleanup_priority, 8) *
+									(env_mngr.get(CONFIG_PARAMS.STORAGE_RECLAMATION_EVICTIONFACTOR) ?? 100000);
+								const adjusted_eviction = eviction_ms / Math.pow(Math.max(cleanup_priority, 1), 4);
+								logger.info?.(
+									`Starting cleanup scan for ${table_name}, evict threshold ${evict_threshold}, adjusted eviction ${adjusted_eviction}ms`
+								);
+								function shouldEvict(expiresAt: number, version: number, metadataFlags: number, record: any) {
+									const evictWhen = expiresAt + adjusted_eviction - Date.now();
+									if (evictWhen < 0) return true;
+									else if (cleanup_priority) {
+										let size = primary_store.lastSize;
+										if (metadataFlags & HAS_BLOBS) {
+											findBlobsInObject(record, (blob) => {
+												if (blob.size) size += blob.size;
+											});
+										}
+										logger.trace?.(
+											`shouldEvict adjusted ${evictWhen} ${size}, ${(evictWhen * (expiresAt - version)) / size} < ${evict_threshold}`
+										);
+										// heuristic to determine if we should perform early eviction based on priority
+										return (evictWhen * (expiresAt - version)) / size < evict_threshold;
+									}
+									return false;
+								}
+
+								try {
+									let count = 0;
+									// iterate through all entries to find expired records and deleted records
+									for (const entry of primary_store.getRange({
+										start: false,
+										snapshot: false, // we don't want to keep read transaction snapshots open
+										versions: true,
+										lazy: true, // only want to access metadata most of the time
+									})) {
+										const { key, value: record, version, expiresAt, metadataFlags } = entry;
+										// if there is no auditing and we are tracking deletion, need to do cleanup of
+										// these deletion entries (audit has its own scheduled job for this)
+										let resolution: Promise<void>;
+										if (record === null && !audit && version + DELETED_RECORD_EXPIRATION < Date.now()) {
+											// make sure it is still deleted when we do the removal
+											resolution = removeEntry(primary_store, entry, version);
+										} else if (expiresAt != undefined && shouldEvict(expiresAt, version, metadataFlags, record)) {
+											// evict!
+											resolution = TableResource.evict(key, record, version);
+											count++;
+										}
+										if (resolution) {
+											await outstanding_cleanup_operations[cleanup_index];
+											outstanding_cleanup_operations[cleanup_index] = resolution.catch((error) => {
+												logger.error?.('Cleanup error', error);
+											});
+											if (++cleanup_index >= MAX_CLEANUP_CONCURRENCY) cleanup_index = 0;
+										}
+										await rest();
+									}
+									logger.info?.(`Finished cleanup scan for ${table_name}, evicted ${count} entries`);
+								} catch (error) {
+									logger.warn?.(`Error in cleanup scan for ${table_name}:`, error);
+								}
+								resolve(undefined);
+								cleanup_priority = 0; // reset the priority
+							})),
+						Math.min(next_scheduled - Date.now(), 0x7fffffff) // make sure it can fit in 32-bit signed number
+					).unref(); // don't let this prevent closing the thread
+				};
+				startNextTimer(next_scheduled);
+			});
 		}
 	}
 	function addDeleteRemoval() {

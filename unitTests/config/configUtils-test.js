@@ -558,10 +558,10 @@ describe('Test configUtils module', () => {
 			logging_file: true,
 			logging_level: 'warn',
 			logging_root: null,
-			logging_rotation_enabled: false,
+			logging_rotation_enabled: true,
 			logging_rotation_interval: null,
 			logging_rotation_compress: false,
-			logging_rotation_maxsize: null,
+			logging_rotation_maxsize: '64M',
 			logging_rotation_path: null,
 			logging_stdstreams: false,
 			mqtt_network_mtls: false,
@@ -619,7 +619,7 @@ describe('Test configUtils module', () => {
 			flat_default_config_obj_rw = config_utils_rw.__set__('flat_default_config_obj', expected_flat_default_config_obj);
 			const parse_document_spy = sandbox.spy(YAML, 'parseDocument');
 			const value = config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.LOGGING_ROTATION_ENABLED);
-			expect(value).to.be.false;
+			expect(value).to.be.true;
 			expect(parse_document_spy.callCount).to.equal(0);
 		});
 	});

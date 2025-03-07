@@ -429,7 +429,6 @@ export function deleteBlob(blob: Blob): void {
 	// do we even need to check for completion here?
 	const filePath = getFilePathForBlob(blob);
 	if (!filePath) {
-		logger.debug?.('No file path for blob, can not delete');
 		return;
 	}
 	setTimeout(() => {
@@ -850,15 +849,21 @@ export function decodeFromDatabase(callback: () => void, rootStore: LMDBStore) {
  * @param object
  */
 export function deleteBlobsInObject(object) {
+	findBlobsInObject(object, (object) => {
+		deleteBlob(object);
+	});
+}
+
+export function findBlobsInObject(object: any, callback: (blob: Blob) => void) {
 	if (object instanceof Blob) {
 		// eslint-disable-next-line
 		// @ts-ignore
-		deleteBlob(object);
+		callback(object);
 	} else if (object.constructor === Object || Array.isArray(object)) {
 		// recursively find and delete blobs in the object
 		for (const key in object) {
 			const value = object[key];
-			if (typeof value === 'object') deleteBlobsInObject(object[key]);
+			if (typeof value === 'object') findBlobsInObject(object[key], callback);
 		}
 	}
 }

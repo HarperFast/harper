@@ -111,3 +111,9 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Overlap: None
 - Can be deferred: Potentially, we could load it on-demand
 - Eventual removal: Yes, once node crypto adds native support for argon2
+
+## hdd-space
+- Need for usage: Used to check for sufficient disk space on Node v16. Runs `df`. Should _only_ run on Node v16.
+- Size: 387KB
+- Security: No known issues.
+- Eventual removal: As soon as we can drop Node v16 support, we should *immediately* remove this dependency. It is not needed on Node v18+.

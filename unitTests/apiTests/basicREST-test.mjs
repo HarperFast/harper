@@ -140,7 +140,6 @@ describe('test REST calls', () => {
 		it('table describe with root url', async () => {
 			let response = await axios('http://localhost:9926/FourProp');
 			assert.equal(response.status, 200);
-			expect(response.data.recordCount).to.be.at.least(10);
 			assert.equal(response.data.attributes.length, 7);
 			assert.equal(response.data.name, 'FourProp');
 		});
@@ -545,7 +544,9 @@ describe('test REST calls', () => {
 		assert.equal(response4.data.name, 'ResourceC');
 		assert.strictEqual(response4.data.params.url, '?queryA=2&queryB=3');
 
-		let response5 = await axios('http://localhost:9926/api/v1/resourceA/resourceB/subPath/ResourceC/some/relative/path/?with=query.property');
+		let response5 = await axios(
+			'http://localhost:9926/api/v1/resourceA/resourceB/subPath/ResourceC/some/relative/path/?with=query.property'
+		);
 		assert.equal(response5.data.name, 'ResourceC');
 		assert.strictEqual(response5.data.params.url, '/some/relative/path/?with=query.property');
 	});

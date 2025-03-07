@@ -11,6 +11,8 @@ env_mgr.initSync();
 const hdb_logger = require('./harper_logger');
 const { CONFIG_PARAMS, ITC_EVENT_TYPES } = require('../hdbTerms');
 const { onMessageFromWorkers } = require('../../server/threads/manageThreads');
+const { convertToMS } = require('../common_utils');
+const { onStorageReclamation } = require('../../server/storageReclamation');
 
 // Interval in ms to check log file and decide if it should be rotated.
 const LOG_AUDIT_INTERVAL = 60000;
@@ -44,6 +46,16 @@ async function logRotator() {
 		const log_path = hdb_logger.getLogFilePath();
 		const max_size = env_mgr.get(CONFIG_PARAMS.LOGGING_ROTATION_MAXSIZE);
 		const interval = env_mgr.get(CONFIG_PARAMS.LOGGING_ROTATION_INTERVAL);
+		const retention = env_mgr.get(CONFIG_PARAMS.LOGGING_ROTATION_RETENTION);
+		let reclamation_priority = 0;
+		onStorageReclamation(
+			log_path,
+			(priority) => {
+				reclamation_priority = priority;
+			},
+			true
+		);
+
 		if (!max_size && !interval) {
 			hdb_logger.error(INT_SIZE_UNDEFINED_MSG);
 			return;
@@ -95,6 +107,23 @@ async function logRotator() {
 					last_rotation_time = Date.now() / 60000;
 				}
 			}
+			if (retention || reclamation_priority) {
+				// remove old logs after retention time
+				// adjust retention time if there is a reclamation priority in place
+				const retention_ms = convertToMS(retention ?? '1M') / (1 + reclamation_priority);
+				reclamation_priority = 0; // reset it after use
+				const files = await fs_prom.readdir(rotated_log_path);
+				for (const file of files) {
+					try {
+						const file_stats = await fs_prom.stat(path.join(rotated_log_path, file));
+						if (Date.now() - file_stats.mtimeMs > retention_ms) {
+							await fs_prom.unlink(path.join(rotated_log_path, file));
+						}
+					} catch (err) {
+						hdb_logger.error('Error trying to remove log', file, err);
+					}
+				}
+			}
 		}, LOG_AUDIT_INTERVAL).unref();
 	} catch (err) {
 		hdb_logger.error(err);
@@ -103,16 +132,18 @@ async function logRotator() {
 
 async function moveLogFile(log_path, rotated_log_path) {
 	const compress = env_mgr.get(CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS);
-	const full_rotate_log_path = path.join(
+	let full_rotate_log_path = path.join(
 		rotated_log_path,
-		`HDB-${new Date(Date.now()).toISOString().replaceAll(':', '-')}.${compress ? 'log.gz' : 'log'}`
+		`HDB-${new Date(Date.now()).toISOString().replaceAll(':', '-')}.log`
 	);
-
+	// Move log file to rotated log path first (if we crash
+	// during compression, we don't want to restart the compression with a new file)
+	await fs_prom.rename(log_path, full_rotate_log_path);
 	if (compress) {
+		log_path = full_rotate_log_path;
+		full_rotate_log_path += '.gz';
 		await pipe(createReadStream(log_path), createGzip(), createWriteStream(full_rotate_log_path));
 		await fs_prom.unlink(log_path);
-	} else {
-		await fs_prom.rename(log_path, full_rotate_log_path);
 	}
 
 	// Close old log file.

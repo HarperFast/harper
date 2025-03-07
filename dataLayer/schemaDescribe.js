@@ -207,7 +207,7 @@ async function descTable(describe_table_object, attr_perms) {
 		table_result.clustering_stream_name = crypto_hash.createNatsTableStreamName(table_result.schema, table_result.name);
 
 	try {
-		const record_count = table_obj.getRecordCount({ exactCount: describe_table_object.exact_count === 'true' });
+		const record_count = await table_obj.getRecordCount({ exactCount: describe_table_object.exact_count === 'true' });
 		table_result.record_count = record_count.recordCount;
 		table_result.table_size = table_obj.getSize();
 		table_result.db_audit_size = table_obj.getAuditSize();

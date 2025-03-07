@@ -40,10 +40,10 @@ logging:
   level: warn
   root: null
   rotation:
-    enabled: false
+    enabled: true
     compress: false
     interval: null
-    maxSize: null
+    maxSize: 64M
     path: null
   stdStreams: false
 mqtt:
