@@ -74,7 +74,7 @@ it('search for random value from CSV load', async () => {
 
 			}
 		})
-		.expect(200);
+		.expect(200)
 });
 
 it('check error on invalid file', async () => {
@@ -89,7 +89,7 @@ it('check error on invalid file', async () => {
 			'file_path': '{{files_location}}Suppliers_wrong.csv',
 		})
 		.expect(400)
-//Unmatched Postman assertion: pm.expect(jsonData.error.includes("No such file or directory")).to.be.true;})
+		.expect((r) => assert.ok(r.body.error.includes("No such file or directory")))
 });
 
 it('csv bulk load update', async () => {
@@ -127,10 +127,10 @@ it('csv bulk load update confirm', async () => {
 			'hash_values': [19],
 			'get_attributes': ['supplierid', 'companyname', 'contactname'],
 		})
-		.expect(200)
-	//Unmatched Postman assertion: pm.expect(jsonData[0].supplierid).to.eql(19)
-	//Unmatched Postman assertion: pm.expect(jsonData[0].contactname).to.eql("Robb Merchant")
+		.expect((r) => assert.ok(r.body[0].supplierid == 19))
+		.expect((r) => assert.ok(r.body[0].contactname == "Robb Merchant"))
 		.expect((r) => assert.ok(r.body[0].companyname == 'The Chum Bucket'))
+		.expect(200)
 });
 
 it('Insert object into table', async () => {
@@ -143,9 +143,9 @@ it('Insert object into table', async () => {
 			'table': '{{cust_tb}}',
 			'records': [{ 'postalcode': { 'house': 30, 'street': 'South St' }, 'customerid': 'TEST1' }],
 		})
-		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records'))
-//Unmatched Postman assertion: pm.expect(jsonData.inserted_hashes[0]).to.eql("TEST1"))
+		.expect((r) => assert.ok(r.body.inserted_hashes[0] == 'TEST1'))
+		.expect(200)
 });
 
 it('Insert object confirm ', async () => {
@@ -161,8 +161,8 @@ it('Insert object confirm ', async () => {
 			'get_attributes': ['postalcode', 'customerid'],
 		})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData[0].postalcode).to.eql({ "house": 30, "street": "South St"})
-//Unmatched Postman assertion: pm.expect(jsonData[0].customerid).to.eql("TEST1"))
+		.expect((r) => assert.ok(r.body[0].postalcode == { "house": 30, "street": "South St"}))
+		.expect((r) => assert.ok(r.body[0].customerid == "TEST1"))
 });
 
 it('Insert array into table', async () => {
@@ -177,7 +177,7 @@ it('Insert array into table', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records'))
-//Unmatched Postman assertion: pm.expect(jsonData.inserted_hashes[0]).to.eql("TEST2"))
+		.expect((r) => assert.ok(r.body.inserted_hashes[0] == "TEST2"))
 });
 
 it('Insert array confirm ', async () => {
@@ -193,8 +193,8 @@ it('Insert array confirm ', async () => {
 			'get_attributes': ['postalcode', 'customerid'],
 		})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData[0].postalcode).to.eql([1, 2, 3])
-//Unmatched Postman assertion: pm.expect(jsonData[0].customerid).to.eql("TEST2"))
+		.expect((r) => assert.ok(r.body[0].postalcode == [1, 2, 3]))
+		.expect((r) => assert.ok(r.body[0].customerid == "TEST2"))
 });
 
 it('Insert value into schema that doesn\'t exist', async () => {
@@ -265,7 +265,7 @@ it('Set attribute to number', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records'))
-//Unmatched Postman assertion: pm.expect(jsonData.inserted_hashes[0]).to.eql(25))
+		.expect((r) => assert.ok(r.body.inserted_hashes[0] == 25))
 });
 
 it('Set attribute to number confirm', async () => {
@@ -487,7 +487,7 @@ it('Upsert dog data for conditions search tests', async () => {
 			}],
 		})
 		.expect(200)
-	//Unmatched Postman assertion: pm.expect(jsonData.upserted_hashes.length).to.eql(11)
+		.expect((r) => assert.ok(r.body.upserted_hashes.length == 11))
 		.expect((r) => assert.ok(r.body.skipped_hashes == 'undefined'))
 		.expect((r) => assert.ok(r.body.message == 'upserted 11 of 11 records'))
 });
@@ -711,7 +711,7 @@ it('select by hash multiple results', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 2))
 		.expect((r) => assert.ok(typeof r.body[0] === 'object'))
-//Unmatched Postman assertion: pm.expect((typeof jsonData[1])).to.eql("object"))
+		.expect((r) => assert.ok(typeof r.body[1] === 'object'))
 });
 
 it('insert initial date function data into table', async () => {
@@ -724,7 +724,7 @@ it('insert initial date function data into table', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'inserted 4 of 4 records'))
-//Unmatched Postman assertion: pm.expect(jsonData.inserted_hashes[0]).to.eql(1))
+		.expect((r) => assert.ok(r.body.inserted_hashes[0] == 1))
 });
 
 it('check initial date function data in table', async () => {
@@ -733,19 +733,21 @@ it('check initial date function data in table', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'SELECT * FROM dev.time_functions' })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 4))
-	//Unmatched Postman assertion: var current_date = new Date().getUTCDate()
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-	//Unmatched Postman assertion: pm.expect([1,2,3,4]).to.include(row.id)
-		.expect((r) => assert.ok(new Date(row.now).getUTCDate() == current_date))
-		.expect((r) => assert.ok(row.now.toString().length == 13))
-		.expect((r) => assert.ok(new Date(row.getdate).getUTCDate() == current_date))
-		.expect((r) => assert.ok(row.getdate.toString().length == 13))
-		.expect((r) => assert.ok(new Date(row.c_timestamp).getUTCDate() == current_date))
-
-		.expect((r) => assert.ok(row.c_timestamp.toString().length == 13))
-//Unmatched Postman assertion: pm.expect(row.c_date).to.match(/\d{4}-[01]{1}\d{1}-[0-3]{1}\d{1}$/)
-//Unmatched Postman assertion: pm.expect(row.c_time).to.match(/^[0-2]{1}\d{1}:[0-6]{1}\d{1}:[0-6]{1}\d{1}.\d{3}$/))
+		.expect((r) => {
+			assert.ok(r.body.length == 4);
+			let current_date = new Date().getUTCDate();
+			r.body.forEach((row) => {
+				assert.ok([1,2,3,4].includes(row.id));
+				assert.ok(new Date(row.now).getUTCDate() == current_date);
+				assert.ok(row.now.toString().length == 13);
+				assert.ok(new Date(row.getdate).getUTCDate() == current_date);
+				assert.ok(row.getdate.toString().length == 13);
+				assert.ok(new Date(row.c_timestamp).getUTCDate() == current_date);
+				assert.ok(row.c_timestamp.toString().length == 13);
+				assert.ok(row.c_date.match(/\d{4}-[01]{1}\d{1}-[0-3]{1}\d{1}$/));
+				assert.ok(row.c_time.match(/^[0-2]{1}\d{1}:[0-6]{1}\d{1}:[0-6]{1}\d{1}.\d{3}$/));
+			})
+		})
 });
 
 it('update w/ date function data to null in table', async () => {
@@ -758,7 +760,7 @@ it('update w/ date function data to null in table', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'updated 4 of 4 records'))
-//Unmatched Postman assertion: pm.expect(jsonData.update_hashes[0]).to.eql(1))
+.expect((r) => assert.ok(r.body.update_hashes[0] == 1))
 });
 
 it('check data set to null in table', async () => {
@@ -767,15 +769,18 @@ it('check data set to null in table', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'SELECT * FROM dev.time_functions' })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 4))
-//Unmatched Postman assertion: var current_date = new Date().getDate()
-//Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect([1,2,3,4]).to.include(row.id)
-//Unmatched Postman assertion: pm.expect(row.now).to.be.null;
-//Unmatched Postman assertion: pm.expect(row.getdate).to.be.null;
-//Unmatched Postman assertion: pm.expect(row.c_timestamp).to.be.null;
-//Unmatched Postman assertion: pm.expect(row.c_date).to.be.null;
-//Unmatched Postman assertion: pm.expect(row.c_time).to.be.null;})
+		.expect((r) => {
+			assert.ok(r.body.length == 4);
+			let current_date = new Date().getDate();
+			r.body.forEach((row) => {
+				assert.ok([1,2,3,4].includes(row.id));
+				assert.ok(!row.now);
+				assert.ok(!row.getdate);
+				assert.ok(!row.c_timestamp);
+				assert.ok(!row.c_date);
+				assert.ok(!row.c_time);
+			})
+		})
 });
 
 it('update w/ new date function data in table', async () => {
@@ -797,19 +802,21 @@ it('check data updated to correct date values in table', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'SELECT * FROM dev.time_functions' })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 4))
-	//Unmatched Postman assertion: var current_date = new Date().getUTCDate()
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-	//Unmatched Postman assertion: pm.expect([1,2,3,4]).to.include(row.id)
-		.expect((r) => assert.ok(new Date(row.now).getUTCDate() == current_date))
-	//Unmatched Postman assertion: pm.expect(row.now.toString().length).to.equal(13)
-		.expect((r) => assert.ok(new Date(row.getdate).getUTCDate() == current_date))
-
-		.expect((r) => assert.ok(row.getdate.toString().length == 13))
-		.expect((r) => assert.ok(new Date(row.c_timestamp).getUTCDate() == current_date))
-		.expect((r) => assert.ok(row.c_timestamp.toString().length == 13))
-		.expect((r) => assert.ok(row.c_date.match(/\d{4}-[01]{1}\d{1}-[0-3]{1}\d{1}$/)))
-		.expect((r) => assert.ok(row.c_time.match(/^[0-2]{1}\d{1}:[0-6]{1}\d{1}:[0-6]{1}\d{1}.\d{3}$/)))
+		.expect((r) => {
+			assert.ok(r.body.length == 4);
+			let current_date = new Date().getUTCDate();
+			r.body.forEach((row) => {
+				assert.ok([1,2,3,4].includes(row.id));
+				assert.ok(new Date(row.now).getUTCDate() == current_date);
+				assert.ok(row.now.toString().length == 13);
+				assert.ok(new Date(row.getdate).getUTCDate() == current_date);
+				assert.ok(row.getdate.toString().length == 13);
+				assert.ok(new Date(row.c_timestamp).getUTCDate() == current_date);
+				assert.ok(row.c_timestamp.toString().length == 13);
+				assert.ok(row.c_date.match(/\d{4}-[01]{1}\d{1}-[0-3]{1}\d{1}$/));
+				assert.ok(row.c_time.match(/^[0-2]{1}\d{1}:[0-6]{1}\d{1}:[0-6]{1}\d{1}.\d{3}$/));
+			})
+		})
 });
 
 it('update w/ other date functions', async () => {
@@ -831,19 +838,22 @@ it('check other date function updates are correct in table', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'SELECT * FROM dev.time_functions' })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 4))
-//Unmatched Postman assertion: var current_date = new Date()
-//Unmatched Postman assertion: var current_day = current_date.getUTCDate()
-//Unmatched Postman assertion: var c_date_plus1 = current_date.setUTCDate(current_day + 1)
-//Unmatched Postman assertion: var c_day_plus1 = new Date(c_date_plus1).getUTCDate()
-//Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(row.c_timestamp).to.match(/\d{13}$/)
-//Unmatched Postman assertion: pm.expect(new Date(row.add_day).getUTCDate()).to.equal(c_day_plus1)
-//Unmatched Postman assertion: pm.expect(row.add_day).to.match(/\d{13}$/)
-//Unmatched Postman assertion: pm.expect(new Date(row.sub_3_years).getFullYear()).to.equal(2017)
-//Unmatched Postman assertion: pm.expect(row.sub_3_years).to.match(/\d{13}$/)
-//Unmatched Postman assertion: pm.expect(new Date(row.today).getUTCDate()).to.equal(current_day)
-//Unmatched Postman assertion: pm.expect(row.today).to.match(/\d{13}$/))
+		.expect((r) => {
+			assert.ok(r.body.length == 4);
+			let current_date = new Date();
+			let current_day = current_date.getUTCDate();
+			let c_date_plus1 = current_date.setUTCDate(current_day + 1);
+			let c_day_plus1 = new Date(c_date_plus1).getUTCDate();
+			r.body.forEach((row) => {
+				assert.ok(row.c_timestamp.match(/\d{13}$/));
+				assert.ok(new Date(row.add_day).getUTCDate() == c_day_plus1);
+				assert.ok(row.add_day.match(/\d{13}$/));
+				assert.ok(new Date(row.sub_3_years).getFullYear() == 2017);
+				assert.ok(row.sub_3_years.match(/\d{13}$/));
+				assert.ok(new Date(row.today).getUTCDate() == current_day);
+				assert.ok(row.today.match(/\d{13}$/));
+			})
+		})
 });
 
 it('update w/ other date functions', async () => {
@@ -856,7 +866,7 @@ it('update w/ other date functions', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'updated 2 of 2 records'))
-//Unmatched Postman assertion: pm.expect(jsonData.update_hashes.length).to.eql(2))
+		.expect((r) => assert.ok(r.body.update_hashes.length == 2))
 });
 
 it('select with date function in WHERE returns correct rows', async () => {
@@ -868,12 +878,16 @@ it('select with date function in WHERE returns correct rows', async () => {
 			'sql': 'SELECT * FROM dev.time_functions WHERE DATE_DIFF(add_day, c_timestamp, \'days\') > 3 AND tomorrow_epoch > NOW()',
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 2))
-	//Unmatched Postman assertion: var current_date = new Date().getDate()
-	//Unmatched Postman assertion: var date_plus_5 = new Date(new Date().setDate(current_date + 5))
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-		.expect((r) => assert.ok([3, 4].includes(row.id)))
-//Unmatched Postman assertion: pm.expect(new Date(row.add_day).getDate()).to.equal(date_plus_5.getDate()))
+		.expect((r) => {
+			assert.ok(r.body.length == 2);
+			let current_date = new Date().getDate();
+			let date_plus_5 = new Date(new Date().setDate(current_date + 5));
+			r.body.forEach((row) => {
+				assert.ok([3, 4].includes(row.id));
+				assert.ok(new Date(row.add_day).getDate() == date_plus_5.getDate());
+			})
+		})
+
 });
 
 it('delete with date function in WHERE deletes correct rows', async () => {
@@ -886,7 +900,7 @@ it('delete with date function in WHERE deletes correct rows', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == '2 of 2 records successfully deleted'))
-//Unmatched Postman assertion: pm.expect(jsonData.deleted_hashes.length).to.eql(2))
+		.expect((r) => assert.ok(r.body.deleted_hashes.length == 2))
 });
 
 it('check that correct rows were deleted based on date function', async () => {
@@ -895,12 +909,15 @@ it('check that correct rows were deleted based on date function', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'SELECT * FROM dev.time_functions' })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 2))
-	//Unmatched Postman assertion: var current_date = new Date().getDate()
-	//Unmatched Postman assertion: var date_plus_3 = new Date().setDate(current_date + 3)
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-		.expect((r) => assert.ok([3, 4].includes(row.id)))
-//Unmatched Postman assertion: pm.expect(row.add_day).to.be.above(date_plus_3))
+		.expect((r) => {
+			assert.ok(r.body.length == 2);
+			let current_date = new Date().getDate();
+			let date_plus_3 = new Date().setDate(current_date + 3);
+			r.body.forEach((row) => {
+				assert.ok([3, 4].includes(row.id));
+				assert.ok(row.add_day > date_plus_3);
+			})
+		})
 });
 
 it('check that DATE(__createdtime__) returns correct value w/ correct alias', async () => {
@@ -912,14 +929,17 @@ it('check that DATE(__createdtime__) returns correct value w/ correct alias', as
 			'sql': 'SELECT id, DATE(__createdtime__), DATE(__updatedtime__) as updatedtime FROM dev.time_functions WHERE id = 3 OR id = 4',
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 2))
-	//Unmatched Postman assertion: var current_date = new Date().getDate()
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-		.expect((r) => assert.ok([3, 4].includes(row.id)))
-//Unmatched Postman assertion: pm.expect(new Date(row.updatedtime).getDate()).to.eql(current_date)
-//Unmatched Postman assertion: pm.expect(new Date(row['DATE(__createdtime__)']).getDate()).to.eql(current_date)
-//Unmatched Postman assertion: pm.expect(row.updatedtime).to.match(/\d{4}-[01]{1}\d{1}-[0-3]{1}\d{1}T[0-2]{1}\d{1}:[0-6]{1}\d{1}:[0-6]{1}\d{1}.\d{3}[+|-][0-1][0-9][0-5][0-9]$/)
-//Unmatched Postman assertion: pm.expect(row['DATE(__createdtime__)']).to.match(/\d{4}-[01]{1}\d{1}-[0-3]{1}\d{1}T[0-2]{1}\d{1}:[0-6]{1}\d{1}:[0-6]{1}\d{1}.\d{3}[+|-][0-1][0-9][0-5][0-9]$/))
+		.expect((r) => {
+			assert.ok(r.body.length == 2);
+			let current_date = new Date().getDate();
+			r.body.forEach((row) => {
+				assert.ok([3, 4].includes(row.id));
+				assert.ok(new Date(row.updatedtime).getDate() == current_date);
+				assert.ok(new Date(row['DATE(__createdtime__)']).getDate() == current_date);
+				assert.ok(row.updatedtime.match(/\d{4}-[01]{1}\d{1}-[0-3]{1}\d{1}T[0-2]{1}\d{1}:[0-6]{1}\d{1}:[0-6]{1}\d{1}.\d{3}[+|-][0-1][0-9][0-5][0-9]$/));
+				assert.ok(row['DATE(__createdtime__)'].match(/\d{4}-[01]{1}\d{1}-[0-3]{1}\d{1}T[0-2]{1}\d{1}:[0-6]{1}\d{1}:[0-6]{1}\d{1}.\d{3}[+|-][0-1][0-9][0-5][0-9]$/));
+			})
+		})
 });
 
 it('count movies where movie.keyword starts with super', async () => {
@@ -932,7 +952,7 @@ it('count movies where movie.keyword starts with super', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-//Unmatched Postman assertion: pm.expect(jsonData[0].count).to.eql(161))
+		.expect((r) => assert.ok(r.body[0].count == 161))
 });
 
 it('return array of just movie keywords', async () => {
@@ -944,11 +964,13 @@ it('return array of just movie keywords', async () => {
 			'sql': 'SELECT title, search_json(\'name\', keywords) as keywords from dev.movie where title Like \'%Avengers%\'',
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 2))
-//Unmatched Postman assertion: jsonData.forEach(data=>{
-//Unmatched Postman assertion: pm.expect(Array.isArray(data.keywords)).to.eql(true)
-//Unmatched Postman assertion: pm.expect(typeof data.keywords[0] === 'string').to.eql(true)
-//Unmatched Postman assertion: }))
+		.expect((r) => {
+			assert.ok(r.body.length == 2);
+			r.body.forEach((data) => {
+				assert.ok(Array.isArray(data.keywords));
+				assert.ok(typeof data.keywords[0] === 'string');
+			})
+		})
 });
 
 it('filter on credits.cast with join to movie', async () => {
@@ -956,32 +978,33 @@ it('filter on credits.cast with join to movie', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			'operation': 'sql',
-			'sql': 'SELECT m.title, m.overview, m.release_date, search_json(\'$[name in ["Robert Downey Jr.", "Chris Evans", "Scarlett Johansson", "Mark Ruffalo", "Chris Hemsworth", "Jeremy Renner", "Clark Gregg", "Samuel L. Jackson", "Gwyneth Paltrow", "Don Cheadle"]].{"actor": name, "character": character}\', c.`cast`) as characters from dev.credits c inner join dev.movie m on c.movie_id = m.id where search_json(\'$count($[name in ["Robert Downey Jr.", "Chris Evans", "Scarlett Johansson", "Mark Ruffalo", "Chris Hemsworth", "Jeremy Renner", "Clark Gregg", "Samuel L. Jackson", "Gwyneth Paltrow", "Don Cheadle"]])\', c.`cast`) >= 2',
+			operation: 'sql',
+			sql: 'SELECT m.title, m.overview, m.release_date, search_json(\'$[name in ["Robert Downey Jr.", "Chris Evans", "Scarlett Johansson", "Mark Ruffalo", "Chris Hemsworth", "Jeremy Renner", "Clark Gregg", "Samuel L. Jackson", "Gwyneth Paltrow", "Don Cheadle"]].{"actor": name, "character": character}\', c.`cast`) as characters from dev.credits c inner join dev.movie m on c.movie_id = m.id where search_json(\'$count($[name in ["Robert Downey Jr.", "Chris Evans", "Scarlett Johansson", "Mark Ruffalo", "Chris Hemsworth", "Jeremy Renner", "Clark Gregg", "Samuel L. Jackson", "Gwyneth Paltrow", "Don Cheadle"]])\', c.`cast`) >= 2',
 		})
 		.expect(200)
+		.expect((r) => {
+			let titles = [
+				'Out of Sight',
+				'Iron Man',
+				'Captain America: The First Avenger',
+				'In Good Company',
+				'Zodiac',
+				'The Spirit',
+				'S.W.A.T.',
+				'Iron Man 2',
+				'Thor',
+				'The Avengers',
+				'Iron Man 3',
+				'Thor: The Dark World',
+				'Avengers: Age of Ultron',
+				'Captain America: The Winter Soldier',
+				'Captain America: Civil War',
+			];
 
-//Unmatched Postman assertion: let titles = [
-//Unmatched Postman assertion: "Out of Sight",
-//Unmatched Postman assertion: "Iron Man",
-//Unmatched Postman assertion: "Captain America: The First Avenger",
-//Unmatched Postman assertion: "In Good Company",
-//Unmatched Postman assertion: "Zodiac",
-//Unmatched Postman assertion: "The Spirit",
-//Unmatched Postman assertion: "S.W.A.T.",
-//Unmatched Postman assertion: "Iron Man 2",
-//Unmatched Postman assertion: "Thor",
-//Unmatched Postman assertion: "The Avengers",
-//Unmatched Postman assertion: "Iron Man 3",
-//Unmatched Postman assertion: "Thor: The Dark World",
-//Unmatched Postman assertion: "Avengers: Age of Ultron",
-//Unmatched Postman assertion: "Captain America: The Winter Soldier",
-//Unmatched Postman assertion: "Captain America: Civil War"
-//Unmatched Postman assertion: ];
-
-//Unmatched Postman assertion: jsonData.forEach(data=>{
-//Unmatched Postman assertion: pm.expect(titles.indexOf(data.title)).to.be.gt(-1)
-//Unmatched Postman assertion: }))
+			r.body.forEach((data) => {
+				assert.ok(titles.indexOf(data.title) > -1);
+			});
+		});
 });
 
 it('insert values into table dev.sql_function', async () => {
@@ -995,7 +1018,7 @@ it('insert values into table dev.sql_function', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'inserted 2 of 2 records'))
 		.expect((r) => assert.ok(r.body.inserted_hashes[0] == 1))
-//Unmatched Postman assertion: pm.expect(jsonData.inserted_hashes[1]).to.eql(2))
+		.expect((r) => assert.ok(r.body.inserted_hashes[1] == 2))
 });
 
 it('SELECT inserted values FROM dev.sql_function', async () => {
@@ -1004,12 +1027,14 @@ it('SELECT inserted values FROM dev.sql_function', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'SELECT * FROM dev.sql_function' })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 2))
-//Unmatched Postman assertion: jsonData.forEach(record => {
-//Unmatched Postman assertion: pm.expect(typeof record.week_day).to.eql("string")
-//Unmatched Postman assertion: pm.expect(typeof record.rando).to.eql("number")
-//Unmatched Postman assertion: pm.expect(record.rando >= 1 && record.rando <= 10).to.eql(true)
-//Unmatched Postman assertion: }))
+		.expect((r) => {
+			assert.ok(r.body.length == 2);
+			r.body.forEach((record) => {
+				assert.ok(typeof record.week_day == "string");
+				assert.ok(typeof record.rando == "number");
+				assert.ok(record.rando >= 1 && record.rando <= 10);				
+			})
+		})
 });
 
 it('update values into table dev.sql_function', async () => {
@@ -1023,7 +1048,7 @@ it('update values into table dev.sql_function', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'updated 2 of 2 records'))
 		.expect((r) => assert.ok(r.body.update_hashes[0] == 1))
-//Unmatched Postman assertion: pm.expect(jsonData.update_hashes[1]).to.eql(2))
+		.expect((r) => assert.ok(r.body.update_hashes[1] == 2))
 });
 
 it('SELECT updated values FROM dev.sql_function', async () => {
@@ -1032,12 +1057,13 @@ it('SELECT updated values FROM dev.sql_function', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'SELECT * FROM dev.sql_function' })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 2))
-//Unmatched Postman assertion: })
-//Unmatched Postman assertion: pm.expect(jsonData[0].rando >= 10 && jsonData[0].rando <= 100).to.eql(true)
-//Unmatched Postman assertion: pm.expect(jsonData[1].rando >= 10 && jsonData[1].rando <= 100).to.eql(true)
-//Unmatched Postman assertion: pm.expect(jsonData[0].upper_week_day === jsonData[0].week_day.toUpperCase()).to.eql(true)
-//Unmatched Postman assertion: pm.expect(jsonData[1].upper_week_day === jsonData[1].week_day.toUpperCase()).to.eql(true))
+		.expect((r) => {
+			assert.ok(r.body.length == 2);
+			assert.ok(r.body[0].rando >= 10 && r.body[0].rando <= 100);
+			assert.ok(r.body[1].rando >= 10 && r.body[1].rando <= 100);
+			assert.ok(r.body[0].upper_week_day === r.body[0].week_day.toUpperCase());
+			assert.ok(r.body[1].upper_week_day === r.body[1].week_day.toUpperCase());
+		})
 });
 
 it('update value in table for non-existent row', async () => {
@@ -1144,7 +1170,7 @@ it('Upsert keywords data for SQL tests', async () => {
 			}],
 		})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.upserted_hashes).to.have.length(10))
+		.expect((r) => assert.ok(r.body.upserted_hashes.length == 10))
 });
 
 it('Delete row from table with reserverd word in WHERE clause', async () => {
@@ -1154,8 +1180,8 @@ it('Delete row from table with reserverd word in WHERE clause', async () => {
 		.send({ 'operation': 'sql', 'sql': 'DELETE FROM dev.keywords WHERE `group` = \'D\'' })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted'))
-	//Unmatched Postman assertion: pm.expect(jsonData.deleted_hashes[0]).to.eql(10)
-	//Unmatched Postman assertion: pm.expect(jsonData.deleted_hashes).to.have.length(1)
+		.expect((r) => assert.ok(r.body.deleted_hashes[0] == 10))
+		.expect((r) => assert.ok(r.body.deleted_hashes.length == 1))
 		.expect((r) => assert.ok(r.body.skipped_hashes.length == 0))
 });
 
@@ -1166,9 +1192,9 @@ it('Delete row from table with multiple reserverd words in WHERE clause', async 
 		.send({ 'operation': 'sql', 'sql': 'DELETE FROM dev.keywords WHERE `group` = \'A\' AND [Inserted] = true' })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == '2 of 2 records successfully deleted'))
-	//Unmatched Postman assertion: pm.expect(jsonData.deleted_hashes[0]).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(jsonData.deleted_hashes[1]).to.eql(7)
-	//Unmatched Postman assertion: pm.expect(jsonData.deleted_hashes).to.have.length(2)
+		.expect((r) => assert.ok(r.body.deleted_hashes[0] == 1))
+		.expect((r) => assert.ok(r.body.deleted_hashes[1] == 7))
+		.expect((r) => assert.ok(r.body.deleted_hashes.length == 2))
 		.expect((r) => assert.ok(r.body.skipped_hashes.length == 0))
 });
 
@@ -1179,7 +1205,7 @@ it('UPDATE rows from table with reserved word in SET and WHERE clause', async ()
 		.send({ 'operation': 'sql', 'sql': 'UPDATE dev.keywords SET `group` = \'D\' WHERE [ALL] = \'no\'' })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'updated 4 of 4 records'))
-	//Unmatched Postman assertion: pm.expect(jsonData.update_hashes).to.have.length(4)
+		.expect((r) => assert.ok(r.body.update_hashes.length == 4))
 		.expect((r) => assert.ok(r.body.skipped_hashes.length == 0))
 });
 
@@ -1312,17 +1338,30 @@ it('Update record "where x != y" dev.cat', async () => {
 });
 
 it('Confirm update record "where x != y" dev.cat', async () => {
+	const cats = ['Biggie Paws', 'Willow', 'Murph', 'Simba', 'Gemma'];
+	const ids = [3,4,6,7,8];
+	
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'SELECT cat_name, adorable, id FROM dev.cat WHERE owner_id != 2' })
+		.expect((r) => assert.ok(r.body.length == 5))
+		.expect((r) => {
+			let cats_found = [];
+			let ids_found = [];
+			r.body.forEach((obj) => {
+				assert.ok(Object.keys(obj).length == 3);
+				assert.ok(obj.adorable == false);
+
+				let cat_found = cats.filter((el) => obj.cat_name == el);
+				if(cat_found.length > 0) cats_found.push(cat_found);
+				let id_found = ids.filter((el) => obj.id == el);
+				if(id_found.length > 0) ids_found.push(id_found);
+			})
+			assert.ok(cats_found.length > 0);
+			assert.ok(ids_found.length > 0);
+		})
 		.expect(200)
-	//Unmatched Postman assertion: pm.expect(jsonData.length).to.equal(5)
-	//Unmatched Postman assertion: jsonData.forEach(obj => {
-		.expect((r) => assert.ok(Object.keys(obj).length == 3))
-	//Unmatched Postman assertion: pm.expect(obj.adorable).to.equal(false)
-		.expect((r) => assert.ok(obj.cat_name == 'Biggie Paws' || obj.cat_name == 'Willow' || obj.cat_name == 'Murph' || obj.cat_name == 'Simba' || obj.cat_name == 'Gemma'))
-//Unmatched Postman assertion: pm.expect(obj.id).to.be.oneOf([3,4,6,7,8])})
 });
 
 it('Update record No where dev.cat', async () => {
@@ -1333,25 +1372,32 @@ it('Update record No where dev.cat', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'updated 9 of 9 records'))
 		.expect((r) => assert.ok(r.body.update_hashes.includes(1, 2, 3, 4, 5, 6, 7, 8, 9)))
-//Unmatched Postman assertion: pm.expect(jsonData.skipped_hashes).to.eql([]))
+		.expect((r) => assert.ok(r.body.skipped_hashes == []))
 });
 
 it('Confirm update record No where dev.cat', async () => {
+	const cats = ['Sophie', 'George', 'Biggie Paws', 'Willow', 'Bird', 'Murph', 'Simba', 'Gemma', 'Bobby'];
+	const ids = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'SELECT cat_name, adorable, id FROM dev.cat' })
-		.expect(200)
-	//Unmatched Postman assertion: pm.expect(jsonData.length).equals(9)
-	//Unmatched Postman assertion: jsonData.forEach(obj => {
-		.expect((r) => assert.ok(Object.keys(obj).length == 3))
-	//Unmatched Postman assertion: pm.expect(obj.adorable).to.equal(true)
+		.send({ operation: 'sql', sql: 'SELECT cat_name, adorable, id FROM dev.cat' })
+		.expect((r) => assert.ok(r.body.length == 9))
 		.expect((r) => {
-			const cats = ['Sophie', 'George', 'Biggie Paws', 'Willow', 'Bird', 'Murph', 'Simba', 'Gemma', 'Bobby'];
-			assert.ok(cats.some(el => obj.cat_name.includes(el)))
-		});
-//Unmatched Postman assertion: pm.expect().to.be.oneOf()
-//Unmatched Postman assertion: pm.expect(obj.id).to.be.oneOf([1,2,3,4,5,6,7,8,9])})
+			let cats_found = [];
+			let ids_found = [];
+			r.body.forEach((obj) => {
+				assert.ok(Object.keys(obj).length == 3);
+				assert.ok(obj.adorable);
+				let cat_found = cats.filter((el) => obj.cat_name == el);
+				if (cat_found.length > 0) cats_found.push(cat_found);
+				let id_found = ids.filter((el) => obj.id == el);
+				if (id_found.length > 0) ids_found.push(id_found);
+			});
+			assert.ok(cats_found.length > 0);
+			assert.ok(ids_found.length > 0);
+		})
+		.expect(200)
 });
 
 it('Update record multiple wheres, multiple columns dev.cat', async () => {
@@ -1364,7 +1410,7 @@ it('Update record multiple wheres, multiple columns dev.cat', async () => {
 		})
 		.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records', 'Expected response message to eql "updated 1 of 1 records"'))
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.update_hashes[0]).to.eql(1))
+		.expect((r) => assert.ok(r.body.update_hashes[0] == 1))
 });
 
 it('Confirm update record multiple wheres, multiple columns dev.cat', async () => {
@@ -2036,10 +2082,13 @@ it('select w/ where not between', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'select * from dev.books WHERE id NOT BETWEEN 1 AND 3 ORDER BY id' });
-//Unmatched Postman assertion: pm.expect(jsonData.length).to.eql(47)
-//Unmatched Postman assertion: jsonData.forEach((row, i) => {
-//Unmatched Postman assertion: pm.expect(row.id).to.be.above(3))
+		.send({ 'operation': 'sql', 'sql': 'select * from dev.books WHERE id NOT BETWEEN 1 AND 3 ORDER BY id' })
+		.expect((r) => {
+			assert.ok(r.body.length == 47);
+			r.body.forEach((row, i) => {
+				assert.ok(row.id > 3);
+			})
+	})
 });
 
 it('select w/ where value equals 0', async () => {
@@ -2049,7 +2098,7 @@ it('select w/ where value equals 0', async () => {
 		.send({ 'operation': 'sql', 'sql': 'select * from dev.books WHERE books_count = 0 ' })
 		.expect((r) => assert.ok(r.body.length == 4))
 //Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(row.books_count).to.eql(0))
+//Unmatched Postman assertion: pm.expect(row.books_count == 0))
 });
 
 it('select w/ where value equals "false"', async () => {
@@ -2059,7 +2108,7 @@ it('select w/ where value equals "false"', async () => {
 		.send({ 'operation': 'sql', 'sql': 'select * from dev.books WHERE nytimes_best_seller = \'false\' ' })
 		.expect((r) => assert.ok(r.body.length == 25))
 //Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(row.nytimes_best_seller).to.eql(false))
+//Unmatched Postman assertion: pm.expect(row.nytimes_best_seller == false))
 });
 
 it('select employees orderby id asc', async () => {
@@ -2072,17 +2121,17 @@ it('select employees orderby id asc', async () => {
 		})
 		.expect((r) => assert.ok(r.body.length == 10))
 		.expect((r) => assert.ok(r.body[0].employeeid == 1))
-//Unmatched Postman assertion: pm.expect(jsonData[1].employeeid).to.eql(2)
-//Unmatched Postman assertion: pm.expect(jsonData[8].employeeid).to.eql(9)
-//Unmatched Postman assertion: pm.expect(jsonData[9].employeeid).to.eql(25))
+		.expect((r) => assert.ok(r.body[1].employeeid == 2))
+		.expect((r) => assert.ok(r.body[8].employeeid == 9))
+		.expect((r) => assert.ok(r.body[9].employeeid == 25))
 });
 
 it('select 2 + 2', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'select 2 + 2 ' });
-//Unmatched Postman assertion: pm.expect(jsonData[0]["2 + 2"]).to.eql(4))
+		.send({ 'operation': 'sql', 'sql': 'select 2 + 2 ' })
+		.expect((r) => assert.ok(r.body[0]["2 + 2"] == 4))
 });
 
 it('select * FROM orders - test no schema', async () => {
@@ -2151,8 +2200,8 @@ it('select orders orderby id desc', async () => {
 		.send({
 			'operation': 'sql',
 			'sql': 'select {{ords_id}}, * from {{schema}}.{{ords_tb}} order by {{ords_id}} desc ',
-		});
-//Unmatched Postman assertion: pm.expect(jsonData[0].orderid).to.eql(11077))
+		})
+		.expect((r) => assert.ok(r.body[0].orderid == 11077))
 });
 
 it('select count(*) orders where shipregion is null', async () => {
@@ -2162,8 +2211,8 @@ it('select count(*) orders where shipregion is null', async () => {
 		.send({
 			'operation': 'sql',
 			'sql': 'select count(*) as `count` from {{schema}}.{{ords_tb}} where shipregion IS NULL',
-		});
-//Unmatched Postman assertion: pm.expect(jsonData[0].count).to.eql(414))
+		})
+		.expect((r) => assert.ok(r.body[0].count == 414))
 });
 
 it('select count(*) orders where shipregion is not null', async () => {
@@ -2173,8 +2222,8 @@ it('select count(*) orders where shipregion is not null', async () => {
 		.send({
 			'operation': 'sql',
 			'sql': 'select count(*) AS `count` from {{schema}}.{{ords_tb}} where shipregion is not null',
-		});
-//Unmatched Postman assertion: pm.expect(jsonData[0].count).to.eql(416))
+		})
+		.expect((r) => assert.ok(r.body[0].count == 416))
 });
 
 it('select most buyer orderby price asc', async () => {
@@ -2186,7 +2235,7 @@ it('select most buyer orderby price asc', async () => {
 			'sql': 'select a.{{ords_id}}, a.productid, d.companyname, d.contactmame, b.productname, sum(a.unitprice) as unitprice, sum(a.quantity), sum(a.discount) from {{schema}}.{{ordd_tb}} a join {{schema}}.{{prod_tb}} b on a.{{prod_id}}=b.{{prod_id}} join {{schema}}.{{ords_tb}} c on a.{{ords_id}}=c.{{ords_id}} join {{schema}}.{{cust_tb}} d on c.{{cust_id}}=d.{{cust_id}} group by a.{{ords_id}}, a.productid, d.companyname, d.contactmame, b.productname order by unitprice desc, d.companyname ',
 		})
 		.expect((r) => assert.ok(r.body[0].companyname == 'Berglunds snabbk\ufffdp'))
-//Unmatched Postman assertion: pm.expect(jsonData[1].companyname).to.eql("Great Lakes Food Market"))
+		.expect((r) => assert.ok(r.body[1].companyname == "Great Lakes Food Market"))
 });
 
 it('select most buyer orderby price asc & companyname alias', async () => {
@@ -2196,9 +2245,9 @@ it('select most buyer orderby price asc & companyname alias', async () => {
 		.send({
 			'operation': 'sql',
 			'sql': 'select a.{{ords_id}}, a.productid, d.companyname as compname, d.contactmame, b.productname, sum(a.unitprice) as unitprice, sum(a.quantity), sum(a.discount) from {{schema}}.{{ordd_tb}} a join {{schema}}.{{prod_tb}} b on a.{{prod_id}}=b.{{prod_id}} join {{schema}}.{{ords_tb}} c on a.{{ords_id}}=c.{{ords_id}} join {{schema}}.{{cust_tb}} d on c.{{cust_id}}=d.{{cust_id}} group by a.{{ords_id}}, a.productid, d.companyname, d.contactmame, b.productname order by unitprice desc, compname ',
-		});
-//Unmatched Postman assertion: pm.expect(jsonData[0].compname).to.eql("Berglunds snabbk\ufffdp")
-//Unmatched Postman assertion: pm.expect(jsonData[1].compname).to.eql("Great Lakes Food Market"))
+		})
+		.expect((r) => assert.ok(r.body[0].compname == "Berglunds snabbk\ufffdp"))
+		.expect((r) => assert.ok(r.body[1].compname == "Great Lakes Food Market"))
 });
 
 it('select most buyer orderby order_id asc & product_id desc', async () => {
@@ -2209,14 +2258,14 @@ it('select most buyer orderby order_id asc & product_id desc', async () => {
 			'operation': 'sql',
 			'sql': 'select a.{{ords_id}} as ords_id, a.productid, d.companyname as companyname, d.contactmame, b.productname, sum(a.unitprice) as unitprice, sum(a.quantity), sum(a.discount) from {{schema}}.{{ordd_tb}} a join {{schema}}.{{prod_tb}} b on a.{{prod_id}}=b.{{prod_id}} join {{schema}}.{{ords_tb}} c on a.{{ords_id}}=c.{{ords_id}} join {{schema}}.{{cust_tb}} d on c.{{cust_id}}=d.{{cust_id}} group by a.{{ords_id}}, a.productid, d.companyname, d.contactmame, b.productname order by ords_id, a.productid desc',
 		})
-	//Unmatched Postman assertion: pm.expect(jsonData[0].ords_id).to.eql(10248)
-	//Unmatched Postman assertion: pm.expect(jsonData[1].ords_id).to.eql(10248)
-	//Unmatched Postman assertion: pm.expect(jsonData[19].ords_id).to.eql(10254)
+		.expect((r) => assert.ok(r.body[0].ords_id == 10248))
+		.expect((r) => assert.ok(r.body[1].ords_id == 10248))
+		.expect((r) => assert.ok(r.body[19].ords_id == 10254))
 		.expect((r) => assert.ok(r.body[0].companyname == 'Vins et alcools Chevalier'))
-//Unmatched Postman assertion: pm.expect(jsonData[19].companyname).to.eql("Chop-suey Chinese")
-//Unmatched Postman assertion: pm.expect(jsonData[0].productid).to.eql(72)
-//Unmatched Postman assertion: pm.expect(jsonData[1].productid).to.eql(42)
-//Unmatched Postman assertion: pm.expect(jsonData[19].productid).to.eql(24))
+		.expect((r) => assert.ok(r.body[19].companyname == "Chop-suey Chinese"))
+		.expect((r) => assert.ok(r.body[0].productid == 72))
+		.expect((r) => assert.ok(r.body[1].productid == 42))
+		.expect((r) => assert.ok(r.body[19].productid == 24))
 });
 
 it('select product orderby id asc', async () => {
@@ -2226,8 +2275,8 @@ it('select product orderby id asc', async () => {
 		.send({
 			'operation': 'sql',
 			'sql': 'select {{prod_id}}, * from {{schema}}.{{prod_tb}} order by {{prod_id}} asc ',
-		});
-//Unmatched Postman assertion: pm.expect(jsonData[0].productid).to.eql(1))
+		})
+		.expect((r) => assert.ok(r.body[0].productid == 1))
 });
 
 it('select customers orderby id asc', async () => {
@@ -2261,7 +2310,7 @@ it('select * with LEFT OUTER JOIN', async () => {
 		.expect((r) => assert.ok(r.body.length == 351))
 	//Unmatched Postman assertion: jsonData.forEach(row => {
 	//Unmatched Postman assertion: const keys = Object.keys(row)
-	//Unmatched Postman assertion: pm.expect(keys.length).to.eql(16)
+	//Unmatched Postman assertion: pm.expect(keys.length == 16)
 	//Unmatched Postman assertion: Object.keys(row).forEach(key => {
 		.expect((r) => assert.ok(row[key] != undefined))
 
@@ -2279,7 +2328,7 @@ it('select specific columns with LEFT OUTER JOIN Copy', async () => {
 		.expect((r) => assert.ok(r.body.length == 351))
 	//Unmatched Postman assertion: jsonData.forEach(row => {
 	//Unmatched Postman assertion: const keys = Object.keys(row)
-	//Unmatched Postman assertion: pm.expect(keys.length).to.eql(11)
+	//Unmatched Postman assertion: pm.expect(keys.length == 11)
 	//Unmatched Postman assertion: Object.keys(row).forEach(key => {
 		.expect((r) => assert.ok(row[key] != undefined))
 
@@ -2292,8 +2341,8 @@ it('select order details', async () => {
 		.send({
 			'operation': 'sql',
 			'sql': 'select {{ordd_id}}, productid, unitprice,quantity, discount from {{schema}}.{{ordd_tb}} order by {{ordd_id}} asc',
-		});
-//Unmatched Postman assertion: pm.expect(jsonData[0].orderid).to.eql(10248))
+		})
+		.expect((r) => assert.ok(r.body[0].orderid == 10248))
 });
 
 it('select count groupby country', async () => {
@@ -2303,16 +2352,16 @@ it('select count groupby country', async () => {
 		.send({
 			'operation': 'sql',
 			'sql': 'select count({{cust_id}}) as counter,country from {{schema}}.{{cust_tb}} group by country order by counter desc',
-		});
-//Unmatched Postman assertion: pm.expect(jsonData[0].country).to.eql('USA'))
+		})
+		.expect((r) => assert.ok(r.body[0].country == 'USA'))
 });
 
 it('select most have the extension employees', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'select extension,* from {{schema}}.{{emps_tb}} order by extension desc' });
-//Unmatched Postman assertion: pm.expect(jsonData[0].firstname).to.eql("Nancy")})
+		.send({ 'operation': 'sql', 'sql': 'select extension,* from {{schema}}.{{emps_tb}} order by extension desc' })
+		.expect((r) => assert.ok(r.body[0].firstname == "Nancy"))
 });
 
 it('select top 10 most price of product', async () => {
@@ -2322,8 +2371,8 @@ it('select top 10 most price of product', async () => {
 		.send({
 			'operation': 'sql',
 			'sql': 'select categoryid,productname,quantityperunit,unitprice,* from {{schema}}.{{prod_tb}}  order by unitprice desc limit 10 ',
-		});
-//Unmatched Postman assertion: pm.expect(jsonData[0].productname).to.equal("C\ufffdte de Blaye"))
+		})
+		.expect((r) => assert.ok(r.body[0].productname == "C\ufffdte de Blaye"))
 });
 
 it('select count min max avg sum price of products', async () => {
@@ -2333,8 +2382,8 @@ it('select count min max avg sum price of products', async () => {
 		.send({
 			'operation': 'sql',
 			'sql': 'select count(unitprice) as allproducts, min(unitprice) as minprice, max(unitprice) as maxprice, avg(unitprice) as avgprice, sum(unitprice) as sumprice from {{schema}}.{{prod_tb}} ',
-		});
-//Unmatched Postman assertion: pm.expect(jsonData[0].allproducts).to.equal(77))
+		})
+		.expect((r) => assert.ok(r.body[0].allproducts == 77))
 });
 
 it('select round unit price using alias', async () => {
@@ -2347,7 +2396,7 @@ it('select round unit price using alias', async () => {
 		})
 		.expect(200)
 //Unmatched Postman assertion: var objKeysData = Object.keys(jsonData[0])
-//Unmatched Postman assertion: pm.expect(objKeysData[0]).to.eql('Price'))
+//Unmatched Postman assertion: pm.expect(objKeysData[0] == 'Price'))
 });
 
 it('select where (like)and(<=>)', async () => {
@@ -2357,17 +2406,17 @@ it('select where (like)and(<=>)', async () => {
 		.send({
 			'operation': 'sql',
 			'sql': 'select * from {{schema}}.{{prod_tb}} where (productname like \'T%\') and (unitprice>100) ',
-		});
-//Unmatched Postman assertion: pm.expect(jsonData[0].unitprice > 100).to.be.true;})
+		})
+		.expect((r) => assert.ok(r.body[0].unitprice > 100))
 });
 
 it('select - where attr < comparator', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'select * from {{schema}}.{{prod_tb}} where unitprice < 81' });
+		.send({ 'operation': 'sql', 'sql': 'select * from {{schema}}.{{prod_tb}} where unitprice < 81' })
 //Unmatched Postman assertion: jsonData.forEach((record)=>{
-//Unmatched Postman assertion: pm.expect(record.unitprice < 81).to.be.true;});
+//Unmatched Postman assertion: pm.expect(record.unitprice < 81).to.be.true;})
 });
 
 it('select - where attr <= comparator', async () => {
@@ -2383,18 +2432,18 @@ it('select - where attr > comparator', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'select * from {{schema}}.{{prod_tb}} where unitprice > 81' });
+		.send({ 'operation': 'sql', 'sql': 'select * from {{schema}}.{{prod_tb}} where unitprice > 81' })
 //Unmatched Postman assertion: jsonData.forEach((record)=>{
-//Unmatched Postman assertion: pm.expect(record.unitprice > 81).to.be.true;});
+//Unmatched Postman assertion: pm.expect(record.unitprice > 81).to.be.true;})
 });
 
 it('select - where attr >= comparator', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'select * from {{schema}}.{{prod_tb}} where unitprice >= 81' });
+		.send({ 'operation': 'sql', 'sql': 'select * from {{schema}}.{{prod_tb}} where unitprice >= 81' })
 //Unmatched Postman assertion: jsonData.forEach((record)=>{
-//Unmatched Postman assertion: pm.expect(record.unitprice >= 81).to.be.true;});
+//Unmatched Postman assertion: pm.expect(record.unitprice >= 81).to.be.true;})
 });
 
 it('select - where attr w/ multiple comparators', async () => {
@@ -2421,7 +2470,7 @@ it('select - where w/ multiple attr comparators', async () => {
 	//Unmatched Postman assertion: jsonData.forEach((record)=>{
 		.expect((r) => assert.ok(record.unitprice > 10))
 		.expect((r) => assert.ok(record.unitprice <= 81))
-//Unmatched Postman assertion: pm.expect(record.unitsinstock).to.eql(0)});
+//Unmatched Postman assertion: pm.expect(record.unitsinstock == 0)})
 });
 
 it('select - where w/ multiple comparators for multiple attrs', async () => {
@@ -2450,7 +2499,7 @@ it('select - where w/ IN() and multiple of comparators for multiple attrs', asyn
 		.expect((r) => assert.ok(record.unitprice > 10))
 		.expect((r) => assert.ok(record.unitprice <= 81))
 		.expect((r) => assert.ok(record.unitsinstock > 10))
-//Unmatched Postman assertion: pm.expect(record.supplierid).to.be.oneOf([1,2,3,4])});
+//Unmatched Postman assertion: pm.expect(record.supplierid).to.be.oneOf([1,2,3,4])})
 });
 
 it('update SQL employee', async () => {
@@ -2471,7 +2520,7 @@ it('select verify SQL update', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'select address from {{schema}}.{{emps_tb}} where {{emps_id}} = 1' })
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData[0].address).to.eql('abc1234'))
+		.expect((r) => assert.ok(r.body[0].address == 'abc1234'))
 });
 
 it('select * dev.long_text', async () => {
@@ -2481,7 +2530,7 @@ it('select * dev.long_text', async () => {
 		.send({ 'operation': 'sql', 'sql': 'select * FROM dev.long_text' })
 		.expect((r) => assert.ok(r.body.length == 25))
 //Unmatched Postman assertion: jsonData.forEach((record)=>{
-//Unmatched Postman assertion: pm.expect(record.remarks.length).to.gt(255)});
+//Unmatched Postman assertion: pm.expect(record.remarks.length).to.gt(255)})
 });
 
 it('select * dev.long_text regexp', async () => {
@@ -2491,7 +2540,7 @@ it('select * dev.long_text regexp', async () => {
 		.send({ 'operation': 'sql', 'sql': 'select * FROM dev.long_text where remarks regexp \'dock\'' })
 		.expect((r) => assert.ok(r.body.length == 3))
 //Unmatched Postman assertion: jsonData.forEach((record)=>{
-//Unmatched Postman assertion: pm.expect(record.remarks.indexOf('dock')).to.gte(0)});
+//Unmatched Postman assertion: pm.expect(record.remarks.indexOf('dock')).to.gte(0)})
 });
 
 it('update employee with falsey data', async () => {
@@ -2503,7 +2552,7 @@ it('update employee with falsey data', async () => {
 			'sql': 'UPDATE {{schema}}.{{emps_tb}} SET address = false, hireDate = 0, notes = null, birthdate = undefined WHERE {{emps_id}} = 1',
 		})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.update_hashes[0]).to.eql(1))
+.expect((r) => assert.ok(r.body.update_hashes[0] == 1))
 });
 
 it('select employee to confirm falsey update', async () => {
@@ -2512,10 +2561,10 @@ it('select employee to confirm falsey update', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'SELECT * FROM {{schema}}.{{emps_tb}} WHERE {{emps_id}} = 1' })
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData[0].address).to.be.false;
-//Unmatched Postman assertion: pm.expect(jsonData[0].hireDate).to.eql(0)
-//Unmatched Postman assertion: pm.expect(jsonData).to.not.have.property('notes')
-//Unmatched Postman assertion: pm.expect(jsonData).to.not.have.property('birthdate'))
+		.expect((r) => assert.ok(!r.body[0].address))
+		.expect((r) => assert.ok(r.body[0].hireDate == 0))
+		.expect((r) => assert.ok(!r.body.hasOwnProperty('notes')))
+		.expect((r) => assert.ok(!r.body.hasOwnProperty('birthdate')))
 });
 
 it('setup for next test - insert array', async () => {
@@ -2530,17 +2579,17 @@ it('setup for next test - insert array', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records'))
-//Unmatched Postman assertion: pm.expect(jsonData.inserted_hashes[0]).to.eql("arrayTest"))
+		.expect((r) => assert.ok(r.body.inserted_hashes[0] == "arrayTest"))
 });
 
 it('select array from table', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'select * from {{schema}}.{{cust_tb}} where {{cust_id}} = \'arrayTest\'' })
+		.send({ 'operation': 'sql', 'sql': 'select * from {{schema}}.{{cust_tb}} where {{cust_id}} = \'arrayTest\''})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData[0].array).to.eql(["arr1","arr2","arr3"])
-//Unmatched Postman assertion: pm.expect(jsonData[0].customerid).to.eql("arrayTest"))
+		.expect((r) => assert.ok(r.body[0].array == ["arr1","arr2","arr3"]))
+		.expect((r) => assert.ok(r.body[0].customerid == "arrayTest"))
 });
 
 it('setup for next test - insert object', async () => {
@@ -2555,7 +2604,7 @@ it('setup for next test - insert object', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records'))
-//Unmatched Postman assertion: pm.expect(jsonData.inserted_hashes[0]).to.eql("objTest"))
+		.expect((r) => assert.ok(r.body.inserted_hashes[0] == "objTest"))
 });
 
 it('select object from table', async () => {
@@ -2564,8 +2613,8 @@ it('select object from table', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'select * from {{schema}}.{{cust_tb}} where {{cust_id}} = \'objTest\'' })
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData[0].object).to.eql({"red": "1", "white": "2", "blue": "3"})
-//Unmatched Postman assertion: pm.expect(jsonData[0].customerid).to.eql("objTest"))
+		.expect((r) => assert.ok(r.body[0].object == {"red": "1", "white": "2", "blue": "3"}))
+		.expect((r) => assert.ok(r.body[0].customerid == "objTest"))
 });
 
 it('select without sql parameter', async () => {
@@ -2590,7 +2639,7 @@ it('select * dev.remarks_blob like w/ special chars pt1', async () => {
 	//Unmatched Postman assertion: } else{
 		.expect((r) => assert.ok(keys.length == 3))
 //Unmatched Postman assertion: }
-//Unmatched Postman assertion: pm.expect(record.remarks.includes('4 Bedroom/2.5+ bath')).to.eql(true)});
+//Unmatched Postman assertion: pm.expect(record.remarks.includes('4 Bedroom/2.5+ bath') == true)})
 });
 
 it('select * dev.remarks_blob like w/ special chars pt2', async () => {
@@ -2609,7 +2658,7 @@ it('select * dev.remarks_blob like w/ special chars pt2', async () => {
 	//Unmatched Postman assertion: } else{
 		.expect((r) => assert.ok(keys.length == 3))
 //Unmatched Postman assertion: }
-//Unmatched Postman assertion: pm.expect(record.remarks.includes('This custom built dream home is stunningly gorgeous!  It is a 5+ acres luxury equestrian property with access to Jennings State Forest from your backyard, no need to trailer your horses anywhere for a beautifully scenic peaceful ride.')).to.eql(true)});
+//Unmatched Postman assertion: pm.expect(record.remarks.includes('This custom built dream home is stunningly gorgeous!  It is a 5+ acres luxury equestrian property with access to Jennings State Forest from your backyard, no need to trailer your horses anywhere for a beautifully scenic peaceful ride.') == true)})
 });
 
 it('select * dev.remarks_blob like w/ special chars pt3', async () => {
@@ -2628,7 +2677,7 @@ it('select * dev.remarks_blob like w/ special chars pt3', async () => {
 	//Unmatched Postman assertion: } else{
 		.expect((r) => assert.ok(keys.length == 3))
 //Unmatched Postman assertion: }
-//Unmatched Postman assertion: pm.expect(record.remarks.includes('...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:')).to.eql(true)});
+//Unmatched Postman assertion: pm.expect(record.remarks.includes('...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:') == true)})
 });
 
 it('select * dev.remarks_blob like w/ special chars pt4', async () => {
@@ -2647,7 +2696,7 @@ it('select * dev.remarks_blob like w/ special chars pt4', async () => {
 	//Unmatched Postman assertion: } else{
 		.expect((r) => assert.ok(keys.length == 3))
 //Unmatched Postman assertion: }
-//Unmatched Postman assertion: pm.expect(record.remarks.includes('**Spacious & updated 2-story home on large preserve lot nearly 1/2 acre! Concrete block constr. & desirable ICW location near JTB, shopping, dining & the beach! Great split BD flrpln w/soaring ceilings features 4BD + office, upstairs loft & 3 full BA.')).to.eql(true)});
+//Unmatched Postman assertion: pm.expect(record.remarks.includes('**Spacious & updated 2-story home on large preserve lot nearly 1/2 acre! Concrete block constr. & desirable ICW location near JTB, shopping, dining & the beach! Great split BD flrpln w/soaring ceilings features 4BD + office, upstairs loft & 3 full BA.') == true)})
 });
 
 it('select * dev.remarks_blob like w/ special chars pt5', async () => {
@@ -2672,7 +2721,7 @@ it('select * FROM {{schema}}.{{ords_tb}} LIMIT 100 OFFSET 0', async () => {
 		.send({ 'operation': 'sql', 'sql': 'select * FROM {{schema}}.{{ords_tb}} LIMIT 100 OFFSET 0' })
 		.expect((r) => assert.ok(r.body.length == 100))
 		.expect((r) => assert.ok(r.body[0].orderid == 10248))
-//Unmatched Postman assertion: pm.expect(jsonData[99].orderid).to.eql(10347))
+		.expect((r) => assert.ok(r.body[99].orderid == 10347))
 });
 
 it('select * FROM {{schema}}.{{ords_tb}} LIMIT 100 OFFSET 0 Copy', async () => {
@@ -2681,8 +2730,8 @@ it('select * FROM {{schema}}.{{ords_tb}} LIMIT 100 OFFSET 0 Copy', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'select * FROM {{schema}}.{{ords_tb}} LIMIT 100 OFFSET 100' })
 		.expect((r) => assert.ok(r.body.length == 100))
-//Unmatched Postman assertion: pm.expect(jsonData[0].orderid).to.eql(10348)
-//Unmatched Postman assertion: pm.expect(jsonData[99].orderid).to.eql(10447))
+		.expect((r) => assert.ok(r.body[0].orderid == 10348))
+		.expect((r) => assert.ok(r.body[99].orderid == 10447))
 });
 
 it('select AVE(rating) w/ join, group by and order by (1 of 2)', async () => {
@@ -2692,14 +2741,14 @@ it('select AVE(rating) w/ join, group by and order by (1 of 2)', async () => {
 		.send({
 			'operation': 'sql',
 			'sql': 'select b.authors as authors, AVG(r.rating) as rating from dev.ratings as r join dev.books as b on r.book_id = b.id group by b.authors order by rating desc',
-		});
-//Unmatched Postman assertion: pm.expect(jsonData.length).to.eql(26)
-//Unmatched Postman assertion: pm.expect(jsonData[0].rating).to.eql(4.46)
-//Unmatched Postman assertion: pm.expect(jsonData[1].rating).to.eql(4.42)
-//Unmatched Postman assertion: pm.expect(jsonData[25].rating).to.eql(2.77)
-//Unmatched Postman assertion: pm.expect(jsonData[0].authors).to.eql("J.K. Rowling, Mary GrandPré, Rufus Beck")
-//Unmatched Postman assertion: pm.expect(jsonData[1].authors).to.eql("Gabriel García Márquez, Gregory Rabassa")
-//Unmatched Postman assertion: pm.expect(jsonData[25].authors).to.eql("Henry James, Patricia Crick"))
+		})
+		.expect((r) => assert.ok(r.body.length == 26))
+		.expect((r) => assert.ok(r.body[0].rating == 4.46))
+		.expect((r) => assert.ok(r.body[1].rating == 4.42))
+		.expect((r) => assert.ok(r.body[25].rating == 2.77))
+		.expect((r) => assert.ok(r.body[0].authors == "J.K. Rowling, Mary GrandPré, Rufus Beck"))
+		.expect((r) => assert.ok(r.body[1].authors == "Gabriel García Márquez, Gregory Rabassa"))
+		.expect((r) => assert.ok(r.body[25].authors == "Henry James, Patricia Crick"))
 });
 
 it('select AVE(rating) w/ join, group by and order by (2 of 2)', async () => {
@@ -2712,13 +2761,13 @@ it('select AVE(rating) w/ join, group by and order by (2 of 2)', async () => {
 		})
 		.expect((r) => assert.ok(r.body.length == 50))
 		.expect((r) => assert.ok(r.body[0].id == 1))
-//Unmatched Postman assertion: pm.expect(jsonData[49].id).to.eql(50)
-//Unmatched Postman assertion: pm.expect(jsonData[5].id).to.eql(6)
-//Unmatched Postman assertion: pm.expect(jsonData[5].authors).to.eql("J.K. Rowling, Mary GrandPré")
-//Unmatched Postman assertion: pm.expect(jsonData[5][`AVG(r.rating)`]).to.eql(4.09)
-//Unmatched Postman assertion: pm.expect(jsonData[21].id).to.eql(22)
-//Unmatched Postman assertion: pm.expect(jsonData[21].authors).to.eql("Edward P. Jones")
-//Unmatched Postman assertion: pm.expect(jsonData[21][`AVG(r.rating)`]).to.eql(3.73))
+		.expect((r) => assert.ok(r.body[49].id == 50))
+		.expect((r) => assert.ok(r.body[5].id == 6))
+		.expect((r) => assert.ok(r.body[5].authors == "J.K. Rowling, Mary GrandPré"))
+		.expect((r) => assert.ok(r.body[5][`AVG(r.rating)`] == 4.09))
+		.expect((r) => assert.ok(r.body[21].id == 22))
+		.expect((r) => assert.ok(r.body[21].authors == "Edward P. Jones"))
+		.expect((r) => assert.ok(r.body[21][`AVG(r.rating)`] == 3.73))
 });
 
 it('select AVE(rating) w/ join and group by (1 of 2)', async () => {
@@ -2731,7 +2780,7 @@ it('select AVE(rating) w/ join and group by (1 of 2)', async () => {
 		})
 		.expect((r) => assert.ok(r.body.length == 50))
 		.expect((r) => assert.ok(Object.keys(jsonData[0]).length == 3))
-//Unmatched Postman assertion: pm.expect(Object.keys(jsonData[49]).length).to.eql(3))
+//Unmatched Postman assertion: pm.expect(Object.keys(jsonData[49]).length == 3))
 });
 
 it('select AVE(rating) w/ join, gb, ob, and LIMIT', async () => {
@@ -2744,9 +2793,9 @@ it('select AVE(rating) w/ join, gb, ob, and LIMIT', async () => {
 		})
 		.expect((r) => assert.ok(r.body.length == 10))
 		.expect((r) => assert.ok(r.body[0].id == 1))
-	//Unmatched Postman assertion: pm.expect(jsonData[9].id).to.eql(10)
-		.expect((r) => assert.ok(Object.keys(jsonData[0]).length == 3))
-//Unmatched Postman assertion: pm.expect(Object.keys(jsonData[8]).length).to.eql(3))
+		.expect((r) => assert.ok(r.body[9].id == 10))
+		.expect((r) => assert.ok(Object.keys(r.body[0]).length == 3))
+		.expect((r) => assert.ok(Object.keys(r.body[8]).length == 3))
 });
 
 it('select COUNT(rating) w/ join, gb, ob, limit, and OFFSET', async () => {
@@ -2756,13 +2805,13 @@ it('select COUNT(rating) w/ join, gb, ob, limit, and OFFSET', async () => {
 		.send({
 			'operation': 'sql',
 			'sql': 'select b.authors as authors, COUNT(r.rating) as rating_count from dev.ratings as r join dev.books as b on r.book_id = b.id group by b.authors order by b.authors limit 15 offset 5',
-		});
-//Unmatched Postman assertion: pm.expect(jsonData.length).to.eql(15)
-//Unmatched Postman assertion: pm.expect(jsonData[0].authors).to.eql("Frank Herbert")
-//Unmatched Postman assertion: pm.expect(jsonData[14].authors).to.eql("Marguerite Duras, Barbara Bray, Maxine Hong Kingston")
-//Unmatched Postman assertion: pm.expect(jsonData[9].authors).to.eql("J.K. Rowling, Mary GrandPré")
-//Unmatched Postman assertion: pm.expect(jsonData[0].rating_count).to.eql(400)
-//Unmatched Postman assertion: pm.expect(jsonData[11].rating_count).to.eql(300))
+		})
+		.expect((r) => assert.ok(r.body.length == 15))
+		.expect((r) => assert.ok(r.body[0].authors == "Frank Herbert"))
+		.expect((r) => assert.ok(r.body[14].authors == "Marguerite Duras, Barbara Bray, Maxine Hong Kingston"))
+		.expect((r) => assert.ok(r.body[9].authors == "J.K. Rowling, Mary GrandPré"))
+		.expect((r) => assert.ok(r.body[0].rating_count == 400))
+		.expect((r) => assert.ok(r.body[11].rating_count == 300))
 });
 
 it('select w/ function alias in ORDER BY and LIMIT', async () => {
@@ -2770,17 +2819,17 @@ it('select w/ function alias in ORDER BY and LIMIT', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			'operation': 'sql',
-			'sql': 'select a.{{ords_id}} as ords_id, a.productid, d.companyname as companyname, d.contactmame, b.productname, ROUND(a.unitprice) as unitprice from {{schema}}.{{ordd_tb}} a join {{schema}}.{{prod_tb}} b on a.{{prod_id}}=b.{{prod_id}} join {{schema}}.{{ords_tb}} c on a.{{ords_id}}=c.{{ords_id}} join {{schema}}.{{cust_tb}} d on c.{{cust_id}}=d.{{cust_id}} order by unitprice DESC LIMIT 25',
+			operation: 'sql',
+			sql: 'select a.{{ords_id}} as ords_id, a.productid, d.companyname as companyname, d.contactmame, b.productname, ROUND(a.unitprice) as unitprice from {{schema}}.{{ordd_tb}} a join {{schema}}.{{prod_tb}} b on a.{{prod_id}}=b.{{prod_id}} join {{schema}}.{{ords_tb}} c on a.{{ords_id}}=c.{{ords_id}} join {{schema}}.{{cust_tb}} d on c.{{cust_id}}=d.{{cust_id}} order by unitprice DESC LIMIT 25',
 		})
 		.expect((r) => assert.ok(r.body.length == 25))
-//Unmatched Postman assertion: pm.expect(jsonData[0].ords_id).to.eql(10518)
-//Unmatched Postman assertion: pm.expect(jsonData[0].unitprice).to.eql(264)
-//Unmatched Postman assertion: pm.expect(jsonData[24].ords_id).to.eql(10510)
-//Unmatched Postman assertion: pm.expect(jsonData[24].unitprice).to.eql(124)
-//Unmatched Postman assertion: pm.expect(jsonData[15].unitprice).to.eql(264)
-//Unmatched Postman assertion: pm.expect(jsonData[16].unitprice).to.eql(211)
-//Unmatched Postman assertion: pm.expect(jsonData[20].unitprice).to.eql(211))
+		.expect((r) => assert.ok(r.body[0].ords_id == 10518))
+		.expect((r) => assert.ok(r.body[0].unitprice == 264))
+		.expect((r) => assert.ok(r.body[24].ords_id == 10510))
+		.expect((r) => assert.ok(r.body[24].unitprice == 124))
+		.expect((r) => assert.ok(r.body[15].unitprice == 264))
+		.expect((r) => assert.ok(r.body[16].unitprice == 211))
+		.expect((r) => assert.ok(r.body[20].unitprice == 211))
 });
 
 it('select w/ inconsistent table refs & ORDER BY column not in SELECT', async () => {
@@ -2792,15 +2841,15 @@ it('select w/ inconsistent table refs & ORDER BY column not in SELECT', async ()
 			'sql': 'SELECT a.productid, a.unitprice as unitprice FROM {{schema}}.{{ordd_tb}} a ORDER BY a.{{ords_id}} DESC',
 		})
 		.expect((r) => assert.ok(r.body.length == 2155))
-//Unmatched Postman assertion: pm.expect(jsonData[0].productid).to.eql(2)
-//Unmatched Postman assertion: pm.expect(jsonData[0].unitprice).to.eql(19)
-//Unmatched Postman assertion: pm.expect(jsonData[1].productid).to.eql(3)
-//Unmatched Postman assertion: pm.expect(jsonData[1].unitprice).to.eql(10)
-//Unmatched Postman assertion: pm.expect(jsonData[3].productid).to.eql(6)
-//Unmatched Postman assertion: pm.expect(jsonData[3].unitprice).to.eql(25)
-//Unmatched Postman assertion: pm.expect(jsonData[15].unitprice).to.eql(9.65)
-//Unmatched Postman assertion: pm.expect(jsonData[996].unitprice).to.eql(18)
-//Unmatched Postman assertion: pm.expect(jsonData[1255].unitprice).to.eql(9.5))
+		.expect((r) => assert.ok(r.body[0].productid == 2))
+		.expect((r) => assert.ok(r.body[0].unitprice == 19))
+		.expect((r) => assert.ok(r.body[1].productid == 3))
+		.expect((r) => assert.ok(r.body[1].unitprice == 10))
+		.expect((r) => assert.ok(r.body[3].productid == 6))
+		.expect((r) => assert.ok(r.body[3].unitprice == 25))
+		.expect((r) => assert.ok(r.body[15].unitprice == 9.65))
+		.expect((r) => assert.ok(r.body[996].unitprice == 18))
+		.expect((r) => assert.ok(r.body[1255].unitprice == 9.5))
 });
 
 it('select w/ inconsistent table refs, ORDER BY column not in SELECT & LIMIT/OFFSET', async () => {
@@ -2810,17 +2859,17 @@ it('select w/ inconsistent table refs, ORDER BY column not in SELECT & LIMIT/OFF
 		.send({
 			'operation': 'sql',
 			'sql': 'SELECT productid, a.unitprice as unitprice FROM {{schema}}.{{ordd_tb}} a ORDER BY {{ords_id}} DESC LIMIT 250 OFFSET 5',
-		});
-//Unmatched Postman assertion: pm.expect(jsonData.length).to.eql(250)
-//Unmatched Postman assertion: pm.expect(jsonData[0].productid).to.eql(8)
-//Unmatched Postman assertion: pm.expect(jsonData[0].unitprice).to.eql(40)
-//Unmatched Postman assertion: pm.expect(jsonData[1].productid).to.eql(10)
-//Unmatched Postman assertion: pm.expect(jsonData[1].unitprice).to.eql(31)
-//Unmatched Postman assertion: pm.expect(jsonData[5].productid).to.eql(16)
-//Unmatched Postman assertion: pm.expect(jsonData[5].unitprice).to.eql(17.45)
-//Unmatched Postman assertion: pm.expect(jsonData[10].unitprice).to.eql(9.65)
-//Unmatched Postman assertion: pm.expect(jsonData[216].unitprice).to.eql(7.75)
-//Unmatched Postman assertion: pm.expect(jsonData[249].unitprice).to.eql(17.45))
+		})
+		.expect((r) => assert.ok(r.body.length == 250))
+		.expect((r) => assert.ok(r.body[0].productid == 8))
+		.expect((r) => assert.ok(r.body[0].unitprice == 40))
+		.expect((r) => assert.ok(r.body[1].productid == 10))
+		.expect((r) => assert.ok(r.body[1].unitprice == 31))
+		.expect((r) => assert.ok(r.body[5].productid == 16))
+		.expect((r) => assert.ok(r.body[5].unitprice == 17.45))
+		.expect((r) => assert.ok(r.body[10].unitprice == 9.65))
+		.expect((r) => assert.ok(r.body[216].unitprice == 7.75))
+		.expect((r) => assert.ok(r.body[249].unitprice == 17.45))
 });
 
 it('select w/ inconsistent table refs & second ORDER BY column not included in SELECT', async () => {
@@ -2832,15 +2881,15 @@ it('select w/ inconsistent table refs & second ORDER BY column not included in S
 			'sql': 'SELECT a.{{ords_id}} as ords_id, a.unitprice as unitprice FROM {{schema}}.{{ordd_tb}} a ORDER BY productid DESC, a.{{ords_id}} DESC',
 		})
 		.expect((r) => assert.ok(r.body.length == 2155))
-//Unmatched Postman assertion: pm.expect(jsonData[0].ords_id).to.eql(11077)
-//Unmatched Postman assertion: pm.expect(jsonData[0].unitprice).to.eql(13)
-//Unmatched Postman assertion: pm.expect(jsonData[1].ords_id).to.eql(11068)
-//Unmatched Postman assertion: pm.expect(jsonData[1].unitprice).to.eql(13)
-//Unmatched Postman assertion: pm.expect(jsonData[3].ords_id).to.eql(11015)
-//Unmatched Postman assertion: pm.expect(jsonData[3].unitprice).to.eql(13)
-//Unmatched Postman assertion: pm.expect(jsonData[15].unitprice).to.eql(13)
-//Unmatched Postman assertion: pm.expect(jsonData[996].unitprice).to.eql(46)
-//Unmatched Postman assertion: pm.expect(jsonData[1255].unitprice).to.eql(14.4))
+		.expect((r) => assert.ok(r.body[0].ords_id == 11077))
+		.expect((r) => assert.ok(r.body[0].unitprice == 13))
+		.expect((r) => assert.ok(r.body[1].ords_id == 11068))
+		.expect((r) => assert.ok(r.body[1].unitprice == 13))
+		.expect((r) => assert.ok(r.body[3].ords_id == 11015))
+		.expect((r) => assert.ok(r.body[3].unitprice == 13))
+		.expect((r) => assert.ok(r.body[15].unitprice == 13))
+		.expect((r) => assert.ok(r.body[996].unitprice == 46))
+		.expect((r) => assert.ok(r.body[1255].unitprice == 14.4))
 });
 
 it('select w/ inconsistent table refs, second ORDER BY column not included in SELECT & LIMIT/OFFSETS', async () => {
@@ -2850,17 +2899,17 @@ it('select w/ inconsistent table refs, second ORDER BY column not included in SE
 		.send({
 			'operation': 'sql',
 			'sql': 'SELECT a.{{ords_id}} as ords_id, a.unitprice as unitprice FROM {{schema}}.{{ordd_tb}} a ORDER BY productid DESC, a.{{ords_id}} DESC LIMIT 205 OFFSET 50',
-		});
-//Unmatched Postman assertion: pm.expect(jsonData.length).to.eql(205)
-//Unmatched Postman assertion: pm.expect(jsonData[0].ords_id).to.eql(10808)
-//Unmatched Postman assertion: pm.expect(jsonData[0].unitprice).to.eql(18)
-//Unmatched Postman assertion: pm.expect(jsonData[1].ords_id).to.eql(10749)
-//Unmatched Postman assertion: pm.expect(jsonData[1].unitprice).to.eql(18)
-//Unmatched Postman assertion: pm.expect(jsonData[3].ords_id).to.eql(10732)
-//Unmatched Postman assertion: pm.expect(jsonData[3].unitprice).to.eql(18)
-//Unmatched Postman assertion: pm.expect(jsonData[16].unitprice).to.eql(14.4)
-//Unmatched Postman assertion: pm.expect(jsonData[66].unitprice).to.eql(6.2)
-//Unmatched Postman assertion: pm.expect(jsonData[204].unitprice).to.eql(15))
+		})
+		.expect((r) => assert.ok(r.body.length == 205))
+		.expect((r) => assert.ok(r.body[0].ords_id == 10808))
+		.expect((r) => assert.ok(r.body[0].unitprice == 18))
+		.expect((r) => assert.ok(r.body[1].ords_id == 10749))
+		.expect((r) => assert.ok(r.body[1].unitprice == 18))
+		.expect((r) => assert.ok(r.body[3].ords_id == 10732))
+		.expect((r) => assert.ok(r.body[3].unitprice == 18))
+		.expect((r) => assert.ok(r.body[16].unitprice == 14.4))
+		.expect((r) => assert.ok(r.body[66].unitprice == 6.2))
+		.expect((r) => assert.ok(r.body[204].unitprice == 15))
 });
 
 it('Select * on 3 table INNER JOIN', async () => {
@@ -2871,18 +2920,19 @@ it('Select * on 3 table INNER JOIN', async () => {
 			'operation': 'sql',
 			'sql': 'SELECT `d`.*, `b`.*, `o`.* FROM `dev`.`dog` AS `d` INNER JOIN `dev`.`breed` AS `b` ON `d`.`breed_id` = `b`.`id` INNER JOIN `dev`.`owner` AS `o` ON `d`.`owner_id` = `o`.`id` ORDER BY `dog_name`',
 		})
-		.expect((r) => assert.ok(r.body.length == 7))
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-		.expect((r) => assert.ok(row.id))
-		.expect((r) => assert.ok(row.id1))
-		.expect((r) => assert.ok(row.id2))
-		.expect((r) => assert.ok(row.name))
-		.expect((r) => assert.ok(row.name1))
-//Unmatched Postman assertion: })
-
-//Unmatched Postman assertion: pm.expect(jsonData[1].name1).to.eql("Sam")
-//Unmatched Postman assertion: pm.expect(jsonData[1].id2).to.eql(1)
-//Unmatched Postman assertion: pm.expect(jsonData[4].id1).to.eql(154))
+		.expect((r) => {
+			assert.ok(r.body.length == 7);
+			r.body.forEach((row) => {
+				assert.ok(row.id);
+				assert.ok(row.id1);
+				assert.ok(row.id2);
+				assert.ok(row.name);
+				assert.ok(row.name1);
+			})
+		})
+		.expect((r) => assert.ok(r.body[1].name1 == "Sam"))
+		.expect((r) => assert.ok(r.body[1].id2 == 1))
+		.expect((r) => assert.ok(r.body[4].id1 == 154))
 });
 
 it('Select with basic CROSS SCHEMA JOIN', async () => {
@@ -2904,7 +2954,7 @@ it('Select with basic CROSS SCHEMA JOIN', async () => {
 
 		.expect((r) => assert.ok(r.body[1].name == 'David'))
 		.expect((r) => assert.ok(r.body[1].id1 == 3))
-//Unmatched Postman assertion: pm.expect(jsonData[4].id1).to.eql(2))
+.expect((r) => assert.ok(r.body[4].id1 == 2))
 });
 
 it('Select with complex CROSS SCHEMA JOIN', async () => {
@@ -2912,24 +2962,25 @@ it('Select with complex CROSS SCHEMA JOIN', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			'operation': 'sql',
-			'sql': 'SELECT d.id, d.dog_name, d.age, d.adorable, o.* FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id ORDER BY o.name, o.id LIMIT 5 OFFSET 1',
+			operation: 'sql',
+			sql: 'SELECT d.id, d.dog_name, d.age, d.adorable, o.* FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id ORDER BY o.name, o.id LIMIT 5 OFFSET 1',
 		})
-		.expect((r) => assert.ok(r.body.length == 5))
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-		.expect((r) => assert.ok(row.id))
-		.expect((r) => assert.ok(row.id1))
-		.expect((r) => assert.ok(row.dog_name))
-		.expect((r) => assert.ok(row.age))
-		.expect((r) => assert.ok(row.name))
-//Unmatched Postman assertion: })
-
-//Unmatched Postman assertion: pm.expect(jsonData[0].name).to.eql("David")
-//Unmatched Postman assertion: pm.expect(jsonData[0].id).to.eql(6)
-//Unmatched Postman assertion: pm.expect(jsonData[0].id1).to.eql(3)
-//Unmatched Postman assertion: pm.expect(jsonData[4].name).to.eql("Kyle")
-//Unmatched Postman assertion: pm.expect(jsonData[4].id).to.eql(5)
-//Unmatched Postman assertion: pm.expect(jsonData[4].id1).to.eql(2))
+		.expect((r) => {
+			assert.ok(r.body.length == 5);
+			r.body.forEach((row) => {
+				assert.ok(row.id);
+				assert.ok(row.id1);
+				assert.ok(row.dog_name);
+				assert.ok(row.age);
+				assert.ok(row.name);
+			})
+		})
+		.expect((r) => assert.ok(r.body[0].name == 'David'))
+		.expect((r) => assert.ok(r.body[0].id == 6))
+		.expect((r) => assert.ok(r.body[0].id1 == 3))
+		.expect((r) => assert.ok(r.body[4].name == 'Kyle'))
+		.expect((r) => assert.ok(r.body[4].id == 5))
+		.expect((r) => assert.ok(r.body[4].id1 == 2))
 });
 
 it('Select with basic CROSS 3 SCHEMA JOINS', async () => {
@@ -2937,25 +2988,26 @@ it('Select with basic CROSS 3 SCHEMA JOINS', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			'operation': 'sql',
-			'sql': 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name, b.id, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id',
+			operation: 'sql',
+			sql: 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name, b.id, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id',
 		})
-		.expect((r) => assert.ok(r.body.length == 7))
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-		.expect((r) => assert.ok(row.id))
-		.expect((r) => assert.ok(row.id1))
-		.expect((r) => assert.ok(row.id2))
-		.expect((r) => assert.ok(row.dog_name))
-		.expect((r) => assert.ok(row.age))
-		.expect((r) => assert.ok(row.name))
-		.expect((r) => assert.ok(row.name1))
-	//Unmatched Postman assertion: })
-
+		.expect((r) => {
+			assert.ok(r.body.length == 7);
+			r.body.forEach((row) => {
+				assert.ok(row.id);
+				assert.ok(row.id1);
+				assert.ok(row.id2);
+				assert.ok(row.dog_name);
+				assert.ok(row.age);
+				assert.ok(row.name);
+				assert.ok(row.name1);
+			})
+		})
 		.expect((r) => assert.ok(r.body[1].name == 'David'))
 		.expect((r) => assert.ok(r.body[1].id1 == 3))
 		.expect((r) => assert.ok(r.body[4].id1 == 2))
-//Unmatched Postman assertion: pm.expect(jsonData[6].id1).to.eql(1)
-//Unmatched Postman assertion: pm.expect(jsonData[6].name1).to.eql("MASTIFF"))
+		.expect((r) => assert.ok(r.body[6].id1 == 1))
+		.expect((r) => assert.ok(r.body[6].name1 == 'MASTIFF'));
 });
 
 it('Select with complex CROSS 3 SCHEMA JOINS', async () => {
@@ -2963,25 +3015,26 @@ it('Select with complex CROSS 3 SCHEMA JOINS', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			'operation': 'sql',
-			'sql': 'SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name',
+			operation: 'sql',
+			sql: 'SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name',
 		})
-		.expect((r) => assert.ok(r.body.length == 7))
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-		.expect((r) => assert.ok(row.dog_age))
-		.expect((r) => assert.ok(row.dog_weight))
-		.expect((r) => assert.ok(row.owner_name))
-		.expect((r) => assert.ok(row.name))
-	//Unmatched Postman assertion: })
-
-	//Unmatched Postman assertion: pm.expect(jsonData[0].dog_age).to.eql(1)
+		.expect((r) => {
+			assert.ok(r.body.length == 7);
+			r.body.forEach((row) => {
+				assert.ok(row.dog_age);
+				assert.ok(row.dog_weight);
+				assert.ok(row.owner_name);
+				assert.ok(row.name);
+			});
+		})
+		.expect((r) => assert.ok(r.body[0].dog_age == 1))
 		.expect((r) => assert.ok(r.body[0].dog_weight == 35))
 		.expect((r) => assert.ok(r.body[0].owner_name == 'Kaylan'))
 		.expect((r) => assert.ok(r.body[0].name == 'BEAGLE MIX'))
-	//Unmatched Postman assertion: pm.expect(jsonData[6].dog_age).to.eql(5)
-	//Unmatched Postman assertion: pm.expect(jsonData[6].dog_weight).to.eql(35)
+		.expect((r) => assert.ok(r.body[6].dog_age == 5))
+		.expect((r) => assert.ok(r.body[6].dog_weight == 35))
 		.expect((r) => assert.ok(r.body[6].owner_name == 'Kyle'))
-//Unmatched Postman assertion: pm.expect(jsonData[6].name).to.eql("WHIPPET"))
+		.expect((r) => assert.ok(r.body[6].name == 'WHIPPET'))
 });
 
 it('Select - simple full table query', async () => {
@@ -2991,7 +3044,7 @@ it('Select - simple full table query', async () => {
 		.send({ 'operation': 'sql', 'sql': 'SELECT * FROM dev.dog' })
 		.expect((r) => assert.ok(r.body.length == 9))
 //Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(Object.keys(row).length).to.equal(9))
+//Unmatched Postman assertion: pm.expect(Object.keys(row).length == 9))
 });
 
 it('Select - simple full table query w/ * and alias', async () => {
@@ -3031,7 +3084,7 @@ it('Select - simple full table query w/ multiple aliases', async () => {
 		.send({ 'operation': 'sql', 'sql': 'SELECT id as dog_id, dog_name as dname, age as dog_age FROM dev.dog' })
 		.expect((r) => assert.ok(r.body.length == 9))
 	//Unmatched Postman assertion: jsonData.forEach(row => {
-	//Unmatched Postman assertion: pm.expect(Object.keys(row).length).to.equal(3)
+	//Unmatched Postman assertion: pm.expect(Object.keys(row).length == 3)
 		.expect((r) => assert.ok(row.dname))
 		.expect((r) => assert.ok(!row.dog_name))
 	//Unmatched Postman assertion: pm.expect(row.dog_id).to.exist;
@@ -3050,7 +3103,7 @@ it('Select - simple full table query from leading_zero', async () => {
 //Unmatched Postman assertion: let expected_ids = [0, "00011", "011"];
 //Unmatched Postman assertion: jsonData.forEach(row => {
 //Unmatched Postman assertion: ids.push(row.id)
-//Unmatched Postman assertion: pm.expect(ids).to.eql(expected_ids))
+//Unmatched Postman assertion: pm.expect(ids == expected_ids))
 });
 
 it('Select - basic self JOIN', async () => {
@@ -3062,8 +3115,7 @@ it('Select - basic self JOIN', async () => {
 			'sql': 'SELECT a.* FROM dev.owner as a INNER JOIN dev.owner as b ON a.name = b.best_friend',
 		})
 		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-
-//Unmatched Postman assertion: pm.expect(jsonData[0].id).to.eql(1))
+		.expect((r) => assert.ok(r.body[0].id == 1))
 });
 
 it('Select - basic self JOIN - reverse scenario', async () => {
@@ -3075,8 +3127,7 @@ it('Select - basic self JOIN - reverse scenario', async () => {
 			'sql': 'SELECT b.* FROM dev.owner as a INNER JOIN dev.owner as b ON a.name = b.best_friend',
 		})
 		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-
-//Unmatched Postman assertion: pm.expect(jsonData[0].id).to.eql(3))
+		.expect((r) => assert.ok(r.body[0].id == 3))
 });
 
 it('query from leading_zero where id = 0', async () => {
@@ -3357,7 +3408,7 @@ it('NoSQL search by hash multiple results', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 2))
 		.expect((r) => assert.ok(typeof r.body[0] === 'object'))
-//Unmatched Postman assertion: pm.expect((typeof jsonData[1])).to.eql("object"))
+		.expect((r) => assert.ok(typeof r.body[1] === 'object'))
 });
 
 it('NoSQL search by value no result', async () => {
@@ -3411,7 +3462,7 @@ it('NoSQL search by value multiple results', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 2))
 		.expect((r) => assert.ok(typeof r.body[0] === 'object'))
-//Unmatched Postman assertion: pm.expect((typeof jsonData[1])).to.eql("object"))
+		.expect((r) => assert.ok(typeof r.body[1] === 'object'))
 });
 
 it('NoSQL search by value limit 20', async () => {
@@ -3498,7 +3549,7 @@ it('NoSQL search by value reverse', async () => {
 			'reverse': true,
 		})
 		.expect(200)
-	//Unmatched Postman assertion: pm.expect(jsonData.length).to.eql(830)
+		.expect((r) => assert.ok(r.body.length == 830))
 
 	//Unmatched Postman assertion: let ids = [11077,11076,11075,11074,11073,11072,11071,11070,11069,11068,11067,11066,11065,11064,11063,11062,11061,11060,11059,11058,11057,11056,11055,11054,11053,11052,11051,11050,11049,11048,11047,11046,11045,11044,11043,11042,11041,11040,11039,11038,11037,11036,11035,11034,11033,11032,11031,11030,11029,11028,11027,11026,11025,11024,11023,11022,11021,11020,11019,11018,11017,11016,11015,11014,11013,11012,11011,11010,11009,11008,11007,11006,11005,11004,11003,11002,11001,11000,10999,10998,10997,10996,10995,10994,10993,10992,10991,10990,10989,10988,10987,10986,10985,10984,10983,10982,10981,10980,10979,10978,10977,10976,10975,10974,10973,10972,10971,10970,10969,10968,10967,10966,10965,10964,10963,10962,10961,10960,10959,10958,10957,10956,10955,10954,10953,10952,10951,10950,10949,10948,10947,10946,10945,10944,10943,10942,10941,10940,10939,10938,10937,10936,10935,10934,10933,10932,10931,10930,10929,10928,10927,10926,10925,10924,10923,10922,10921,10920,10919,10918,10917,10916,10915,10914,10913,10912,10911,10910,10909,10908,10907,10906,10905,10904,10903,10902,10901,10900,10899,10898,10897,10896,10895,10894,10893,10892,10891,10890,10889,10888,10887,10886,10885,10884,10883,10882,10881,10880,10879,10878,10877,10876,10875,10874,10873,10872,10871,10870,10869,10868,10867,10866,10865,10864,10863,10862,10861,10860,10859,10858,10857,10856,10855,10854,10853,10852,10851,10850,10849,10848,10847,10846,10845,10844,10843,10842,10841,10840,10839,10838,10837,10836,10835,10834,10833,10832,10831,10830,10829,10828,10827,10826,10825,10824,10823,10822,10821,10820,10819,10818,10817,10816,10815,10814,10813,10812,10811,10810,10809,10808,10807,10806,10805,10804,10803,10802,10801,10800,10799,10798,10797,10796,10795,10794,10793,10792,10791,10790,10789,10788,10787,10786,10785,10784,10783,10782,10781,10780,10779,10778,10777,10776,10775,10774,10773,10772,10771,10770,10769,10768,10767,10766,10765,10764,10763,10762,10761,10760,10759,10758,10757,10756,10755,10754,10753,10752,10751,10750,10749,10748,10747,10746,10745,10744,10743,10742,10741,10740,10739,10738,10737,10736,10735,10734,10733,10732,10731,10730,10729,10728,10727,10726,10725,10724,10723,10722,10721,10720,10719,10718,10717,10716,10715,10714,10713,10712,10711,10710,10709,10708,10707,10706,10705,10704,10703,10702,10701,10700,10699,10698,10697,10696,10695,10694,10693,10692,10691,10690,10689,10688,10687,10686,10685,10684,10683,10682,10681,10680,10679,10678,10677,10676,10675,10674,10673,10672,10671,10670,10669,10668,10667,10666,10665,10664,10663,10662,10661,10660,10659,10658,10657,10656,10655,10654,10653,10652,10651,10650,10649,10648,10647,10646,10645,10644,10643,10642,10641,10640,10639,10638,10637,10636,10635,10634,10633,10632,10631,10630,10629,10628,10627,10626,10625,10624,10623,10622,10621,10620,10619,10618,10617,10616,10615,10614,10613,10612,10611,10610,10609,10608,10607,10606,10605,10604,10603,10602,10601,10600,10599,10598,10597,10596,10595,10594,10593,10592,10591,10590,10589,10588,10587,10586,10585,10584,10583,10582,10581,10580,10579,10578,10577,10576,10575,10574,10573,10572,10571,10570,10569,10568,10567,10566,10565,10564,10563,10562,10561,10560,10559,10558,10557,10556,10555,10554,10553,10552,10551,10550,10549,10548,10547,10546,10545,10544,10543,10542,10541,10540,10539,10538,10537,10536,10535,10534,10533,10532,10531,10530,10529,10528,10527,10526,10525,10524,10523,10522,10521,10520,10519,10518,10517,10516,10515,10514,10513,10512,10511,10510,10509,10508,10507,10506,10505,10504,10503,10502,10501,10500,10499,10498,10497,10496,10495,10494,10493,10492,10491,10490,10489,10488,10487,10486,10485,10484,10483,10482,10481,10480,10479,10478,10477,10476,10475,10474,10473,10472,10471,10470,10469,10468,10467,10466,10465,10464,10463,10462,10461,10460,10459,10458,10457,10456,10455,10454,10453,10452,10451,10450,10449,10448,10447,10446,10445,10444,10443,10442,10441,10440,10439,10438,10437,10436,10435,10434,10433,10432,10431,10430,10429,10428,10427,10426,10425,10424,10423,10422,10421,10420,10419,10418,10417,10416,10415,10414,10413,10412,10411,10410,10409,10408,10407,10406,10405,10404,10403,10402,10401,10400,10399,10398,10397,10396,10395,10394,10393,10392,10391,10390,10389,10388,10387,10386,10385,10384,10383,10382,10381,10380,10379,10378,10377,10376,10375,10374,10373,10372,10371,10370,10369,10368,10367,10366,10365,10364,10363,10362,10361,10360,10359,10358,10357,10356,10355,10354,10353,10352,10351,10350,10349,10348,10347,10346,10345,10344,10343,10342,10341,10340,10339,10338,10337,10336,10335,10334,10333,10332,10331,10330,10329,10328,10327,10326,10325,10324,10323,10322,10321,10320,10319,10318,10317,10316,10315,10314,10313,10312,10311,10310,10309,10308,10307,10306,10305,10304,10303,10302,10301,10300,10299,10298,10297,10296,10295,10294,10293,10292,10291,10290,10289,10288,10287,10286,10285,10284,10283,10282,10281,10280,10279,10278,10277,10276,10275,10274,10273,10272,10271,10270,10269,10268,10267,10266,10265,10264,10263,10262,10261,10260,10259,10258,10257,10256,10255,10254,10253,10252,10251,10250,10249,10248];
 
@@ -3622,7 +3673,7 @@ it('update NoSQL call.aggr set data to dot & double dot', async () => {
 			'records': [{ 'all': 4, 'dog_name': '.', 'owner_name': '..' }],
 		})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.update_hashes[0]).to.eql(4)
+		.expect((r) => assert.ok(r.body.update_hashes[0] == 4))
 });
 
 it('update NoSQL employee add new attribute', async () => {
@@ -3664,7 +3715,7 @@ it('Insert with duplicate records to make sure both are not added', async () => 
 			}, { '{{emps_id}}': 212, 'address': 'def1234', 'lastname': 'dobolina2', 'firstname': 'bob' }],
 		})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.skipped_hashes[0]).to.eql(212)
+		.expect((r) => assert.ok(r.body.skipped_hashes[0] == 212))
 });
 
 it('Insert with no hash', async () => {
@@ -3710,8 +3761,8 @@ it('NoSQL search by hash', async () => {
 			'get_attributes': ['address', 'test_record'],
 		})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData[0].address).to.eql('def1234')
-//Unmatched Postman assertion: pm.expect(jsonData[0].test_record).to.eql("I'mATest"))
+		.expect((r) => assert.ok(r.body[0].address == 'def1234'))
+		.expect((r) => assert.ok(r.body[0].test_record == "I'mATest"))
 });
 
 it('NoSQL search by hash - check dot & double dot', async () => {
@@ -3726,8 +3777,8 @@ it('NoSQL search by hash - check dot & double dot', async () => {
 			'get_attributes': ['*'],
 		})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData[0].dog_name).to.eql('.')
-//Unmatched Postman assertion: pm.expect(jsonData[0].owner_name).to.eql(".."))
+		.expect((r) => assert.ok(r.body[0].dog_name == '.'))
+		.expect((r) => assert.ok(r.body[0].owner_name == ".."))
 });
 
 it('NoSQL search by hash no schema', async () => {
@@ -3802,7 +3853,7 @@ it('update NoSQL employee with falsey attributes', async () => {
 		})
 		.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records', 'Expected response message to eql "updated 1 of 1 records"'))
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.update_hashes[0]).to.eql(2))
+		.expect((r) => assert.ok(r.body.update_hashes[0] == 2))
 });
 
 it('NoSQL search by hash to confirm falsey update', async () => {
@@ -3818,9 +3869,9 @@ it('NoSQL search by hash to confirm falsey update', async () => {
 			'get_attributes': ['address', 'hireDate', 'notes'],
 		})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData[0].address).to.eql(0)
-//Unmatched Postman assertion: pm.expect(jsonData[0].hireDate).to.eql(null)
-//Unmatched Postman assertion: pm.expect(jsonData[0].notes).to.eql(false))
+		.expect((r) => assert.ok(r.body[0].address == 0))
+		.expect((r) => assert.ok(r.body[0].hireDate == null))
+		.expect((r) => assert.ok(r.body[0].notes == false))
 });
 
 it('update NoSQL one employee record with no hash attribute', async () => {
@@ -3887,10 +3938,10 @@ it('update NoSQL employee with valid nonexistent hash', async () => {
 	//Unmatched Postman assertion: if(jsonData.message === "updated 0 of 1 records"){
 		.expect((r) => assert.ok(r.body.message == 'updated 0 of 1 records'))
 		.expect((r) => assert.ok(r.body.update_hashes == []))
-	//Unmatched Postman assertion: pm.expect(jsonData.skipped_hashes[0]).to.eql("There is no way this exists")
+		.expect((r) => assert.ok(r.body.skipped_hashes[0] == "There is no way this exists"))
 	//Unmatched Postman assertion: } else if(jsonData.message === "updated 1 of 1 records"){
 		.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records', 'Expected response message to eql "updated 1 of 1 records"'))
-	//Unmatched Postman assertion: pm.expect(jsonData.update_hashes[0]).to.eql("There is no way this exists")
+		.expect((r) => assert.ok(r.body.update_hashes[0] == "There is no way this exists"))
 		.expect((r) => assert.ok(r.body.skipped_hashes == []))
 //Unmatched Postman assertion: }})
 });
@@ -3916,7 +3967,7 @@ it('NoSQL search by value - * at end', async () => {
 	//Unmatched Postman assertion: } else{
 		.expect((r) => assert.ok(keys.length == 3))
 //Unmatched Postman assertion: }
-//Unmatched Postman assertion: pm.expect(record.remarks.includes('Location ... Location ...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:')).to.eql(true)});
+//Unmatched Postman assertion: pm.expect(record.remarks.includes('Location ... Location ...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:') == true)})
 });
 
 it('NoSQL search by value - * at start', async () => {
@@ -3940,7 +3991,7 @@ it('NoSQL search by value - * at start', async () => {
 	//Unmatched Postman assertion: } else{
 		.expect((r) => assert.ok(keys.length == 3))
 //Unmatched Postman assertion: }
-//Unmatched Postman assertion: pm.expect(record.remarks.includes("*DON'T MISS THIS BEAUTIFUL DAVID WEEKLEY BELMONTE MODEL*ONE OF THE LARGEST LOTS IN CROSSWATER*GREAT FOR OUTDOOR FUN!*LUXURIOUS LIVING!*HIGH TECH HOME*CROWN MOLDING, CUSTOM PLANTATION SHUTTERS, 18'' TILE & CUSTOM WHITE OAK HARDWOOD FLOORING...")).to.eql(true)});
+//Unmatched Postman assertion: pm.expect(record.remarks.includes("*DON'T MISS THIS BEAUTIFUL DAVID WEEKLEY BELMONTE MODEL*ONE OF THE LARGEST LOTS IN CROSSWATER*GREAT FOR OUTDOOR FUN!*LUXURIOUS LIVING!*HIGH TECH HOME*CROWN MOLDING, CUSTOM PLANTATION SHUTTERS, 18'' TILE & CUSTOM WHITE OAK HARDWOOD FLOORING...") == true)})
 });
 
 it('NoSQL search by value - * at start and end', async () => {
@@ -3964,7 +4015,7 @@ it('NoSQL search by value - * at start and end', async () => {
 	//Unmatched Postman assertion: } else{
 		.expect((r) => assert.ok(keys.length == 3))
 //Unmatched Postman assertion: }
-//Unmatched Postman assertion: pm.expect(record.remarks.includes("4 Bedroom/2.5+")).to.eql(true)});
+//Unmatched Postman assertion: pm.expect(record.remarks.includes("4 Bedroom/2.5+") == true)})
 });
 
 it('NoSQL search by value - * as search_value', async () => {
@@ -4011,7 +4062,7 @@ it('NoSQL search by value - *** at start', async () => {
 	//Unmatched Postman assertion: } else{
 		.expect((r) => assert.ok(keys.length == 3))
 //Unmatched Postman assertion: }
-//Unmatched Postman assertion: pm.expect(record.remarks.includes("**Spacious & updated 2-story home on large preserve lot nearly 1/2 acre! Concrete block constr. & desirable ICW location near JTB, shopping, dining & the beach! Great split BD flrpln w/soaring ceilings features 4BD + office, upstairs loft & 3 full BA.")).to.eql(true)});
+//Unmatched Postman assertion: pm.expect(record.remarks.includes("**Spacious & updated 2-story home on large preserve lot nearly 1/2 acre! Concrete block constr. & desirable ICW location near JTB, shopping, dining & the beach! Great split BD flrpln w/soaring ceilings features 4BD + office, upstairs loft & 3 full BA.") == true)})
 });
 
 it('NoSQL search by hash on leading_zero, value = 0', async () => {
@@ -4093,9 +4144,9 @@ it('NoSQL search by value leading_zero - value = "011"', async () => {
 		})
 		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
 	//Unmatched Postman assertion: let record = jsonData[0];
-	//Unmatched Postman assertion: pm.expect(record.id).to.eql('011')
+	//Unmatched Postman assertion: pm.expect(record.id == '011')
 		.expect((r) => assert.ok(record.another_attribute == 'another_2'))
-//Unmatched Postman assertion: pm.expect(record.some_attribute).to.eql("some_att2"))
+//Unmatched Postman assertion: pm.expect(record.some_attribute == "some_att2"))
 });
 
 it('NoSQL search by value leading_zero - value = "0*"', async () => {
@@ -4170,7 +4221,7 @@ it('Upsert into products 1 new record & 2 that exist', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.upserted_hashes.length == 3))
-	//Unmatched Postman assertion: pm.expect(jsonData.upserted_hashes).to.eql([1, 100, 101])
+		.expect((r) => assert.ok(r.body.upserted_hashes == [1, 100, 101]))
 		.expect((r) => assert.ok(r.body.skipped_hashes == 'undefined'))
 		.expect((r) => assert.ok(r.body.message == 'upserted 3 of 3 records'))
 });
@@ -4191,7 +4242,7 @@ it('Confirm upserted records exist and are updated', async () => {
 //Unmatched Postman assertion: const expectedHashes = [1, 100, 101];
 //Unmatched Postman assertion: jsonData.forEach(row => {
 //Unmatched Postman assertion: pm.expect(expectedHashes.includes(row.productid)).to.be.true;
-//Unmatched Postman assertion: pm.expect(row.discontinued).to.be.true;});
+//Unmatched Postman assertion: pm.expect(row.discontinued).to.be.true;})
 });
 
 it('Upsert into products 3 new records w/o hash vals', async () => {
@@ -4247,7 +4298,7 @@ it('Remove added record from products', async () => {
 		.send({ 'operation': 'delete', 'schema': '{{schema}}', 'table': '{{prod_tb}}', 'hash_values': [100] })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.deleted_hashes.length == 1))
-	//Unmatched Postman assertion: pm.expect(jsonData.deleted_hashes).to.eql([100])
+		.expect((r) => assert.ok(r.body.deleted_hashes == [100]))
 		.expect((r) => assert.ok(r.body.skipped_hashes.length == 0))
 		.expect((r) => assert.ok(r.body.skipped_hashes == []))
 		.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted'))
@@ -4277,8 +4328,8 @@ it('Update products 1 existing record & one that does not exist', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body.update_hashes.length == 1))
 		.expect((r) => assert.ok(r.body.update_hashes == [1]))
-	//Unmatched Postman assertion: pm.expect(jsonData.skipped_hashes.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(jsonData.skipped_hashes).to.eql([100])
+		.expect((r) => assert.ok(r.body.skipped_hashes.length == 1))
+		.expect((r) => assert.ok(r.body.skipped_hashes == [100]))
 		.expect((r) => assert.ok(r.body.message == 'updated 1 of 2 records'))
 });
 
@@ -4478,7 +4529,7 @@ it('search by conditions - starts_with', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 6))
 //Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(row.location.startsWith('Denver')).to.equal(true))
+//Unmatched Postman assertion: pm.expect(row.location.startsWith('Denver') == true))
 });
 
 it('search by conditions - ends_with', async () => {
@@ -4597,7 +4648,7 @@ it('search by conditions - between using same value', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 2))
 //Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(row.age).to.equal(5))
+//Unmatched Postman assertion: pm.expect(row.age == 5))
 });
 
 it('search by conditions - between w/ alpha', async () => {
@@ -5140,7 +5191,7 @@ it('Check Data CSV job - update - perms error', async () => {
 		.expect((r) => assert.ok(r.body[0].status == 'ERROR'))
 		.expect((r) => assert.ok(r.body[0].id == getJobId(job_id)))
 		.expect((r) => assert.ok(msg.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
-	//Unmatched Postman assertion: pm.expect(msg.unauthorized_access.length).to.eql(0)
+	//Unmatched Postman assertion: pm.expect(msg.unauthorized_access.length == 0)
 		.expect((r) => assert.ok(msg.invalid_schema_items.length == 1))
 		.expect((r) => assert.ok(r.body.message.invalid_schema_items[0] == 'Attribute \' rando\' does not exist on \'northnwd.suppliers\''))
 	//Unmatched Postman assertion: break;
@@ -5203,13 +5254,13 @@ it('Check Data CSV job - upsert - perms error', async () => {
 		.expect((r) => assert.ok(unauth_obj.schema == 'dev'))
 		.expect((r) => assert.ok(unauth_obj.table == 'dog'))
 		.expect((r) => assert.ok(unauth_obj.required_table_permissions.length == 0))
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions.length).to.eql(2)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].attribute_name).to.eql("adorable")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions[0]).to.eql("update")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].attribute_name).to.eql("age")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions[0]).to.eql("insert")
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions.length == 2))
+	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].attribute_name == "adorable")
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == "update"))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == "age"))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert'))
 		.expect((r) => assert.ok(msg.invalid_schema_items.length == 1))
 		.expect((r) => assert.ok(r.body.message.invalid_schema_items[0] == 'Attribute \'rando\' does not exist on \'dev.dog\''))
 	//Unmatched Postman assertion: break;
@@ -5272,13 +5323,13 @@ it('Check URL CSV job  - upsert -  perms error', async () => {
 		.expect((r) => assert.ok(unauth_obj.schema == 'northnwd'))
 		.expect((r) => assert.ok(unauth_obj.table == 'url_csv_data'))
 		.expect((r) => assert.ok(unauth_obj.required_table_permissions.length == 0))
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions.length).to.eql(2)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].attribute_name).to.eql("name")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions[0]).to.eql("update")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].attribute_name).to.eql("section")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions[0]).to.eql("insert")
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions.length == 2))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == "name"))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == "update"))
+	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].attribute_name == "section")
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert'))
 		.expect((r) => assert.ok(msg.invalid_schema_items.length == 1))
 		.expect((r) => assert.ok(r.body.message.invalid_schema_items[0] == 'Attribute \'country\' does not exist on \'northnwd.url_csv_data\''))
 	//Unmatched Postman assertion: break;
@@ -5341,10 +5392,10 @@ it('Check URL CSV job  - update -  perms error', async () => {
 		.expect((r) => assert.ok(unauth_obj.schema == 'northnwd'))
 		.expect((r) => assert.ok(unauth_obj.table == 'url_csv_data'))
 		.expect((r) => assert.ok(unauth_obj.required_table_permissions.length == 0))
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].attribute_name).to.eql("name")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions[0]).to.eql("update")
+	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions.length == 1)
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == "name"))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == "update"))
 		.expect((r) => assert.ok(msg.invalid_schema_items.length == 1))
 		.expect((r) => assert.ok(r.body.message.invalid_schema_items[0] == 'Attribute \'country\' does not exist on \'northnwd.url_csv_data\''))
 	//Unmatched Postman assertion: break;
@@ -5405,16 +5456,16 @@ it('Check File CSV job perms error', async () => {
 		.expect((r) => assert.ok(r.body[0].message.unauthorized_access.length == 1))
 	//Unmatched Postman assertion: const unauth_obj = msg.unauthorized_access[0];
 		.expect((r) => assert.ok(unauth_obj.schema == 'dev'))
-	//Unmatched Postman assertion: pm.expect(unauth_obj.table).to.eql("books")
+	//Unmatched Postman assertion: pm.expect(unauth_obj.table == "books")
 		.expect((r) => assert.ok(unauth_obj.required_table_permissions.length == 0))
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions.length).to.eql(2)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].attribute_name).to.eql("id")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions[0]).to.eql("insert")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].attribute_name).to.eql("books_count")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions[0]).to.eql("insert")
-	//Unmatched Postman assertion: pm.expect(msg.invalid_schema_items.length).to.eql(17)
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions.length == 2))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == "id"))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert'))
+	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].attribute_name == "books_count")
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert'))
+	//Unmatched Postman assertion: pm.expect(msg.invalid_schema_items.length == 17)
 	//Unmatched Postman assertion: const expected_invalid_items = [
 	//Unmatched Postman assertion: "Attribute 'authors' does not exist on 'dev.books'",
 	//Unmatched Postman assertion: "Attribute 'original_publication_year' does not exist on 'dev.books'",
@@ -5502,14 +5553,14 @@ it('Check S3 CSV job perms error', async () => {
 		.expect((r) => assert.ok(unauth_obj.schema == 'dev'))
 		.expect((r) => assert.ok(unauth_obj.table == 'dog'))
 		.expect((r) => assert.ok(unauth_obj.required_table_permissions.length == 0))
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions.length).to.eql(2)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].attribute_name).to.eql("owner_id")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions[0]).to.eql("insert")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].attribute_name).to.eql("age")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions[0]).to.eql("insert")
-	//Unmatched Postman assertion: pm.expect(msg.invalid_schema_items.length).to.eql(2)
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions.length == 2))
+	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].attribute_name == "owner_id")
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert'))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == "age"))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert'))
+	//Unmatched Postman assertion: pm.expect(msg.invalid_schema_items.length == 2)
 	//Unmatched Postman assertion: const expected_invalid_items = [
 	//Unmatched Postman assertion: "Attribute 'breed_id' does not exist on 'dev.dog'",
 	//Unmatched Postman assertion: "Attribute 'weight_lbs' does not exist on 'dev.dog'"
@@ -5582,15 +5633,15 @@ it('Check S3 JSON upsert perms error', async () => {
 		.expect((r) => assert.ok(unauth_obj.schema == 'dev'))
 		.expect((r) => assert.ok(unauth_obj.table == 'owner'))
 		.expect((r) => assert.ok(unauth_obj.required_table_permissions.length == 0))
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions.length).to.eql(2)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].attribute_name).to.eql("id")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions.length).to.eql(2)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions[0]).to.eql("insert")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions[1]).to.eql("update")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].attribute_name).to.eql("name")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions.length).to.eql(2)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions[0]).to.eql("insert")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions[1]).to.eql("update")
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions.length == 2))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == "id"))
+	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions.length == 2)
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert'))
+	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions[1] == "update")
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == "name"))
+	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions.length == 2)
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert'))
+	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions[1] == "update")
 		.expect((r) => assert.ok(msg.invalid_schema_items.length == 0))
 	//Unmatched Postman assertion: break;
 	//Unmatched Postman assertion: case 'COMPLETE':
@@ -5654,17 +5705,17 @@ it('Check S3 JSON insert perms error', async () => {
 		.expect((r) => assert.ok(r.body[0].id == getJobId(job_id)))
 		.expect((r) => assert.ok(msg.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
 		.expect((r) => assert.ok(r.body[0].message.unauthorized_access.length == 1))
-	//Unmatched Postman assertion: const unauth_obj = msg.unauthorized_access[0];
+		//Unmatched Postman assertion: const unauth_obj = msg.unauthorized_access[0];
 		.expect((r) => assert.ok(unauth_obj.schema == 'dev'))
 		.expect((r) => assert.ok(unauth_obj.table == 'owner'))
 		.expect((r) => assert.ok(unauth_obj.required_table_permissions.length == 0))
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions.length).to.eql(2)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].attribute_name).to.eql("id")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions[0]).to.eql("insert")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].attribute_name).to.eql("name")
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions[0]).to.eql("insert")
+		.expect((r) => assert.ok(unauth_obj.required_attribute_permissions.length == 2))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == "id"))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert'))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == "name"))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1))
+	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert'))
 		.expect((r) => assert.ok(msg.invalid_schema_items.length == 0))
 	//Unmatched Postman assertion: break;
 	//Unmatched Postman assertion: case 'COMPLETE':
@@ -5789,7 +5840,7 @@ it('Check Data CSV upsert job completed', async () => {
 	//Unmatched Postman assertion: case 'COMPLETE':
 	//Unmatched Postman assertion: console.log(jsonData[0])
 		.expect((r) => assert.ok(r.body[0].message.includes('successfully loaded 1 of 1 records')))
-//Unmatched Postman assertion: pm.expect(status).to.eql('COMPLETE')
+.expect((r) => assert.ok(status == 'COMPLETE'))
 //Unmatched Postman assertion: break;
 //Unmatched Postman assertion: case '0':
 //Unmatched Postman assertion: case 0:
@@ -5812,7 +5863,7 @@ it('Check row from Data CSV job was upserted', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'SELECT count(*) AS row_count FROM {{schema}}.{{supp_tb}}' })
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData[0].row_count).to.eql(30))
+		.expect((r) => assert.ok(r.body[0].row_count == 30))
 });
 
 it('Import CSV from S3 to table w/ full attr perms - update', async () => {
@@ -5857,7 +5908,7 @@ it('Check S3 CSV update job completed', async () => {
 	//Unmatched Postman assertion: case 'COMPLETE':
 	//Unmatched Postman assertion: console.log(jsonData[0])
 		.expect((r) => assert.ok(r.body[0].message.includes('successfully loaded 9 of 12 records')))
-//Unmatched Postman assertion: pm.expect(status).to.eql('COMPLETE')
+.expect((r) => assert.ok(status == 'COMPLETE'))
 //Unmatched Postman assertion: break;
 //Unmatched Postman assertion: case '0':
 //Unmatched Postman assertion: case 0:
@@ -5894,8 +5945,7 @@ it('Drop bulk_load_user', async () => {
 		.send({ 'operation': 'drop_user', 'username': 'bulk_load_user' })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message))
-
-//Unmatched Postman assertion: pm.expect(jsonData.message).to.contain('successfully deleted'))
+		.expect((r) => assert.ok(jsonData.message.includes('successfully deleted')))
 });
 
 it('Drop bulk_load_user role', async () => {
@@ -5905,8 +5955,7 @@ it('Drop bulk_load_user role', async () => {
 		.send({ 'operation': 'drop_role', 'id': '{{role_id}}' })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message))
-
-//Unmatched Postman assertion: pm.expect(jsonData.message).to.contain('successfully deleted'))
+		.expect((r) => assert.ok(jsonData.message.includes('successfully deleted')))
 });
 
 it('Authentication - bad username', async () => {
@@ -6213,8 +6262,8 @@ it('NoSQL Try to insert into insert restricted region table as test_user', async
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql('insert')
+	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
+	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == "insert"))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'region'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
@@ -6289,8 +6338,8 @@ it('NoSQL Try to update restricted territories table as test_user', async () => 
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql('update')
+	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
+	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == "update"))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'territories'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
@@ -6344,9 +6393,8 @@ it('NoSQL Try to update FULLY restricted attrs in categories table as test_user'
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'categoryname' does not exist on 'northnwd.categories'")).to.eql(true)
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'picture' does not exist on 'northnwd.categories'")).to.eql(true)
-
+		.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'categoryname' does not exist on 'northnwd.categories'")))
+		.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'picture' does not exist on 'northnwd.categories'")))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
 });
 
@@ -6366,8 +6414,8 @@ it('NoSQL Try to delete from restricted categories table as test_user', async ()
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql('delete')
+	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
+	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == "delete"))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'categories'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
@@ -6389,8 +6437,8 @@ it('NoSQL Try to read shippers table FULLY restricted attribute as test_user', a
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")).to.eql(true)
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")).to.eql(true)
+	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")))
+	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")))
 
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
 });
@@ -6428,8 +6476,8 @@ it('NoSQL Try to update shippers table FULLY restricted attributes as test_user'
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")).to.eql(true)
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")).to.eql(true)
+	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")))
+	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")))
 
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
 });
@@ -6447,9 +6495,9 @@ it('NoSQL Try to insert shippers table restricted attributes as test_user', asyn
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 3))
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")).to.eql(true)
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")).to.eql(true)
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'")).to.eql(true)
+	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")))
+	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")))
+	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'")))
 
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
 });
@@ -6670,8 +6718,7 @@ it('NoSQL Try to update attr w/ timestamp value in update row as SU  - expect su
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "updated 2 of 2 records"))
-
-//Unmatched Postman assertion: pm.expect(jsonData.update_hashes.length).to.eql(2))
+		.expect((r) => assert.ok(r.body.update_hashes.length == 2))
 });
 
 it('NoSQL Try to update timestamp value on dog table as SU - expect', async () => {
@@ -6689,8 +6736,7 @@ it('NoSQL Try to update timestamp value on dog table as SU - expect', async () =
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "updated 2 of 2 records"))
-
-//Unmatched Postman assertion: pm.expect(jsonData.update_hashes.length).to.eql(2))
+		.expect((r) => assert.ok(r.body.update_hashes.length == 2))
 });
 
 it('NoSQL - Upsert - table perms true/no attribute perms set - expect success', async () => {
@@ -6726,7 +6772,7 @@ it('NoSQL - Upsert - table perms true/attr perms true - expect success', async (
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.upserted_hashes.length == 2))
-	//Unmatched Postman assertion: pm.expect(jsonData.upserted_hashes.includes(8)).to.be.true;
+		.expect((r) => assert.ok(r.body.upserted_hashes.includes(8)))
 		.expect((r) => assert.ok(r.body.skipped_hashes == 'undefined'))
 		.expect((r) => assert.ok(r.body.message == "upserted 2 of 2 records"))
 });
@@ -6772,9 +6818,9 @@ it('NoSQL - Upsert - table perms true/false  - expect error', async () => {
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == "territories"))
-//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1)
-//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql("update")
-//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions.length).to.eql(0))
+		.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == "update"))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 0))
 });
 
 it('NoSQL - Upsert - table perms true/attr perms true but new attribute included - expect error', async () => {
@@ -6823,10 +6869,10 @@ it('NoSQL - Upsert - table perms true/some attr perms false - expect error', asy
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == "dev"))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == "dog"))
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(0)
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions.length).to.eql(2)
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 0))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 2))
 	//Unmatched Postman assertion: jsonData.unauthorized_access[0].required_attribute_permissions.forEach(attr_perm_err => {
-	//Unmatched Postman assertion: pm.expect(attr_perm_err.required_permissions[0]).to.eql(expected_attr_perm_errs[attr_perm_err.attribute_name])
+	//Unmatched Postman assertion: pm.expect(attr_perm_err.required_permissions[0] == expected_attr_perm_errs[attr_perm_err.attribute_name])
 	//Unmatched Postman assertion: })
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1))
 		.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'birthday' does not exist on 'dev.dog'"))
@@ -6985,9 +7031,9 @@ const response = await request(envUrl)
 	.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
 	.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == "dev"))
 	.expect((r) => assert.ok(r.body.unauthorized_access[0].table == "dog_conditions"))
-//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions.length).to.eql(1)
-//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql("breed_id")
-//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql("read"))
+.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_attribute_permissions.length == 1))
+.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name == "breed_id"))
+.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0] == "read"))
 });
 
 it("search by conditions - starts_with - unauth'd attrs in get / search", async () => {
@@ -7008,9 +7054,9 @@ const response = await request(envUrl)
 	.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
 	.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == "dev"))
 	.expect((r) => assert.ok(r.body.unauthorized_access[0].table == "dog_conditions"))
-//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions.length).to.eql(1)
-//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql("breed_id")
-//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql("read"))
+.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_attribute_permissions.length == 1))
+.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name == "breed_id"))
+.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0] == "read"))
 });
 
 it('search by conditions - equals & contains - restricted attr', async () => {
@@ -7118,9 +7164,9 @@ const response = await request(envUrl)
 	.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
 	.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == "dev"))
 	.expect((r) => assert.ok(r.body.unauthorized_access[0].table == "dog_conditions"))
-//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions.length).to.eql(1)
-//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name).to.eql("breed_id")
-//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0]).to.eql("read"))
+.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_attribute_permissions.length == 1))
+.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name == "breed_id"))
+.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0] == "read"))
 });
 
 it('NoSQL Alter non-SU role', async () => {
@@ -7275,7 +7321,7 @@ it('NoSQL Add cluster_user with another permission, expect fail', async () => {
 		.expect((r) => assert.ok(r.body.error == "Errors in the role permissions JSON provided"))
 		.expect((r) => assert.ok(responseData.main_permissions.length == 1))
 		.expect((r) => assert.ok(r.body.main_permissions[0] == "Roles cannot have both 'super_user' and 'cluster_user' values included in their permissions set."))
-//Unmatched Postman assertion: pm.expect(Object.keys(responseData.schema_permissions).length).to.equal(0)
+//Unmatched Postman assertion: pm.expect(Object.keys(responseData.schema_permissions).length == 0)
 });
 
 it('NoSQL Add User with cluster_user Role', async () => {
@@ -7291,8 +7337,7 @@ it('NoSQL Add User with cluster_user Role', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message))
-
-//Unmatched Postman assertion: pm.expect(jsonData.message).to.contain('successfully added'))
+		.expect((r) => assert.ok(r.body.message.includes('successfully added')))
 });
 
 it('NoSQL alter cluster user, change password', async () => {
@@ -7302,8 +7347,7 @@ it('NoSQL alter cluster user, change password', async () => {
 		.send({ "operation": "alter_user", "username": "test_cluster_user", "password": "{{password}}111" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message))
-
-//Unmatched Postman assertion: pm.expect(jsonData.message).to.contain('updated 1 of 1 records'))
+		.expect((r) => assert.ok(r.body.message.includes('updated 1 of 1 records')))
 });
 
 it('NoSQL drop test_cluster_user', async () => {
@@ -7313,8 +7357,7 @@ it('NoSQL drop test_cluster_user', async () => {
 		.send({ "operation": "drop_user", "username": "test_cluster_user" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message))
-
-//Unmatched Postman assertion: pm.expect(jsonData.message).to.contain('successfully deleted'))
+		.expect((r) => assert.ok(jsonData.message.includes('successfully deleted')))
 });
 
 it('NoSQL drop cluster_user role', async () => {
@@ -7324,8 +7367,7 @@ it('NoSQL drop cluster_user role', async () => {
 		.send({ "operation": "drop_role", "id": "{{cluster_user_role_id}}" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message))
-
-//Unmatched Postman assertion: pm.expect(jsonData.message).to.contain('successfully deleted'))
+		.expect((r) => assert.ok(jsonData.message.includes('successfully deleted')))
 });
 
 it('SQL Add non SU role', async () => {
@@ -7531,7 +7573,7 @@ it('get user info make sure role was not changed', async () => {
 
 //Unmatched Postman assertion: for(let user of responseData) {
 //Unmatched Postman assertion: if(user.username === 'test_user') {
-//Unmatched Postman assertion: pm.expect(postman.getEnvironmentVariable("user_role_id")).to.eql(user.role.id)
+//Unmatched Postman assertion: pm.expect(postman.getEnvironmentVariable("user_role_id") == user.role.id)
 //Unmatched Postman assertion: }
 //Unmatched Postman assertion: }})
 });
@@ -7571,7 +7613,7 @@ it('SQL Try to read region table as test_user', async () => {
 		.send({ "operation": "sql", "sql": "select * from {{schema}}.{{regi_tb}}" })
 		.expect(200)
 
-//Unmatched Postman assertion: var permitted_attrs = ["regiondescription", "regionid"];//Unmatched Postman assertion: jsonData.forEach(obj => {
+//Unmatched Postman assertion: var permitted_attrs = ["regiondescription", "regionid"];//Unmatched Postman assertion: jsonData.forEach((obj) => {
 //Unmatched Postman assertion: Object.keys(obj).forEach(attr_name => {
 //Unmatched Postman assertion: pm.expect(permitted_attrs.includes(attr_name))
 //Unmatched Postman assertion: })
@@ -7600,8 +7642,8 @@ it('SQL Try to insert into restricted region table as test_user', async () => {
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql('insert')
+	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
+	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == "insert"))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == "region"))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
@@ -7643,7 +7685,7 @@ it('SQL Try to insert into territories table with allowed attributes as test_use
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "inserted 1 of 1 records"))
-//Unmatched Postman assertion: pm.expect(jsonData.inserted_hashes[0]).to.eql(165))
+		.expect((r) => assert.ok(r.body.inserted_hashes[0] == 165))
 });
 
 it('SQL Try to update territories table as SU', async () => {
@@ -7668,8 +7710,8 @@ it('SQL Try to update restricted territories table as test_user', async () => {
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql('update')
+	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
+	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == "update"))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'territories'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
@@ -7717,8 +7759,8 @@ it('SQL Try to delete from restricted categories table as test_user', async () =
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql('delete')
+	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
+	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == "delete"))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'categories'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
@@ -7759,9 +7801,9 @@ it('SQL Try to insert into shippers table w/ FULLY restricted attributes as test
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 3))
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")).to.eql(true)
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")).to.eql(true)
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'")).to.eql(true)
+	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")))
+	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")))
+	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'")))
 
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
 });
@@ -7788,9 +7830,9 @@ it('SQL Try to read shippers table as test_user with restricted attribute in WHE
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 3))
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")).to.eql(true)
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'")).to.eql(true)
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")).to.eql(true)
+	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")))
+	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'")))
+	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")))
 
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
 });
@@ -7806,8 +7848,8 @@ it('Select with restricted CROSS SCHEMA JOIN as test_user', async () => {
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'id' does not exist on 'other.owner'")).to.eql(true)
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'name' does not exist on 'other.owner'")).to.eql(true)
+		.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'id' does not exist on 'other.owner'")))
+	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'name' does not exist on 'other.owner'")))
 
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
 });
@@ -7817,15 +7859,14 @@ it('Select * with restricted CROSS SCHEMA JOIN as test_user', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			"operation": "sql",
-			"sql": "SELECT d.*, o.* FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id ORDER BY o.name, o.id LIMIT 5 OFFSET 1"
+			'operation': 'sql',
+			'sql': 'SELECT d.*, o.* FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id ORDER BY o.name, o.id LIMIT 5 OFFSET 1',
 		})
 		.expect(403)
-		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
+		.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'id' does not exist on 'other.owner'")).to.eql(true)
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'name' does not exist on 'other.owner'")).to.eql(true)
-
+		.expect((r) => assert.ok(r.body.invalid_schema_items.includes('Attribute \'id\' does not exist on \'other.owner\'')))
+		.expect((r) => assert.ok(jsonData.invalid_schema_items.includes('Attribute \'name\' does not exist on \'other.owner\'')))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
 });
 
@@ -7834,19 +7875,19 @@ it('Select restricted attrs in CROSS 3 SCHEMA JOINS as test_user', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			"operation": "sql",
-			"sql": "SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name, b.id, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id"
+			'operation': 'sql',
+			'sql': 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name, b.id, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id',
 		})
 		.expect(403)
-		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
+		.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql('read')
-		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == "another"))
-		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == "breed"))
+		.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
+		.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == 'read'))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'another'))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'breed'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
-//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'id' does not exist on 'other.owner'")).to.eql(true)
-//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'name' does not exist on 'other.owner'")).to.eql(true))
+		.expect((r) => assert.ok(r.body.invalid_schema_items.includes('Attribute \'id\' does not exist on \'other.owner\'')))
+		.expect((r) => assert.ok(r.body.invalid_schema_items.includes('Attribute \'name\' does not exist on \'other.owner\'')))
 });
 
 it('Select with complex CROSS 3 SCHEMA JOINS as test_user', async () => {
@@ -7854,19 +7895,19 @@ it('Select with complex CROSS 3 SCHEMA JOINS as test_user', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			"operation": "sql",
-			"sql": "SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name, b.image FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name"
+			'operation': 'sql',
+			'sql': 'SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name, b.image FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name',
 		})
 		.expect(403)
-		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
+		.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql('read')
-		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == "another"))
-		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == "breed"))
+		.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
+		.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == 'read'))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'another'))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'breed'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
-//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'id' does not exist on 'other.owner'")).to.eql(true)
-//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'name' does not exist on 'other.owner'")).to.eql(true))
+		.expect((r) => assert.ok(r.body.invalid_schema_items.includes('Attribute \'id\' does not exist on \'other.owner\'')))
+		.expect((r) => assert.ok(r.body.invalid_schema_items.includes('Attribute \'name\' does not exist on \'other.owner\'')))
 });
 
 it('Select * w/ two table CROSS SCHEMA JOIN on table with FULLY restricted attributes as test_user', async () => {
@@ -7880,8 +7921,8 @@ it('Select * w/ two table CROSS SCHEMA JOIN on table with FULLY restricted attri
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'name' does not exist on 'other.owner'")).to.eql(true)
-	//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'id' does not exist on 'other.owner'")).to.eql(true)
+	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'name' does not exist on 'other.owner'")))
+	.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'id' does not exist on 'other.owner'")))
 
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
 });
@@ -8012,22 +8053,23 @@ it('Select two table CROSS SCHEMA JOIN as test_user', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			"operation": "sql",
-			"sql": "SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id"
+			operation: 'sql',
+			sql: 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id',
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 9))
-		//Unmatched Postman assertion: var expected_attributes = ["id", "dog_name", "age", "adorable", "id1", "name"]
-	//Unmatched Postman assertion: //Important to test that only the id (returned as id1) and name attributes come back for 'other.owner' since user only has access to those two attributes
-
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-	//Unmatched Postman assertion: expected_attributes.forEach(attr => {
-	//Unmatched Postman assertion: pm.expect(row[attr]).to.exist;
-	//Unmatched Postman assertion: })
-	//Unmatched Postman assertion: })
-		.expect((r) => assert.ok(r.body[1].name == "Kyle"))
-//Unmatched Postman assertion: pm.expect(jsonData[3].id1).to.eql(1)
-//Unmatched Postman assertion: pm.expect(jsonData[4].id1).to.eql(2))
+		.expect((r) => {
+			assert.ok(r.body.length == 9);
+			const expected_attributes = ['id', 'dog_name', 'age', 'adorable', 'id1', 'name'];
+			//Important to test that only the id (returned as id1) and name attributes come back for 'other.owner' since user only has access to those two attributes
+			r.body.forEach((row) => {
+				expected_attributes.forEach((attr) => {
+					assert.ok(row[attr]);
+				});
+			});
+		})
+		.expect((r) => assert.ok(r.body[1].name == 'Kyle'))
+		.expect((r) => assert.ok(r.body[3].id1 == 1))
+		.expect((r) => assert.ok(r.body[4].id1 == 2))
 });
 
 it('Select * w/ two table CROSS SCHEMA JOIN as test_user', async () => {
@@ -8044,9 +8086,9 @@ it('Select * w/ two table CROSS SCHEMA JOIN as test_user', async () => {
 
 		.expect((r) => assert.ok(r.body.length == 5))
 //Unmatched Postman assertion: jsonData.forEach((obj, i) => {
-//Unmatched Postman assertion: pm.expect(obj.name).to.eql(expected_names[i])
+//Unmatched Postman assertion: pm.expect(obj.name == expected_names[i])
 //Unmatched Postman assertion: Object.keys(k => {
-//Unmatched Postman assertion: pm.expect(expected_attrs.includes(k)).to.eql(true)
+//Unmatched Postman assertion: pm.expect(expected_attrs.includes(k) == true)
 
 });
 
@@ -8055,25 +8097,26 @@ it('Select w/ CROSS 3 SCHEMA JOINS as test_user', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			"operation": "sql",
-			"sql": "SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name, b.id, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id"
+			operation: 'sql',
+			sql: 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name, b.id, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id',
 		})
-		.expect((r) => assert.ok(r.body.length == 9))
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-		.expect((r) => assert.ok(row.id))
-		.expect((r) => assert.ok(row.id1))
-		.expect((r) => assert.ok(row.id2))
-		.expect((r) => assert.ok(row.dog_name))
-		.expect((r) => assert.ok(row.age))
-		.expect((r) => assert.ok(row.name))
-		.expect((r) => assert.ok(row.name1))
-	//Unmatched Postman assertion: })
-
-		.expect((r) => assert.ok(r.body[1].name == "Kyle"))
-	//Unmatched Postman assertion: pm.expect(jsonData[1].id1).to.eql(2)
+		.expect((r) => {
+			assert.ok(r.body.length == 9);
+			r.body.forEach((row) => {
+				assert.ok(row.id);
+				assert.ok(row.id1);
+				assert.ok(row.id2);
+				assert.ok(row.dog_name);
+				assert.ok(row.age);
+				assert.ok(row.name);
+				assert.ok(row.name1);
+			});
+		})
+		.expect((r) => assert.ok(r.body[1].name == 'Kyle'))
+		.expect((r) => assert.ok(r.body[1].id1 == 2))
 		.expect((r) => assert.ok(r.body[4].id1 == 2))
-//Unmatched Postman assertion: pm.expect(jsonData[6].id1).to.eql(4)
-//Unmatched Postman assertion: pm.expect(jsonData[6].name1).to.eql("BEAGLE MIX"))
+		.expect((r) => assert.ok(r.body[6].id1 == 4))
+		.expect((r) => assert.ok(r.body[6].name1 == 'BEAGLE MIX'));
 });
 
 it('Select with complex CROSS 3 SCHEMA JOINS as test_user', async () => {
@@ -8081,25 +8124,26 @@ it('Select with complex CROSS 3 SCHEMA JOINS as test_user', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			"operation": "sql",
-			"sql": "SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name"
+			operation: 'sql',
+			sql: 'SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name',
 		})
-		.expect((r) => assert.ok(r.body.length == 9))
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-		.expect((r) => assert.ok(row.dog_age))
-		.expect((r) => assert.ok(row.dog_weight))
-		.expect((r) => assert.ok(row.owner_name))
-		.expect((r) => assert.ok(row.name))
-	//Unmatched Postman assertion: })
-
-	//Unmatched Postman assertion: pm.expect(jsonData[0].dog_age).to.eql(3)
+		.expect((r) => {
+			assert.ok(r.body.length == 9);
+			r.body.forEach((row) => {
+				assert.ok(row.dog_age);
+				assert.ok(row.dog_weight);
+				assert.ok(row.owner_name);
+				assert.ok(row.name);
+			})
+		})
+		.expect((r) => assert.ok(r.body[0].dog_age == 3))
 		.expect((r) => assert.ok(r.body[0].dog_weight == 35))
-		.expect((r) => assert.ok(r.body[0].owner_name == "Kaylan"))
-		.expect((r) => assert.ok(r.body[0].name == "BEAGLE MIX"))
-	//Unmatched Postman assertion: pm.expect(jsonData[6].dog_age).to.eql(8)
-	//Unmatched Postman assertion: pm.expect(jsonData[6].dog_weight).to.eql(15)
-		.expect((r) => assert.ok(r.body[6].owner_name == "Kyle"))
-//Unmatched Postman assertion: pm.expect(jsonData[6].name).to.eql("TERRIER MIX"))
+		.expect((r) => assert.ok(r.body[0].owner_name == 'Kaylan'))
+		.expect((r) => assert.ok(r.body[0].name == 'BEAGLE MIX'))
+		.expect((r) => assert.ok(r.body[6].dog_age == 8))
+		.expect((r) => assert.ok(r.body[6].dog_weight == 15))
+		.expect((r) => assert.ok(r.body[6].owner_name == 'Kyle'))
+		.expect((r) => assert.ok(r.body[6].name == 'TERRIER MIX'))
 });
 
 it('SQL ALTER non SU role with multi table join restrictions', async () => {
@@ -8171,14 +8215,14 @@ it('Select with ALL RESTRICTED complex CROSS 3 SCHEMA JOINS as test_user', async
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql('read')
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == 'read'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'dev'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'dog'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 3))
-//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'id' does not exist on 'other.owner'")).to.eql(true)
-//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'name' does not exist on 'other.owner'")).to.eql(true)
-//Unmatched Postman assertion: pm.expect(jsonData.invalid_schema_items.includes("Attribute 'country' does not exist on 'another.breed'")).to.eql(true))
+		.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'id' does not exist on 'other.owner'")))
+		.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'name' does not exist on 'other.owner'")))
+		.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'country' does not exist on 'another.breed'")))
 });
 
 it('SQL drop test user', async () => {
@@ -8967,7 +9011,7 @@ it('Check S3 export', async () => {
 	//Unmatched Postman assertion: }
 		.expect((r) => assert.ok(r.body[0].result.ETag))
 		.expect((r) => assert.ok(r.body[0].result.VersionId))
-//Unmatched Postman assertion: pm.expect(status).to.eql('COMPLETE')
+.expect((r) => assert.ok(status == 'COMPLETE'))
 //Unmatched Postman assertion: break;
 //Unmatched Postman assertion: case '0':
 //Unmatched Postman assertion: case 0:
@@ -9038,7 +9082,7 @@ it('Check S3 export search_by_conditions', async () => {
 	//Unmatched Postman assertion: }
 		.expect((r) => assert.ok(r.body[0].result.ETag))
 		.expect((r) => assert.ok(r.body[0].result.VersionId))
-//Unmatched Postman assertion: pm.expect(status).to.eql('COMPLETE')
+.expect((r) => assert.ok(status == 'COMPLETE'))
 //Unmatched Postman assertion: break;
 //Unmatched Postman assertion: case '0':
 //Unmatched Postman assertion: case 0:
@@ -9102,9 +9146,9 @@ it('Check export local search_by_conditions', async () => {
 //Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
 //Unmatched Postman assertion: pm.environment.set("next_request", "Create S3 test table")
 //Unmatched Postman assertion: }
-//Unmatched Postman assertion: pm.expect(jsonData[0].message.message).to.equal("Successfully exported JSON locally.")
-//Unmatched Postman assertion: pm.expect(jsonData[0].type).to.equal("export_local")
-//Unmatched Postman assertion: pm.expect(status).to.eql('COMPLETE')
+.expect((r) => assert.ok(r.body[0].message.message == "Successfully exported JSON locally."))
+.expect((r) => assert.ok(r.body[0].type == "export_local"))
+.expect((r) => assert.ok(status == 'COMPLETE'))
 //Unmatched Postman assertion: break;
 //Unmatched Postman assertion: case '0':
 //Unmatched Postman assertion: case 0:
@@ -9644,7 +9688,7 @@ it('Search Jobs by date', async () => {
 			"to_date": "{{date_tomorrow}}"
 		})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.length).to.be.above(0))
+		.expect((r) => assert.ok(r.body.length > 0))
 });
 
 it('Search Jobs by date - non-super user', async () => {
@@ -10206,7 +10250,7 @@ it('Confirm correct attributes', async () => {
 		.set(headers)
 		.send({ "operation": "describe_table", "schema": "{{drop_schema}}", "table": "{{drop_table}}" })
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.attributes.length).to.eql(3))
+		.expect((r) => assert.ok(r.body.attributes.length == 3))
 });
 
 it('Clean up after drop schema tests', async () => {
@@ -10527,7 +10571,7 @@ it('Search by hash confirm upsert', async () => {
 		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
 		.expect((r) => assert.ok(r.body[0].id == "123a"))
 		.expect((r) => assert.ok(r.body[0].unitsinstock == 39))
-//Unmatched Postman assertion: pm.expect(jsonData[0].unitsnnorder).to.eql(0))
+		.expect((r) => assert.ok(r.body[0].unitsnnorder == 0))
 });
 
 it('Drop attribute unitsnnorder', async () => {
@@ -10822,7 +10866,7 @@ it('Verify records are deleted', async () => {
 		.set(headers)
 		.send({ "operation": "sql", "sql": "SELECT * from {{schema}}.{{emps_tb}} where address like '%Lane'" })
 		.expect(200)
-//Unmatched Postman assertion: //we want to test that the returned result is an empty array"//Unmatched Postman assertion: pm.expect(Array.isArray(jsonData) && jsonData.length === 0).to.be.true;
+.expect((r) => assert.ok(Array.isArray(jsonData) && jsonData.length === 0))
 });
 
 it('NoSQL Delete', async () => {
@@ -10831,14 +10875,17 @@ it('NoSQL Delete', async () => {
 		.set(headers)
 		.send({ "operation": "delete", "schema": "{{schema}}", "table": "{{emps_tb}}", "hash_values": [924, 927] })
 		.expect(200)
-//Unmatched Postman assertion: let expected_result = {
-//Unmatched Postman assertion: "message": "2 of 2 records successfully deleted",
-//Unmatched Postman assertion: "deleted_hashes": [
-//Unmatched Postman assertion: 924,
-//Unmatched Postman assertion: 927
-//Unmatched Postman assertion: ],
-//Unmatched Postman assertion: "skipped_hashes": []
-//Unmatched Postman assertion: };//Unmatched Postman assertion: pm.expect(jsonData).to.eql(expected_result))
+		.expect((r) => {
+			let expected_result = {
+				"message": "2 of 2 records successfully deleted",
+				"deleted_hashes": [
+					924,
+					927
+				],
+				"skipped_hashes": []
+			};
+			assert.deepEqual(r.body, expected_result);
+		})
 });
 
 it('NoSQL Verify records are deleted', async () => {
@@ -10853,7 +10900,7 @@ it('NoSQL Verify records are deleted', async () => {
 			"get_attributes": ["*"]
 		})
 		.expect(200)
-//Unmatched Postman assertion: //we want to test that the returned result is an empty array"//Unmatched Postman assertion: pm.expect(Array.isArray(jsonData) && jsonData.length === 0).to.be.true;
+.expect((r) => assert.ok(Array.isArray(jsonData) && jsonData.length === 0))
 });
 
 it('Insert records with objects and arrays', async () => {
@@ -10873,7 +10920,7 @@ it('Insert records with objects and arrays', async () => {
 			}, { "employeeid": 7927, "address": ["1", "2", "3"] }]
 		})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.message).to.be.eql("inserted 4 of 4 records"))
+		.expect((r) => assert.ok(r.body.message == "inserted 4 of 4 records"))
 });
 
 it('Delete records contaitng objects and arrays', async () => {
@@ -10881,22 +10928,20 @@ it('Delete records contaitng objects and arrays', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			"operation": "delete",
-			"schema": "{{schema}}",
-			"table": "{{emps_tb}}",
-			"hash_values": [7924, 7925, 7926, 7927]
+			operation: 'delete',
+			schema: '{{schema}}',
+			table: '{{emps_tb}}',
+			hash_values: [7924, 7925, 7926, 7927],
 		})
 		.expect(200)
-//Unmatched Postman assertion: let expected_result = {
-//Unmatched Postman assertion: "message": "4 of 4 records successfully deleted",
-//Unmatched Postman assertion: "deleted_hashes": [
-//Unmatched Postman assertion: 7924,
-//Unmatched Postman assertion: 7925,
-//Unmatched Postman assertion: 7926,
-//Unmatched Postman assertion: 7927
-//Unmatched Postman assertion: ],
-//Unmatched Postman assertion: "skipped_hashes": []
-//Unmatched Postman assertion: }//Unmatched Postman assertion: pm.expect(jsonData).to.be.eql(expected_result))
+		.expect((r) => {
+			let expected_result = {
+				message: '4 of 4 records successfully deleted',
+				deleted_hashes: [7924, 7925, 7926, 7927],
+				skipped_hashes: [],
+			};
+			assert.deepEqual(r.body, expected_result);
+		})
 });
 
 it('Verify object and array records deleted', async () => {
@@ -10911,7 +10956,7 @@ it('Verify object and array records deleted', async () => {
 			"get_attributes": ["employeeid", "address"]
 		})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData).to.be.eql([]))
+		.expect((r) => assert.deepEqual(r.body, []))
 });
 
 it('test SQL deleteing with numeric hash in single quotes', async () => {
@@ -10955,9 +11000,7 @@ it('Restart for new settings', async () => {
 		.set(headers)
 		.send({ "operation": "restart" })
 		.expect(200)
-
-//Unmatched Postman assertion: // This timeout is here to give HDB time to restart before the next text is ran.
-		await setTimeout(60000)
+	await setTimeout(60000)
 });
 
 it('create test table', async () => {
@@ -11094,8 +11137,7 @@ it('Insert new records', async () => {
 			"records": [{ "id": 1, "name": "Penny" }, { "id": 2, "name": "Kato", "age": 6 }]
 		})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.inserted_hashes.length).to.eql(2)
-
+		.expect((r) => assert.ok(r.body.inserted_hashes.length == 2))
 	await setTimeout(100)
 });
 
@@ -11127,7 +11169,6 @@ it('Update records', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.update_hashes.length == 2))
-
 	await setTimeout(100)
 });
 
@@ -11221,14 +11262,16 @@ it('Check upsert transaction', async () => {
 			"search_values": [5]
 		})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData["5"].length).to.eql(1)
-//Unmatched Postman assertion: const transaction = jsonData["5"][0]
-//Unmatched Postman assertion: pm.expect(transaction.operation).to.eql("upsert")
-//Unmatched Postman assertion: pm.expect(transaction.records.length).to.eql(1)
-//Unmatched Postman assertion: Object.keys(transaction.records[0]).forEach(key => {
-//Unmatched Postman assertion: pm.expect(["id", "name", "age", "__updatedtime__", "__createdtime__"]).includes(key)
-
-	await setTimeout(100)
+		.expect((r) => {
+			assert.ok(r.body["5"].length == 1);
+			const transaction = r.body["5"][0];
+			assert.ok(transaction.operation == "upsert");
+			assert.ok(transaction.records.length == 1);
+			Object.keys(transaction.records[0]).forEach((key) => {
+				assert.ok(["id", "name", "age", "__updatedtime__", "__createdtime__"].includes(key));
+			})
+		})
+	await setTimeout(100);
 });
 
 it('Fetch all Transactions', async () => {
@@ -11241,13 +11284,13 @@ it('Fetch all Transactions', async () => {
 	//Unmatched Postman assertion: const expected_attrs = ["id", "name", "__updatedtime__"];
 	//Unmatched Postman assertion: const other_attrs = ["age", "__createdtime__"];
 	//Unmatched Postman assertion: const upsert_trans = jsonData[7]; console.log(upsert_trans)
-	//Unmatched Postman assertion: pm.expect(upsert_trans.operation).to.eql("upsert")
-	//Unmatched Postman assertion: pm.expect(upsert_trans.records.length).to.eql(3)
-	//Unmatched Postman assertion: pm.expect(upsert_trans.records[0].id).to.eql(4)
+	//Unmatched Postman assertion: pm.expect(upsert_trans.operation == "upsert")
+	//Unmatched Postman assertion: pm.expect(upsert_trans.records.length == 3)
+	//Unmatched Postman assertion: pm.expect(upsert_trans.records[0].id == 4)
 	//Unmatched Postman assertion: Object.keys(upsert_trans.records[0]).forEach(key => {
 		.expect((r) => assert.ok([...expected_attrs, ...other_attrs]).includes(key))
 
-	//Unmatched Postman assertion: pm.expect(upsert_trans.records[1].id).to.eql(5)
+	//Unmatched Postman assertion: pm.expect(upsert_trans.records[1].id == 5)
 	//Unmatched Postman assertion: Object.keys(upsert_trans.records[1]).forEach(key => {
 		.expect((r) => assert.ok([...expected_attrs, ...other_attrs]).includes(key))
 
@@ -11285,13 +11328,11 @@ it('Fetch user transactions', async () => {
 			"schema": "test_delete_before",
 			"table": "test_read",
 			"search_type": "username",
-			"search_values": ["{{username}}"]
+			"search_values": [`${generic.username}`]
 		})
 		.expect(200)
-//Unmatched Postman assertion: let user = pm.environment.get("username")
-//Unmatched Postman assertion: pm.expect(jsonData[user].length).to.eql(8)
-//Unmatched Postman assertion: })
-	await setTimeout(100)
+		.expect((r) => assert.ok(r.body[generic.username].length == 8))
+	await setTimeout(100);
 });
 
 it('Fetch hash transactions', async () => {
@@ -11306,9 +11347,8 @@ it('Fetch hash transactions', async () => {
 			"search_values": [1, "blerrrrr"]
 		})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData["1"].length).to.eql(3)
-//Unmatched Postman assertion: pm.expect(jsonData["blerrrrr"].length).to.eql(2)
-
+		.expect((r) => assert.ok(r.body["1"].length == 3))
+		.expect((r) => assert.ok(r.body["blerrrrr"].length == 2))
 	await setTimeout(100)
 });
 
@@ -11496,19 +11536,19 @@ it('Describe All - non-SU test_user', async () => {
 
 	//Unmatched Postman assertion: pm.expect(json_response).to.haveOwnProperty('')
 	//Unmatched Postman assertion: pm.expect(json_response.another).to.haveOwnProperty('breed')
-	//Unmatched Postman assertion: pm.expect(json_response.another.breed.schema).to.eql('another')
-	//Unmatched Postman assertion: pm.expect(json_response.another.breed.name).to.eql('breed')
-	//Unmatched Postman assertion: pm.expect(json_response.another.breed.attributes.length).to.eql(0)
-	//Unmatched Postman assertion: pm.expect(json_response.another.breed.hash_attribute).to.eql('id')
-	//Unmatched Postman assertion: pm.expect(json_response.another.breed.record_count).to.eql(350)
+	//Unmatched Postman assertion: pm.expect(json_response.another.breed.schema == 'another')
+	//Unmatched Postman assertion: pm.expect(json_response.another.breed.name == 'breed')
+	//Unmatched Postman assertion: pm.expect(json_response.another.breed.attributes.length == 0)
+	//Unmatched Postman assertion: pm.expect(json_response.another.breed.hash_attribute == 'id')
+	//Unmatched Postman assertion: pm.expect(json_response.another.breed.record_count == 350)
 		.expect((r) => assert.ok(r.body.another.breed.hasOwnProperty('clustering_stream_name')))
 		.expect((r) => assert.ok(r.body.another.breed.hasOwnProperty('last_updated_record')))
 	//Unmatched Postman assertion: pm.expect(json_response).to.haveOwnProperty('northnwd')
 		.expect((r) => assert.ok(r.body.northnwd.hasOwnProperty('categories')))
 		.expect((r) => assert.ok(r.body.northnwd.hasOwnProperty('region')))
 		.expect((r) => assert.ok(r.body.northnwd.hasOwnProperty('territories')))
-//Unmatched Postman assertion: pm.expect(Object.keys(json_response.northnwd).length).to.eql(3)
-//Unmatched Postman assertion: pm.expect(Object.keys(json_response.other).length).to.eql(1)
+//Unmatched Postman assertion: pm.expect(Object.keys(json_response.northnwd).length == 3)
+//Unmatched Postman assertion: pm.expect(Object.keys(json_response.other).length == 1)
 //Unmatched Postman assertion: pm.expect(json_response.other).to.haveOwnProperty('owner'))
 });
 
@@ -11531,7 +11571,7 @@ it('Describe Schema - non-SU test_user', async () => {
 		.send({ "operation": "describe_schema", "schema": "northnwd" })
 		.expect(200)
 //Unmatched Postman assertion: var response_arr = Object.values(jsonResponse)
-//Unmatched Postman assertion: pm.expect(response_arr.length).to.eql(3)
+//Unmatched Postman assertion: pm.expect(response_arr.length == 3)
 //Unmatched Postman assertion: pm.expect(jsonResponse).to.haveOwnProperty('categories')
 //Unmatched Postman assertion: pm.expect(jsonResponse).to.haveOwnProperty('region')
 //Unmatched Postman assertion: pm.expect(jsonResponse).to.haveOwnProperty('territories'))
@@ -11555,15 +11595,14 @@ it('Describe Table - non-SU test_user', async () => {
 		.set(headers)
 		.send({ "operation": "describe_table", "schema": "northnwd", "table": "region" })
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonResponse).to.haveOwnProperty('schema')
-//Unmatched Postman assertion: pm.expect(jsonResponse).to.haveOwnProperty('name')
-//Unmatched Postman assertion: pm.expect(jsonResponse).to.haveOwnProperty('attributes')
-//Unmatched Postman assertion: pm.expect(jsonResponse).to.haveOwnProperty('hash_attribute')
-//Unmatched Postman assertion: pm.expect(jsonResponse).to.haveOwnProperty('clustering_stream_name')
-//Unmatched Postman assertion: pm.expect(jsonResponse).to.haveOwnProperty('record_count')
-//Unmatched Postman assertion: pm.expect(jsonResponse).to.haveOwnProperty('last_updated_record')
-//Unmatched Postman assertion: pm.expect(jsonResponse.attributes.length).to.equal(2)
-
+		.expect((r) => assert.ok(r.body.hasOwnProperty('schema')))
+		.expect((r) => assert.ok(r.body.hasOwnProperty('name')))
+		.expect((r) => assert.ok(r.body.hasOwnProperty('attributes')))
+		.expect((r) => assert.ok(r.body.hasOwnProperty('hash_attribute')))
+		.expect((r) => assert.ok(r.body.hasOwnProperty('clustering_stream_name')))
+		.expect((r) => assert.ok(r.body.hasOwnProperty('record_count')))
+		.expect((r) => assert.ok(r.body.hasOwnProperty('last_updated_record')))
+		.expect((r) => assert.ok(r.body.attributes.length == 2))
 });
 
 it('Describe  SYSTEM schema as non-SU', async () => {
@@ -11652,7 +11691,7 @@ it('Describe All - test user NO PERMS', async () => {
 		.set(headers)
 		.send({ "operation": "describe_all" })
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonResponse).to.eql({}))
+//Unmatched Postman assertion: pm.expect(jsonResponse == {}))
 });
 
 it('Describe Schema - test user NO PERMS', async () => {
@@ -11760,11 +11799,11 @@ it('Describe All - test user ONE TABLE PERM', async () => {
 		.set(headers)
 		.send({ "operation": "describe_all" })
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(Object.keys(jsonResponse).length).to.eql(1)
-//Unmatched Postman assertion: pm.expect(Object.keys(jsonResponse.northnwd).length).to.eql(1)
-//Unmatched Postman assertion: pm.expect(Object.keys(jsonResponse.northnwd.employees).length).to.eql(11)
+//Unmatched Postman assertion: pm.expect(Object.keys(jsonResponse).length == 1)
+//Unmatched Postman assertion: pm.expect(Object.keys(jsonResponse.northnwd).length == 1)
+//Unmatched Postman assertion: pm.expect(Object.keys(jsonResponse.northnwd.employees).length == 11)
 //Unmatched Postman assertion: pm.expect(jsonResponse.northnwd.employees.db_size).to.be.a('number')
-//Unmatched Postman assertion: pm.expect(jsonResponse.northnwd.employees.attributes.length).to.eql(4)})
+//Unmatched Postman assertion: pm.expect(jsonResponse.northnwd.employees.attributes.length == 4)})
 });
 
 it('Describe Schema - restricted schema - non-SU test_user', async () => {
@@ -11792,11 +11831,11 @@ it('Describe Schema - non-SU test_user', async () => {
 //Unmatched Postman assertion: }
 
 //Unmatched Postman assertion: var response_arr = Object.values(jsonResponse)
-//Unmatched Postman assertion: pm.expect(response_arr.length).to.eql(1)
+//Unmatched Postman assertion: pm.expect(response_arr.length == 1)
 //Unmatched Postman assertion: response_arr.forEach(table_data => {
 //Unmatched Postman assertion: const { name, schema, attributes } = table_data;
 //Unmatched Postman assertion: attributes.forEach(attr => {
-//Unmatched Postman assertion: pm.expect(expected_schema[schema][name].includes(attr.attribute)).to.eql(true)
+//Unmatched Postman assertion: pm.expect(expected_schema[schema][name].includes(attr.attribute) == true)
 //Unmatched Postman assertion: })
 
 });
@@ -11822,12 +11861,12 @@ it('Describe Table - non-SU test_user', async () => {
 //Unmatched Postman assertion: let top_attributes = ["name", "schema", "id", "hash_attribute", "__updatedtime__", "__createdtime__", "attributes", "record_count"];
 //Unmatched Postman assertion: var expected_attributes = ["employeeid", "city", "firstname", "lastname"];
 
-//Unmatched Postman assertion: pm.expect(jsonResponse.schema).to.eql('northnwd')
-//Unmatched Postman assertion: pm.expect(jsonResponse.name).to.eql('employees')
+//Unmatched Postman assertion: pm.expect(jsonResponse.schema == 'northnwd')
+//Unmatched Postman assertion: pm.expect(jsonResponse.name == 'employees')
 //Unmatched Postman assertion: jsonResponse.attributes.forEach(attr => {
-//Unmatched Postman assertion: pm.expect(expected_attributes.includes(attr.attribute)).to.eql(true)
+//Unmatched Postman assertion: pm.expect(expected_attributes.includes(attr.attribute) == true)
 //Unmatched Postman assertion: })
-//Unmatched Postman assertion: pm.expect(jsonResponse.attributes.length).to.equal(4)})
+//Unmatched Postman assertion: pm.expect(jsonResponse.attributes.length == 4)})
 });
 
 it('Drop one_perm_user', async () => {
@@ -11885,8 +11924,8 @@ it('Add role with mismatched table/attr READ perms - expect fail', async () => {
 
 		.expect((r) => assert.ok(r.body.main_permissions.length == 0))
 //Unmatched Postman assertion: })
-
-//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories[0]).to.equal("You have a conflict with TABLE permissions for 'northnwd.categories' being false and ATTRIBUTE permissions being true"))
+		.expect((r) => assert.ok(responseData.schema_permissions.northnwd_categories[0] == 
+			"You have a conflict with TABLE permissions for 'northnwd.categories' being false and ATTRIBUTE permissions being true"))
 });
 
 it('Add role with non-boolean READ table perms - expect fail', async () => {
@@ -11927,8 +11966,8 @@ it('Add role with non-boolean READ table perms - expect fail', async () => {
 		.expect((r) => assert.ok(r.body.main_permissions.length == 0))
 //Unmatched Postman assertion: })
 
-//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories.length).to.equal(1)
-//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories[0]).to.equal("Table READ permission must be a boolean"))
+//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories.length == 1)
+//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories[0] == "Table READ permission must be a boolean"))
 });
 
 it('Add role with non-boolean INSERT/DELETE perms - expect fail', async () => {
@@ -11969,7 +12008,7 @@ it('Add role with non-boolean INSERT/DELETE perms - expect fail', async () => {
 		.expect((r) => assert.ok(r.body.main_permissions.length == 0))
 //Unmatched Postman assertion: })
 
-//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories.length).to.equal(2)
+.expect((r) => assert.ok(responseData.schema_permissions.northnwd_categories.length == 2))
 //Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories).to.includes("Table INSERT permission must be a boolean")
 //Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories).to.includes("Table DELETE permission must be a boolean"))
 });
@@ -12012,7 +12051,7 @@ it('Add role with non-boolean READ and UPDATE attribute perms - expect fail', as
 		.expect((r) => assert.ok(r.body.main_permissions.length == 0))
 //Unmatched Postman assertion: })
 
-//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories.length).to.equal(2)
+.expect((r) => assert.ok(responseData.schema_permissions.northnwd_categories.length == 2))
 //Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories).to.include("READ attribute permission for 'description' must be a boolean")
 //Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories).to.include("UPDATE attribute permission for 'description' must be a boolean"))
 });
@@ -12051,11 +12090,10 @@ it('Add role with mismatched table/attr INSERT perms - expect fail', async () =>
 		.expect((r) => assert.ok(r.body.error == "Errors in the role permissions JSON provided"))
 	//Unmatched Postman assertion: "main_permissions")
 	//Unmatched Postman assertion: })
-
 		.expect((r) => assert.ok(r.body.main_permissions.length == 0))
 //Unmatched Postman assertion: })
-
-//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories[0]).to.equal("You have a conflict with TABLE permissions for 'northnwd.categories' being false and ATTRIBUTE permissions being true")})
+		.expect((r) => assert.ok(responseData.schema_permissions.northnwd_categories[0] ==
+			"You have a conflict with TABLE permissions for 'northnwd.categories' being false and ATTRIBUTE permissions being true"))
 });
 
 it('Add role with mismatched table/attr UPDATE perms - expect fail', async () => {
@@ -12095,8 +12133,8 @@ it('Add role with mismatched table/attr UPDATE perms - expect fail', async () =>
 
 		.expect((r) => assert.ok(r.body.main_permissions.length == 0))
 //Unmatched Postman assertion: })
-
-//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories[0]).to.equal("You have a conflict with TABLE permissions for 'northnwd.categories' being false and ATTRIBUTE permissions being true")})
+		.expect((r) => assert.ok(responseData.schema_permissions.northnwd_categories[0] ==
+			"You have a conflict with TABLE permissions for 'northnwd.categories' being false and ATTRIBUTE permissions being true"))
 });
 
 it('Add role with multiple mismatched table/attr perms - expect fail', async () => {
@@ -12136,8 +12174,8 @@ it('Add role with multiple mismatched table/attr perms - expect fail', async () 
 
 		.expect((r) => assert.ok(r.body.main_permissions.length == 0))
 //Unmatched Postman assertion: })
-
-//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories[0]).to.equal("You have a conflict with TABLE permissions for 'northnwd.categories' being false and ATTRIBUTE permissions being true")})
+		.expect((r) => assert.ok(responseData.schema_permissions.northnwd_categories[0] ==
+			"You have a conflict with TABLE permissions for 'northnwd.categories' being false and ATTRIBUTE permissions being true"))
 });
 
 it('Add role with with misformed attr perms array key  - expect fail', async () => {
@@ -12214,7 +12252,7 @@ it('Add role with with missing attr perms for table  - expect fail', async () =>
 		.expect((r) => assert.ok(r.body.main_permissions.length == 0))
 //Unmatched Postman assertion: })
 
-//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories[0]).to.equal("Missing 'attribute_permissions' array")})
+//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories[0] == "Missing 'attribute_permissions' array")})
 });
 
 it('Add role with with perms for non-existent schema  - expect fail', async () => {
@@ -12250,7 +12288,7 @@ it('Add role with with perms for non-existent schema  - expect fail', async () =
 		.expect((r) => assert.ok(r.body.main_permissions[0] == "database 'wrong_schema' does not exist"))
 //Unmatched Postman assertion: })
 
-//Unmatched Postman assertion: pm.expect(Object.keys(responseData.schema_permissions).length).to.equal(0))
+.expect((r) => assert.ok(Object.keys(responseData.schema_permissions).length == 0))
 });
 
 it('Add role with with perms for non-existent table  - expect fail', async () => {
@@ -12286,7 +12324,7 @@ it('Add role with with perms for non-existent table  - expect fail', async () =>
 		.expect((r) => assert.ok(r.body.main_permissions[0] == "Table 'northnwd.wrong_table' does not exist"))
 //Unmatched Postman assertion: })
 
-//Unmatched Postman assertion: pm.expect(Object.keys(responseData.schema_permissions).length).to.equal(0))
+.expect((r) => assert.ok(Object.keys(responseData.schema_permissions).length == 0))
 });
 
 it('Add SU role with perms  - expect fail', async () => {
@@ -12607,7 +12645,7 @@ it('Query system table as SU', async () => {
 		})
 		.expect(200)
 //Unmatched Postman assertion: var objKeysData = Object.keys(jsonData[0])
-//Unmatched Postman assertion: pm.expect(jsonData[0].username).to.eql(environment["username"])
+		.expect((r) => assert.ok(r.body[0].username == environment["username"]))
 //Unmatched Postman assertion: pm.expect(objKeysData.includes("password")).to.be.true;
 //Unmatched Postman assertion: pm.expect(objKeysData.includes("role")).to.be.true;})
 });
@@ -12627,8 +12665,8 @@ it('Query system table non SU', async () => {
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql('read')
+	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
+	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == 'read'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'system'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'hdb_user'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
@@ -12652,8 +12690,8 @@ it('Insert record system table as non SU', async () => {
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions.length).to.eql(1)
-	//Unmatched Postman assertion: pm.expect(jsonData.unauthorized_access[0].required_table_permissions[0]).to.eql('insert')
+	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
+	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == "insert"))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'system'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'hdb_user'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
@@ -13041,7 +13079,7 @@ it('Insert record into table', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "inserted 1 of 1 records"))
-//Unmatched Postman assertion: pm.expect(jsonData.inserted_hashes[0]).to.eql("my-node"))
+		.expect((r) => assert.ok(r.body.inserted_hashes[0] == "my-node"))
 });
 
 it('Update record into table', async () => {
@@ -13056,7 +13094,7 @@ it('Update record into table', async () => {
 		})
 		.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records', 'Expected response message to eql "updated 1 of 1 records"'))
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.update_hashes[0]).to.eql("my-node"))
+		.expect((r) => assert.ok(r.body.update_hashes[0] == "my-node"))
 });
 
 it('Confirm record in table', async () => {
@@ -13071,8 +13109,8 @@ it('Confirm record in table', async () => {
 			"get_attributes": ["*"]
 		})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData[0].name).to.eql("my-node")
-//Unmatched Postman assertion: pm.expect(jsonData[0].url).to.eql("updated-url"))
+		.expect((r) => assert.ok(r.body[0].name == "my-node"))
+		.expect((r) => assert.ok(r.body[0].url == "updated-url"))
 });
 
 it('Confirm table cant be dropped', async () => {
@@ -13132,7 +13170,7 @@ it('Update role table', async () => {
 		})
 		.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records', 'Expected response message to eql "updated 1 of 1 records"'))
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.update_hashes[0]).to.eql("important-role"))
+		.expect((r) => assert.ok(r.body.update_hashes[0] == "important-role"))
 });
 
 it('Update user table', async () => {
@@ -13147,7 +13185,7 @@ it('Update user table', async () => {
 		})
 		.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records', 'Expected response message to eql "updated 1 of 1 records"'))
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.update_hashes[0]).to.eql("important-user"))
+		.expect((r) => assert.ok(r.body.update_hashes[0] == "important-user"))
 });
 
 it('Test Update role table non-SU doesnt work', async () => {
@@ -13208,7 +13246,7 @@ it('Delete record from table', async () => {
 		.send({ "operation": "delete", "database": "system", "table": "hdb_nodes", "ids": ["my-node"] })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "1 of 1 record successfully deleted"))
-//Unmatched Postman assertion: pm.expect(jsonData.deleted_hashes[0]).to.eql("my-node"))
+		.expect((r) => assert.ok(r.body.deleted_hashes[0] == "my-node"))
 });
 
 it('Drop user', async () => {
@@ -13395,13 +13433,13 @@ it('alter_role with bad data', async () => {
 			}
 		})
 		.expect(400)
-//Unmatched Postman assertion: pm.expect(jsonResponse.main_permissions.length).to.eql(2)
-//Unmatched Postman assertion: pm.expect(jsonResponse.main_permissions.includes("database 'crapschema' does not exist")).to.eql(true)
-//Unmatched Postman assertion: pm.expect(jsonResponse.main_permissions.includes("Table 'dev.craptable' does not exist")).to.eql(true)
+//Unmatched Postman assertion: pm.expect(jsonResponse.main_permissions.length == 2)
+//Unmatched Postman assertion: pm.expect(jsonResponse.main_permissions.includes("database 'crapschema' does not exist") == true)
+//Unmatched Postman assertion: pm.expect(jsonResponse.main_permissions.includes("Table 'dev.craptable' does not exist") == true)
 
-//Unmatched Postman assertion: pm.expect(jsonResponse.schema_permissions.dev_dog.length).to.eql(2)
-//Unmatched Postman assertion: pm.expect(jsonResponse.schema_permissions.dev_dog.includes("Invalid attribute 'name' in 'attribute_permissions'")).to.eql(true)
-//Unmatched Postman assertion: pm.expect(jsonResponse.schema_permissions.dev_dog.includes("Invalid attribute 'crapattribute' in 'attribute_permissions'")).to.eql(true))
+//Unmatched Postman assertion: pm.expect(jsonResponse.schema_permissions.dev_dog.length == 2)
+//Unmatched Postman assertion: pm.expect(jsonResponse.schema_permissions.dev_dog.includes("Invalid attribute 'name' in 'attribute_permissions'") == true)
+//Unmatched Postman assertion: pm.expect(jsonResponse.schema_permissions.dev_dog.includes("Invalid attribute 'crapattribute' in 'attribute_permissions'") == true))
 });
 
 it('list_roles ensure role not changed', async () => {
@@ -13450,9 +13488,9 @@ it('alter_role good data', async () => {
 			}
 		})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonResponse.role).to.eql("user_role_update")
-//Unmatched Postman assertion: pm.expect(jsonResponse.id).to.eql(pm.variables.get("role_id"))
-//Unmatched Postman assertion: pm.expect(jsonResponse.permission.super_user).to.eql(false)
+//Unmatched Postman assertion: pm.expect(jsonResponse.role == "user_role_update")
+//Unmatched Postman assertion: pm.expect(jsonResponse.id == pm.variables.get("role_id"))
+//Unmatched Postman assertion: pm.expect(jsonResponse.permission.super_user == false)
 //Unmatched Postman assertion: pm.expect(jsonResponse.permission.northnwd.tables.customers).to.deep.eql({
 //Unmatched Postman assertion: "read": false,
 //Unmatched Postman assertion: "insert": false,
@@ -13621,7 +13659,7 @@ it('Alter User set active to false.', async () => {
 		.send({ "operation": "alter_user", "username": "test_user", "password": "{{password}}", "active": false })
 		.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records', 'Expected response message to eql "updated 1 of 1 records"'))
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.update_hashes[0]).to.eql("test_user"))
+		.expect((r) => assert.ok(r.body.update_hashes[0] == "test_user"))
 });
 
 it('Check for active=false', async () => {
@@ -13715,7 +13753,7 @@ it('Confirm attribute secondary indexing works', async () => {
 		.set(headers)
 		.send({ "operation": "sql", "sql": "select * from dev.create_attr_test where owner_id = 1" })
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.length).to.eql(3))
+		.expect((r) => assert.ok(r.body.length == 3))
 });
 
 it('Describe table DropAttributeTest', async () => {
@@ -13724,7 +13762,7 @@ it('Describe table DropAttributeTest', async () => {
 		.set(headers)
 		.send({ "operation": "describe_table", "table": "AttributeDropTest", "schema": "dev" })
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.another_attribute).to.eql(undefined))
+		.expect((r) => assert.ok(r.body.another_attribute == undefined))
 });
 
 it('Create Attribute', async () => {
@@ -13801,8 +13839,8 @@ it('Get Fingerprint', async () => {
 		.set(headers)
 		.send({ "operation": "get_fingerprint" })
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData).to.haveOwnProperty('message')
-//Unmatched Postman assertion: pm.expect(jsonData.message).to.not.be.null;})
+		.expect((r) => assert.ok(r.body.hasOwnProperty('message')))
+		.expect((r) => assert.ok(r.body.message))
 });
 
 it('Set License', async () => {
@@ -13824,10 +13862,10 @@ it('Get Registration Info', async () => {
 		.set(headers)
 		.send({ "operation": "registration_info" })
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData).to.have.ownProperty('registered')
-//Unmatched Postman assertion: pm.expect(jsonData).to.have.ownProperty('version')
-//Unmatched Postman assertion: pm.expect(jsonData).to.have.ownProperty('ram_allocation')
-//Unmatched Postman assertion: pm.expect(jsonData).to.have.ownProperty('license_expiration_date'))
+		.expect((r) => assert.ok(r.body.hasOwnProperty('registered')))
+		.expect((r) => assert.ok(r.body.hasOwnProperty('version')))
+		.expect((r) => assert.ok(r.body.hasOwnProperty('ram_allocation')))
+		.expect((r) => assert.ok(r.body.hasOwnProperty('license_expiration_date')))
 });
 
 it('Set License Bad Key', async () => {
@@ -13845,13 +13883,13 @@ it('Get Configuration', async () => {
 		.set(headers)
 		.send({ "operation": "get_configuration" })
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.clustering).to.not.be.undefined;
-//Unmatched Postman assertion: pm.expect(jsonData.componentsRoot).to.not.be.undefined;
-//Unmatched Postman assertion: pm.expect(jsonData.logging).to.not.be.undefined;
-//Unmatched Postman assertion: pm.expect(jsonData.localStudio).to.not.be.undefined;
-//Unmatched Postman assertion: pm.expect(jsonData.operationsApi).to.not.be.undefined;
-//Unmatched Postman assertion: pm.expect(jsonData.operationsApi.network.port).to.not.be.undefined;
-//Unmatched Postman assertion: pm.expect(jsonData.threads).to.not.be.undefined;
+		.expect((r) => assert.ok(r.body.clustering))
+		.expect((r) => assert.ok(r.body.componentsRoot))
+		.expect((r) => assert.ok(r.body.logging))
+		.expect((r) => assert.ok(r.body.localStudio))
+		.expect((r) => assert.ok(r.body.operationsApi))
+		.expect((r) => assert.ok(r.body.operationsApi.network.port))
+		.expect((r) => assert.ok(r.body.threads))
 });
 
 it('Cluster set routes hub', async () => {
@@ -13965,7 +14003,7 @@ it('Confirm Configuration', async () => {
 		.set(headers)
 		.send({ "operation": "get_configuration" })
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.logging.rotation.maxSize).to.equal("12M")
+		.expect((r) => assert.ok(r.body.logging.rotation.maxSize == "12M"))
 });
 
 it('Set Configuration Bad Data', async () => {
@@ -14163,7 +14201,7 @@ it('test search_by_hash with valid jwt', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-//Unmatched Postman assertion: pm.expect(jsonData[0].employeeid).to.eql(1))
+		.expect((r) => assert.ok(r.body[0].employeeid == 1))
 });
 
 it('test search_by_hash with invalid jwt', async () => {
@@ -15205,7 +15243,7 @@ it('VALIDATION Check Schema not found.', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "describe_all" })
-//Unmatched Postman assertion: pm.expect(jsonData).to.not.haveOwnProperty('northnwd')})
+		.expect((r) => assert.ok(!r.body.hasOwnProperty('northnwd')))
 });
 
 it('drop schema dev', async () => {
@@ -15325,7 +15363,7 @@ it('Search for attribute', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].id == "1"))
 		.expect((r) => assert.ok(r.body[0].price == 100))
-//Unmatched Postman assertion: pm.expect(jsonData[0].taxRate).to.eql(0.19))
+		.expect((r) => assert.ok(r.body[0].taxRate ==0.19))
 });
 
 it('Search and get attributes', async () => {
@@ -15343,7 +15381,7 @@ it('Search and get attributes', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].id == "1"))
 		.expect((r) => assert.ok(r.body[0].price == 100))
-	//Unmatched Postman assertion: pm.expect(jsonData[0].taxRate).to.eql(0.19)
+	.expect((r) => assert.ok(jsonData[0].taxRate ==0.19))
 		.expect((r) => assert.ok(r.body[0].totalPrice == 119))
 		.expect((r) => assert.ok(r.body[0].notIndexedTotalPrice == 119))
 		.expect((r) => assert.ok(r.body[0].jsTotalPrice == 119))
@@ -15356,7 +15394,7 @@ it('Search REST id', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes("inserted 1 of 1 records")))
 		.expect((r) => assert.ok(r.body.price == 100))
-//Unmatched Postman assertion: pm.expect(jsonData.taxRate).to.eql(0.19))
+		.expect((r) => assert.ok(r.body.taxRate == 0.19))
 });
 
 it('Search REST id select', async () => {
@@ -15366,10 +15404,10 @@ it('Search REST id select', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes("inserted 1 of 1 records")))
 		.expect((r) => assert.ok(r.body.price == 100))
-//Unmatched Postman assertion: pm.expect(jsonData.taxRate).to.eql(0.19)
-//Unmatched Postman assertion: pm.expect(jsonData.totalPrice).to.eql(119)
-//Unmatched Postman assertion: pm.expect(jsonData.notIndexedTotalPrice).to.eql(119)
-//Unmatched Postman assertion: pm.expect(jsonData.jsTotalPrice).to.eql(119))
+		.expect((r) => assert.ok(r.body.taxRate == 0.19))
+		.expect((r) => assert.ok(r.body.totalPrice == 119))
+		.expect((r) => assert.ok(r.body.notIndexedTotalPrice == 119))
+		.expect((r) => assert.ok(r.body.jsTotalPrice == 119))
 });
 
 it('Search REST attribute select', async () => {
@@ -15379,7 +15417,7 @@ it('Search REST attribute select', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].id == "1"))
 		.expect((r) => assert.ok(r.body[0].price == 100))
-	//Unmatched Postman assertion: pm.expect(jsonData[0].taxRate).to.eql(0.19)
+	.expect((r) => assert.ok(jsonData[0].taxRate ==0.19))
 		.expect((r) => assert.ok(r.body[0].totalPrice == 119))
 		.expect((r) => assert.ok(r.body[0].notIndexedTotalPrice == 119))
 		.expect((r) => assert.ok(r.body[0].jsTotalPrice == 119))
@@ -15392,7 +15430,7 @@ it('Search REST attribute 2 select', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].id == "1"))
 		.expect((r) => assert.ok(r.body[0].price == 100))
-	//Unmatched Postman assertion: pm.expect(jsonData[0].taxRate).to.eql(0.19)
+	.expect((r) => assert.ok(jsonData[0].taxRate ==0.19))
 		.expect((r) => assert.ok(r.body[0].totalPrice == 119))
 		.expect((r) => assert.ok(r.body[0].notIndexedTotalPrice == 119))
 		.expect((r) => assert.ok(r.body[0].jsTotalPrice == 119))
@@ -15405,7 +15443,7 @@ it('Delete data', async () => {
 		.send({ "operation": "delete", "table": "Product", "ids": ["1"] })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes('1 of 1 record successfully deleted')))
-//Unmatched Postman assertion: pm.expect(response.deleted_hashes).to.eql(['1']))
+//Unmatched Postman assertion: pm.expect(response.deleted_hashes == ['1']))
 });
 
 it('Delete table', async () => {
@@ -15585,7 +15623,7 @@ it('Named query with operationName 2', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body.data.SubObject.length == 6))
 //Unmatched Postman assertion: jsonData.data.SubObject.forEach((row, i) => {
-//Unmatched Postman assertion: pm.expect(row.id).to.equal((i).toString()))
+.expect((r) => assert.ok(row.id == (i).toString()))
 });
 
 it('Query by primary key field', async () => {
@@ -15609,7 +15647,7 @@ it('Multi resource query', async () => {
 	//Unmatched Postman assertion: })
 		.expect((r) => assert.ok(r.body.data.SubObject.length == 6))
 //Unmatched Postman assertion: jsonData.data.SubObject.forEach((row, i) => {
-//Unmatched Postman assertion: pm.expect(row.id).to.equal((i).toString()))
+.expect((r) => assert.ok(row.id == (i).toString()))
 });
 
 it('Query by variable non null no default', async () => {
@@ -15678,7 +15716,7 @@ it('Query by multiple nested attributes', async () => {
 		.set(headers)
 		.send({ "query": "{ SubObject(any: \"any-1\", related: { name: \"name-1\" }) { id any } }" })
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.data.SubObject[0].id).to.eql("1"))
+		.expect((r) => assert.ok(r.body.data.SubObject[0].id == "1"))
 });
 
 it('Query by nested attribute primary key', async () => {
@@ -15781,7 +15819,7 @@ it('Query w top level fragment multi resource', async () => {
 	//Unmatched Postman assertion: })
 		.expect((r) => assert.ok(r.body.data.SubObject.length == 6))
 //Unmatched Postman assertion: jsonData.data.SubObject.forEach((row, i) => {
-//Unmatched Postman assertion: pm.expect(row.id).to.equal((i).toString()))
+.expect((r) => assert.ok(row.id == (i).toString()))
 });
 
 it('Query with inline fragment', async () => {
@@ -15799,7 +15837,7 @@ it('Query with nested fragments', async () => {
 		.set(headers)
 		.send({ "query": "query Get { Related(id: \"2\") { ...relatedFields otherTable { ...id } } } fragment relatedFields on Related { ...id name } fragment id on Any { id }" })
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData.data.Related[0].id).to.eql("2"))
+		.expect((r) => assert.ok(r.body.data.Related[0].id == "2"))
 });
 
 it('[rest] Named query Get Related', async () => {
@@ -15819,7 +15857,7 @@ it('[rest] Named query Get SubObject', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 6))
 //Unmatched Postman assertion: jsonData.forEach((row, i) => {
-//Unmatched Postman assertion: pm.expect(row.id).to.equal((i).toString()))
+.expect((r) => assert.ok(row.id == (i).toString()))
 });
 
 it('[rest] Query by primary key field', async () => {
@@ -15827,7 +15865,7 @@ it('[rest] Query by primary key field', async () => {
 		.get('/Related/?id==1&select(id,name)')
 		.set(headers)
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData[0].id).to.eql("1"))
+		.expect((r) => assert.ok(r.body[0].id == "1"))
 });
 
 it('[rest] Query by variable non null', async () => {
@@ -15851,8 +15889,8 @@ it('[rest] Query by var with null var', async () => {
 		.get('/SubObject/?any==null&select(id,any)')
 		.set(headers)
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData[0].id).to.eql("0")
-//Unmatched Postman assertion: pm.expect(jsonData[0].any).to.be.null;})
+		.expect((r) => assert.ok(r.body[0].id == "0"))
+		.expect((r) => assert.ok(r.body[0].any == null))
 });
 
 it('[rest] Query by nested attribute', async () => {
@@ -15892,7 +15930,7 @@ it('[rest] Query with nested fragments', async () => {
 		.get('/Related/?id==3')
 		.set(headers)
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData[0].id).to.eql("3"))
+		.expect((r) => assert.ok(r.body[0].id == "3"))
 });
 
 it('Describe all with valid credentials', async () => {
@@ -15961,10 +15999,9 @@ it('Create auth token with valid credentials', async () => {
 		.set(headers)
 		.send({ "operation": "create_authentication_tokens", "username": "{{username}}", "password": "{{password}}" })
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonData).to.haveOwnProperty('operation_token')
-//Unmatched Postman assertion: pm.expect(jsonData.operation_token).to.not.be.empty;
+		.expect((r) => assert.ok(r.body.hasOwnProperty('operation_token')))
+		.expect((r) => assert.ok(r.body.operation_token))
 //Unmatched Postman assertion: pm.environment.set('my_operation_token', jsonData.operation_token)
-//Unmatched Postman assertion: // console.log(pm.variables.get('my_operation_token')))
 });
 
 it('Describe all with valid auth token', async () => {
@@ -16028,7 +16065,7 @@ it('Restart service and wait', async () => {
 		.set(headers)
 		.send({ operation: 'restart_service', service: 'http_workers' })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.message.includes('Restarting')));
+		.expect((r) => assert.ok(r.body.message.includes('Restarting')))
 	//Unmatched Postman assertion: //wait for 31 seconds
 	//Unmatched Postman assertion: console.log('waiting for 31 seconds for the restart of services')
 	await setTimeout(31000);

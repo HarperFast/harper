@@ -659,17 +659,17 @@ const myPath = path.resolve(__dirname + '/..' + generic.files_location) + '/';
 //     .expect(401)
 // });
 
-
-it('Add component', async () => {
-  const response = await request(envUrl)
-    .post('')
-    .send({ "operation": "add_component", "project": "myApp111" })
-    .expect((r) => {
-      console.log(r.body);
-      assert.ok(JSON.stringify(r.body).includes("Successfully added project") ||
-        JSON.stringify(r.body).includes("Project already exists"))
-    })
-});
+//
+// it('Add component', async () => {
+//   const response = await request(envUrl)
+//     .post('')
+//     .send({ "operation": "add_component", "project": "myApp111" })
+//     .expect((r) => {
+//       console.log(r.body);
+//       assert.ok(JSON.stringify(r.body).includes("Successfully added project") ||
+//         JSON.stringify(r.body).includes("Project already exists"))
+//     })
+// });
 
 // it('Drop component', async () => {
 //   const response = await request(envUrl)
@@ -681,3 +681,273 @@ it('Add component', async () => {
 //       assert.ok(r.body.message.includes('Successfully dropped: myApp111'))
 //     })
 // });
+
+
+// it('Confirm update record No where dev.cat', async () => {
+//   const cats = ['Sophie', 'George', 'Bau', 'Willow', 'Bird', 'Murph', 'Simba', 'Gemma', 'Bobby'];
+//   const ids = [19,2,3,4,5,6,7,8,1];
+//
+//   const response = await request(envUrl)
+//     .post('')
+//     .set(headers)
+//     .send({ 'operation': 'sql', 'sql': 'SELECT cat_name, id FROM dev.cat' })
+//     .expect((r) => {
+//       let cats_found = [];
+//       let ids_found = [];
+//       r.body.forEach((obj) => {
+//         // console.log(obj);
+//         let cat_found = cats.filter((el) => obj.cat_name == el);
+//         if(cat_found.length > 0) cats_found.push(cat_found);
+//         let id_found = ids.filter((el) => obj.id == el);
+//         if(id_found.length > 0) ids_found.push(id_found);
+//       })
+//       console.log(cats_found.length);
+//       console.log(ids_found.length);
+//       assert.ok(cats_found.length > 0);
+//       assert.ok(ids_found.length > 0);
+//     })
+//     .expect(200)
+// });
+
+//
+//
+// it('Confirm update record No where dev.cat', async () => {
+//   const cats = ['Sophie', 'George', 'Biggie Paws', 'Willow', 'Bird', 'Murph', 'Simba', 'Gemma', 'Bobby'];
+//   const ids = [1, 2, 3, 4, 5, 6, 7, 8, 9];
+//   const response = await request(envUrl)
+//     .post('')
+//     .set(headers)
+//     .send({ operation: 'sql', sql: 'SELECT cat_name, id FROM dev.cat' })
+//     .expect((r) => assert.ok(r.body.length == 3))
+//     .expect((r) => {
+//       let cats_found = [];
+//       let ids_found = [];
+//       r.body.forEach((obj) => {
+//         assert.ok(Object.keys(obj).length == 2);
+//         let cat_found = cats.filter((el) => obj.cat_name == el);
+//         if (cat_found.length > 0) cats_found.push(cat_found);
+//         let id_found = ids.filter((el) => obj.id == el);
+//         if (id_found.length > 0) ids_found.push(id_found);
+//       });
+//       assert.ok(cats_found.length > 0);
+//       assert.ok(ids_found.length > 0);
+//     })
+//     .expect(200);
+// });
+//
+//
+// it('Confirm update record "where x != y" dev.cat', async () => {
+//   const cats = ['Biggie Paws', 'Willow', 'Murph', 'Bau', 'Gemma'];
+//   const ids = [3,4,6,7,1];
+//
+//   const response = await request(envUrl)
+//     .post('')
+//     .set(headers)
+//     .send({ 'operation': 'sql', 'sql': 'SELECT cat_name, id FROM dev.cat' })
+//     .expect((r) => assert.ok(r.body.length == 3))
+//     .expect((r) => {
+//       let cats_found = [];
+//       let ids_found = [];
+//       r.body.forEach((obj) => {
+//         assert.ok(Object.keys(obj).length == 2);
+//         // assert.ok(obj.adorable == false);
+//
+//         let cat_found = cats.filter((el) => obj.cat_name == el);
+//         if(cat_found.length > 0) cats_found.push(cat_found);
+//         let id_found = ids.filter((el) => obj.id == el);
+//         if(id_found.length > 0) ids_found.push(id_found);
+//       })
+//       assert.ok(cats_found.length > 0);
+//       assert.ok(ids_found.length > 0);
+//     })
+//     .expect(200)
+// });
+
+
+// it('NoSQL - Upsert - table perms true/attr perms true - expect success', async () => {
+//   const response = await request(envUrl)
+//     .post('')
+//     .set(headers)
+//     .send({
+//       "operation": "insert",
+//       "schema": "dev",
+//       "table": "cat",
+//       "records": [{ "id": 8, "name": "Seaweed" }]
+//     })
+//     .expect(200)
+//     .expect((r) => assert.ok(r.body.message == "inserted 0 of 1 records"))
+//     .expect((r) => assert.ok(r.body.skipped_hashes.includes(8)))
+// });
+
+
+// it('Get Configuration', async () => {
+//   const response = await request(envUrl)
+//     .post('')
+//     .set(headers)
+//     .send({ "operation": "get_configuration" })
+//     .expect(200)
+//     // .expect((r) => assert.ok(r.body.clustering))
+//     .expect((r) => assert.ok(r.body.componentsRoot))
+//     .expect((r) => assert.ok(r.body.logging))
+//     .expect((r) => assert.ok(r.body.localStudio))
+//     .expect((r) => assert.ok(r.body.operationsApi))
+//     .expect((r) => assert.ok(r.body.operationsApi.network.port))
+//     .expect((r) => assert.ok(r.body.threads))
+//
+//   console.log(response.body.clustering);
+// });
+
+
+// it('assert not empty', async () => {
+//   const response = await request(envUrl)
+//     .post('')
+//     .set(headers)
+//     .send({ 'operation': 'sql', 'sql': 'SELECT name, cat_name, id FROM dev.cat where id = 9' })
+//     .expect((r) => {
+//       console.log(r.body);
+//       assert.ok(r.body[0].cat_name);
+//     })
+// })
+
+
+// it('insert initial date function data into table', async () => {
+//   const response = await request(envUrl)
+//     .post('')
+//     .set(headers)
+//     .send({
+//       'operation': 'sql',
+//       'sql': 'INSERT INTO dev.time_functions (id, c_date, c_time, c_timestamp, getdate, now) VALUES (1, CURRENT_DATE(), CURRENT_TIME(), CURRENT_TIMESTAMP, GETDATE(), NOW()), (2, CURRENT_DATE(), CURRENT_TIME(), CURRENT_TIMESTAMP, GETDATE(), NOW()), (3, CURRENT_DATE(), CURRENT_TIME(), CURRENT_TIMESTAMP, GETDATE(), NOW()), (4, CURRENT_DATE(), CURRENT_TIME(), CURRENT_TIMESTAMP, GETDATE(), NOW())',
+//     })
+//     .expect(200)
+//     .expect((r) => assert.ok(r.body.message == 'inserted 4 of 4 records'))
+//     .expect((r) => assert.ok(r.body.inserted_hashes[0] == 1))
+// });
+//
+
+
+// it('check data updated to correct date values in table', async () => {
+//   const response = await request(envUrl)
+//     .post('')
+//     .set(headers)
+//     .send({ 'operation': 'sql', 'sql': 'SELECT * FROM dev.time_functions' })
+//     .expect(200)
+//     // .expect((r) => assert.ok(r.body.length == 4))
+//     // //Unmatched Postman assertion: var current_date = new Date().getUTCDate()
+//     // //Unmatched Postman assertion: jsonData.forEach(row => {
+//     // .expect((r) => assert.ok([1,2,3,4].includes(row.id)))
+//     // .expect((r) => assert.ok(new Date(row.now).getUTCDate() == current_date))
+//     // //Unmatched Postman assertion: pm.expect(row.now.toString().length == 13)
+//     // .expect((r) => assert.ok(new Date(row.getdate).getUTCDate() == current_date))
+//     //
+//     // .expect((r) => assert.ok(row.getdate.toString().length == 13))
+//     // .expect((r) => assert.ok(new Date(row.c_timestamp).getUTCDate() == current_date))
+//     // .expect((r) => assert.ok(row.c_timestamp.toString().length == 13))
+//     // .expect((r) => assert.ok(row.c_date.match(/\d{4}-[01]{1}\d{1}-[0-3]{1}\d{1}$/)))
+//     // .expect((r) => assert.ok(row.c_time.match(/^[0-2]{1}\d{1}:[0-6]{1}\d{1}:[0-6]{1}\d{1}.\d{3}$/)))
+//     .expect((r) => {
+//       console.log(r.body[0].c_date.match(/\d{4}-[01]{1}\d{1}-[0-3]{1}\d{1}$/));
+//       assert.ok(r.body[0].c_time.match(/^[0-2]{1}\d{1}:[0-6]{1}\d{1}:[0-6]{1}\d{1}.\d{3}$/));
+//     })
+// //
+// });
+//
+// it('check data updated to correct date values in table', async () => {
+//   const response = await request(envUrl)
+//     .post('')
+//     .set(headers)
+//     .send({ 'operation': 'sql', 'sql': 'SELECT * FROM dev.time_functions' })
+//     .expect(200)
+//     .expect((r) => {
+//       assert.ok(r.body.length == 4);
+//       let current_date = new Date().getUTCDate();
+//       console.log('current date: ' + current_date);
+//       r.body.forEach((row) => {
+//         console.log('1 ' + row.id);
+//         console.log('2 ' + new Date(row.now).getUTCDate());
+//         console.log('3 ' + row.now.toString().length);
+//         console.log('4 ' + new Date(row.getdate).getUTCDate());
+//         console.log('5 ' + row.getdate.toString().length);
+//         console.log('6 ' + new Date(row.c_timestamp).getUTCDate());
+//         console.log('7 ' + row.c_timestamp.toString().length);
+//         console.log('8 ' + row.c_date.match(/\d{4}-[01]{1}\d{1}-[0-3]{1}\d{1}$/));
+//         console.log('9 ' + row.c_time.match(/^[0-2]{1}\d{1}:[0-6]{1}\d{1}:[0-6]{1}\d{1}.\d{3}$/));
+//         console.log('\n\n\n');
+//       })
+//     })
+// });
+//
+// it('check data updated to correct date values in table', async () => {
+//   const response = await request(envUrl)
+//     .post('')
+//     .set(headers)
+//     .send({ 'operation': 'sql', 'sql': 'SELECT * FROM dev.time_functions' })
+//     .expect(200)
+//     .expect((r) => {
+//       assert.ok(r.body.length == 4);
+//       let current_date = new Date().getUTCDate();
+//       r.body.forEach((row) => {
+//         assert.ok([1,2,3,4].includes(row.id));
+//         assert.ok(new Date(row.now).getUTCDate() == current_date);
+//         assert.ok(row.now.toString().length == 13);
+//         assert.ok(new Date(row.getdate).getUTCDate() == current_date);
+//         assert.ok(row.getdate.toString().length == 13);
+//         assert.ok(new Date(row.c_timestamp).getUTCDate() == current_date);
+//         assert.ok(row.c_timestamp.toString().length == 13);
+//         assert.ok(row.c_date.match(/\d{4}-[01]{1}\d{1}-[0-3]{1}\d{1}$/));
+//         assert.ok(row.c_time.match(/^[0-2]{1}\d{1}:[0-6]{1}\d{1}:[0-6]{1}\d{1}.\d{3}$/));
+//       })
+//     })
+// });
+
+
+// it('Fetch user transactions', async () => {
+//   const response = await request(envUrl)
+//     .post('')
+//     .set(headers)
+//     .send({
+//     "operation":"search_by_value",
+//     "schema":"dev",
+//     "table":"cat",
+//     "hash_attribute": "id",
+//     "search_attribute":"cat_name",
+//     "get_attributes": ["cat_name"],
+//     "search_value": `${generic.username}`
+//     })
+//     .expect((r) => {
+//       // console.log(r.body);
+//       console.log(r.body[0][generic.username]);
+//       console.log(r.body[0][`${generic.username}`]);
+//       // assert.ok(r.body[generic.username]);
+//     })
+//   await setTimeout(100);
+// });
+
+// it('Get Registration Info', async () => {
+//   const response = await request(envUrl)
+//     .post('')
+//     .set(headers)
+//     .send({ "operation": "registration_info" })
+//     .expect(200)
+//     .expect((r) => assert.ok(r.body.hasOwnProperty('registered')))
+//     .expect((r) => assert.ok(r.body.hasOwnProperty('version')))
+//     .expect((r) => assert.ok(r.body.hasOwnProperty('ram_allocation')))
+//     .expect((r) => assert.ok(r.body.hasOwnProperty('license_expiration_date')))
+// });
+
+it('Verify object and array records deleted', async () => {
+  const response = await request(envUrl)
+    .post('')
+    .set(headers)
+    .send({
+      "operation": "search_by_hash",
+      "schema": "dev",
+      "table": "cat",
+      "hash_values": [100],
+      "get_attributes": ["cat_name"]
+    })
+    .expect(200)
+    .expect((r) => {
+      console.log(r.body);
+      assert.deepEqual(r.body, []);
+    })
+});

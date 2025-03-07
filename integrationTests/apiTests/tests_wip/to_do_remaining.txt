@@ -18,10 +18,31 @@ sau poate fi si r.status (din supertest r.status si r.body)
 .expect((r) => assert.ok(Object.keys(obj).length == 3))
 //undefined null NaN empty string ("") false
 .expect((r) => assert.ok(!value))
+assert.OK merge si pentru assert not empty
 ====================================================================================
 
 
-sa caut dupa pm.expect
+
+assert.ok(r.body == [])
+CU:
+assert.deepEqual(r.body, [])
+
+deci:
+assert.ok(r.body == [
+CU:
+assert.deepEqual(r.body, [
+
+si:
+assert.ok(r.body == {
+CU:
+assert.deepEqual(r.body, {
+
+
+//Unmatched Postman assertion: jsonData.forEach(row => {
+
+
+sa nu mai ramana nicaieri jsonData
+
 
 sa caut dupa // Unmatched Postman assertion:
 sa caut dupa //Unmatched Postman assertion
@@ -32,6 +53,8 @@ sa ma uit la setTimeout( si sa pun await uri si sa fie inafara la await request(
 sa inlocuiesc tot ce e cu: {{ , ca de exemplu {{schema}}, de ex:
 {{username}} devine ${generic.username}
 si "{{username}}" devine `${generic.username}`
+
+sa caut si dupa: environment[" sau environment[
 
 sa verific in .send() in json uri sa nu existe // adica commenturile din postman body, ca a pus comment uri ca si //
 
