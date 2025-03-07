@@ -1452,9 +1452,23 @@ export function makeTable(options) {
 								throw new Error('Residency must be an array, got: ' + residency);
 							}
 							if (!residency.includes(server.hostname)) {
-								// if we aren't in the residency list, specify that our local record should be omitted
+								// if we aren't in the residency list, specify that our local record should be omitted or be partial
+								audit_record_to_store ??= record_to_store;
 								omitLocalRecord = true;
-								// TODO: If there are indexes we may need to record a local partial/invalidation record
+								if (TableResource.getResidencyById) {
+									// complete omission of the record that doesn't belong here
+									record_to_store = undefined;
+								} else {
+									// store the partial record
+									record_to_store = null;
+									for (const name in indices) {
+										if (!record_to_store) {
+											record_to_store = {};
+										}
+										// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
+										record_to_store[name] = audit_record_to_store[name];
+									}
+								}
 							}
 						}
 						residency_id = getResidencyId(residency);
@@ -1482,7 +1496,7 @@ export function makeTable(options) {
 						record_to_store,
 						existing_entry,
 						txn_time,
-						0,
+						omitLocalRecord ? INVALIDATED : 0,
 						audit,
 						{
 							omitLocalRecord,

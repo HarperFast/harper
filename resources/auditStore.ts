@@ -157,7 +157,7 @@ export function removeAuditEntry(audit_store: any, key: number, value: any): Pro
 		// if it has blobs, and isn't in use from the main record, we need to delete them as well
 		audit_record = readAuditEntry(value);
 		const primary_store = audit_store.tableStores[audit_record.tableId];
-		if (primary_store.getEntry(audit_record.recordId).version !== audit_record.version) {
+		if (primary_store.getEntry(audit_record.recordId)?.version !== audit_record.version) {
 			// if the versions don't match, then this should be the only/last reference to any blob
 			decodeFromDatabase(() => deleteBlobsInObject(audit_record.getValue(primary_store)), primary_store.rootStore);
 		}

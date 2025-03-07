@@ -360,11 +360,8 @@ export function recordUpdater(store, table_id, audit_store) {
 					deleteBlobsInObject(existing_entry.value);
 				}
 			}
-			let result;
-			if (options?.omitLocalRecord) {
-				// if we aren't writing the local record (as is the case for sharding that doesn't include ourselves in the shard), we still need to write the audit record
-				audit_record ??= record;
-			} else {
+			let result: Promise<void>;
+			if (!options?.omitLocalRecord) {
 				result = encodeBlobsWithFilePath(() => store.put(id, record, put_options), id, store.rootStore);
 				if (blobsWereEncoded) {
 					extended_type |= HAS_BLOBS;
@@ -409,7 +406,7 @@ export function recordUpdater(store, table_id, audit_store) {
 					}
 				}
 				result = audit_store.put(
-					options?.omitLocalRecord ? NEW_TIMESTAMP_PLACEHOLDER : LAST_TIMESTAMP_PLACEHOLDER,
+					record === undefined ? NEW_TIMESTAMP_PLACEHOLDER : LAST_TIMESTAMP_PLACEHOLDER,
 					createAuditEntry(
 						new_version,
 						table_id,
