@@ -70,8 +70,11 @@
 		"format:fix": "npm run format -- --write",
 		"lint": "eslint .",
 		"lint:fix": "npm run lint -- --fix",
-		"cluster:local": "docker compose -f utility/dev/docker-compose.yml --project-directory . build && docker compose -f utility/dev/docker-compose.yml --project-directory . up",
-		"cluster:latest": "docker compose -f utility/dev/docker-compose.yml --project-directory . pull && docker compose -f utility/dev/docker-compose.yml --project-directory . up"
+		"cluster:ip:local": "pushd utility/dev && docker compose -f docker-compose.ip.yml --project-directory ../.. build && docker compose -f docker-compose.ip.yml --project-directory ../.. up; popd",
+		"cluster:ip:latest": "pushd utility/dev && docker compose -f docker-compose.ip.yml --project-directory ../.. pull && docker compose -f docker-compose.ip.yml --project-directory ../.. up; popd",
+		"cluster:delete": "pushd utility/dev && docker compose -f docker-compose.ip.yml --project-directory ../.. down --remove-orphans; popd",
+		"cluster:hostname:local": "pushd utility/dev && docker compose -f docker-compose.hostname.yml --project-directory ../.. build && docker compose -f docker-compose.hostname.yml --project-directory ../.. up; popd",
+		"cluster:hostname:latest": "pushd utility/dev && docker compose -f docker-compose.hostname.yml --project-directory ../.. pull && docker compose -f docker-compose.hostname.yml --project-directory ../.. up; popd"
 	},
 	"dependencies": {
 		"@aws-sdk/client-s3": "3.750.0",
