@@ -178,7 +178,7 @@ export function removeAuditEntry(audit_store: any, key: number, value: any): Pro
 		audit_record = readAuditEntry(value);
 		const primary_store = audit_store.tableStores[audit_record.tableId];
 		const entry = primary_store.getEntry(audit_record.recordId);
-		if (entry.version !== audit_record.version || !entry.value) {
+		if (!entry || entry.version !== audit_record.version || !entry.value) {
 			// if the versions don't match or the record has been removed/null-ed, then this should be the only/last reference to any blob
 			decodeFromDatabase(() => deleteBlobsInObject(audit_record.getValue(primary_store)), primary_store.rootStore);
 		}

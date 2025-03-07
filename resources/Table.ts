@@ -1373,6 +1373,7 @@ export function makeTable(options) {
 					let update_to_apply = record_update;
 
 					this.#saveMode = 0;
+					let omitLocalRecord = false;
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
@@ -1455,9 +1456,23 @@ export function makeTable(options) {
 								throw new Error('Residency must be an array, got: ' + residency);
 							}
 							if (!residency.includes(server.hostname)) {
-								// if we aren't in the residency, add ourselves.
-								// TODO: we probably want to allow this, but we need to write the partial record in the main table and the full record in the audit log
-								residency.push(server.hostname);
+								// if we aren't in the residency list, specify that our local record should be omitted or be partial
+								audit_record_to_store ??= record_to_store;
+								omitLocalRecord = true;
+								if (TableResource.getResidencyById) {
+									// complete omission of the record that doesn't belong here
+									record_to_store = undefined;
+								} else {
+									// store the partial record
+									record_to_store = null;
+									for (const name in indices) {
+										if (!record_to_store) {
+											record_to_store = {};
+										}
+										// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
+										record_to_store[name] = audit_record_to_store[name];
+									}
+								}
 							}
 						}
 						residency_id = getResidencyId(residency);
@@ -1491,9 +1506,10 @@ export function makeTable(options) {
 						record_to_store,
 						existing_entry,
 						txn_time,
-						0,
+						omitLocalRecord ? INVALIDATED : 0,
 						audit,
 						{
+							omitLocalRecord,
 							user: context?.user,
 							residencyId: residency_id,
 							expiresAt: expires_at,
