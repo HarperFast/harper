@@ -306,13 +306,14 @@ describe('Replication', () => {
 			let retries = 20;
 			do {
 				await new Promise((resolve) => setTimeout(resolve, 500));
-				let result = test_stores[1].getBinary('8');
+				let result = test_stores[1].get('8');
 				if (!result) {
 					assert(--retries > 0);
 					continue;
 				}
 				// verify that this is a small partial record, and invalidation entry
-				assert(result.length < 30);
+				assert.equal(result.value.name, name);
+				assert(!result.value.id);
 				result = test_stores[2].getBinary('8');
 				if (!result) {
 					assert(--retries > 0);
