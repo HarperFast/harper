@@ -88,6 +88,12 @@ async function restart(req) {
 
 		if (env_mgr.get(hdb_terms.CONFIG_PARAMS.STORAGE_COMPACTONSTART)) await compactOnStart();
 
+		if (process.env.HARPER_EXIT_ON_RESTART) {
+			// use this to exit the process so that it will be restarted by the
+			// PM/container/orchestrator.
+			process.exit(0);
+		}
+
 		setTimeout(() => {
 			restartWorkers();
 		}, 50); // can't await this because it would deadlock on waiting for itself to finish
