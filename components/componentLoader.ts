@@ -4,10 +4,7 @@ import { isMainThread } from 'worker_threads';
 import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager';
 import { PACKAGE_ROOT } from '../utility/packageUtils';
-import {
-	CONFIG_PARAMS,
-	HDB_ROOT_DIR_NAME,
-} from '../utility/hdbTerms';
+import { CONFIG_PARAMS, HDB_ROOT_DIR_NAME } from '../utility/hdbTerms';
 import * as graphql_handler from '../resources/graphql';
 import * as graphql_query_handler from '../server/graphqlQuerying';
 import * as roles from '../resources/roles';
@@ -181,7 +178,7 @@ export async function loadComponent(
 		try {
 			if (
 				isMainThread &&
-				(is_root || (existsSync(harperdb_module) && realpathSync(PACKAGE_ROOT) !== realpathSync(harperdb_module)))
+				(is_root || !existsSync(harperdb_module) || realpathSync(PACKAGE_ROOT) !== realpathSync(harperdb_module))
 			) {
 				// if the app has a harperdb module, we symlink it to the main app so it can be used in the main app (with the running modules)
 				rmSync(harperdb_module, { recursive: true, force: true });
