@@ -361,7 +361,7 @@ export function recordUpdater(store, table_id, audit_store) {
 				}
 			}
 			let result: Promise<void>;
-			if (!options?.omitLocalRecord) {
+			if (record !== undefined) {
 				result = encodeBlobsWithFilePath(() => store.put(id, record, put_options), id, store.rootStore);
 				if (blobsWereEncoded) {
 					extended_type |= HAS_BLOBS;

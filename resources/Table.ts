@@ -342,18 +342,18 @@ export function makeTable(options) {
 					switch (event.type) {
 						case 'put':
 							return should_revalidate_events
-								? resource._writeInvalidate(options)
+								? resource._writeInvalidate(value, options)
 								: resource._writeUpdate(value, true, options);
 						case 'patch':
 							return should_revalidate_events
-								? resource._writeInvalidate(options)
+								? resource._writeInvalidate(value, options)
 								: resource._writeUpdate(value, false, options);
 						case 'delete':
 							return resource._writeDelete(options);
 						case 'publish':
 							return resource._writePublish(value, options);
 						case 'invalidate':
-							return resource._writeInvalidate(options);
+							return resource._writeInvalidate(value, options);
 						case 'relocate':
 							return resource._writeRelocate(options);
 						default:
@@ -1102,7 +1102,7 @@ export function makeTable(options) {
 		invalidate() {
 			this._writeInvalidate();
 		}
-		_writeInvalidate(options) {
+		_writeInvalidate(partial_record?: any, options?: any) {
 			const context = this.getContext();
 			const id = this.getId();
 			checkValidId(id);
@@ -1116,11 +1116,13 @@ export function makeTable(options) {
 				beforeIntermediate: apply_to_sources_intermediate.invalidate?.bind(this, context, id),
 				commit: (txn_time, existing_entry) => {
 					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId) <= 0) return;
-					let partial_record = null;
+					partial_record ??= null;
 					for (const name in indices) {
 						if (!partial_record) partial_record = {};
 						// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-						partial_record[name] = this.getProperty(name);
+						if (partial_record[name] === undefined) {
+							partial_record[name] = this.getProperty(name);
+						}
 					}
 					logger.trace?.(`Invalidating entry id: ${id}, timestamp: ${new Date(txn_time).toISOString()}`);
 
