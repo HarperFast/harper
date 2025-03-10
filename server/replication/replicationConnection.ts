@@ -859,7 +859,7 @@ export function replicateOverWS(ws, options, authorization) {
 								let extended_type = 0;
 								if (residency_id) extended_type |= HAS_CURRENT_RESIDENCY_ID;
 								if (audit_record.previousResidencyId) extended_type |= HAS_PREVIOUS_RESIDENCY_ID;
-								let full_record,
+								let full_record: any,
 									partial_record = null;
 								for (const name in table.indices) {
 									if (!partial_record) {
