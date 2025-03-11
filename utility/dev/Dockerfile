@@ -6,18 +6,18 @@ FROM node:23
 RUN mkdir /opt/harper
 WORKDIR /opt/harper
 
-COPY ./package.json ./package-lock.json ./
+COPY package.json package-lock.json ./
 
 # These are all to appease the NATS installation, which this image is not intended to use
 # Maybe optimize this to skip NATS somehow in the future?
-COPY ./launchServiceScripts/launchInstallNATSServer.js ./launchServiceScripts/
-COPY ./bin/dev.js ./bin/
-COPY ./utility/hdbTerms.js ./utility/
-COPY ./server/nats/utility/* ./server/nats/utility/
+COPY launchServiceScripts/launchInstallNATSServer.js ./launchServiceScripts/
+COPY bin/dev.js ./bin/
+COPY utility/packageUtils.js utility/hdbTerms.ts ./utility/
+COPY server/nats/utility/* ./server/nats/utility/
 
 RUN npm i
 
-COPY ./ /opt/harper/
+COPY . /opt/harper/
 
 RUN npm link
 
@@ -28,5 +28,7 @@ ENV TC_AGREEMENT=yes \
     LOGGING_STDSTREAMS=true
 
 EXPOSE 9925 9926 9932 9933
+
+HEALTHCHECK CMD ["curl", "-sf", "http://localhost:9925/health" ]
 
 CMD ["harperdb"]
