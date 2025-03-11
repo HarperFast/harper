@@ -178,7 +178,9 @@ export async function loadComponent(
 		try {
 			if (
 				isMainThread &&
-				(is_root || !existsSync(harperdb_module) || realpathSync(PACKAGE_ROOT) !== realpathSync(harperdb_module))
+				(is_root ||
+					((existsSync(harperdb_module) || !folder.startsWith(getHdbBasePath())) &&
+						(!existsSync(harperdb_module) || realpathSync(PACKAGE_ROOT) !== realpathSync(harperdb_module))))
 			) {
 				// if the app has a harperdb module, we symlink it to the main app so it can be used in the main app (with the running modules)
 				rmSync(harperdb_module, { recursive: true, force: true });
