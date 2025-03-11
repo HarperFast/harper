@@ -212,13 +212,13 @@ export async function recordHostname() {
 	const hostnameHash = nodeId[0] === 1;
 	if (hostnameHash) {
 		const hostnamesTable = getAnalyticsHostnamesTable();
-		const recordId = nodeId.slice(1);
+		const hostnameId = nodeId.slice(1);
 		// primary keys have to be numbers or strings so convert the 32-bit hash to a number
-		const hostnameId = nodeHashToNumber(recordId);
-		const record = await hostnamesTable.get(hostnameId);
+		const recordId = nodeHashToNumber(hostnameId);
+		const record = await hostnamesTable.get(recordId);
 		if (!record) {
 			const hostnameRecord = {
-				id: hostnameId,
+				id: recordId,
 				hostname,
 			};
 			log.trace?.(`storing hostname: ${JSON.stringify(hostnameRecord)}`);

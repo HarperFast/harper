@@ -43,6 +43,7 @@ import { server } from '../Server';
 const operation_log = harper_logger.loggerWithTag('operation');
 import keys from '../../security/keys';
 import * as set_node from '../../server/replication/setNode';
+import * as analytics from '../../resources/analytics/read';
 import operation_function_caller from '../../utility/OperationFunctionCaller';
 import type { OperationRequest, OperationRequestBody, OperationResult } from '../operationsServer';
 import { transact_to_clustering_utils } from '../../utility/clustering/transactToClusteringUtilities';
@@ -493,6 +494,10 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.GET_SSH_KNOWN_HOSTS,
 		new OperationFunctionObject(custom_function_operations.getSSHKnownHosts)
+	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.GET_ANALYTICS,
+		new OperationFunctionObject(analytics.get)
 	);
 	return opFuncMap;
 }
