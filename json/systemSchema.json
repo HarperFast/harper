@@ -197,6 +197,19 @@
 			}
 		]
 	},
+	"hdb_analytics_hostnames": {
+		"hash_attribute": "id",
+		"name": "hdb_analytics_hostnames",
+		"schema": "system",
+		"attributes": [
+			{
+				"attribute": "id"
+			},
+			{
+				"attribute": "hostname"
+			}
+		]
+	},
 	"hdb_analytics": {
 		"hash_attribute": "id",
 		"name": "hdb_analytics",

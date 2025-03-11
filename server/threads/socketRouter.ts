@@ -41,6 +41,7 @@ if (isMainThread) {
 
 const LICENSE_NAG_PERIOD = 600000; // ten minutes
 export async function startHTTPThreads(thread_count = 2, dynamic_threads?: boolean) {
+	recordHostname().catch(err => harper_logger.error?.('Error recording hostname for analytics:', err));
 	try {
 		if (dynamic_threads) {
 			startHTTPWorker(0, 1, true);

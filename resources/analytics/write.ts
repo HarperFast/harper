@@ -206,6 +206,27 @@ function sendAnalytics() {
 	}, ANALYTICS_DELAY).unref();
 }
 
+export async function recordHostname() {
+	const hostname = server.hostname;
+	const nodeId = stableNodeId(hostname);
+	const hostnameHash = nodeId[0] === 1;
+	if (hostnameHash) {
+		const hostnamesTable = getAnalyticsHostnamesTable();
+		const recordId = nodeId.slice(1);
+		// primary keys have to be numbers or strings so convert the 32-bit hash to a number
+		const hostnameId = nodeHashToNumber(recordId);
+		const record = await hostnamesTable.get(hostnameId);
+		if (!record) {
+			const hostnameRecord = {
+				id: hostnameId,
+				hostname,
+			};
+			log.trace?.(`storing hostname: ${JSON.stringify(hostnameRecord)}`);
+			hostnamesTable.put(hostnameRecord.id, hostnameRecord);
+		}
+	}
+}
+
 export interface Metric {
 	[key: string]: any;
 }
