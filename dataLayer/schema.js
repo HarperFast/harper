@@ -1,21 +1,46 @@
 'use strict';
 
-const validation = require('../validation/schema_validator');
 const schema_metadata_validator = require('../validation/schemaMetadataValidator');
+const { validateBySchema } = require('../validation/validationWrapper');
+const { common_validators, schema_regex } = require('../validation/common_validators');
+const Joi = require('joi');
 const logger = require('../utility/logging/harper_logger');
 const uuidV4 = require('uuid').v4;
-const clone = require('clone');
 const signalling = require('../utility/signalling');
 const hdb_terms = require('../utility/hdbTerms');
 const util = require('util');
 const harperBridge = require('./harperBridge/harperBridge');
-const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const { handleHDBError, hdb_errors, ClientError } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const { SchemaEventMsg } = require('../server/threads/itc');
 const nats_utils = require('../server/nats/utility/natsUtils');
 const { getDatabases } = require('../resources/databases');
 const { transformReq } = require('../utility/common_utils');
 const { replicateOperation } = require('../server/replication/replicator');
+
+const DB_NAME_CONSTRAINTS = Joi.string()
+	.min(1)
+	.max(common_validators.schema_length.maximum)
+	.pattern(schema_regex)
+	.messages({ 'string.pattern.base': '{:#label} ' + common_validators.schema_format.message });
+
+const TABLE_NAME_CONSTRAINTS = Joi.string()
+	.min(1)
+	.max(common_validators.schema_length.maximum)
+	.pattern(schema_regex)
+	.messages({ 'string.pattern.base': '{:#label} ' + common_validators.schema_format.message })
+	.required();
+
+const PRIMARY_KEY_CONSTRAINTS = Joi.string()
+	.min(1)
+	.max(common_validators.schema_length.maximum)
+	.pattern(schema_regex)
+	.messages({
+		'string.pattern.base': '{:#label} ' + common_validators.schema_format.message,
+		'any.required': "'primary_key' is required",
+		'string.base': "'primary_key' must be a string",
+	})
+	.required();
 
 module.exports = {
 	createSchema: createSchema,
@@ -41,17 +66,14 @@ async function createSchema(schema_create_object) {
 }
 
 async function createSchemaStructure(schema_create_object) {
-	let validation_error = validation.schema_object(schema_create_object);
-	if (validation_error) {
-		throw handleHDBError(
-			validation_error,
-			validation_error.message,
-			HTTP_STATUS_CODES.BAD_REQUEST,
-			undefined,
-			undefined,
-			true
-		);
-	}
+	const validation = validateBySchema(
+		schema_create_object,
+		Joi.object({
+			database: DB_NAME_CONSTRAINTS,
+			schema: DB_NAME_CONSTRAINTS,
+		})
+	);
+	if (validation) throw new ClientError(validation.message);
 
 	transformReq(schema_create_object);
 
@@ -78,19 +100,17 @@ async function createTable(create_table_object) {
 }
 
 async function createTableStructure(create_table_object) {
-	let validation_error = validation.create_table_object(create_table_object);
-	if (validation_error) {
-		throw handleHDBError(
-			validation_error,
-			validation_error.message,
-			HTTP_STATUS_CODES.BAD_REQUEST,
-			undefined,
-			undefined,
-			true
-		);
-	}
-
-	validation.validateTableResidence(create_table_object.residence);
+	const validation = validateBySchema(
+		create_table_object,
+		Joi.object({
+			database: DB_NAME_CONSTRAINTS,
+			schema: DB_NAME_CONSTRAINTS,
+			table: TABLE_NAME_CONSTRAINTS,
+			residence: Joi.array().items(Joi.string().min(1)).optional(),
+			hash_attribute: PRIMARY_KEY_CONSTRAINTS,
+		})
+	);
+	if (validation) throw new ClientError(validation.message);
 
 	let invalid_table_msg = await schema_metadata_validator.checkSchemaTableExists(
 		create_table_object.schema,
@@ -137,13 +157,18 @@ async function createTableStructure(create_table_object) {
 }
 
 async function dropSchema(drop_schema_object) {
-	let no_db_error =
-		!drop_schema_object.schema && !drop_schema_object.database ? new Error('database is required') : undefined;
-	let validation_error = validation.schema_object(drop_schema_object);
-	const val_error = no_db_error ?? validation_error;
-	if (val_error) {
-		throw handleHDBError(val_error, val_error.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
-	}
+	const validation = validateBySchema(
+		drop_schema_object,
+		Joi.object({
+			database: Joi.string(),
+			schema: Joi.string(),
+		})
+			.or('database', 'schema')
+			.messages({
+				'object.missing': "'database' is required",
+			})
+	);
+	if (validation) throw new ClientError(validation.message);
 
 	transformReq(drop_schema_object);
 
@@ -182,17 +207,15 @@ async function dropSchema(drop_schema_object) {
 }
 
 async function dropTable(drop_table_object) {
-	let validation_error = validation.table_object(drop_table_object);
-	if (validation_error) {
-		throw handleHDBError(
-			validation_error,
-			validation_error.message,
-			HTTP_STATUS_CODES.BAD_REQUEST,
-			undefined,
-			undefined,
-			true
-		);
-	}
+	const validation = validateBySchema(
+		drop_table_object,
+		Joi.object({
+			database: Joi.string(),
+			schema: Joi.string(),
+			table: Joi.string().required(),
+		})
+	);
+	if (validation) throw new ClientError(validation.message);
 
 	transformReq(drop_table_object);
 
@@ -227,17 +250,16 @@ async function dropTable(drop_table_object) {
  * @returns {Promise<*>}
  */
 async function dropAttribute(drop_attribute_object) {
-	let validation_error = validation.attribute_object(drop_attribute_object);
-	if (validation_error) {
-		throw handleHDBError(
-			validation_error,
-			validation_error.message,
-			HTTP_STATUS_CODES.BAD_REQUEST,
-			undefined,
-			undefined,
-			true
-		);
-	}
+	const validation = validateBySchema(
+		drop_attribute_object,
+		Joi.object({
+			database: Joi.string(),
+			schema: Joi.string(),
+			table: Joi.string().required(),
+			attribute: Joi.string().required(),
+		})
+	);
+	if (validation) throw new ClientError(validation.message);
 
 	transformReq(drop_attribute_object);
 

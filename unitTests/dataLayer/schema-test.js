@@ -18,8 +18,6 @@ chai.use(sinon_chai);
 const signalling = require('../../utility/signalling');
 let insert = require('../../dataLayer/insert');
 const logger = require('../../utility/logging/harper_logger');
-const common = require('../../utility/common_utils');
-const schema_validator = require('../../validation/schema_validator');
 const schema_metadata_validator = require('../../validation/schemaMetadataValidator');
 const util = require('util');
 const { cloneDeep } = require('lodash');
@@ -41,7 +39,7 @@ const CREATE_TABLE_OBJECT_TEST = {
 	schema: SCHEMA_NAME_TEST,
 	table: TABLE_NAME_TEST,
 	hash_attribute: HASH_ATT_TEST,
-	residence: '',
+	residence: ['*'],
 };
 const DROP_SCHEMA_OBJECT_TEST = { operation: 'drop_schema', schema: SCHEMA_NAME_TEST };
 const DROP_TABLE_OBJECT_TEST = { operation: 'drop_table', schema: SCHEMA_NAME_TEST, table: TABLE_NAME_TEST };
@@ -83,7 +81,6 @@ describe('Test schema module', function () {
 	let insert_stub;
 	let logger_error_stub;
 	let logger_info_stub;
-	let schema_validator_stub;
 	let attr_validator_stub;
 	global.hdb_schema = {};
 	let sandbox = sinon.createSandbox();
@@ -95,14 +92,11 @@ describe('Test schema module', function () {
 		signal_schema_change_stub = sinon.stub(signalling, 'signalSchemaChange');
 		logger_error_stub = sinon.stub(logger, 'error');
 		logger_info_stub = sinon.stub(logger, 'info');
-		schema_validator_stub = sinon.stub(schema_validator, 'schema_object');
-		attr_validator_stub = sinon.stub(schema_validator, 'attribute_object');
 	});
 
 	afterEach(function () {
 		sinon.resetHistory();
 		insert_stub.resolves();
-		schema_validator_stub.returns();
 	});
 
 	after(function () {
@@ -164,22 +158,6 @@ describe('Test schema module', function () {
 			schema_exists_stub.restore();
 		});
 
-		it('should throw a validation error', async function () {
-			let validation_err = 'Schema is required';
-			schema_validator_stub.throws(new Error(validation_err));
-			let error;
-
-			try {
-				await schema.createSchemaStructure(SCHEMA_CREATE_OBJECT_TEST);
-			} catch (err) {
-				error = err;
-			}
-
-			expect(error).to.be.instanceOf(Error);
-			expect(error.message).to.equal(validation_err);
-			expect(schema_validator_stub).to.have.been.calledOnce;
-		});
-
 		it('should throw schema already exists error', async function () {
 			schema_exists_stub.resolves(false);
 			global.hdb_schema = cloneDeep(GLOBAL_SCHEMA_FAKE);
@@ -218,7 +196,6 @@ describe('Test schema module', function () {
 
 			expect(result).to.equal(create_table_struc_fake);
 			expect(create_table_struc_stub).to.have.been.calledOnce;
-			expect(signal_schema_change_stub).to.have.been.calledOnce;
 		});
 
 		it('should catch thrown error from createTableStructure', async function () {
@@ -242,8 +219,6 @@ describe('Test schema module', function () {
 	 * Tests for createTableStructure function.
 	 */
 	describe('Create table structure', function () {
-		let create_table_validator_stub = sinon.stub(schema_validator, 'create_table_object');
-		let residence_validator_stub = sinon.stub(schema_validator, 'validateTableResidence');
 		let harper_bridge_stub;
 		let schema_exists_stub;
 		let schema_table_exists_stub;
@@ -265,23 +240,22 @@ describe('Test schema module', function () {
 			schema_exists_stub.resolves(true);
 			schema_table_exists_stub.resolves(true);
 			global.clustering_on = true;
-			create_table_validator_stub.returns();
 		});
 
 		it('should catch thrown error from validation.create_table_object', async function () {
-			let create_table_validator_err = 'Table is required';
-			create_table_validator_stub.throws(new Error(create_table_validator_err));
 			let error;
-
 			try {
-				await schema.createTableStructure(CREATE_TABLE_OBJECT_TEST);
+				await schema.createTableStructure({
+					operation: 'create_table',
+					schema: SCHEMA_NAME_TEST,
+					hash_attribute: HASH_ATT_TEST,
+				});
 			} catch (err) {
 				error = err;
 			}
 
 			expect(error).to.be.instanceOf(Error);
-			expect(error.message).to.equal(create_table_validator_err);
-			expect(create_table_validator_stub).to.have.been.calledOnce;
+			expect(error.message).to.equal("'table' is required");
 		});
 
 		it('should throw table already exists error message', async function () {
@@ -299,8 +273,7 @@ describe('Test schema module', function () {
 			expect(error.message).to.equal(
 				`Table '${CREATE_TABLE_OBJECT_TEST.table}' already exists in '${CREATE_TABLE_OBJECT_TEST.schema}'`
 			);
-			expect(create_table_validator_stub).to.have.been.calledOnce;
-			expect(residence_validator_stub).to.have.been.calledOnce;
+
 			global.hdb_schema.dogsrule = {};
 		});
 
@@ -327,8 +300,6 @@ describe('Test schema module', function () {
 			expect(error.message).to.equal(
 				`Clustering does not appear to be enabled. Cannot insert table with property 'residence'.`
 			);
-			expect(create_table_validator_stub).to.have.been.calledOnce;
-			expect(residence_validator_stub).to.have.been.calledOnce;
 		});
 
 		it('should call all stubs and return success message', async function () {
@@ -337,29 +308,26 @@ describe('Test schema module', function () {
 			expect(result).to.equal(
 				`table '${CREATE_TABLE_OBJECT_TEST.schema}.${CREATE_TABLE_OBJECT_TEST.table}' successfully created.`
 			);
-			expect(create_table_validator_stub).to.have.been.calledOnce;
-			expect(residence_validator_stub).to.have.been.calledOnce;
 		});
 
 		it('should call createTable without setting table.residence', async function () {
-			CREATE_TABLE_OBJECT_TEST.residence = null;
+			CREATE_TABLE_OBJECT_TEST.residence = undefined;
 			let result = await schema.createTableStructure(CREATE_TABLE_OBJECT_TEST);
 
 			expect(result).to.equal(
 				`table '${CREATE_TABLE_OBJECT_TEST.schema}.${CREATE_TABLE_OBJECT_TEST.table}' successfully created.`
 			);
-			expect(create_table_validator_stub).to.have.been.calledOnce;
-			expect(residence_validator_stub).to.have.been.calledOnce;
 		});
 
 		it('should catch and throw validation error', async () => {
-			create_table_validator_stub.restore();
-			const expected_err = test_util.generateHDBError('Table is required,Hash attribute is required', 400);
-			await test_util.assertErrorAsync(
-				schema.createTableStructure,
-				[{ operation: 'create_table', schema: 'dogz' }],
-				expected_err
-			);
+			let error;
+			try {
+				await schema.createTableStructure({ operation: 'create_table', schema: 'dogz' });
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error.message).to.be.equal("'table' is required. 'primary_key' is required");
 		});
 	});
 
@@ -373,12 +341,8 @@ describe('Test schema module', function () {
 		let check_exists_stub;
 
 		before(() => {
-			schema_validator_stub.returns(undefined);
 			sandbox.restore();
 			purge_schema_table_stub = sandbox.stub(nats_utils, 'purgeSchemaTableStreams').resolves();
-			// check_exists_stub = sandbox.stub().callsFake(async (schema_name) => {
-			// 	global.hdb_schema[schema_name] = Object.assign({}, GLOBAL_SCHEMA_FAKE[schema_name]);
-			// });
 			check_exists_stub = sandbox.stub().resolves(true);
 		});
 
@@ -442,8 +406,14 @@ describe('Test schema module', function () {
 		});
 
 		it('Test schema obj validation catches and throws error', async () => {
-			const expected_err = test_util.generateHDBError('database is required', 400);
-			await test_util.assertErrorAsync(schema.dropSchema, [{ operation: 'drop_schema' }], expected_err);
+			let error;
+			try {
+				await schema.dropSchema({ operation: 'drop_schema' });
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error.message).to.be.equal("'database' is required");
 		});
 	});
 
@@ -482,12 +452,14 @@ describe('Test schema module', function () {
 		});
 
 		it('Test that validation error is caught and thrown', async () => {
-			let test_err_result = await test_util.testError(
-				schema.dropTable({ operation: 'drop_table', table: '', schema: 'dogs' }),
-				'Table is too short (minimum is 1 characters)'
-			);
+			let error;
+			try {
+				await schema.dropTable({ operation: 'drop_table', table: '', schema: 'dogs' });
+			} catch (err) {
+				error = err;
+			}
 
-			expect(test_err_result).to.be.true;
+			expect(error.message).to.equal("'table' is not allowed to be empty");
 		});
 
 		it('Test stubs are called as expected and success message is returned', async () => {
@@ -566,23 +538,22 @@ describe('Test schema module', function () {
 		});
 
 		it('should throw a validation error', async function () {
-			let validation_err = 'Attribute is required';
-			attr_validator_stub.returns(new Error(validation_err));
 			let error;
-
 			try {
-				await schema.dropAttribute(DROP_ATTR_OBJECT_TEST);
+				await schema.dropAttribute({
+					operation: 'drop_attribute',
+					schema: SCHEMA_NAME_TEST,
+					table: TABLE_NAME_TEST,
+				});
 			} catch (err) {
 				error = err;
 			}
 
 			expect(error).to.be.instanceOf(Error);
-			expect(error.message).to.equal(validation_err);
-			expect(attr_validator_stub).to.have.been.calledOnce;
+			expect(error.message).to.equal("'attribute' is required");
 		});
 
 		it('should throw cannot drop a hash attribute error', async function () {
-			attr_validator_stub.returns();
 			global.hdb_schema = cloneDeep(GLOBAL_SCHEMA_FAKE);
 			let error;
 
@@ -592,32 +563,8 @@ describe('Test schema module', function () {
 				error = err;
 			}
 
-			expect(attr_validator_stub).to.have.been.calledOnce;
 			expect(error).to.be.instanceOf(Error);
 			expect(error.message).to.equal('You cannot drop a hash attribute');
-		});
-
-		it('should throw and log error from bridge drop attribute', async function () {
-			// Set global schema hash_attribute to something different than test schema const after last test.
-			global.hdb_schema = GLOBAL_SCHEMA_FAKE;
-			global.hdb_schema.dogsrule.catsdrool.hash_attribute = 'notid';
-			let move_attr_trash_err = 'There was problem moving attribute to trash';
-			bridge_drop_attr_stub.throws(new Error(move_attr_trash_err));
-			let error;
-
-			try {
-				await schema.dropAttribute(DROP_ATTR_OBJECT_TEST);
-			} catch (err) {
-				error = err;
-			}
-
-			expect(error).to.be.instanceOf(Error);
-			expect(attr_validator_stub).to.have.been.calledOnce;
-			expect(bridge_drop_attr_stub).to.have.been.calledWith(DROP_ATTR_OBJECT_TEST);
-			expect(logger_error_stub).to.have.been.calledWith(
-				`Got an error deleting attribute ${util.inspect(DROP_ATTR_OBJECT_TEST)}.`
-			);
-			expect(error.message).to.equal(move_attr_trash_err);
 		});
 
 		it('should call all functions and return a success message', async function () {

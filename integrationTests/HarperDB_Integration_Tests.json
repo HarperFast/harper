@@ -467,16 +467,17 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 200\", function () {\r",
-									"    pm.response.to.have.status(200);\r",
+									"pm.test(\"Status code is 400\", function () {\r",
+									"    pm.response.to.have.status(400);\r",
 									"});\r",
 									"\r",
-									"tests[\"Create Schema\"] = responseBody.has(\"successfully created\");\r",
-									"\r",
-									"\r",
+									"pm.test(\"string schema returns error\", function () {\r",
+									"     pm.expect(pm.response.json().error).to.equal(\"'schema' must be a string\");\r",
+									"});\r",
 									""
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -2572,13 +2573,16 @@
 							"listen": "test",
 							"script": {
 								"exec": [
-									"pm.test(\"Status code is 200\", function () {",
-									"    pm.response.to.have.status(200);",
+									"pm.test(\"Status code is 400\", function () {",
+									"    pm.response.to.have.status(400);",
 									"});",
 									"",
-									"tests[\"Create Table\"] = responseBody.has(\"successfully created.\");"
+									"pm.test(\"string schema and table returns error\", function () {",
+									"     pm.expect(pm.response.json().error).to.equal(\"'schema' must be a string. 'table' must be a string\");",
+									"});"
 								],
-								"type": "text/javascript"
+								"type": "text/javascript",
+								"packages": {}
 							}
 						}
 					],
@@ -45153,17 +45157,16 @@
 									"listen": "test",
 									"script": {
 										"exec": [
-											"pm.test(\"Status code is 200\", function () {",
-											"    pm.response.to.have.status(200);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
-											"pm.test(\"Response from drop number number table is correct\", () =>{",
-											"     var jsonData = pm.response.json();",
-											"     pm.expect(jsonData.message).to.eql(\"successfully deleted table '1123.1'\");",
-											"});",
-											""
+											"pm.test(\"string schema and table returns error\", function () {",
+											"     pm.expect(pm.response.json().error).to.equal(\"'schema' must be a string. 'table' must be a string\");",
+											"});"
 										],
-										"type": "text/javascript"
+										"type": "text/javascript",
+										"packages": {}
 									}
 								}
 							],
@@ -45287,17 +45290,16 @@
 									"listen": "test",
 									"script": {
 										"exec": [
-											"pm.test(\"Status code is 200\", function () {",
-											"    pm.response.to.have.status(200);",
+											"pm.test(\"Status code is 400\", function () {",
+											"    pm.response.to.have.status(400);",
 											"});",
 											"",
-											"pm.test(\"Response from drop number number schema is correct\", () =>{",
-											"     var jsonData = pm.response.json();",
-											"     pm.expect(jsonData.message).to.eql(\"successfully deleted '1123'\");",
-											"});",
-											""
+											"pm.test(\"string schema and table returns error\", function () {",
+											"     pm.expect(pm.response.json().error).to.equal(\"'schema' must be a string\");",
+											"});"
 										],
-										"type": "text/javascript"
+										"type": "text/javascript",
+										"packages": {}
 									}
 								}
 							],
