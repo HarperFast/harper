@@ -4,6 +4,9 @@
 import * as logger from '../../utility/logging/logger';
 import { getThisNodeName, lastTimeInAuditStore } from './replicator';
 import { pack, unpack } from 'msgpackr';
+import crypto from 'crypto';
+import * as net from 'node:net';
+import { Hash } from 'node:crypto';
 
 const REMOTE_NODE_IDS = Symbol.for('remote-ids');
 function getIdMappingRecord(audit_store) {
@@ -103,4 +106,51 @@ export function getIdOfRemoteNode(remote_node_name, audit_store) {
 	}
 	logger.trace?.('The remote node name map', remote_node_name, name_to_id, id);
 	return id;
+}
+
+function normalizeIPv6Segments(ipv6: string) {
+	// for embedded IPv4 in IPv6 e.g. ::ffff:127.0.0.1
+	ipv6 = ipv6.replace(/(\d{1,3}\.){3}\d{1,3}$/, (ipv4) => {
+		const [a, b, c, d] = ipv4.split('.').map(parseInt);
+		return ((a << 8) | b).toString(16) + ':' + ((c << 8) | d).toString(16);
+	});
+
+	// shortened IPs e.g. 2001:db8::1428:57ab
+	ipv6 = ipv6.replace('::', ':'.repeat(10 - ipv6.split(':').length));
+
+	return ipv6
+		.toLowerCase()
+		.split(':')
+		.map((v) => v.padStart(4, '0'));
+}
+
+/** stableNodeId takes a hostname or IP address and returns a Uint8Array containing
+ * the 32-bit binary SHAKE128 hash of the hostname, the 32-bit binary
+ * representation of the IPv4 address, or the 128-bit binary representation
+ * of the IPv6 address, depending on the argument. If the return value is an IP
+ * address, the leftmost byte will be 0x00. If the return value is a hostname hash,
+ * the leftmost byte will be 0x01.
+ *
+ */
+export function stableNodeId(nodeHostname: string): Uint8Array {
+	let ipAddr: number[];
+	let hasher: Hash;
+	let hash: string;
+	switch (net.isIP(nodeHostname)) {
+		// eslint-disable-next-line sonarjs/no-fallthrough
+		case 4:
+			ipAddr = nodeHostname.split('.').map((octet: string) => parseInt(octet, 10));
+		// eslint-disable-next-line no-fallthrough
+		case 6:
+			ipAddr ||= normalizeIPv6Segments(nodeHostname).reduce((segments: number[], segment: string) => {
+				segments.push(parseInt(segment.substring(0, 2), 16));
+				segments.push(parseInt(segment.substring(2), 16));
+				return segments;
+			}, []);
+			return Uint8Array.from([0, ...ipAddr]);
+		default:
+			hasher = crypto.createHash('shake128', { outputLength: 4 }); // 4 bytes = 32 bits
+			hash = hasher.update(nodeHostname).digest('binary');
+			return new Uint8Array(Buffer.concat([Buffer.from([1]), Buffer.from(hash, 'binary')]));
+	}
 }

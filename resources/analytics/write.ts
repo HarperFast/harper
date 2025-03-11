@@ -12,6 +12,7 @@ import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 import { server } from '../../server/Server';
 import * as fs from 'node:fs';
 import { stableNodeId } from '../../server/replication/nodeIdMapping';
+import { getAnalyticsHostnamesTable, nodeHashToNumber } from './hostnames';
 
 const log = loggerWithTag('analytics');
 
@@ -205,20 +206,19 @@ function sendAnalytics() {
 	}, ANALYTICS_DELAY).unref();
 }
 
-interface Metric {
+export interface Metric {
 	[key: string]: any;
 }
 
 function storeMetric(table: Table, metric: Metric) {
+	const hostname = server.hostname;
+	const nodeId = stableNodeId(hostname);
 	const metricValue = {
-		id: getNextMonotonicTime(),
+		id: [getNextMonotonicTime(), ...nodeId],
 		...metric,
 	};
-	table.primaryStore.put(metricValue.id, metricValue, { append: true }).then((success: boolean) => {
-		if (!success) {
-			table.primaryStore.put(metricValue.id, metricValue);
-		}
-	});
+	log.trace?.(`storing metric ${JSON.stringify(metricValue)}`);
+	table.put(metricValue.id, metricValue);
 }
 
 interface ResourceUsage extends Partial<NodeJS.ResourceUsage> {

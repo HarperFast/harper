@@ -165,16 +165,26 @@ export function getDatabases(): Databases {
 	const NON_REPLICATING_SYSTEM_TABLES = [
 		'hdb_temp',
 		'hdb_certificate',
-		'hdb_analytics',
 		'hdb_raw_analytics',
 		'hdb_session_will',
 		'hdb_job',
 		'hdb_license',
 		'hdb_info',
 	];
+	if (env_get(CONFIG_PARAMS.ANALYTICS_REPLICATE) === false) {
+		NON_REPLICATING_SYSTEM_TABLES.push('hdb_analytics');
+	} else {
+		// auditing must be enabled for replication
+		if (databases.system?.['hdb_analytics']) {
+			databases.system['hdb_analytics'].enableAuditing();
+			databases.system['hdb_analytics_hostnames'].enableAuditing();
+		}
+	}
 	if (databases.system) {
 		for (const table_name of NON_REPLICATING_SYSTEM_TABLES) {
-			if (databases.system[table_name]) databases.system[table_name].replicate = false;
+			if (databases.system[table_name]) {
+				databases.system[table_name].replicate = false;
+			}
 		}
 	}
 	defined_databases = null;

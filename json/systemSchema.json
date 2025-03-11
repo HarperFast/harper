@@ -201,7 +201,6 @@
 		"hash_attribute": "id",
 		"name": "hdb_analytics",
 		"schema": "system",
-		"audit": false,
 		"attributes": [
 			{
 				"attribute": "id"
