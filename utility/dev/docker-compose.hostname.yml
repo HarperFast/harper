@@ -46,7 +46,7 @@ services:
     build:
       dockerfile: Dockerfile
       context: utility/dev/replication_setup
-    command: ["harper1", "harper3", "5"]
+    command: ["harper3", "harper1", "2"]
     networks:
       harperdb:
     depends_on:
