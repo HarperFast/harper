@@ -44,6 +44,7 @@ exports.createNode = async function createNode(index, database_path, node_count)
 		routes.push({
 			name: 'node-' + (i + 1),
 			url: 'ws://localhost:' + (9325 + i),
+			shard: i + 1,
 		});
 	}
 	const options = {

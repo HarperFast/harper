@@ -25,6 +25,7 @@ const validation_schema = Joi.object({
 	replicates: Joi.boolean(),
 	subscriptions: Joi.array(),
 	revoked_certificates: Joi.array(),
+	shard: Joi.number(),
 });
 
 /**
@@ -177,6 +178,7 @@ export async function setNode(req: object) {
 	}
 	if (req.retain_authorization) node_record.authorization = req.authorization;
 	if (req.revoked_certificates) node_record.revoked_certificates = req.revoked_certificates;
+	if (req.shard) node_record.shard = req.shard;
 
 	if (node_record.replicates) {
 		const this_node = {

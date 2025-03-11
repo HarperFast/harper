@@ -340,7 +340,7 @@ describe('Replication', () => {
 				await test_stores[1].remove('10');
 				await test_stores[2].remove('10');
 				TestTable.setResidencyById((id) => {
-					return ['node-' + ((parseInt(id) % 3) + 1)];
+					return (parseInt(id) % 3) + 1;
 				});
 			});
 			after(() => {

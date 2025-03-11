@@ -22,6 +22,9 @@ interface Server {
 	authenticateUser(username: string, password: string, request: Request): any;
 	operation(operation: any, context: any, authorize?: boolean): Promise<any>;
 	recordAnalytics(value: Value, metric: string, path?: string, method?: string, type?: string): void;
+	nodes: string[];
+	shards: Map<number, string[]>;
+	hostname: string;
 }
 interface ServerOptions {
 	port?: number;

@@ -108,6 +108,8 @@ export interface Table {
 	sources: (new () => ResourceInterface)[];
 	Transaction: ReturnType<typeof makeTable>;
 }
+type ResidencyDefinition = number | string[] | void;
+
 // we default to the max age of the streams because this is the limit on the number of old transactions
 // we might need to reconcile deleted entries against.
 const DELETE_ENTRY_EXPIRATION =
@@ -210,6 +212,7 @@ export function makeTable(options) {
 		static propertyResolvers;
 		static userResolvers = {};
 		static sources = [];
+		static getResidencyById: (id: Id) => number | void;
 		static get expirationMS() {
 			return expiration_ms;
 		}
@@ -808,13 +811,13 @@ export function makeTable(options) {
 			return dbis_db.get([Symbol.for('residency_by_id'), id]);
 		}
 
-		static setResidency(getResidency: (record: object, context: Context, previous_residency: string[]) => string[]) {
+		static setResidency(getResidency: (record: object, context: Context) => ResidencyDefinition) {
 			TableResource.getResidency = getResidency;
 		}
-		static setResidencyById(getResidencyById: (id: Id) => string[]) {
+		static setResidencyById(getResidencyById: (id: Id) => number | void) {
 			TableResource.getResidencyById = getResidencyById;
 		}
-		static getResidency(record: object, context: Context, previous_residency: string[]) {
+		static getResidency(record: object, context: Context) {
 			if (TableResource.getResidencyById) {
 				return TableResource.getResidencyById(record[primary_key]);
 			}
@@ -831,9 +834,9 @@ export function makeTable(options) {
 			if (count >= 0 && server.nodes) {
 				// if we are given a count, choose nodes and return them
 				const replicate_to = [server.hostname]; // start with ourselves, we should always be in the list
-				if (previous_residency) {
+				if (context.previousResidency) {
 					// if we have a previous residency, we should preserve it
-					replicate_to.push(...previous_residency.slice(0, count));
+					replicate_to.push(...context.previousResidency.slice(0, count));
 				} else {
 					// otherwise need to create a new list of nodes to replicate to, based on available nodes
 					// randomize this to ensure distribution of data
@@ -1202,12 +1205,9 @@ export function makeTable(options) {
 				previousResidency: this.getResidencyRecord(existing_entry.residencyId),
 				isRelocation: true,
 			};
-			const residency = this.getResidency(entry.value, context);
+			const residency = residencyFromFunction(this.getResidency(entry.value, context));
 			let residency_id: number;
 			if (residency) {
-				if (!Array.isArray(residency)) {
-					throw new Error('Residency must be an array, but was: ' + residency);
-				}
 				if (!residency.includes(server.hostname)) return; // if we aren't in the residency, we don't need to do anything, we are not responsible for storing this record
 				residency_id = getResidencyId(residency);
 			}
@@ -1452,11 +1452,8 @@ export function makeTable(options) {
 					if (options?.residencyId != undefined) residency_id = options.residencyId;
 					else {
 						if (entry?.residencyId) context.previousResidency = TableResource.getResidencyRecord(entry.residencyId);
-						const residency = TableResource.getResidency(record_to_store, context);
+						const residency = residencyFromFunction(TableResource.getResidency(record_to_store, context));
 						if (residency) {
-							if (!Array.isArray(residency)) {
-								throw new Error('Residency must be an array, got: ' + residency);
-							}
 							if (!residency.includes(server.hostname)) {
 								// if we aren't in the residency list, specify that our local record should be omitted or be partial
 								audit_record_to_store ??= record_to_store;
@@ -3026,7 +3023,7 @@ export function makeTable(options) {
 		if (TableResource.getResidencyById && options.ensureLoaded && context?.replicateFrom !== false) {
 			// this is a special case for when the residency can be determined from the id alone (hash-based sharding),
 			// allow for a fast path to load the record from the correct node
-			const residency = TableResource.getResidencyById(id);
+			const residency = residencyFromFunction(TableResource.getResidencyById(id));
 			if (residency) {
 				if (!residency.includes(server.hostname) && source_load) {
 					// this record is not on this node, so we shouldn't load it here
@@ -3707,12 +3704,28 @@ export function makeTable(options) {
 			}, RECORD_PRUNING_INTERVAL).unref();
 		}
 	}
+	function residencyFromFunction(shardOrResidencyList: ResidencyDefinition): string[] | void {
+		if (shardOrResidencyList == undefined) return;
+		if (Array.isArray(shardOrResidencyList)) return shardOrResidencyList;
+		if (typeof shardOrResidencyList === 'number') {
+			if (shardOrResidencyList >= 65536) throw new Error(`Shard id ${shardOrResidencyList} must be below 65536`);
+			const residencyList = server.shards.get?.(shardOrResidencyList);
+			if (residencyList) return residencyList.map((node) => node.name);
+			throw new Error(`Shard ${shardOrResidencyList} is not defined`);
+		}
+		throw new Error(
+			`Shard or residency list ${shardOrResidencyList} is not a valid type, must be a shard number or residency list of node hostnames`
+		);
+	}
 	function getResidencyId(owner_node_names) {
 		if (owner_node_names) {
-			const set_key = owner_node_names.join(','); // TODO: Translate this to node ids to create key
+			const set_key = owner_node_names.join(',');
 			let residency_id = dbis_db.get([Symbol.for('residency_by_set'), set_key]);
 			if (residency_id) return residency_id;
-			dbis_db.put([Symbol.for('residency_by_set'), set_key], (residency_id = Math.floor(Math.random() * 0x7fffffff)));
+			dbis_db.put(
+				[Symbol.for('residency_by_set'), set_key],
+				(residency_id = Math.floor(Math.random() * 0x7fff0000) + 0xffff)
+			);
 			dbis_db.put([Symbol.for('residency_by_id'), residency_id], owner_node_names);
 			return residency_id;
 		}
