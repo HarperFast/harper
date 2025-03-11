@@ -1,10 +1,12 @@
-#!/usr/bin/env sh
+#!/usr/bin/env bash
 
 api_host=$1
 node_name=$2
 delay=$3
 
-sleep "$delay"
+if [[ -n "$delay" ]]; then
+  sleep "$delay"
+fi
 
 add_node() {
   curl -sfk -u admin:admin "https://$api_host:9925" -H "Content-Type: application/json" \
@@ -12,8 +14,13 @@ add_node() {
   \"authorization\": {\"username\": \"admin\", \"password\": \"admin\"}}"
 }
 
-# TODO: Add a maximum number of attempts check here so this doesn't just loop forever if something's broken
+max_attempts=100
+attempt=0
 until add_node; do
   echo -n ". "
+  if [[ $((++attempt)) -gt $max_attempts ]]; then
+    echo "Exceeded $max_attempts attempts to add node to cluster; exiting"
+    exit 1
+  fi
   sleep 1
 done
