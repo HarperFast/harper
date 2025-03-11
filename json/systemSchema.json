@@ -160,6 +160,9 @@
 			},
 			{
 				"attribute": "revoked_certificates"
+			},
+			{
+				"attribute": "shard"
 			}
 		]
 	},

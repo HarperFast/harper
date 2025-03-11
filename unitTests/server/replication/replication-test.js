@@ -334,13 +334,57 @@ describe('Replication', () => {
 			let result = test_stores[1].get('8')?.value;
 			assert.equal(result.name, name);
 		});
-		describe('id-based sharding', function () {
+		describe('id-based sharding by shard', function () {
 			before(async () => {
 				await test_stores[0].remove('10');
 				await test_stores[1].remove('10');
 				await test_stores[2].remove('10');
 				TestTable.setResidencyById((id) => {
 					return (parseInt(id) % 3) + 1;
+				});
+			});
+			after(() => {
+				TestTable.setResidencyById(null);
+			});
+			it('A write to table with id sharding defined and residency that does not include itself should replicate', async function () {
+				let name = 'name ' + Math.random();
+
+				let result = test_stores[0].getBinary('10');
+				assert(!result);
+
+				await TestTable.put({
+					id: '10', // should be forced to replicate and only store the record on node-2
+					name,
+				});
+
+				let retries = 20;
+				do {
+					await new Promise((resolve) => setTimeout(resolve, 500));
+					let result = test_stores[1].getBinary('10');
+					if (!result) {
+						assert(--retries > 0);
+						continue;
+					}
+					// verify that this is a full record
+					assert(result.length > 30);
+					result = test_stores[0].getBinary('10');
+					assert(!result);
+					result = test_stores[2].getBinary('10');
+					assert(!result);
+					break;
+				} while (true);
+				// now verify that the record can be loaded on-demand here
+				result = await TestTable.get('10');
+				assert.equal(result.name, name);
+			});
+		});
+		describe('id-based sharding by residency list', function () {
+			before(async () => {
+				await test_stores[0].remove('10');
+				await test_stores[1].remove('10');
+				await test_stores[2].remove('10');
+				TestTable.setResidencyById((id) => {
+					return ['node-' + ((parseInt(id) % 3) + 1)];
 				});
 			});
 			after(() => {
