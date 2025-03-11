@@ -4,7 +4,7 @@ import { parser as makeParser, generate } from 'mqtt-packet';
 import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsSession';
 import { getSuperUser } from '../security/user';
 import { serializeMessage, getDeserializer } from './serverHelpers/contentTypes';
-import { recordAction, addAnalyticsListener, recordActionBinary } from '../resources/analytics';
+import { recordAction, addAnalyticsListener, recordActionBinary } from '../resources/analytics/write';
 import { server } from '../server/Server';
 import { get } from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms';

@@ -6,7 +6,7 @@ import { join } from 'path';
 import axios from 'axios';
 import { encode } from 'cbor-x';
 import { createRequire } from 'module';
-import analytics from '../../ts-build/resources/analytics.js';
+import analytics from '../../ts-build/resources/analytics/write.js';
 import { disableNATS } from '../../ts-build/server/nats/natsReplicator.js';
 import { bypassAuth } from '../../ts-build/security/auth.js';
 import { bypassAuth as bypassAuthMQTT } from '../../ts-build/server/mqtt.js';

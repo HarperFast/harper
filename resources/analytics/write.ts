@@ -1,16 +1,17 @@
 import { parentPort, threadId } from 'worker_threads';
-import { setChildListenerByType } from '../server/threads/manageThreads';
-import { getDatabases, table } from './databases';
-import type { Databases, Table, Tables } from './databases';
-import { getLogFilePath } from '../utility/logging/harper_logger';
-import { loggerWithTag } from '../utility/logging/logger';
+import { setChildListenerByType } from '../../server/threads/manageThreads';
+import { getDatabases, table } from '../databases';
+import type { Databases, Table, Tables } from '../databases';
+import { getLogFilePath } from '../../utility/logging/harper_logger';
+import { loggerWithTag } from '../../utility/logging/logger';
 import { dirname, join } from 'path';
 import { open } from 'fs/promises';
-import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
-import { get as env_get, initSync } from '../utility/environment/environmentManager';
-import { CONFIG_PARAMS } from '../utility/hdbTerms';
-import { server } from '../server/Server';
-import fs from 'node:fs';
+import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility';
+import { get as env_get, initSync } from '../../utility/environment/environmentManager';
+import { CONFIG_PARAMS } from '../../utility/hdbTerms';
+import { server } from '../../server/Server';
+import * as fs from 'node:fs';
+import { stableNodeId } from '../../server/replication/nodeIdMapping';
 
 const log = loggerWithTag('analytics');
 
@@ -208,10 +209,9 @@ interface Metric {
 	[key: string]: any;
 }
 
-function storeMetric(table: Table, metricName: string, metric: Metric) {
+function storeMetric(table: Table, metric: Metric) {
 	const metricValue = {
 		id: getNextMonotonicTime(),
-		metric: metricName,
 		...metric,
 	};
 	table.primaryStore.put(metricValue.id, metricValue, { append: true }).then((success: boolean) => {
@@ -269,12 +269,13 @@ function storeTableSizeMetrics(analyticsTable: Table, dbName: string, tables: Ta
 		const fullTableName = `${dbName}.${tableName}`;
 		const tableSize = table.getSize();
 		const metric = {
+			metric: 'table-size',
 			database: dbName,
 			table: tableName,
 			size: tableSize,
 		};
-		storeMetric(analyticsTable, 'table-size', metric);
 		log.trace?.(`table ${fullTableName} size metric: ${JSON.stringify(metric)}`);
+		storeMetric(analyticsTable, metric);
 		dbUsedSize += tableSize;
 	}
 	return dbUsedSize;
@@ -289,13 +290,14 @@ function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 			const dbUsedSize = storeTableSizeMetrics(analyticsTable, db, tables);
 			const dbFree = dbTotalSize - dbUsedSize;
 			const metric = {
+				metric: 'database-size',
 				database: db,
 				size: dbTotalSize,
 				used: dbUsedSize,
 				free: dbFree,
 				audit: dbAuditSize,
 			};
-			storeMetric(analyticsTable, 'database-size', metric);
+			storeMetric(analyticsTable, metric);
 			log.trace?.(`database ${db} size metric: ${JSON.stringify(metric)}`);
 		} catch (error) {
 			// a table or db was deleted, could get an error here
@@ -310,14 +312,15 @@ function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
 			const [firstTable] = Object.values(tables);
 			const storageStats = firstTable.getStorageStats();
 			const metric = {
+				metric: 'storage-volume',
 				database: db,
 				...storageStats,
 			};
-			storeMetric(analyticsTable, 'storage-volume', metric);
+			storeMetric(analyticsTable, metric);
 			log.trace?.(`db ${db} storage volume metrics: ${JSON.stringify(metric)}`);
 		} catch (error) {
 			// a table or db was deleted, could get an error here
-			log.warn?.(`Error getting DB volumne metrics`, error);
+			log.warn?.(`Error getting DB volume metrics`, error);
 		}
 	}
 }
@@ -420,6 +423,7 @@ async function aggregation(from_period, to_period = 60000) {
 		await rest();
 	}
 	for (const entry of threads_to_average) {
+		// eslint-disable-next-line @typescript-eslint/no-unused-vars,prefer-const
 		let { path, method, type, metric, count, total, distribution, threads, ...measures } = entry;
 		threads = threads.filter((thread) => thread);
 		for (const measure_name in measures) {
@@ -464,24 +468,16 @@ async function aggregation(from_period, to_period = 60000) {
 		Object.assign(action, { p1, p10, p25, median, p75, p90, p95, p99, p999 });
 	}
 	let has_updates;
-	for (const [key, value] of aggregate_actions) {
-		value.id = getNextMonotonicTime();
+	for (const [, value] of aggregate_actions) {
 		value.time = last_time;
-		analytics_table.primaryStore.put(value.id, value, { append: true }).then((success: boolean) => {
-			// if for some reason we can't append, try again without append
-			if (!success) {
-				analytics_table.primaryStore.put(value.id, value);
-			}
-		});
+		storeMetric(analytics_table, value);
 		has_updates = true;
 	}
 	const now = Date.now();
 	const { idle, active } = performance.eventLoopUtilization();
 	// don't record boring entries
 	if (has_updates || active * 10 > idle) {
-		const id = getNextMonotonicTime();
 		const value = {
-			id,
 			metric: 'main-thread-utilization',
 			idle: idle - last_idle,
 			active: active - last_active,
@@ -489,12 +485,7 @@ async function aggregation(from_period, to_period = 60000) {
 			time: now,
 			...process.memoryUsage(),
 		};
-		analytics_table.primaryStore.put(id, value, { append: true }).then((success: boolean) => {
-			// if for some reason we can't append, try again without append
-			if (!success) {
-				analytics_table.primaryStore.put(id, value);
-			}
-		});
+		storeMetric(analytics_table, value);
 	}
 	last_idle = idle;
 	last_active = active;
@@ -505,7 +496,11 @@ async function aggregation(from_period, to_period = 60000) {
 	currentResourceUsage.time = now;
 	currentResourceUsage.period = lastResourceUsage.time ? now - lastResourceUsage.time : to_period;
 	currentResourceUsage.cpuUtilization = calculateCPUUtilization(lastResourceUsage, currentResourceUsage.period);
-	storeMetric(analytics_table, 'resource-usage', currentResourceUsage);
+	const cruMetric = {
+		metric: 'resource-usage',
+		...currentResourceUsage,
+	};
+	storeMetric(analytics_table, cruMetric);
 	lastResourceUsage = currentResourceUsage;
 
 	// database-size & table-size metrics
@@ -532,7 +527,8 @@ async function cleanup(AnalyticsTable, expiration) {
 
 const RAW_EXPIRATION = 3600000;
 const AGGREGATE_EXPIRATION = 31536000000; // one year
-let RawAnalyticsTable;
+
+let RawAnalyticsTable: Table;
 function getRawAnalyticsTable() {
 	return (
 		RawAnalyticsTable ||
@@ -556,7 +552,8 @@ function getRawAnalyticsTable() {
 		}))
 	);
 }
-let AnalyticsTable;
+
+let AnalyticsTable: Table;
 function getAnalyticsTable() {
 	return (
 		AnalyticsTable ||

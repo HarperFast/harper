@@ -33,7 +33,7 @@ import * as tls from 'node:tls';
 import { getHDBNodeTable, getReplicationSharedStatus } from './knownNodes';
 import * as process from 'node:process';
 import { isIP } from 'node:net';
-import { recordAction } from '../../resources/analytics';
+import { recordAction } from '../../resources/analytics/write';
 import { decodeBlobsWithWrites, decodeWithBlobCallback, getFileId } from '../../resources/blob';
 import { PassThrough } from 'node:stream';
 
