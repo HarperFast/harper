@@ -26,9 +26,10 @@ interface Server {
 	shards: Map<number, string[]>;
 	hostname: string;
 }
-interface ServerOptions {
+export interface ServerOptions {
 	port?: number;
 	securePort?: number;
+	isOperationsServer?: boolean;
 }
 interface WebSocketOptions extends ServerOptions {
 	subProtocol: string;

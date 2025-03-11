@@ -22,6 +22,9 @@ import {
 	reqBodyValidationHandler,
 } from './serverHelpers/serverHandlers';
 import { registerContentHandlers } from './serverHelpers/contentTypes';
+import type { OperationFunctionName } from './serverHelpers/serverUtilities';
+import type { ParsedSqlObject } from '../sqlTranslator/index';
+import type { User } from '../resources/ResourceInterface';
 
 const DEFAULT_HEADERS_TIMEOUT = 60000;
 const REQ_MAX_BODY_SIZE = 1024 * 1024 * 1024; //this is 1GB in bytes
@@ -91,8 +94,31 @@ async function setUp() {
 	await hdb_license.getLicense();
 }
 
-interface PostBody {
-	operation: string;
+interface BaseOperationRequestBody {
+	operation: OperationFunctionName;
+	bypass_auth: boolean;
+	hdb_user?: User;
+	hdb_auth_header?: string;
+	password?: string;
+	payload?: string;
+	sql?: string;
+	parsed_sql_object?: ParsedSqlObject;
+}
+
+type SearchOperation = BaseOperationRequestBody;
+
+interface SearchOperationRequestBody {
+	search_operation: SearchOperation;
+}
+
+export type OperationRequestBody = BaseOperationRequestBody & SearchOperationRequestBody;
+
+export interface OperationRequest {
+	body: OperationRequestBody;
+}
+
+export interface OperationResult {
+	message?: any;
 }
 
 /**
@@ -149,7 +175,7 @@ function buildServer(is_https: boolean): FastifyInstance {
 	});
 
 	// This handles all POST requests
-	app.post<{ Body: PostBody }>(
+	app.post<{ Body: OperationRequestBody }>(
 		'/',
 		{
 			preValidation: [reqBodyValidationHandler, authHandler],

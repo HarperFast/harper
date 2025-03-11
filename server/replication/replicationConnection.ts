@@ -1446,8 +1446,9 @@ export function replicateOverWS(ws, options, authorization) {
 			} else {
 				// note that if replicateByDefault is enabled, we are listing the *excluded* tables
 				for (const table_name in tables) {
-					if (replicate_by_default ? tables[table_name].replicate === false : tables[table_name].replicate)
+					if (replicate_by_default ? tables[table_name].replicate === false : tables[table_name].replicate) {
 						table_subs.push(table_name);
+					}
 				}
 			}
 
