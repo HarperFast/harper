@@ -450,9 +450,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined) {
 							() => store.decoder.decode(buffer.subarray(decoder.position, end)),
 							store.rootStore
 						);
-						this.value.count = 0;
 					}
-					this.value.count++;
 					return this.value;
 				}
 				if (action & HAS_PARTIAL_RECORD && audit_time) {
