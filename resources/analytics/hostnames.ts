@@ -1,5 +1,7 @@
 import { table, Table } from '../databases';
 
+export const hostnameIds = new Map<string, number>();
+
 let AnalyticsHostnamesTable: Table;
 export function getAnalyticsHostnamesTable() {
 	return (
@@ -23,4 +25,3 @@ export function getAnalyticsHostnamesTable() {
 export function nodeHashToNumber(nodeHash: Uint8Array): number {
 	return (nodeHash[0] << 23) | (nodeHash[1] << 15) | (nodeHash[2] << 7) | nodeHash[3];
 }
-

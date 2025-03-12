@@ -12,7 +12,7 @@ import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 import { server } from '../../server/Server';
 import * as fs from 'node:fs';
 import { stableNodeId } from '../../server/replication/nodeIdMapping';
-import { getAnalyticsHostnamesTable, nodeHashToNumber } from './hostnames';
+import { getAnalyticsHostnamesTable, nodeHashToNumber, hostnameIds } from './hostnames';
 
 const log = loggerWithTag('analytics');
 
@@ -233,9 +233,13 @@ export interface Metric {
 
 function storeMetric(table: Table, metric: Metric) {
 	const hostname = server.hostname;
-	const nodeId = stableNodeId(hostname);
+	let nodeId = hostnameIds.get(hostname);
+	if (!nodeId) {
+		nodeId = nodeHashToNumber(stableNodeId(hostname));
+		hostnameIds.set(hostname, nodeId);
+	}
 	const metricValue = {
-		id: [getNextMonotonicTime(), ...nodeId],
+		id: [getNextMonotonicTime(), nodeId],
 		...metric,
 	};
 	log.trace?.(`storing metric ${JSON.stringify(metricValue)}`);
