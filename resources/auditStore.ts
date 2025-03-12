@@ -424,6 +424,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined) {
 		length = decoder.readInt();
 		const username_start = decoder.position;
 		const username_end = (decoder.position += length);
+		let value: any;
 		return {
 			type: EVENT_TYPES[action & 7],
 			tableId: table_id,
@@ -442,16 +443,15 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined) {
 			get encoded() {
 				return start ? buffer.subarray(start, end) : buffer;
 			},
-			value: undefined,
 			getValue(store, full_record?, audit_time?) {
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !full_record)) {
-					if (!this.value) {
-						this.value = decodeFromDatabase(
+					if (!value) {
+						value = decodeFromDatabase(
 							() => store.decoder.decode(buffer.subarray(decoder.position, end)),
 							store.rootStore
 						);
 					}
-					return this.value;
+					return value;
 				}
 				if (action & HAS_PARTIAL_RECORD && audit_time) {
 					return getRecordAtTime(store.getEntry(this.recordId), audit_time, store);
