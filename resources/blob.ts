@@ -50,6 +50,7 @@ type StorageInfo = {
 	start?: number;
 	end?: number;
 	saving?: Promise<void>;
+	asString?: string;
 };
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
 // We want to keep the file path private (but accessible to the extension)
@@ -111,12 +112,18 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 	toJSON() {
 		if (this.type?.startsWith('text')) {
 			const storageInfo = storageInfoForBlob.get(this);
-			let { start, end, contentBuffer } = storageInfo;
+			let { start, end, contentBuffer, asString } = storageInfo;
+			if (asString) {
+				return asString;
+			}
 			if (contentBuffer && (end !== undefined || start !== undefined)) {
 				contentBuffer = contentBuffer.subarray(start ?? 0, end ?? storageInfo.contentBuffer.length);
 			}
 			// if we have a content buffer we can return
-			if (contentBuffer) return contentBuffer.toString();
+			if (contentBuffer) {
+				storageInfo.asString = contentBuffer.toString();
+				return storageInfo.asString;
+			}
 			asyncSerialization(this.bytes().then((buffer) => (storageInfo.contentBuffer = buffer)));
 			return '';
 		}
