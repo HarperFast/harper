@@ -1,0 +1,15 @@
+services:
+  harper:
+    image: harperdb/harperdb
+    build:
+      dockerfile: utility/dev/Dockerfile
+      context: ../..
+    pull_policy: missing
+    environment:
+      HDB_ADMIN_USERNAME: admin
+      HDB_ADMIN_PASSWORD: admin
+      LOGGING_LEVEL: trace
+      HTTP_PORT: 9926
+      ANALYTICS_REPLICATE: true
+      OPERATIONSAPI_NETWORK_PORT:
+      OPERATIONSAPI_NETWORK_SECUREPORT: 9925
