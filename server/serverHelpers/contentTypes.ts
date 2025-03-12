@@ -406,7 +406,7 @@ export function serialize(response_data, request, response_object) {
 	return response_body;
 }
 
-let asyncSerializations: Promise<void>;
+let asyncSerializations: Promise<void>[];
 /**
  * Serialize a message, may be use multiple times (like with WebSockets)
  * @param message
@@ -452,6 +452,9 @@ export function serializeMessage(
 export function asyncSerialization(promiseToSerialize: Promise<any>) {
 	if (asyncSerializations) asyncSerializations.push(promiseToSerialize);
 	else throw new Error('Unable to serialize asynchronously');
+}
+export function hasAsyncSerialization() {
+	return !!asyncSerializations;
 }
 
 function streamToBuffer(stream: Readable): Promise<Buffer> {

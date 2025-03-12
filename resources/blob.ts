@@ -34,7 +34,7 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { join, dirname } from 'path';
 import logger from '../utility/logging/logger';
 import type { LMDBStore } from 'lmdb';
-import { asyncSerialization } from '../server/serverHelpers/contentTypes';
+import { asyncSerialization, hasAsyncSerialization } from '../server/serverHelpers/contentTypes';
 
 type StorageInfo = {
 	storageIndex: number;
@@ -124,8 +124,9 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 				storageInfo.asString = contentBuffer.toString();
 				return storageInfo.asString;
 			}
-			asyncSerialization(this.bytes().then((buffer) => (storageInfo.contentBuffer = buffer)));
-			return '';
+			if (hasAsyncSerialization())
+				asyncSerialization(this.bytes().then((buffer) => (storageInfo.contentBuffer = buffer)));
+			return `[blob: ${this.type}, ${this.size} bytes]`;
 		}
 		return {
 			description:
