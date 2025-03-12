@@ -257,6 +257,10 @@ async function cloneUsingWS() {
 	// Restarting HDB to pick up new config
 	await restartWorkers();
 
+	// Get last updated record timestamps for all DB and write to file
+	// These values can be used for checking when the clone replication has caught up with leader
+	await getLastUpdatedRecord();
+
 	// When cloning with WS we utilize add_node to clone all the DB and setup replication
 	console.log('Adding node to the cluster');
 	const add_node = require('../clustering/addNode');
@@ -272,6 +276,43 @@ async function cloneUsingWS() {
 	config_utils.updateConfigValue(CONFIG_PARAMS.CLONED, true);
 
 	if (no_start) process.exit();
+}
+
+/**
+ * Will loop through a system describe and a describe_all to compare the last updated record for each table
+ * and record the most recent timestamp for each database in a JSON file.
+ * @returns {Promise<void>}
+ */
+async function getLastUpdatedRecord() {
+	const findMostRecentTimestamp = (describeObj) => {
+		let mostRecent = 0;
+		for (const table in describeObj) {
+			const tableObj = describeObj[table];
+			// requestId is part of the describe response so we ignore it
+			if (typeof tableObj !== 'object') continue;
+			if (tableObj.last_updated_record > mostRecent) {
+				mostRecent = tableObj.last_updated_record;
+			}
+		}
+
+		return mostRecent;
+	};
+
+	console.log('Getting last updated record timestamp for all database');
+	const lastUpdated = {};
+	const systemDb = await leaderReq({ operation: 'describe_database', database: 'system' });
+	lastUpdated['system'] = findMostRecentTimestamp(systemDb);
+
+	const allDb = await leaderReq({ operation: 'describe_all' });
+	for (const db in allDb) {
+		// requestId is part of the describe response so we ignore it
+		if (typeof allDb[db] !== 'object') continue;
+		lastUpdated[db] = findMostRecentTimestamp(allDb[db]);
+	}
+
+	const lastUpdatedFilePath = join(root_path, 'tmp', 'lastUpdated.json');
+	console.log('Writing last updated database timestamps to:', lastUpdatedFilePath);
+	await fs.outputJson(lastUpdatedFilePath, lastUpdated);
 }
 
 /**
