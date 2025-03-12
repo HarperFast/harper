@@ -91,7 +91,7 @@ export function subscribeToNodeUpdates(listener) {
 				}
 				const shards = new Map();
 				for await (const node of getHDBNodeTable().search({})) {
-					if (node.shard) {
+					if (node.shard != undefined) {
 						let nodesForShard = shards.get(node.shard);
 						if (!nodesForShard) {
 							shards.set(node.shard, (nodesForShard = []));
