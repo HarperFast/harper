@@ -314,6 +314,9 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 					const message_binary = await serializeMessage(result.value, request);
 					ws.send(message_binary);
 					recordAction(message_binary.length, 'bytes-sent', request.handlerPath, 'message', 'ws');
+					if (ws._socket.writableNeedDrain) {
+						await new Promise((resolve) => ws._socket.once('drain', resolve));
+					}
 				}
 			}
 		} catch (error) {

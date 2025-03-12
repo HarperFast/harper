@@ -321,17 +321,19 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 								HEADER.set(buffer);
 								size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
 								if (size > totalContentRead) {
-									if (isBeingWritten !== false) {
+									if (checkIfIsBeingWritten()) {
 										// the file is not finished being written, watch the file for changes to resume reading
 										timer = setTimeout(() => {
 											onError(new Error('File read timed out'));
 										}, FILE_READ_TIMEOUT).unref();
-										watcher = watch(filePath, { persistent: false }, () => {
-											clearTimeout(timer);
-											watcher.close();
-											checkIfIsBeingWritten();
-											readMore(resolve, reject);
-										});
+										if (!watcher) {
+											watcher = watch(filePath, { persistent: false }, () => {
+												clearTimeout(timer);
+												watcher.close();
+												watcher = null;
+												readMore(resolve, reject);
+											});
+										}
 									} else {
 										onError(new Error('Blob is incomplete'));
 										// do NOT close the controller, or the error won't propagate to the stream
@@ -862,16 +864,24 @@ export function deleteBlobsInObject(object) {
 	});
 }
 
+/**
+ * Find all blobs in an object, recursively searching for Blob instances
+ * @param object
+ * @param callback
+ */
 export function findBlobsInObject(object: any, callback: (blob: Blob) => void) {
 	if (object instanceof Blob) {
 		// eslint-disable-next-line
 		// @ts-ignore
 		callback(object);
-	} else if (object.constructor === Object || Array.isArray(object)) {
-		// recursively find and delete blobs in the object
+	} else if (Array.isArray(object)) {
+		for (const value of object) {
+			if (typeof value === 'object' && value) findBlobsInObject(value, callback);
+		}
+	} else if (object.constructor === Object) {
 		for (const key in object) {
 			const value = object[key];
-			if (typeof value === 'object') findBlobsInObject(object[key], callback);
+			if (typeof value === 'object' && value) findBlobsInObject(object[key], callback);
 		}
 	}
 }

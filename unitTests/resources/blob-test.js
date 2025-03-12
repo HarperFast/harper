@@ -5,7 +5,12 @@ const { table } = require('../../resources/databases');
 const { Readable, PassThrough } = require('node:stream');
 const { setAuditRetention } = require('../../resources/auditStore');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
-const { getFilePathForBlob, setDeletionDelay, encodeBlobsAsBuffers } = require('../../resources/blob');
+const {
+	getFilePathForBlob,
+	setDeletionDelay,
+	encodeBlobsAsBuffers,
+	findBlobsInObject,
+} = require('../../resources/blob');
 const { existsSync } = require('fs');
 const { pack } = require('msgpackr');
 const { randomBytes } = require('crypto');
@@ -25,6 +30,31 @@ describe('Blob test', () => {
 				{ name: 'blob', type: 'Blob' },
 			],
 		});
+	});
+	it('find a blob in an object', async () => {
+		let blobCount = 0;
+		findBlobsInObject(
+			{
+				blob: await createBlob(Buffer.from('test')),
+				other: 'test',
+				nested: {
+					blob: await createBlob(Buffer.from('test')),
+					other: 'test',
+				},
+				array: [
+					{ string: 'str', hasNull: null, other: 'test' },
+					{ blob: await createBlob(Buffer.from('test')), other: 'test' },
+					null,
+					undefined,
+					3,
+				],
+			},
+			(blob) => {
+				assert(blob instanceof Blob);
+				blobCount++;
+			}
+		);
+		assert.equal(blobCount, 3);
 	});
 	it('create a blob and save it', async () => {
 		let testString = 'this is a test string'.repeat(256);
@@ -211,6 +241,7 @@ describe('Blob test', () => {
 					this.push(testString);
 					this.sentAString = true;
 				} else {
+					console.log('throwing error in read stream');
 					throw new Error('test error');
 				}
 			}
