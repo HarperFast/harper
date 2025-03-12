@@ -241,6 +241,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 		let watcher: any;
 		let timer: any;
 		let isBeingWritten: boolean;
+		let previouslyFinishedWriting = false;
 		const blob = this;
 
 		return new ReadableStream({
@@ -332,15 +333,25 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 										} else {
 											// set up a watcher to be notified of file changes
 											watcher = watch(filePath, { persistent: false }, () => {
-												clearTimeout(timer);
 												watcher.close();
 												watcher = null;
-												readMore(resolve, reject);
+												if (timer) {
+													// if we are waiting for a timeout, that means we finished another read and we can proceed with the next one=
+													clearTimeout(timer); // clear it
+													timer = null;
+													readMore(resolve, reject);
+												}
 											});
 											readMore(resolve, reject); // immediately try to read again in case there was a change before we started watching
 										}
 									} else {
-										onError(new Error('Blob is incomplete'));
+										if (previouslyFinishedWriting) {
+											// we verified that the blob was finished writing before the last read, we can confidently say it is incomplete
+											onError(new Error('Blob is incomplete'));
+										} else {
+											previouslyFinishedWriting = true;
+											readMore(resolve, reject); // try again (possibly for the last time) now that we know the status of the file writing
+										}
 										// do NOT close the controller, or the error won't propagate to the stream
 									}
 									return;
