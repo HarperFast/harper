@@ -274,6 +274,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 				return new Promise(function readMore(resolve: () => void, reject: (error: Error) => void) {
 					function onError(error) {
 						close(fd);
+						clearTimeout(timer);
 						if (watcher) watcher.close();
 						reject(error);
 						blob.#onError?.forEach((callback) => callback(error));
@@ -323,16 +324,20 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 								if (size > totalContentRead) {
 									if (checkIfIsBeingWritten()) {
 										// the file is not finished being written, watch the file for changes to resume reading
-										timer = setTimeout(() => {
-											onError(new Error('File read timed out'));
-										}, FILE_READ_TIMEOUT).unref();
-										if (!watcher) {
+										if (watcher) {
+											// already watching, but add a timer to make sure we don't wait forever
+											timer = setTimeout(() => {
+												onError(new Error('File read timed out'));
+											}, FILE_READ_TIMEOUT).unref();
+										} else {
+											// set up a watcher to be notified of file changes
 											watcher = watch(filePath, { persistent: false }, () => {
 												clearTimeout(timer);
 												watcher.close();
 												watcher = null;
 												readMore(resolve, reject);
 											});
+											readMore(resolve, reject); // immediately try to read again in case there was a change before we started watching
 										}
 									} else {
 										onError(new Error('Blob is incomplete'));
