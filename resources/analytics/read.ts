@@ -15,16 +15,7 @@ async function lookupHostname(hostnameHash: Uint8Array): Promise<string|null> {
 		get_attributes: ['*'],
 	};
 	log.trace?.(`lookupHostname searchByIdReq: ${JSON.stringify(searchByIdReq)}`);
-	// const results = await search.searchByHash(searchByIdReq);
-	const results = await search.searchByValue({
-		database: 'system',
-		table: getAnalyticsHostnamesTable().name,
-		search_attribute: 'id',
-		search_value: '*',
-		get_attributes: ['*'],
-	});
-	// This might need to be a little more forgiving than throwing an error when it can't find the hostname
-	// There will be replication delays, etc.
+	const results = await search.searchByHash(searchByIdReq);
 	for await (const result of results) {
 		log.trace?.(`lookupHostname result: ${JSON.stringify(result)}`);
 		return result.hostname;
