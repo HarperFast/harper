@@ -53,7 +53,7 @@ export class DatabaseTransaction implements Transaction {
 	}
 	useReadTxn() {
 		this.getReadTxn();
-		this.readTxn.use();
+		this.readTxn?.use();
 		this.readTxnsUsed++;
 		return this.readTxn;
 	}
@@ -100,7 +100,7 @@ export class DatabaseTransaction implements Transaction {
 	/**
 	 * Resolves with information on the timestamp and success of the commit
 	 */
-	commit(options: { letItLinger?: boolean; timestamp?: number } = {}): Promise<CommitResolution> {
+	commit(options: { doneWriting?: boolean; timestamp?: number } = {}): Promise<CommitResolution> {
 		let txn_time = this.timestamp;
 		if (!txn_time) txn_time = this.timestamp = options.timestamp || getNextMonotonicTime();
 		if (!options.timestamp) options.timestamp = txn_time;
@@ -161,7 +161,7 @@ export class DatabaseTransaction implements Transaction {
 		}
 		// release the read snapshot so we don't keep it open longer than necessary
 		if (!retries) this.doneReadTxn();
-		this.open = options?.letItLinger ? TRANSACTION_STATE.LINGERING : TRANSACTION_STATE.CLOSED;
+		this.open = options?.doneWriting ? TRANSACTION_STATE.LINGERING : TRANSACTION_STATE.OPEN;
 		let resolution;
 		const completions = [];
 		let write_index = 0;

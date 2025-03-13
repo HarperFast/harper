@@ -64,17 +64,6 @@ describe('Transactions', () => {
 		});
 		assert.equal((await TxnTest.get(42)).name, 'the answer');
 	});
-	it('Do not allow write after txn commits', async function () {
-		const context = {};
-		await transaction(context, () => {});
-		let error;
-		try {
-			TxnTest.put(42, { name: 'wrong answer' }, context);
-		} catch (e) {
-			error = e;
-		}
-		assert(error.message?.includes('Can not'));
-	});
 	it('Can run txn with three tables and two databases', async function () {
 		const context = {};
 		let start = Date.now();
@@ -97,6 +86,22 @@ describe('Transactions', () => {
 		}
 		assert.equal(last_txn2.id, 13);
 		assert.equal(last_txn.version, last_txn2.version);
+	});
+	it('Can run txn with commit in the middle', async function () {
+		const context = {};
+		let start = Date.now();
+		await transaction(context, async () => {
+			TxnTest.put(7, { name: 'seven' }, context);
+			TxnTest2.put(13, { name: 'thirteen' }, context);
+			await context.transaction.commit();
+			assert.equal((await TxnTest.get(7, context)).name, 'seven');
+			let entries = [];
+			for await (let entry of TxnTest2.search([{ attribute: 'name', value: 'thirteen' }], context)) {
+				entries.push(entry);
+			}
+			assert.equal(entries[0].name, 'thirteen');
+			TxnTest3.put(14, { name: 'fourteen' }, context);
+		});
 	});
 	describe('Testing updates', () => {
 		it('Can update with addTo and set', async function () {
