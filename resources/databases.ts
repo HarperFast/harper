@@ -177,7 +177,7 @@ export function getDatabases(): Databases {
 		// auditing must be enabled for replication
 		if (databases.system?.['hdb_analytics']) {
 			databases.system['hdb_analytics'].enableAuditing();
-			databases.system['hdb_analytics_hostnames'].enableAuditing();
+			databases.system['hdb_analytics_hostname'].enableAuditing();
 		}
 	}
 	if (databases.system) {

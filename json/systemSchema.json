@@ -197,9 +197,9 @@
 			}
 		]
 	},
-	"hdb_analytics_hostnames": {
+	"hdb_analytics_hostname": {
 		"hash_attribute": "id",
-		"name": "hdb_analytics_hostnames",
+		"name": "hdb_analytics_hostname",
 		"schema": "system",
 		"attributes": [
 			{

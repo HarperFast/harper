@@ -3,11 +3,11 @@ import { table, Table } from '../databases';
 export const hostnameIds = new Map<string, number>();
 
 let AnalyticsHostnamesTable: Table;
-export function getAnalyticsHostnamesTable() {
+export function getAnalyticsHostnameTable() {
 	return (
 		AnalyticsHostnamesTable ||
 		(AnalyticsHostnamesTable = table({
-			table: 'hdb_analytics_hostnames',
+			table: 'hdb_analytics_hostname',
 			database: 'system',
 			attributes: [
 				{
