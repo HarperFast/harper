@@ -9,6 +9,7 @@ http:
   port: null
   securePort: 9926
   mtls: false
+  http2: false
   timeout: 120000
 threads:
   count: null
