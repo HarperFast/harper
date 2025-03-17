@@ -427,8 +427,19 @@ describe('Replication', () => {
 				await test_stores[0].remove('10');
 				await test_stores[1].remove('10');
 				await test_stores[2].remove('10');
+				await test_stores[0].remove('11');
+				await test_stores[1].remove('11');
+				await test_stores[2].remove('11');
 				TestTable.setResidency((record) => {
 					return ['node-' + ((parseInt(record.id) % 3) + 1)];
+				});
+				TestTable.sourcedFrom({
+					get(id) {
+						return {
+							id,
+							name: 'from source',
+						};
+					},
 				});
 			});
 			after(() => {
@@ -467,6 +478,32 @@ describe('Replication', () => {
 				// now verify that the record can be loaded on-demand here
 				result = await TestTable.get('10');
 				assert.equal(result.name, name);
+			});
+			it('A get from origin with record-based sharding and no self-residency', async function () {
+				let result = test_stores[0].getBinary('11');
+				assert(!result);
+
+				result = await TestTable.get('11');
+				assert.equal(result.name, 'from source');
+				let retries = 20;
+				do {
+					await new Promise((resolve) => setTimeout(resolve, 500));
+					let result = test_stores[2].get('11');
+					if (!result) {
+						assert(--retries > 0);
+						continue;
+					}
+					// verify that this is a full record
+					assert.equal(result.value.name, 'from source');
+					assert.equal(result.value.id, '11');
+					result = test_stores[0].get('11');
+					assert.equal(result.value.name, 'from source');
+					assert(!result.value.id); // partial record, so this shouldn't there
+					result = test_stores[1].get('11');
+					assert.equal(result.value.name, 'from source');
+					assert(!result.value.id); // partial record, so this shouldn't there
+					break;
+				} while (true);
 			});
 		});
 		it('A write to the table during a single broken connection should route through another node', async function () {
