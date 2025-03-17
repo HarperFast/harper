@@ -427,6 +427,9 @@ describe('Replication', () => {
 				await test_stores[0].remove('10');
 				await test_stores[1].remove('10');
 				await test_stores[2].remove('10');
+				await test_stores[0].remove('11');
+				await test_stores[1].remove('11');
+				await test_stores[2].remove('11');
 				TestTable.setResidency((record) => {
 					return ['node-' + ((parseInt(record.id) % 3) + 1)];
 				});
@@ -477,9 +480,7 @@ describe('Replication', () => {
 				assert.equal(result.name, name);
 			});
 			it('A get from origin with record-based sharding and no self-residency', async function () {
-				let name = 'name ' + Math.random();
-
-				let result = test_stores[0].getBinary('10');
+				let result = test_stores[0].getBinary('11');
 				assert(!result);
 
 				result = await TestTable.get('11');
