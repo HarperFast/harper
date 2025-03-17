@@ -3481,6 +3481,35 @@ export function makeTable(options) {
 							const has_index_changes = updateIndices(id, existing_record, updated_record);
 							if (updated_record) {
 								apply_to_sources_intermediate.put?.(source_context, id, updated_record);
+								if (existing_entry) {
+									context.previousResidency = TableResource.getResidencyRecord(existing_entry.residencyId);
+								}
+								let auditRecord: any;
+								let omitLocalRecord = false;
+								let residencyId: number;
+								const residency = residencyFromFunction(TableResource.getResidency(updated_record, context));
+								if (residency) {
+									if (!residency.includes(server.hostname)) {
+										// if we aren't in the residency list, specify that our local record should be omitted or be partial
+										auditRecord = updated_record;
+										omitLocalRecord = true;
+										if (TableResource.getResidencyById) {
+											// complete omission of the record that doesn't belong here
+											updated_record = undefined;
+										} else {
+											// store the partial record
+											updated_record = null;
+											for (const name in indices) {
+												if (!updated_record) {
+													updated_record = {};
+												}
+												// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
+												updated_record[name] = auditRecord[name];
+											}
+										}
+									}
+									residencyId = getResidencyId(residency);
+								}
 								logger.trace?.(
 									`Writing resolved record from source with id: ${id}, timestamp: ${new Date(txn_time).toISOString()}`
 								);
@@ -3490,11 +3519,12 @@ export function makeTable(options) {
 									updated_record,
 									existing_entry,
 									txn_time,
-									0,
-									(audit && has_changes) || null,
-									{ user: source_context?.user, expiresAt: source_context.expiresAt },
+									omitLocalRecord ? INVALIDATED : 0,
+									(audit && (has_changes || omitLocalRecord)) || null,
+									{ user: source_context?.user, expiresAt: source_context.expiresAt, residencyId },
 									'put',
-									Boolean(invalidated)
+									Boolean(invalidated),
+									auditRecord
 								);
 							} else if (existing_entry) {
 								apply_to_sources_intermediate.delete?.(source_context, id);
