@@ -361,11 +361,13 @@ export async function loadComponent(
 								if (resources.isWorker) await extension_module.handleDirectory?.(url_path, path, resources);
 							}
 						} catch (error) {
-							error.message = `Could not load ${dirent.isFile() ? 'file' : 'directory'} '${path}'${
-								component_config.module ? " using '" + component_config.module + "'" : ''
-							} for application '${folder}' due to: ${error.message}`;
+							const message = `Could not load ${dirent.isFile() ? 'file' : 'directory'} '${path}'${
+								component_config.module ? ` using '${component_config.module}'` : ''
+							} for application '${folder}' due to:\n`;
+							error.message = `${message}${error.message}`;
+							error.stack = `${message}${error.stack}`;
 							error_reporter?.(error);
-							(getWorkerIndex() === 0 ? console : harper_logger).error(error);
+							harper_logger.error(error);
 							resources.set(component_config.path || '/', new ErrorResource(error));
 							component_errors.set(is_root ? component_name : basename(folder), error.message);
 						}

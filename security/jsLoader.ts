@@ -25,7 +25,22 @@ export async function secureImport(file_path) {
 		const result = await (await compartment).import(module_url);
 		return result.namespace;
 	} else {
-		return import(module_url);
+		try {
+			// important! we need to await the import, otherwise the error will not be caught
+			return await import(module_url);
+		} catch (err) {
+			try {
+				// the actual parse error (internally known as the "arrow message")
+				// is hidden behind a private symbol (arrow_message_private_symbol)
+				// on the error object and the only way to access it is to use the
+				// internal util.decorateErrorStack() function
+				const util = await import('internal/util');
+				util.default.decorateErrorStack(err);
+			} catch {
+				// maybe --expose-internals was not set?
+			}
+			throw err;
+		}
 	}
 }
 

@@ -137,7 +137,12 @@ function startWorker(path, options = {}) {
 			maxOldGenerationSizeMb: max_old_memory,
 			maxYoungGenerationSizeMb: max_young_memory,
 		},
-		execArgv: ['--enable-source-maps'],
+		execArgv: [
+			'--enable-source-maps',
+
+			// expose Node.js internal utils so jsLoader can use `decorateErrorStack()`
+			'--expose-internals'
+		],
 		argv: process.argv.slice(2),
 		// pass these in synchronously to the worker so it has them on startup:
 		workerData: {
