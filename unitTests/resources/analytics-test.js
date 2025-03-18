@@ -3,7 +3,7 @@ const chai = require('chai');
 const expect = chai.expect;
 const { diffResourceUsage, calculateCPUUtilization } = require('../../resources/analytics/write');
 
-describe('analytics', () => {
+describe('analytics/write', () => {
 	describe('diffResourceUsage', () => {
 		it('diffs all counters', () => {
 			const lastResourceUsage = {
