@@ -12,7 +12,7 @@ import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 import { server } from '../../server/Server';
 import * as fs from 'node:fs';
 import { stableNodeId } from '../../server/replication/nodeIdMapping';
-import { getAnalyticsHostnamesTable, nodeHashToNumber, hostnameIds } from './hostnames';
+import { getAnalyticsHostnameTable, nodeIds } from './hostnames';
 
 const log = loggerWithTag('analytics');
 
@@ -208,22 +208,18 @@ function sendAnalytics() {
 
 export async function recordHostname() {
 	const hostname = server.hostname;
+	log.trace?.('recordHostname server.hostname:', hostname);
 	const nodeId = stableNodeId(hostname);
-	const hostnameHash = nodeId[0] === 1;
-	if (hostnameHash) {
-		const hostnamesTable = getAnalyticsHostnamesTable();
-		const hostnameId = nodeId.slice(1);
-		// primary keys have to be numbers or strings so convert the 32-bit hash to a number
-		const recordId = nodeHashToNumber(hostnameId);
-		const record = await hostnamesTable.get(recordId);
-		if (!record) {
-			const hostnameRecord = {
-				id: recordId,
-				hostname,
-			};
-			log.trace?.(`storing hostname: ${JSON.stringify(hostnameRecord)}`);
-			hostnamesTable.put(hostnameRecord.id, hostnameRecord);
-		}
+	log.trace?.('recordHostname nodeId:', nodeId);
+	const hostnamesTable = getAnalyticsHostnameTable();
+	const record = await hostnamesTable.get(nodeId);
+	if (!record) {
+		const hostnameRecord = {
+			id: nodeId,
+			hostname,
+		};
+		log.trace?.(`storing hostname: ${JSON.stringify(hostnameRecord)}`);
+		hostnamesTable.put(hostnameRecord.id, hostnameRecord);
 	}
 }
 
@@ -233,10 +229,12 @@ export interface Metric {
 
 function storeMetric(table: Table, metric: Metric) {
 	const hostname = server.hostname;
-	let nodeId = hostnameIds.get(hostname);
+	let nodeId = nodeIds.get(hostname);
+	nodeId ? log.trace?.('storeMetric cached nodeId:', nodeId) : null;
 	if (!nodeId) {
-		nodeId = nodeHashToNumber(stableNodeId(hostname));
-		hostnameIds.set(hostname, nodeId);
+		nodeId = stableNodeId(hostname);
+		log.trace?.('storeMetric new nodeId:', nodeId);
+		nodeIds.set(hostname, nodeId);
 	}
 	const metricValue = {
 		id: [getNextMonotonicTime(), nodeId],

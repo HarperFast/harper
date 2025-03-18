@@ -2,11 +2,11 @@
  * This module is responsible for managing the mapping of node/host names to node ids.
  */
 import * as logger from '../../utility/logging/logger';
+import * as log from '../../utility/logging/harper_logger';
 import { getThisNodeName, lastTimeInAuditStore } from './replicator';
 import { pack, unpack } from 'msgpackr';
 import crypto from 'crypto';
 import * as net from 'node:net';
-import { Hash } from 'node:crypto';
 
 const REMOTE_NODE_IDS = Symbol.for('remote-ids');
 function getIdMappingRecord(audit_store) {
@@ -108,7 +108,7 @@ export function getIdOfRemoteNode(remote_node_name, audit_store) {
 	return id;
 }
 
-function normalizeIPv6Segments(ipv6: string) {
+function normalizeIPv6(ipv6: string) {
 	// for embedded IPv4 in IPv6 e.g. ::ffff:127.0.0.1
 	ipv6 = ipv6.replace(/(\d{1,3}\.){3}\d{1,3}$/, (ipv4) => {
 		const [a, b, c, d] = ipv4.split('.').map(parseInt);
@@ -121,36 +121,34 @@ function normalizeIPv6Segments(ipv6: string) {
 	return ipv6
 		.toLowerCase()
 		.split(':')
-		.map((v) => v.padStart(4, '0'));
+		.map((v) => v.padStart(4, '0'))
+		.join(':');
 }
 
-/** stableNodeId takes a hostname or IP address and returns a Uint8Array containing
- * the 32-bit binary SHAKE128 hash of the hostname, the 32-bit binary
- * representation of the IPv4 address, or the 128-bit binary representation
- * of the IPv6 address, depending on the argument. If the return value is an IP
- * address, the leftmost byte will be 0x00. If the return value is a hostname hash,
- * the leftmost byte will be 0x01.
- *
- */
-export function stableNodeId(nodeHostname: string): Uint8Array {
-	let ipAddr: number[];
-	let hasher: Hash;
-	let hash: string;
-	switch (net.isIP(nodeHostname)) {
-		// eslint-disable-next-line sonarjs/no-fallthrough
-		case 4:
-			ipAddr = nodeHostname.split('.').map((octet: string) => parseInt(octet, 10));
-		// eslint-disable-next-line no-fallthrough
-		case 6:
-			ipAddr ||= normalizeIPv6Segments(nodeHostname).reduce((segments: number[], segment: string) => {
-				segments.push(parseInt(segment.substring(0, 2), 16));
-				segments.push(parseInt(segment.substring(2), 16));
-				return segments;
-			}, []);
-			return Uint8Array.from([0, ...ipAddr]);
-		default:
-			hasher = crypto.createHash('shake128', { outputLength: 4 }); // 4 bytes = 32 bits
-			hash = hasher.update(nodeHostname).digest('binary');
-			return new Uint8Array(Buffer.concat([Buffer.from([1]), Buffer.from(hash, 'binary')]));
+function nodeHashToNumber(nodeHash: Uint8Array): number {
+	log.trace?.('nodeHashToNumber arg:', nodeHash);
+	if (nodeHash.length !== 4) {
+		throw new Error(`nodeHash must be exactly 4 bytes (32 bits); got ${nodeHash.length} bytes`);
 	}
+	const num = (nodeHash[0] << 24) | (nodeHash[1] << 16) | (nodeHash[2] << 8) | nodeHash[3];
+	log.trace?.('nodeHashToNumber num:', num);
+	return num;
+}
+
+/** stableNodeId takes a hostname or IP address and returns a number containing
+ * the 32-bit SHAKE128 hash of the hostname or IP address. The astute among you
+ * will now be thinking, "Why return a 32-bit hash of a 32-bit IPv4 address?"
+ * And the answer is that this is primarily intended for identifying cluster
+ * nodes, and in production those should always use hostnames for TLS security.
+ * So it doesn't make much sense to optimize the IPv4 use case.
+ */
+export function stableNodeId(nodeAddrOrName: string): number {
+	const hasher = crypto.createHash('shake128', { outputLength: 4 }); // 4 bytes = 32 bits
+	let normalized: string;
+	if (net.isIPv6(nodeAddrOrName)) {
+		normalized = normalizeIPv6(nodeAddrOrName);
+	} else {
+		normalized = nodeAddrOrName.toLowerCase();
+	}
+	return nodeHashToNumber(Uint8Array.from(hasher.update(normalized).digest()));
 }
