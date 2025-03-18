@@ -602,6 +602,7 @@ export const CONFIG_PARAMS = {
 	REPLICATION_ROUTES: 'replication_routes',
 	REPLICATION_DATABASES: 'replication_databases',
 	REPLICATION_ENABLEROOTCAS: 'replication_enableRootCAs',
+	REPLICATION_SHARD: 'replication_shard',
 	REPLICATION_COPYTABLESTOCATCHUP: 'replication_copyTablesToCatchUp',
 	ROOTPATH: 'rootPath',
 	SERIALIZATION_BIGINT: 'serialization_bigInt',

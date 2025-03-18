@@ -102,6 +102,7 @@ export async function setNode(req: object) {
 	const target_add_node_obj = {
 		operation: OPERATIONS_ENUM.ADD_NODE_BACK,
 		hostname: get(CONFIG_PARAMS.REPLICATION_HOSTNAME),
+		shard: get(CONFIG_PARAMS.REPLICATION_SHARD),
 		target_hostname: hostname,
 		url: this_url,
 		csr,
@@ -184,6 +185,7 @@ export async function setNode(req: object) {
 		const this_node = {
 			url: this_url,
 			ca: cert_auth,
+			shard: get(CONFIG_PARAMS.REPLICATION_HOSTNAME),
 			replicates: true,
 			subscriptions: null,
 		};
@@ -238,12 +240,14 @@ export async function addNodeBack(req) {
 
 	if (req.start_time) node_record.start_time = req.start_time;
 	if (req.authorization) node_record.authorization = req.authorization;
+	if (req.shard) node_record.shard = req.shard;
 
 	const rep_ca = await getReplicationCertAuth();
 	if (node_record.replicates) {
 		const this_node = {
 			url: getThisNodeUrl(),
 			ca: rep_ca?.certificate,
+			shard: get(CONFIG_PARAMS.REPLICATION_HOSTNAME),
 			replicates: true,
 			subscriptions: null,
 		};
