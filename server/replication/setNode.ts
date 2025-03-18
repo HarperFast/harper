@@ -102,13 +102,14 @@ export async function setNode(req: object) {
 	const target_add_node_obj = {
 		operation: OPERATIONS_ENUM.ADD_NODE_BACK,
 		hostname: get(CONFIG_PARAMS.REPLICATION_HOSTNAME),
-		shard: get(CONFIG_PARAMS.REPLICATION_SHARD),
 		target_hostname: hostname,
 		url: this_url,
 		csr,
 		cert_auth,
 		authorization: req.retain_authorization ? req.authorization : null,
 	};
+	if (get(CONFIG_PARAMS.REPLICATION_SHARD) !== undefined)
+		target_add_node_obj.shard = get(CONFIG_PARAMS.REPLICATION_SHARD);
 
 	if (req.subscriptions) {
 		target_add_node_obj.subscriptions = req.subscriptions.map(reverseSubscription);
@@ -179,16 +180,16 @@ export async function setNode(req: object) {
 	}
 	if (req.retain_authorization) node_record.authorization = req.authorization;
 	if (req.revoked_certificates) node_record.revoked_certificates = req.revoked_certificates;
-	if (req.shard) node_record.shard = req.shard;
+	if (req.shard !== undefined) node_record.shard = req.shard;
 
 	if (node_record.replicates) {
 		const this_node = {
 			url: this_url,
 			ca: cert_auth,
-			shard: get(CONFIG_PARAMS.REPLICATION_HOSTNAME),
 			replicates: true,
 			subscriptions: null,
 		};
+		if (get(CONFIG_PARAMS.REPLICATION_SHARD) !== undefined) this_node.shard = get(CONFIG_PARAMS.REPLICATION_SHARD);
 
 		if (req.retain_authorization) this_node.authorization = req.authorization;
 		if (req.start_time) this_node.start_time = req.start_time;
@@ -240,17 +241,18 @@ export async function addNodeBack(req) {
 
 	if (req.start_time) node_record.start_time = req.start_time;
 	if (req.authorization) node_record.authorization = req.authorization;
-	if (req.shard) node_record.shard = req.shard;
+	if (req.shard !== undefined) node_record.shard = req.shard;
 
 	const rep_ca = await getReplicationCertAuth();
 	if (node_record.replicates) {
 		const this_node = {
 			url: getThisNodeUrl(),
 			ca: rep_ca?.certificate,
-			shard: get(CONFIG_PARAMS.REPLICATION_HOSTNAME),
 			replicates: true,
 			subscriptions: null,
 		};
+		if (get(CONFIG_PARAMS.REPLICATION_SHARD) !== undefined) this_node.shard = get(CONFIG_PARAMS.REPLICATION_SHARD);
+
 		if (req.start_time) this_node.start_time = req.start_time;
 		if (req.authorization) this_node.authorization = req.authorization;
 		await ensureNode(getThisNodeName(), this_node);
