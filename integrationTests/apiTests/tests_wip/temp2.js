@@ -934,20 +934,87 @@ const myPath = path.resolve(__dirname + '/..' + generic.files_location) + '/';
 //     .expect((r) => assert.ok(r.body.hasOwnProperty('license_expiration_date')))
 // });
 
-it('Verify object and array records deleted', async () => {
+// it('Verify object and array records deleted', async () => {
+//   const response = await request(envUrl)
+//     .post('')
+//     .set(headers)
+//     .send({
+//       "operation": "search_by_hash",
+//       "schema": "dev",
+//       "table": "cat",
+//       "hash_values": [100],
+//       "get_attributes": ["cat_name"]
+//     })
+//     .expect(200)
+//     .expect((r) => {
+//       console.log(r.body);
+//       assert.deepEqual(r.body, []);
+//     })
+// });
+
+//
+// it('test1', async () => {
+//   const response = await request(envUrl)
+//     .post('')
+//     .set(headers)
+//     .send({ "operation": "sql", "sql": "select count(*) from dev.cat" })
+//     .expect(200)
+//     .expect((r) => {
+//       console.log(r.body);
+//       console.log('genericJobId: ' + generic.job_id);
+//       generic.job_id = 1;
+//       console.log('genericJobId: ' + generic.job_id);
+//     })
+// });
+
+it('test2', async () => {
+  console.log('\n');
+  console.log(headers.Authorization);
   const response = await request(envUrl)
     .post('')
     .set(headers)
-    .send({
-      "operation": "search_by_hash",
-      "schema": "dev",
-      "table": "cat",
-      "hash_values": [100],
-      "get_attributes": ["cat_name"]
+    .send({ "operation": "sql", "sql": "select count(*) from dev.cat" })
+    .expect((r) => {
+      // console.log(r.text);
+      // console.log(r.body);
+      assert.ok(r.text.includes('6'));
+      // console.log('genericJobId: ' + generic.job_id);
+      // generic.job_id = 2;
+      // console.log('genericJobId: ' + generic.job_id);
     })
     .expect(200)
-    .expect((r) => {
-      console.log(r.body);
-      assert.deepEqual(r.body, []);
+});
+
+it('Describe all with invalid password', async () => {
+  const response = await request(envUrl)
+    .post('')
+    .set({
+      Authorization: 'Basic ' + Buffer.from(generic.username + ':' + 'admin').toString('base64'),
+      'Content-Type': 'application/json'
     })
+    .send({ "operation": "describe_all" })
+    .expect((r) => {
+      // console.log('@@@@@: ' + JSON.stringify(r));
+      console.log(JSON.parse(JSON.stringify(r)).req.headers.authorization);
+      // console.log(r.text);
+      // console.log(r.body);
+      assert.ok(JSON.stringify(r.body) == r.text);
+      assert.ok(!r.text.includes('Login failed'))
+    })
+    .expect(200)
+    console.log('&&&&&: ' + JSON.stringify(response.body.northnwd.categories.schema));
+    console.log('*****: ' + response.body.northnwd.categories.schema);
+    // .expect(401)
+});
+
+it('Describe all with invalid username', async () => {
+  const response = await request(envUrl)
+    .post('')
+    .set({
+      'Authorization': 'Basic ' + Buffer.from('thisIsNotMyUsername' + ':' + generic.password).toString('base64'),
+      'Content-Type': 'application/json',
+    })
+    .send({ operation: 'describe_all' })
+    .expect((r) => { assert.ok(r.text.includes('Login failed')) })
+    .expect(401);
 });

@@ -22,27 +22,15 @@ assert.OK merge si pentru assert not empty
 ====================================================================================
 
 
-
-assert.ok(r.body == [])
+//Unmatched Postman assertion: jsonData.forEach(
 CU:
-assert.deepEqual(r.body, [])
-
-deci:
-assert.ok(r.body == [
-CU:
-assert.deepEqual(r.body, [
-
-si:
-assert.ok(r.body == {
-CU:
-assert.deepEqual(r.body, {
-
-
-//Unmatched Postman assertion: jsonData.forEach(row => {
+//.expect((r) => { r.body.forEach((
 
 
 sa nu mai ramana nicaieri jsonData
 
+
+checkJobCompleted
 
 sa caut dupa // Unmatched Postman assertion:
 sa caut dupa //Unmatched Postman assertion
@@ -61,6 +49,9 @@ sa verific in .send() in json uri sa nu existe // adica commenturile din postman
 The targeted final format would look like this: https://github.com/HarperDB/harperdb/pull/2351/files
 
 sa ma uit la setNextRequest
+
+sa ma uit la ultimele commit uri pentru json ul de postman din repo
+eu am mai facut schimbari la clustering la punctul 15 parca
 
 sa fie expect(<<STATUS CODE>>) tot timpul ultimul expect din metoda, inainte de ult rand:
 });

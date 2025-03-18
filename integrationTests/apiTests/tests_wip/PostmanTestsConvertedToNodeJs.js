@@ -4,7 +4,7 @@ import request from 'supertest';
 import { setTimeout } from 'node:timers/promises';
 import { checkJobCompleted, getJobId } from '../utils/jobs.js';
 import { envUrl, envUrlRest, generic, headers } from '../config/envConfig.js';
-import { csvFileUpload } from '../utils/csv.js';
+import { csvDataLoad, csvFileUpload, csvUrlLoad } from '../utils/csv.js';
 import { setTimeout as sleep } from 'node:timers/promises';
 import * as path from 'node:path';
 import { fileURLToPath } from 'url';
@@ -1215,7 +1215,7 @@ it('Drop table keywords', async () => {
 		.set(headers)
 		.send({ 'operation': 'drop_table', 'schema': 'dev', 'table': 'keywords' })
 		.expect(200)
-//Unmatched Postman assertion: tests["Create Table"] = responseBody.has("successfully deleted table 'dev.keywords'"))
+		.expect((r) => assert.ok(r.body.message.includes('successfully deleted table \'dev.keywords\'')))
 });
 
 it('Create table dev.cat for Update', async () => {
@@ -2097,8 +2097,11 @@ it('select w/ where value equals 0', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'select * from dev.books WHERE books_count = 0 ' })
 		.expect((r) => assert.ok(r.body.length == 4))
-//Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(row.books_count == 0))
+		.expect((r) => {
+			r.body.forEach((row) => {
+				assert.ok(row.books_count == 0);
+			});
+		});
 });
 
 it('select w/ where value equals "false"', async () => {
@@ -2107,8 +2110,11 @@ it('select w/ where value equals "false"', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'select * from dev.books WHERE nytimes_best_seller = \'false\' ' })
 		.expect((r) => assert.ok(r.body.length == 25))
-//Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(row.nytimes_best_seller == false))
+		.expect((r) => {
+			r.body.forEach((row) => {
+				assert.ok(row.nytimes_best_seller == false);
+			})
+		})
 });
 
 it('select employees orderby id asc', async () => {
@@ -2308,12 +2314,15 @@ it('select * with LEFT OUTER JOIN', async () => {
 		.send({ 'operation': 'sql', 'sql': 'SELECT * FROM dev.breed b LEFT JOIN dev.dog d ON b.id = d.breed_id' })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 351))
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-	//Unmatched Postman assertion: const keys = Object.keys(row)
-	//Unmatched Postman assertion: pm.expect(keys.length == 16)
-	//Unmatched Postman assertion: Object.keys(row).forEach(key => {
-		.expect((r) => assert.ok(row[key] != undefined))
-
+		.expect((r) => {
+			r.body.forEach((row) => {
+				const keys = Object.keys(row);
+				assert.ok(keys.length == 16);
+				Object.keys(row).forEach((key) => {
+					assert.ok(row[key] != undefined);
+				});
+			});
+		});
 });
 
 it('select specific columns with LEFT OUTER JOIN Copy', async () => {
@@ -2326,12 +2335,15 @@ it('select specific columns with LEFT OUTER JOIN Copy', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 351))
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-	//Unmatched Postman assertion: const keys = Object.keys(row)
-	//Unmatched Postman assertion: pm.expect(keys.length == 11)
-	//Unmatched Postman assertion: Object.keys(row).forEach(key => {
-		.expect((r) => assert.ok(row[key] != undefined))
-
+		.expect((r) => {
+			r.body.forEach((row) => {
+				const keys = Object.keys(row);
+				assert.ok(keys.length == 11);
+				Object.keys(row).forEach((key) => {
+					assert.ok(row[key] != undefined);
+				});
+			});
+		});
 });
 
 it('select order details', async () => {
@@ -2940,21 +2952,22 @@ it('Select with basic CROSS SCHEMA JOIN', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			'operation': 'sql',
-			'sql': 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id',
+			operation: 'sql',
+			sql: 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id',
 		})
 		.expect((r) => assert.ok(r.body.length == 8))
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-		.expect((r) => assert.ok(row.id))
-		.expect((r) => assert.ok(row.id1))
-		.expect((r) => assert.ok(row.dog_name))
-		.expect((r) => assert.ok(row.age))
-		.expect((r) => assert.ok(row.name))
-	//Unmatched Postman assertion: })
-
+		.expect((r) => {
+			r.body.forEach((row) => {
+				assert.ok(row.id);
+				assert.ok(row.id1);
+				assert.ok(row.dog_name);
+				assert.ok(row.age);
+				assert.ok(row.name);
+			})
+		})
 		.expect((r) => assert.ok(r.body[1].name == 'David'))
 		.expect((r) => assert.ok(r.body[1].id1 == 3))
-.expect((r) => assert.ok(r.body[4].id1 == 2))
+		.expect((r) => assert.ok(r.body[4].id1 == 2))
 });
 
 it('Select with complex CROSS SCHEMA JOIN', async () => {
@@ -3041,10 +3054,13 @@ it('Select - simple full table query', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'SELECT * FROM dev.dog' })
+		.send({ operation: 'sql', sql: 'SELECT * FROM dev.dog' })
 		.expect((r) => assert.ok(r.body.length == 9))
-//Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(Object.keys(row).length == 9))
+		.expect((r) => {
+			r.body.forEach((row) => {
+				assert.ok(Object.keys(row).length == 9);
+			});
+		});
 });
 
 it('Select - simple full table query w/ * and alias', async () => {
@@ -3081,16 +3097,19 @@ it('Select - simple full table query w/ multiple aliases', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'SELECT id as dog_id, dog_name as dname, age as dog_age FROM dev.dog' })
+		.send({ operation: 'sql', sql: 'SELECT id as dog_id, dog_name as dname, age as dog_age FROM dev.dog' })
 		.expect((r) => assert.ok(r.body.length == 9))
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-	//Unmatched Postman assertion: pm.expect(Object.keys(row).length == 3)
-		.expect((r) => assert.ok(row.dname))
-		.expect((r) => assert.ok(!row.dog_name))
-	//Unmatched Postman assertion: pm.expect(row.dog_id).to.exist;
-	//Unmatched Postman assertion: pm.expect(row.id).to.not.exist;
-		.expect((r) => assert.ok(row.dog_age))
-//Unmatched Postman assertion: pm.expect(row.age).to.not.exist;})
+		.expect((r) => {
+			r.body.forEach((row) => {
+				assert.ok(Object.keys(row).length == 3);
+				assert.ok(row.dname);
+				assert.ok(!row.dog_name);
+				assert.ok(row.dog_id);
+				assert.ok(!row.id);
+				assert.ok(row.dog_age);
+				assert.ok(!row.age);
+			});
+		});
 });
 
 it('Select - simple full table query from leading_zero', async () => {
@@ -3099,11 +3118,14 @@ it('Select - simple full table query from leading_zero', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'SELECT * FROM dev.leading_zero' })
 		.expect((r) => assert.ok(r.body.length == 3))
-//Unmatched Postman assertion: let ids = [];
-//Unmatched Postman assertion: let expected_ids = [0, "00011", "011"];
-//Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: ids.push(row.id)
-//Unmatched Postman assertion: pm.expect(ids == expected_ids))
+		.expect((r) => {
+			let ids = [];
+			let expected_ids = [0, "00011", "011"];
+			r.body.forEach((row) => {
+				ids.push(row.id);
+			})
+			assert.ok(ids == expected_ids);
+		})
 });
 
 it('Select - basic self JOIN', async () => {
@@ -4238,11 +4260,14 @@ it('Confirm upserted records exist and are updated', async () => {
 			'search_value': true,
 			'get_attributes': ['*'],
 		})
+		.expect((r) => {
+			const expectedHashes = [1, 100, 101];
+			r.body.forEach((row) => {
+				assert.ok(expectedHashes.includes(row.productid));
+				assert.ok(row.discontinued);
+			})
+		})
 		.expect(200)
-//Unmatched Postman assertion: const expectedHashes = [1, 100, 101];
-//Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(expectedHashes.includes(row.productid)).to.be.true;
-//Unmatched Postman assertion: pm.expect(row.discontinued).to.be.true;})
 });
 
 it('Upsert into products 3 new records w/o hash vals', async () => {
@@ -4503,16 +4528,19 @@ it('search by conditions - contains', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			'operation': 'search_by_conditions',
-			'schema': 'dev',
-			'table': 'dog_conditions',
-			'get_attributes': ['*'],
-			'conditions': [{ 'search_attribute': 'location', 'search_type': 'contains', 'search_value': 'Denver' }],
+			operation: 'search_by_conditions',
+			schema: 'dev',
+			table: 'dog_conditions',
+			get_attributes: ['*'],
+			conditions: [{ search_attribute: 'location', search_type: 'contains', search_value: 'Denver' }],
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 6))
-//Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(row.location.includes('Denver')).to.be.true;})
+		.expect((r) => {
+			r.body.forEach((row) => {
+				assert.ok(row.location.includes('Denver'));
+			});
+		});
 });
 
 it('search by conditions - starts_with', async () => {
@@ -4528,8 +4556,11 @@ it('search by conditions - starts_with', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 6))
-//Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(row.location.startsWith('Denver') == true))
+		.expect((r) => {
+			r.body.forEach((row) => {
+				assert.ok(row.location.startsWith('Denver'));
+			})
+		})
 });
 
 it('search by conditions - ends_with', async () => {
@@ -4545,8 +4576,11 @@ it('search by conditions - ends_with', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 4))
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-		.expect((r) => assert.ok([...row.dog_name].pop() == 'y'))
+		.expect((r) => {
+			r.body.forEach((row) => {
+				assert.ok([...row.dog_name].pop() == 'y');
+			})
+		})
 });
 
 it('search by conditions - greater_than', async () => {
@@ -4562,8 +4596,11 @@ it('search by conditions - greater_than', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 6))
-//Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(row.age > 4).to.be.true;})
+		.expect((r) => {
+			r.body.forEach((row) => {
+				assert.ok(row.age > 4);
+			})
+		})
 });
 
 it('search by conditions - greater_than_equal', async () => {
@@ -4571,16 +4608,19 @@ it('search by conditions - greater_than_equal', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			'operation': 'search_by_conditions',
-			'schema': 'dev',
-			'table': 'dog_conditions',
-			'get_attributes': ['*'],
-			'conditions': [{ 'search_attribute': 'age', 'search_type': 'greater_than_equal', 'search_value': 4 }],
+			operation: 'search_by_conditions',
+			schema: 'dev',
+			table: 'dog_conditions',
+			get_attributes: ['*'],
+			conditions: [{ search_attribute: 'age', search_type: 'greater_than_equal', search_value: 4 }],
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 8))
-//Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(row.age >= 4).to.be.true;})
+		.expect((r) => {
+			r.body.forEach((row) => {
+				assert.ok(row.age >= 4);
+			});
+		});
 });
 
 it('search by conditions - less_than', async () => {
@@ -4588,16 +4628,19 @@ it('search by conditions - less_than', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			'operation': 'search_by_conditions',
-			'schema': 'dev',
-			'table': 'dog_conditions',
-			'get_attributes': ['*'],
-			'conditions': [{ 'search_attribute': 'age', 'search_type': 'less_than', 'search_value': 4 }],
+			operation: 'search_by_conditions',
+			schema: 'dev',
+			table: 'dog_conditions',
+			get_attributes: ['*'],
+			conditions: [{ search_attribute: 'age', search_type: 'less_than', search_value: 4 }],
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 2))
-//Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(row.age < 4).to.be.true;})
+		.expect((r) => {
+			r.body.forEach((row) => {
+				assert.ok(row.age < 4);
+			});
+		});
 });
 
 it('search by conditions - less_than_equal', async () => {
@@ -4613,8 +4656,11 @@ it('search by conditions - less_than_equal', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 4))
-//Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(row.age <= 4).to.be.true;})
+		.expect((r) => {
+			r.body.forEach((row) => {
+				assert.ok(row.age <= 4);
+			})
+		})
 });
 
 it('search by conditions - between', async () => {
@@ -4630,8 +4676,11 @@ it('search by conditions - between', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 5))
-//Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(row.age <= 5 && row.age >= 2).to.be.true;})
+		.expect((r) => {
+			r.body.forEach((row) => {
+				assert.ok(row.age <= 5 && row.age >= 2);
+			})
+		})
 });
 
 it('search by conditions - between using same value', async () => {
@@ -4647,8 +4696,11 @@ it('search by conditions - between using same value', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 2))
-//Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(row.age == 5))
+		.expect((r) => {
+			r.body.forEach((row) => {
+				assert.ok(row.age == 5);
+			})
+		})
 });
 
 it('search by conditions - between w/ alpha', async () => {
@@ -4656,16 +4708,19 @@ it('search by conditions - between w/ alpha', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			'operation': 'search_by_conditions',
-			'schema': 'dev',
-			'table': 'dog_conditions',
-			'get_attributes': ['*'],
-			'conditions': [{ 'search_attribute': 'group', 'search_type': 'between', 'search_value': ['A', 'B'] }],
+			operation: 'search_by_conditions',
+			schema: 'dev',
+			table: 'dog_conditions',
+			get_attributes: ['*'],
+			conditions: [{ search_attribute: 'group', search_type: 'between', search_value: ['A', 'B'] }]
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 7))
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-		.expect((r) => assert.ok(['A', 'B'].includes(row.group)))
+		.expect((r) => {
+			r.body.forEach((row) => {
+				assert.ok(['A', 'B'].includes(row.group));
+			});
+		});
 });
 
 it('search by conditions - equals & equals', async () => {
@@ -4685,8 +4740,11 @@ it('search by conditions - equals & equals', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 2))
-//Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(row.age === 5 && row.group === "A").to.be.true;})
+		.expect((r) => { 
+			r.body.forEach((row) => {
+				assert.ok(row.age === 5 && row.group === "A");
+			})
+		})
 });
 
 it('search by conditions - equals || equals', async () => {
@@ -4694,21 +4752,30 @@ it('search by conditions - equals || equals', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			'operation': 'search_by_conditions',
-			'schema': 'dev',
-			'table': 'dog_conditions',
-			'get_attributes': ['*'],
-			'operator': 'OR',
-			'conditions': [{
-				'search_attribute': 'group',
-				'search_type': 'equals',
-				'search_value': 'A'
-			}, { 'search_attribute': 'group', 'search_type': 'equals', 'search_value': 'B' }],
+			operation: 'search_by_conditions',
+			schema: 'dev',
+			table: 'dog_conditions',
+			get_attributes: ['*'],
+			operator: 'OR',
+			conditions: [
+				{
+					search_attribute: 'group',
+					search_type: 'equals',
+					search_value: 'A',
+				},
+				{
+					search_attribute: 'group',
+					search_type: 'equals',
+					search_value: 'B' }
+			]
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 7))
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-		.expect((r) => assert.ok(['A', 'B'].includes(row.group)))
+		.expect((r) => {
+			r.body.forEach((row) => {
+				assert.ok(['A', 'B'].includes(row.group));
+			});
+		});
 });
 
 it('search by conditions - equals & contains', async () => {
@@ -4728,9 +4795,12 @@ it('search by conditions - equals & contains', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 2))
-	//Unmatched Postman assertion: jsonData.forEach(row => {
-		.expect((r) => assert.ok(row.group == 'B'))
-//Unmatched Postman assertion: pm.expect(row.location.includes('CO')).to.be.true;})
+		.expect((r) => {
+			r.body.forEach((row) => {
+				assert.ok(row.group == 'B');
+				assert.ok(row.location.includes('CO'));
+			})
+		})
 });
 
 it('search by conditions - equals & ends_with', async () => {
@@ -4801,8 +4871,11 @@ it('search by conditions - less_than_equal ||  greater_than', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 8))
-//Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(row.age <=4 || row.age > 5).to.be.true;})
+		.expect((r) => {
+			r.body.forEach((row) => {
+				assert.ok(row.age <=4 || row.age > 5);
+			})
+		})
 });
 
 it('search by conditions - contains || contains', async () => {
@@ -4823,8 +4896,11 @@ it('search by conditions - contains || contains', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 10))
-//Unmatched Postman assertion: jsonData.forEach(row => {
-//Unmatched Postman assertion: pm.expect(row.location.includes('CO') || row.location.includes('NC')).to.be.true;})
+		.expect((r) => {
+			r.body.forEach((row) => {
+				assert.ok(row.location.includes('CO') || row.location.includes('NC'));
+			})
+		})
 });
 
 it('search by conditions - contains & between', async () => {
@@ -5137,9 +5213,7 @@ it('Add non-SU bulk_load_role', async () => {
 			},
 		})
 		.expect(200)
-
-	//Unmatched Postman assertion: responseData = JSON.parse(responseBody);
-//Unmatched Postman assertion: postman.setEnvironmentVariable("role_id", responseData.id)})
+	generic.role_id = response.body.id;
 });
 
 it('Add user with new bulk_load_role', async () => {
@@ -5157,22 +5231,8 @@ it('Add user with new bulk_load_role', async () => {
 });
 
 it('CSV Data Load  update to table w/ new attr & restricted attrs', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({
-			'operation': 'csv_data_load',
-			'action': 'update',
-			'schema': '{{schema}}',
-			'table': '{{supp_tb}}',
-			'data': 'supplierid,companyname, rando\n19,The Chum Bucket, Another attr value\n',
-		})
-		.expect(200)
-
-	//Unmatched Postman assertion: const responseData = JSON.parse(responseBody);
-//Unmatched Postman assertion: let id_index = responseData.message.indexOf('id ')
-//Unmatched Postman assertion: let parsedId = responseData.message.substr(id_index + 3, responseData.message.length)
-//Unmatched Postman assertion: pm.environment.set("job_id", parsedId))
+	await csvDataLoad('update', generic.schema, generic.supp_tb,
+		'supplierid,companyname, rando\n19,The Chum Bucket, Another attr value\n');
 });
 
 it('Check Data CSV job - update - perms error', async () => {
@@ -5215,22 +5275,8 @@ it('Check Data CSV job - update - perms error', async () => {
 });
 
 it('CSV Data Load - upsert - to table w/ some restricted attrs & new attr', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({
-			'operation': 'csv_data_load',
-			'action': 'upsert',
-			'schema': 'dev',
-			'table': 'dog',
-			'data': 'id,dog_name,adorable,age,rando\n19,doggy,true,22,Another attr value\n',
-		})
-		.expect(200)
-
-	//Unmatched Postman assertion: const responseData = JSON.parse(responseBody);
-//Unmatched Postman assertion: let id_index = responseData.message.indexOf('id ')
-//Unmatched Postman assertion: let parsedId = responseData.message.substr(id_index + 3, responseData.message.length)
-//Unmatched Postman assertion: pm.environment.set("job_id", parsedId))
+	await csvDataLoad('upsert', generic.schema_dev, 'dog',
+		'id,dog_name,adorable,age,rando\n19,doggy,true,22,Another attr value\n');
 });
 
 it('Check Data CSV job - upsert - perms error', async () => {
@@ -5298,7 +5344,7 @@ it('CSV URL Load - upsert - to table w/ restricted attrs', async () => {
 		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
 
 	//Unmatched Postman assertion: let id_index = jsonData.message.indexOf('id ');
-//Unmatched Postman assertion: let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length)
+//Unmatched Postman assertion: let parsedId = jsonData.message.substring(id_index + 3, jsonData.message.length)
 //Unmatched Postman assertion: pm.environment.set("job_id", parsedId))
 });
 
@@ -5367,7 +5413,7 @@ it('CSV URL Load - update - to table w/ restricted attrs', async () => {
 		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
 
 	//Unmatched Postman assertion: let id_index = jsonData.message.indexOf('id ');
-//Unmatched Postman assertion: let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length)
+//Unmatched Postman assertion: let parsedId = jsonData.message.substring(id_index + 3, jsonData.message.length)
 //Unmatched Postman assertion: pm.environment.set("job_id", parsedId))
 });
 
@@ -5433,7 +5479,7 @@ it('CSV File Load to table w/ restricted attrs', async () => {
 		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
 
 	//Unmatched Postman assertion: let id_index = jsonData.message.indexOf('id ');
-//Unmatched Postman assertion: let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length)
+//Unmatched Postman assertion: let parsedId = jsonData.message.substring(id_index + 3, jsonData.message.length)
 //Unmatched Postman assertion: pm.environment.set("job_id", parsedId))
 });
 
@@ -5528,7 +5574,7 @@ it('Import CSV from S3 to table w/ restricted attrs', async () => {
 		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
 
 	//Unmatched Postman assertion: let id_index = jsonData.message.indexOf('id ');
-//Unmatched Postman assertion: let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length)
+//Unmatched Postman assertion: let parsedId = jsonData.message.substring(id_index + 3, jsonData.message.length)
 //Unmatched Postman assertion: pm.environment.set("job_id", parsedId))
 });
 
@@ -5608,7 +5654,7 @@ it('Import JSON from S3 - upsert - to table w/ restricted attrs', async () => {
 		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
 
 	//Unmatched Postman assertion: let id_index = jsonData.message.indexOf('id ');
-//Unmatched Postman assertion: let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length)
+//Unmatched Postman assertion: let parsedId = jsonData.message.substring(id_index + 3, jsonData.message.length)
 //Unmatched Postman assertion: pm.environment.set("job_id", parsedId))
 });
 
@@ -5684,7 +5730,7 @@ it('Import JSON from S3 - insert - to table w/ restricted attrs', async () => {
 		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
 
 	//Unmatched Postman assertion: let id_index = jsonData.message.indexOf('id ');
-//Unmatched Postman assertion: let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length)
+//Unmatched Postman assertion: let parsedId = jsonData.message.substring(id_index + 3, jsonData.message.length)
 //Unmatched Postman assertion: pm.environment.set("job_id", parsedId))
 });
 
@@ -5805,22 +5851,8 @@ it('Alter non-SU bulk_load_role', async () => {
 });
 
 it('CSV Data Load  upsert to table w/ full perms', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({
-			'operation': 'csv_data_load',
-			'action': 'upsert',
-			'schema': '{{schema}}',
-			'table': '{{supp_tb}}',
-			'data': 'companyname, new_attr\nThe Chum Bucket, Another attr value\n',
-		})
-		.expect(200)
-
-	//Unmatched Postman assertion: const responseData = JSON.parse(responseBody);
-//Unmatched Postman assertion: let id_index = responseData.message.indexOf('id ')
-//Unmatched Postman assertion: let parsedId = responseData.message.substr(id_index + 3, responseData.message.length)
-//Unmatched Postman assertion: pm.environment.set("job_id", parsedId))
+	await csvDataLoad('upsert', generic.schema, generic.supp_tb,
+		'companyname, new_attr\nThe Chum Bucket, Another attr value\n');
 });
 
 it('Check Data CSV upsert job completed', async () => {
@@ -5887,7 +5919,7 @@ it('Import CSV from S3 to table w/ full attr perms - update', async () => {
 		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
 
 	//Unmatched Postman assertion: let id_index = jsonData.message.indexOf('id ');
-//Unmatched Postman assertion: let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length)
+//Unmatched Postman assertion: let parsedId = jsonData.message.substring(id_index + 3, jsonData.message.length)
 //Unmatched Postman assertion: pm.environment.set("job_id", parsedId))
 });
 
@@ -7277,9 +7309,7 @@ it('NoSQL Alter non-SU role', async () => {
 			}
 		})
 		.expect(200)
-
-//Unmatched Postman assertion: // responseData = JSON.parse(responseBody)
-//Unmatched Postman assertion: // postman.setEnvironmentVariable("role_id", responseData.id)})
+	generic.role_id = response.body.id;
 });
 
 it('NoSQL drop test user', async () => {
@@ -7305,7 +7335,7 @@ it('NoSQL Add cluster_user Role', async () => {
 		.send({ "operation": "add_role", "role": "test_cluster_user_role", "permission": { "cluster_user": true } })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.id))
-//Unmatched Postman assertion: postman.setEnvironmentVariable("cluster_user_role_id", r.body.id))
+	generic.cluster_user_role_id = response.body.id;
 });
 
 it('NoSQL Add cluster_user with another permission, expect fail', async () => {
@@ -7317,11 +7347,11 @@ it('NoSQL Add cluster_user with another permission, expect fail', async () => {
 			"role": "cluster_user_bad",
 			"permission": { "cluster_user": true, "super_user": true }
 		})
-		.expect(400)
 		.expect((r) => assert.ok(r.body.error == "Errors in the role permissions JSON provided"))
-		.expect((r) => assert.ok(responseData.main_permissions.length == 1))
+		.expect((r) => assert.ok(r.body.main_permissions.length == 1))
 		.expect((r) => assert.ok(r.body.main_permissions[0] == "Roles cannot have both 'super_user' and 'cluster_user' values included in their permissions set."))
-//Unmatched Postman assertion: pm.expect(Object.keys(responseData.schema_permissions).length == 0)
+		.expect((r) => assert.ok(Object.keys(r.body.schema_permissions).length == 0))
+		.expect(400)
 });
 
 it('NoSQL Add User with cluster_user Role', async () => {
@@ -7489,9 +7519,7 @@ it('SQL Add non SU role', async () => {
 			}
 		})
 		.expect(200)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-//Unmatched Postman assertion: postman.setEnvironmentVariable("role_id", responseData.id)})
+	generic.role_id = response.body.id;
 });
 
 it('SQL Add User with new Role', async () => {
@@ -7546,12 +7574,13 @@ it('get user info', async () => {
 		.set(headers)
 		.send({ "operation": "list_users" })
 		.expect(200)
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-//Unmatched Postman assertion: for(let user of responseData) {
-//Unmatched Postman assertion: if(user.username === 'test_user') {
-//Unmatched Postman assertion: postman.setEnvironmentVariable("user_role_id", user.role.id)
-//Unmatched Postman assertion: }
-//Unmatched Postman assertion: }})
+		.expect((r) => {
+			for(let user of r.body) {
+				if(user.username === 'test_user') {
+					assert.ok(generic.cluster_user_role_id == user.role.id);
+				}
+			}
+		})
 });
 
 it('try to set bad role to user', async () => {
@@ -7569,13 +7598,13 @@ it('get user info make sure role was not changed', async () => {
 		.set(headers)
 		.send({ "operation": "list_users" })
 		.expect(200)
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-
-//Unmatched Postman assertion: for(let user of responseData) {
-//Unmatched Postman assertion: if(user.username === 'test_user') {
-//Unmatched Postman assertion: pm.expect(postman.getEnvironmentVariable("user_role_id") == user.role.id)
-//Unmatched Postman assertion: }
-//Unmatched Postman assertion: }})
+		.expect((r) => {
+			for(let user of r.body) {
+				if(user.username === 'test_user') {
+					assert.ok(generic.cluster_user_role_id == user.role.id);
+				}
+			}
+		})
 });
 
 it('SQL Try to read suppliers table as SU', async () => {
@@ -9290,62 +9319,57 @@ it('Confirm CSV records import', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			"operation": "sql",
-			"sql": "select `one`, `object_array`, `id`, `address`, `object`, `lastname`, `firstname`, `array` FROM S3_DATA.s3_test_csv_import ORDER BY id ASC"
+			operation: 'sql',
+			sql: 'select `one`, `object_array`, `id`, `address`, `object`, `lastname`, `firstname`, `array` FROM S3_DATA.s3_test_csv_import ORDER BY id ASC',
 		})
 		.expect(200)
-	//Unmatched Postman assertion: let expected_res = [
-	//Unmatched Postman assertion: {
-	//Unmatched Postman assertion: "one": "only one",
-	//Unmatched Postman assertion: "object_array": "",
-	//Unmatched Postman assertion: "id": "a",
-	//Unmatched Postman assertion: "address": "1 North Street",
-	//Unmatched Postman assertion: "object": "",
-	//Unmatched Postman assertion: "lastname": "Dog",
-	//Unmatched Postman assertion: "firstname": "Harper",
-	//Unmatched Postman assertion: "array": ""
-	//Unmatched Postman assertion: },
-	//Unmatched Postman assertion: {
-	//Unmatched Postman assertion: "one": "",
-	//Unmatched Postman assertion: "object_array": "",
-	//Unmatched Postman assertion: "id": "b",
-	//Unmatched Postman assertion: "address": "",
-	//Unmatched Postman assertion: "object": {
-	//Unmatched Postman assertion: "name": "object",
-	//Unmatched Postman assertion: "number": 1,
-	//Unmatched Postman assertion: "array": [
-	//Unmatched Postman assertion: 1,
-	//Unmatched Postman assertion: "two"
-	//Unmatched Postman assertion: ]
-	//Unmatched Postman assertion: },
-	//Unmatched Postman assertion: "lastname": "",
-	//Unmatched Postman assertion: "firstname": "Harper",
-	//Unmatched Postman assertion: "array": [
-	//Unmatched Postman assertion: 1,
-	//Unmatched Postman assertion: 2,
-	//Unmatched Postman assertion: "three"
-	//Unmatched Postman assertion: ]
-	//Unmatched Postman assertion: },
-	//Unmatched Postman assertion: {
-	//Unmatched Postman assertion: "one": "",
-	//Unmatched Postman assertion: "object_array": [
-	//Unmatched Postman assertion: {
-	//Unmatched Postman assertion: "number": 1
-	//Unmatched Postman assertion: },
-	//Unmatched Postman assertion: {
-	//Unmatched Postman assertion: "number": "two",
-	//Unmatched Postman assertion: "count": 2
-	//Unmatched Postman assertion: }
-	//Unmatched Postman assertion: ],
-	//Unmatched Postman assertion: "id": "c",
-	//Unmatched Postman assertion: "address": "",
-	//Unmatched Postman assertion: "object": "",
-	//Unmatched Postman assertion: "lastname": "",
-	//Unmatched Postman assertion: "firstname": "",
-	//Unmatched Postman assertion: "array": ""
-	//Unmatched Postman assertion: }
-	//Unmatched Postman assertion: ]
-		.expect((r) => assert.ok(r.body == expected_res))
+		.expect((r) => {
+			let expected_res = [
+				{
+					one: 'only one',
+					object_array: '',
+					id: 'a',
+					address: '1 North Street',
+					object: '',
+					lastname: 'Dog',
+					firstname: 'Harper',
+					array: '',
+				},
+				{
+					one: '',
+					object_array: '',
+					id: 'b',
+					address: '',
+					object: {
+						name: 'object',
+						number: 1,
+						array: [1, 'two'],
+					},
+					lastname: '',
+					firstname: 'Harper',
+					array: [1, 2, 'three'],
+				},
+				{
+					one: '',
+					object_array: [
+						{
+							number: 1,
+						},
+						{
+							number: 'two',
+							count: 2,
+						},
+					],
+					id: 'c',
+					address: '',
+					object: '',
+					lastname: '',
+					firstname: '',
+					array: '',
+				},
+			];
+			assert.ok(r.body == expected_res);
+		});
 });
 
 it('Export S3 test table JSON', async () => {
@@ -9562,9 +9586,7 @@ it('Jobs - Add non SU role', async () => {
 			}
 		})
 		.expect(200)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-//Unmatched Postman assertion: postman.setEnvironmentVariable("role_id", responseData.id)})
+	generic.role_id = response.body.id;
 });
 
 it('Jobs - Add User with new Role', async () => {
@@ -9587,8 +9609,7 @@ it('Jobs - Add jobs test schema', async () => {
 		.set(headers)
 		.send({ "operation": "create_schema", "schema": "test_job" })
 		.expect(200)
-
-//Unmatched Postman assertion: tests["Create Schema"] = responseBody.has("successfully created")
+		.expect((r) => assert.ok(r.body.message.includes('successfully created')))
 	await setTimeout(500)
 });
 
@@ -9655,10 +9676,12 @@ it('Jobs - Test Remove Files Before with su and store job_id', async () => {
 			"table": "runner"
 		})
 		.expect(200)
-//Unmatched Postman assertion: var jsonData = JSON.parse(responseBody)
-//Unmatched Postman assertion: let id_index = jsonData.message.indexOf('id ')
-//Unmatched Postman assertion: let parsedId = jsonData.message.substr(id_index + 3, jsonData.message.length)
-//Unmatched Postman assertion: pm.environment.set("job_id", parsedId))
+		.expect((r) => {
+			let id_index = r.body.message.indexOf('id ');
+			let parsedId = r.body.message.substring(id_index + 3, r.body.message.length);
+			generic.job_id = parsedId;
+
+		})
 });
 
 it('Jobs - Wait for remove files before', async () => {
@@ -9894,8 +9917,7 @@ it('Jobs - Delete Jobs_test schema', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "drop_schema", "schema": "test_job" })
-
-//Unmatched Postman assertion: tests["Delete Schema"] = responseBody.has("successfully delete"))
+		.expect((r) => assert.ok(r.body.message.includes('successfully delete')))
 });
 
 it('create test schema', async () => {
@@ -9904,8 +9926,7 @@ it('create test schema', async () => {
 		.set(headers)
 		.send({ "operation": "create_schema", "schema": "test_delete_before" })
 		.expect(200)
-
-//Unmatched Postman assertion: tests["Create Schema"] = responseBody.has("successfully created")
+		.expect((r) => assert.ok(r.body.message.includes('successfully created')))
 	await setTimeout(500)
 });
 
@@ -11503,9 +11524,7 @@ it('Add non-SU role', async () => {
 			}
 		})
 		.expect(200)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-//Unmatched Postman assertion: postman.setEnvironmentVariable("role_id", responseData.id)})
+	generic.role_id = response.body.id;
 });
 
 it('Add User with non-SU role', async () => {
@@ -11666,9 +11685,7 @@ it('Add non-SU role with NO PERMS', async () => {
 		.set(headers)
 		.send({ "operation": "add_role", "role": "developer_test_no_perms", "permission": { "super_user": false } })
 		.expect(200)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-//Unmatched Postman assertion: postman.setEnvironmentVariable("role_id", responseData.id)})
+	generic.role_id = response.body.id;
 });
 
 it('Add User with new NO PERMS Role', async () => {
@@ -11774,9 +11791,7 @@ it('Add non-SU role with perm for ONE table', async () => {
 			}
 		})
 		.expect(200)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-//Unmatched Postman assertion: postman.setEnvironmentVariable("role_id", responseData.id)})
+	generic.role_id = response.body.id;
 });
 
 it('Add User with new ONE PERM Role', async () => {
@@ -11892,40 +11907,39 @@ it('Add role with mismatched table/attr READ perms - expect fail', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			"operation": "add_role",
-			"role": "developer_test",
-			"permission": {
-				"super_user": false,
-				"northnwd": {
-					"tables": {
-						"categories": {
-							"read": false,
-							"insert": true,
-							"update": true,
-							"delete": false,
-							"attribute_permissions": [{
-								"attribute_name": "description",
-								"read": true,
-								"insert": true,
-								"update": true
-							}]
-						}
-					}
-				}
-			}
+			operation: 'add_role',
+			role: 'developer_test',
+			permission: {
+				super_user: false,
+				northnwd: {
+					tables: {
+						categories: {
+							read: false,
+							insert: true,
+							update: true,
+							delete: false,
+							attribute_permissions: [
+								{
+									attribute_name: 'description',
+									read: true,
+									insert: true,
+									update: true,
+								},
+							],
+						},
+					},
+				},
+			},
 		})
-		.expect(400)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-
-		.expect((r) => assert.ok(r.body.error == "Errors in the role permissions JSON provided"))
-	//Unmatched Postman assertion: "main_permissions")
-	//Unmatched Postman assertion: })
-
+		.expect((r) => assert.ok(r.body.error == 'Errors in the role permissions JSON provided'))
 		.expect((r) => assert.ok(r.body.main_permissions.length == 0))
-//Unmatched Postman assertion: })
-		.expect((r) => assert.ok(responseData.schema_permissions.northnwd_categories[0] == 
-			"You have a conflict with TABLE permissions for 'northnwd.categories' being false and ATTRIBUTE permissions being true"))
+		.expect((r) =>
+			assert.ok(
+				r.body.schema_permissions.northnwd_categories[0] ==
+					"You have a conflict with TABLE permissions for 'northnwd.categories' being false and ATTRIBUTE permissions being true"
+			)
+		)
+		.expect(400);
 });
 
 it('Add role with non-boolean READ table perms - expect fail', async () => {
@@ -11955,19 +11969,12 @@ it('Add role with non-boolean READ table perms - expect fail', async () => {
 				}
 			}
 		})
-		.expect(400)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-
 		.expect((r) => assert.ok(r.body.error == "Errors in the role permissions JSON provided"))
-	//Unmatched Postman assertion: "main_permissions")
-	//Unmatched Postman assertion: })
-
 		.expect((r) => assert.ok(r.body.main_permissions.length == 0))
-//Unmatched Postman assertion: })
-
-//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories.length == 1)
-//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories[0] == "Table READ permission must be a boolean"))
+		.expect((r) => assert.ok(r.body.schema_permissions.northnwd_categories.length == 1))
+		.expect((r) => assert.ok(r.body.schema_permissions.northnwd_categories[0] ==
+			"Table READ permission must be a boolean"))
+		.expect(400)
 });
 
 it('Add role with non-boolean INSERT/DELETE perms - expect fail', async () => {
@@ -11997,20 +12004,12 @@ it('Add role with non-boolean INSERT/DELETE perms - expect fail', async () => {
 				}
 			}
 		})
-		.expect(400)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-
 		.expect((r) => assert.ok(r.body.error == "Errors in the role permissions JSON provided"))
-	//Unmatched Postman assertion: "main_permissions")
-	//Unmatched Postman assertion: })
-
 		.expect((r) => assert.ok(r.body.main_permissions.length == 0))
-//Unmatched Postman assertion: })
-
-.expect((r) => assert.ok(responseData.schema_permissions.northnwd_categories.length == 2))
-//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories).to.includes("Table INSERT permission must be a boolean")
-//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories).to.includes("Table DELETE permission must be a boolean"))
+		.expect((r) => assert.ok(r.body.schema_permissions.northnwd_categories.length == 2))
+		.expect((r) => assert.ok(r.body.schema_permissions.northnwd_categories.includes("Table INSERT permission must be a boolean")))
+		.expect((r) => assert.ok(r.body.schema_permissions.northnwd_categories.includes("Table DELETE permission must be a boolean")))
+		.expect(400)
 });
 
 it('Add role with non-boolean READ and UPDATE attribute perms - expect fail', async () => {
@@ -12040,20 +12039,12 @@ it('Add role with non-boolean READ and UPDATE attribute perms - expect fail', as
 				}
 			}
 		})
-		.expect(400)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-
 		.expect((r) => assert.ok(r.body.error == "Errors in the role permissions JSON provided"))
-	//Unmatched Postman assertion: "main_permissions")
-	//Unmatched Postman assertion: })
-
 		.expect((r) => assert.ok(r.body.main_permissions.length == 0))
-//Unmatched Postman assertion: })
-
-.expect((r) => assert.ok(responseData.schema_permissions.northnwd_categories.length == 2))
-//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories).to.include("READ attribute permission for 'description' must be a boolean")
-//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories).to.include("UPDATE attribute permission for 'description' must be a boolean"))
+		.expect((r) => assert.ok(r.body.schema_permissions.northnwd_categories.length == 2))
+		.expect((r) => assert.ok(r.body.schema_permissions.northnwd_categories.includes("READ attribute permission for 'description' must be a boolean")))
+			.expect((r) => assert.ok(r.body.schema_permissions.northnwd_categories.includes("UPDATE attribute permission for 'description' must be a boolean")))
+		.expect(400)
 });
 
 it('Add role with mismatched table/attr INSERT perms - expect fail', async () => {
@@ -12083,17 +12074,11 @@ it('Add role with mismatched table/attr INSERT perms - expect fail', async () =>
 				}
 			}
 		})
-		.expect(400)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-
 		.expect((r) => assert.ok(r.body.error == "Errors in the role permissions JSON provided"))
-	//Unmatched Postman assertion: "main_permissions")
-	//Unmatched Postman assertion: })
 		.expect((r) => assert.ok(r.body.main_permissions.length == 0))
-//Unmatched Postman assertion: })
-		.expect((r) => assert.ok(responseData.schema_permissions.northnwd_categories[0] ==
+		.expect((r) => assert.ok(r.body.schema_permissions.northnwd_categories[0] ==
 			"You have a conflict with TABLE permissions for 'northnwd.categories' being false and ATTRIBUTE permissions being true"))
+		.expect(400)
 });
 
 it('Add role with mismatched table/attr UPDATE perms - expect fail', async () => {
@@ -12123,18 +12108,12 @@ it('Add role with mismatched table/attr UPDATE perms - expect fail', async () =>
 				}
 			}
 		})
-		.expect(400)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
 
 		.expect((r) => assert.ok(r.body.error == "Errors in the role permissions JSON provided"))
-	//Unmatched Postman assertion: "main_permissions")
-	//Unmatched Postman assertion: })
-
 		.expect((r) => assert.ok(r.body.main_permissions.length == 0))
-//Unmatched Postman assertion: })
-		.expect((r) => assert.ok(responseData.schema_permissions.northnwd_categories[0] ==
+		.expect((r) => assert.ok(r.body.schema_permissions.northnwd_categories[0] ==
 			"You have a conflict with TABLE permissions for 'northnwd.categories' being false and ATTRIBUTE permissions being true"))
+		.expect(400)
 });
 
 it('Add role with multiple mismatched table/attr perms - expect fail', async () => {
@@ -12164,18 +12143,11 @@ it('Add role with multiple mismatched table/attr perms - expect fail', async () 
 				}
 			}
 		})
-		.expect(400)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-
 		.expect((r) => assert.ok(r.body.error == "Errors in the role permissions JSON provided"))
-	//Unmatched Postman assertion: "main_permissions")
-	//Unmatched Postman assertion: })
-
 		.expect((r) => assert.ok(r.body.main_permissions.length == 0))
-//Unmatched Postman assertion: })
-		.expect((r) => assert.ok(responseData.schema_permissions.northnwd_categories[0] ==
+		.expect((r) => assert.ok(r.body.schema_permissions.northnwd_categories[0] ==
 			"You have a conflict with TABLE permissions for 'northnwd.categories' being false and ATTRIBUTE permissions being true"))
+		.expect(400)
 });
 
 it('Add role with with misformed attr perms array key  - expect fail', async () => {
@@ -12205,19 +12177,11 @@ it('Add role with with misformed attr perms array key  - expect fail', async () 
 				}
 			}
 		})
-		.expect(400)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-
 		.expect((r) => assert.ok(r.body.error == "Errors in the role permissions JSON provided"))
-	//Unmatched Postman assertion: "main_permissions")
-	//Unmatched Postman assertion: })
-
 		.expect((r) => assert.ok(r.body.main_permissions.length == 0))
-//Unmatched Postman assertion: })
-
-//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories).to.include("Invalid table permission key value 'attribute_restrictions'")
-//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories).to.include("Missing 'attribute_permissions' array"))
+		.expect((r) => assert.ok(r.body.schema_permissions.northnwd_categories.includes("Invalid table permission key value 'attribute_restrictions'")))
+		.expect((r) => assert.ok(r.body.schema_permissions.northnwd_categories.includes("Missing 'attribute_permissions' array")))
+		.expect(400)
 });
 
 it('Add role with with missing attr perms for table  - expect fail', async () => {
@@ -12241,18 +12205,10 @@ it('Add role with with missing attr perms for table  - expect fail', async () =>
 				}
 			}
 		})
-		.expect(400)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-
 		.expect((r) => assert.ok(r.body.error == "Errors in the role permissions JSON provided"))
-	//Unmatched Postman assertion: "main_permissions")
-	//Unmatched Postman assertion: })
-
 		.expect((r) => assert.ok(r.body.main_permissions.length == 0))
-//Unmatched Postman assertion: })
-
-//Unmatched Postman assertion: pm.expect(responseData.schema_permissions.northnwd_categories[0] == "Missing 'attribute_permissions' array")})
+		.expect((r) => assert.ok(r.body.schema_permissions.northnwd_categories[0] == "Missing 'attribute_permissions' array"))
+		.expect(400)
 });
 
 it('Add role with with perms for non-existent schema  - expect fail', async () => {
@@ -12276,19 +12232,11 @@ it('Add role with with perms for non-existent schema  - expect fail', async () =
 				}
 			}
 		})
-		.expect(400)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-
 		.expect((r) => assert.ok(r.body.error == "Errors in the role permissions JSON provided"))
-	//Unmatched Postman assertion: "main_permissions")
-	//Unmatched Postman assertion: })
-
-		.expect((r) => assert.ok(responseData.main_permissions.length == 1))
+		.expect((r) => assert.ok(r.body.main_permissions.length == 1))
 		.expect((r) => assert.ok(r.body.main_permissions[0] == "database 'wrong_schema' does not exist"))
-//Unmatched Postman assertion: })
-
-.expect((r) => assert.ok(Object.keys(responseData.schema_permissions).length == 0))
+		.expect((r) => assert.ok(Object.keys(r.body.schema_permissions).length == 0))
+		.expect(400)
 });
 
 it('Add role with with perms for non-existent table  - expect fail', async () => {
@@ -12312,19 +12260,11 @@ it('Add role with with perms for non-existent table  - expect fail', async () =>
 				}
 			}
 		})
-		.expect(400)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-
 		.expect((r) => assert.ok(r.body.error == "Errors in the role permissions JSON provided"))
-	//Unmatched Postman assertion: "main_permissions")
-	//Unmatched Postman assertion: })
-
-		.expect((r) => assert.ok(responseData.main_permissions.length == 1))
+		.expect((r) => assert.ok(r.body.main_permissions.length == 1))
 		.expect((r) => assert.ok(r.body.main_permissions[0] == "Table 'northnwd.wrong_table' does not exist"))
-//Unmatched Postman assertion: })
-
-.expect((r) => assert.ok(Object.keys(responseData.schema_permissions).length == 0))
+		.expect((r) => assert.ok(Object.keys(r.body.schema_permissions).length == 0))
+		.expect(400)
 });
 
 it('Add SU role with perms  - expect fail', async () => {
@@ -12475,7 +12415,7 @@ it('Add non-SU role', async () => {
 			}
 		})
 		.expect(200)
-//Unmatched Postman assertion: postman.setEnvironmentVariable("role_id", r.body.id)})
+	generic.role_id = response.body.id;
 });
 
 it('Add User with non-SU role', async () => {
@@ -12612,9 +12552,7 @@ it('Add non-SU role', async () => {
 			}
 		})
 		.expect(200)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-//Unmatched Postman assertion: postman.setEnvironmentVariable("role_id", responseData.id)})
+	generic.role_id = response.body.id;
 });
 
 it('Add User with non-SU role', async () => {
@@ -12916,9 +12854,7 @@ it('Add non-SU role for schema tests', async () => {
 			}
 		})
 		.expect(200)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-//Unmatched Postman assertion: postman.setEnvironmentVariable("role_id", responseData.id)})
+	generic.role_id = response.body.id;
 });
 
 it('Add test_user  with new role for schema error tests', async () => {
@@ -13345,9 +13281,7 @@ it('Add non-SU role', async () => {
 			}
 		})
 		.expect(200)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-//Unmatched Postman assertion: postman.setEnvironmentVariable("role_id", responseData.id)})
+	generic.role_id = response.body.id;
 });
 
 it('Add non-SU role w/ same name', async () => {
@@ -13618,9 +13552,7 @@ it('Add non-SU role', async () => {
 			}
 		})
 		.expect(200)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-//Unmatched Postman assertion: postman.setEnvironmentVariable("role_id", responseData.id)})
+	generic.role_id = response.body.id;
 });
 
 it('Add User with new Role', async () => {
@@ -14021,9 +13953,7 @@ it('Add non-SU role', async () => {
 		.set(headers)
 		.send({ "operation": "add_role", "role": "test_dev_role", "permission": { "super_user": false } })
 		.expect(200)
-
-//Unmatched Postman assertion: responseData = JSON.parse(responseBody)
-//Unmatched Postman assertion: postman.setEnvironmentVariable("role_id", responseData.id)})
+	generic.role_id = response.body.id;
 });
 
 it('Add User with non-SU role', async () => {
@@ -15226,8 +15156,7 @@ it('drop schema northnwd', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "drop_schema", "schema": "northnwd" })
-
-//Unmatched Postman assertion: tests["Delete Schema"] = responseBody.has("successfully delete")
+		.expect((r) => assert.ok(r.body.message.includes('successfully delete')))
 	await setTimeout(1000)
 });
 
@@ -15251,8 +15180,7 @@ it('drop schema dev', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "drop_schema", "schema": "dev" })
-
-//Unmatched Postman assertion: tests["Delete Schema"] = responseBody.has("successfully delete"))
+		.expect((r) => assert.ok(r.body.message.includes('successfully delete')))
 });
 
 it('drop schema other', async () => {
@@ -15260,8 +15188,7 @@ it('drop schema other', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "drop_schema", "schema": "other" })
-
-//Unmatched Postman assertion: tests["Delete Schema"] = responseBody.has("successfully delete"))
+		.expect((r) => assert.ok(r.body.message.includes('successfully delete')))
 });
 
 it('drop schema another', async () => {
@@ -15269,8 +15196,7 @@ it('drop schema another', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "drop_schema", "schema": "another" })
-
-//Unmatched Postman assertion: tests["Delete Schema"] = responseBody.has("successfully delete"))
+		.expect((r) => assert.ok(r.body.message.includes('successfully delete')))
 });
 
 it('drop schema call', async () => {
@@ -15278,8 +15204,7 @@ it('drop schema call', async () => {
 		.post('')
 		.set(headers)
 		.send({ "operation": "drop_schema", "schema": "call" })
-
-//Unmatched Postman assertion: tests["Delete Schema"] = responseBody.has("successfully delete"))
+		.expect((r) => assert.ok(r.body.message.includes('successfully delete')))
 });
 
 it('drop schema test_delete_before (disabled)', async () => {
@@ -15944,53 +15869,65 @@ it('Describe all with valid credentials', async () => {
 it('Describe all with invalid password', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set({
+			Authorization: 'Basic ' + Buffer.from(generic.username + ':' + 'thisIsNotMyPassword').toString('base64'),
+			'Content-Type': 'application/json'
+		})
 		.send({ "operation": "describe_all" })
+		.expect((r) => { assert.ok(r.text.includes('Login failed')) })
 		.expect(401)
-//Unmatched Postman assertion: tests["Login failed"] = responseBody.has("Login failed")
 });
 
 it('Describe all with invalid username', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
-		.send({ "operation": "describe_all" })
-		.expect(401)
-//Unmatched Postman assertion: tests["Login failed"] = responseBody.has("Login failed")
+		.set({
+			'Authorization': 'Basic ' + Buffer.from('thisIsNotMyUsername' + ':' + generic.password).toString('base64'),
+			'Content-Type': 'application/json',
+		})
+		.send({ operation: 'describe_all' })
+		.expect((r) => { assert.ok(r.text.includes('Login failed')) })
+		.expect(401);
 });
 
 it('Describe all with empty credentials', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set({
+			'Authorization': 'Basic ' + Buffer.from('' + ':' + '').toString('base64'),
+			'Content-Type': 'application/json',
+		})
 		.send({ "operation": "describe_all" })
+		.expect((r) => { assert.ok(r.text.includes('Must login')) })
 		.expect(401)
-//Unmatched Postman assertion: tests["Must login"] = responseBody.has("Must login")
 });
 
 it('Describe all with long credentials', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
-		.send({ "operation": "describe_all" })
-		.expect(401)
-//Unmatched Postman assertion: tests["Login failed"] = responseBody.has("Login failed")
+		.set({
+			'Authorization':
+				'Basic ' +
+				Buffer.from(
+					'sdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdj' +
+						':' +
+						'sdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafksdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdjsdkafkjsdkljsakdj'
+				).toString('base64'),
+			'Content-Type': 'application/json',
+		})
+		.send({ operation: 'describe_all' })
+		.expect((r) => { assert.ok(r.text.includes('Login failed')) })
+		.expect(401);
 });
 
 it('Describe all without auth', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set({ 'Content-Type': 'application/json' })
 		.send({ "operation": "describe_all" })
-		.expect(200)
+		.expect((r) => { assert.ok(r.text.includes('Must login')) })
 		.expect(401)
-
-//Unmatched Postman assertion: // this is only for dev config, not prod
-
-//Unmatched Postman assertion: // })
-//Unmatched Postman assertion: // this is only for prod config, not dev
-
-//Unmatched Postman assertion: tests["Must login"] = responseBody.has("Must login"))
+		// this is only for prod config, not dev. in dev mode it works without auth
 });
 
 it('Create auth token with valid credentials', async () => {

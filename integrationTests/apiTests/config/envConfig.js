@@ -53,7 +53,10 @@ export let generic = {
 export const envUrl = generic.host + ':' + generic.port;
 export const envUrlRest = generic.host + ':' + generic.portRest;
 
+const credentials = `${generic.username}:${generic.password}`;
+const encodedCredentials = Buffer.from(credentials).toString('base64');
+
 export const headers = {
-    // Authorization: 'Basic ' + encodeCredentials(),
+    Authorization: `Basic ${encodedCredentials}`,
     'Content-Type': 'application/json'
 }
