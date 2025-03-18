@@ -3739,8 +3739,11 @@ export function makeTable(options) {
 		if (Array.isArray(shardOrResidencyList)) return shardOrResidencyList;
 		if (typeof shardOrResidencyList === 'number') {
 			if (shardOrResidencyList >= 65536) throw new Error(`Shard id ${shardOrResidencyList} must be below 65536`);
-			const residencyList = server.shards.get?.(shardOrResidencyList);
-			if (residencyList) return residencyList.map((node) => node.name);
+			const residencyList = server.shards?.get?.(shardOrResidencyList);
+			if (residencyList) {
+				logger.trace?.(`Shard ${shardOrResidencyList} mapped to ${residencyList.map((node) => node.name).join(', ')}`);
+				return residencyList.map((node) => node.name);
+			}
 			throw new Error(`Shard ${shardOrResidencyList} is not defined`);
 		}
 		throw new Error(
