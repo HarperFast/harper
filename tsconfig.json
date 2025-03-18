@@ -9,6 +9,6 @@
 		"moduleResolution": "NodeNext",
 		"module": "NodeNext",
 		"sourceMap": true,
-		"alwaysStrict": true,
+		"strict": true,
 	}
 }
