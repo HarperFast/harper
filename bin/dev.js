@@ -5,7 +5,7 @@ if (__filename.endsWith('dev.js')) {
 	const { existsSync, statSync, readFileSync, writeFileSync } = require('node:fs');
 	const { isMainThread } = require('node:worker_threads');
 	const { spawnSync, spawn } = require('node:child_process');
-
+	require('source-map-support').install();
 	const { PACKAGE_ROOT } = require('../utility/packageUtils');
 
 	const SRC_DIRECTORIES = ['bin', 'components', 'dataLayer', 'resources', 'server', 'sqlTranslator', 'upgrade', 'utility', 'validation'];
