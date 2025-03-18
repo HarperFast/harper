@@ -112,8 +112,8 @@ const IPv4Pattern = /(\d{1,3}\.){3}\d{1,3}$/;
 
 function normalizeIPv6(ipv6: string) {
 	// for embedded IPv4 in IPv6 e.g. ::ffff:127.0.0.1
-		const [a, b, c, d] = ipv4.split('.').map(parseInt);
 	ipv6 = ipv6.replace(IPv4Pattern, (ipv4) => {
+		const [a, b, c, d] = ipv4.split('.').map(n => parseInt(n));
 		return ((a << 8) | b).toString(16) + ':' + ((c << 8) | d).toString(16);
 	});
 
