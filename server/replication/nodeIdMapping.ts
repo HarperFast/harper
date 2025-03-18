@@ -6,7 +6,7 @@ import * as log from '../../utility/logging/harper_logger';
 import { getThisNodeName, lastTimeInAuditStore } from './replicator';
 import { pack, unpack } from 'msgpackr';
 import crypto from 'crypto';
-import * as net from 'node:net';
+import { isIPv6 } from 'node:net';
 
 const REMOTE_NODE_IDS = Symbol.for('remote-ids');
 function getIdMappingRecord(audit_store) {
@@ -147,7 +147,7 @@ function nodeHashToNumber(nodeHash: Uint8Array): number {
 export function stableNodeId(nodeAddrOrName: string): number {
 	const hasher = crypto.createHash('shake128', { outputLength: 4 }); // 4 bytes = 32 bits
 	let normalized: string;
-	if (net.isIPv6(nodeAddrOrName)) {
+	if (isIPv6(nodeAddrOrName)) {
 		normalized = normalizeIPv6(nodeAddrOrName);
 	} else {
 		normalized = nodeAddrOrName.toLowerCase();
