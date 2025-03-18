@@ -2,11 +2,10 @@ import { table, type Table } from '../databases';
 
 export const nodeIds = new Map<string, number>();
 
-let AnalyticsHostnamesTable: Table;
+let AnalyticsHostnameTable: Table;
 export function getAnalyticsHostnameTable() {
-	return (
-		AnalyticsHostnamesTable ||
-		(AnalyticsHostnamesTable = table({
+	if (!AnalyticsHostnameTable) {
+		AnalyticsHostnameTable = table({
 			table: 'hdb_analytics_hostname',
 			database: 'system',
 			attributes: [
@@ -18,6 +17,7 @@ export function getAnalyticsHostnameTable() {
 					name: 'hostname',
 				},
 			],
-		}))
-	);
+		});
+	}
+	return AnalyticsHostnameTable;
 }
