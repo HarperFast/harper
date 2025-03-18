@@ -110,7 +110,7 @@ export function getIdOfRemoteNode(remote_node_name, audit_store) {
 
 const IPv4Pattern = /(\d{1,3}\.){3}\d{1,3}$/;
 
-function normalizeIPv6(ipv6: string) {
+export function normalizeIPv6(ipv6: string) {
 	// for embedded IPv4 in IPv6 e.g. ::ffff:127.0.0.1
 	ipv6 = ipv6.replace(IPv4Pattern, (ipv4) => {
 		const [a, b, c, d] = ipv4.split('.').map(n => parseInt(n));
@@ -123,7 +123,7 @@ function normalizeIPv6(ipv6: string) {
 	return ipv6
 		.toLowerCase()
 		.split(':')
-		.map((v) => v.padStart(4, '0'))
+		.map(v => v.padStart(4, '0'))
 		.join(':');
 }
 
