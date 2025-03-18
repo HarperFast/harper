@@ -1,4 +1,4 @@
-import { table, Table } from '../databases';
+import { table, type Table } from '../databases';
 
 export const nodeIds = new Map<string, number>();
 
