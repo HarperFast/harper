@@ -155,6 +155,7 @@ function configValidator(config_json, skip_fs_validation = false) {
 		).optional(),
 		analytics: Joi.object({
 			aggregatePeriod: number,
+			replicate: boolean.optional(),
 		}),
 		replication: Joi.object({
 			hostname: Joi.alternatives(string, number).optional().empty(null),
