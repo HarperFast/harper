@@ -382,7 +382,6 @@ export class ResourceBridge extends LMDBBridge {
 	}
 
 	searchByValue(search_object: SearchObject, comparator?: string) {
-		console.log('searchByValue', search_object, comparator);
 		if (comparator && VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[comparator] === undefined) {
 			throw new Error(`Value search comparator - ${comparator} - is not valid`);
 		}
