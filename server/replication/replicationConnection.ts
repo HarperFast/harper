@@ -84,7 +84,7 @@ export async function createWebSocket(
 
 	const node_name = getThisNodeName();
 	let secure_context;
-	if (url.includes('wss://')) {
+	if (url?.includes('wss://')) {
 		if (!secure_contexts) {
 			const SNICallback = createTLSSelector('operations-api');
 			const secure_target = {
