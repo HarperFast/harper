@@ -211,13 +211,13 @@ export function operation(operation: OperationRequestBody, context: Context, aut
 
 interface Transaction {
 	schema: string;
-  table: string;
-  operation: OperationFunctionName;
+	table: string;
+	operation: OperationFunctionName;
 }
 
 interface TransactionWrapper {
 	channel: string;
-  transactions: Transaction[];
+	transactions: Transaction[];
 }
 
 interface CatchupOperationRequest extends OperationRequestBody {
@@ -370,10 +370,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.SET_LICENSE, new OperationFunctionObject(reg.setLicense));
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO, new OperationFunctionObject(reg.getRegistrationInfo));
 	opFuncMap.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(restart.restart));
-	opFuncMap.set(
-		terms.OPERATIONS_ENUM.RESTART_SERVICE,
-		new OperationFunctionObject(executeJob, restart.restartService)
-	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.RESTART_SERVICE, new OperationFunctionObject(executeJob, restart.restartService));
 	opFuncMap.set(terms.OPERATIONS_ENUM.CATCHUP, new OperationFunctionObject(catchup));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.SYSTEM_INFORMATION,
@@ -468,10 +465,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE,
 		new OperationFunctionObject(executeJob, transaction_log.deleteTransactionLogsBefore)
 	);
-	opFuncMap.set(
-		terms.OPERATIONS_ENUM.INSTALL_NODE_MODULES,
-		new OperationFunctionObject(npm_utilities.installModules)
-	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.INSTALL_NODE_MODULES, new OperationFunctionObject(npm_utilities.installModules));
 	opFuncMap.set(terms.OPERATIONS_ENUM.AUDIT_NODE_MODULES, new OperationFunctionObject(npm_utilities.auditModules));
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_BACKUP, new OperationFunctionObject(schema.getBackup));
 	opFuncMap.set(terms.OPERATIONS_ENUM.ADD_SSH_KEY, new OperationFunctionObject(custom_function_operations.addSSHKey));
@@ -495,9 +489,6 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		terms.OPERATIONS_ENUM.GET_SSH_KNOWN_HOSTS,
 		new OperationFunctionObject(custom_function_operations.getSSHKnownHosts)
 	);
-	opFuncMap.set(
-		terms.OPERATIONS_ENUM.GET_ANALYTICS,
-		new OperationFunctionObject(analytics.get)
-	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.GET_ANALYTICS, new OperationFunctionObject(analytics.get));
 	return opFuncMap;
 }
