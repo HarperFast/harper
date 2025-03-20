@@ -185,7 +185,7 @@ export function getOperationFunction(json: OperationRequestBody): OperationFunct
 	operation_log.trace(`getOperationFunction with operation: ${json.operation}`);
 
 	if (OPERATION_FUNCTION_MAP.has(json.operation)) {
-		return OPERATION_FUNCTION_MAP.get(json.operation);
+		return OPERATION_FUNCTION_MAP.get(json.operation)!;
 	}
 
 	throw handleHDBError(
@@ -271,21 +271,24 @@ interface JobResult {
 export async function executeJob(json: OperationRequestBody): Promise<JobResult> {
 	transformReq(json);
 
-	let new_job_object = undefined;
-	let result = undefined;
+	let new_job_object;
+	let result;
 	try {
 		result = await jobs.addJob(json);
-		new_job_object = result.createdJob;
-		operation_log.info('addJob result', result);
-		const job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
-		const return_message = await job_runner.parseMessage(job_runner_message);
+		if (result) {
+			new_job_object = result.createdJob;
+			operation_log.info('addJob result', result);
+			const job_runner_message = new job_runner.RunnerMessage(new_job_object, json);
+			const return_message = await job_runner.parseMessage(job_runner_message);
 
-		return {
-			message: return_message ?? `Starting job with id ${new_job_object.id}`,
-			job_id: new_job_object.id,
-		};
+			return {
+				message: return_message ?? `Starting job with id ${new_job_object.id}`,
+				job_id: new_job_object.id,
+			};
+		}
 	} catch (err) {
-		const message = `There was an error executing job: ${err.http_resp_msg ? err.http_resp_msg : err}`;
+		const error = err instanceof Error ? err : null;
+		const message = `There was an error executing job: ${(error && 'http_resp_msg' in error) ? error.http_resp_msg : err}`;
 		operation_log.error(message);
 		throw handleHDBError(err, message);
 	}
