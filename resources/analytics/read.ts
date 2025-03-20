@@ -37,14 +37,14 @@ export async function get(req: AnalyticsRequest): Promise<Metric[]> {
 		get_attributes: req.getAttributes ? req.getAttributes : ['*'],
 	};
 	if (req.startTimestamp) {
-		searchByConditionsReq.conditions.push({
+		searchByConditionsReq.conditions!.push({
 			search_attribute: 'id',
 			search_type: 'greater_than_equal',
 			search_value: req.startTimestamp,
 		});
 	}
 	if (req.endTimestamp) {
-		searchByConditionsReq.conditions.push({
+		searchByConditionsReq.conditions!.push({
 			search_attribute: 'id',
 			search_type: 'less_than',
 			search_value: req.endTimestamp,
