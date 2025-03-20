@@ -77,13 +77,17 @@ let secure_contexts: Map<string, tls.SecureContext>;
  */
 
 export async function createWebSocket(
-	url,
+	url: string,
 	options: { authorization?: string; rejectUnauthorized?: boolean; serverName?: string }
 ) {
 	const { authorization, rejectUnauthorized } = options || {};
 
 	const node_name = getThisNodeName();
 	let secure_context;
+	if (url == null) {
+		throw new TypeError(`Invalid URL: Expected a string URL for node "${node_name}" but received ${url}`);
+	}
+
 	if (url.includes('wss://')) {
 		if (!secure_contexts) {
 			const SNICallback = createTLSSelector('operations-api');
