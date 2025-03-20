@@ -278,6 +278,7 @@ describe('Test configUtils module', () => {
 				},
 				analytics: {
 					aggregatePeriod: 60,
+					replicate: false,
 				},
 				clustering: {
 					enabled: true,
@@ -424,6 +425,7 @@ describe('Test configUtils module', () => {
 				authentication_operationtokentimeout: '2d',
 				authentication_refreshtokentimeout: '31d',
 				analytics_aggregateperiod: 60,
+				analytics_replicate: false,
 				clustering_enabled: true,
 				clustering_hubserver_cluster_name: 'testHarperDB',
 				clustering_hubserver_cluster_network_port: 9933,
@@ -537,6 +539,7 @@ describe('Test configUtils module', () => {
 	describe('Test getDefaultConfig function', () => {
 		const expected_flat_default_config_obj = {
 			analytics_aggregateperiod: 60,
+			analytics_replicate: false,
 			authentication_authorizelocal: false,
 			authentication_cachettl: 30000,
 			authentication_enablesessions: true,
