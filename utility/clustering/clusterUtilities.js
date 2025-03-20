@@ -25,7 +25,6 @@ const p_search_by_hash = search.searchByHash;
 const p_search_by_value = search.searchByValue;
 
 module.exports = {
-	authHeaderToUser,
 	isEmpty,
 	getNodeRecord,
 	upsertNodeRecord,
@@ -35,13 +34,6 @@ module.exports = {
 	getSystemInfo,
 	reverseSubscription,
 };
-
-async function authHeaderToUser(json_body) {
-	let req = { headers: { authorization: json_body.hdb_auth_header } };
-
-	json_body.hdb_user = await p_auth_authorize(req, null);
-	return json_body;
-}
 
 /**
  * Test if the passed value is null or undefined.  This will not check string length.

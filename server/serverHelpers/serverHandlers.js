@@ -76,7 +76,6 @@ function authHandler(req, resp, done) {
 			.then((user_data) => {
 				user = user_data;
 				req.body.hdb_user = user;
-				req.body.hdb_auth_header = req.headers.authorization;
 				done();
 			})
 			.catch((err) => {
@@ -87,7 +86,6 @@ function authHandler(req, resp, done) {
 			});
 	} else {
 		req.body.hdb_user = null;
-		req.body.hdb_auth_header = req.headers.authorization;
 		req.body.baseRequest = req.raw?.baseRequest;
 		req.body.baseResponse = resp.raw?.baseResponse;
 		req.body.fastifyResponse = resp;

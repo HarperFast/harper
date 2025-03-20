@@ -142,7 +142,7 @@ async function installModules(req) {
 	const deprecation_warning =
 		'install_node_modules is deprecated. Dependencies are automatically installed on' +
 		' deploy, and install_node_modules can lead to inconsistent behavior';
-	harper_logger.warn(deprecation_warning, req);
+	harper_logger.warn(deprecation_warning, req.projects);
 	const validation = modulesValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);

@@ -295,10 +295,6 @@ describe('Test serverHandlers.js module ', () => {
 			serverHandlers_rw.authHandler(test_req, {}, (err, data) => {
 				assert.ok(data === undefined, 'Should not return anything for valid auth');
 				assert.ok(test_req.body.hdb_user === TEST_USER, 'Method should assign user to request body');
-				assert.ok(
-					test_req.body.hdb_auth_header === TEST_REQ.headers.authorization,
-					'Method should assign auth header to body'
-				);
 			});
 		});
 
@@ -310,10 +306,6 @@ describe('Test serverHandlers.js module ', () => {
 			serverHandlers_rw.authHandler(test_req, {}, (err, data) => {
 				assert.ok(data === undefined, 'Should not return anything for valid auth');
 				assert.ok(test_req.body.hdb_user === null, 'Method should assign null for hdb_user on request body');
-				assert.ok(
-					test_req.body.hdb_auth_header === TEST_REQ.headers.authorization,
-					'Method should assign auth header to body'
-				);
 			});
 		});
 
