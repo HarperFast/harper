@@ -2,11 +2,8 @@
  * This module is responsible for managing the mapping of node/host names to node ids.
  */
 import * as logger from '../../utility/logging/logger';
-import * as log from '../../utility/logging/harper_logger';
 import { getThisNodeName, lastTimeInAuditStore } from './replicator';
 import { pack, unpack } from 'msgpackr';
-import crypto from 'crypto';
-import { isIPv6 } from 'node:net';
 
 const REMOTE_NODE_IDS = Symbol.for('remote-ids');
 function getIdMappingRecord(audit_store) {
@@ -108,49 +105,3 @@ export function getIdOfRemoteNode(remote_node_name, audit_store) {
 	return id;
 }
 
-const IPv4Pattern = /(\d{1,3}\.){3}\d{1,3}$/;
-
-export function normalizeIPv6(ipv6: string) {
-	// for embedded IPv4 in IPv6 e.g. ::ffff:127.0.0.1
-	ipv6 = ipv6.replace(IPv4Pattern, (ipv4) => {
-		const [a, b, c, d] = ipv4.split('.').map(n => parseInt(n));
-		return ((a << 8) | b).toString(16) + ':' + ((c << 8) | d).toString(16);
-	});
-
-	// shortened IPs e.g. 2001:db8::1428:57ab
-	ipv6 = ipv6.replace('::', ':'.repeat(10 - ipv6.split(':').length));
-
-	return ipv6
-		.toLowerCase()
-		.split(':')
-		.map(v => v.padStart(4, '0'))
-		.join(':');
-}
-
-function nodeHashToNumber(nodeHash: Uint8Array): number {
-	log.trace?.('nodeHashToNumber arg:', nodeHash);
-	if (nodeHash.length !== 4) {
-		throw new Error(`nodeHash must be exactly 4 bytes (32 bits); got ${nodeHash.length} bytes`);
-	}
-	const num = (nodeHash[0] << 24) | (nodeHash[1] << 16) | (nodeHash[2] << 8) | nodeHash[3];
-	log.trace?.('nodeHashToNumber num:', num);
-	return num;
-}
-
-/** stableNodeId takes a hostname or IP address and returns a number containing
- * the 32-bit SHAKE128 hash of the hostname or IP address. The astute among you
- * will now be thinking, "Why return a 32-bit hash of a 32-bit IPv4 address?"
- * And the answer is that this is primarily intended for identifying cluster
- * nodes, and in production those should always use hostnames for TLS security.
- * So it doesn't make much sense to optimize the IPv4 use case.
- */
-export function stableNodeId(nodeAddrOrName: string): number {
-	const hasher = crypto.createHash('shake128', { outputLength: 4 }); // 4 bytes = 32 bits
-	let normalized: string;
-	if (isIPv6(nodeAddrOrName)) {
-		normalized = normalizeIPv6(nodeAddrOrName);
-	} else {
-		normalized = nodeAddrOrName.toLowerCase();
-	}
-	return nodeHashToNumber(Uint8Array.from(hasher.update(normalized).digest()));
-}

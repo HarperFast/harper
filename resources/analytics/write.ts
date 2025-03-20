@@ -11,8 +11,7 @@ import { get as env_get, initSync } from '../../utility/environment/environmentM
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 import { server } from '../../server/Server';
 import * as fs from 'node:fs';
-import { stableNodeId } from '../../server/replication/nodeIdMapping';
-import { getAnalyticsHostnameTable, nodeIds } from './hostnames';
+import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames';
 
 const log = loggerWithTag('analytics');
 
