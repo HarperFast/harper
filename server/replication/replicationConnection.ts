@@ -85,7 +85,7 @@ export async function createWebSocket(
 	const node_name = getThisNodeName();
 	let secure_context;
 	if (url == null) {
-		throw new Error(`url is missing from hdb_nodes record for ${node_name}`);
+		throw new TypeError(`Invalid URL: Expected a string URL for node "${node_name}" but received ${url}`);
 	}
 
 	if (url.includes('wss://')) {
