@@ -437,7 +437,7 @@ export function replicateOverWS(ws, options, authorization) {
 						for (const table_definition of data) {
 							const database_name = message[2];
 							table_definition.database = database_name;
-							let table;
+							let table: any;
 							if (checkDatabaseAccess(database_name)) {
 								if (database_name === 'system') {
 									// for system connection, we only update new tables
@@ -1710,44 +1710,55 @@ export function replicateOverWS(ws, options, authorization) {
 			data_view = new DataView(encoding_buffer.buffer, 0, encoding_buffer.length);
 		}
 	}
+	// Check the attributes in the msg vs the table and if they dont match call ensureTable to create them
+	function ensureTableIfChanged(table_definition: any, existing_table: any) {
+		const db_name = table_definition.database ?? 'data';
+		if (db_name !== 'data' && !databases[db_name]) {
+			logger.warn?.('Database not found', table_definition.database);
+			return;
+		}
+		if (!existing_table) existing_table = {};
+		const was_schema_defined = existing_table.schemaDefined;
+		let has_changes = false;
+		const schema_defined = table_definition.schemaDefined;
+		const attributes = existing_table.attributes || [];
+		for (let i = 0; i < table_definition.attributes?.length; i++) {
+			const ensure_attribute = table_definition.attributes[i];
+			const existing_attribute = attributes[i];
+			if (
+				!existing_attribute ||
+				existing_attribute.name !== ensure_attribute.name ||
+				existing_attribute.type !== ensure_attribute.type
+			) {
+				// a difference in the attribute definitions was found
+				if (was_schema_defined) {
+					// if the schema is defined, we will not change, we will honor our local definition, as it is just going to cause a battle between nodes if there are differences that we try to propagate
+					logger.error?.(
+						`Schema for '${database_name}.${table_definition.table}' is defined locally, but attribute '${ensure_attribute.name}: ${ensure_attribute.type}' from '${
+							remote_node_name
+						}' does not match local attribute ${existing_attribute ? "'" + existing_attribute.name + ': ' + existing_attribute.type + "'" : 'which does not exist'}`
+					);
+				} else {
+					has_changes = true;
+					if (!schema_defined) ensure_attribute.indexed = true; // if it is a dynamic schema, we need to index (all) the attributes
+					attributes[i] = ensure_attribute;
+				}
+			}
+		}
+		if (has_changes) {
+			logger.debug?.('(Re)creating', table_definition);
+			return ensureTable({
+				table: table_definition.table,
+				database: table_definition.database,
+				schemaDefined: table_definition.schemaDefined,
+				attributes,
+				...existing_table,
+			});
+		}
+		return existing_table;
+	}
 }
 
 class Encoder {
 	constructor() {}
-}
-// Check the attributes in the msg vs the table and if they dont match call ensureTable to create them
-function ensureTableIfChanged(table_definition, existing_table) {
-	const db_name = table_definition.database ?? 'data';
-	if (db_name !== 'data' && !databases[db_name]) {
-		logger.warn?.('Database not found', table_definition.database);
-		return;
-	}
-	if (!existing_table) existing_table = {};
-	let has_changes = false;
-	const schema_defined = table_definition.schemaDefined;
-	const attributes = existing_table.attributes || [];
-	for (let i = 0; i < table_definition.attributes?.length; i++) {
-		const ensure_attribute = table_definition.attributes[i];
-		const existing_attribute = attributes[i];
-		if (
-			!existing_attribute ||
-			existing_attribute.name !== ensure_attribute.name ||
-			existing_attribute.type !== ensure_attribute.type
-		) {
-			has_changes = true;
-			if (!schema_defined) ensure_attribute.indexed = true; // if it is a dynamic schema, we need to index (all) the attributes
-			attributes[i] = ensure_attribute;
-		}
-	}
-	if (has_changes) {
-		logger.debug?.('(Re)creating', table_definition);
-		return ensureTable({
-			table: table_definition.table,
-			database: table_definition.database,
-			schemaDefined: table_definition.schemaDefined,
-			attributes,
-			...existing_table,
-		});
-	}
-	return existing_table;
 }
