@@ -33,10 +33,8 @@ const TRUE_COMPARE_VAL = 'TRUE';
 const { CONFIG_PARAMS } = terms;
 let server;
 
-module.exports = {
-	hdbServer: operationsServer,
-	start: operationsServer,
-};
+export {operationsServer as hdbServer};
+export {operationsServer as start};
 
 /**
  * Builds a HarperDB server.
