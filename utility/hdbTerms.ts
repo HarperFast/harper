@@ -547,6 +547,7 @@ export const CONFIG_PARAMS = {
 	THREADS_MAXHEAPMEMORY: 'threads_maxHeapMemory',
 	HTTP_SESSIONAFFINITY: 'http_sessionAffinity',
 	HTTP_COMPRESSIONTHRESHOLD: 'http_compressionThreshold',
+	HTTP_COOKIE_DOMAIN: 'http_cookie_domain',
 	HTTP_CORS: 'http_cors',
 	HTTP_CORSACCESSLIST: 'http_corsAccessList',
 	HTTP_CORSACCESSCONTROLALLOWHEADERS: 'http_corsAccessControlAllowHeaders',

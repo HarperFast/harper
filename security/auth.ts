@@ -57,8 +57,8 @@ export async function authentication(request, next_handler) {
 					: [];
 			if (access_list.includes(origin) || access_list.includes('*')) {
 				if (request.method === 'OPTIONS') {
-
-					const accessControlAllowHeaders = env.get(CONFIG_PARAMS.HTTP_CORSACCESSCONTROLALLOWHEADERS) ?? 'Accept, Content-Type, Authorization';
+					const accessControlAllowHeaders =
+						env.get(CONFIG_PARAMS.HTTP_CORSACCESSCONTROLALLOWHEADERS) ?? 'Accept, Content-Type, Authorization';
 
 					// preflight request
 					const headers = new Headers([
@@ -208,9 +208,10 @@ export async function authentication(request, next_handler) {
 			request.session.update = function (updated_session) {
 				if (!session_id) {
 					session_id = uuid();
+					const domain = CONFIG_PARAMS.HTTP_COOKIE_DOMAIN;
 					const cookie_prefix =
 						(origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
-					const cookie = `${cookie_prefix}${session_id}; Path=/; Expires=Tue, 01 Oct 8307 19:33:20 GMT; HttpOnly${
+					const cookie = `${cookie_prefix}${session_id}; Path=/; Expires=Tue, 01 Oct 8307 19:33:20 GMT; ${domain ? 'Domain=' + domain + '; ' : ''}HttpOnly${
 						request.protocol === 'https' ? '; SameSite=None; Secure' : ''
 					}`;
 					if (response_headers) {
