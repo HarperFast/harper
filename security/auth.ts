@@ -9,6 +9,7 @@ import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/h
 import { loggerWithTag, AuthAuditLog, debug } from '../utility/logging/harper_logger.js';
 import { user } from '../server/itc/serverHandlers';
 import { Headers } from '../server/serverHelpers/Headers';
+import { convertToMS } from '../utility/common_utils';
 const auth_event_log = loggerWithTag('auth-event');
 env.initSync();
 
@@ -30,6 +31,9 @@ let AUTHORIZE_LOCAL =
 	process.env.DEV_MODE;
 const LOG_AUTH_SUCCESSFUL = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL) ?? false;
 const LOG_AUTH_FAILED = env.get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED) ?? false;
+
+const DEFAULT_COOKIE_EXPIRES = 'Tue, 01 Oct 8307 19:33:20 GMT';
+
 let authorization_cache = new Map();
 server.onInvalidatedUser(() => {
 	// TODO: Eventually we probably want to be able to invalidate individual users
@@ -206,12 +210,16 @@ export async function authentication(request, next_handler) {
 		}
 		if (ENABLE_SESSIONS) {
 			request.session.update = function (updated_session) {
+				const expires = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_EXPIRES);
 				if (!session_id) {
 					session_id = uuid();
-					const domain = CONFIG_PARAMS.HTTP_COOKIE_DOMAIN;
+					const domain = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_DOMAIN);
+					const expires_string = expires
+						? new Date(Date.now() + convertToMS(expires)).toUTCString()
+						: DEFAULT_COOKIE_EXPIRES;
 					const cookie_prefix =
 						(origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
-					const cookie = `${cookie_prefix}${session_id}; Path=/; Expires=Tue, 01 Oct 8307 19:33:20 GMT; ${domain ? 'Domain=' + domain + '; ' : ''}HttpOnly${
+					const cookie = `${cookie_prefix}${session_id}; Path=/; Expires=${expires_string}; ${domain ? 'Domain=' + domain + '; ' : ''}HttpOnly${
 						request.protocol === 'https' ? '; SameSite=None; Secure' : ''
 					}`;
 					if (response_headers) {
@@ -233,7 +241,9 @@ export async function authentication(request, next_handler) {
 					}
 				}
 				updated_session.id = session_id;
-				return session_table.put(updated_session);
+				return session_table.put(updated_session, {
+					expiresAt: expires ? Date.now() + convertToMS(expires) : undefined,
+				});
 			};
 			request.login = async function (username: string, password: string) {
 				const user: any = (request.user = await server.authenticateUser(username, password, request));
