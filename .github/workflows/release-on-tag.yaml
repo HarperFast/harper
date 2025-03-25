@@ -275,6 +275,9 @@ jobs:
     uses: ./.github/workflows/build.yaml
     with:
       artifactVersionOverride: ${{ needs.meta.outputs.harperdbVersion }}
+#      # These values should only be used to debug the workflow
+#      preferDownload: true
+#      dummyLicense: true
 
   #############################################################
   #  Build offline installer to
@@ -486,11 +489,10 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        nodeVersion: [ 16, 18, 20, 22 ]
         container:
           - 'harpersystems/harper'
           - 'harpersystems/harper-openshift'
-          - 'harpersystems/harper-chrome'
+        nodeVersion: [ 16, 22 ]
         include:
           - container: 'harpersystems/harper'
             file: 'utility/Docker/Dockerfile'
@@ -501,6 +503,7 @@ jobs:
           - container: 'harpersystems/harper-chrome'
             file: 'utility/Docker/Dockerfile-chrome'
             buildPlatforms: 'linux/amd64'
+            nodeVersion: 22
     steps:
       - name: checkout repo
         uses: actions/checkout@v4
