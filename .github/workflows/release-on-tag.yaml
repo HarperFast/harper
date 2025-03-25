@@ -285,7 +285,6 @@ jobs:
   #############################################################
   build-offline-installer:
     runs-on: ubuntu-latest
-    if: ${{ inputs.forcedVersion != 'no_forced' }}
     needs:
       - meta
       - build
@@ -341,7 +340,7 @@ jobs:
       - build
     strategy:
       matrix:
-        nodeVersion: [16, 18, 20, 22]
+        nodeVersion: [16, 22]
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
