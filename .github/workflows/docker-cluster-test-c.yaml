@@ -42,7 +42,6 @@ jobs:
   ##########################
   dockerBuild:
     needs: build
-    uses: ./.github/workflows/docker-build.yaml
     strategy:
       fail-fast: false
       matrix:
@@ -53,12 +52,18 @@ jobs:
             file: 'utility/Docker/Dockerfile'
           - flavor: 'openshift'
             file: 'utility/Docker/Dockerfile-openshift'
-    with:
-      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      container: 'tar'
-      containerTarball: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ matrix.flavor }}-${{ matrix.platform }}-${{ github.run_number }}.tar
-      file: ${{ matrix.file }}
-      platforms: 'linux/${{ matrix.platform }}'
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v4
+      - name: docker-build
+        uses: ./.github/docker-build
+        with:
+          harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+          containerImage: 'tar'
+          containerTarball: docker-harperdb_${{ needs.build.outputs.harperdbVersion }}-${{ matrix.flavor }}-${{ matrix.platform }}-${{ github.run_number }}.tar
+          dockerFile: ${{ matrix.file }}
+          buildPlatforms: 'linux/${{ matrix.platform }}'
 
   ##############################
   #  Call Docker Test template

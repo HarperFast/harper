@@ -336,11 +336,11 @@ jobs:
     needs:
       - meta
       - build
-    runs-on: ubuntu-latest
     strategy:
       matrix:
         nodeVersion: [16, 18, 20, 22]
     timeout-minutes: 30
+    runs-on: ubuntu-latest
     steps:
       - name: checkout repo
         uses: actions/checkout@v4
@@ -349,7 +349,7 @@ jobs:
         with:
           harperdbVersion: ${{ needs.meta.outputs.harperdbVersion }}
           nodeVersion: ${{ matrix.nodeVersion }}
-          dockerImage: 'harperdb/private'
+          containerImage: 'harperdb/private'
           tagLatest: ${{ needs.meta.outputs.dockerhub_tag_latest == 'true' && true || false }}
           buildPlatforms: 'linux/amd64,linux/arm64'
           push: ${{ needs.meta.outputs.push == 'true' && 'true' || 'false' }}
@@ -471,8 +471,9 @@ jobs:
 
   ###################################
   #  Release to Public Dockerhub
-  #    harperdb/harperdb
-  #    harperdb/harperdb-openshift
+  #    harpersystems/harper
+  #    harpersystems/harper-openshift
+  #    harpersystems/harper-chrome (amd64 only)
   #  Publish to Redhat Connect
   ###################################
   publicReleaseDocker:
@@ -487,13 +488,19 @@ jobs:
       matrix:
         nodeVersion: [ 16, 18, 20, 22 ]
         container:
-          - 'harperdb/harperdb'
-          - 'harperdb/harperdb-openshift'
+          - 'harpersystems/harper'
+          - 'harpersystems/harper-openshift'
+          - 'harpersystems/harper-chrome'
         include:
-          - container: 'harperdb/harperdb'
+          - container: 'harpersystems/harper'
             file: 'utility/Docker/Dockerfile'
-          - container: 'harperdb/harperdb-openshift'
+            buildPlatforms: 'linux/amd64,linux/arm64'
+          - container: 'harpersystems/harper-openshift'
             file: 'utility/Docker/Dockerfile-openshift'
+            buildPlatforms: 'linux/amd64,linux/arm64'
+          - container: 'harpersystems/harper-chrome'
+            file: 'utility/Docker/Dockerfile-chrome'
+            buildPlatforms: 'linux/amd64'
     steps:
       - name: checkout repo
         uses: actions/checkout@v4
@@ -502,11 +509,11 @@ jobs:
         with:
           harperdbVersion: ${{ needs.meta.outputs.harperdbVersion }}
           nodeVersion: ${{ matrix.nodeVersion }}
-          dockerImage: ${{ matrix.container }}
+          containerImage: ${{ matrix.container }}
           tagLatest: ${{ needs.meta.outputs.dockerhub_tag_latest == 'true' && true || false }}
           buildPlatforms: 'linux/amd64,linux/arm64'
           push: ${{ needs.meta.outputs.push == 'true' && 'true' || 'false' }}
-          #pushRedhatConnect: ${{ matrix.nodeVersion == 22 && 'true' || 'false' }} # only checking node version here, docker-build action will check if harperdb/harperdb-openshift
+          #pushRedhatConnect: ${{ matrix.nodeVersion == 22 && 'true' || 'false' }} # only checking node version here, docker-build action will check if harpersystems/harper-openshift
           pushRedhatConnect: false # temporarily disabled
           dockerUsername: ${{ secrets.DOCKER_USERNAME }}
           dockerPassword: ${{ secrets.DOCKER_PASSWORD }}

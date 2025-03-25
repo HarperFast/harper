@@ -73,11 +73,24 @@ ENV HDB_ADMIN_PASSWORD=password
 ENV LOGGING_STDSTREAMS=true
 
 USER root
+ENV PUPPETEER_SKIP_CHROMIUM_DOWNLOAD=true
 
 # Install ps and git
 RUN <<-EOF
     apt-get update
-    apt-get install -y procps git
+    apt-get install procps git curl gnupg -y
+    mkdir -m 0755 -p /etc/apt/keyrings
+    curl --location --silent https://dl-ssl.google.com/linux/linux_signing_key.pub | gpg --dearmor -o /etc/apt/keyrings/google.gpg
+    cat <<EOT > /etc/apt/sources.list.d/google.sources
+Types: deb
+URIs: https://dl.google.com/linux/chrome/deb/
+Suites: stable
+Components: main
+Signed-By: /etc/apt/keyrings/google.gpg
+EOT
+    apt-get update
+    apt-get install google-chrome-stable -y --no-install-recommends
+    rm -rf /var/lib/apt/lists/*
 EOF
 
 # Add Licensing files
@@ -90,16 +103,17 @@ VOLUME /home/harperdb/hdb
 EXPOSE 9925
 EXPOSE 9926
 EXPOSE 9932
+EXPOSE 9933
 
 # Set npm global directory
 ENV NPM_CONFIG_PREFIX=/home/harperdb/.npm-global
 ENV PATH=/home/harperdb/.npm-global/bin:$PATH
 
 # Change node user and group to harperdb
-RUN <<-EOF
-    usermod -d /home/harperdb -l harperdb node
-    groupmod -n harperdb node
-    rm -rf /home/node
+RUN <<EOF
+usermod -d /home/harperdb -l harperdb node
+groupmod -n harperdb node
+rm -rf /home/node
 EOF
 
 # Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
