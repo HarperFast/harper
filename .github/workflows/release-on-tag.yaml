@@ -490,7 +490,6 @@ jobs:
       matrix:
         container:
           - 'harpersystems/harper'
-          - 'harpersystems/harper-openshift'
         nodeVersion: [ 16, 22 ]
         include:
           - container: 'harpersystems/harper'
@@ -499,6 +498,7 @@ jobs:
           - container: 'harpersystems/harper-openshift'
             file: 'utility/Docker/Dockerfile-openshift'
             buildPlatforms: 'linux/amd64,linux/arm64'
+            nodeVersion: 22
           - container: 'harpersystems/harper-chrome'
             file: 'utility/Docker/Dockerfile-chrome'
             buildPlatforms: 'linux/amd64'
