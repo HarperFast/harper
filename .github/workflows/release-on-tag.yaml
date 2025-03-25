@@ -285,7 +285,6 @@ jobs:
   #############################################################
   build-offline-installer:
     runs-on: ubuntu-latest
-    if: ${{ inputs.forcedVersion != 'no_forced' }}
     needs:
       - meta
       - build
@@ -341,7 +340,7 @@ jobs:
       - build
     strategy:
       matrix:
-        nodeVersion: [16, 18, 20, 22]
+        nodeVersion: [16, 22]
     timeout-minutes: 30
     runs-on: ubuntu-latest
     steps:
@@ -491,7 +490,6 @@ jobs:
       matrix:
         container:
           - 'harpersystems/harper'
-          - 'harpersystems/harper-openshift'
         nodeVersion: [ 16, 22 ]
         include:
           - container: 'harpersystems/harper'
@@ -500,6 +498,7 @@ jobs:
           - container: 'harpersystems/harper-openshift'
             file: 'utility/Docker/Dockerfile-openshift'
             buildPlatforms: 'linux/amd64,linux/arm64'
+            nodeVersion: 22
           - container: 'harpersystems/harper-chrome'
             file: 'utility/Docker/Dockerfile-chrome'
             buildPlatforms: 'linux/amd64'
