@@ -4,15 +4,15 @@ on:
   workflow_dispatch:
     inputs:
       container:
-        description: 'Which container to build, harperdb/private, harperdb/harperdb, harperdb/harperdb-fabric, harperdb/harperdb-openshift, tar, or public for both harperdb and openshift'
-        default: 'harperdb/private'
+        description: 'Which container to build, harpersystems/private, harpersystems/harper, harpersystems/harper-openshift, tar, or public for both harperdb and openshift'
+        default: 'harpersystems/private'
         required: false
         type: choice
         options:
-          - 'harperdb/private'
-          - 'harperdb/harperdb'
-          - 'harperdb/harperdb-openshift'
-          - 'harperdb/fabric'
+          - 'harpersystems/private'
+          - 'harpersystems/harper'
+          - 'harpersystems/harper-openshift'
+          - 'harpersystems/harper-chrome'
           - 'tar'
           - 'public'
       file:
@@ -51,6 +51,11 @@ jobs:
   ####################
   build:
     uses: ./.github/workflows/build.yaml
+#    # These values should only be used to debug the workflow
+#    with:
+#      preferDownload: true
+#      dummyLicense: true
+
 
   ############################
   #  Build Container Image(s)
@@ -59,18 +64,34 @@ jobs:
     if: inputs.container != 'public'
     needs:
       - build
-    uses: ./.github/workflows/docker-build.yaml
-    with:
-      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      nodeVersion: ${{ inputs.nodeVersion }}
-      container: ${{ inputs.container }}
-      file: ${{ inputs.file }}
-      latest: ${{ inputs.latest }}
-      platforms: ${{ inputs.platforms }}
-      push: ${{ inputs.push }}
-    secrets:
-      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v4
+      - name: docker-build
+        uses: ./.github/docker-build
+        with:
+          harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+          nodeVersion: ${{ inputs.nodeVersion }}
+          containerImage: ${{ inputs.container }}
+          dockerFile: ${{ inputs.file }}
+          tagLatest: ${{ inputs.latest }}
+          buildPlatforms: ${{ inputs.platforms }}
+          push: ${{ inputs.push }}
+          dockerUsername: ${{ secrets.DOCKER_USERNAME }}
+          dockerPassword: ${{ secrets.DOCKER_PASSWORD }}
+
+      #####################
+      # Security Scanning #
+      #####################
+      - name: Run Trivy vulnerability scanner
+        if: inputs.container != 'tar'
+        continue-on-error: true
+        uses: ./.github/container-scanning
+        with:
+          containerImage: ${{ inputs.containerImage }}
+          containerTag: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
 
   publish_public_containers:
     if: inputs.container == 'public'
@@ -81,17 +102,37 @@ jobs:
         include:
           - container: 'harperdb/harperdb'
             file: 'utility/Docker/Dockerfile'
+            buildPlatforms: ${{ inputs.platforms }}
           - container: 'harperdb/harperdb-openshift'
             file: 'utility/Docker/Dockerfile-openshift'
-    uses: ./.github/workflows/docker-build.yaml
-    with:
-      harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
-      nodeVersion: ${{  inputs.nodeVersion }}
-      container: ${{ matrix.container }}
-      file: ${{ matrix.file }}
-      latest: ${{ inputs.latest }}
-      platforms: ${{ inputs.platforms }}
-      push: ${{ inputs.push }}
-    secrets:
-      DOCKER_USERNAME: ${{ secrets.DOCKER_USERNAME }}
-      DOCKER_PASSWORD: ${{ secrets.DOCKER_PASSWORD }}
+            buildPlatforms: ${{ inputs.platforms }}
+          - container: 'harperdb/harperdb-chrome'
+            file: 'utility/Docker/Dockerfile-chrome'
+            buildPlatforms: 'linux/amd64'
+    runs-on: ubuntu-latest
+    steps:
+      - name: checkout repo
+        uses: actions/checkout@v4
+      - name: docker-build
+        uses: ./.github/docker-build
+        with:
+          harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
+          nodeVersion: ${{  inputs.nodeVersion }}
+          containerImage: ${{ matrix.container }}
+          dockerFile: ${{ matrix.file }}
+          tagLatest: ${{ inputs.latest }}
+          buildPlatforms: ${{ inputs.platforms }}
+          push: ${{ inputs.push }}
+          dockerUsername: ${{ secrets.DOCKER_USERNAME }}
+          dockerPassword: ${{ secrets.DOCKER_PASSWORD }}
+
+      #####################
+      # Security Scanning #
+      #####################
+      - name: Run Trivy vulnerability scanner
+        continue-on-error: true
+        uses: ./.github/container-scanning
+        with:
+          containerImage: ${{ matrix.container }}
+          containerTag: ${{ github.sha }}
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

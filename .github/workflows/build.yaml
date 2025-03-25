@@ -13,6 +13,16 @@ on:
         type: string
         required: false
         default: 'default'
+      preferDownload:
+        description: 'Download version from npm to go faster. Should only be used for testing workflows'
+        type: boolean
+        required: false
+        default: false
+      dummyLicense:
+        description: 'Generate dummy license files to go faster (not for production). Should only be used for testing workflows'
+        type: boolean
+        required: false
+        default: false
   workflow_dispatch:
 
 jobs:
@@ -50,9 +60,18 @@ jobs:
       #  Build HarperDB
       ####################################
       - name: Build artifact
+        if: inputs.preferDownload != true
         run: |
           #!/bin/bash
           ./utility/devops/build/build.sh
+
+      - name: Download Build artifact
+        if: inputs.preferDownload == true
+        env:
+          harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
+        run: |
+          #!/bin/bash
+          npm pack harperdb@${harperdbVersion}
 
       - name: 'Rename Tarball'
         if: ${{ needs.getNodeVersion.outputs.harperdbVersion != inputs.artifactVersionOverride && inputs.artifactVersionOverride != 'default' }}
@@ -69,13 +88,21 @@ jobs:
       #  Get License Files for Container
       ####################################
       - name: 'Get Latest License Files'
+        if: inputs.dummyLicense != true
         run: .github/scripts/get-license-files.sh
       - name: 'Generate license files'
+        if: inputs.dummyLicense != true
         continue-on-error: true
         uses: apache/skywalking-eyes/dependency@main
         with:
           mode: 'resolve'
           flags: '--output=utility/Docker/licenses/dependencies'
+      - name: 'Generate dummy license files'
+        if: inputs.dummyLicense == true
+        run: |
+          #!/usr/bin/env bash
+          mkdir -p utility/Docker/licenses
+          touch utility/Docker/licenses/not-for-distribution
       - name: 'Upload Artifact'
         uses: actions/upload-artifact@v4
         with:

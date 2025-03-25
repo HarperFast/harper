@@ -8,19 +8,22 @@ ARG HARPERDB_VERSION
 USER 0
 
 # Create symlink for compatibility
-RUN ln -s ${HOME} /home/harperdb && chmod -R u=rwx /home/harperdb
+RUN <<-EOF
+    ln -s ${HOME} /home/harperdb
+    chmod -R u=rwx /home/harperdb
+EOF
 
 #Copy HarperDB tarball
 COPY $HARPERDB_TARBALL .
 
-#Create installation directory, .harperdb directory and hdb_boot_properties.file
-RUN mkdir -p /home/harperdb/hdb && \
-    mkdir /home/harperdb/.harperdb && \
-    touch /home/harperdb/.harperdb/hdb_boot_properties.file && \
+# Create installation directory, .harperdb directory and hdb_boot_properties.file
+RUN <<-EOF
+    mkdir -p /home/harperdb/hdb
+    mkdir /home/harperdb/.harperdb
+    touch /home/harperdb/.harperdb/hdb_boot_properties.file
     echo $'settings_path = /home/harperdb/hdb/harperdb-config.yaml\ninstall_user = default' > /home/harperdb/.harperdb/hdb_boot_properties.file
-
-# fix permissions -- requires root group
-RUN chown -R 1001:0 /home/harperdb /home/harperdb/.harperdb /home/harperdb/hdb
+    chown -R 1001:0 /home/harperdb /home/harperdb/.harperdb /home/harperdb/hdb
+EOF
 
 #Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
 USER 1001
@@ -29,9 +32,11 @@ USER 1001
 WORKDIR /home/harperdb/
 
 #Install HarperDB package and clean up tarball
-RUN npm install $HARPERDB_TARBALL && \
-    npm cache clean --force  && \
+RUN <<-EOF
+    npm install $HARPERDB_TARBALL
+    npm cache clean --force
     rm -f $HARPERDB_TARBALL
+EOF
 
 # Runtime stage
 FROM registry.access.redhat.com/ubi9/nodejs-${NODE_VERSION}-minimal:latest AS runtime
@@ -94,13 +99,15 @@ ENV LOGGING_STDSTREAMS=true
 USER 0
 
 # re-create symlink for compatibility
-RUN ln -sf ${HOME} /home/harperdb && chmod -R u=rwx /home/harperdb
-
 # install deps
-RUN microdnf install --assumeyes --nodocs --refresh hostname git procps && microdnf clean all
+RUN <<-EOF
+    ln -sf ${HOME} /home/harperdb
+    chmod -R u=rwx /home/harperdb
+    microdnf install --assumeyes --nodocs --refresh hostname git procps
+    microdnf clean all
+EOF
 
 # RHCC Licensing files
-RUN mkdir /licenses
 COPY utility/Docker/licenses /licenses
 
 #Create mount point
