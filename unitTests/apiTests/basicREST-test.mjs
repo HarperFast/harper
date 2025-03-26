@@ -93,6 +93,16 @@ describe('test REST calls', () => {
 		response = await axios('http://localhost:9926/VariedProps/33');
 		assert.equal(response.data.name, 'new record');
 	});
+	it('POST with x-www-form-urlencoded data', async () => {
+		const headers = {
+			'content-type': 'application/x-www-form-urlencoded',
+		};
+		const params = new URLSearchParams({ id: 'www-form-urlencoded-unique-id', name: 'www-form-urlencoded' });
+		let response = await axios.post('http://localhost:9926/VariedProps/', params, { headers });
+		assert.equal(response.status, 201);
+		response = await axios('http://localhost:9926/VariedProps/www-form-urlencoded-unique-id');
+		assert.equal(response.data.name, 'www-form-urlencoded');
+	});
 	it('POST a new record', async () => {
 		const headers = {
 			//authorization,
@@ -130,7 +140,6 @@ describe('test REST calls', () => {
 		it('table describe with root url', async () => {
 			let response = await axios('http://localhost:9926/FourProp');
 			assert.equal(response.status, 200);
-			assert(response.data.recordCount >= 10);
 			assert.equal(response.data.attributes.length, 7);
 			assert.equal(response.data.name, 'FourProp');
 		});
@@ -427,6 +436,23 @@ describe('test REST calls', () => {
 		assert.equal(response.headers['x-custom-header'], 'custom value');
 		assert.equal(response.data.property, 'custom response');
 	});
+	describe('direct URL mapping', function () {
+		before(() => {
+			tables.SimpleCache.directURLMapping = true;
+		});
+		it('direct URL mapping', async () => {
+			let response = await axios.put('http://localhost:9926/SimpleCache/with-query?query=string', {
+				name: 'hello world',
+			});
+			response = await axios('http://localhost:9926/SimpleCache/with-query?query=string');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.id, 'with-query?query=string');
+			assert.equal(response.data.name, 'hello world');
+		});
+		after(() => {
+			tables.SimpleCache.directURLMapping = false;
+		});
+	});
 	describe('BigInt', function () {
 		let bigint64BitAsString = '12345678901234567890';
 		let json = `{"anotherBigint":-12345678901234567890,"id":12345678901234567890,"name":"new record with a bigint"}`;
@@ -482,7 +508,7 @@ describe('test REST calls', () => {
 			headers: {
 				// specify the special content type that will always return 'one' then 'two'
 				Accept: 'application/custom-async-iterator',
-			}
+			},
 		});
 		// Assert everything works as expected
 		assert.equal(response.status, 200);
@@ -495,10 +521,33 @@ describe('test REST calls', () => {
 			headers: {
 				// specify the special content type that will always return 'one' then 'two'
 				Accept: 'application/custom-iterator',
-			}
+			},
 		});
 		// Assert everything works as expected
 		assert.equal(response.status, 200);
 		assert.equal(response.data, 'onetwo');
+	});
+
+	it('routes requests with nested path structure to correct resource', async () => {
+		let response1 = await axios('http://localhost:9926/api/v1/resourceA');
+		assert.equal(response1.data.name, 'ResourceA');
+
+		let response2 = await axios('http://localhost:9926/api/v1/resourceA/?queryA=1&queryB=2');
+		assert.equal(response2.data.name, 'ResourceA');
+		assert.strictEqual(response2.data.params.url, '/?queryA=1&queryB=2');
+
+		let response3 = await axios('http://localhost:9926/api/v1/resourceA/resourceB/');
+		assert.equal(response3.data.name, 'ResourceB');
+		assert.strictEqual(response3.data.params.url, '/');
+
+		let response4 = await axios('http://localhost:9926/api/v1/resourceA/resourceB/subPath/ResourceC?queryA=2&queryB=3');
+		assert.equal(response4.data.name, 'ResourceC');
+		assert.strictEqual(response4.data.params.url, '?queryA=2&queryB=3');
+
+		let response5 = await axios(
+			'http://localhost:9926/api/v1/resourceA/resourceB/subPath/ResourceC/some/relative/path/?with=query.property'
+		);
+		assert.equal(response5.data.name, 'ResourceC');
+		assert.strictEqual(response5.data.params.url, '/some/relative/path/?with=query.property');
 	});
 });

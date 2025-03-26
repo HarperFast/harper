@@ -32,6 +32,32 @@ export class Echo extends Resource {
 	}
 }
 
+class ResourceA extends Resource {
+	get(params) {
+		return { name: 'ResourceA', params };
+	}
+}
+
+class ResourceB extends Resource {
+	get(params) {
+		return { name: 'ResourceB', params };
+	}
+}
+
+class ResourceC extends Resource {
+	get(params) {
+		return { name: 'ResourceC', params };
+	}
+}
+
+export const api = {
+	v1: {
+		resourceA: ResourceA,
+		'resourceA/resourceB': ResourceB,
+		'resourceA/resourceB/subPath/ResourceC': ResourceC,
+	},
+};
+
 class SubObject extends tables.SubObject {
 	get(query) {
 		global.headersTest = this.getContext().headers;

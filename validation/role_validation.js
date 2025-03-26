@@ -55,7 +55,7 @@ function dropRoleValidation(object) {
 	return validator.validateObject(object, constraints);
 }
 
-const ALLOWED_JSON_KEYS = ['operation', 'role', 'id', 'permission', 'hdb_user', 'hdb_auth_header', 'access'];
+const ALLOWED_JSON_KEYS = ['operation', 'role', 'id', 'permission', 'hdb_user', 'access'];
 
 function customValidate(object, constraints) {
 	let validationErrors = {

@@ -5,10 +5,11 @@ const environment_utility = require('../../../../utility/lmdb/environmentUtility
 const write_utility = require('../../../../utility/lmdb/writeUtility');
 const { getSystemSchemaPath, getSchemaPath } = require('../lmdbUtility/initializePaths');
 const system_schema = require('../../../../json/systemSchema');
-const schema_validator = require('../../../../validation/schema_validator');
+const { validateBySchema } = require('../../../../validation/validationWrapper');
+const Joi = require('joi');
 const LMDBCreateAttributeObject = require('../lmdbUtility/LMDBCreateAttributeObject');
 const returnObject = require('../../bridgeUtility/insertUpdateReturnObj');
-const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
+const { handleHDBError, hdb_errors, ClientError } = require('../../../../utility/errors/hdbError');
 const hdb_utils = require('../../../../utility/common_utils');
 const { HTTP_STATUS_CODES } = hdb_errors;
 
@@ -22,17 +23,17 @@ module.exports = lmdbCreateAttribute;
  * @returns {{skipped_hashes: *, update_hashes: *, message: string}}
  */
 async function lmdbCreateAttribute(create_attribute_obj) {
-	let validation_error = schema_validator.attribute_object(create_attribute_obj);
-	if (validation_error) {
-		throw handleHDBError(
-			new Error(),
-			validation_error.message,
-			hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST,
-			undefined,
-			undefined,
-			true
-		);
-	}
+	const validation = validateBySchema(
+		create_attribute_obj,
+		Joi.object({
+			database: Joi.string(),
+			schema: Joi.string(),
+			table: Joi.string().required(),
+			attribute: Joi.string().required(),
+		})
+	);
+	if (validation) throw new ClientError(validation.message);
+
 	//check if schema.table does not exist throw error
 	let check_schema_table =
 		!create_attribute_obj.skip_table_check &&

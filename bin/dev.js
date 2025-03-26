@@ -6,6 +6,12 @@ if (__filename.endsWith('dev.js')) {
 	const { isMainThread } = require('node:worker_threads');
 	const { spawnSync, spawn } = require('node:child_process');
 
+	// Enable source maps for TypeScript debugging.
+	// These methods are specifically marked as "experimental", and we should
+	// replace them with `module.getSourceMapsSupport()` and
+	// `module.setSourceMapsSupport()` when our minimum Node version is 22.
+	process.setSourceMapsEnabled(true);
+
 	const { PACKAGE_ROOT } = require('../utility/packageUtils');
 
 	const SRC_DIRECTORIES = ['bin', 'components', 'dataLayer', 'resources', 'server', 'sqlTranslator', 'upgrade', 'utility', 'validation'];

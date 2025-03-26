@@ -3,7 +3,7 @@
 const Joi = require('joi');
 const path = require('path');
 const fs = require('fs-extra');
-const { exec } = require('child_process');
+const { exec, spawn } = require('child_process');
 const util = require('util');
 const p_exec = util.promisify(exec);
 const terms = require('./hdbTerms');
@@ -13,6 +13,7 @@ const { HTTP_STATUS_CODES } = hdb_errors;
 const env = require('./environment/environmentManager');
 const validator = require('../validation/validationWrapper');
 const harper_logger = require('./logging/harper_logger');
+const { once } = require('events');
 env.initSync();
 const CF_ROUTES_DIR = env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
 const NPM_INSTALL_COMMAND = 'npm install --force --omit=dev --json';
@@ -97,19 +98,39 @@ async function linkHarperdb() {
  * @returns {Promise<*>}
  */
 async function runCommand(command, cwd = undefined, env = process.env) {
-	let stdout, stderr;
-	try {
-		({ stdout, stderr } = await p_exec(command, { cwd, env }));
-	} catch (err) {
-		throw new Error(err.stderr.replace('\n', ''));
+	harper_logger.debug({ tagName: 'npm_run_command' }, `running command: \`${command}\``);
+
+	// eslint-disable-next-line sonarjs/os-command
+	const commandProcess = spawn(command, {
+		shell: true,
+		cwd,
+		env,
+		stdio: ['ignore', 'pipe', 'pipe'],
+	});
+
+	let stdout = '';
+	let stderr = '';
+
+	commandProcess.stdout.on('data', (chunk) => {
+		const str = chunk.toString();
+		harper_logger.debug({ tagName: 'npm_run_command:stdout' }, str);
+		stdout += str;
+	});
+
+	commandProcess.stderr.on('data', (chunk) => {
+		const str = chunk.toString();
+		harper_logger.error({ tagName: 'npm_run_command:stderr' }, str);
+		stderr += str;
+	});
+
+	const [code] = await once(commandProcess, 'close');
+
+	if (code !== 0) {
+		// eslint-disable-next-line sonarjs/no-nested-template-literals
+		throw new Error(`Command \`${command}\` exited with code ${code}.${stderr === '' ? '' : ` Error: ${stderr}`}`);
 	}
 
-	if (stderr && !stderr.includes('Debugger listening') && !stderr.includes('warn using --force')) {
-		harper_logger.error('Error running NPM command:', command, stderr);
-	}
-
-	harper_logger.trace(stdout, stderr);
-	return stdout?.replace('\n', '');
+	return stdout || undefined;
 }
 
 /**
@@ -121,7 +142,7 @@ async function installModules(req) {
 	const deprecation_warning =
 		'install_node_modules is deprecated. Dependencies are automatically installed on' +
 		' deploy, and install_node_modules can lead to inconsistent behavior';
-	harper_logger.warn(deprecation_warning, req);
+	harper_logger.warn(deprecation_warning, req.projects);
 	const validation = modulesValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
@@ -225,19 +246,8 @@ async function auditModules(req) {
  */
 async function checkNPMInstalled() {
 	//verify npm is available on this machine
-	try {
-		await runCommand('npm -v');
-		return true;
-	} catch (e) {
-		throw handleHDBError(
-			new Error(),
-			`Unable to install project dependencies: npm is not installed on this instance of HarperDB.`,
-			HTTP_STATUS_CODES.BAD_REQUEST,
-			undefined,
-			undefined,
-			true
-		);
-	}
+	await runCommand('npm -v');
+	return true;
 }
 
 /**

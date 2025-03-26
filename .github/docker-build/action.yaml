@@ -1,16 +1,16 @@
 name: 'Docker Build'
-description: 'Build a HarperDB Docker container. requires build and license artifacts'
+description: 'Build a Harper Docker container. requires build and license artifacts'
 
 inputs:
 
 # required inputs
   harperdbVersion:
-    description: 'version of Harperdb to build. used as a reference for download-artifact'
+    description: 'version of Harper to build. used as a reference for download-artifact'
     required: true
 
 # inputs with defaults
-  dockerImage:
-    description: 'name of image to create/upload. ex: `harperdb/harperdb`'
+  containerImage:
+    description: 'name of image to create/upload. ex: `harperdb/harperdb`, or `tar` to build tarball'
     required: false
   dockerFile:
     description: 'path to Dockerfile'
@@ -38,6 +38,10 @@ inputs:
     description: 'push the image to dockerhub'
     required: false
     default: 'false'
+  containerTarball:
+    description: 'override name for tarball created when container is tar: "default" tries to create a good name'
+    required: false
+    default: 'default'
 
 # inputs for redhat connect
   pushRedhatConnect:
@@ -73,9 +77,6 @@ runs:
 #########
 # setup #
 #########
-#    - name: checkout repo
-#      uses: actions/checkout@v4
-
     - name: setup qemu
       uses: docker/setup-qemu-action@v3
 
@@ -83,7 +84,7 @@ runs:
       uses: docker/setup-buildx-action@v3
 
     - name: log into dockerhub
-      if: inputs.dockerImage != 'tar' || inputs.push == true
+      if: inputs.containerImage != 'tar' || inputs.push == true
       uses: docker/login-action@v3
       with:
         username: ${{ inputs.dockerUsername }}
@@ -92,7 +93,7 @@ runs:
 ######################
 # download artifacts #
 ######################
-    - name: download harperdb
+    - name: download harper
       uses: actions/download-artifact@v4
       with:
         name: harperdb-${{ inputs.harperdbVersion }}.tgz
@@ -105,6 +106,36 @@ runs:
         path: 'utility/Docker/licenses/'
 
 ################################
+# get old name from rebranding #
+################################
+    - name: get alt names
+      id: alt_name
+      shell: bash
+      env:
+        containerImage: ${{ inputs.containerImage }}
+        dockerFile: ${{ inputs.dockerFile }}
+      run: | 
+        #/usr/bin/env bash
+        
+        if [[ "${containerImage##*/}" == 'harper-openshift' ]]; then
+          echo 'containerImageAltName=harperdb/harperdb-openshift' >> "${GITHUB_OUTPUT}"
+        elif [[ "${containerImage##*/}" == 'private' ]]; then 
+          echo 'containerImageAltName=harperdb/private' >> "${GITHUB_OUTPUT}"
+        elif [[ "${containerImage##*/}" == 'harper' ]]; then 
+          echo 'containerImageAltName=harperdb/harperdb' >> "${GITHUB_OUTPUT}"
+        else
+          #echo "containerImageAltName=''" >> "${GITHUB_OUTPUT}"
+          echo "${containerImage}"
+        fi
+        
+        if [[ "${containerImage}" == 'tar' ]]; then
+          # override for flavor when creating tarballs
+          [[ "${dockerFile}" == 'utility/Docker/Dockerfile' ]] && echo 'containerImageFlavor=standard' >> "${GITHUB_OUTPUT}"
+          [[ "${dockerFile}" == 'utility/Docker/Dockerfile-openshift' ]] && echo 'containerImageFlavor=openshift' >> "${GITHUB_OUTPUT}"
+        fi
+        exit 0
+
+################################
 # generate tags for containers #
 ################################
     - name: docker meta
@@ -112,12 +143,14 @@ runs:
       uses: docker/metadata-action@v5
       with:
         # list of Docker images to use as base name for tags
-        images: ${{ inputs.dockerImage }}
+        images: |
+          ${{ inputs.containerImage == 'tar' && 'harperdb/harperdb' || inputs.containerImage }}
+          ${{ steps.alt_name.outputs.containerImageAltName }}
         # generate Docker tags based on the following events/attributes
         tags: |
-          type=raw,enable=${{ inputs.dockerImage != 'harperdb/private' && inputs.nodeVersion == inputs.latestNodeVersion }},value=${{ inputs.harperdbVersion }}
-          type=raw,enable=${{ inputs.dockerImage == 'harperdb/private'}},value=${{ inputs.harperdbVersion }}-${{ github.run_number }}
-          type=raw,enable=${{ inputs.dockerImage == 'tar'}},value=${{ inputs.harperdbVersion }}-${{ github.run_number }}
+          type=raw,enable=${{ inputs.containerImage != 'harperdb/private' && inputs.nodeVersion == inputs.latestNodeVersion }},value=${{ inputs.harperdbVersion }}
+          type=raw,enable=${{ inputs.containerImage == 'harperdb/private'}},value=${{ inputs.harperdbVersion }}-${{ github.run_number }}
+          type=raw,enable=${{ inputs.containerImage == 'tar'}},value=${{ inputs.harperdbVersion }}-${{ github.run_number }}
           type=raw,enable=${{ inputs.nodeVersion != inputs.latestNodeVersion }},value=${{ inputs.harperdbVersion }}_node-${{ inputs.nodeVersion }}
           type=raw,value=latest,enable=${{ inputs.nodeVersion == inputs.latestNodeVersion && inputs.tagLatest || false }}
           type=raw,value=${{ github.sha }}
@@ -126,7 +159,8 @@ runs:
 #########################
 # build container image #
 #########################
-    - name: build and push ${{ inputs.dockerImage }}:${{ inputs.harperdbVersion }}
+    - name: build and push ${{ inputs.containerImage }}:${{ inputs.harperdbVersion }}
+      if: inputs.containerImage != 'tar'
       id: build-push-container
       uses: docker/build-push-action@v5
       with:
@@ -144,24 +178,79 @@ runs:
         cache-from: type=gha
         cache-to: type=gha,mode=max
 
+  ###########################
+  # build container tarball #
+  ###########################
+    - name: Set tar name
+      id: set-tar-name
+      if: inputs.containerImage == 'tar'
+      env:
+        harperdbVersion: ${{ inputs.harperdbVersion }}
+        nodeVersion: ${{ inputs.nodeVersion }}
+        nodeVersionDefault: ${{ env.NODE_VERSION_DEFAULT }}
+        runNumber: ${{ github.run_number }}
+        containerFile: ${{ inputs.dockerFile }}
+        platform: ${{ inputs.buildPlatforms }}
+        containerTarball: ${{ inputs.containerTarball }}
+      shell: bash
+      run: |
+        #!/usr/bin/env bash
+        if [[ "${containerTarball}" == "default" ]]; then
+          base="docker-harperdb_${harperdbVersion}-"
+          [[ "${containerFile}" == *"-openshift" ]] && flavor='-openshift' || flavor=''
+          [[ "${nodeVersion}" == "${nodeVersionDefault}" ]] && nodeFlavor='' || nodeFlavor="-node-${nodeVersion}"
+          arch="-${platform##*/}"
+          echo "tarName=${base}${nodeFlavor}${runNumber}${flavor}${arch}.tar" >> "${GITHUB_OUTPUT}"
+        else
+          echo "tarName=${containerTarball}" >> "${GITHUB_OUTPUT}"
+        fi
+
+    - name: Create container tarball ${{ steps.set-tar-name.outputs.tarName }}
+      id: build-image-tar
+      if: inputs.containerImage == 'tar'
+      uses: docker/build-push-action@v5
+      with:
+        context: .
+        file: ${{ inputs.dockerFile }}
+        platforms: ${{ inputs.buildPlatforms }}
+        push: false
+        tags: ${{ steps.docker-meta.outputs.tags }}
+        outputs: type=docker,dest=${{ steps.set-tar-name.outputs.tarName }}
+        build-args: |
+          HARPERDB_VERSION=${{ inputs.harperdbVersion }}
+          NODE_VERSION=${{ inputs.nodeVersion }}
+          HARPERDB_TARBALL=harperdb-${{ inputs.harperdbVersion }}.tgz
+          VCS_REF=`git rev-parse HEAD`
+          BUILD_DATE=`date -u +%FT%T`
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+    - name: Publish tarball as artifact ${{ steps.set-tar-name.outputs.tarName }}
+      if: inputs.containerImage == 'tar'
+      uses: actions/upload-artifact@v4
+      with:
+        name: ${{ steps.set-tar-name.outputs.tarName }}
+        path: ${{ steps.set-tar-name.outputs.tarName }}
+        retention-days: 1
+
 #############################
 # publish to redhat connect #
 #############################
     - name: install openshift CLI tools
-      if: ${{ inputs.pushRedhatConnect == 'true' && inputs.dockerImage == 'harperdb/harperdb-openshift' }}
+      if: ${{ inputs.pushRedhatConnect == 'true' && inputs.containerImage == 'harperdb/harperdb-openshift' }}
       uses: redhat-actions/openshift-tools-installer@v1
       with:
         source: 'github'
         preflight: 'latest'
 
-    - name: publish to redhat connect ${{ inputs.dockerImage }}:${{ inputs.harperdbVersion }}
-      if: ${{ inputs.pushRedhatConnect == 'true' && inputs.dockerImage == 'harperdb/harperdb-openshift' }}
+    - name: publish to redhat connect ${{ inputs.containerImage }}:${{ inputs.harperdbVersion }}
+      if: ${{ inputs.pushRedhatConnect == 'true' && inputs.containerImage == 'harperdb/harperdb-openshift' }}
       env:
         CERTIFICATION_PROJECT_ID: ${{ inputs.redhatCertificationProjectId }}
         REDHAT_DOCKERCONFIG: ${{ inputs.redhatDockerConfig }}
         PYXIS_API_TOKEN: ${{ inputs.redhatPyxisApiToken }}
         container_registry: 'registry.hub.docker.com'
-        container_image: ${{ inputs.dockerImage }}
+        container_image: ${{ inputs.containerImage }}
         container_tag: ${{ inputs.harperdbVersion }}
         push: ${{ inputs.push }}
       shell: bash

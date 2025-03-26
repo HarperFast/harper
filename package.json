@@ -1,6 +1,6 @@
 {
 	"name": "harperdb",
-	"version": "4.5.0-beta.1",
+	"version": "4.5.1",
 	"description": "HarperDB is a distributed database, caching service, streaming broker, and application development platform focused on performance and ease of use.",
 	"keywords": [
 		"database",
@@ -48,7 +48,7 @@
 		"test": "pm2 kill && rimraf ./.nyc_output/* && node utility/devops/register.js --reset_license && npm run test:replication && npm run test:apitests && npm run test:resources && npm run test:logging && npm run test:upgrade && npm run test:nats && npm run test:cfserver && npm run test:hdbserver && npm run test:bin && npm run test:main && npm run test:security && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license",
 		"test:resources": "cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/resources/**/*.js' --config '../unitTests/.mocharc.json'",
 		"test:bin": "cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/bin/**/*.js' --config '../unitTests/.mocharc.json'",
-		"test:main": "cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --config '../unitTests/.mocharc-main.json'",
+		"test:main": "cd bin/ && node --expose-internals ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --config '../unitTests/.mocharc-main.json'",
 		"test:lmdbbridge": "cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/dataLayer/harperBridge/lmdbBridge/**/*.js' --config '../unitTests/.mocharc.json'",
 		"test:lmdbutility": "cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/utility/lmdb/**/*.js' --config '../unitTests/.mocharc.json'",
 		"test:hdbserver": "cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/server/harperdb/hdbServer-test.js' --config '../unitTests/.mocharc.json'",
@@ -57,8 +57,8 @@
 		"test:upgrade": "cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/upgrade/**/*.js' --config '../unitTests/.mocharc.json'",
 		"test:apitests": "pm2 kill && cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/apiTests/**/*-test.mjs' --config '../unitTests/.mocharc.json'",
 		"test:logging": "cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/utility/logging/*.js' --config '../unitTests/.mocharc.json'",
-		"test:ci": " cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --retries 3 --config '../unitTests/.mocharc-main.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/dataLayer/harperBridge/lmdbBridge/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/utility/lmdb/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/server/harperdb/hdbServer-test.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/server/customFunctions/customFunctionsServer-test.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/upgrade/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/server/nats/**/*.js' --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter",
-		"test:security": "cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/security/**/*.js' --config '../unitTests/.mocharc.json'",
+		"test:ci": " cd bin/ && node --expose-internals ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --retries 3 --config '../unitTests/.mocharc-main.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/dataLayer/harperBridge/lmdbBridge/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/utility/lmdb/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/server/harperdb/hdbServer-test.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/server/customFunctions/customFunctionsServer-test.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/upgrade/**/*.js' --parallel --retries 3 --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter && ../node_modules/mocha/bin/_mocha '../unitTests/server/nats/**/*.js' --config '../unitTests/.mocharc.json' --reporter mocha-teamcity-reporter",
+		"test:security": "cd bin/ && node --expose-internals ../node_modules/mocha/bin/_mocha '../unitTests/security/**/*.js' --config '../unitTests/.mocharc.json'",
 		"test:replication": "cd bin/ && ../node_modules/mocha/bin/_mocha '../unitTests/server/replication/**/*.js' --config '../unitTests/.mocharc.json'",
 		"test:supertest": "cd integrationTests/apiTests && node --test tests/test_suite.cjs",
 		"hdb-check": "./utility/devops/hdb-check.sh",
@@ -71,8 +71,11 @@
 		"format:fix": "npm run format -- --write",
 		"lint": "eslint .",
 		"lint:fix": "npm run lint -- --fix",
-		"cluster:local": "docker compose -f utility/dev/docker-compose.yml --project-directory . build && docker compose -f utility/dev/docker-compose.yml --project-directory . up",
-		"cluster:latest": "docker compose -f utility/dev/docker-compose.yml --project-directory . pull && docker compose -f utility/dev/docker-compose.yml --project-directory . up"
+		"cluster:ip:local": "pushd utility/dev && docker compose -f docker-compose.ip.yml --project-directory ../.. build && docker compose -f docker-compose.ip.yml --project-directory ../.. up; popd",
+		"cluster:ip:latest": "pushd utility/dev && docker compose -f docker-compose.ip.yml --project-directory ../.. pull && docker compose -f docker-compose.ip.yml --project-directory ../.. up; popd",
+		"cluster:delete": "pushd utility/dev && docker compose -f docker-compose.ip.yml --project-directory ../.. down --remove-orphans; popd",
+		"cluster:hostname:local": "pushd utility/dev && docker compose -f docker-compose.hostname.yml --project-directory ../.. build && docker compose -f docker-compose.hostname.yml --project-directory ../.. up; popd",
+		"cluster:hostname:latest": "pushd utility/dev && docker compose -f docker-compose.hostname.yml --project-directory ../.. pull && docker compose -f docker-compose.hostname.yml --project-directory ../.. up; popd"
 	},
 	"dependencies": {
 		"@aws-sdk/client-s3": "3.750.0",
@@ -97,6 +100,7 @@
 		"chalk": "4.1.2",
 		"cli-progress": "3.12.0",
 		"clone": "2.1.2",
+		"dotenv": "^16.4.7",
 		"fast-glob": "3.3.3",
 		"fastify": "~4.29.0",
 		"fastify-plugin": "~4.5.1",
@@ -180,7 +184,6 @@
 		"rimraf": "3.0.2",
 		"sinon": "10.0.0",
 		"sinon-chai": "3.7.0",
-		"source-map-support": "^0.5.21",
 		"typescript": "^5.7.3",
 		"undici": "^7.3.0",
 		"why-is-node-still-running": "^1.0.0",
@@ -193,6 +196,7 @@
 	},
 	"optionalDependencies": {
 		"bufferutil": "^4.0.9",
+		"hdd-space": "^1.2.0",
 		"segfault-handler": "^1.3.0",
 		"utf-8-validate": "^5.0.10"
 	}

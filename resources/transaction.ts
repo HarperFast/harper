@@ -20,7 +20,8 @@ export function transaction<T>(
 		// optional first argument, handle case of no request
 		callback = context;
 		context = {};
-	} else if (!context) context = {}; // request argument included, but null or undefined, so create anew one
+	} else if (!context)
+		context = {}; // request argument included, but null or undefined, so create anew one
 	else if (context?.transaction?.open === TRANSACTION_STATE.OPEN && typeof callback === 'function')
 		return callback(context.transaction); // nothing to be done, already in open transaction
 	if (typeof callback !== 'function') throw new Error('Callback function must be provided to transaction');
@@ -42,7 +43,7 @@ export function transaction<T>(
 	return onComplete(result);
 	// when the transaction function completes, run this to commit the transaction
 	function onComplete(result) {
-		const committed = transaction.commit({ letItLinger: options?.letItLinger });
+		const committed = transaction.commit({ doneWriting: true });
 		if (committed.then) {
 			return committed.then(() => {
 				return result;

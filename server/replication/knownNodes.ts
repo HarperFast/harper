@@ -47,6 +47,9 @@ export function getHDBNodeTable() {
 					attribute: 'replicates',
 				},
 				{
+					attribute: 'revoked_certificates',
+				},
+				{
 					attribute: '__createdtime__',
 				},
 				{
@@ -86,6 +89,17 @@ export function subscribeToNodeUpdates(listener) {
 						console.error('Invalid node update event', event);
 					}
 				}
+				const shards = new Map();
+				for await (const node of getHDBNodeTable().search({})) {
+					if (node.shard != undefined) {
+						let nodesForShard = shards.get(node.shard);
+						if (!nodesForShard) {
+							shards.set(node.shard, (nodesForShard = []));
+						}
+						nodesForShard.push(node);
+					}
+				}
+				server.shards = shards;
 				if (event.type === 'put' || event.type === 'delete') {
 					listener(event.value, event.id);
 				}
@@ -217,6 +231,8 @@ export function* iterateRoutes(options: { routes: (Route | any)[] }) {
 			subscription: route.subscriptions,
 			routes: route.routes,
 			start_time: route.startTime,
+			revoked_certificates: route.revokedCertificates,
+			shard: route.shard,
 		};
 	}
 }

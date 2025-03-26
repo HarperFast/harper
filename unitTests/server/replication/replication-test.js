@@ -297,7 +297,6 @@ describe('Replication', () => {
 				{
 					id: '8',
 					name,
-					//locations: ['node-1', 'node-3'],
 				},
 				{
 					replicateTo: ['node-3'],
@@ -307,13 +306,14 @@ describe('Replication', () => {
 			let retries = 20;
 			do {
 				await new Promise((resolve) => setTimeout(resolve, 500));
-				let result = test_stores[1].getBinary('8');
+				let result = test_stores[1].get('8');
 				if (!result) {
 					assert(--retries > 0);
 					continue;
 				}
 				// verify that this is a small partial record, and invalidation entry
-				assert(result.length < 30);
+				assert.equal(result.value.name, name);
+				assert(!result.value.id);
 				result = test_stores[2].getBinary('8');
 				if (!result) {
 					assert(--retries > 0);
@@ -333,6 +333,178 @@ describe('Replication', () => {
 			});
 			let result = test_stores[1].get('8')?.value;
 			assert.equal(result.name, name);
+		});
+		describe('id-based sharding by shard', function () {
+			before(async () => {
+				await test_stores[0].remove('10');
+				await test_stores[1].remove('10');
+				await test_stores[2].remove('10');
+				TestTable.setResidencyById((id) => {
+					return (parseInt(id) % 3) + 1;
+				});
+			});
+			after(() => {
+				TestTable.setResidencyById(null);
+			});
+			it('A write to table with id sharding defined and residency that does not include itself should replicate', async function () {
+				let name = 'name ' + Math.random();
+
+				let result = test_stores[0].getBinary('10');
+				assert(!result);
+
+				await TestTable.put({
+					id: '10', // should be forced to replicate and only store the record on node-2
+					name,
+				});
+
+				let retries = 20;
+				do {
+					await new Promise((resolve) => setTimeout(resolve, 500));
+					let result = test_stores[1].getBinary('10');
+					if (!result) {
+						assert(--retries > 0);
+						continue;
+					}
+					// verify that this is a full record
+					assert(result.length > 30);
+					result = test_stores[0].getBinary('10');
+					assert(!result);
+					result = test_stores[2].getBinary('10');
+					assert(!result);
+					break;
+				} while (true);
+				// now verify that the record can be loaded on-demand here
+				result = await TestTable.get('10');
+				assert.equal(result.name, name);
+			});
+		});
+		describe('id-based sharding by residency list', function () {
+			before(async () => {
+				await test_stores[0].remove('10');
+				await test_stores[1].remove('10');
+				await test_stores[2].remove('10');
+				TestTable.setResidencyById((id) => {
+					return ['node-' + ((parseInt(id) % 3) + 1)];
+				});
+			});
+			after(() => {
+				TestTable.setResidencyById(null);
+			});
+			it('A write to table with id sharding defined and residency that does not include itself should replicate', async function () {
+				let name = 'name ' + Math.random();
+
+				let result = test_stores[0].getBinary('10');
+				assert(!result);
+
+				await TestTable.put({
+					id: '10', // should be forced to replicate and only store the record on node-2
+					name,
+				});
+
+				let retries = 20;
+				do {
+					await new Promise((resolve) => setTimeout(resolve, 500));
+					let result = test_stores[1].getBinary('10');
+					if (!result) {
+						assert(--retries > 0);
+						continue;
+					}
+					// verify that this is a full record
+					assert(result.length > 30);
+					result = test_stores[0].getBinary('10');
+					assert(!result);
+					result = test_stores[2].getBinary('10');
+					assert(!result);
+					break;
+				} while (true);
+				// now verify that the record can be loaded on-demand here
+				result = await TestTable.get('10');
+				assert.equal(result.name, name);
+			});
+		});
+		describe('record-based sharding', function () {
+			before(async () => {
+				await test_stores[0].remove('10');
+				await test_stores[1].remove('10');
+				await test_stores[2].remove('10');
+				await test_stores[0].remove('11');
+				await test_stores[1].remove('11');
+				await test_stores[2].remove('11');
+				TestTable.setResidency((record) => {
+					return ['node-' + ((parseInt(record.id) % 3) + 1)];
+				});
+				TestTable.sourcedFrom({
+					get(id) {
+						return {
+							id,
+							name: 'from source',
+						};
+					},
+				});
+			});
+			after(() => {
+				TestTable.setResidency(null);
+			});
+			it('A write to table with record-based sharding and residency that does not include itself should replicate', async function () {
+				let name = 'name ' + Math.random();
+
+				let result = test_stores[0].getBinary('10');
+				assert(!result);
+
+				await TestTable.put({
+					id: '10', // should be forced to replicate and only store the record on node-2
+					name,
+				});
+
+				let retries = 20;
+				do {
+					await new Promise((resolve) => setTimeout(resolve, 500));
+					let result = test_stores[1].get('10');
+					if (!result) {
+						assert(--retries > 0);
+						continue;
+					}
+					// verify that this is a full record
+					assert.equal(result.value.name, name);
+					assert.equal(result.value.id, '10');
+					result = test_stores[0].get('10');
+					assert.equal(result.value.name, name);
+					assert(!result.value.id); // partial record, so this shouldn't there
+					result = test_stores[2].get('10');
+					assert.equal(result.value.name, name);
+					assert(!result.value.id); // partial record, so this shouldn't there
+					break;
+				} while (true);
+				// now verify that the record can be loaded on-demand here
+				result = await TestTable.get('10');
+				assert.equal(result.name, name);
+			});
+			it('A get from origin with record-based sharding and no self-residency', async function () {
+				let result = test_stores[0].getBinary('11');
+				assert(!result);
+
+				result = await TestTable.get('11');
+				assert.equal(result.name, 'from source');
+				let retries = 20;
+				do {
+					await new Promise((resolve) => setTimeout(resolve, 500));
+					let result = test_stores[2].get('11');
+					if (!result) {
+						assert(--retries > 0);
+						continue;
+					}
+					// verify that this is a full record
+					assert.equal(result.value.name, 'from source');
+					assert.equal(result.value.id, '11');
+					result = test_stores[0].get('11');
+					assert.equal(result.value.name, 'from source');
+					assert(!result.value.id); // partial record, so this shouldn't there
+					result = test_stores[1].get('11');
+					assert.equal(result.value.name, 'from source');
+					assert(!result.value.id); // partial record, so this shouldn't there
+					break;
+				} while (true);
+			});
 		});
 		it('A write to the table during a single broken connection should route through another node', async function () {
 			let name = 'name ' + Math.random();

@@ -33,45 +33,112 @@ const BAD_PROJECT_PACKAGE_JSON = {
 };
 
 describe('test runCommand', () => {
-	const sandbox = sinon.createSandbox();
-	const run_command = npm_utils.__get__('runCommand');
+	// Moving away from rewire. Don't want to update rest of this test file just yet, but will fix this up when I do.
+	const { runCommand } = require('../../utility/npmUtilities');
+	const harperLogger = require('../../utility/logging/harper_logger');
+
+	beforeEach(() => {
+		sinon.replace(harperLogger, 'debug', sinon.fake());
+		sinon.replace(harperLogger, 'error', sinon.fake());
+	});
 
 	afterEach(() => {
-		sandbox.restore();
+		sinon.restore();
 	});
 
-	it('test stderr is not null', async () => {
-		let exec_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
-			return { stderr: 'bad stuff' };
-		});
-
-		let exec_restore = npm_utils.__set__('p_exec', exec_stub);
-		let error;
-		try {
-			await run_command('npm install');
-		} catch (e) {
-			error = e;
-		}
-		expect(error).is.undefined;
-		exec_restore();
+	it('should handle stdout and stderr', async () => {
+		const command = `node -e "console.log('good stuff\\nhello, world'); console.error('bad stuff\\ngoodbye, world');"`;
+		const actual = await runCommand(command);
+		expect(actual).to.equal('good stuff\nhello, world\n');
+		assert.deepEqual(harperLogger.debug.getCall(0).args, [
+			{ tagName: 'npm_run_command' },
+			`running command: \`${command}\``,
+		]);
+		assert.deepEqual(harperLogger.debug.getCall(1).args, [
+			{ tagName: 'npm_run_command:stdout' },
+			'good stuff\nhello, world\n',
+		]);
+		assert.deepEqual(harperLogger.error.getCall(0).args, [
+			{ tagName: 'npm_run_command:stderr' },
+			'bad stuff\ngoodbye, world\n',
+		]);
 	});
 
-	it('test stderr is null', async () => {
-		let exec_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
-			return { stdout: 'good stuff' };
-		});
+	it('should ignore stdin', async () => {
+		/**
+		 * runCommand sets the processes `stdin` to `ignore` which essentially disables `stdin`.
+		 *
+		 * `stdin` cannot actually be disabled, it is set to `/dev/null` or `NUL` depending on the OS, and returns `EOF` immediately when read.
+		 *
+		 * This script immediately puts the `stdin` Readable into `flowing` mode (with `resume()`).
+		 *
+		 * Then it listens for an `end` event which only fires when the `stdin` Readable closes.
+		 *
+		 * The `setTimeout` call advances the event loop one tick allowing the end event handler to fire if `stdin` has closed.
+		 *
+		 * And thus, the process exits with code `0` if `stdin` has closed, otherwise it exits with code `1`.
+		 *
+		 * ```js
+		 * let end = false;
+		 * process.stdin.resume();
+		 * process.stdin.on('end', () => { end = true; });
+		 * setTimeout(() => {process.exit(end ? 0 : 1)}, 1);
+		 * ```
+		 */
+		const command = `node -e "let end = false; process.stdin.resume(); process.stdin.on('end', () => { end = true; }); setImmediate(() => { process.exit(end ? 0 : 1); });"`;
+		const actual = await runCommand(command);
+		assert.equal(actual, undefined);
+		assert.deepEqual(harperLogger.debug.getCall(0).args, [
+			{ tagName: 'npm_run_command' },
+			`running command: \`${command}\``,
+		]);
+		assert.equal(harperLogger.error.callCount, 0);
+	});
 
-		let exec_restore = npm_utils.__set__('p_exec', exec_stub);
-		let error;
-		let result;
+	it('should error on non-zero exit code', async () => {
+		const command = `node -e "process.exit(1);"`;
 		try {
-			result = await run_command('npm install');
-		} catch (e) {
-			error = e;
+			await runCommand(command);
+			assert.fail('Expected an error');
+		} catch (error) {
+			assert.equal(error.message, `Command \`${command}\` exited with code 1.`);
+			assert.deepEqual(harperLogger.debug.getCall(0).args, [
+				{ tagName: 'npm_run_command' },
+				`running command: \`${command}\``,
+			]);
+			assert.equal(harperLogger.error.callCount, 0);
 		}
-		expect(error).is.equal(undefined);
-		expect(result).is.equal('good stuff');
-		exec_restore();
+	});
+
+	it('should error on non-zero exit code and include stderr', async () => {
+		const command = `node -e "console.error('foo'); process.exit(1);"`;
+		try {
+			await runCommand(command);
+			assert.fail('Expected an error');
+		} catch (error) {
+			assert.equal(error.message, `Command \`${command}\` exited with code 1. Error: foo\n`);
+			assert.deepEqual(harperLogger.debug.getCall(0).args, [
+				{ tagName: 'npm_run_command' },
+				`running command: \`${command}\``,
+			]);
+			assert.equal(harperLogger.error.callCount, 1);
+			assert.deepEqual(harperLogger.error.getCall(0).args, [{ tagName: 'npm_run_command:stderr' }, 'foo\n']);
+		}
+	});
+
+	it('should throw spawn error', async () => {
+		const command = 'node -e "process.exit(0);"';
+		try {
+			await runCommand(command, 'i-dont-exist');
+			assert.fail('Expected an error');
+		} catch (error) {
+			assert.equal(error.code, 'ENOENT');
+			assert.deepEqual(harperLogger.debug.getCall(0).args, [
+				{ tagName: 'npm_run_command' },
+				`running command: \`${command}\``,
+			]);
+			assert.equal(harperLogger.error.callCount, 0);
+		}
 	});
 });
 

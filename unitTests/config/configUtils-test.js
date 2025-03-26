@@ -373,6 +373,7 @@ describe('Test configUtils module', () => {
 						securePort: 9925,
 						domainSocket: 'hdb/operations-server',
 						headersTimeout: 60001,
+						http2: false,
 						https: true,
 						mtls: false,
 						keepAliveTimeout: 5001,
@@ -393,6 +394,7 @@ describe('Test configUtils module', () => {
 					securePort: 9926,
 					timeout: 119999,
 					headersTimeout: 59999,
+					http2: false,
 					mtls: false,
 				},
 				threads: {
@@ -474,12 +476,14 @@ describe('Test configUtils module', () => {
 				operationsapi_network_domainsocket: 'hdb/operations-server',
 				operationsapi_network_headerstimeout: 60001,
 				operationsapi_network_https: true,
+				operationsapi_network_http2: false,
 				operationsapi_network_keepalivetimeout: 5001,
 				operationsapi_network_timeout: 120001,
 				http_compressionthreshold: 0,
 				http_cors: false,
 				http_corsaccesslist: ['test1', 'test2'],
 				http_keepalivetimeout: 4999,
+				http_http2: false,
 				http_port: 9936,
 				http_secureport: 9926,
 				http_mtls: false,
@@ -541,6 +545,7 @@ describe('Test configUtils module', () => {
 			http_cors: false,
 			http_corsaccesslist: [null],
 			http_compressionthreshold: 0,
+			http_http2: false,
 			http_keepalivetimeout: 30000,
 			http_port: null,
 			http_secureport: 9926,
@@ -558,10 +563,10 @@ describe('Test configUtils module', () => {
 			logging_file: true,
 			logging_level: 'warn',
 			logging_root: null,
-			logging_rotation_enabled: false,
+			logging_rotation_enabled: true,
 			logging_rotation_interval: null,
 			logging_rotation_compress: false,
-			logging_rotation_maxsize: null,
+			logging_rotation_maxsize: '64M',
 			logging_rotation_path: null,
 			logging_stdstreams: false,
 			mqtt_network_mtls: false,
@@ -572,6 +577,7 @@ describe('Test configUtils module', () => {
 			operationsapi_network_cors: true,
 			operationsapi_network_corsaccesslist: ['*'],
 			operationsapi_network_domainsocket: 'hdb/operations-server',
+			operationsapi_network_http2: false,
 			operationsapi_network_keepalivetimeout: 30000,
 			operationsapi_network_port: null,
 			operationsapi_network_secureport: 9925,
@@ -619,7 +625,7 @@ describe('Test configUtils module', () => {
 			flat_default_config_obj_rw = config_utils_rw.__set__('flat_default_config_obj', expected_flat_default_config_obj);
 			const parse_document_spy = sandbox.spy(YAML, 'parseDocument');
 			const value = config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.LOGGING_ROTATION_ENABLED);
-			expect(value).to.be.false;
+			expect(value).to.be.true;
 			expect(parse_document_spy.callCount).to.equal(0);
 		});
 	});

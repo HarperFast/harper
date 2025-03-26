@@ -3,10 +3,19 @@ import { transaction } from './transaction';
 import { ErrorResource } from './ErrorResource';
 import logger from '../utility/logging/harper_logger';
 import { ServerError } from '../utility/errors/hdbError';
+
+interface ResourceEntry {
+	Resource: typeof Resource;
+	path: string;
+	exportTypes: any;
+	hasSubPaths: boolean;
+	relativeURL: string;
+}
+
 /**
  * This is the global set of all resources that have been registered on this server.
  */
-export class Resources extends Map<string, typeof Resource> {
+export class Resources extends Map<string, ResourceEntry> {
 	isWorker = true;
 	loginPath?: (request) => string;
 	set(path, resource, export_types?: string[], force?: boolean): void {
@@ -55,27 +64,45 @@ export class Resources extends Map<string, typeof Resource> {
 	 * that can further transform data from the main structured object resources).
 	 * @return The matched Resource class. Note that the remaining path is "returned" by setting the relativeURL property
 	 */
-	getMatch(url: string, export_type?: string) {
+	getMatch(url: string, export_type?: string): ResourceEntry | undefined {
 		let slash_index = 2;
-		let found_entry;
-		while ((slash_index = url.indexOf('/', slash_index)) > -1) {
-			const resource_path = url.slice(0, slash_index);
-			let entry = this.get(resource_path);
-			if (!entry && resource_path.indexOf('.') > -1) {
-				// try to match the first part of the path if the .extension
-				const parts = resource_path.split('.');
-				entry = this.get(parts[0]);
+		let prevSlashIndex = 0;
+		let found_entry: ResourceEntry;
+
+		const urlLength = url.length;
+
+		while (slash_index < urlLength) {
+			prevSlashIndex = slash_index;
+			slash_index = url.indexOf('/', slash_index);
+
+			if (slash_index === -1) {
+				slash_index = urlLength;
+			}
+
+			const resourcePath = slash_index === urlLength ? url : url.slice(0, slash_index);
+			let entry = this.get(resourcePath);
+			let queryIndex = -1;
+			if (!entry && slash_index === urlLength) {
+				// try to match the first part of the path if there's a query
+				queryIndex = resourcePath.indexOf('?', prevSlashIndex);
+				if (queryIndex !== -1) {
+					const pathPart = resourcePath.slice(0, queryIndex);
+					entry = this.get(pathPart);
+				}
 			}
 			if (entry && (!export_type || entry.exportTypes?.[export_type] !== false)) {
-				entry.relativeURL = url.slice(slash_index);
+				entry.relativeURL = url.slice(queryIndex !== -1 ? queryIndex : slash_index);
 				if (!entry.hasSubPaths) {
 					return entry;
 				}
 				found_entry = entry;
 			}
+
 			slash_index += 2;
 		}
+
 		if (found_entry) return found_entry;
+
 		// try the exact path
 		const search_index = url.indexOf('?');
 		const path = search_index > -1 ? url.slice(0, search_index) : url;
@@ -89,12 +116,13 @@ export class Resources extends Map<string, typeof Resource> {
 			// still not found, see if there is an explicit root path
 			found_entry = this.get('');
 			if (found_entry && (!export_type || found_entry.exportTypes?.[export_type] !== false)) {
-				if (url[0] !== '/') url = '/' + url;
+				if (url.charAt(0) !== '/') url = '/' + url;
 				found_entry.relativeURL = url;
 			}
 		}
 		return found_entry;
 	}
+
 	getResource(path: string, resource_info) {
 		const entry = this.getMatch(path);
 		if (entry) {

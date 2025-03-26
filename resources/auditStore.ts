@@ -9,6 +9,7 @@ import * as harper_logger from '../utility/logging/harper_logger';
 import { getRecordAtTime } from './crdt';
 import { isMainThread } from 'worker_threads';
 import { decodeFromDatabase, deleteBlobsInObject } from './blob';
+import { onStorageReclamation } from '../server/storageReclamation';
 
 /**
  * This module is responsible for the binary representation of audit records in an efficient form.
@@ -91,50 +92,69 @@ export function openAuditStore(root_store) {
 		};
 	};
 	let pending_cleanup = null;
-	function scheduleAuditCleanup(audit_cleanup_delay = DEFAULT_AUDIT_CLEANUP_DELAY) {
+	let last_cleanup_resolution: Promise<void>;
+	let cleanup_priority = 0;
+	let audit_cleanup_delay = DEFAULT_AUDIT_CLEANUP_DELAY;
+	onStorageReclamation(audit_store.env.path, (priority) => {
+		cleanup_priority = priority; // update the priority
+		if (priority) {
+			// and if we have a priority, schedule cleanup soon
+			return scheduleAuditCleanup(100);
+		}
+	});
+	function scheduleAuditCleanup(new_cleanup_delay?: number): Promise<void> {
+		if (new_cleanup_delay) audit_cleanup_delay = new_cleanup_delay;
 		clearTimeout(pending_cleanup);
-		pending_cleanup = setTimeout(async () => {
-			// query for audit entries that are old
-			if (audit_store.rootStore.status === 'closed' || audit_store.rootStore.status === 'closing') return;
-			let deleted = 0;
-			let committed;
-			let last_key;
-			try {
-				for (const { key, value } of audit_store.getRange({
-					start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
-					snapshot: false,
-					end: Date.now() - audit_retention,
-				})) {
-					try {
-						committed = removeAuditEntry(audit_store, key, value);
-					} catch (error) {
-						harper_logger.warn('Error removing audit entry', error);
+		const resolution = new Promise<void>((resolve) => {
+			pending_cleanup = setTimeout(async () => {
+				await last_cleanup_resolution;
+				last_cleanup_resolution = resolution;
+				// query for audit entries that are old
+				if (audit_store.rootStore.status === 'closed' || audit_store.rootStore.status === 'closing') return;
+				let deleted = 0;
+				let committed: Promise<void>;
+				let last_key: any;
+				try {
+					for (const { key, value } of audit_store.getRange({
+						start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
+						snapshot: false,
+						end: Date.now() - audit_retention / (1 + cleanup_priority * cleanup_priority), // remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
+					})) {
+						try {
+							committed = removeAuditEntry(audit_store, key, value);
+						} catch (error) {
+							harper_logger.warn('Error removing audit entry', error);
+						}
+						last_key = key;
+						await new Promise(setImmediate);
+						if (++deleted >= MAX_DELETES_PER_CLEANUP) {
+							// limit the amount we cleanup per event turn so we don't use too much memory/CPU
+							audit_cleanup_delay = 10; // and keep trying very soon
+							break;
+						}
 					}
-					last_key = key;
-					await new Promise(setImmediate);
-					if (++deleted >= MAX_DELETES_PER_CLEANUP) {
-						// limit the amount we cleanup per event turn so we don't use too much memory/CPU
-						audit_cleanup_delay = 10; // and keep trying very soon
-						break;
+					await committed;
+				} finally {
+					if (deleted === 0) {
+						// if we didn't delete anything, we can increase the delay (double until we get to one tenth of the retention time)
+						audit_cleanup_delay = Math.min(audit_cleanup_delay << 1, audit_retention / 10);
+					} else {
+						// if we did delete something, update our updates since timestamp
+						updateLastRemoved(audit_store, last_key);
+						// and do updates faster
+						if (audit_cleanup_delay > 100) audit_cleanup_delay = audit_cleanup_delay >> 1;
 					}
+					resolve(undefined);
+					scheduleAuditCleanup();
 				}
-				await committed;
-			} finally {
-				if (deleted === 0) {
-					// if we didn't delete anything, we can increase the delay (double until we get to one tenth of the retention time)
-					audit_cleanup_delay = Math.min(audit_cleanup_delay << 1, audit_retention / 10);
-				} else {
-					// if we did delete something, update our updates since timestamp
-					updateLastRemoved(audit_store, last_key);
-				}
-				scheduleAuditCleanup(audit_cleanup_delay);
-			}
-			// we can run this pretty frequently since there is very little overhead to these queries
-		}, audit_cleanup_delay).unref();
+				// we can run this pretty frequently since there is very little overhead to these queries
+			}, audit_cleanup_delay).unref();
+		});
+		return resolution;
 	}
 	audit_store.scheduleAuditCleanup = scheduleAuditCleanup;
 	if (getWorkerIndex() === getWorkerCount() - 1) {
-		scheduleAuditCleanup(DEFAULT_AUDIT_CLEANUP_DELAY);
+		scheduleAuditCleanup();
 	}
 	if (getWorkerIndex() === 0 && !timestamp_errored) {
 		// make sure the timestamp is valid
@@ -157,8 +177,9 @@ export function removeAuditEntry(audit_store: any, key: number, value: any): Pro
 		// if it has blobs, and isn't in use from the main record, we need to delete them as well
 		audit_record = readAuditEntry(value);
 		const primary_store = audit_store.tableStores[audit_record.tableId];
-		if (primary_store.getEntry(audit_record.recordId).version !== audit_record.version) {
-			// if the versions don't match, then this should be the only/last reference to any blob
+		const entry = primary_store?.getEntry(audit_record.recordId);
+		if (!entry || entry.version !== audit_record.version || !entry.value) {
+			// if the versions don't match or the record has been removed/null-ed, then this should be the only/last reference to any blob
 			decodeFromDatabase(() => deleteBlobsInObject(audit_record.getValue(primary_store)), primary_store.rootStore);
 		}
 	}
@@ -169,7 +190,7 @@ export function removeAuditEntry(audit_store: any, key: number, value: any): Pro
 		audit_record = audit_record || readAuditEntry(value);
 		const table_id = audit_record.tableId;
 		const primary_store = audit_store.tableStores[audit_record.tableId];
-		if (primary_store.getEntry(audit_record.recordId).version === audit_record.version)
+		if (primary_store?.getEntry(audit_record.recordId).version === audit_record.version)
 			audit_store.deleteCallbacks?.[table_id]?.(audit_record.recordId, audit_record.version);
 	}
 	return audit_store.remove(key);
@@ -403,6 +424,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined) {
 		length = decoder.readInt();
 		const username_start = decoder.position;
 		const username_end = (decoder.position += length);
+		let value: any;
 		return {
 			type: EVENT_TYPES[action & 7],
 			tableId: table_id,
@@ -422,11 +444,15 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined) {
 				return start ? buffer.subarray(start, end) : buffer;
 			},
 			getValue(store, full_record?, audit_time?) {
-				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !full_record))
-					return decodeFromDatabase(
-						() => store.decoder.decode(buffer.subarray(decoder.position, end)),
-						store.rootStore
-					);
+				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !full_record)) {
+					if (!value) {
+						value = decodeFromDatabase(
+							() => store.decoder.decode(buffer.subarray(decoder.position, end)),
+							store.rootStore
+						);
+					}
+					return value;
+				}
 				if (action & HAS_PARTIAL_RECORD && audit_time) {
 					return getRecordAtTime(store.getEntry(this.recordId), audit_time, store);
 				} // TODO: If we store a partial and full record, may need to read both sequentially

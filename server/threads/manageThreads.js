@@ -137,7 +137,12 @@ function startWorker(path, options = {}) {
 			maxOldGenerationSizeMb: max_old_memory,
 			maxYoungGenerationSizeMb: max_young_memory,
 		},
-		execArgv: ['--enable-source-maps'],
+		execArgv: [
+			'--enable-source-maps',
+
+			// expose Node.js internal utils so jsLoader can use `decorateErrorStack()`
+			'--expose-internals'
+		],
 		argv: process.argv.slice(2),
 		// pass these in synchronously to the worker so it has them on startup:
 		workerData: {
@@ -215,6 +220,14 @@ async function restartWorkers(
 	start_replacement_threads = true
 ) {
 	if (isMainThread) {
+		try {
+			// we do this because it is possible for a component to chdir to itself, get re-deployed and then the cwd
+			// inode link is invalid and it can cause a lot of problems. But process.cwd() still returns the path, for
+			// some reason, so we need to reset it to the correct path.
+			process.chdir(process.cwd());
+		} catch (e) {
+			harper_logger.error('Unable to reestablish current working directory', e);
+		}
 		// This is here to prevent circular dependencies
 		if (start_replacement_threads) {
 			const { loadRootComponents } = require('../loadRootComponents');

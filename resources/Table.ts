@@ -47,7 +47,8 @@ import { recordAction, recordActionBinary } from './analytics';
 import { rebuildUpdateBefore } from './crdt';
 import { appendHeader } from '../server/serverHelpers/Headers';
 import fs from 'node:fs';
-import { Blob, deleteBlobsInObject } from './blob';
+import { Blob, deleteBlobsInObject, findBlobsInObject } from './blob';
+import { onStorageReclamation } from '../server/storageReclamation';
 
 type Attribute = {
 	name: string;
@@ -107,6 +108,8 @@ export interface Table {
 	sources: (new () => ResourceInterface)[];
 	Transaction: ReturnType<typeof makeTable>;
 }
+type ResidencyDefinition = number | string[] | void;
+
 // we default to the max age of the streams because this is the limit on the number of old transactions
 // we might need to reconcile deleted entries against.
 const DELETE_ENTRY_EXPIRATION =
@@ -133,6 +136,7 @@ export function makeTable(options) {
 		replicate,
 	} = options;
 	let { expirationMS: expiration_ms, evictionMS: eviction_ms, audit, trackDeletes: track_deletes } = options;
+	eviction_ms ??= 0;
 	let { attributes } = options;
 	if (!attributes) attributes = [];
 	const updateRecord = recordUpdater(primary_store, table_id, audit_store);
@@ -155,7 +159,8 @@ export function makeTable(options) {
 	let apply_to_sources = {};
 	let apply_to_sources_intermediate = {};
 	let cleanup_interval = 86400000;
-	let last_cleanup_interval: NodeJS.Timeout;
+	let cleanup_priority = 0;
+	let last_cleanup_interval: number;
 	let cleanup_timer: NodeJS.Timeout;
 	let property_resolvers: any;
 	let has_relationships = false;
@@ -177,6 +182,10 @@ export function makeTable(options) {
 	const MAX_PREFETCH_SEQUENCE = 10;
 	const MAX_PREFETCH_BUNDLE = 6;
 	if (audit) addDeleteRemoval();
+	onStorageReclamation(primary_store.env.path, (priority: number) => {
+		if (has_source_get) return scheduleCleanup(priority);
+	});
+
 	class TableResource extends Resource {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
@@ -203,6 +212,7 @@ export function makeTable(options) {
 		static propertyResolvers;
 		static userResolvers = {};
 		static sources = [];
+		static getResidencyById: (id: Id) => number | void;
 		static get expirationMS() {
 			return expiration_ms;
 		}
@@ -335,18 +345,18 @@ export function makeTable(options) {
 					switch (event.type) {
 						case 'put':
 							return should_revalidate_events
-								? resource._writeInvalidate(options)
+								? resource._writeInvalidate(value, options)
 								: resource._writeUpdate(value, true, options);
 						case 'patch':
 							return should_revalidate_events
-								? resource._writeInvalidate(options)
+								? resource._writeInvalidate(value, options)
 								: resource._writeUpdate(value, false, options);
 						case 'delete':
 							return resource._writeDelete(options);
 						case 'publish':
 							return resource._writePublish(value, options);
 						case 'invalidate':
-							return resource._writeInvalidate(options);
+							return resource._writeInvalidate(value, options);
 						case 'relocate':
 							return resource._writeRelocate(options);
 						default:
@@ -801,13 +811,13 @@ export function makeTable(options) {
 			return dbis_db.get([Symbol.for('residency_by_id'), id]);
 		}
 
-		static setResidency(getResidency: (record: object, context: Context, previous_residency: string[]) => string[]) {
+		static setResidency(getResidency: (record: object, context: Context) => ResidencyDefinition) {
 			TableResource.getResidency = getResidency;
 		}
-		static setResidencyById(getResidencyById: (id: Id) => string[]) {
+		static setResidencyById(getResidencyById: (id: Id) => number | void) {
 			TableResource.getResidencyById = getResidencyById;
 		}
-		static getResidency(record: object, context: Context, previous_residency: string[]) {
+		static getResidency(record: object, context: Context) {
 			if (TableResource.getResidencyById) {
 				return TableResource.getResidencyById(record[primary_key]);
 			}
@@ -824,9 +834,9 @@ export function makeTable(options) {
 			if (count >= 0 && server.nodes) {
 				// if we are given a count, choose nodes and return them
 				const replicate_to = [server.hostname]; // start with ourselves, we should always be in the list
-				if (previous_residency) {
+				if (context.previousResidency) {
 					// if we have a previous residency, we should preserve it
-					replicate_to.push(...previous_residency.slice(0, count));
+					replicate_to.push(...context.previousResidency.slice(0, count));
 				} else {
 					// otherwise need to create a new list of nodes to replicate to, based on available nodes
 					// randomize this to ensure distribution of data
@@ -902,11 +912,8 @@ export function makeTable(options) {
 			}
 			if (this.getId() === null) {
 				if (query?.conditions) return this.search(query); // if there is a query, assume it was meant to be a root level query
-				const record_count = TableResource.getRecordCount();
 				return {
 					// basically a describe call
-					recordCount: record_count.recordCount,
-					estimatedRecordRange: record_count.estimatedRange,
 					records: './', // an href to the records themselves
 					name: table_name,
 					database: database_name,
@@ -1098,7 +1105,7 @@ export function makeTable(options) {
 		invalidate() {
 			this._writeInvalidate();
 		}
-		_writeInvalidate(options) {
+		_writeInvalidate(partial_record?: any, options?: any) {
 			const context = this.getContext();
 			const id = this.getId();
 			checkValidId(id);
@@ -1112,11 +1119,13 @@ export function makeTable(options) {
 				beforeIntermediate: apply_to_sources_intermediate.invalidate?.bind(this, context, id),
 				commit: (txn_time, existing_entry) => {
 					if (precedesExistingVersion(txn_time, existing_entry, options?.nodeId) <= 0) return;
-					let partial_record = null;
+					partial_record ??= null;
 					for (const name in indices) {
 						if (!partial_record) partial_record = {};
 						// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-						partial_record[name] = this.getProperty(name);
+						if (partial_record[name] === undefined) {
+							partial_record[name] = this.getProperty(name);
+						}
 					}
 					logger.trace?.(`Invalidating entry id: ${id}, timestamp: ${new Date(txn_time).toISOString()}`);
 
@@ -1196,12 +1205,9 @@ export function makeTable(options) {
 				previousResidency: this.getResidencyRecord(existing_entry.residencyId),
 				isRelocation: true,
 			};
-			const residency = this.getResidency(entry.value, context);
+			const residency = residencyFromFunction(this.getResidency(entry.value, context));
 			let residency_id: number;
 			if (residency) {
-				if (!Array.isArray(residency)) {
-					throw new Error('Residency must be an array, but was: ' + residency);
-				}
 				if (!residency.includes(server.hostname)) return; // if we aren't in the residency, we don't need to do anything, we are not responsible for storing this record
 				residency_id = getResidencyId(residency);
 			}
@@ -1369,6 +1375,7 @@ export function makeTable(options) {
 					let update_to_apply = record_update;
 
 					this.#saveMode = 0;
+					let omitLocalRecord = false;
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
@@ -1445,15 +1452,26 @@ export function makeTable(options) {
 					if (options?.residencyId != undefined) residency_id = options.residencyId;
 					else {
 						if (entry?.residencyId) context.previousResidency = TableResource.getResidencyRecord(entry.residencyId);
-						const residency = TableResource.getResidency(record_to_store, context);
+						const residency = residencyFromFunction(TableResource.getResidency(record_to_store, context));
 						if (residency) {
-							if (!Array.isArray(residency)) {
-								throw new Error('Residency must be an array, got: ' + residency);
-							}
 							if (!residency.includes(server.hostname)) {
-								// if we aren't in the residency, add ourselves.
-								// TODO: we probably want to allow this, but we need to write the partial record in the main table and the full record in the audit log
-								residency.push(server.hostname);
+								// if we aren't in the residency list, specify that our local record should be omitted or be partial
+								audit_record_to_store ??= record_to_store;
+								omitLocalRecord = true;
+								if (TableResource.getResidencyById) {
+									// complete omission of the record that doesn't belong here
+									record_to_store = undefined;
+								} else {
+									// store the partial record
+									record_to_store = null;
+									for (const name in indices) {
+										if (!record_to_store) {
+											record_to_store = {};
+										}
+										// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
+										record_to_store[name] = audit_record_to_store[name];
+									}
+								}
 							}
 						}
 						residency_id = getResidencyId(residency);
@@ -1471,7 +1489,13 @@ export function makeTable(options) {
 								? ', replaces entry from: ' + new Date(existing_entry.version).toISOString()
 								: ', new entry'
 						}`,
-						record_to_store
+						(() => {
+							try {
+								return JSON.stringify(record_to_store).slice(0, 100);
+							} catch (e) {
+								return '';
+							}
+						})()
 					);
 					updateIndices(id, existing_record, record_to_store);
 					const type = full_update ? 'put' : 'patch';
@@ -1481,9 +1505,10 @@ export function makeTable(options) {
 						record_to_store,
 						existing_entry,
 						txn_time,
-						0,
+						omitLocalRecord ? INVALIDATED : 0,
 						audit,
 						{
+							omitLocalRecord,
 							user: context?.user,
 							residencyId: residency_id,
 							expiresAt: expires_at,
@@ -2624,14 +2649,14 @@ export function makeTable(options) {
 		}
 		static getStorageStats() {
 			const storePath = primary_store.env.path;
-			const stats = fs.statfsSync(storePath);
+			const stats: any = fs.statfsSync?.(storePath) ?? {};
 			return {
 				available: stats.bavail * stats.bsize,
 				free: stats.bfree * stats.bsize,
 				size: stats.blocks * stats.bsize,
 			};
 		}
-		static getRecordCount(options) {
+		static async getRecordCount(options?: any) {
 			// iterate through the metadata entries to exclude their count and exclude the deletion counts
 			const entry_count = primary_store.getStats().entryCount;
 			const TIME_LIMIT = 1000 / 2; // one second time limit, enforced by seeing if we are halfway through at 500ms
@@ -2641,9 +2666,10 @@ export function makeTable(options) {
 			let record_count = 0;
 			let entries_scanned = 0;
 			let limit: number;
-			for (const { value } of primary_store.getRange({ start: true, lazy: true })) {
+			for (const { value } of primary_store.getRange({ start: true, lazy: true, snapshot: false })) {
 				if (value != null) record_count++;
 				entries_scanned++;
+				await rest();
 				if (!exact_count && entries_scanned < halfway && performance.now() - start > TIME_LIMIT) {
 					// it is taking too long, so we will just take this sample and a sample from the end to estimate
 					limit = entries_scanned;
@@ -2655,8 +2681,15 @@ export function makeTable(options) {
 				// entries and last thousand entries
 				const first_record_count = record_count;
 				record_count = 0;
-				for (const { value } of primary_store.getRange({ start: '\uffff', reverse: true, lazy: true, limit })) {
+				for (const { value } of primary_store.getRange({
+					start: '\uffff',
+					reverse: true,
+					lazy: true,
+					limit,
+					snapshot: false,
+				})) {
 					if (value != null) record_count++;
+					await rest();
 				}
 				const sample_size = limit * 2;
 				const record_rate = (record_count + first_record_count) / sample_size;
@@ -2990,7 +3023,7 @@ export function makeTable(options) {
 		if (TableResource.getResidencyById && options.ensureLoaded && context?.replicateFrom !== false) {
 			// this is a special case for when the residency can be determined from the id alone (hash-based sharding),
 			// allow for a fast path to load the record from the correct node
-			const residency = TableResource.getResidencyById(id);
+			const residency = residencyFromFunction(TableResource.getResidencyById(id));
 			if (residency) {
 				if (!residency.includes(server.hostname) && source_load) {
 					// this record is not on this node, so we shouldn't load it here
@@ -3448,6 +3481,35 @@ export function makeTable(options) {
 							const has_index_changes = updateIndices(id, existing_record, updated_record);
 							if (updated_record) {
 								apply_to_sources_intermediate.put?.(source_context, id, updated_record);
+								if (existing_entry) {
+									context.previousResidency = TableResource.getResidencyRecord(existing_entry.residencyId);
+								}
+								let auditRecord: any;
+								let omitLocalRecord = false;
+								let residencyId: number;
+								const residency = residencyFromFunction(TableResource.getResidency(updated_record, context));
+								if (residency) {
+									if (!residency.includes(server.hostname)) {
+										// if we aren't in the residency list, specify that our local record should be omitted or be partial
+										auditRecord = updated_record;
+										omitLocalRecord = true;
+										if (TableResource.getResidencyById) {
+											// complete omission of the record that doesn't belong here
+											updated_record = undefined;
+										} else {
+											// store the partial record
+											updated_record = null;
+											for (const name in indices) {
+												if (!updated_record) {
+													updated_record = {};
+												}
+												// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
+												updated_record[name] = auditRecord[name];
+											}
+										}
+									}
+									residencyId = getResidencyId(residency);
+								}
 								logger.trace?.(
 									`Writing resolved record from source with id: ${id}, timestamp: ${new Date(txn_time).toISOString()}`
 								);
@@ -3457,11 +3519,12 @@ export function makeTable(options) {
 									updated_record,
 									existing_entry,
 									txn_time,
-									0,
-									(audit && has_changes) || null,
-									{ user: source_context?.user, expiresAt: source_context.expiresAt },
+									omitLocalRecord ? INVALIDATED : 0,
+									(audit && (has_changes || omitLocalRecord)) || null,
+									{ user: source_context?.user, expiresAt: source_context.expiresAt, residencyId },
 									'put',
-									Boolean(invalidated)
+									Boolean(invalidated),
+									auditRecord
 								);
 							} else if (existing_entry) {
 								apply_to_sources_intermediate.delete?.(source_context, id);
@@ -3512,79 +3575,115 @@ export function makeTable(options) {
 			throw new ClientError('Can not specify replication confirmation without super user permissions', 403);
 		return true;
 	}
-	function scheduleCleanup() {
+	function scheduleCleanup(priority?: number): Promise<void> | void {
+		let run_immediately = false;
+		if (priority) {
+			// run immediately if there is a big increase in priority
+			if (priority - cleanup_priority > 1) run_immediately = true;
+			cleanup_priority = priority;
+		}
 		// Periodically evict expired records and deleted records searching for records who expiresAt timestamp is before now
-		if (cleanup_interval === last_cleanup_interval) return;
+		if (cleanup_interval === last_cleanup_interval && !run_immediately) return;
 		last_cleanup_interval = cleanup_interval;
 		if (getWorkerIndex() === getWorkerCount() - 1) {
 			// run on the last thread so we aren't overloading lower-numbered threads
 			if (cleanup_timer) clearTimeout(cleanup_timer);
 			if (!cleanup_interval) return;
-			const start_of_year = new Date();
-			start_of_year.setMonth(0);
-			start_of_year.setDate(1);
-			start_of_year.setHours(0);
-			start_of_year.setMinutes(0);
-			start_of_year.setSeconds(0);
-			// find the next scheduled run based on regular cycles from the beginning of the year (if we restart, this enables a good continuation of scheduling)
-			const next_scheduled =
-				Math.ceil((Date.now() - start_of_year.getTime()) / cleanup_interval) * cleanup_interval +
-				start_of_year.getTime();
-			const startNextTimer = (next_scheduled) => {
-				logger.trace?.(`Scheduled next cleanup scan at ${new Date(next_scheduled)}ms`);
-				// noinspection JSVoidFunctionReturnValueUsed
-				cleanup_timer = setTimeout(
-					() =>
-						(last_eviction_completion = last_eviction_completion.then(async () => {
-							// schedule the next run for when the next cleanup interval should occur (or now if it is in the past)
-							startNextTimer(Math.max(next_scheduled + cleanup_interval, Date.now()));
-							if (primary_store.rootStore.status !== 'open') {
-								clearTimeout(cleanup_timer);
-								return;
-							}
-							const MAX_CLEANUP_CONCURRENCY = 50;
-							const outstanding_cleanup_operations = new Array(MAX_CLEANUP_CONCURRENCY);
-							let cleanup_index = 0;
-							logger.info?.(`Starting cleanup scan for ${table_name}`);
-							try {
-								let count = 0;
-								// iterate through all entries to find expired records and deleted records
-								for (const entry of primary_store.getRange({
-									start: false,
-									snapshot: false, // we don't want to keep read transaction snapshots open
-									versions: true,
-									lazy: true, // only want to access metadata most of the time
-								})) {
-									const { key, value: record, version, expiresAt } = entry;
-									// if there is no auditing and we are tracking deletion, need to do cleanup of
-									// these deletion entries (audit has its own scheduled job for this)
-									let resolution;
-									if (record === null && !audit && version + DELETED_RECORD_EXPIRATION < Date.now()) {
-										// make sure it is still deleted when we do the removal
-										resolution = removeEntry(primary_store, entry, version);
-									} else if (expiresAt != undefined && expiresAt + eviction_ms < Date.now()) {
-										// evict!
-										resolution = TableResource.evict(key, record, version);
-										count++;
-									}
-									if (resolution) {
-										await outstanding_cleanup_operations[cleanup_index];
-										outstanding_cleanup_operations[cleanup_index] = resolution.catch((error) => {
-											logger.error?.('Cleanup error', error);
-										});
-										if (++cleanup_index >= MAX_CLEANUP_CONCURRENCY) cleanup_index = 0;
-									}
-									await rest();
+			return new Promise((resolve) => {
+				const start_of_year = new Date();
+				start_of_year.setMonth(0);
+				start_of_year.setDate(1);
+				start_of_year.setHours(0);
+				start_of_year.setMinutes(0);
+				start_of_year.setSeconds(0);
+				const next_interval = cleanup_interval / (1 + cleanup_priority);
+				// find the next scheduled run based on regular cycles from the beginning of the year (if we restart, this enables a good continuation of scheduling)
+				const next_scheduled = run_immediately
+					? Date.now()
+					: Math.ceil((Date.now() - start_of_year.getTime()) / next_interval) * next_interval + start_of_year.getTime();
+				const startNextTimer = (next_scheduled) => {
+					logger.trace?.(`Scheduled next cleanup scan at ${new Date(next_scheduled)}`);
+					// noinspection JSVoidFunctionReturnValueUsed
+					cleanup_timer = setTimeout(
+						() =>
+							(last_eviction_completion = last_eviction_completion.then(async () => {
+								// schedule the next run for when the next cleanup interval should occur (or now if it is in the past)
+								startNextTimer(Math.max(next_scheduled + cleanup_interval, Date.now()));
+								if (primary_store.rootStore.status !== 'open') {
+									clearTimeout(cleanup_timer);
+									return;
 								}
-								logger.info?.(`Finished cleanup scan for ${table_name}, evicted ${count} entries`);
-							} catch (error) {
-								logger.warn?.(`Error in cleanup scan for ${table_name}:`, error);
-							}
-						})),
-					Math.min(next_scheduled - Date.now(), 0x7fffffff) // make sure it can fit in 32-bit signed number
-				).unref(); // don't let this prevent closing the thread
-			};
-			startNextTimer(next_scheduled);
+								const MAX_CLEANUP_CONCURRENCY = 50;
+								const outstanding_cleanup_operations = new Array(MAX_CLEANUP_CONCURRENCY);
+								let cleanup_index = 0;
+								const evict_threshold =
+									Math.pow(cleanup_priority, 8) *
+									(env_mngr.get(CONFIG_PARAMS.STORAGE_RECLAMATION_EVICTIONFACTOR) ?? 100000);
+								const adjusted_eviction = eviction_ms / Math.pow(Math.max(cleanup_priority, 1), 4);
+								logger.info?.(
+									`Starting cleanup scan for ${table_name}, evict threshold ${evict_threshold}, adjusted eviction ${adjusted_eviction}ms`
+								);
+								function shouldEvict(expiresAt: number, version: number, metadataFlags: number, record: any) {
+									const evictWhen = expiresAt + adjusted_eviction - Date.now();
+									if (evictWhen < 0) return true;
+									else if (cleanup_priority) {
+										let size = primary_store.lastSize;
+										if (metadataFlags & HAS_BLOBS) {
+											findBlobsInObject(record, (blob) => {
+												if (blob.size) size += blob.size;
+											});
+										}
+										logger.trace?.(
+											`shouldEvict adjusted ${evictWhen} ${size}, ${(evictWhen * (expiresAt - version)) / size} < ${evict_threshold}`
+										);
+										// heuristic to determine if we should perform early eviction based on priority
+										return (evictWhen * (expiresAt - version)) / size < evict_threshold;
+									}
+									return false;
+								}
+
+								try {
+									let count = 0;
+									// iterate through all entries to find expired records and deleted records
+									for (const entry of primary_store.getRange({
+										start: false,
+										snapshot: false, // we don't want to keep read transaction snapshots open
+										versions: true,
+										lazy: true, // only want to access metadata most of the time
+									})) {
+										const { key, value: record, version, expiresAt, metadataFlags } = entry;
+										// if there is no auditing and we are tracking deletion, need to do cleanup of
+										// these deletion entries (audit has its own scheduled job for this)
+										let resolution: Promise<void>;
+										if (record === null && !audit && version + DELETED_RECORD_EXPIRATION < Date.now()) {
+											// make sure it is still deleted when we do the removal
+											resolution = removeEntry(primary_store, entry, version);
+										} else if (expiresAt != undefined && shouldEvict(expiresAt, version, metadataFlags, record)) {
+											// evict!
+											resolution = TableResource.evict(key, record, version);
+											count++;
+										}
+										if (resolution) {
+											await outstanding_cleanup_operations[cleanup_index];
+											outstanding_cleanup_operations[cleanup_index] = resolution.catch((error) => {
+												logger.error?.('Cleanup error', error);
+											});
+											if (++cleanup_index >= MAX_CLEANUP_CONCURRENCY) cleanup_index = 0;
+										}
+										await rest();
+									}
+									logger.info?.(`Finished cleanup scan for ${table_name}, evicted ${count} entries`);
+								} catch (error) {
+									logger.warn?.(`Error in cleanup scan for ${table_name}:`, error);
+								}
+								resolve(undefined);
+								cleanup_priority = 0; // reset the priority
+							})),
+						Math.min(next_scheduled - Date.now(), 0x7fffffff) // make sure it can fit in 32-bit signed number
+					).unref(); // don't let this prevent closing the thread
+				};
+				startNextTimer(next_scheduled);
+			});
 		}
 	}
 	function addDeleteRemoval() {
@@ -3635,12 +3734,31 @@ export function makeTable(options) {
 			}, RECORD_PRUNING_INTERVAL).unref();
 		}
 	}
+	function residencyFromFunction(shardOrResidencyList: ResidencyDefinition): string[] | void {
+		if (shardOrResidencyList == undefined) return;
+		if (Array.isArray(shardOrResidencyList)) return shardOrResidencyList;
+		if (typeof shardOrResidencyList === 'number') {
+			if (shardOrResidencyList >= 65536) throw new Error(`Shard id ${shardOrResidencyList} must be below 65536`);
+			const residencyList = server.shards?.get?.(shardOrResidencyList);
+			if (residencyList) {
+				logger.trace?.(`Shard ${shardOrResidencyList} mapped to ${residencyList.map((node) => node.name).join(', ')}`);
+				return residencyList.map((node) => node.name);
+			}
+			throw new Error(`Shard ${shardOrResidencyList} is not defined`);
+		}
+		throw new Error(
+			`Shard or residency list ${shardOrResidencyList} is not a valid type, must be a shard number or residency list of node hostnames`
+		);
+	}
 	function getResidencyId(owner_node_names) {
 		if (owner_node_names) {
-			const set_key = owner_node_names.join(','); // TODO: Translate this to node ids to create key
+			const set_key = owner_node_names.join(',');
 			let residency_id = dbis_db.get([Symbol.for('residency_by_set'), set_key]);
 			if (residency_id) return residency_id;
-			dbis_db.put([Symbol.for('residency_by_set'), set_key], (residency_id = Math.floor(Math.random() * 0x7fffffff)));
+			dbis_db.put(
+				[Symbol.for('residency_by_set'), set_key],
+				(residency_id = Math.floor(Math.random() * 0x7fff0000) + 0xffff)
+			);
 			dbis_db.put([Symbol.for('residency_by_id'), residency_id], owner_node_names);
 			return residency_id;
 		}

@@ -157,6 +157,12 @@
 			},
 			{
 				"attribute": "routes"
+			},
+			{
+				"attribute": "revoked_certificates"
+			},
+			{
+				"attribute": "shard"
 			}
 		]
 	},

@@ -1171,10 +1171,10 @@ async function getKey(req) {
 
 	if (name === '.jwtPrivate') {
 		const jwt = await getJWTRSAKeys();
-		return jwt.private_key;
+		return jwt.privateKey;
 	} else if (name === '.jwtPublic') {
 		const jwt = await getJWTRSAKeys();
-		return jwt.public_key;
+		return jwt.publicKey;
 	} else if (private_keys.get(name)) {
 		return private_keys.get(req.name);
 	} else {

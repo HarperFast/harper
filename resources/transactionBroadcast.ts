@@ -123,6 +123,9 @@ function notifyFromTransactionData(subscriptions) {
 		let matching_key = keyArrayToString(record_id);
 		let ancestor_level = 0;
 		do {
+			// we iterate through the key hierarchy, notifying all subscribers for each key,
+			// so for an id like resource/foo/bar, we notify subscribers for resource/foo/bar, resource/foo/, resource/foo, resource/, and resource
+			// this allows for efficient subscriptions to children ids/topics
 			const key_subscriptions = table_subscriptions.get(matching_key);
 			if (key_subscriptions) {
 				for (const subscription of key_subscriptions) {
@@ -161,10 +164,12 @@ function notifyFromTransactionData(subscriptions) {
 			}
 			if (matching_key == null) break;
 			const last_slash = matching_key.lastIndexOf?.('/', matching_key.length - 2);
+			if (last_slash !== matching_key.length - 1) {
+				ancestor_level++; // don't increase the ancestor level for this going from resource/ to resource
+			}
 			if (last_slash > -1) {
-				matching_key = matching_key.slice(0, last_slash);
+				matching_key = matching_key.slice(0, last_slash + 1);
 			} else matching_key = null;
-			ancestor_level++;
 		} while (true);
 	}
 	if (subscribers_with_txns) {

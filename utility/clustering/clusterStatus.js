@@ -13,7 +13,7 @@ const { parentPort } = require('worker_threads');
 const { onMessageByType } = require('../../server/threads/manageThreads');
 const { getThisNodeName } = require('../../server/replication/replicator');
 const { requestClusterStatus } = require('../../server/replication/subscriptionManager');
-const { getReplicationSharedStatus } = require('../../server/replication/knownNodes');
+const { getReplicationSharedStatus, getHDBNodeTable } = require('../../server/replication/knownNodes');
 const {
 	CONFIRMATION_STATUS_POSITION,
 	RECEIVED_VERSION_POSITION,
@@ -71,6 +71,10 @@ async function clusterStatus() {
 			response = requestClusterStatus();
 		}
 		response.node_name = getThisNodeName();
+		// If it doesn't exist and or needs to be updated.
+		const this_node = getHDBNodeTable().primaryStore.get(response.node_name);
+		if (this_node?.shard) response.shard = this_node.shard;
+		if (this_node?.url) response.url = this_node.url;
 		response.is_enabled = true; // if we have replication, replication is enabled
 		return response;
 	}

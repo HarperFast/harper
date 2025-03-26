@@ -747,101 +747,105 @@ describe('test MQTT connections and commands', () => {
 			client.on('close', resolve);
 		});
 	});
-	it('subscribe to single-level wildcard/full table', async function () {
-		const topic_expectations = {
-			//'SimpleRecord/+': ['SimpleRecord/', 'SimpleRecord/44', 'SimpleRecord/47'],
-			'SimpleRecord/+/33': ['SimpleRecord/sub/33'],
-			'SimpleRecord/sub/+': ['SimpleRecord/sub/33'],
-			'SimpleRecord/sub/+/33': ['SimpleRecord/sub/sub2/33'],
-			'SimpleRecord/+/+/+': ['SimpleRecord/sub/sub2/33'],
-			'SimpleRecord/+/sub2/+': ['SimpleRecord/sub/sub2/33'],
-			'SimpleRecord/+/+': ['SimpleRecord/sub/33'],
-			'SimpleRecord/sub/#': ['SimpleRecord/sub/33', 'SimpleRecord/sub/sub2/33'],
-			'SimpleRecord/+/sub2/#': ['SimpleRecord/sub/sub2/33'],
+
+	const wildcardsTests = (splitSegments) =>
+		async function () {
+			const topic_expectations = {
+				//'SimpleRecord/+': ['SimpleRecord/', 'SimpleRecord/44', 'SimpleRecord/47'],
+				'SimpleRecord/+/33': ['SimpleRecord/sub/33'],
+				'SimpleRecord/sub/+': ['SimpleRecord/sub/33'],
+				'SimpleRecord/sub/+/33': ['SimpleRecord/sub/sub2/33'],
+				'SimpleRecord/+/+/+': ['SimpleRecord/sub/sub2/33'],
+				'SimpleRecord/+/sub2/+': ['SimpleRecord/sub/sub2/33'],
+				'SimpleRecord/+/+': ['SimpleRecord/sub/33'],
+				'SimpleRecord/sub/#': ['SimpleRecord/sub/33', 'SimpleRecord/sub/sub2/33'],
+				'SimpleRecord/+/sub2/#': ['SimpleRecord/sub/sub2/33'],
+			};
+			for (const subscription_topic in topic_expectations) {
+				let expected_topics = topic_expectations[subscription_topic];
+				await new Promise((resolve, reject) => {
+					client2.subscribe(subscription_topic, function (err) {
+						if (err) reject(err);
+						else {
+							resolve();
+						}
+					});
+				});
+				let message_count = 0;
+				let message_listener;
+				await new Promise((resolve, reject) => {
+					client2.on(
+						'message',
+						(message_listener = (topic, payload, packet) => {
+							assert(expected_topics.includes(topic));
+							let record = JSON.parse(payload);
+							assert(record.name);
+							if (++message_count == expected_topics.length) resolve();
+						})
+					);
+					client2.publish(
+						'SimpleRecord/44',
+						JSON.stringify({
+							name: 'This is a test 1',
+						}),
+						{
+							retain: false,
+							qos: 1,
+						}
+					);
+					client2.publish(
+						'SimpleRecord/sub/33',
+						JSON.stringify({
+							name: 'This is a test to a sub-topic',
+						}),
+						{
+							retain: false,
+							qos: 1,
+						}
+					);
+					client2.publish(
+						'SimpleRecord/sub/sub2/33',
+						JSON.stringify({
+							name: 'This is a test to a deeper sub-topic',
+						}),
+						{
+							retain: false,
+							qos: 1,
+						}
+					);
+
+					client.publish(
+						'SimpleRecord/47',
+						JSON.stringify({
+							name: 'This is a test 2',
+						}),
+						{
+							retain: true,
+							qos: 1,
+						}
+					);
+
+					client.publish(
+						'SimpleRecord/',
+						JSON.stringify({
+							name: 'This is a test to the generic table topic',
+						}),
+						{
+							qos: 1,
+						}
+					);
+				});
+				client2.off('message', message_listener);
+				await new Promise((resolve, reject) => {
+					client2.unsubscribe(subscription_topic, function (err) {
+						if (err) reject(err);
+						else resolve();
+					});
+				});
+			}
 		};
-		for (const subscription_topic in topic_expectations) {
-			let expected_topics = topic_expectations[subscription_topic];
-			await new Promise((resolve, reject) => {
-				client2.subscribe(subscription_topic, function (err) {
-					if (err) reject(err);
-					else {
-						resolve();
-					}
-				});
-			});
-			let message_count = 0;
-			let message_listener;
-			await new Promise((resolve, reject) => {
-				client2.on(
-					'message',
-					(message_listener = (topic, payload, packet) => {
-						assert(expected_topics.includes(topic));
-						let record = JSON.parse(payload);
-						assert(record.name);
-						if (++message_count == expected_topics.length) resolve();
-					})
-				);
-				client2.publish(
-					'SimpleRecord/44',
-					JSON.stringify({
-						name: 'This is a test 1',
-					}),
-					{
-						retain: false,
-						qos: 1,
-					}
-				);
-				client2.publish(
-					'SimpleRecord/sub/33',
-					JSON.stringify({
-						name: 'This is a test to a sub-topic',
-					}),
-					{
-						retain: false,
-						qos: 1,
-					}
-				);
-				client2.publish(
-					'SimpleRecord/sub/sub2/33',
-					JSON.stringify({
-						name: 'This is a test to a deeper sub-topic',
-					}),
-					{
-						retain: false,
-						qos: 1,
-					}
-				);
-
-				client.publish(
-					'SimpleRecord/47',
-					JSON.stringify({
-						name: 'This is a test 2',
-					}),
-					{
-						retain: true,
-						qos: 1,
-					}
-				);
-
-				client.publish(
-					'SimpleRecord/',
-					JSON.stringify({
-						name: 'This is a test to the generic table topic',
-					}),
-					{
-						qos: 1,
-					}
-				);
-			});
-			client2.off('message', message_listener);
-			await new Promise((resolve, reject) => {
-				client2.unsubscribe(subscription_topic, function (err) {
-					if (err) reject(err);
-					else resolve();
-				});
-			});
-		}
-	});
+	it('subscribe to single-level wildcard/full table with split segments', wildcardsTests(true));
+	it('subscribe to single-level wildcard/full table', wildcardsTests(false));
 	it('subscribe to multi-level wildcard/full table', async function () {
 		await new Promise((resolve, reject) => {
 			client2.subscribe('SimpleRecord/#', function (err) {

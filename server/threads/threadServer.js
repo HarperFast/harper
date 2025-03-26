@@ -436,7 +436,7 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 		if (secure) {
 			// check if we want to enable HTTP/2; operations server doesn't use HTTP/2 because it doesn't allow the
 			// ALPNCallback to work with our custom protocol for replication
-			http2 = env.get(server_prefix + '_http2') ?? !is_operations_server;
+			http2 = env.get(server_prefix + '_http2');
 			// If we are in secure mode, we use HTTP/2 (createSecureServer from http2), with back-compat support
 			// HTTP/1. We do not use HTTP/2 for insecure mode for a few reasons: browsers do not support insecure
 			// HTTP/2. We have seen slower performance with HTTP/2, when used for directly benchmarking. We have
@@ -698,7 +698,7 @@ Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
 		return (
 			'connection' in this.headers &&
 			'upgrade' in this.headers &&
-			this.headers.connection.includes('Upgrade') &&
+			this.headers.connection.toLowerCase().includes('upgrade') &&
 			this.headers.upgrade.toLowerCase() == 'websocket'
 		);
 	},

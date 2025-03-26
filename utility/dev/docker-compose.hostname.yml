@@ -1,0 +1,56 @@
+services:
+  harper1:
+    extends:
+      service: harper
+      file: utility/dev/docker-compose.base.yml
+    networks:
+      harperdb:
+    environment:
+      REPLICATION_URL: wss://harper1:9933
+    ports:
+      - "49925:9925"
+      - "49926:9926"
+  harper2:
+    extends:
+      service: harper
+      file: utility/dev/docker-compose.base.yml
+    networks:
+      harperdb:
+    environment:
+      REPLICATION_URL: wss://harper2:9933
+    ports:
+      - "49935:9925"
+      - "49936:9926"
+  harper3:
+    extends:
+      service: harper
+      file: utility/dev/docker-compose.base.yml
+    networks:
+      harperdb:
+    environment:
+      REPLICATION_URL: wss://harper3:9933
+    ports:
+      - "49945:9925"
+      - "49946:9926"
+  replication_setup_2:
+    build:
+      dockerfile: Dockerfile
+      context: utility/dev/replication_setup
+    command: ["harper1", "harper2", "1"]
+    networks:
+      harperdb:
+    depends_on:
+      - harper1
+      - harper2
+  replication_setup_3:
+    build:
+      dockerfile: Dockerfile
+      context: utility/dev/replication_setup
+    command: ["harper3", "harper1", "2"]
+    networks:
+      harperdb:
+    depends_on:
+      - harper1
+      - harper3
+networks:
+  harperdb:

@@ -4,10 +4,7 @@ import { isMainThread } from 'worker_threads';
 import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager';
 import { PACKAGE_ROOT } from '../utility/packageUtils';
-import {
-	CONFIG_PARAMS,
-	HDB_ROOT_DIR_NAME,
-} from '../utility/hdbTerms';
+import { CONFIG_PARAMS, HDB_ROOT_DIR_NAME } from '../utility/hdbTerms';
 import * as graphql_handler from '../resources/graphql';
 import * as graphql_query_handler from '../server/graphqlQuerying';
 import * as roles from '../resources/roles';
@@ -16,6 +13,7 @@ import * as login from '../resources/login';
 import * as REST from '../server/REST';
 import * as fastify_routes_handler from '../server/fastifyRoutes';
 import * as staticFiles from '../server/static';
+import * as loadEnv from '../resources/loadEnv';
 import fg from 'fast-glob';
 import { watchDir, getWorkerIndex } from '../server/threads/manageThreads';
 import harper_logger from '../utility/logging/harper_logger';
@@ -91,6 +89,7 @@ const TRUSTED_RESOURCE_LOADERS = {
 	replication,
 	authentication: auth,
 	mqtt,
+	loadEnv,
 	/*
 	static: ...
 	login: ...
@@ -174,11 +173,14 @@ export async function loadComponent(
 		} else {
 			config = DEFAULT_CONFIG;
 		}
+
 		const harperdb_module = join(folder, 'node_modules', 'harperdb');
 		try {
 			if (
 				isMainThread &&
-				(is_root || (existsSync(harperdb_module) && realpathSync(PACKAGE_ROOT) !== realpathSync(harperdb_module)))
+				(is_root ||
+					((existsSync(harperdb_module) || !folder.startsWith(getHdbBasePath())) &&
+						(!existsSync(harperdb_module) || realpathSync(PACKAGE_ROOT) !== realpathSync(harperdb_module))))
 			) {
 				// if the app has a harperdb module, we symlink it to the main app so it can be used in the main app (with the running modules)
 				rmSync(harperdb_module, { recursive: true, force: true });
@@ -359,11 +361,13 @@ export async function loadComponent(
 								if (resources.isWorker) await extension_module.handleDirectory?.(url_path, path, resources);
 							}
 						} catch (error) {
-							error.message = `Could not load ${dirent.isFile() ? 'file' : 'directory'} '${path}'${
-								component_config.module ? " using '" + component_config.module + "'" : ''
-							} for application '${folder}' due to: ${error.message}`;
+							const message = `Could not load ${dirent.isFile() ? 'file' : 'directory'} '${path}'${
+								component_config.module ? ` using '${component_config.module}'` : ''
+							} for application '${folder}' due to:\n`;
+							error.message = `${message}${error.message}`;
+							error.stack = `${message}${error.stack}`;
 							error_reporter?.(error);
-							(getWorkerIndex() === 0 ? console : harper_logger).error(error);
+							harper_logger.error(error);
 							resources.set(component_config.path || '/', new ErrorResource(error));
 							component_errors.set(is_root ? component_name : basename(folder), error.message);
 						}

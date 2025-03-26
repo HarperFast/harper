@@ -3,10 +3,11 @@
 //this is to avoid a circular dependency with insert.  insert needs the describe all function but so does the main schema module.  as such the functions have been broken out into a separate module.
 const search = require('./search');
 const logger = require('../utility/logging/harper_logger');
-const validator = require('../validation/schema_validator');
+const { validateBySchema } = require('../validation/validationWrapper');
+const Joi = require('joi');
 const crypto_hash = require('../security/cryptoHash');
 const hdb_utils = require('../utility/common_utils');
-const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const { handleHDBError, hdb_errors, ClientError } = require('../utility/errors/hdbError');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 const env_mngr = require('../utility/environment/environmentManager');
 env_mngr.initSync();
@@ -125,10 +126,15 @@ async function descTable(describe_table_object, attr_perms) {
 		table_attr_perms = describe_table_object.hdb_user?.role?.permission[schema]?.tables[table]?.attribute_permissions;
 	}
 
-	let validation = validator.describe_table(describe_table_object);
-	if (validation) {
-		throw validation;
-	}
+	const validation = validateBySchema(
+		describe_table_object,
+		Joi.object({
+			database: Joi.string(),
+			table: Joi.string().required(),
+			exact_count: Joi.boolean().strict(),
+		})
+	);
+	if (validation) throw new ClientError(validation.message);
 
 	let databases = getDatabases();
 	let tables = databases[schema];
@@ -207,7 +213,7 @@ async function descTable(describe_table_object, attr_perms) {
 		table_result.clustering_stream_name = crypto_hash.createNatsTableStreamName(table_result.schema, table_result.name);
 
 	try {
-		const record_count = table_obj.getRecordCount({ exactCount: describe_table_object.exact_count === 'true' });
+		const record_count = await table_obj.getRecordCount({ exactCount: !!describe_table_object.exact_count });
 		table_result.record_count = record_count.recordCount;
 		table_result.table_size = table_obj.getSize();
 		table_result.db_audit_size = table_obj.getAuditSize();
@@ -238,10 +244,14 @@ async function descTable(describe_table_object, attr_perms) {
 async function describeSchema(describe_schema_object) {
 	hdb_utils.transformReq(describe_schema_object);
 
-	let validation_msg = validator.schema_object(describe_schema_object);
-	if (validation_msg) {
-		throw validation_msg;
-	}
+	const validation = validateBySchema(
+		describe_schema_object,
+		Joi.object({
+			database: Joi.string(),
+			exact_count: Joi.boolean().strict(),
+		})
+	);
+	if (validation) throw new ClientError(validation.message);
 
 	let schema_perms;
 

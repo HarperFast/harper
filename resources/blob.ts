@@ -34,7 +34,7 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms';
 import { join, dirname } from 'path';
 import logger from '../utility/logging/logger';
 import type { LMDBStore } from 'lmdb';
-import { asyncSerialization } from '../server/serverHelpers/contentTypes';
+import { asyncSerialization, hasAsyncSerialization } from '../server/serverHelpers/contentTypes';
 
 type StorageInfo = {
 	storageIndex: number;
@@ -50,6 +50,7 @@ type StorageInfo = {
 	start?: number;
 	end?: number;
 	saving?: Promise<void>;
+	asString?: string;
 };
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
 // We want to keep the file path private (but accessible to the extension)
@@ -111,14 +112,21 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 	toJSON() {
 		if (this.type?.startsWith('text')) {
 			const storageInfo = storageInfoForBlob.get(this);
-			let { start, end, contentBuffer } = storageInfo;
+			let { start, end, contentBuffer, asString } = storageInfo;
+			if (asString) {
+				return asString;
+			}
 			if (contentBuffer && (end !== undefined || start !== undefined)) {
 				contentBuffer = contentBuffer.subarray(start ?? 0, end ?? storageInfo.contentBuffer.length);
 			}
 			// if we have a content buffer we can return
-			if (contentBuffer) return contentBuffer.toString();
-			asyncSerialization(this.bytes().then((buffer) => (storageInfo.contentBuffer = buffer)));
-			return '';
+			if (contentBuffer) {
+				storageInfo.asString = contentBuffer.toString();
+				return storageInfo.asString;
+			}
+			if (hasAsyncSerialization())
+				asyncSerialization(this.bytes().then((buffer) => (storageInfo.contentBuffer = buffer)));
+			return `[blob: ${this.type}, ${this.size} bytes]`;
 		}
 		return {
 			description:
@@ -233,6 +241,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 		let watcher: any;
 		let timer: any;
 		let isBeingWritten: boolean;
+		let previouslyFinishedWriting = false;
 		const blob = this;
 
 		return new ReadableStream({
@@ -266,6 +275,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 				return new Promise(function readMore(resolve: () => void, reject: (error: Error) => void) {
 					function onError(error) {
 						close(fd);
+						clearTimeout(timer);
 						if (watcher) watcher.close();
 						reject(error);
 						blob.#onError?.forEach((callback) => callback(error));
@@ -313,19 +323,35 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 								HEADER.set(buffer);
 								size = Number(headerView.getBigUint64(0) & 0xffffffffffffn);
 								if (size > totalContentRead) {
-									if (isBeingWritten !== false) {
+									if (checkIfIsBeingWritten()) {
 										// the file is not finished being written, watch the file for changes to resume reading
-										timer = setTimeout(() => {
-											onError(new Error('File read timed out'));
-										}, FILE_READ_TIMEOUT).unref();
-										watcher = watch(filePath, { persistent: false }, () => {
-											clearTimeout(timer);
-											watcher.close();
-											checkIfIsBeingWritten();
-											readMore(resolve, reject);
-										});
+										if (watcher) {
+											// already watching, but add a timer to make sure we don't wait forever
+											timer = setTimeout(() => {
+												onError(new Error('File read timed out'));
+											}, FILE_READ_TIMEOUT).unref();
+										} else {
+											// set up a watcher to be notified of file changes
+											watcher = watch(filePath, { persistent: false }, () => {
+												watcher.close();
+												watcher = null;
+												if (timer) {
+													// if we are waiting for a timeout, that means we finished another read and we can proceed with the next one=
+													clearTimeout(timer); // clear it
+													timer = null;
+													readMore(resolve, reject);
+												}
+											});
+											readMore(resolve, reject); // immediately try to read again in case there was a change before we started watching
+										}
 									} else {
-										onError(new Error('Blob is incomplete'));
+										if (previouslyFinishedWriting) {
+											// we verified that the blob was finished writing before the last read, we can confidently say it is incomplete
+											onError(new Error('Blob is incomplete'));
+										} else {
+											previouslyFinishedWriting = true;
+											readMore(resolve, reject); // try again (possibly for the last time) now that we know the status of the file writing
+										}
 										// do NOT close the controller, or the error won't propagate to the stream
 									}
 									return;
@@ -429,7 +455,6 @@ export function deleteBlob(blob: Blob): void {
 	// do we even need to check for completion here?
 	const filePath = getFilePathForBlob(blob);
 	if (!filePath) {
-		logger.debug?.('No file path for blob, can not delete');
 		return;
 	}
 	setTimeout(() => {
@@ -850,15 +875,29 @@ export function decodeFromDatabase(callback: () => void, rootStore: LMDBStore) {
  * @param object
  */
 export function deleteBlobsInObject(object) {
+	findBlobsInObject(object, (object) => {
+		deleteBlob(object);
+	});
+}
+
+/**
+ * Find all blobs in an object, recursively searching for Blob instances
+ * @param object
+ * @param callback
+ */
+export function findBlobsInObject(object: any, callback: (blob: Blob) => void) {
 	if (object instanceof Blob) {
 		// eslint-disable-next-line
 		// @ts-ignore
-		deleteBlob(object);
-	} else if (object.constructor === Object || Array.isArray(object)) {
-		// recursively find and delete blobs in the object
+		callback(object);
+	} else if (Array.isArray(object)) {
+		for (const value of object) {
+			if (typeof value === 'object' && value) findBlobsInObject(value, callback);
+		}
+	} else if (object.constructor === Object) {
 		for (const key in object) {
 			const value = object[key];
-			if (typeof value === 'object') deleteBlobsInObject(object[key]);
+			if (typeof value === 'object' && value) findBlobsInObject(object[key], callback);
 		}
 	}
 }

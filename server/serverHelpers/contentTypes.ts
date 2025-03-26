@@ -139,8 +139,9 @@ media_types.set('text/event-stream', {
 //'multipart/form-data'
 media_types.set('application/x-www-form-urlencoded', {
 	deserialize(data) {
-		const object = {};
-		for (const [key, value] of new URLSearchParams(data)) {
+		const stringData = Buffer.isBuffer(data) ? data.toString('utf8') : data;
+		const object: Record<string, string | string[]> = {};
+		for (const [key, value] of new URLSearchParams(stringData)) {
 			if (object.hasOwnProperty(key)) {
 				// in case there are multiple query params with the same name, convert them to an array
 				const last = object[key];
@@ -148,6 +149,7 @@ media_types.set('application/x-www-form-urlencoded', {
 				else object.key = [last, value];
 			} else object[key] = value;
 		}
+		return object;
 	},
 	serialize(data) {
 		const usp = new URLSearchParams();
@@ -404,7 +406,7 @@ export function serialize(response_data, request, response_object) {
 	return response_body;
 }
 
-let asyncSerializations: Promise<void>;
+let asyncSerializations: Promise<void>[];
 /**
  * Serialize a message, may be use multiple times (like with WebSockets)
  * @param message
@@ -450,6 +452,9 @@ export function serializeMessage(
 export function asyncSerialization(promiseToSerialize: Promise<any>) {
 	if (asyncSerializations) asyncSerializations.push(promiseToSerialize);
 	else throw new Error('Unable to serialize asynchronously');
+}
+export function hasAsyncSerialization() {
+	return !!asyncSerializations;
 }
 
 function streamToBuffer(stream: Readable): Promise<Buffer> {

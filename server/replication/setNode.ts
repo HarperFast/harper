@@ -24,6 +24,8 @@ const validation_schema = Joi.object({
 	verify_tls: Joi.boolean(),
 	replicates: Joi.boolean(),
 	subscriptions: Joi.array(),
+	revoked_certificates: Joi.array(),
+	shard: Joi.number(),
 });
 
 /**
@@ -106,6 +108,8 @@ export async function setNode(req: object) {
 		cert_auth,
 		authorization: req.retain_authorization ? req.authorization : null,
 	};
+	if (get(CONFIG_PARAMS.REPLICATION_SHARD) !== undefined)
+		target_add_node_obj.shard = get(CONFIG_PARAMS.REPLICATION_SHARD);
 
 	if (req.subscriptions) {
 		target_add_node_obj.subscriptions = req.subscriptions.map(reverseSubscription);
@@ -175,6 +179,8 @@ export async function setNode(req: object) {
 		node_record.start_time = typeof req.start_time === 'string' ? new Date(req.start_time).getTime() : req.start_time;
 	}
 	if (req.retain_authorization) node_record.authorization = req.authorization;
+	if (req.revoked_certificates) node_record.revoked_certificates = req.revoked_certificates;
+	if (req.shard !== undefined) node_record.shard = req.shard;
 
 	if (node_record.replicates) {
 		const this_node = {
@@ -183,6 +189,8 @@ export async function setNode(req: object) {
 			replicates: true,
 			subscriptions: null,
 		};
+		if (get(CONFIG_PARAMS.REPLICATION_SHARD) !== undefined) this_node.shard = get(CONFIG_PARAMS.REPLICATION_SHARD);
+
 		if (req.retain_authorization) this_node.authorization = req.authorization;
 		if (req.start_time) this_node.start_time = req.start_time;
 		await ensureNode(getThisNodeName(), this_node);
@@ -233,6 +241,7 @@ export async function addNodeBack(req) {
 
 	if (req.start_time) node_record.start_time = req.start_time;
 	if (req.authorization) node_record.authorization = req.authorization;
+	if (req.shard !== undefined) node_record.shard = req.shard;
 
 	const rep_ca = await getReplicationCertAuth();
 	if (node_record.replicates) {
@@ -242,6 +251,8 @@ export async function addNodeBack(req) {
 			replicates: true,
 			subscriptions: null,
 		};
+		if (get(CONFIG_PARAMS.REPLICATION_SHARD) !== undefined) this_node.shard = get(CONFIG_PARAMS.REPLICATION_SHARD);
+
 		if (req.start_time) this_node.start_time = req.start_time;
 		if (req.authorization) this_node.authorization = req.authorization;
 		await ensureNode(getThisNodeName(), this_node);

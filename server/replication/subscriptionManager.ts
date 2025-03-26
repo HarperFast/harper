@@ -50,7 +50,8 @@ export async function startOnMainThread(options) {
 	// but don't await this because this start function has to finish before the threads can start
 	whenThreadsStarted.then(async () => {
 		const nodes = [];
-		for await (const node of databases.system.hdb_nodes.search([])) {
+		// if we are getting notified of system table updates, hdb_nodes could be absent
+		for await (const node of databases.system.hdb_nodes?.search([]) || []) {
 			nodes.push(node);
 		}
 		for (const route of iterateRoutes(options)) {
@@ -58,14 +59,20 @@ export async function startOnMainThread(options) {
 				const replicate_all = !route.subscriptions;
 				if (replicate_all) {
 					const this_name = getThisNodeName();
-					// If it doesn't exist and hasn't been created. Note that this will be null if it has previously been deleted,
-					// and we don't want to recreate nodes for deleted nodes
-					if (getHDBNodeTable().primaryStore.get(this_name) === undefined)
-						await ensureNode(this_name, {
-							name: this_name,
-							url: options.url ?? getThisNodeUrl(),
-							replicates: true,
-						});
+					// If it doesn't exist and or needs to be updated.
+					const existing = getHDBNodeTable().primaryStore.get(this_name);
+					if (existing !== null) {
+						// if this was null it has previously been deleted, and we don't want to recreate nodes for deleted nodes
+						const url = options.url ?? getThisNodeUrl();
+						if (existing === undefined || existing.url !== url || existing.shard !== options.shard) {
+							await ensureNode(this_name, {
+								name: this_name,
+								url,
+								shard: options.shard,
+								replicates: true,
+							});
+						}
+					}
 				}
 				const replicate_system = route.trusted !== false;
 				if (replicate_all) {
@@ -471,6 +478,12 @@ export async function ensureNode(name: string, node) {
 				break;
 			}
 		}
+
+		if (Array.isArray(node.revoked_certificates)) {
+			const existing_revoked = existing.revoked_certificates || [];
+			node.revoked_certificates = [...new Set([...existing_revoked, ...node.revoked_certificates])];
+		}
+
 		logger.info(`Updating node ${name} at ${node.url}`);
 		await table.patch(node);
 	}

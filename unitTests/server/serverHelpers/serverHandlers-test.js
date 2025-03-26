@@ -295,23 +295,17 @@ describe('Test serverHandlers.js module ', () => {
 			serverHandlers_rw.authHandler(test_req, {}, (err, data) => {
 				assert.ok(data === undefined, 'Should not return anything for valid auth');
 				assert.ok(test_req.body.hdb_user === TEST_USER, 'Method should assign user to request body');
-				assert.ok(
-					test_req.body.hdb_auth_header === TEST_REQ.headers.authorization,
-					'Method should assign auth header to body'
-				);
 			});
 		});
 
 		it('Should pass auth for valid request for create auth tokens operation', () => {
 			const test_req = test_utils.deepClone(TEST_AUTH_REQ);
+			test_req.body.username = 'norm';
+			test_req.body.password = 'let-me-in';
 
 			serverHandlers_rw.authHandler(test_req, {}, (err, data) => {
 				assert.ok(data === undefined, 'Should not return anything for valid auth');
 				assert.ok(test_req.body.hdb_user === null, 'Method should assign null for hdb_user on request body');
-				assert.ok(
-					test_req.body.hdb_auth_header === TEST_REQ.headers.authorization,
-					'Method should assign auth header to body'
-				);
 			});
 		});
 

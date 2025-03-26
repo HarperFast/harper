@@ -3,11 +3,14 @@ const test_utils = require('../test_utils');
 test_utils.preTestPrep();
 const assert = require('assert');
 const rewire = require('rewire');
+const sinon = require('sinon');
 const auth = rewire('../../security/fastifyAuth');
 const token_auth = rewire('../../security/tokenAuthentication');
 const password_function = require('../../utility/password');
 const hdb_error = require('../../utility/errors/hdbError').handleHDBError;
-const { setUsersWithRolesCache } = require('../../security/user');
+const user = require('../../security/user');
+const insert = require('../../dataLayer/insert');
+const signalling = require('../../utility/signalling');
 
 const PASSPHRASE_VALUE = '6340b357-55b2-4fc8-b359-cae7d90c8c01';
 const PRIVATE_KEY_VALUE =
@@ -80,8 +83,6 @@ const PUBLIC_KEY_VALUE =
 	'Xbe/Q0MHiGt7hvhB51+C08m+qxIDk2l8Icg77mS4WuxBbWBxN/FF18ttp4GfHJWw\n' +
 	'brlmQxVf0PFY+0tM8fCkpccCAwEAAQ==\n' +
 	'-----END PUBLIC KEY-----';
-
-const JWTObjects = require('../../security/JWTObjects');
 
 const VALID_ROLE = {
 	permission: {
@@ -166,7 +167,7 @@ let invalid_other_user = {
 
 describe('Test authorize function', function () {
 	before(async () => {
-		await setUsersWithRolesCache(hdb_users_map);
+		await user.setUsersWithRolesCache(hdb_users_map);
 	});
 
 	it('Cannot complete request Basic authorization: User not found ', function (done) {
@@ -240,6 +241,7 @@ describe('Test authorize function', function () {
 });
 
 describe('test authorize function for JWT', () => {
+	let sandbox;
 	let rw_get_tokens;
 	let rw_validate_user;
 	let rw_token_auth;
@@ -251,22 +253,16 @@ describe('test authorize function for JWT', () => {
 	let expired_user_tokens;
 	let orig_hdb_users = global.hdb_users;
 	before(async () => {
-		rw_get_tokens = token_auth.__set__(
-			'getJWTRSAKeys',
-			async () => new JWTObjects.JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
-		);
-
-		rw_validate_user = token_auth.__set__('user_functions', {
-			findAndValidateUser: async (u, pw) => ({ username: u }),
+		sandbox = sinon.createSandbox();
+		rw_get_tokens = token_auth.__set__('getJWTRSAKeys', async () => {
+			return { publicKey: PUBLIC_KEY_VALUE, privateKey: PRIVATE_KEY_VALUE, passphrase: PASSPHRASE_VALUE };
 		});
 
-		let rw_update = token_auth.__set__('update', async (update_object) => {
+		sandbox.stub(user, 'findAndValidateUser').callsFake(async (u, pw) => ({ username: u }));
+		sandbox.stub(insert, 'update').callsFake(async (update_object) => {
 			return { message: 'updated 1 of 1', update_hashes: ['1'], skipped_hashes: [] };
 		});
-
-		let rw_signalling = token_auth.__set__('signalling', {
-			signalUserChange: (obj) => {},
-		});
+		sandbox.stub(signalling, 'signalUserChange').callsFake((obj) => {});
 
 		op_token_timeout = token_auth.__set__('OPERATION_TOKEN_TIMEOUT', '-1');
 		r_token_timeout = token_auth.__set__('REFRESH_TOKEN_TIMEOUT', '-1');
@@ -290,17 +286,16 @@ describe('test authorize function for JWT', () => {
 			],
 			['old_user', { username: 'old_user', active: false }],
 		]);
-		await setUsersWithRolesCache(user_map);
+		await user.setUsersWithRolesCache(user_map);
 
-		rw_validate_user();
-		rw_signalling();
-		rw_update();
+		sandbox.restore();
 	});
 
 	after(() => {
 		rw_get_tokens();
 		rw_token_auth();
 		global.hdb_users = orig_hdb_users;
+		sandbox.restore();
 	});
 
 	it('test hdb_admin operation token', (done) => {
@@ -327,7 +322,8 @@ describe('test authorize function for JWT', () => {
 
 		auth.authorize(request, null, function (err, user) {
 			assert.deepStrictEqual(user, undefined);
-			assert.deepStrictEqual(err, hdb_error(new Error(), 'invalid token', 401), ' error');
+			assert.deepStrictEqual(err.message, 'invalid token');
+			assert.deepStrictEqual(err.statusCode, 401);
 			done();
 		});
 	});
@@ -354,7 +350,8 @@ describe('test authorize function for JWT', () => {
 
 		auth.authorize(request, null, function (err, user) {
 			assert.deepStrictEqual(user, undefined);
-			assert.deepStrictEqual(err, hdb_error(new Error(), 'invalid token', 401), ' error');
+			assert.deepStrictEqual(err.message, 'invalid token');
+			assert.deepStrictEqual(err.statusCode, 401);
 			done();
 		});
 	});
@@ -368,7 +365,8 @@ describe('test authorize function for JWT', () => {
 
 		auth.authorize(request, null, function (err, user) {
 			assert.deepStrictEqual(user, undefined);
-			assert.deepStrictEqual(err, hdb_error(new Error(), 'token expired', 403), ' error');
+			assert.deepStrictEqual(err.message, 'token expired');
+			assert.deepStrictEqual(err.statusCode, 403);
 			done();
 		});
 	});
@@ -405,7 +403,8 @@ describe('test authorize function for JWT', () => {
 
 		auth.authorize(request, null, function (err, user) {
 			assert.deepStrictEqual(user, undefined);
-			assert.deepStrictEqual(err, hdb_error(new Error(), 'invalid token', 401), ' error');
+			assert.deepStrictEqual(err.message, 'invalid token');
+			assert.deepStrictEqual(err.statusCode, 401);
 			assert.deepStrictEqual(request.body.refresh_token, undefined);
 			done();
 		});
@@ -423,7 +422,8 @@ describe('test authorize function for JWT', () => {
 
 		auth.authorize(request, null, function (err, user) {
 			assert.deepStrictEqual(user, undefined);
-			assert.deepStrictEqual(err, hdb_error(new Error(), 'invalid token', 401), ' error');
+			assert.deepStrictEqual(err.message, 'invalid token');
+			assert.deepStrictEqual(err.statusCode, 401);
 			assert.deepStrictEqual(request.body.refresh_token, undefined);
 			done();
 		});
@@ -441,7 +441,8 @@ describe('test authorize function for JWT', () => {
 
 		auth.authorize(request, null, function (err, user) {
 			assert.deepStrictEqual(user, undefined);
-			assert.deepStrictEqual(err, hdb_error(new Error(), 'invalid token', 401), ' error');
+			assert.deepStrictEqual(err.message, 'invalid token');
+			assert.deepStrictEqual(err.statusCode, 401);
 			assert.deepStrictEqual(request.body.refresh_token, undefined);
 			done();
 		});
@@ -459,7 +460,8 @@ describe('test authorize function for JWT', () => {
 
 		auth.authorize(request, null, function (err, user) {
 			assert.deepStrictEqual(user, undefined);
-			assert.deepStrictEqual(err, hdb_error(new Error(), 'token expired', 403), ' error');
+			assert.deepStrictEqual(err.message, 'token expired');
+			assert.deepStrictEqual(err.statusCode, 403);
 			assert.deepStrictEqual(request.body.refresh_token, undefined);
 			done();
 		});
@@ -575,7 +577,7 @@ let attribute_read_some_false_user = {
 	},
 };
 
-let user = {
+let userObj = {
 	role: {
 		permission: JSON.stringify({
 			super_user: false,
@@ -746,7 +748,7 @@ describe('Test checkPermissions function', function () {
 	});
 
 	it('can authorized with have restrict attribute true', function (done) {
-		check_permission_object.user = user;
+		check_permission_object.user = userObj;
 		auth.checkPermissions(check_permission_object, function (err, result) {
 			assert.equal(err, null, 'no error');
 			assert.equal(result.authorized, true, 'authorized restrict attribute name, id ');
