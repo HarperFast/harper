@@ -1,6 +1,6 @@
 import request from "supertest";
 import assert from "node:assert";
-import {setTimeout as sleep} from 'node:timers/promises';
+import { setTimeout, setTimeout as sleep } from 'node:timers/promises';
 import {envUrl, headers} from "../config/envConfig.js";
 
 
@@ -11,6 +11,8 @@ export async function getJobId(jsonData) {
     let parsedId = jsonData.message.substring(id_index + 3, jsonData.message.length);
     return parsedId;
 }
+
+let errorMessage = "";
 
 export async function checkJobCompleted(job_id, expectedErrorMessage, expectedCompletedMessage) {
     const response = await request(envUrl)
@@ -30,7 +32,13 @@ export async function checkJobCompleted(job_id, expectedErrorMessage, expectedCo
         case 'ERROR':
             if (expectedErrorMessage) {
                 console.log(status + " (AS EXPECTED) job id: " + job_id);
-                assert.ok(jsonData[0].message.includes(expectedErrorMessage));
+                try {
+                    assert.ok(jsonData[0].message.includes(expectedErrorMessage));
+                } catch(err) {
+                    assert.ok(jsonData[0].message.error.includes(expectedErrorMessage));
+                }
+                errorMessage = jsonData[0].message;
+                console.log(errorMessage);
             } else {
                 console.log(status + " job id: " + job_id);
                 assert.fail('Status was ERROR');
@@ -38,9 +46,12 @@ export async function checkJobCompleted(job_id, expectedErrorMessage, expectedCo
             break;
         case 'COMPLETE':
             console.log(status + " job id: " + job_id);
-            if (expectedCompletedMessage)
+            if (expectedCompletedMessage) {
+                console.log(JSON.stringify(jsonData));
                 assert.ok(jsonData[0].message.includes(expectedCompletedMessage));
+            }
             assert.equal(status, 'COMPLETE');
+            errorMessage = "";
             break;
         case '0':
             assert.fail('Status was: ' + status);
@@ -57,4 +68,24 @@ export async function checkJobCompleted(job_id, expectedErrorMessage, expectedCo
             assert.fail('Status was not one of the expected ones. Status was: ' + status + ' job id: ' + job_id);
             break;
     }
+    return errorMessage;
+}
+
+export async function checkJob(job_id, timeoutInSeconds) {
+	let jobResponse = null;
+  let seconds = 0;
+	do {
+		jobResponse = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'get_job',
+				id: job_id,
+			})
+			.expect(200);
+		await setTimeout(1000);
+    seconds++;
+    console.log(seconds + ' ' + jobResponse.body[0].status);
+	} while (jobResponse.body[0].status == 'IN_PROGRESS' && seconds < timeoutInSeconds);
+	return jobResponse;
 }

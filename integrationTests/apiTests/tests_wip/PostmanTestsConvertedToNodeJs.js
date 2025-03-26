@@ -2,39 +2,33 @@ import { it, test } from 'node:test';
 import assert from 'node:assert';
 import request from 'supertest';
 import { setTimeout } from 'node:timers/promises';
-import { checkJobCompleted, getJobId } from '../utils/jobs.js';
-import { envUrl, envUrlRest, generic, headers } from '../config/envConfig.js';
+import { checkJob, checkJobCompleted, getJobId } from '../utils/jobs.js';
+import {
+	createHeaders, dateTomorrow, dateYesterday,
+	envUrl,
+	envUrlRest,
+	generic, getCsvPath,
+	headers,
+	headersBulkLoadUser,
+	headersNoPermsUser, headersOnePermUser,
+	headersTestUser,
+} from '../config/envConfig.js';
 import { csvDataLoad, csvFileUpload, csvUrlLoad } from '../utils/csv.js';
 import { setTimeout as sleep } from 'node:timers/promises';
-import * as path from 'node:path';
-import { fileURLToPath } from 'url';
 
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const myPath = path.resolve(__dirname + '/..' + generic.files_location) + '/';
-// const myPath = path.resolve(process.cwd() + generic.files_location);
+
 
 
 it('csv_data_load with invalid attribute', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({
-			'operation': 'csv_data_load',
-			'schema': 'dev',
-			'action': 'insert',
-			'table': 'invalid_attribute',
-			'data': 'id,s/ome=attribute\n1,cheeseburger\n2,hamburger with cheese\n3,veggie burger\n',
-		})
-		.expect(200)
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-//Unmatched Postman assertion: eval(pm.globals.get("function:getJobId"))(jsonData, "csv_file_load with invalid attributes")
+	const errorMsg = await csvDataLoad(headers, 'insert', 'dev', 'invalid_attribute',
+		'id,s/ome=attribute\n1,cheeseburger\n2,hamburger with cheese\n3,veggie burger\n',
+		"Invalid column name 's/ome=attribute'");
 });
 
 it('csv_file_load with invalid attributes', async () => {
 	await csvFileUpload(generic.schema_dev, 'invalid_attribute',
-		myPath + 'InvalidAttributes.csv', 'Invalid column name');
+		getCsvPath() + 'InvalidAttributes.csv', 'Invalid column name');
 });
 
 it('search for specific value from CSV load', async () => {
@@ -43,9 +37,9 @@ it('search for specific value from CSV load', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_hash',
-			'schema': '{{schema}}',
-			'table': '{{supp_tb}}',
-			'hash_attribute': '{{supp_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.supp_tb}`,
+			'hash_attribute': `${generic.supp_id}`,
 			'hash_values': [10],
 			'get_attributes': ['supplierid', 'companyname', 'contactname'],
 		})
@@ -84,9 +78,9 @@ it('check error on invalid file', async () => {
 		.send({
 			'operation': 'csv_file_load',
 			'action': 'insert',
-			'schema': '{{schema}}',
-			'table': '{{supp_tb}}',
-			'file_path': '{{files_location}}Suppliers_wrong.csv',
+			'schema': `${generic.schema}`,
+			'table': `${generic.supp_tb}`,
+			'file_path': `${getCsvPath()}Suppliers_wrong.csv`
 		})
 		.expect(400)
 		.expect((r) => assert.ok(r.body.error.includes("No such file or directory")))
@@ -99,20 +93,16 @@ it('csv bulk load update', async () => {
 		.send({
 			'operation': 'csv_data_load',
 			'action': 'update',
-			'schema': '{{schema}}',
-			'table': '{{supp_tb}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.supp_tb}`,
 			'data': 'supplierid,companyname\n19,The Chum Bucket\n',
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-//Unmatched Postman assertion: need here a call to checkJobCompleted(job_id, expectedErrorMessage, expectedCompletedMessage);
-});
+		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0,
+			'Expected to find "Starting job" in the response'))
 
-it('wait for csv bulk load update to complete', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ 'operation': 'get_job', 'id': '{{job_id}}' })
+	const id = await getJobId(response.body);
+	await checkJobCompleted(id);
 });
 
 it('csv bulk load update confirm', async () => {
@@ -121,9 +111,9 @@ it('csv bulk load update confirm', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_hash',
-			'schema': '{{schema}}',
-			'table': '{{supp_tb}}',
-			'hash_attribute': '{{supp_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.supp_tb}`,
+			'hash_attribute': `${generic.supp_id}`,
 			'hash_values': [19],
 			'get_attributes': ['supplierid', 'companyname', 'contactname'],
 		})
@@ -139,8 +129,8 @@ it('Insert object into table', async () => {
 		.set(headers)
 		.send({
 			'operation': 'insert',
-			'schema': '{{schema}}',
-			'table': '{{cust_tb}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.cust_tb}`,
 			'records': [{ 'postalcode': { 'house': 30, 'street': 'South St' }, 'customerid': 'TEST1' }],
 		})
 		.expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records'))
@@ -154,14 +144,14 @@ it('Insert object confirm ', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_hash',
-			'schema': '{{schema}}',
-			'table': '{{cust_tb}}',
-			'hash_attribute': '{{supp_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.cust_tb}`,
+			'hash_attribute': `${generic.supp_id}`,
 			'hash_values': ['TEST1'],
 			'get_attributes': ['postalcode', 'customerid'],
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body[0].postalcode == { "house": 30, "street": "South St"}))
+		.expect((r) => assert.deepEqual(r.body[0].postalcode, { "house": 30, "street": "South St"}))
 		.expect((r) => assert.ok(r.body[0].customerid == "TEST1"))
 });
 
@@ -171,8 +161,8 @@ it('Insert array into table', async () => {
 		.set(headers)
 		.send({
 			'operation': 'insert',
-			'schema': '{{schema}}',
-			'table': '{{cust_tb}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.cust_tb}`,
 			'records': [{ 'postalcode': [1, 2, 3], 'customerid': 'TEST2' }],
 		})
 		.expect(200)
@@ -186,38 +176,38 @@ it('Insert array confirm ', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_hash',
-			'schema': '{{schema}}',
-			'table': '{{cust_tb}}',
-			'hash_attribute': '{{supp_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.cust_tb}`,
+			'hash_attribute': `${generic.supp_id}`,
 			'hash_values': ['TEST2'],
 			'get_attributes': ['postalcode', 'customerid'],
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body[0].postalcode == [1, 2, 3]))
+		.expect((r) => assert.deepEqual(r.body[0].postalcode, [1, 2, 3]))
 		.expect((r) => assert.ok(r.body[0].customerid == "TEST2"))
 });
 
-it('Insert value into schema that doesn\'t exist', async () => {
+it('Insert value into schema that doesnt exist', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
 		.send({
 			'operation': 'insert',
 			'schema': 'not_a_schema',
-			'table': '{{cust_tb}}',
+			'table': `${generic.cust_tb}`,
 			'records': [{ 'name': 'Harper', 'customerid': 1 }],
 		})
 		.expect(400)
 		.expect((r) => assert.ok(r.body.error == 'database \'not_a_schema\' does not exist'))
 });
 
-it('Insert value into table that doesn\'t exist', async () => {
+it('Insert value into table that doesnt exist', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
 		.send({
 			'operation': 'insert',
-			'schema': '{{schema}}',
+			'schema': `${generic.schema}`,
 			'table': 'not_a_table',
 			'records': [{ 'name': 'Harper', 'customerid': 1 }],
 		})
@@ -232,7 +222,7 @@ it('Update value in schema that doesn\'t exist', async () => {
 		.send({
 			'operation': 'update',
 			'schema': 'not_a_schema',
-			'table': '{{cust_tb}}',
+			'table': `${generic.cust_tb}`,
 			'records': [{ 'name': 'Harper', 'customerid': 1 }],
 		})
 		.expect(400)
@@ -245,7 +235,7 @@ it('Update value in table that doesn\'t exist', async () => {
 		.set(headers)
 		.send({
 			'operation': 'update',
-			'schema': '{{schema}}',
+			'schema': `${generic.schema}`,
 			'table': 'not_a_table',
 			'records': [{ 'name': 'Harper', 'customerid': 1 }],
 		})
@@ -259,8 +249,8 @@ it('Set attribute to number', async () => {
 		.set(headers)
 		.send({
 			'operation': 'insert',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
 			'records': [{ '4289': 'Mutt', 'firstname': 'Test for number attribute', 'employeeid': 25 }],
 		})
 		.expect(200)
@@ -272,14 +262,15 @@ it('Set attribute to number confirm', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'describe_table', 'table': '{{emps_tb}}', 'schema': '{{schema}}' })
+		.send({ 'operation': 'describe_table', 'table': `${generic.emps_tb}`, 'schema': `${generic.schema}` })
 		.expect(200)
-	//Unmatched Postman assertion: var found = false
-	//Unmatched Postman assertion: jsonData.attributes.forEach((obj) => {
-	//Unmatched Postman assertion: if( Object.values(obj)[0] === '4289' ) {
-	//Unmatched Postman assertion: found = true;
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(found))
+		.expect((r) => {
+			let found = false;
+			r.body.attributes.forEach((obj) => {
+				if(Object.values(obj)[0] === '4289') found = true;
+			})
+			assert.ok(found);
+		})
 });
 
 it('Set attribute name greater than 250 bytes', async () => {
@@ -288,8 +279,8 @@ it('Set attribute name greater than 250 bytes', async () => {
 		.set(headers)
 		.send({
 			'operation': 'insert',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
 			'records': [{
 				'4289': 'Mutt',
 				'firstname': 'Test for number attribute',
@@ -298,8 +289,10 @@ it('Set attribute name greater than 250 bytes', async () => {
 			}],
 		})
 		.expect(400)
-	//Unmatched Postman assertion: var longAttribute = "transaction aborted due to attribute name IIetmyLabradorcomeoutsidewithmewhenIwastakingthebinsoutonemorningIlethimgoforawanderthinkinghewasjustgoingtopeeonthetelegraphpoleattheendofourdrivewaylikehealwaysdoesInsteadhesawhisopportunityandseizeditHekeptwalkingpastthetelegraphpolepasttheborderofour being too long. Attribute names cannot be longer than 250 bytes."
-		.expect((r) => assert.ok(r.body.error == longAttribute))
+		.expect((r) => {
+			let longAttribute = "transaction aborted due to attribute name IIetmyLabradorcomeoutsidewithmewhenIwastakingthebinsoutonemorningIlethimgoforawanderthinkinghewasjustgoingtopeeonthetelegraphpoleattheendofourdrivewaylikehealwaysdoesInsteadhesawhisopportunityandseizeditHekeptwalkingpastthetelegraphpolepasttheborderofour being too long. Attribute names cannot be longer than 250 bytes.";
+			assert.ok(r.body.error == longAttribute);
+		})
 });
 
 it('insert valid records into dev.invalid_attributes', async () => {
@@ -336,7 +329,7 @@ it('insert records into dev.leading_zero', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes('inserted 3')))
-		.expect((r) => assert.ok(r.body.inserted_hashes == [0, '011', '00011']))
+		.expect((r) => assert.deepEqual(r.body.inserted_hashes, [0, '011', '00011']))
 });
 
 it('insert test records into dev.rando', async () => {
@@ -685,7 +678,7 @@ it('select by hash no result', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'SELECT * FROM {{schema}}.{{emps_tb}} WHERE {{emps_id}} = 190' })
+		.send({ 'operation': 'sql', 'sql': `SELECT * FROM ${generic.schema}.${generic.emps_tb} WHERE ${generic.emps_id} = 190` })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 0))
 });
@@ -694,7 +687,7 @@ it('select by hash one result', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'SELECT * FROM {{schema}}.{{emps_tb}} WHERE {{emps_id}} = 3' })
+		.send({ 'operation': 'sql', 'sql': `SELECT * FROM ${generic.schema}.${generic.emps_tb} WHERE ${generic.emps_id} = 3` })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
 		.expect((r) => assert.ok(typeof r.body[0] === 'object'))
@@ -706,7 +699,7 @@ it('select by hash multiple results', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'SELECT * FROM {{schema}}.{{emps_tb}} WHERE {{emps_id}} = 3 OR {{emps_id}} = 5',
+			'sql': `SELECT * FROM ${generic.schema}.${generic.emps_tb} WHERE ${generic.emps_id} = 3 OR ${generic.emps_id} = 5`,
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 2))
@@ -1076,8 +1069,8 @@ it('update value in table for non-existent row', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'updated 0 of 0 records'))
-		.expect((r) => assert.ok(r.body.skipped_hashes == []))
-		.expect((r) => assert.ok(r.body.update_hashes == []))
+		.expect((r) => assert.deepEqual(r.body.skipped_hashes, []))
+		.expect((r) => assert.deepEqual(r.body.update_hashes, []))
 });
 
 it('Create table keywords for SQL tests', async () => {
@@ -1372,7 +1365,7 @@ it('Update record No where dev.cat', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'updated 9 of 9 records'))
 		.expect((r) => assert.ok(r.body.update_hashes.includes(1, 2, 3, 4, 5, 6, 7, 8, 9)))
-		.expect((r) => assert.ok(r.body.skipped_hashes == []))
+		.expect((r) => assert.deepEqual(r.body.skipped_hashes, []))
 });
 
 it('Confirm update record No where dev.cat', async () => {
@@ -1460,9 +1453,8 @@ it('Update record with nonexistant id dev.cat', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'UPDATE dev.cat SET cat_name = \'Garfield\' WHERE id = 75' })
 		.expect(200)
-		// @@@@@@@
 		.expect((r) => assert.ok(r.body.message == 'updated 0 of 0 records'))
-		.expect((r) => assert.ok(r.body.update_hashes == []))
+		.expect((r) => assert.deepEqual(r.body.update_hashes, []))
 });
 
 it('Confirm update record with nonexistant id dev.cat', async () => {
@@ -2064,8 +2056,11 @@ it('select w/ where in numeric values as strings', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'select * from dev.books WHERE id IN(\'1\',\'2\',\'3\') ORDER BY id' })
 		.expect((r) => assert.ok(r.body.length == 3))
-	//Unmatched Postman assertion: jsonData.forEach((row, i) => {
-		.expect((r) => assert.ok(row.id == i + 1))
+		.expect((r) => {
+			r.body.forEach((row, i) => {
+				assert.ok(row.id == i + 1);
+			})
+		})
 });
 
 it('select w/ where between', async () => {
@@ -2074,8 +2069,11 @@ it('select w/ where between', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'select * from dev.books WHERE id BETWEEN 1 AND 3 ORDER BY id' })
 		.expect((r) => assert.ok(r.body.length == 3))
-	//Unmatched Postman assertion: jsonData.forEach((row, i) => {
-		.expect((r) => assert.ok(row.id == i + 1))
+		.expect((r) => {
+			r.body.forEach((row, i) => {
+				assert.ok(row.id == i + 1);
+			})
+		})
 });
 
 it('select w/ where not between', async () => {
@@ -2123,7 +2121,7 @@ it('select employees orderby id asc', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'select {{emps_id}}, * from {{schema}}.{{emps_tb}} order by {{emps_id}} asc ',
+			'sql': `select ${generic.emps_id}, * from ${generic.schema}.${generic.emps_tb} order by ${generic.emps_id} asc`,
 		})
 		.expect((r) => assert.ok(r.body.length == 10))
 		.expect((r) => assert.ok(r.body[0].employeeid == 1))
@@ -2205,7 +2203,7 @@ it('select orders orderby id desc', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'select {{ords_id}}, * from {{schema}}.{{ords_tb}} order by {{ords_id}} desc ',
+			'sql': `select ${generic.ords_id}, * from ${generic.schema}.${generic.ords_tb} order by ${generic.ords_id} desc`,
 		})
 		.expect((r) => assert.ok(r.body[0].orderid == 11077))
 });
@@ -2216,7 +2214,7 @@ it('select count(*) orders where shipregion is null', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'select count(*) as `count` from {{schema}}.{{ords_tb}} where shipregion IS NULL',
+			'sql': `select count(*) as \`count\` from ${generic.schema}.${generic.ords_tb} where shipregion IS NULL`,
 		})
 		.expect((r) => assert.ok(r.body[0].count == 414))
 });
@@ -2227,7 +2225,7 @@ it('select count(*) orders where shipregion is not null', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'select count(*) AS `count` from {{schema}}.{{ords_tb}} where shipregion is not null',
+			'sql': `select count(*) AS \`count\` from ${generic.schema}.${generic.ords_tb} where shipregion is not null`,
 		})
 		.expect((r) => assert.ok(r.body[0].count == 416))
 });
@@ -2238,7 +2236,14 @@ it('select most buyer orderby price asc', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'select a.{{ords_id}}, a.productid, d.companyname, d.contactmame, b.productname, sum(a.unitprice) as unitprice, sum(a.quantity), sum(a.discount) from {{schema}}.{{ordd_tb}} a join {{schema}}.{{prod_tb}} b on a.{{prod_id}}=b.{{prod_id}} join {{schema}}.{{ords_tb}} c on a.{{ords_id}}=c.{{ords_id}} join {{schema}}.{{cust_tb}} d on c.{{cust_id}}=d.{{cust_id}} group by a.{{ords_id}}, a.productid, d.companyname, d.contactmame, b.productname order by unitprice desc, d.companyname ',
+			'sql': `select a.${generic.ords_id}, a.productid, d.companyname, d.contactmame, b.productname, 
+       sum(a.unitprice) as unitprice, sum(a.quantity), sum(a.discount) 
+				from ${generic.schema}.${generic.ordd_tb} a 
+				    join ${generic.schema}.${generic.prod_tb} b on a.${generic.prod_id}=b.${generic.prod_id} 
+				    join ${generic.schema}.${generic.ords_tb} c on a.${generic.ords_id}=c.${generic.ords_id} 
+				    join ${generic.schema}.${generic.cust_tb} d on c.${generic.cust_id}=d.${generic.cust_id}
+				group by a.${generic.ords_id}, a.productid, d.companyname, d.contactmame, b.productname 
+				order by unitprice desc, d.companyname`
 		})
 		.expect((r) => assert.ok(r.body[0].companyname == 'Berglunds snabbk\ufffdp'))
 		.expect((r) => assert.ok(r.body[1].companyname == "Great Lakes Food Market"))
@@ -2250,7 +2255,14 @@ it('select most buyer orderby price asc & companyname alias', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'select a.{{ords_id}}, a.productid, d.companyname as compname, d.contactmame, b.productname, sum(a.unitprice) as unitprice, sum(a.quantity), sum(a.discount) from {{schema}}.{{ordd_tb}} a join {{schema}}.{{prod_tb}} b on a.{{prod_id}}=b.{{prod_id}} join {{schema}}.{{ords_tb}} c on a.{{ords_id}}=c.{{ords_id}} join {{schema}}.{{cust_tb}} d on c.{{cust_id}}=d.{{cust_id}} group by a.{{ords_id}}, a.productid, d.companyname, d.contactmame, b.productname order by unitprice desc, compname ',
+			'sql': `select a.${generic.ords_id}, a.productid, d.companyname as compname, d.contactmame, b.productname, 
+       sum(a.unitprice) as unitprice, sum(a.quantity), sum(a.discount) 
+				from ${generic.schema}.${generic.ordd_tb} a 
+				    join ${generic.schema}.${generic.prod_tb} b on a.${generic.prod_id}=b.${generic.prod_id} 
+				    join ${generic.schema}.${generic.ords_tb} c on a.${generic.ords_id}=c.${generic.ords_id} 
+				    join ${generic.schema}.${generic.cust_tb} d on c.${generic.cust_id}=d.${generic.cust_id}
+				group by a.${generic.ords_id}, a.productid, d.companyname, d.contactmame, b.productname 
+				order by unitprice desc, compname`
 		})
 		.expect((r) => assert.ok(r.body[0].compname == "Berglunds snabbk\ufffdp"))
 		.expect((r) => assert.ok(r.body[1].compname == "Great Lakes Food Market"))
@@ -2262,7 +2274,14 @@ it('select most buyer orderby order_id asc & product_id desc', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'select a.{{ords_id}} as ords_id, a.productid, d.companyname as companyname, d.contactmame, b.productname, sum(a.unitprice) as unitprice, sum(a.quantity), sum(a.discount) from {{schema}}.{{ordd_tb}} a join {{schema}}.{{prod_tb}} b on a.{{prod_id}}=b.{{prod_id}} join {{schema}}.{{ords_tb}} c on a.{{ords_id}}=c.{{ords_id}} join {{schema}}.{{cust_tb}} d on c.{{cust_id}}=d.{{cust_id}} group by a.{{ords_id}}, a.productid, d.companyname, d.contactmame, b.productname order by ords_id, a.productid desc',
+			'sql': `select a.${generic.ords_id} as ords_id, a.productid, d.companyname as compname, d.contactmame, b.productname, 
+       sum(a.unitprice) as unitprice, sum(a.quantity), sum(a.discount) 
+				from ${generic.schema}.${generic.ordd_tb} a 
+				    join ${generic.schema}.${generic.prod_tb} b on a.${generic.prod_id}=b.${generic.prod_id} 
+				    join ${generic.schema}.${generic.ords_tb} c on a.${generic.ords_id}=c.${generic.ords_id} 
+				    join ${generic.schema}.${generic.cust_tb} d on c.${generic.cust_id}=d.${generic.cust_id}
+				group by a.${generic.ords_id}, a.productid, d.companyname, d.contactmame, b.productname 
+				order by ords_id desc, a.productid desc`
 		})
 		.expect((r) => assert.ok(r.body[0].ords_id == 10248))
 		.expect((r) => assert.ok(r.body[1].ords_id == 10248))
@@ -2280,7 +2299,7 @@ it('select product orderby id asc', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'select {{prod_id}}, * from {{schema}}.{{prod_tb}} order by {{prod_id}} asc ',
+			'sql': `select ${generic.prod_id}, * from ${generic.schema}.${generic.prod_tb} order by ${generic.prod_id} asc`,
 		})
 		.expect((r) => assert.ok(r.body[0].productid == 1))
 });
@@ -2291,7 +2310,7 @@ it('select customers orderby id asc', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'select {{cust_id}}, * from {{schema}}.{{cust_tb}} order by {{cust_id}} asc ',
+			'sql': `select ${generic.cust_id}, * from ${generic.schema}.${generic.cust_tb} order by ${generic.cust_id} asc`,
 		})
 		.expect((r) => assert.ok(r.body[0].customerid == 'ALFKI'))
 });
@@ -2302,7 +2321,14 @@ it('select all details join 5 table where customername', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'select a.{{cust_id}}, a.companyname, a.contactmame, b.{{ords_id}}, b.shipname, d.productid, d.productname, d.unitprice, c.quantity, c.discount, e.employeeid, e.firstname, e.lastname from {{schema}}.{{cust_tb}} a join {{schema}}.{{ords_tb}} b on a.{{cust_id}}=b.{{cust_id}} join {{schema}}.{{ordd_tb}} c on b.{{ordd_id}}=c.{{ordd_id}} join {{schema}}.{{prod_tb}} d on c.{{prod_id}}=d.{{prod_id}} join {{schema}}.{{emps_tb}} e on b.{{emps_id}}=e.{{emps_id}}  where a.companyname=\'Alfreds Futterkiste\' ',
+			'sql': `select a.${generic.cust_id}, a.companyname, a.contactmame, b.${generic.ords_id}, b.shipname, 
+       d.productid, d.productname, d.unitprice, c.quantity, c.discount, e.employeeid, e.firstname, e.lastname 
+				from ${generic.schema}.${generic.cust_tb} a 
+				    join ${generic.schema}.${generic.ords_tb} b on a.${generic.cust_id}=b.${generic.cust_id}
+				    join ${generic.schema}.${generic.ordd_tb} c on b.${generic.ordd_id}=c.${generic.ordd_id} 
+				    join ${generic.schema}.${generic.prod_tb} d on c.${generic.prod_id}=d.${generic.prod_id}
+				    join ${generic.schema}.${generic.emps_tb} e on b.${generic.emps_id}=e.${generic.emps_id}
+				where a.companyname='Alfreds Futterkiste'`
 		})
 		.expect((r) => assert.ok(r.body[0].customerid == 'ALFKI'))
 });
@@ -2352,7 +2378,8 @@ it('select order details', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'select {{ordd_id}}, productid, unitprice,quantity, discount from {{schema}}.{{ordd_tb}} order by {{ordd_id}} asc',
+			'sql': `select ${generic.ordd_id}, productid, unitprice,quantity, discount 
+								from ${generic.schema}.${generic.ordd_tb} order by ${generic.ordd_id} asc`
 		})
 		.expect((r) => assert.ok(r.body[0].orderid == 10248))
 });
@@ -2363,7 +2390,8 @@ it('select count groupby country', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'select count({{cust_id}}) as counter,country from {{schema}}.{{cust_tb}} group by country order by counter desc',
+			'sql': `select count(${generic.cust_id}) as counter,country 
+								from ${generic.schema}.${generic.cust_tb} group by country order by counter desc`,
 		})
 		.expect((r) => assert.ok(r.body[0].country == 'USA'))
 });
@@ -2372,7 +2400,7 @@ it('select most have the extension employees', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'select extension,* from {{schema}}.{{emps_tb}} order by extension desc' })
+		.send({ 'operation': 'sql', 'sql': `select extension,* from ${generic.schema}.${generic.emps_tb} order by extension desc` })
 		.expect((r) => assert.ok(r.body[0].firstname == "Nancy"))
 });
 
@@ -2382,7 +2410,7 @@ it('select top 10 most price of product', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'select categoryid,productname,quantityperunit,unitprice,* from {{schema}}.{{prod_tb}}  order by unitprice desc limit 10 ',
+			'sql': `select categoryid,productname,quantityperunit,unitprice,* from ${generic.schema}.${generic.prod_tb}  order by unitprice desc limit 10 `,
 		})
 		.expect((r) => assert.ok(r.body[0].productname == "C\ufffdte de Blaye"))
 });
@@ -2393,7 +2421,9 @@ it('select count min max avg sum price of products', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'select count(unitprice) as allproducts, min(unitprice) as minprice, max(unitprice) as maxprice, avg(unitprice) as avgprice, sum(unitprice) as sumprice from {{schema}}.{{prod_tb}} ',
+			'sql': `select count(unitprice) as allproducts, min(unitprice) as minprice, 
+       max(unitprice) as maxprice, avg(unitprice) as avgprice, sum(unitprice) as sumprice 
+					from ${generic.schema}.${generic.prod_tb} `
 		})
 		.expect((r) => assert.ok(r.body[0].allproducts == 77))
 });
@@ -2404,11 +2434,13 @@ it('select round unit price using alias', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'SELECT ROUND(unitprice) AS Price FROM {{schema}}.{{prod_tb}} GROUP BY ROUND(unitprice)',
+			'sql': `SELECT ROUND(unitprice) AS Price FROM ${generic.schema}.${generic.prod_tb} GROUP BY ROUND(unitprice)`,
 		})
 		.expect(200)
-//Unmatched Postman assertion: var objKeysData = Object.keys(jsonData[0])
-//Unmatched Postman assertion: pm.expect(objKeysData[0] == 'Price'))
+		.expect((r) => {
+			let objKeysData = Object.keys(r.body[0]);
+			assert.ok(objKeysData[0] == 'Price');
+		})
 });
 
 it('select where (like)and(<=>)', async () => {
@@ -2417,7 +2449,7 @@ it('select where (like)and(<=>)', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'select * from {{schema}}.{{prod_tb}} where (productname like \'T%\') and (unitprice>100) ',
+			'sql': `select * from ${generic.schema}.${generic.prod_tb} where (productname like 'T%') and (unitprice>100) `
 		})
 		.expect((r) => assert.ok(r.body[0].unitprice > 100))
 });
@@ -2426,36 +2458,48 @@ it('select - where attr < comparator', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'select * from {{schema}}.{{prod_tb}} where unitprice < 81' })
-//Unmatched Postman assertion: jsonData.forEach((record)=>{
-//Unmatched Postman assertion: pm.expect(record.unitprice < 81).to.be.true;})
+		.send({ 'operation': 'sql', 'sql': `select * from ${generic.schema}.${generic.prod_tb} where unitprice < 81` })
+		.expect((r) => {
+			r.body.forEach((record) => {
+				assert.ok(record.unitprice < 81);
+			})
+		})
 });
 
 it('select - where attr <= comparator', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'select * from {{schema}}.{{prod_tb}} where unitprice <= 81' })
-	//Unmatched Postman assertion: jsonData.forEach((record)=>{
-		.expect((r) => assert.ok(record.unitprice <= 81))
+		.send({ 'operation': 'sql', 'sql': `select * from ${generic.schema}.${generic.prod_tb} where unitprice <= 81` })
+		.expect((r) => {
+			r.body.forEach((record) => {
+				assert.ok(record.unitprice <= 81);
+			})
+		})
 });
 
 it('select - where attr > comparator', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'select * from {{schema}}.{{prod_tb}} where unitprice > 81' })
-//Unmatched Postman assertion: jsonData.forEach((record)=>{
-//Unmatched Postman assertion: pm.expect(record.unitprice > 81).to.be.true;})
+		.send({ 'operation': 'sql', 'sql': `select * from ${generic.schema}.${generic.prod_tb} where unitprice > 81` })
+		.expect((r) => {
+			r.body.forEach((record) => {
+				assert.ok(record.unitprice > 81);
+			})
+		})
 });
 
 it('select - where attr >= comparator', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'select * from {{schema}}.{{prod_tb}} where unitprice >= 81' })
-//Unmatched Postman assertion: jsonData.forEach((record)=>{
-//Unmatched Postman assertion: pm.expect(record.unitprice >= 81).to.be.true;})
+		.send({ 'operation': 'sql', 'sql': `select * from ${generic.schema}.${generic.prod_tb} where unitprice >= 81` })
+		.expect((r) => {
+			r.body.forEach((record) => {
+				assert.ok(record.unitprice >= 81);
+			})
+		})
 });
 
 it('select - where attr w/ multiple comparators', async () => {
@@ -2464,11 +2508,14 @@ it('select - where attr w/ multiple comparators', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'select * from {{schema}}.{{prod_tb}} where unitprice > 20 AND unitprice <= 81',
+			'sql': `select * from ${generic.schema}.${generic.prod_tb} where unitprice > 20 AND unitprice <= 81`
 		})
-	//Unmatched Postman assertion: jsonData.forEach((record)=>{
-	//Unmatched Postman assertion: pm.expect(record.unitprice > 20).to.be.true;
-		.expect((r) => assert.ok(record.unitprice <= 81))
+		.expect((r) => {
+			r.body.forEach((record) => {
+				assert.ok(record.unitprice > 20);
+				assert.ok(record.unitprice <= 81);
+			})
+		})
 });
 
 it('select - where w/ multiple attr comparators', async () => {
@@ -2477,12 +2524,15 @@ it('select - where w/ multiple attr comparators', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'select * from {{schema}}.{{prod_tb}} where unitprice > 10 AND unitprice <=81 AND unitsinstock = 0',
+			'sql': `select * from ${generic.schema}.${generic.prod_tb} where unitprice > 10 AND unitprice <=81 AND unitsinstock = 0`
 		})
-	//Unmatched Postman assertion: jsonData.forEach((record)=>{
-		.expect((r) => assert.ok(record.unitprice > 10))
-		.expect((r) => assert.ok(record.unitprice <= 81))
-//Unmatched Postman assertion: pm.expect(record.unitsinstock == 0)})
+		.expect((r) => {
+			r.body.forEach((record) => {
+				assert.ok(record.unitprice > 10);
+				assert.ok(record.unitprice <= 81);
+				assert.ok(record.unitsinstock == 0);
+			})
+		})
 });
 
 it('select - where w/ multiple comparators for multiple attrs', async () => {
@@ -2491,12 +2541,15 @@ it('select - where w/ multiple comparators for multiple attrs', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'select * from {{schema}}.{{prod_tb}} where unitprice > 10 AND unitprice <=81 AND unitsinstock > 10',
+			'sql': `select * from ${generic.schema}.${generic.prod_tb} where unitprice > 10 AND unitprice <=81 AND unitsinstock > 10`
 		})
-	//Unmatched Postman assertion: jsonData.forEach((record)=>{
-		.expect((r) => assert.ok(record.unitprice > 10))
-		.expect((r) => assert.ok(record.unitprice <= 81))
-		.expect((r) => assert.ok(record.unitsinstock > 10))
+		.expect((r) => {
+			r.body.forEach((record) => {
+				assert.ok(record.unitprice > 10);
+				assert.ok(record.unitprice <= 81);
+				assert.ok(record.unitsinstock > 10);
+			})
+		})
 });
 
 it('select - where w/ IN() and multiple of comparators for multiple attrs', async () => {
@@ -2505,13 +2558,17 @@ it('select - where w/ IN() and multiple of comparators for multiple attrs', asyn
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'select * from {{schema}}.{{prod_tb}} where unitprice > 10 AND unitprice <=81 AND unitsinstock > 10 AND supplierid IN(1,2,3,4)',
+			'sql': `select * from ${generic.schema}.${generic.prod_tb} 
+         where unitprice > 10 AND unitprice <=81 AND unitsinstock > 10 AND supplierid IN(1,2,3,4)`
 		})
-	//Unmatched Postman assertion: jsonData.forEach((record)=>{
-		.expect((r) => assert.ok(record.unitprice > 10))
-		.expect((r) => assert.ok(record.unitprice <= 81))
-		.expect((r) => assert.ok(record.unitsinstock > 10))
-//Unmatched Postman assertion: pm.expect(record.supplierid).to.be.oneOf([1,2,3,4])})
+		.expect((r) => {
+			r.body.forEach((record) => {
+				assert.ok(record.unitprice > 10);
+				assert.ok(record.unitprice <= 81);
+				assert.ok(record.unitsinstock > 10);
+				assert.ok([1, 2, 3, 4].includes(record.supplierid));
+			})
+		})
 });
 
 it('update SQL employee', async () => {
@@ -2520,7 +2577,7 @@ it('update SQL employee', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'update {{schema}}.{{emps_tb}} set address = \'abc1234\' where {{emps_id}} = 1',
+			'sql': `update ${generic.schema}.${generic.emps_tb} set address = 'abc1234' where ${generic.emps_id} = 1`
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.update_hashes[0] == 1))
@@ -2530,7 +2587,7 @@ it('select verify SQL update', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'select address from {{schema}}.{{emps_tb}} where {{emps_id}} = 1' })
+		.send({ 'operation': 'sql', 'sql': `select address from ${generic.schema}.${generic.emps_tb} where ${generic.emps_id} = 1` })
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].address == 'abc1234'))
 });
@@ -2541,8 +2598,11 @@ it('select * dev.long_text', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'select * FROM dev.long_text' })
 		.expect((r) => assert.ok(r.body.length == 25))
-//Unmatched Postman assertion: jsonData.forEach((record)=>{
-//Unmatched Postman assertion: pm.expect(record.remarks.length).to.gt(255)})
+		.expect((r) => {
+			r.body.forEach((record) => {
+				assert.ok(record.remarks.length > 255);
+			})
+		})
 });
 
 it('select * dev.long_text regexp', async () => {
@@ -2551,8 +2611,11 @@ it('select * dev.long_text regexp', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'select * FROM dev.long_text where remarks regexp \'dock\'' })
 		.expect((r) => assert.ok(r.body.length == 3))
-//Unmatched Postman assertion: jsonData.forEach((record)=>{
-//Unmatched Postman assertion: pm.expect(record.remarks.indexOf('dock')).to.gte(0)})
+		.expect((r) => {
+			r.body.forEach((record) => {
+				assert.ok(record.remarks.indexOf('dock') >= 0);
+			})
+		})
 });
 
 it('update employee with falsey data', async () => {
@@ -2561,7 +2624,7 @@ it('update employee with falsey data', async () => {
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'UPDATE {{schema}}.{{emps_tb}} SET address = false, hireDate = 0, notes = null, birthdate = undefined WHERE {{emps_id}} = 1',
+			'sql': `UPDATE ${generic.schema}.${generic.emps_tb} SET address = false, hireDate = 0, notes = null, birthdate = undefined WHERE ${generic.emps_id} = 1`
 		})
 		.expect(200)
 .expect((r) => assert.ok(r.body.update_hashes[0] == 1))
@@ -2571,7 +2634,7 @@ it('select employee to confirm falsey update', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'SELECT * FROM {{schema}}.{{emps_tb}} WHERE {{emps_id}} = 1' })
+		.send({ 'operation': 'sql', 'sql': `SELECT * FROM ${generic.schema}.${generic.emps_tb} WHERE ${generic.emps_id} = 1` })
 		.expect(200)
 		.expect((r) => assert.ok(!r.body[0].address))
 		.expect((r) => assert.ok(r.body[0].hireDate == 0))
@@ -2585,8 +2648,8 @@ it('setup for next test - insert array', async () => {
 		.set(headers)
 		.send({
 			'operation': 'insert',
-			'schema': '{{schema}}',
-			'table': '{{cust_tb}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.cust_tb}`,
 			'records': [{ 'array': ['arr1', 'arr2', 'arr3'], 'customerid': 'arrayTest' }],
 		})
 		.expect(200)
@@ -2598,9 +2661,9 @@ it('select array from table', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'select * from {{schema}}.{{cust_tb}} where {{cust_id}} = \'arrayTest\''})
+		.send({ 'operation': 'sql', 'sql': `select * from ${generic.schema}.${generic.cust_tb} where ${generic.cust_id} = 'arrayTest'`})
 		.expect(200)
-		.expect((r) => assert.ok(r.body[0].array == ["arr1","arr2","arr3"]))
+		.expect((r) => assert.deepEqual(r.body[0].array, ["arr1","arr2","arr3"]))
 		.expect((r) => assert.ok(r.body[0].customerid == "arrayTest"))
 });
 
@@ -2610,8 +2673,8 @@ it('setup for next test - insert object', async () => {
 		.set(headers)
 		.send({
 			'operation': 'insert',
-			'schema': '{{schema}}',
-			'table': '{{cust_tb}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.cust_tb}`,
 			'records': [{ 'object': { 'red': '1', 'white': '2', 'blue': '3' }, 'customerid': 'objTest' }],
 		})
 		.expect(200)
@@ -2623,9 +2686,9 @@ it('select object from table', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'select * from {{schema}}.{{cust_tb}} where {{cust_id}} = \'objTest\'' })
+		.send({ 'operation': 'sql', 'sql': `select * from ${generic.schema}.${generic.cust_tb} where ${generic.cust_id} = 'objTest'` })
 		.expect(200)
-		.expect((r) => assert.ok(r.body[0].object == {"red": "1", "white": "2", "blue": "3"}))
+		.expect((r) => assert.deepEqual(r.body[0].object, {"red": "1", "white": "2", "blue": "3"}))
 		.expect((r) => assert.ok(r.body[0].customerid == "objTest"))
 });
 
@@ -2633,7 +2696,7 @@ it('select without sql parameter', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'slq': 'select * from {{schema}}.{{cust_tb}}' })
+		.send({ 'operation': 'sql', 'slq': `select * from ${generic.schema}.${generic.cust_tb}` })
 		.expect(400)
 		.expect((r) => assert.ok(r.body.error == 'The \'sql\' parameter is missing from the request body'))
 });
@@ -2644,14 +2707,17 @@ it('select * dev.remarks_blob like w/ special chars pt1', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'select * FROM dev.remarks_blob where remarks like \'%4 Bedroom/2.5+ bath%\'' })
 		.expect((r) => assert.ok(r.body.length == 3))
-	//Unmatched Postman assertion: jsonData.forEach((record)=>{
-	//Unmatched Postman assertion: let keys = Object.keys(record)
-	//Unmatched Postman assertion: if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){
-		.expect((r) => assert.ok(keys.length == 5))
-	//Unmatched Postman assertion: } else{
-		.expect((r) => assert.ok(keys.length == 3))
-//Unmatched Postman assertion: }
-//Unmatched Postman assertion: pm.expect(record.remarks.includes('4 Bedroom/2.5+ bath') == true)})
+		.expect((r) => {
+			r.body.forEach((record) => {
+				let keys = Object.keys(record);
+				if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1) {
+					assert.ok(keys.length == 5);
+				} else {
+					assert.ok(keys.length == 3);
+				}
+				assert.ok(record.remarks.includes('4 Bedroom/2.5+ bath'));
+			})
+		})
 });
 
 it('select * dev.remarks_blob like w/ special chars pt2', async () => {
@@ -2663,14 +2729,20 @@ it('select * dev.remarks_blob like w/ special chars pt2', async () => {
 			'sql': 'select * FROM dev.remarks_blob where remarks like \'This custom built dream home is stunningly gorgeous!  It is a 5+ acres luxury equestrian property with access to Jennings State Forest from your backyard, no need to trailer your horses anywhere for a beautifully scenic peaceful ride.%\'',
 		})
 		.expect((r) => assert.ok(r.body.length == 2))
-	//Unmatched Postman assertion: jsonData.forEach((record)=>{
-	//Unmatched Postman assertion: let keys = Object.keys(record)
-	//Unmatched Postman assertion: if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){
-		.expect((r) => assert.ok(keys.length == 5))
-	//Unmatched Postman assertion: } else{
-		.expect((r) => assert.ok(keys.length == 3))
-//Unmatched Postman assertion: }
-//Unmatched Postman assertion: pm.expect(record.remarks.includes('This custom built dream home is stunningly gorgeous!  It is a 5+ acres luxury equestrian property with access to Jennings State Forest from your backyard, no need to trailer your horses anywhere for a beautifully scenic peaceful ride.') == true)})
+		.expect((r) => {
+			r.body.forEach((record) => {
+				let keys = Object.keys(record);
+				if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1) {
+					assert.ok(keys.length == 5);
+				} else {
+					assert.ok(keys.length == 3);
+				}
+				assert.ok(record.remarks.includes(
+					'This custom built dream home is stunningly gorgeous!  It is a 5+ acres luxury equestrian property with access to' +
+					' Jennings State Forest from your backyard, no need to trailer your horses anywhere for a beautifully scenic peaceful ride.'
+				));
+			})
+		})
 });
 
 it('select * dev.remarks_blob like w/ special chars pt3', async () => {
@@ -2682,14 +2754,19 @@ it('select * dev.remarks_blob like w/ special chars pt3', async () => {
 			'sql': 'select * FROM dev.remarks_blob where remarks like \'%...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:%\'',
 		})
 		.expect((r) => assert.ok(r.body.length == 2))
-	//Unmatched Postman assertion: jsonData.forEach((record)=>{
-	//Unmatched Postman assertion: let keys = Object.keys(record)
-	//Unmatched Postman assertion: if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){
-		.expect((r) => assert.ok(keys.length == 5))
-	//Unmatched Postman assertion: } else{
-		.expect((r) => assert.ok(keys.length == 3))
-//Unmatched Postman assertion: }
-//Unmatched Postman assertion: pm.expect(record.remarks.includes('...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:') == true)})
+		.expect((r) => {
+			r.body.forEach((record) => {
+				let keys = Object.keys(record);
+				if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1) {
+					assert.ok(keys.length == 5);
+				} else {
+					assert.ok(keys.length == 3);
+				}
+				assert.ok(record.remarks.includes(
+					'...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, ' +
+					'shopping & entertainment. Gated community! Loaded with upgrades:'));
+			})
+		})
 });
 
 it('select * dev.remarks_blob like w/ special chars pt4', async () => {
@@ -2701,14 +2778,19 @@ it('select * dev.remarks_blob like w/ special chars pt4', async () => {
 			'sql': 'select * FROM dev.remarks_blob where remarks like \'**Spacious & updated 2-story home on large preserve lot nearly 1/2 acre! Concrete block constr. & desirable ICW location near JTB, shopping, dining & the beach! Great split BD flrpln w/soaring ceilings features 4BD + office, upstairs loft & 3 full BA.\'',
 		})
 		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-	//Unmatched Postman assertion: jsonData.forEach((record)=>{
-	//Unmatched Postman assertion: let keys = Object.keys(record)
-	//Unmatched Postman assertion: if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){
-		.expect((r) => assert.ok(keys.length == 5))
-	//Unmatched Postman assertion: } else{
-		.expect((r) => assert.ok(keys.length == 3))
-//Unmatched Postman assertion: }
-//Unmatched Postman assertion: pm.expect(record.remarks.includes('**Spacious & updated 2-story home on large preserve lot nearly 1/2 acre! Concrete block constr. & desirable ICW location near JTB, shopping, dining & the beach! Great split BD flrpln w/soaring ceilings features 4BD + office, upstairs loft & 3 full BA.') == true)})
+		.expect((r) => {
+			r.body.forEach((record) => {
+				let keys = Object.keys(record);
+				if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1) {
+					assert.ok(keys.length == 5);
+				} else {
+					assert.ok(keys.length == 3);
+				}
+				assert.ok(record.remarks.includes('**Spacious & updated 2-story home on large preserve ' +
+					'lot nearly 1/2 acre! Concrete block constr. & desirable ICW location near JTB, shopping, ' +
+					'dining & the beach! Great split BD flrpln w/soaring ceilings features 4BD + office, upstairs loft & 3 full BA.'));
+			})
+		})
 });
 
 it('select * dev.remarks_blob like w/ special chars pt5', async () => {
@@ -2717,30 +2799,33 @@ it('select * dev.remarks_blob like w/ special chars pt5', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'select * FROM dev.remarks_blob where remarks like \'%\'' })
 		.expect((r) => assert.ok(r.body.length == 11))
-	//Unmatched Postman assertion: jsonData.forEach((record)=>{
-	//Unmatched Postman assertion: let keys = Object.keys(record)
-	//Unmatched Postman assertion: if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){
-		.expect((r) => assert.ok(keys.length == 5))
-	//Unmatched Postman assertion: } else{
-		.expect((r) => assert.ok(keys.length == 3))
-//Unmatched Postman assertion: }});
+		.expect((r) => {
+			r.body.forEach((record) => {
+				let keys = Object.keys(record);
+				if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1) {
+					assert.ok(keys.length == 5);
+				} else {
+					assert.ok(keys.length == 3);
+				}
+			})
+		})
 });
 
-it('select * FROM {{schema}}.{{ords_tb}} LIMIT 100 OFFSET 0', async () => {
+it('select * FROM schema.ords_tb LIMIT 100 OFFSET 0', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'select * FROM {{schema}}.{{ords_tb}} LIMIT 100 OFFSET 0' })
+		.send({ 'operation': 'sql', 'sql': `select * FROM ${generic.schema}.${generic.ords_tb} LIMIT 100 OFFSET 0` })
 		.expect((r) => assert.ok(r.body.length == 100))
 		.expect((r) => assert.ok(r.body[0].orderid == 10248))
 		.expect((r) => assert.ok(r.body[99].orderid == 10347))
 });
 
-it('select * FROM {{schema}}.{{ords_tb}} LIMIT 100 OFFSET 0 Copy', async () => {
+it('select * FROM schema.ords_tb LIMIT 100 OFFSET 0 Copy', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'select * FROM {{schema}}.{{ords_tb}} LIMIT 100 OFFSET 100' })
+		.send({ 'operation': 'sql', 'sql': `select * FROM ${generic.schema}.${generic.ords_tb} LIMIT 100 OFFSET 100` })
 		.expect((r) => assert.ok(r.body.length == 100))
 		.expect((r) => assert.ok(r.body[0].orderid == 10348))
 		.expect((r) => assert.ok(r.body[99].orderid == 10447))
@@ -2791,8 +2876,8 @@ it('select AVE(rating) w/ join and group by (1 of 2)', async () => {
 			'sql': 'select b.id, b.authors as authors, AVG(r.rating) from dev.ratings as r join dev.books as b on r.book_id = b.id group by b.authors, b.id',
 		})
 		.expect((r) => assert.ok(r.body.length == 50))
-		.expect((r) => assert.ok(Object.keys(jsonData[0]).length == 3))
-//Unmatched Postman assertion: pm.expect(Object.keys(jsonData[49]).length == 3))
+		.expect((r) => assert.ok(Object.keys(r.body[0]).length == 3))
+		.expect((r) => assert.ok(Object.keys(r.body[49]).length == 3))
 });
 
 it('select AVE(rating) w/ join, gb, ob, and LIMIT', async () => {
@@ -2832,7 +2917,13 @@ it('select w/ function alias in ORDER BY and LIMIT', async () => {
 		.set(headers)
 		.send({
 			operation: 'sql',
-			sql: 'select a.{{ords_id}} as ords_id, a.productid, d.companyname as companyname, d.contactmame, b.productname, ROUND(a.unitprice) as unitprice from {{schema}}.{{ordd_tb}} a join {{schema}}.{{prod_tb}} b on a.{{prod_id}}=b.{{prod_id}} join {{schema}}.{{ords_tb}} c on a.{{ords_id}}=c.{{ords_id}} join {{schema}}.{{cust_tb}} d on c.{{cust_id}}=d.{{cust_id}} order by unitprice DESC LIMIT 25',
+			sql: `select a.${generic.ords_id} as ords_id, a.productid, 
+       			d.companyname as companyname, d.contactmame, b.productname, ROUND(a.unitprice) as unitprice 
+						from ${generic.schema}.${generic.ordd_tb} a 
+						join ${generic.schema}.${generic.prod_tb} b on a.${generic.prod_id}=b.${generic.prod_id}
+						join ${generic.schema}.${generic.ords_tb} c on a.${generic.ords_id}=c.${generic.ords_id}
+						join ${generic.schema}.${generic.cust_tb} d on c.${generic.cust_id}=d.${generic.cust_id} 
+						order by unitprice DESC LIMIT 25`
 		})
 		.expect((r) => assert.ok(r.body.length == 25))
 		.expect((r) => assert.ok(r.body[0].ords_id == 10518))
@@ -2850,7 +2941,7 @@ it('select w/ inconsistent table refs & ORDER BY column not in SELECT', async ()
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'SELECT a.productid, a.unitprice as unitprice FROM {{schema}}.{{ordd_tb}} a ORDER BY a.{{ords_id}} DESC',
+			'sql': `SELECT a.productid, a.unitprice as unitprice FROM ${generic.schema}.${generic.ordd_tb} a ORDER BY a.${generic.ords_id} DESC`
 		})
 		.expect((r) => assert.ok(r.body.length == 2155))
 		.expect((r) => assert.ok(r.body[0].productid == 2))
@@ -2870,7 +2961,8 @@ it('select w/ inconsistent table refs, ORDER BY column not in SELECT & LIMIT/OFF
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'SELECT productid, a.unitprice as unitprice FROM {{schema}}.{{ordd_tb}} a ORDER BY {{ords_id}} DESC LIMIT 250 OFFSET 5',
+			'sql': `SELECT productid, a.unitprice as unitprice FROM ${generic.schema}.${generic.ordd_tb} a 
+                                           ORDER BY ${generic.ords_id} DESC LIMIT 250 OFFSET 5`
 		})
 		.expect((r) => assert.ok(r.body.length == 250))
 		.expect((r) => assert.ok(r.body[0].productid == 8))
@@ -2890,7 +2982,8 @@ it('select w/ inconsistent table refs & second ORDER BY column not included in S
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'SELECT a.{{ords_id}} as ords_id, a.unitprice as unitprice FROM {{schema}}.{{ordd_tb}} a ORDER BY productid DESC, a.{{ords_id}} DESC',
+			'sql': `SELECT a.${generic.ords_id} as ords_id, a.unitprice as unitprice FROM ${generic.schema}.${generic.ordd_tb} a 
+							ORDER BY productid DESC, a.${generic.ords_id} DESC`
 		})
 		.expect((r) => assert.ok(r.body.length == 2155))
 		.expect((r) => assert.ok(r.body[0].ords_id == 11077))
@@ -2910,7 +3003,8 @@ it('select w/ inconsistent table refs, second ORDER BY column not included in SE
 		.set(headers)
 		.send({
 			'operation': 'sql',
-			'sql': 'SELECT a.{{ords_id}} as ords_id, a.unitprice as unitprice FROM {{schema}}.{{ordd_tb}} a ORDER BY productid DESC, a.{{ords_id}} DESC LIMIT 205 OFFSET 50',
+			'sql': `SELECT a.${generic.ords_id} as ords_id, a.unitprice as unitprice FROM ${generic.schema}.${generic.ordd_tb} a 
+            	ORDER BY productid DESC, a.${generic.ords_id} DESC LIMIT 205 OFFSET 50`
 		})
 		.expect((r) => assert.ok(r.body.length == 205))
 		.expect((r) => assert.ok(r.body[0].ords_id == 10808))
@@ -3124,7 +3218,7 @@ it('Select - simple full table query from leading_zero', async () => {
 			r.body.forEach((row) => {
 				ids.push(row.id);
 			})
-			assert.ok(ids == expected_ids);
+			assert.deepEqual(ids, expected_ids);
 		})
 });
 
@@ -3158,10 +3252,9 @@ it('query from leading_zero where id = 0', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'SELECT * FROM dev.leading_zero where id = 0' })
 		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-	//Unmatched Postman assertion: let record = jsonData[0];
-		.expect((r) => assert.ok(record.id == 0))
-		.expect((r) => assert.ok(record.another_attribute == 'another_1'))
-		.expect((r) => assert.ok(record.some_attribute == 'some_att1'))
+		.expect((r) => assert.ok(r.body[0].id == 0))
+		.expect((r) => assert.ok(r.body[0].another_attribute == 'another_1'))
+		.expect((r) => assert.ok(r.body[0].some_attribute == 'some_att1'))
 });
 
 it("query from leading_zero where id = '011'", async () => {
@@ -3190,7 +3283,7 @@ it('insert record with dog_name =  single space value & empty string', async () 
 		.send({ 'operation': 'sql', 'sql': 'INSERT INTO dev.dog (id, dog_name) VALUES (1111, \' \'), (2222, \'\')' })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'inserted 2 of 2 records'))
-		.expect((r) => assert.ok(r.body.inserted_hashes == [1111, 2222]))
+		.expect((r) => assert.deepEqual(r.body.inserted_hashes, [1111, 2222]))
 });
 
 it('SELECT record with dog_name = single space and validate value', async () => {
@@ -3217,7 +3310,7 @@ it('Delete dev.dog records previously created', async () => {
 		.set(headers)
 		.send({ 'operation': 'sql', 'sql': 'DELETE FROM dev.dog WHERE id IN (1111, 2222)' })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.deleted_hashes == [1111, 2222]))
+		.expect((r) => assert.deepEqual(r.body.deleted_hashes, [1111, 2222]))
 });
 
 it('insert invalid attribute name - single row', async () => {
@@ -3388,9 +3481,9 @@ it('NoSQL search by hash no result', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_hash',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
-			'hash_attribute': '{{emps_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
+			'hash_attribute': `${generic.emps_id}`,
 			'hash_values': [100],
 			'get_attributes': ['firstname', 'lastname'],
 		})
@@ -3404,9 +3497,9 @@ it('NoSQL search by hash one result', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_hash',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
-			'hash_attribute': '{{emps_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
+			'hash_attribute': `${generic.emps_id}`,
 			'hash_values': [1],
 			'get_attributes': ['firstname', 'lastname'],
 		})
@@ -3421,9 +3514,9 @@ it('NoSQL search by hash multiple results', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_hash',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
-			'hash_attribute': '{{emps_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
+			'hash_attribute': `${generic.emps_id}`,
 			'hash_values': [1, 5],
 			'get_attributes': ['firstname', 'lastname'],
 		})
@@ -3439,9 +3532,9 @@ it('NoSQL search by value no result', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_value',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
-			'hash_attribute': '{{emps_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
+			'hash_attribute': `${generic.emps_id}`,
 			'search_attribute': 'lastname',
 			'search_value': 'Xyz',
 			'get_attributes': ['firstname', 'lastname'],
@@ -3456,9 +3549,9 @@ it('NoSQL search by value one result', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_value',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
-			'hash_attribute': '{{emps_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
+			'hash_attribute': `${generic.emps_id}`,
 			'search_attribute': 'lastname',
 			'search_value': 'King',
 			'get_attributes': ['firstname', 'lastname'],
@@ -3474,9 +3567,9 @@ it('NoSQL search by value multiple results', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_value',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
-			'hash_attribute': '{{emps_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
+			'hash_attribute': `${generic.emps_id}`,
 			'search_attribute': 'lastname',
 			'search_value': 'D*',
 			'get_attributes': ['firstname', 'lastname'],
@@ -3493,21 +3586,21 @@ it('NoSQL search by value limit 20', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_value',
-			'schema': '{{schema}}',
-			'table': '{{ords_tb}}',
-			'search_attribute': '{{ordd_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.ords_tb}`,
+			'search_attribute': `${generic.ordd_id}`,
 			'search_value': '*',
 			'get_attributes': ['*'],
 			'limit': 20,
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 20))
-
-	//Unmatched Postman assertion: let ids = [10248,10249,10250,10251,10252,10253,10254,10255,10256,10257,10258,10259,10260,10261,10262,10263,10264,10265,10266,10267];
-
-	//Unmatched Postman assertion: for(let x = 0, length = ids.length; x < length; x++){
-		.expect((r) => assert.ok(r.body[x].orderid == ids[x]))
-//Unmatched Postman assertion: }})
+		.expect((r) => {
+			let ids = [10248,10249,10250,10251,10252,10253,10254,10255,10256,10257,10258,10259,10260,10261,10262,10263,10264,10265,10266,10267];
+			for(let x = 0, length = ids.length; x < length; x++) {
+				assert.ok(r.body[x].orderid == ids[x]);
+			}
+		})
 });
 
 it('NoSQL search by value offset 20', async () => {
@@ -3516,21 +3609,21 @@ it('NoSQL search by value offset 20', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_value',
-			'schema': '{{schema}}',
-			'table': '{{ords_tb}}',
-			'search_attribute': '{{ordd_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.ords_tb}`,
+			'search_attribute': `${generic.ordd_id}`,
 			'search_value': '*',
 			'get_attributes': ['*'],
 			'offset': 20,
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 810))
-
-	//Unmatched Postman assertion: let ids = [10268,10269,10270,10271,10272,10273,10274,10275,10276,10277,10278,10279,10280,10281,10282,10283,10284,10285,10286,10287,10288,10289,10290,10291,10292,10293,10294,10295,10296,10297,10298,10299,10300,10301,10302,10303,10304,10305,10306,10307,10308,10309,10310,10311,10312,10313,10314,10315,10316,10317,10318,10319,10320,10321,10322,10323,10324,10325,10326,10327,10328,10329,10330,10331,10332,10333,10334,10335,10336,10337,10338,10339,10340,10341,10342,10343,10344,10345,10346,10347,10348,10349,10350,10351,10352,10353,10354,10355,10356,10357,10358,10359,10360,10361,10362,10363,10364,10365,10366,10367,10368,10369,10370,10371,10372,10373,10374,10375,10376,10377,10378,10379,10380,10381,10382,10383,10384,10385,10386,10387,10388,10389,10390,10391,10392,10393,10394,10395,10396,10397,10398,10399,10400,10401,10402,10403,10404,10405,10406,10407,10408,10409,10410,10411,10412,10413,10414,10415,10416,10417,10418,10419,10420,10421,10422,10423,10424,10425,10426,10427,10428,10429,10430,10431,10432,10433,10434,10435,10436,10437,10438,10439,10440,10441,10442,10443,10444,10445,10446,10447,10448,10449,10450,10451,10452,10453,10454,10455,10456,10457,10458,10459,10460,10461,10462,10463,10464,10465,10466,10467,10468,10469,10470,10471,10472,10473,10474,10475,10476,10477,10478,10479,10480,10481,10482,10483,10484,10485,10486,10487,10488,10489,10490,10491,10492,10493,10494,10495,10496,10497,10498,10499,10500,10501,10502,10503,10504,10505,10506,10507,10508,10509,10510,10511,10512,10513,10514,10515,10516,10517,10518,10519,10520,10521,10522,10523,10524,10525,10526,10527,10528,10529,10530,10531,10532,10533,10534,10535,10536,10537,10538,10539,10540,10541,10542,10543,10544,10545,10546,10547,10548,10549,10550,10551,10552,10553,10554,10555,10556,10557,10558,10559,10560,10561,10562,10563,10564,10565,10566,10567,10568,10569,10570,10571,10572,10573,10574,10575,10576,10577,10578,10579,10580,10581,10582,10583,10584,10585,10586,10587,10588,10589,10590,10591,10592,10593,10594,10595,10596,10597,10598,10599,10600,10601,10602,10603,10604,10605,10606,10607,10608,10609,10610,10611,10612,10613,10614,10615,10616,10617,10618,10619,10620,10621,10622,10623,10624,10625,10626,10627,10628,10629,10630,10631,10632,10633,10634,10635,10636,10637,10638,10639,10640,10641,10642,10643,10644,10645,10646,10647,10648,10649,10650,10651,10652,10653,10654,10655,10656,10657,10658,10659,10660,10661,10662,10663,10664,10665,10666,10667,10668,10669,10670,10671,10672,10673,10674,10675,10676,10677,10678,10679,10680,10681,10682,10683,10684,10685,10686,10687,10688,10689,10690,10691,10692,10693,10694,10695,10696,10697,10698,10699,10700,10701,10702,10703,10704,10705,10706,10707,10708,10709,10710,10711,10712,10713,10714,10715,10716,10717,10718,10719,10720,10721,10722,10723,10724,10725,10726,10727,10728,10729,10730,10731,10732,10733,10734,10735,10736,10737,10738,10739,10740,10741,10742,10743,10744,10745,10746,10747,10748,10749,10750,10751,10752,10753,10754,10755,10756,10757,10758,10759,10760,10761,10762,10763,10764,10765,10766,10767,10768,10769,10770,10771,10772,10773,10774,10775,10776,10777,10778,10779,10780,10781,10782,10783,10784,10785,10786,10787,10788,10789,10790,10791,10792,10793,10794,10795,10796,10797,10798,10799,10800,10801,10802,10803,10804,10805,10806,10807,10808,10809,10810,10811,10812,10813,10814,10815,10816,10817,10818,10819,10820,10821,10822,10823,10824,10825,10826,10827,10828,10829,10830,10831,10832,10833,10834,10835,10836,10837,10838,10839,10840,10841,10842,10843,10844,10845,10846,10847,10848,10849,10850,10851,10852,10853,10854,10855,10856,10857,10858,10859,10860,10861,10862,10863,10864,10865,10866,10867,10868,10869,10870,10871,10872,10873,10874,10875,10876,10877,10878,10879,10880,10881,10882,10883,10884,10885,10886,10887,10888,10889,10890,10891,10892,10893,10894,10895,10896,10897,10898,10899,10900,10901,10902,10903,10904,10905,10906,10907,10908,10909,10910,10911,10912,10913,10914,10915,10916,10917,10918,10919,10920,10921,10922,10923,10924,10925,10926,10927,10928,10929,10930,10931,10932,10933,10934,10935,10936,10937,10938,10939,10940,10941,10942,10943,10944,10945,10946,10947,10948,10949,10950,10951,10952,10953,10954,10955,10956,10957,10958,10959,10960,10961,10962,10963,10964,10965,10966,10967,10968,10969,10970,10971,10972,10973,10974,10975,10976,10977,10978,10979,10980,10981,10982,10983,10984,10985,10986,10987,10988,10989,10990,10991,10992,10993,10994,10995,10996,10997,10998,10999,11000,11001,11002,11003,11004,11005,11006,11007,11008,11009,11010,11011,11012,11013,11014,11015,11016,11017,11018,11019,11020,11021,11022,11023,11024,11025,11026,11027,11028,11029,11030,11031,11032,11033,11034,11035,11036,11037,11038,11039,11040,11041,11042,11043,11044,11045,11046,11047,11048,11049,11050,11051,11052,11053,11054,11055,11056,11057,11058,11059,11060,11061,11062,11063,11064,11065,11066,11067,11068,11069,11070,11071,11072,11073,11074,11075,11076,11077];
-
-	//Unmatched Postman assertion: for(let x = 0, length = ids.length; x < length; x++){
-		.expect((r) => assert.ok(r.body[x].orderid == ids[x]))
-//Unmatched Postman assertion: }})
+		.expect((r) => {
+			let ids = [10268,10269,10270,10271,10272,10273,10274,10275,10276,10277,10278,10279,10280,10281,10282,10283,10284,10285,10286,10287,10288,10289,10290,10291,10292,10293,10294,10295,10296,10297,10298,10299,10300,10301,10302,10303,10304,10305,10306,10307,10308,10309,10310,10311,10312,10313,10314,10315,10316,10317,10318,10319,10320,10321,10322,10323,10324,10325,10326,10327,10328,10329,10330,10331,10332,10333,10334,10335,10336,10337,10338,10339,10340,10341,10342,10343,10344,10345,10346,10347,10348,10349,10350,10351,10352,10353,10354,10355,10356,10357,10358,10359,10360,10361,10362,10363,10364,10365,10366,10367,10368,10369,10370,10371,10372,10373,10374,10375,10376,10377,10378,10379,10380,10381,10382,10383,10384,10385,10386,10387,10388,10389,10390,10391,10392,10393,10394,10395,10396,10397,10398,10399,10400,10401,10402,10403,10404,10405,10406,10407,10408,10409,10410,10411,10412,10413,10414,10415,10416,10417,10418,10419,10420,10421,10422,10423,10424,10425,10426,10427,10428,10429,10430,10431,10432,10433,10434,10435,10436,10437,10438,10439,10440,10441,10442,10443,10444,10445,10446,10447,10448,10449,10450,10451,10452,10453,10454,10455,10456,10457,10458,10459,10460,10461,10462,10463,10464,10465,10466,10467,10468,10469,10470,10471,10472,10473,10474,10475,10476,10477,10478,10479,10480,10481,10482,10483,10484,10485,10486,10487,10488,10489,10490,10491,10492,10493,10494,10495,10496,10497,10498,10499,10500,10501,10502,10503,10504,10505,10506,10507,10508,10509,10510,10511,10512,10513,10514,10515,10516,10517,10518,10519,10520,10521,10522,10523,10524,10525,10526,10527,10528,10529,10530,10531,10532,10533,10534,10535,10536,10537,10538,10539,10540,10541,10542,10543,10544,10545,10546,10547,10548,10549,10550,10551,10552,10553,10554,10555,10556,10557,10558,10559,10560,10561,10562,10563,10564,10565,10566,10567,10568,10569,10570,10571,10572,10573,10574,10575,10576,10577,10578,10579,10580,10581,10582,10583,10584,10585,10586,10587,10588,10589,10590,10591,10592,10593,10594,10595,10596,10597,10598,10599,10600,10601,10602,10603,10604,10605,10606,10607,10608,10609,10610,10611,10612,10613,10614,10615,10616,10617,10618,10619,10620,10621,10622,10623,10624,10625,10626,10627,10628,10629,10630,10631,10632,10633,10634,10635,10636,10637,10638,10639,10640,10641,10642,10643,10644,10645,10646,10647,10648,10649,10650,10651,10652,10653,10654,10655,10656,10657,10658,10659,10660,10661,10662,10663,10664,10665,10666,10667,10668,10669,10670,10671,10672,10673,10674,10675,10676,10677,10678,10679,10680,10681,10682,10683,10684,10685,10686,10687,10688,10689,10690,10691,10692,10693,10694,10695,10696,10697,10698,10699,10700,10701,10702,10703,10704,10705,10706,10707,10708,10709,10710,10711,10712,10713,10714,10715,10716,10717,10718,10719,10720,10721,10722,10723,10724,10725,10726,10727,10728,10729,10730,10731,10732,10733,10734,10735,10736,10737,10738,10739,10740,10741,10742,10743,10744,10745,10746,10747,10748,10749,10750,10751,10752,10753,10754,10755,10756,10757,10758,10759,10760,10761,10762,10763,10764,10765,10766,10767,10768,10769,10770,10771,10772,10773,10774,10775,10776,10777,10778,10779,10780,10781,10782,10783,10784,10785,10786,10787,10788,10789,10790,10791,10792,10793,10794,10795,10796,10797,10798,10799,10800,10801,10802,10803,10804,10805,10806,10807,10808,10809,10810,10811,10812,10813,10814,10815,10816,10817,10818,10819,10820,10821,10822,10823,10824,10825,10826,10827,10828,10829,10830,10831,10832,10833,10834,10835,10836,10837,10838,10839,10840,10841,10842,10843,10844,10845,10846,10847,10848,10849,10850,10851,10852,10853,10854,10855,10856,10857,10858,10859,10860,10861,10862,10863,10864,10865,10866,10867,10868,10869,10870,10871,10872,10873,10874,10875,10876,10877,10878,10879,10880,10881,10882,10883,10884,10885,10886,10887,10888,10889,10890,10891,10892,10893,10894,10895,10896,10897,10898,10899,10900,10901,10902,10903,10904,10905,10906,10907,10908,10909,10910,10911,10912,10913,10914,10915,10916,10917,10918,10919,10920,10921,10922,10923,10924,10925,10926,10927,10928,10929,10930,10931,10932,10933,10934,10935,10936,10937,10938,10939,10940,10941,10942,10943,10944,10945,10946,10947,10948,10949,10950,10951,10952,10953,10954,10955,10956,10957,10958,10959,10960,10961,10962,10963,10964,10965,10966,10967,10968,10969,10970,10971,10972,10973,10974,10975,10976,10977,10978,10979,10980,10981,10982,10983,10984,10985,10986,10987,10988,10989,10990,10991,10992,10993,10994,10995,10996,10997,10998,10999,11000,11001,11002,11003,11004,11005,11006,11007,11008,11009,11010,11011,11012,11013,11014,11015,11016,11017,11018,11019,11020,11021,11022,11023,11024,11025,11026,11027,11028,11029,11030,11031,11032,11033,11034,11035,11036,11037,11038,11039,11040,11041,11042,11043,11044,11045,11046,11047,11048,11049,11050,11051,11052,11053,11054,11055,11056,11057,11058,11059,11060,11061,11062,11063,11064,11065,11066,11067,11068,11069,11070,11071,11072,11073,11074,11075,11076,11077];
+			for(let x = 0, length = ids.length; x < length; x++) {
+				assert.ok(r.body[x].orderid == ids[x]);
+			}
+		})
 });
 
 it('NoSQL search by value limit 20 offset 20', async () => {
@@ -3539,9 +3632,9 @@ it('NoSQL search by value limit 20 offset 20', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_value',
-			'schema': '{{schema}}',
-			'table': '{{ords_tb}}',
-			'search_attribute': '{{ordd_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.ords_tb}`,
+			'search_attribute': `${generic.ordd_id}`,
 			'search_value': '*',
 			'get_attributes': ['*'],
 			'limit': 20,
@@ -3549,12 +3642,12 @@ it('NoSQL search by value limit 20 offset 20', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 20))
-
-	//Unmatched Postman assertion: let ids = [10268,10269,10270,10271,10272,10273,10274,10275,10276,10277,10278,10279,10280,10281,10282,10283,10284,10285,10286,10287];
-
-	//Unmatched Postman assertion: for(let x = 0, length = ids.length; x < length; x++){
-		.expect((r) => assert.ok(r.body[x].orderid == ids[x]))
-//Unmatched Postman assertion: }})
+		.expect((r) => {
+			let ids = [10268,10269,10270,10271,10272,10273,10274,10275,10276,10277,10278,10279,10280,10281,10282,10283,10284,10285,10286,10287];
+			for(let x = 0, length = ids.length; x < length; x++) {
+				assert.ok(r.body[x].orderid == ids[x]);
+			}
+		})
 });
 
 it('NoSQL search by value reverse', async () => {
@@ -3563,21 +3656,21 @@ it('NoSQL search by value reverse', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_value',
-			'schema': '{{schema}}',
-			'table': '{{ords_tb}}',
-			'search_attribute': '{{ordd_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.ords_tb}`,
+			'search_attribute': `${generic.ordd_id}`,
 			'search_value': '*',
 			'get_attributes': ['*'],
 			'reverse': true,
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 830))
-
-	//Unmatched Postman assertion: let ids = [11077,11076,11075,11074,11073,11072,11071,11070,11069,11068,11067,11066,11065,11064,11063,11062,11061,11060,11059,11058,11057,11056,11055,11054,11053,11052,11051,11050,11049,11048,11047,11046,11045,11044,11043,11042,11041,11040,11039,11038,11037,11036,11035,11034,11033,11032,11031,11030,11029,11028,11027,11026,11025,11024,11023,11022,11021,11020,11019,11018,11017,11016,11015,11014,11013,11012,11011,11010,11009,11008,11007,11006,11005,11004,11003,11002,11001,11000,10999,10998,10997,10996,10995,10994,10993,10992,10991,10990,10989,10988,10987,10986,10985,10984,10983,10982,10981,10980,10979,10978,10977,10976,10975,10974,10973,10972,10971,10970,10969,10968,10967,10966,10965,10964,10963,10962,10961,10960,10959,10958,10957,10956,10955,10954,10953,10952,10951,10950,10949,10948,10947,10946,10945,10944,10943,10942,10941,10940,10939,10938,10937,10936,10935,10934,10933,10932,10931,10930,10929,10928,10927,10926,10925,10924,10923,10922,10921,10920,10919,10918,10917,10916,10915,10914,10913,10912,10911,10910,10909,10908,10907,10906,10905,10904,10903,10902,10901,10900,10899,10898,10897,10896,10895,10894,10893,10892,10891,10890,10889,10888,10887,10886,10885,10884,10883,10882,10881,10880,10879,10878,10877,10876,10875,10874,10873,10872,10871,10870,10869,10868,10867,10866,10865,10864,10863,10862,10861,10860,10859,10858,10857,10856,10855,10854,10853,10852,10851,10850,10849,10848,10847,10846,10845,10844,10843,10842,10841,10840,10839,10838,10837,10836,10835,10834,10833,10832,10831,10830,10829,10828,10827,10826,10825,10824,10823,10822,10821,10820,10819,10818,10817,10816,10815,10814,10813,10812,10811,10810,10809,10808,10807,10806,10805,10804,10803,10802,10801,10800,10799,10798,10797,10796,10795,10794,10793,10792,10791,10790,10789,10788,10787,10786,10785,10784,10783,10782,10781,10780,10779,10778,10777,10776,10775,10774,10773,10772,10771,10770,10769,10768,10767,10766,10765,10764,10763,10762,10761,10760,10759,10758,10757,10756,10755,10754,10753,10752,10751,10750,10749,10748,10747,10746,10745,10744,10743,10742,10741,10740,10739,10738,10737,10736,10735,10734,10733,10732,10731,10730,10729,10728,10727,10726,10725,10724,10723,10722,10721,10720,10719,10718,10717,10716,10715,10714,10713,10712,10711,10710,10709,10708,10707,10706,10705,10704,10703,10702,10701,10700,10699,10698,10697,10696,10695,10694,10693,10692,10691,10690,10689,10688,10687,10686,10685,10684,10683,10682,10681,10680,10679,10678,10677,10676,10675,10674,10673,10672,10671,10670,10669,10668,10667,10666,10665,10664,10663,10662,10661,10660,10659,10658,10657,10656,10655,10654,10653,10652,10651,10650,10649,10648,10647,10646,10645,10644,10643,10642,10641,10640,10639,10638,10637,10636,10635,10634,10633,10632,10631,10630,10629,10628,10627,10626,10625,10624,10623,10622,10621,10620,10619,10618,10617,10616,10615,10614,10613,10612,10611,10610,10609,10608,10607,10606,10605,10604,10603,10602,10601,10600,10599,10598,10597,10596,10595,10594,10593,10592,10591,10590,10589,10588,10587,10586,10585,10584,10583,10582,10581,10580,10579,10578,10577,10576,10575,10574,10573,10572,10571,10570,10569,10568,10567,10566,10565,10564,10563,10562,10561,10560,10559,10558,10557,10556,10555,10554,10553,10552,10551,10550,10549,10548,10547,10546,10545,10544,10543,10542,10541,10540,10539,10538,10537,10536,10535,10534,10533,10532,10531,10530,10529,10528,10527,10526,10525,10524,10523,10522,10521,10520,10519,10518,10517,10516,10515,10514,10513,10512,10511,10510,10509,10508,10507,10506,10505,10504,10503,10502,10501,10500,10499,10498,10497,10496,10495,10494,10493,10492,10491,10490,10489,10488,10487,10486,10485,10484,10483,10482,10481,10480,10479,10478,10477,10476,10475,10474,10473,10472,10471,10470,10469,10468,10467,10466,10465,10464,10463,10462,10461,10460,10459,10458,10457,10456,10455,10454,10453,10452,10451,10450,10449,10448,10447,10446,10445,10444,10443,10442,10441,10440,10439,10438,10437,10436,10435,10434,10433,10432,10431,10430,10429,10428,10427,10426,10425,10424,10423,10422,10421,10420,10419,10418,10417,10416,10415,10414,10413,10412,10411,10410,10409,10408,10407,10406,10405,10404,10403,10402,10401,10400,10399,10398,10397,10396,10395,10394,10393,10392,10391,10390,10389,10388,10387,10386,10385,10384,10383,10382,10381,10380,10379,10378,10377,10376,10375,10374,10373,10372,10371,10370,10369,10368,10367,10366,10365,10364,10363,10362,10361,10360,10359,10358,10357,10356,10355,10354,10353,10352,10351,10350,10349,10348,10347,10346,10345,10344,10343,10342,10341,10340,10339,10338,10337,10336,10335,10334,10333,10332,10331,10330,10329,10328,10327,10326,10325,10324,10323,10322,10321,10320,10319,10318,10317,10316,10315,10314,10313,10312,10311,10310,10309,10308,10307,10306,10305,10304,10303,10302,10301,10300,10299,10298,10297,10296,10295,10294,10293,10292,10291,10290,10289,10288,10287,10286,10285,10284,10283,10282,10281,10280,10279,10278,10277,10276,10275,10274,10273,10272,10271,10270,10269,10268,10267,10266,10265,10264,10263,10262,10261,10260,10259,10258,10257,10256,10255,10254,10253,10252,10251,10250,10249,10248];
-
-	//Unmatched Postman assertion: for(let x = 0, length = ids.length; x < length; x++){
-		.expect((r) => assert.ok(r.body[x].orderid == ids[x]))
-//Unmatched Postman assertion: }})
+		.expect((r) => {
+			let ids = [11077,11076,11075,11074,11073,11072,11071,11070,11069,11068,11067,11066,11065,11064,11063,11062,11061,11060,11059,11058,11057,11056,11055,11054,11053,11052,11051,11050,11049,11048,11047,11046,11045,11044,11043,11042,11041,11040,11039,11038,11037,11036,11035,11034,11033,11032,11031,11030,11029,11028,11027,11026,11025,11024,11023,11022,11021,11020,11019,11018,11017,11016,11015,11014,11013,11012,11011,11010,11009,11008,11007,11006,11005,11004,11003,11002,11001,11000,10999,10998,10997,10996,10995,10994,10993,10992,10991,10990,10989,10988,10987,10986,10985,10984,10983,10982,10981,10980,10979,10978,10977,10976,10975,10974,10973,10972,10971,10970,10969,10968,10967,10966,10965,10964,10963,10962,10961,10960,10959,10958,10957,10956,10955,10954,10953,10952,10951,10950,10949,10948,10947,10946,10945,10944,10943,10942,10941,10940,10939,10938,10937,10936,10935,10934,10933,10932,10931,10930,10929,10928,10927,10926,10925,10924,10923,10922,10921,10920,10919,10918,10917,10916,10915,10914,10913,10912,10911,10910,10909,10908,10907,10906,10905,10904,10903,10902,10901,10900,10899,10898,10897,10896,10895,10894,10893,10892,10891,10890,10889,10888,10887,10886,10885,10884,10883,10882,10881,10880,10879,10878,10877,10876,10875,10874,10873,10872,10871,10870,10869,10868,10867,10866,10865,10864,10863,10862,10861,10860,10859,10858,10857,10856,10855,10854,10853,10852,10851,10850,10849,10848,10847,10846,10845,10844,10843,10842,10841,10840,10839,10838,10837,10836,10835,10834,10833,10832,10831,10830,10829,10828,10827,10826,10825,10824,10823,10822,10821,10820,10819,10818,10817,10816,10815,10814,10813,10812,10811,10810,10809,10808,10807,10806,10805,10804,10803,10802,10801,10800,10799,10798,10797,10796,10795,10794,10793,10792,10791,10790,10789,10788,10787,10786,10785,10784,10783,10782,10781,10780,10779,10778,10777,10776,10775,10774,10773,10772,10771,10770,10769,10768,10767,10766,10765,10764,10763,10762,10761,10760,10759,10758,10757,10756,10755,10754,10753,10752,10751,10750,10749,10748,10747,10746,10745,10744,10743,10742,10741,10740,10739,10738,10737,10736,10735,10734,10733,10732,10731,10730,10729,10728,10727,10726,10725,10724,10723,10722,10721,10720,10719,10718,10717,10716,10715,10714,10713,10712,10711,10710,10709,10708,10707,10706,10705,10704,10703,10702,10701,10700,10699,10698,10697,10696,10695,10694,10693,10692,10691,10690,10689,10688,10687,10686,10685,10684,10683,10682,10681,10680,10679,10678,10677,10676,10675,10674,10673,10672,10671,10670,10669,10668,10667,10666,10665,10664,10663,10662,10661,10660,10659,10658,10657,10656,10655,10654,10653,10652,10651,10650,10649,10648,10647,10646,10645,10644,10643,10642,10641,10640,10639,10638,10637,10636,10635,10634,10633,10632,10631,10630,10629,10628,10627,10626,10625,10624,10623,10622,10621,10620,10619,10618,10617,10616,10615,10614,10613,10612,10611,10610,10609,10608,10607,10606,10605,10604,10603,10602,10601,10600,10599,10598,10597,10596,10595,10594,10593,10592,10591,10590,10589,10588,10587,10586,10585,10584,10583,10582,10581,10580,10579,10578,10577,10576,10575,10574,10573,10572,10571,10570,10569,10568,10567,10566,10565,10564,10563,10562,10561,10560,10559,10558,10557,10556,10555,10554,10553,10552,10551,10550,10549,10548,10547,10546,10545,10544,10543,10542,10541,10540,10539,10538,10537,10536,10535,10534,10533,10532,10531,10530,10529,10528,10527,10526,10525,10524,10523,10522,10521,10520,10519,10518,10517,10516,10515,10514,10513,10512,10511,10510,10509,10508,10507,10506,10505,10504,10503,10502,10501,10500,10499,10498,10497,10496,10495,10494,10493,10492,10491,10490,10489,10488,10487,10486,10485,10484,10483,10482,10481,10480,10479,10478,10477,10476,10475,10474,10473,10472,10471,10470,10469,10468,10467,10466,10465,10464,10463,10462,10461,10460,10459,10458,10457,10456,10455,10454,10453,10452,10451,10450,10449,10448,10447,10446,10445,10444,10443,10442,10441,10440,10439,10438,10437,10436,10435,10434,10433,10432,10431,10430,10429,10428,10427,10426,10425,10424,10423,10422,10421,10420,10419,10418,10417,10416,10415,10414,10413,10412,10411,10410,10409,10408,10407,10406,10405,10404,10403,10402,10401,10400,10399,10398,10397,10396,10395,10394,10393,10392,10391,10390,10389,10388,10387,10386,10385,10384,10383,10382,10381,10380,10379,10378,10377,10376,10375,10374,10373,10372,10371,10370,10369,10368,10367,10366,10365,10364,10363,10362,10361,10360,10359,10358,10357,10356,10355,10354,10353,10352,10351,10350,10349,10348,10347,10346,10345,10344,10343,10342,10341,10340,10339,10338,10337,10336,10335,10334,10333,10332,10331,10330,10329,10328,10327,10326,10325,10324,10323,10322,10321,10320,10319,10318,10317,10316,10315,10314,10313,10312,10311,10310,10309,10308,10307,10306,10305,10304,10303,10302,10301,10300,10299,10298,10297,10296,10295,10294,10293,10292,10291,10290,10289,10288,10287,10286,10285,10284,10283,10282,10281,10280,10279,10278,10277,10276,10275,10274,10273,10272,10271,10270,10269,10268,10267,10266,10265,10264,10263,10262,10261,10260,10259,10258,10257,10256,10255,10254,10253,10252,10251,10250,10249,10248];
+			for(let x = 0, length = ids.length; x < length; x++) {
+				assert.ok(r.body[x].orderid == ids[x]);
+			}
+		})
 });
 
 it('NoSQL search by value reverse offset 20', async () => {
@@ -3586,9 +3679,9 @@ it('NoSQL search by value reverse offset 20', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_value',
-			'schema': '{{schema}}',
-			'table': '{{ords_tb}}',
-			'search_attribute': '{{ordd_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.ords_tb}`,
+			'search_attribute': `${generic.ordd_id}`,
 			'search_value': '*',
 			'get_attributes': ['*'],
 			'reverse': true,
@@ -3596,12 +3689,12 @@ it('NoSQL search by value reverse offset 20', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 810))
-
-	//Unmatched Postman assertion: let ids = [11057,11056,11055,11054,11053,11052,11051,11050,11049,11048,11047,11046,11045,11044,11043,11042,11041,11040,11039,11038,11037,11036,11035,11034,11033,11032,11031,11030,11029,11028,11027,11026,11025,11024,11023,11022,11021,11020,11019,11018,11017,11016,11015,11014,11013,11012,11011,11010,11009,11008,11007,11006,11005,11004,11003,11002,11001,11000,10999,10998,10997,10996,10995,10994,10993,10992,10991,10990,10989,10988,10987,10986,10985,10984,10983,10982,10981,10980,10979,10978,10977,10976,10975,10974,10973,10972,10971,10970,10969,10968,10967,10966,10965,10964,10963,10962,10961,10960,10959,10958,10957,10956,10955,10954,10953,10952,10951,10950,10949,10948,10947,10946,10945,10944,10943,10942,10941,10940,10939,10938,10937,10936,10935,10934,10933,10932,10931,10930,10929,10928,10927,10926,10925,10924,10923,10922,10921,10920,10919,10918,10917,10916,10915,10914,10913,10912,10911,10910,10909,10908,10907,10906,10905,10904,10903,10902,10901,10900,10899,10898,10897,10896,10895,10894,10893,10892,10891,10890,10889,10888,10887,10886,10885,10884,10883,10882,10881,10880,10879,10878,10877,10876,10875,10874,10873,10872,10871,10870,10869,10868,10867,10866,10865,10864,10863,10862,10861,10860,10859,10858,10857,10856,10855,10854,10853,10852,10851,10850,10849,10848,10847,10846,10845,10844,10843,10842,10841,10840,10839,10838,10837,10836,10835,10834,10833,10832,10831,10830,10829,10828,10827,10826,10825,10824,10823,10822,10821,10820,10819,10818,10817,10816,10815,10814,10813,10812,10811,10810,10809,10808,10807,10806,10805,10804,10803,10802,10801,10800,10799,10798,10797,10796,10795,10794,10793,10792,10791,10790,10789,10788,10787,10786,10785,10784,10783,10782,10781,10780,10779,10778,10777,10776,10775,10774,10773,10772,10771,10770,10769,10768,10767,10766,10765,10764,10763,10762,10761,10760,10759,10758,10757,10756,10755,10754,10753,10752,10751,10750,10749,10748,10747,10746,10745,10744,10743,10742,10741,10740,10739,10738,10737,10736,10735,10734,10733,10732,10731,10730,10729,10728,10727,10726,10725,10724,10723,10722,10721,10720,10719,10718,10717,10716,10715,10714,10713,10712,10711,10710,10709,10708,10707,10706,10705,10704,10703,10702,10701,10700,10699,10698,10697,10696,10695,10694,10693,10692,10691,10690,10689,10688,10687,10686,10685,10684,10683,10682,10681,10680,10679,10678,10677,10676,10675,10674,10673,10672,10671,10670,10669,10668,10667,10666,10665,10664,10663,10662,10661,10660,10659,10658,10657,10656,10655,10654,10653,10652,10651,10650,10649,10648,10647,10646,10645,10644,10643,10642,10641,10640,10639,10638,10637,10636,10635,10634,10633,10632,10631,10630,10629,10628,10627,10626,10625,10624,10623,10622,10621,10620,10619,10618,10617,10616,10615,10614,10613,10612,10611,10610,10609,10608,10607,10606,10605,10604,10603,10602,10601,10600,10599,10598,10597,10596,10595,10594,10593,10592,10591,10590,10589,10588,10587,10586,10585,10584,10583,10582,10581,10580,10579,10578,10577,10576,10575,10574,10573,10572,10571,10570,10569,10568,10567,10566,10565,10564,10563,10562,10561,10560,10559,10558,10557,10556,10555,10554,10553,10552,10551,10550,10549,10548,10547,10546,10545,10544,10543,10542,10541,10540,10539,10538,10537,10536,10535,10534,10533,10532,10531,10530,10529,10528,10527,10526,10525,10524,10523,10522,10521,10520,10519,10518,10517,10516,10515,10514,10513,10512,10511,10510,10509,10508,10507,10506,10505,10504,10503,10502,10501,10500,10499,10498,10497,10496,10495,10494,10493,10492,10491,10490,10489,10488,10487,10486,10485,10484,10483,10482,10481,10480,10479,10478,10477,10476,10475,10474,10473,10472,10471,10470,10469,10468,10467,10466,10465,10464,10463,10462,10461,10460,10459,10458,10457,10456,10455,10454,10453,10452,10451,10450,10449,10448,10447,10446,10445,10444,10443,10442,10441,10440,10439,10438,10437,10436,10435,10434,10433,10432,10431,10430,10429,10428,10427,10426,10425,10424,10423,10422,10421,10420,10419,10418,10417,10416,10415,10414,10413,10412,10411,10410,10409,10408,10407,10406,10405,10404,10403,10402,10401,10400,10399,10398,10397,10396,10395,10394,10393,10392,10391,10390,10389,10388,10387,10386,10385,10384,10383,10382,10381,10380,10379,10378,10377,10376,10375,10374,10373,10372,10371,10370,10369,10368,10367,10366,10365,10364,10363,10362,10361,10360,10359,10358,10357,10356,10355,10354,10353,10352,10351,10350,10349,10348,10347,10346,10345,10344,10343,10342,10341,10340,10339,10338,10337,10336,10335,10334,10333,10332,10331,10330,10329,10328,10327,10326,10325,10324,10323,10322,10321,10320,10319,10318,10317,10316,10315,10314,10313,10312,10311,10310,10309,10308,10307,10306,10305,10304,10303,10302,10301,10300,10299,10298,10297,10296,10295,10294,10293,10292,10291,10290,10289,10288,10287,10286,10285,10284,10283,10282,10281,10280,10279,10278,10277,10276,10275,10274,10273,10272,10271,10270,10269,10268,10267,10266,10265,10264,10263,10262,10261,10260,10259,10258,10257,10256,10255,10254,10253,10252,10251,10250,10249,10248];
-
-	//Unmatched Postman assertion: for(let x = 0, length = ids.length; x < length; x++){
-		.expect((r) => assert.ok(r.body[x].orderid == ids[x]))
-//Unmatched Postman assertion: }})
+		.expect((r) => {
+			let ids = [11057,11056,11055,11054,11053,11052,11051,11050,11049,11048,11047,11046,11045,11044,11043,11042,11041,11040,11039,11038,11037,11036,11035,11034,11033,11032,11031,11030,11029,11028,11027,11026,11025,11024,11023,11022,11021,11020,11019,11018,11017,11016,11015,11014,11013,11012,11011,11010,11009,11008,11007,11006,11005,11004,11003,11002,11001,11000,10999,10998,10997,10996,10995,10994,10993,10992,10991,10990,10989,10988,10987,10986,10985,10984,10983,10982,10981,10980,10979,10978,10977,10976,10975,10974,10973,10972,10971,10970,10969,10968,10967,10966,10965,10964,10963,10962,10961,10960,10959,10958,10957,10956,10955,10954,10953,10952,10951,10950,10949,10948,10947,10946,10945,10944,10943,10942,10941,10940,10939,10938,10937,10936,10935,10934,10933,10932,10931,10930,10929,10928,10927,10926,10925,10924,10923,10922,10921,10920,10919,10918,10917,10916,10915,10914,10913,10912,10911,10910,10909,10908,10907,10906,10905,10904,10903,10902,10901,10900,10899,10898,10897,10896,10895,10894,10893,10892,10891,10890,10889,10888,10887,10886,10885,10884,10883,10882,10881,10880,10879,10878,10877,10876,10875,10874,10873,10872,10871,10870,10869,10868,10867,10866,10865,10864,10863,10862,10861,10860,10859,10858,10857,10856,10855,10854,10853,10852,10851,10850,10849,10848,10847,10846,10845,10844,10843,10842,10841,10840,10839,10838,10837,10836,10835,10834,10833,10832,10831,10830,10829,10828,10827,10826,10825,10824,10823,10822,10821,10820,10819,10818,10817,10816,10815,10814,10813,10812,10811,10810,10809,10808,10807,10806,10805,10804,10803,10802,10801,10800,10799,10798,10797,10796,10795,10794,10793,10792,10791,10790,10789,10788,10787,10786,10785,10784,10783,10782,10781,10780,10779,10778,10777,10776,10775,10774,10773,10772,10771,10770,10769,10768,10767,10766,10765,10764,10763,10762,10761,10760,10759,10758,10757,10756,10755,10754,10753,10752,10751,10750,10749,10748,10747,10746,10745,10744,10743,10742,10741,10740,10739,10738,10737,10736,10735,10734,10733,10732,10731,10730,10729,10728,10727,10726,10725,10724,10723,10722,10721,10720,10719,10718,10717,10716,10715,10714,10713,10712,10711,10710,10709,10708,10707,10706,10705,10704,10703,10702,10701,10700,10699,10698,10697,10696,10695,10694,10693,10692,10691,10690,10689,10688,10687,10686,10685,10684,10683,10682,10681,10680,10679,10678,10677,10676,10675,10674,10673,10672,10671,10670,10669,10668,10667,10666,10665,10664,10663,10662,10661,10660,10659,10658,10657,10656,10655,10654,10653,10652,10651,10650,10649,10648,10647,10646,10645,10644,10643,10642,10641,10640,10639,10638,10637,10636,10635,10634,10633,10632,10631,10630,10629,10628,10627,10626,10625,10624,10623,10622,10621,10620,10619,10618,10617,10616,10615,10614,10613,10612,10611,10610,10609,10608,10607,10606,10605,10604,10603,10602,10601,10600,10599,10598,10597,10596,10595,10594,10593,10592,10591,10590,10589,10588,10587,10586,10585,10584,10583,10582,10581,10580,10579,10578,10577,10576,10575,10574,10573,10572,10571,10570,10569,10568,10567,10566,10565,10564,10563,10562,10561,10560,10559,10558,10557,10556,10555,10554,10553,10552,10551,10550,10549,10548,10547,10546,10545,10544,10543,10542,10541,10540,10539,10538,10537,10536,10535,10534,10533,10532,10531,10530,10529,10528,10527,10526,10525,10524,10523,10522,10521,10520,10519,10518,10517,10516,10515,10514,10513,10512,10511,10510,10509,10508,10507,10506,10505,10504,10503,10502,10501,10500,10499,10498,10497,10496,10495,10494,10493,10492,10491,10490,10489,10488,10487,10486,10485,10484,10483,10482,10481,10480,10479,10478,10477,10476,10475,10474,10473,10472,10471,10470,10469,10468,10467,10466,10465,10464,10463,10462,10461,10460,10459,10458,10457,10456,10455,10454,10453,10452,10451,10450,10449,10448,10447,10446,10445,10444,10443,10442,10441,10440,10439,10438,10437,10436,10435,10434,10433,10432,10431,10430,10429,10428,10427,10426,10425,10424,10423,10422,10421,10420,10419,10418,10417,10416,10415,10414,10413,10412,10411,10410,10409,10408,10407,10406,10405,10404,10403,10402,10401,10400,10399,10398,10397,10396,10395,10394,10393,10392,10391,10390,10389,10388,10387,10386,10385,10384,10383,10382,10381,10380,10379,10378,10377,10376,10375,10374,10373,10372,10371,10370,10369,10368,10367,10366,10365,10364,10363,10362,10361,10360,10359,10358,10357,10356,10355,10354,10353,10352,10351,10350,10349,10348,10347,10346,10345,10344,10343,10342,10341,10340,10339,10338,10337,10336,10335,10334,10333,10332,10331,10330,10329,10328,10327,10326,10325,10324,10323,10322,10321,10320,10319,10318,10317,10316,10315,10314,10313,10312,10311,10310,10309,10308,10307,10306,10305,10304,10303,10302,10301,10300,10299,10298,10297,10296,10295,10294,10293,10292,10291,10290,10289,10288,10287,10286,10285,10284,10283,10282,10281,10280,10279,10278,10277,10276,10275,10274,10273,10272,10271,10270,10269,10268,10267,10266,10265,10264,10263,10262,10261,10260,10259,10258,10257,10256,10255,10254,10253,10252,10251,10250,10249,10248];
+			for(let x = 0, length = ids.length; x < length; x++) {
+				assert.ok(r.body[x].orderid == ids[x]);
+			}
+		})
 });
 
 it('NoSQL search by value reverse limit 20', async () => {
@@ -3610,9 +3703,9 @@ it('NoSQL search by value reverse limit 20', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_value',
-			'schema': '{{schema}}',
-			'table': '{{ords_tb}}',
-			'search_attribute': '{{ordd_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.ords_tb}`,
+			'search_attribute': `${generic.ordd_id}`,
 			'search_value': '*',
 			'get_attributes': ['*'],
 			'reverse': true,
@@ -3620,12 +3713,12 @@ it('NoSQL search by value reverse limit 20', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 20))
-
-	//Unmatched Postman assertion: let ids = [11077,11076,11075,11074,11073,11072,11071,11070,11069,11068,11067,11066,11065,11064,11063,11062,11061,11060,11059,11058];
-
-	//Unmatched Postman assertion: for(let x = 0, length = ids.length; x < length; x++){
-		.expect((r) => assert.ok(r.body[x].orderid == ids[x]))
-//Unmatched Postman assertion: }})
+		.expect((r) => {
+			let ids = [11077,11076,11075,11074,11073,11072,11071,11070,11069,11068,11067,11066,11065,11064,11063,11062,11061,11060,11059,11058];
+			for(let x = 0, length = ids.length; x < length; x++) {
+				assert.ok(r.body[x].orderid == ids[x]);
+			}
+		})
 });
 
 it('NoSQL search by value reverse offset 20 limit 20', async () => {
@@ -3634,9 +3727,9 @@ it('NoSQL search by value reverse offset 20 limit 20', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_value',
-			'schema': '{{schema}}',
-			'table': '{{ords_tb}}',
-			'search_attribute': '{{ordd_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.ords_tb}`,
+			'search_attribute': `${generic.ordd_id}`,
 			'search_value': '*',
 			'get_attributes': ['*'],
 			'reverse': true,
@@ -3645,12 +3738,12 @@ it('NoSQL search by value reverse offset 20 limit 20', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 20))
-
-	//Unmatched Postman assertion: let ids = [11057,11056,11055,11054,11053,11052,11051,11050,11049,11048,11047,11046,11045,11044,11043,11042,11041,11040,11039,11038];
-
-	//Unmatched Postman assertion: for(let x = 0, length = ids.length; x < length; x++){
-		.expect((r) => assert.ok(r.body[x].orderid == ids[x]))
-//Unmatched Postman assertion: }})
+		.expect((r) => {
+			let ids = [11057,11056,11055,11054,11053,11052,11051,11050,11049,11048,11047,11046,11045,11044,11043,11042,11041,11040,11039,11038];
+			for(let x = 0, length = ids.length; x < length; x++) {
+				assert.ok(r.body[x].orderid == ids[x]);
+			}
+		})
 });
 
 it('update NoSQL employee', async () => {
@@ -3659,9 +3752,9 @@ it('update NoSQL employee', async () => {
 		.set(headers)
 		.send({
 			'operation': 'update',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
-			'records': [{ '{{emps_id}}': 1, 'address': 'def1234' }],
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
+			'records': [{ [generic.emps_id]: 1, 'address': 'def1234' }],
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.update_hashes[0] == 1))
@@ -3673,11 +3766,11 @@ it('update NoSQL employee confirm', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_hash',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
-			'hash_attribute': '{{emps_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
+			'hash_attribute': `${generic.emps_id}`,
 			'hash_values': [1],
-			'get_attributes': ['{{emps_id}}', 'address'],
+			'get_attributes': [`${generic.emps_id}`, 'address'],
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].employeeid == 1))
@@ -3704,21 +3797,13 @@ it('update NoSQL employee add new attribute', async () => {
 		.set(headers)
 		.send({
 			'operation': 'update',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
-			'records': [{ '{{emps_id}}': 1, 'address': 'def1234', 'test_record': 'I\'mATest' }],
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
+			'records': [{ [generic.emps_id]: 1, 'address': 'def1234', 'test_record': 'I\'mATest' }],
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.update_hashes[0] == 1))
-
-//Unmatched Postman assertion: function pausecomp(millis)
-//Unmatched Postman assertion: {
-//Unmatched Postman assertion: var date = new Date()
-//Unmatched Postman assertion: var curDate = null;
-//Unmatched Postman assertion: do { curDate = new Date() }
-//Unmatched Postman assertion: while(curDate-date < millis)
-//Unmatched Postman assertion: }
-//Unmatched Postman assertion: pausecomp(100))
+	await setTimeout(200);
 });
 
 it('Insert with duplicate records to make sure both are not added', async () => {
@@ -3726,18 +3811,25 @@ it('Insert with duplicate records to make sure both are not added', async () => 
 		.post('')
 		.set(headers)
 		.send({
-			'operation': 'insert',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
-			'records': [{
-				'{{emps_id}}': 212,
-				'address': 'def1234',
-				'lastname': 'dobolina',
-				'firstname': 'bob'
-			}, { '{{emps_id}}': 212, 'address': 'def1234', 'lastname': 'dobolina2', 'firstname': 'bob' }],
+			operation: 'insert',
+			schema: `${generic.schema}`,
+			table: `${generic.emps_tb}`,
+			records: [
+				{
+					[generic.emps_id]: 212,
+					address: 'def1234',
+					lastname: 'dobolina',
+					firstname: 'bob',
+				},
+				{ [generic.emps_id]: 212,
+					address: 'def1234',
+					lastname: 'dobolina2',
+					firstname: 'bob'
+				},
+			],
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body.skipped_hashes[0] == 212))
+		.expect((r) => assert.ok(r.body.skipped_hashes[0] == 212));
 });
 
 it('Insert with no hash', async () => {
@@ -3746,8 +3838,8 @@ it('Insert with no hash', async () => {
 		.set(headers)
 		.send({
 			'operation': 'insert',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
 			'records': [{ 'address': '1 North Street', 'lastname': 'Dog', 'firstname': 'Harper' }],
 		})
 		.expect(200)
@@ -3761,9 +3853,9 @@ it('Insert with empty hash', async () => {
 		.set(headers)
 		.send({
 			'operation': 'insert',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
-			'records': [{ '{{emps_id}}': '', 'address': '23 North Street', 'lastname': 'Cat', 'firstname': 'Brian' }],
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
+			'records': [{ [generic.emps_id]: '', 'address': '23 North Street', 'lastname': 'Cat', 'firstname': 'Brian' }],
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.inserted_hashes.length == 1))
@@ -3776,9 +3868,9 @@ it('NoSQL search by hash', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_hash',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
-			'hash_attribute': '{{emps_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
+			'hash_attribute': `${generic.emps_id}`,
 			'hash_values': [1],
 			'get_attributes': ['address', 'test_record'],
 		})
@@ -3869,9 +3961,9 @@ it('update NoSQL employee with falsey attributes', async () => {
 		.set(headers)
 		.send({
 			'operation': 'update',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
-			'records': [{ '{{emps_id}}': 2, 'address': 0, 'hireDate': null, 'notes': false }],
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
+			'records': [{ [generic.emps_id]: 2, 'address': 0, 'hireDate': null, 'notes': false }],
 		})
 		.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records', 'Expected response message to eql "updated 1 of 1 records"'))
 		.expect(200)
@@ -3884,9 +3976,9 @@ it('NoSQL search by hash to confirm falsey update', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_hash',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
-			'hash_attribute': '{{emps_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
+			'hash_attribute': `${generic.emps_id}`,
 			'hash_values': [2],
 			'get_attributes': ['address', 'hireDate', 'notes'],
 		})
@@ -3902,8 +3994,8 @@ it('update NoSQL one employee record with no hash attribute', async () => {
 		.set(headers)
 		.send({
 			'operation': 'update',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
 			'records': [{ 'address': '3000 Dog Place' }],
 		})
 		.expect(400)
@@ -3916,9 +4008,9 @@ it('update NoSQL one employee record with empty hash attribute', async () => {
 		.set(headers)
 		.send({
 			'operation': 'update',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
-			'records': [{ '{{emps_id}}': '', 'address': '123 North Blvd', 'notes': 'This guy is the real deal' }],
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
+			'records': [{ [generic.emps_id]: '', 'address': '123 North Blvd', 'notes': 'This guy is the real deal' }],
 		})
 		.expect(400)
 		.expect((r) => assert.ok(r.body.error == 'a valid hash attribute must be provided with update record, check log for more info'))
@@ -3930,14 +4022,14 @@ it('update NoSQL multiple employee records with no hash attribute', async () => 
 		.set(headers)
 		.send({
 			'operation': 'update',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
 			'records': [{
-				'{{emps_id}}': 2,
+				[generic.emps_id]: 2,
 				'address': '123 North Blvd',
 				'notes': 'This guy is the real deal'
 			}, { 'address': '45 Lost St', 'notes': 'This person doesn\'t even have an id!' }, {
-				'{{emps_id}}': 3,
+				[generic.emps_id]: 3,
 				'address': '1 Main St',
 				'notes': 'This guy okay'
 			}],
@@ -3952,20 +4044,22 @@ it('update NoSQL employee with valid nonexistent hash', async () => {
 		.set(headers)
 		.send({
 			'operation': 'update',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
-			'records': [{ '{{emps_id}}': 'There is no way this exists', 'notes': 'who is this fella?' }],
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
+			'records': [{ [generic.emps_id]: 'There is no way this exists', 'notes': 'who is this fella?' }],
+		})
+		.expect((r) => {
+			if(r.body.message === "updated 0 of 1 records") {
+				assert.ok(r.body.message == 'updated 0 of 1 records');
+				assert.deepEqual(r.body.update_hashes, []);
+				assert.ok(r.body.skipped_hashes[0] == "There is no way this exists");
+			} else if(r.body.message === "updated 1 of 1 records") {
+				assert.ok(r.body.message == 'updated 1 of 1 records', 'Expected response message to eql "updated 1 of 1 records"');
+				assert.ok(r.body.update_hashes[0] == "There is no way this exists");
+				assert.deepEqual(r.body.skipped_hashes, []);
+			}
 		})
 		.expect(200)
-	//Unmatched Postman assertion: if(jsonData.message === "updated 0 of 1 records"){
-		.expect((r) => assert.ok(r.body.message == 'updated 0 of 1 records'))
-		.expect((r) => assert.ok(r.body.update_hashes == []))
-		.expect((r) => assert.ok(r.body.skipped_hashes[0] == "There is no way this exists"))
-	//Unmatched Postman assertion: } else if(jsonData.message === "updated 1 of 1 records"){
-		.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records', 'Expected response message to eql "updated 1 of 1 records"'))
-		.expect((r) => assert.ok(r.body.update_hashes[0] == "There is no way this exists"))
-		.expect((r) => assert.ok(r.body.skipped_hashes == []))
-//Unmatched Postman assertion: }})
 });
 
 it('NoSQL search by value - * at end', async () => {
@@ -3982,14 +4076,19 @@ it('NoSQL search by value - * at end', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 2))
-	//Unmatched Postman assertion: jsonData.forEach((record)=>{
-	//Unmatched Postman assertion: let keys = Object.keys(record)
-	//Unmatched Postman assertion: if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){
-		.expect((r) => assert.ok(keys.length == 5))
-	//Unmatched Postman assertion: } else{
-		.expect((r) => assert.ok(keys.length == 3))
-//Unmatched Postman assertion: }
-//Unmatched Postman assertion: pm.expect(record.remarks.includes('Location ... Location ...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:') == true)})
+		.expect((r) => {
+			r.body.forEach((record) => {
+				let keys = Object.keys(record);
+				if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1) {
+					assert.ok(keys.length == 5);
+				} else {
+					assert.ok(keys.length == 3);
+				}
+				assert.ok(record.remarks.includes(
+					'Location ... Location ...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet ' +
+					'schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:'));
+			})
+		})
 });
 
 it('NoSQL search by value - * at start', async () => {
@@ -4006,14 +4105,20 @@ it('NoSQL search by value - * at start', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-	//Unmatched Postman assertion: jsonData.forEach((record)=>{
-	//Unmatched Postman assertion: let keys = Object.keys(record)
-	//Unmatched Postman assertion: if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){
-		.expect((r) => assert.ok(keys.length == 5))
-	//Unmatched Postman assertion: } else{
-		.expect((r) => assert.ok(keys.length == 3))
-//Unmatched Postman assertion: }
-//Unmatched Postman assertion: pm.expect(record.remarks.includes("*DON'T MISS THIS BEAUTIFUL DAVID WEEKLEY BELMONTE MODEL*ONE OF THE LARGEST LOTS IN CROSSWATER*GREAT FOR OUTDOOR FUN!*LUXURIOUS LIVING!*HIGH TECH HOME*CROWN MOLDING, CUSTOM PLANTATION SHUTTERS, 18'' TILE & CUSTOM WHITE OAK HARDWOOD FLOORING...") == true)})
+		.expect((r) => {
+			r.body.forEach((record) => {
+				let keys = Object.keys(record);
+				if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1) {
+					assert.ok(keys.length == 5);
+				} else {
+					assert.ok(keys.length == 3);
+				}
+				assert.ok(record.remarks.includes(
+					"*DON'T MISS THIS BEAUTIFUL DAVID WEEKLEY BELMONTE MODEL*ONE OF THE LARGEST LOTS IN " +
+					"CROSSWATER*GREAT FOR OUTDOOR FUN!*LUXURIOUS LIVING!*HIGH TECH HOME*CROWN MOLDING, " +
+					"CUSTOM PLANTATION SHUTTERS, 18'' TILE & CUSTOM WHITE OAK HARDWOOD FLOORING..."));
+			})
+		})
 });
 
 it('NoSQL search by value - * at start and end', async () => {
@@ -4030,14 +4135,17 @@ it('NoSQL search by value - * at start and end', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 3))
-	//Unmatched Postman assertion: jsonData.forEach((record)=>{
-	//Unmatched Postman assertion: let keys = Object.keys(record)
-	//Unmatched Postman assertion: if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){
-		.expect((r) => assert.ok(keys.length == 5))
-	//Unmatched Postman assertion: } else{
-		.expect((r) => assert.ok(keys.length == 3))
-//Unmatched Postman assertion: }
-//Unmatched Postman assertion: pm.expect(record.remarks.includes("4 Bedroom/2.5+") == true)})
+		.expect((r) => {
+			r.body.forEach((record) => {
+				let keys = Object.keys(record);
+				if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1) {
+					assert.ok(keys.length == 5);
+				} else {
+					assert.ok(keys.length == 3);
+				}
+				assert.ok(record.remarks.includes("4 Bedroom/2.5+"));
+			})
+		})
 });
 
 it('NoSQL search by value - * as search_value', async () => {
@@ -4054,13 +4162,16 @@ it('NoSQL search by value - * as search_value', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 11))
-	//Unmatched Postman assertion: jsonData.forEach((record)=>{
-	//Unmatched Postman assertion: let keys = Object.keys(record)
-	//Unmatched Postman assertion: if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){
-		.expect((r) => assert.ok(keys.length == 5))
-	//Unmatched Postman assertion: } else{
-		.expect((r) => assert.ok(keys.length == 3))
-//Unmatched Postman assertion: }});
+		.expect((r) => {
+			r.body.forEach((record) => {
+				let keys = Object.keys(record);
+				if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1) {
+					assert.ok(keys.length == 5);
+				} else {
+					assert.ok(keys.length == 3);
+				}
+			})
+		})
 });
 
 it('NoSQL search by value - *** at start', async () => {
@@ -4077,14 +4188,20 @@ it('NoSQL search by value - *** at start', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-	//Unmatched Postman assertion: jsonData.forEach((record)=>{
-	//Unmatched Postman assertion: let keys = Object.keys(record)
-	//Unmatched Postman assertion: if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1){
-		.expect((r) => assert.ok(keys.length == 5))
-	//Unmatched Postman assertion: } else{
-		.expect((r) => assert.ok(keys.length == 3))
-//Unmatched Postman assertion: }
-//Unmatched Postman assertion: pm.expect(record.remarks.includes("**Spacious & updated 2-story home on large preserve lot nearly 1/2 acre! Concrete block constr. & desirable ICW location near JTB, shopping, dining & the beach! Great split BD flrpln w/soaring ceilings features 4BD + office, upstairs loft & 3 full BA.") == true)})
+		.expect((r) => {
+			r.body.forEach((record) => {
+				let keys = Object.keys(record);
+				if(keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1) {
+					assert.ok(keys.length == 5);
+				} else {
+					assert.ok(keys.length == 3);
+				}
+				assert.ok(record.remarks.includes(
+					"**Spacious & updated 2-story home on large preserve lot nearly 1/2 acre! " +
+					"Concrete block constr. & desirable ICW location near JTB, shopping, dining & the beach! " +
+					"Great split BD flrpln w/soaring ceilings features 4BD + office, upstairs loft & 3 full BA."));
+			})
+		})
 });
 
 it('NoSQL search by hash on leading_zero, value = 0', async () => {
@@ -4101,10 +4218,12 @@ it('NoSQL search by hash on leading_zero, value = 0', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-	//Unmatched Postman assertion: let record = jsonData[0];
-		.expect((r) => assert.ok(record.id == 0))
-		.expect((r) => assert.ok(record.another_attribute == 'another_1'))
-		.expect((r) => assert.ok(record.some_attribute == 'some_att1'))
+		.expect((r) => {
+			let record = r.body[0];
+			assert.ok(record.id == 0);
+			assert.ok(record.another_attribute == 'another_1');
+			assert.ok(record.some_attribute == 'some_att1');
+		})
 });
 
 it('NoSQL search by hash on leading_zero, values "011","00011"', async () => {
@@ -4123,13 +4242,13 @@ it('NoSQL search by hash on leading_zero, values "011","00011"', async () => {
 		.expect((r) => assert.ok(r.body.length == 2))
 		.expect((r) => {
 			let record = r.body[0];
-			assert.ok(record.id == '011')
-			assert.ok(record.another_attribute == 'another_2')
-			assert.ok(record.some_attribute == 'some_att2')
+			assert.ok(record.id == '011');
+			assert.ok(record.another_attribute == 'another_2');
+			assert.ok(record.some_attribute == 'some_att2');
 			let record2 = r.body[1];
-			assert.ok(record2.id == '00011')
-			assert.ok(record2.another_attribute == 'another_3')
-			assert.ok(record2.some_attribute == 'some_att3')
+			assert.ok(record2.id == '00011');
+			assert.ok(record2.another_attribute == 'another_3');
+			assert.ok(record2.some_attribute == 'some_att3');
 		})
 });
 
@@ -4146,10 +4265,9 @@ it('NoSQL search by value leading_zero - value = 0', async () => {
 			'get_attributes': ['*'],
 		})
 		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-	//Unmatched Postman assertion: let record = jsonData[0];
-		.expect((r) => assert.ok(record.id == 0))
-		.expect((r) => assert.ok(record.another_attribute == 'another_1'))
-		.expect((r) => assert.ok(record.some_attribute == 'some_att1'))
+		.expect((r) => assert.ok(r.body[0].id == 0))
+		.expect((r) => assert.ok(r.body[0].another_attribute == 'another_1'))
+		.expect((r) => assert.ok(r.body[0].some_attribute == 'some_att1'))
 });
 
 it('NoSQL search by value leading_zero - value = "011"', async () => {
@@ -4165,10 +4283,9 @@ it('NoSQL search by value leading_zero - value = "011"', async () => {
 			'get_attributes': ['*'],
 		})
 		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-	//Unmatched Postman assertion: let record = jsonData[0];
-	//Unmatched Postman assertion: pm.expect(record.id == '011')
-		.expect((r) => assert.ok(record.another_attribute == 'another_2'))
-//Unmatched Postman assertion: pm.expect(record.some_attribute == "some_att2"))
+		.expect((r) => assert.ok(r.body[0].id == '011'))
+		.expect((r) => assert.ok(r.body[0].another_attribute == 'another_2'))
+		.expect((r) => assert.ok(r.body[0].some_attribute == "some_att2"))
 });
 
 it('NoSQL search by value leading_zero - value = "0*"', async () => {
@@ -4204,8 +4321,8 @@ it('Upsert into products 1 new record & 2 that exist', async () => {
 		.set(headers)
 		.send({
 			'operation': 'upsert',
-			'schema': '{{schema}}',
-			'table': '{{prod_tb}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.prod_tb}`,
 			'records': [{
 				'categoryid': 1,
 				'unitsnnorder': 0,
@@ -4243,7 +4360,7 @@ it('Upsert into products 1 new record & 2 that exist', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.upserted_hashes.length == 3))
-		.expect((r) => assert.ok(r.body.upserted_hashes == [1, 100, 101]))
+		.expect((r) => assert.deepEqual(r.body.upserted_hashes, [1, 100, 101]))
 		.expect((r) => assert.ok(r.body.skipped_hashes == 'undefined'))
 		.expect((r) => assert.ok(r.body.message == 'upserted 3 of 3 records'))
 });
@@ -4254,8 +4371,8 @@ it('Confirm upserted records exist and are updated', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_value',
-			'schema': '{{schema}}',
-			'table': '{{prod_tb}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.prod_tb}`,
 			'search_attribute': 'discontinued',
 			'search_value': true,
 			'get_attributes': ['*'],
@@ -4276,8 +4393,8 @@ it('Upsert into products 3 new records w/o hash vals', async () => {
 		.set(headers)
 		.send({
 			'operation': 'upsert',
-			'schema': '{{schema}}',
-			'table': '{{prod_tb}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.prod_tb}`,
 			'records': [{
 				'categoryid': 1,
 				'unitsnnorder': 0,
@@ -4320,12 +4437,12 @@ it('Remove added record from products', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'delete', 'schema': '{{schema}}', 'table': '{{prod_tb}}', 'hash_values': [100] })
+		.send({ 'operation': 'delete', 'schema': `${generic.schema}`, 'table': `${generic.prod_tb}`, 'hash_values': [100] })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.deleted_hashes.length == 1))
-		.expect((r) => assert.ok(r.body.deleted_hashes == [100]))
+		.expect((r) => assert.deepEqual(r.body.deleted_hashes, [100]))
 		.expect((r) => assert.ok(r.body.skipped_hashes.length == 0))
-		.expect((r) => assert.ok(r.body.skipped_hashes == []))
+		.expect((r) => assert.deepEqual(r.body.skipped_hashes, []))
 		.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted'))
 });
 
@@ -4335,8 +4452,8 @@ it('Update products 1 existing record & one that does not exist', async () => {
 		.set(headers)
 		.send({
 			'operation': 'update',
-			'schema': '{{schema}}',
-			'table': '{{prod_tb}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.prod_tb}`,
 			'records': [{ 'productid': 1, 'discontinued': true }, {
 				'categoryid': 1,
 				'unitsnnorder': 0,
@@ -4352,9 +4469,9 @@ it('Update products 1 existing record & one that does not exist', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.update_hashes.length == 1))
-		.expect((r) => assert.ok(r.body.update_hashes == [1]))
+		.expect((r) => assert.deepEqual(r.body.update_hashes, [1]))
 		.expect((r) => assert.ok(r.body.skipped_hashes.length == 1))
-		.expect((r) => assert.ok(r.body.skipped_hashes == [100]))
+		.expect((r) => assert.deepEqual(r.body.skipped_hashes, [100]))
 		.expect((r) => assert.ok(r.body.message == 'updated 1 of 2 records'))
 });
 
@@ -4364,16 +4481,16 @@ it('Restore Product record', async () => {
 		.set(headers)
 		.send({
 			'operation': 'update',
-			'schema': '{{schema}}',
-			'table': '{{prod_tb}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.prod_tb}`,
 			'records': [{ 'productid': 1, 'discontinued': 'False' }],
 		})
 		.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records', 'Expected response message to eql "updated 1 of 1 records"'))
 		.expect(200)
 		.expect((r) => assert.ok(r.body.update_hashes.length == 1))
-		.expect((r) => assert.ok(r.body.update_hashes == [1]))
+		.expect((r) => assert.deepEqual(r.body.update_hashes, [1]))
 		.expect((r) => assert.ok(r.body.skipped_hashes.length == 0))
-		.expect((r) => assert.ok(r.body.skipped_hashes == []))
+		.expect((r) => assert.deepEqual(r.body.skipped_hashes, []))
 });
 
 it('attempt to update __createdtime__', async () => {
@@ -4382,9 +4499,9 @@ it('attempt to update __createdtime__', async () => {
 		.set(headers)
 		.send({
 			'operation': 'update',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
-			'records': [{ '{{emps_id}}': 1, '__createdtime__': 'bad value' }],
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
+			'records': [{ [generic.emps_id]: 1, '__createdtime__': 'bad value' }],
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.update_hashes[0] == 1))
@@ -4396,11 +4513,11 @@ it('confirm __createdtime__ did not change', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_hash',
-			'schema': '{{schema}}',
-			'table': '{{emps_tb}}',
-			'hash_attribute': '{{emps_id}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.emps_tb}`,
+			'hash_attribute': `${generic.emps_id}`,
 			'hash_values': [1],
-			'get_attributes': ['{{emps_id}}', '__createdtime__'],
+			'get_attributes': [`${generic.emps_id}`, '__createdtime__'],
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].employeeid == 1))
@@ -4419,7 +4536,7 @@ it('insert record with dog_name =  single space value & empty string', async () 
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'inserted 2 of 2 records'))
-		.expect((r) => assert.ok(r.body.inserted_hashes == [1111, 2222]))
+		.expect((r) => assert.deepEqual(r.body.inserted_hashes, [1111, 2222]))
 });
 
 it('search by value dog_name = single space string', async () => {
@@ -4460,7 +4577,7 @@ it('Delete dev.dog records previously created', async () => {
 		.set(headers)
 		.send({ 'operation': 'delete', 'schema': 'dev', 'table': 'dog', 'hash_values': [1111, 2222] })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.deleted_hashes == [1111, 2222]))
+		.expect((r) => assert.deepEqual(r.body.deleted_hashes, [1111, 2222]))
 });
 
 it('Search by value 123.4', async () => {
@@ -5125,95 +5242,112 @@ it('Add non-SU bulk_load_role', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			'operation': 'add_role', 'role': 'bulk_load_role', 'permission': {
-				'super_user': false,
-				'{{schema}}': {
-					'tables': {
-						'{{supp_tb}}': {
-							'read': true,
-							'insert': true,
-							'update': true,
-							'delete': true,
-							'attribute_permissions': [{
-								'attribute_name': 'companyname',
-								'read': true,
-								'insert': true,
-								'update': true,
-							}],
+			operation: 'add_role',
+			role: 'bulk_load_role',
+			permission: {
+				super_user: false,
+				northnwd: {
+					tables: {
+						suppliers: {
+							read: true,
+							insert: true,
+							update: true,
+							delete: true,
+							attribute_permissions: [
+								{
+									attribute_name: 'companyname',
+									read: true,
+									insert: true,
+									update: true,
+								},
+							],
 						},
-						'{{csv_tb}}': {
-							'read': true,
-							'insert': true,
-							'update': true,
-							'delete': false,
-							'attribute_permissions': [{
-								'attribute_name': 'name',
-								'read': false,
-								'insert': true,
-								'update': false,
-							}, {
-								'attribute_name': 'section',
-								'read': true,
-								'insert': false,
-								'update': true,
-							}, { 'attribute_name': 'image', 'read': true, 'insert': true, 'update': true }],
+						url_csv_data: {
+							read: true,
+							insert: true,
+							update: true,
+							delete: false,
+							attribute_permissions: [
+								{
+									attribute_name: 'name',
+									read: false,
+									insert: true,
+									update: false,
+								},
+								{
+									attribute_name: 'section',
+									read: true,
+									insert: false,
+									update: true,
+								},
+								{ attribute_name: 'image', read: true, insert: true, update: true },
+							],
 						},
-					}
+					},
 				},
 				'dev': {
-					'tables': {
-						'books': {
-							'read': true,
-							'insert': true,
-							'update': true,
-							'delete': true,
-							'attribute_permissions': [{
-								'attribute_name': 'books_count',
-								'read': true,
-								'insert': false,
-								'update': true,
-							}],
+					tables: {
+						books: {
+							read: true,
+							insert: true,
+							update: true,
+							delete: true,
+							attribute_permissions: [
+								{
+									attribute_name: 'books_count',
+									read: true,
+									insert: false,
+									update: true,
+								},
+							],
 						},
-						'dog': {
-							'read': true,
-							'insert': true,
-							'update': true,
-							'delete': false,
-							'attribute_permissions': [{
-								'attribute_name': 'dog_name',
-								'read': false,
-								'insert': true,
-								'update': true,
-							}, {
-								'attribute_name': 'age',
-								'read': true,
-								'insert': false,
-								'update': true,
-							}, {
-								'attribute_name': 'adorable',
-								'read': true,
-								'insert': true,
-								'update': false,
-							}, { 'attribute_name': 'owner_id', 'read': true, 'insert': false, 'update': false }],
+						dog: {
+							read: true,
+							insert: true,
+							update: true,
+							delete: false,
+							attribute_permissions: [
+								{
+									attribute_name: 'dog_name',
+									read: false,
+									insert: true,
+									update: true,
+								},
+								{
+									attribute_name: 'age',
+									read: true,
+									insert: false,
+									update: true,
+								},
+								{
+									attribute_name: 'adorable',
+									read: true,
+									insert: true,
+									update: false,
+								},
+								{ attribute_name: 'owner_id', read: true, insert: false, update: false },
+							],
 						},
-						'owner': {
-							'read': true,
-							'insert': true,
-							'update': true,
-							'delete': false,
-							'attribute_permissions': [{
-								'attribute_name': 'name',
-								'read': true,
-								'insert': false,
-								'update': false,
-							}],
+						owner: {
+							read: true,
+							insert: true,
+							update: true,
+							delete: false,
+							attribute_permissions: [
+								{
+									attribute_name: 'name',
+									read: true,
+									insert: false,
+									update: false,
+								},
+							],
 						},
-					}
-				}
+					},
+				},
 			},
 		})
-		.expect(200)
-	generic.role_id = response.body.id;
+		.expect((r) => assert.ok(r.body.id))
+		.expect(200);
 });
 
 it('Add user with new bulk_load_role', async () => {
@@ -5221,506 +5355,301 @@ it('Add user with new bulk_load_role', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			'operation': 'add_user',
-			'role': 'bulk_load_role',
-			'username': 'bulk_load_user',
-			'password': '{{password}}',
-			'active': true,
+			operation: 'add_user',
+			role: 'bulk_load_role',
+			username: 'bulk_load_user',
+			password: `${generic.password}`,
+			active: true,
 		})
-		.expect(200)
+		.expect(200);
 });
 
 it('CSV Data Load  update to table w/ new attr & restricted attrs', async () => {
-	await csvDataLoad('update', generic.schema, generic.supp_tb,
-		'supplierid,companyname, rando\n19,The Chum Bucket, Another attr value\n');
-});
-
-it('Check Data CSV job - update - perms error', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ 'operation': 'get_job', 'id': '{{job_id}}' })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: const msg = jsonData[0].message;
-		.expect((r) => assert.ok(r.body[0].status == 'ERROR'))
-		.expect((r) => assert.ok(r.body[0].id == getJobId(job_id)))
-		.expect((r) => assert.ok(msg.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
-	//Unmatched Postman assertion: pm.expect(msg.unauthorized_access.length == 0)
-		.expect((r) => assert.ok(msg.invalid_schema_items.length == 1))
-		.expect((r) => assert.ok(r.body.message.invalid_schema_items[0] == 'Attribute \' rando\' does not exist on \'northnwd.suppliers\''))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-		.expect((r) => assert.ok(r.body[0].status != 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check Data CSV job - update - perms error')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check Data CSV job - update - perms error')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	const errorMsg = await csvDataLoad(
+		headersBulkLoadUser,
+		'update',
+		generic.schema,
+		generic.supp_tb,
+		'supplierid,companyname, rando\n19,The Chum Bucket, Another attr value\n',
+		'This operation is not authorized due to role restrictions and/or invalid database items'
+	);
+	assert.ok(errorMsg.unauthorized_access.length == 0);
+	assert.ok(errorMsg.invalid_schema_items.length == 1);
+	assert.ok(errorMsg.invalid_schema_items[0] == "Attribute ' rando' does not exist on 'northnwd.suppliers'");
 });
 
 it('CSV Data Load - upsert - to table w/ some restricted attrs & new attr', async () => {
-	await csvDataLoad('upsert', generic.schema_dev, 'dog',
-		'id,dog_name,adorable,age,rando\n19,doggy,true,22,Another attr value\n');
-});
-
-it('Check Data CSV job - upsert - perms error', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ 'operation': 'get_job', 'id': '{{job_id}}' })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: const msg = jsonData[0].message;
-		.expect((r) => assert.ok(r.body[0].status == 'ERROR'))
-		.expect((r) => assert.ok(r.body[0].id == getJobId(job_id)))
-		.expect((r) => assert.ok(msg.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
-		.expect((r) => assert.ok(r.body[0].message.unauthorized_access.length == 1))
-	//Unmatched Postman assertion: const unauth_obj = msg.unauthorized_access[0];
-		.expect((r) => assert.ok(unauth_obj.schema == 'dev'))
-		.expect((r) => assert.ok(unauth_obj.table == 'dog'))
-		.expect((r) => assert.ok(unauth_obj.required_table_permissions.length == 0))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions.length == 2))
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].attribute_name == "adorable")
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == "update"))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == "age"))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert'))
-		.expect((r) => assert.ok(msg.invalid_schema_items.length == 1))
-		.expect((r) => assert.ok(r.body.message.invalid_schema_items[0] == 'Attribute \'rando\' does not exist on \'dev.dog\''))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-		.expect((r) => assert.ok(r.body[0].status != 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check Data CSV job - upsert - perms error')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check Data CSV job - upsert - perms error')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	const errorMsg = await csvDataLoad(
+		headersBulkLoadUser,
+		'upsert',
+		generic.schema_dev,
+		'dog',
+		'id,dog_name,adorable,age,rando\n19,doggy,true,22,Another attr value\n',
+		'This operation is not authorized due to role restrictions and/or invalid database items'
+	);
+	assert.ok(errorMsg.unauthorized_access.length == 1);
+	const unauth_obj = errorMsg.unauthorized_access[0];
+	assert.ok(unauth_obj.schema == 'dev');
+	assert.ok(unauth_obj.table == 'dog');
+	assert.ok(unauth_obj.required_table_permissions.length == 0);
+	assert.ok(unauth_obj.required_attribute_permissions.length == 2);
+	assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'adorable');
+	assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1);
+	assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'update');
+	assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'age');
+	assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1);
+	assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert');
+	assert.ok(errorMsg.invalid_schema_items.length == 1);
+	assert.ok(errorMsg.invalid_schema_items[0] == "Attribute 'rando' does not exist on 'dev.dog'");
 });
 
 it('CSV URL Load - upsert - to table w/ restricted attrs', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersBulkLoadUser)
 		.send({
-			'operation': 'csv_url_load',
-			'action': 'upsert',
-			'schema': '{{schema}}',
-			'table': '{{csv_tb}}',
-			'csv_url': 'https://harperdb-integration-test-data.s3.us-east-2.amazonaws.com/breeds.csv',
+			operation: 'csv_url_load',
+			action: 'upsert',
+			schema: `${generic.schema}`,
+			table: `${generic.csv_tb}`,
+			csv_url: 'https://harperdb-integration-test-data.s3.us-east-2.amazonaws.com/breeds.csv',
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
+		.expect((r) =>
+			assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response')
+		);
 
-	//Unmatched Postman assertion: let id_index = jsonData.message.indexOf('id ');
-//Unmatched Postman assertion: let parsedId = jsonData.message.substring(id_index + 3, jsonData.message.length)
-//Unmatched Postman assertion: pm.environment.set("job_id", parsedId))
-});
+	const id = await getJobId(response.body);
+	const errorMsg = await checkJobCompleted(
+		id,
+		'This operation is not authorized due to role restrictions and/or invalid database items'
+	);
 
-it('Check URL CSV job  - upsert -  perms error', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ 'operation': 'get_job', 'id': '{{job_id}}' })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: const msg = jsonData[0].message;
-		.expect((r) => assert.ok(r.body[0].status == 'ERROR'))
-		.expect((r) => assert.ok(r.body[0].id == getJobId(job_id)))
-		.expect((r) => assert.ok(msg.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
-		.expect((r) => assert.ok(r.body[0].message.unauthorized_access.length == 1))
-	//Unmatched Postman assertion: const unauth_obj = msg.unauthorized_access[0];
-		.expect((r) => assert.ok(unauth_obj.schema == 'northnwd'))
-		.expect((r) => assert.ok(unauth_obj.table == 'url_csv_data'))
-		.expect((r) => assert.ok(unauth_obj.required_table_permissions.length == 0))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions.length == 2))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == "name"))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == "update"))
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].attribute_name == "section")
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert'))
-		.expect((r) => assert.ok(msg.invalid_schema_items.length == 1))
-		.expect((r) => assert.ok(r.body.message.invalid_schema_items[0] == 'Attribute \'country\' does not exist on \'northnwd.url_csv_data\''))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-		.expect((r) => assert.ok(r.body[0].status != 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check URL CSV job  - upsert -  perms error')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check URL CSV job  - upsert -  perms error')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	assert.ok(errorMsg.unauthorized_access.length == 1);
+	const unauth_obj = errorMsg.unauthorized_access[0];
+
+	assert.ok(unauth_obj.schema == 'northnwd');
+	assert.ok(unauth_obj.table == 'url_csv_data');
+	assert.ok(unauth_obj.required_table_permissions.length == 0);
+	assert.ok(unauth_obj.required_attribute_permissions.length == 2);
+	assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'name');
+	assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1);
+	assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'update');
+	assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'section');
+	assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1);
+	assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert');
+	assert.ok(errorMsg.invalid_schema_items.length == 1);
+	assert.ok(errorMsg.invalid_schema_items[0] == "Attribute 'country' does not exist on 'northnwd.url_csv_data'");
 });
 
 it('CSV URL Load - update - to table w/ restricted attrs', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersBulkLoadUser)
 		.send({
 			'operation': 'csv_url_load',
 			'action': 'update',
-			'schema': '{{schema}}',
-			'table': '{{csv_tb}}',
+			'schema': `${generic.schema}`,
+			'table': `${generic.csv_tb}`,
 			'csv_url': 'https://harperdb-integration-test-data.s3.us-east-2.amazonaws.com/breeds.csv',
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
+		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0,
+			'Expected to find "Starting job" in the response'))
 
-	//Unmatched Postman assertion: let id_index = jsonData.message.indexOf('id ');
-//Unmatched Postman assertion: let parsedId = jsonData.message.substring(id_index + 3, jsonData.message.length)
-//Unmatched Postman assertion: pm.environment.set("job_id", parsedId))
-});
+	const id = await getJobId(response.body);
+	const errorMsg = await checkJobCompleted(
+		id,
+		'This operation is not authorized due to role restrictions and/or invalid database items'
+	);
 
-it('Check URL CSV job  - update -  perms error', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ 'operation': 'get_job', 'id': '{{job_id}}' })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: const msg = jsonData[0].message;
-		.expect((r) => assert.ok(r.body[0].status == 'ERROR'))
-		.expect((r) => assert.ok(r.body[0].id == getJobId(job_id)))
-		.expect((r) => assert.ok(msg.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
-		.expect((r) => assert.ok(r.body[0].message.unauthorized_access.length == 1))
-	//Unmatched Postman assertion: const unauth_obj = msg.unauthorized_access[0];
-		.expect((r) => assert.ok(unauth_obj.schema == 'northnwd'))
-		.expect((r) => assert.ok(unauth_obj.table == 'url_csv_data'))
-		.expect((r) => assert.ok(unauth_obj.required_table_permissions.length == 0))
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions.length == 1)
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == "name"))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == "update"))
-		.expect((r) => assert.ok(msg.invalid_schema_items.length == 1))
-		.expect((r) => assert.ok(r.body.message.invalid_schema_items[0] == 'Attribute \'country\' does not exist on \'northnwd.url_csv_data\''))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-		.expect((r) => assert.ok(r.body[0].status != 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check URL CSV job  - update -  perms error')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check URL CSV job  - update -  perms error')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	assert.ok(errorMsg.unauthorized_access.length == 1);
+	const unauth_obj = errorMsg.unauthorized_access[0];
+
+	assert.ok(unauth_obj.schema == 'northnwd');
+	assert.ok(unauth_obj.table == 'url_csv_data');
+	assert.ok(unauth_obj.required_table_permissions.length == 0);
+	assert.ok(unauth_obj.required_attribute_permissions.length == 1);
+	assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == "name");
+	assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1);
+	assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == "update");
+	assert.ok(errorMsg.invalid_schema_items.length == 1);
+	assert.ok(errorMsg.invalid_schema_items[0] == 'Attribute \'country\' does not exist on \'northnwd.url_csv_data\'');
+
 });
 
 it('CSV File Load to table w/ restricted attrs', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersBulkLoadUser)
 		.send({
 			'operation': 'csv_file_load',
 			'action': 'insert',
 			'schema': 'dev',
 			'table': 'books',
-			'file_path': '{{files_location}}Books.csv',
+			'file_path': `${getCsvPath()}` + 'Books.csv',
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
+		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0,
+			'Expected to find "Starting job" in the response'))
 
-	//Unmatched Postman assertion: let id_index = jsonData.message.indexOf('id ');
-//Unmatched Postman assertion: let parsedId = jsonData.message.substring(id_index + 3, jsonData.message.length)
-//Unmatched Postman assertion: pm.environment.set("job_id", parsedId))
-});
+	const id = await getJobId(response.body);
+	const errorMsg = await checkJobCompleted(
+		id,
+		'This operation is not authorized due to role restrictions and/or invalid database items'
+	);
 
-it('Check File CSV job perms error', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ 'operation': 'get_job', 'id': '{{job_id}}' })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: const msg = jsonData[0].message;
-		.expect((r) => assert.ok(r.body[0].status == 'ERROR'))
-		.expect((r) => assert.ok(r.body[0].id == getJobId(job_id)))
-		.expect((r) => assert.ok(msg.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
-		.expect((r) => assert.ok(r.body[0].message.unauthorized_access.length == 1))
-	//Unmatched Postman assertion: const unauth_obj = msg.unauthorized_access[0];
-		.expect((r) => assert.ok(unauth_obj.schema == 'dev'))
-	//Unmatched Postman assertion: pm.expect(unauth_obj.table == "books")
-		.expect((r) => assert.ok(unauth_obj.required_table_permissions.length == 0))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions.length == 2))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == "id"))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert'))
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].attribute_name == "books_count")
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert'))
-	//Unmatched Postman assertion: pm.expect(msg.invalid_schema_items.length == 17)
-	//Unmatched Postman assertion: const expected_invalid_items = [
-	//Unmatched Postman assertion: "Attribute 'authors' does not exist on 'dev.books'",
-	//Unmatched Postman assertion: "Attribute 'original_publication_year' does not exist on 'dev.books'",
-	//Unmatched Postman assertion: "Attribute 'original_title' does not exist on 'dev.books'",
-	//Unmatched Postman assertion: "Attribute 'title' does not exist on 'dev.books'",
-	//Unmatched Postman assertion: "Attribute 'language_code' does not exist on 'dev.books'",
-	//Unmatched Postman assertion: "Attribute 'average_rating' does not exist on 'dev.books'",
-	//Unmatched Postman assertion: "Attribute 'ratings_count' does not exist on 'dev.books'",
-	//Unmatched Postman assertion: "Attribute 'work_ratings_count' does not exist on 'dev.books'",
-	//Unmatched Postman assertion: "Attribute 'work_text_reviews_count' does not exist on 'dev.books'",
-	//Unmatched Postman assertion: "Attribute 'ratings_1' does not exist on 'dev.books'",
-	//Unmatched Postman assertion: "Attribute 'ratings_2' does not exist on 'dev.books'",
-	//Unmatched Postman assertion: "Attribute 'ratings_3' does not exist on 'dev.books'",
-	//Unmatched Postman assertion: "Attribute 'ratings_4' does not exist on 'dev.books'",
-	//Unmatched Postman assertion: "Attribute 'ratings_5' does not exist on 'dev.books'",
-	//Unmatched Postman assertion: "Attribute 'nytimes_best_seller' does not exist on 'dev.books'",
-	//Unmatched Postman assertion: "Attribute 'image_url' does not exist on 'dev.books'",
-	//Unmatched Postman assertion: "Attribute 'small_image_url' does not exist on 'dev.books'"
-	//Unmatched Postman assertion: ];
-	//Unmatched Postman assertion: msg.invalid_schema_items.forEach(item => {
-		.expect((r) => assert.ok(expected_invalid_items.includes(item)))
-		//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-		.expect((r) => assert.ok(r.body[0].status != 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check File CSV job perms error')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check File CSV job perms error')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	assert.ok(errorMsg.unauthorized_access.length == 1);
+	const unauth_obj = errorMsg.unauthorized_access[0];
+
+	assert.ok(unauth_obj.schema == 'dev');
+	assert.ok(unauth_obj.table == "books");
+	assert.ok(unauth_obj.required_table_permissions.length == 0);
+	assert.ok(unauth_obj.required_attribute_permissions.length == 2);
+	assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == "id");
+	assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1);
+	assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert');
+	assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == "books_count");
+	assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1);
+	assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert');
+	assert.ok(errorMsg.invalid_schema_items.length == 17);
+
+	const expected_invalid_items = [
+	"Attribute 'authors' does not exist on 'dev.books'",
+	"Attribute 'original_publication_year' does not exist on 'dev.books'",
+	"Attribute 'original_title' does not exist on 'dev.books'",
+	"Attribute 'title' does not exist on 'dev.books'",
+	"Attribute 'language_code' does not exist on 'dev.books'",
+	"Attribute 'average_rating' does not exist on 'dev.books'",
+	"Attribute 'ratings_count' does not exist on 'dev.books'",
+	"Attribute 'work_ratings_count' does not exist on 'dev.books'",
+	"Attribute 'work_text_reviews_count' does not exist on 'dev.books'",
+	"Attribute 'ratings_1' does not exist on 'dev.books'",
+	"Attribute 'ratings_2' does not exist on 'dev.books'",
+	"Attribute 'ratings_3' does not exist on 'dev.books'",
+	"Attribute 'ratings_4' does not exist on 'dev.books'",
+	"Attribute 'ratings_5' does not exist on 'dev.books'",
+	"Attribute 'nytimes_best_seller' does not exist on 'dev.books'",
+	"Attribute 'image_url' does not exist on 'dev.books'",
+	"Attribute 'small_image_url' does not exist on 'dev.books'"
+	];
+
+	errorMsg.invalid_schema_items.forEach((item) => {
+		 assert.ok(expected_invalid_items.includes(item));
+	})
 });
 
 it('Import CSV from S3 to table w/ restricted attrs', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersBulkLoadUser)
 		.send({
-			'operation': 'import_from_s3',
-			'action': 'insert',
-			'schema': 'dev',
-			'table': 'dog',
-			's3': {
-				'aws_access_key_id': '{{s3_key}}',
-				'aws_secret_access_key': '{{s3_secret}}',
-				'bucket': 'harperdb-integration-test-data',
-				'key': 'non_public_folder/dogs.csv',
-				'region': 'us-east-2'
+			operation: 'import_from_s3',
+			action: 'insert',
+			schema: 'dev',
+			table: 'dog',
+			s3: {
+				aws_access_key_id: `${generic.s3_key}`,
+				aws_secret_access_key: `${generic.s3_secret}`,
+				bucket: 'harperdb-integration-test-data',
+				key: 'non_public_folder/dogs.csv',
+				region: 'us-east-2',
 			},
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
+		.expect((r) =>
+			assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response')
+		);
 
-	//Unmatched Postman assertion: let id_index = jsonData.message.indexOf('id ');
-//Unmatched Postman assertion: let parsedId = jsonData.message.substring(id_index + 3, jsonData.message.length)
-//Unmatched Postman assertion: pm.environment.set("job_id", parsedId))
-});
+	const id = await getJobId(response.body);
+	const errorMsg = await checkJobCompleted(
+		id,
+		'This operation is not authorized due to role restrictions and/or invalid database items'
+	);
 
-it('Check S3 CSV job perms error', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ 'operation': 'get_job', 'id': '{{job_id}}' })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: const msg = jsonData[0].message;
-		.expect((r) => assert.ok(r.body[0].status == 'ERROR'))
-		.expect((r) => assert.ok(r.body[0].id == getJobId(job_id)))
-		.expect((r) => assert.ok(msg.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
-		.expect((r) => assert.ok(r.body[0].message.unauthorized_access.length == 1))
-	//Unmatched Postman assertion: const unauth_obj = msg.unauthorized_access[0];
-		.expect((r) => assert.ok(unauth_obj.schema == 'dev'))
-		.expect((r) => assert.ok(unauth_obj.table == 'dog'))
-		.expect((r) => assert.ok(unauth_obj.required_table_permissions.length == 0))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions.length == 2))
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].attribute_name == "owner_id")
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert'))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == "age"))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert'))
-	//Unmatched Postman assertion: pm.expect(msg.invalid_schema_items.length == 2)
-	//Unmatched Postman assertion: const expected_invalid_items = [
-	//Unmatched Postman assertion: "Attribute 'breed_id' does not exist on 'dev.dog'",
-	//Unmatched Postman assertion: "Attribute 'weight_lbs' does not exist on 'dev.dog'"
-	//Unmatched Postman assertion: ];
-	//Unmatched Postman assertion: msg.invalid_schema_items.forEach(item => {
-		.expect((r) => assert.ok(expected_invalid_items.includes(item)))
-		//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-		.expect((r) => assert.ok(r.body[0].status != 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 CSV job perms error')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 CSV job perms error')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	assert.ok(errorMsg.unauthorized_access.length == 1);
+	const unauth_obj = errorMsg.unauthorized_access[0];
+
+	assert.ok(unauth_obj.schema == 'dev');
+	assert.ok(unauth_obj.table == 'dog');
+	assert.ok(unauth_obj.required_table_permissions.length == 0);
+	assert.ok(unauth_obj.required_attribute_permissions.length == 2);
+	assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'owner_id');
+	assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1);
+	assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert');
+	assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'age');
+	assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1);
+	assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert');
+
+	assert.ok(errorMsg.invalid_schema_items.length == 2);
+	const expected_invalid_items = [
+		"Attribute 'breed_id' does not exist on 'dev.dog'",
+		"Attribute 'weight_lbs' does not exist on 'dev.dog'",
+	];
+	errorMsg.invalid_schema_items.forEach((item) => {
+		assert.ok(expected_invalid_items.includes(item));
+	});
 });
 
 it('Import JSON from S3 - upsert - to table w/ restricted attrs', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersBulkLoadUser)
 		.send({
-			'operation': 'import_from_s3',
-			'action': 'upsert',
-			'schema': 'dev',
-			'table': 'owner',
-			's3': {
-				'aws_access_key_id': '{{s3_key}}',
-				'aws_secret_access_key': '{{s3_secret}}',
-				'bucket': 'harperdb-integration-test-data',
-				'key': 'non_public_folder/owners_update.json',
-				'region': 'us-east-2'
+			operation: 'import_from_s3',
+			action: 'upsert',
+			schema: 'dev',
+			table: 'owner',
+			s3: {
+				aws_access_key_id: `${generic.s3_key}`,
+				aws_secret_access_key: `${generic.s3_secret}`,
+				bucket: 'harperdb-integration-test-data',
+				key: 'non_public_folder/owners_update.json',
+				region: 'us-east-2',
 			},
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
+		.expect((r) =>
+			assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response')
+		);
 
-	//Unmatched Postman assertion: let id_index = jsonData.message.indexOf('id ');
-//Unmatched Postman assertion: let parsedId = jsonData.message.substring(id_index + 3, jsonData.message.length)
-//Unmatched Postman assertion: pm.environment.set("job_id", parsedId))
-});
+	const id = await getJobId(response.body);
+	const errorMsg = await checkJobCompleted(
+		id,
+		'This operation is not authorized due to role restrictions and/or invalid database items'
+	);
 
-it('Check S3 JSON upsert perms error', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ 'operation': 'get_job', 'id': '{{job_id}}' })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch (status) {
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: const msg = jsonData[0].message;
-		.expect((r) => assert.ok(r.body[0].status == 'ERROR'))
-		.expect((r) => assert.ok(r.body[0].id == getJobId(job_id)))
-		.expect((r) => assert.ok(msg.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
-		.expect((r) => assert.ok(r.body[0].message.unauthorized_access.length == 1))
-	//Unmatched Postman assertion: const unauth_obj = msg.unauthorized_access[0];
-		.expect((r) => assert.ok(unauth_obj.schema == 'dev'))
-		.expect((r) => assert.ok(unauth_obj.table == 'owner'))
-		.expect((r) => assert.ok(unauth_obj.required_table_permissions.length == 0))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions.length == 2))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == "id"))
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions.length == 2)
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert'))
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[0].required_permissions[1] == "update")
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == "name"))
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions.length == 2)
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert'))
-	//Unmatched Postman assertion: pm.expect(unauth_obj.required_attribute_permissions[1].required_permissions[1] == "update")
-		.expect((r) => assert.ok(msg.invalid_schema_items.length == 0))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-		.expect((r) => assert.ok(r.body[0].status != 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 JSON upsert perms error')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 JSON upsert perms error')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	assert.ok(errorMsg.unauthorized_access.length == 1);
+	const unauth_obj = errorMsg.unauthorized_access[0];
+
+	assert.ok(unauth_obj.schema == 'dev');
+	assert.ok(unauth_obj.table == 'owner');
+	assert.ok(unauth_obj.required_table_permissions.length == 0);
+	assert.ok(unauth_obj.required_attribute_permissions.length == 2);
+	assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'id');
+	assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 2);
+	assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert');
+	assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[1] == 'update');
+	assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'name');
+	assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 2);
+	assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert');
+	assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[1] == 'update');
+
+	assert.ok(errorMsg.invalid_schema_items.length == 0);
 });
 
 it('Import JSON from S3 - insert - to table w/ restricted attrs', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersBulkLoadUser)
 		.send({
 			'operation': 'import_from_s3',
 			'action': 'insert',
 			'schema': 'dev',
 			'table': 'owner',
 			's3': {
-				'aws_access_key_id': '{{s3_key}}',
-				'aws_secret_access_key': '{{s3_secret}}',
+				'aws_access_key_id': `${generic.s3_key}`,
+				'aws_secret_access_key': `${generic.s3_secret}`,
 				'bucket': 'harperdb-integration-test-data',
 				'key': 'non_public_folder/owners_update.json',
 				'region': 'us-east-2'
@@ -5729,58 +5658,25 @@ it('Import JSON from S3 - insert - to table w/ restricted attrs', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
 
-	//Unmatched Postman assertion: let id_index = jsonData.message.indexOf('id ');
-//Unmatched Postman assertion: let parsedId = jsonData.message.substring(id_index + 3, jsonData.message.length)
-//Unmatched Postman assertion: pm.environment.set("job_id", parsedId))
-});
+	const id = await getJobId(response.body);
+	const errorMsg = await checkJobCompleted(id,
+		'This operation is not authorized due to role restrictions and/or invalid database items');
 
-it('Check S3 JSON insert perms error', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ 'operation': 'get_job', 'id': '{{job_id}}' })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: const msg = jsonData[0].message;
-		.expect((r) => assert.ok(r.body[0].status == 'ERROR'))
-		.expect((r) => assert.ok(r.body[0].id == getJobId(job_id)))
-		.expect((r) => assert.ok(msg.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
-		.expect((r) => assert.ok(r.body[0].message.unauthorized_access.length == 1))
-		//Unmatched Postman assertion: const unauth_obj = msg.unauthorized_access[0];
-		.expect((r) => assert.ok(unauth_obj.schema == 'dev'))
-		.expect((r) => assert.ok(unauth_obj.table == 'owner'))
-		.expect((r) => assert.ok(unauth_obj.required_table_permissions.length == 0))
-		.expect((r) => assert.ok(unauth_obj.required_attribute_permissions.length == 2))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == "id"))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert'))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == "name"))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1))
-	.expect((r) => assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert'))
-		.expect((r) => assert.ok(msg.invalid_schema_items.length == 0))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-		.expect((r) => assert.ok(r.body[0].status != 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 JSON insert perms error')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 JSON insert perms error')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	assert.ok(errorMsg.unauthorized_access.length == 1);
+	const unauth_obj = errorMsg.unauthorized_access[0];
+
+	assert.ok(unauth_obj.schema == 'dev');
+	assert.ok(unauth_obj.table == 'owner');
+	assert.ok(unauth_obj.required_table_permissions.length == 0);
+	assert.ok(unauth_obj.required_attribute_permissions.length == 2);
+	assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == "id");
+	assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1);
+	assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert');
+	assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == "name");
+	assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1);
+	assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert');
+	assert.ok(errorMsg.invalid_schema_items.length == 0);
+
 });
 
 it('Alter non-SU bulk_load_role', async () => {
@@ -5788,112 +5684,89 @@ it('Alter non-SU bulk_load_role', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			'operation': 'alter_role',
-			'id': '{{role_id}}',
-			'role': 'bulk_load_role',
-			'permission': {
-				'super_user': false,
-				'{{schema}}': {
-					'tables': {
-						'{{supp_tb}}': {
-							'read': true,
-							'insert': true,
-							'update': true,
-							'delete': true,
-							'attribute_permissions': [],
+			operation: 'alter_role',
+			id: 'bulk_load_role',
+			role: 'bulk_load_role',
+			permission: {
+				super_user: false,
+				northnwd: {
+					tables: {
+						suppliers: {
+							read: true,
+							insert: true,
+							update: true,
+							delete: true,
+							attribute_permissions: [],
 						},
-					}
+					},
 				},
-				'dev': {
-					'tables': {
-						'dog': {
-							'read': true,
-							'insert': true,
-							'update': true,
-							'delete': false,
-							'attribute_permissions': [{
-								'attribute_name': 'dog_name',
-								'read': false,
-								'insert': true,
-								'update': true,
-							}, {
-								'attribute_name': 'age',
-								'read': true,
-								'insert': true,
-								'update': true,
-							}, {
-								'attribute_name': 'adorable',
-								'read': true,
-								'insert': true,
-								'update': true,
-							}, {
-								'attribute_name': 'owner_id',
-								'read': true,
-								'insert': true,
-								'update': true,
-							}, {
-								'attribute_name': 'weight_lbs',
-								'read': true,
-								'insert': true,
-								'update': true,
-							}, {
-								'attribute_name': 'breed_id',
-								'read': true,
-								'insert': true,
-								'update': true,
-							}, { 'attribute_name': '__updatedtime__', 'read': true, 'insert': true, 'update': false }],
+				dev: {
+					tables: {
+						dog: {
+							read: true,
+							insert: true,
+							update: true,
+							delete: false,
+							attribute_permissions: [
+								{
+									attribute_name: 'dog_name',
+									read: false,
+									insert: true,
+									update: true,
+								},
+								{
+									attribute_name: 'age',
+									read: true,
+									insert: true,
+									update: true,
+								},
+								{
+									attribute_name: 'adorable',
+									read: true,
+									insert: true,
+									update: true,
+								},
+								{
+									attribute_name: 'owner_id',
+									read: true,
+									insert: true,
+									update: true,
+								},
+								{
+									attribute_name: 'weight_lbs',
+									read: true,
+									insert: true,
+									update: true,
+								},
+								{
+									attribute_name: 'breed_id',
+									read: true,
+									insert: true,
+									update: true,
+								},
+								{ attribute_name: '__updatedtime__', read: true, insert: true, update: false },
+							],
 						},
-					}
-				}
+					},
+				},
 			},
 		})
+		.expect((r) => assert.ok(r.body.id == 'bulk_load_role'))
 		.expect(200)
 });
 
 it('CSV Data Load  upsert to table w/ full perms', async () => {
-	await csvDataLoad('upsert', generic.schema, generic.supp_tb,
-		'companyname, new_attr\nThe Chum Bucket, Another attr value\n');
-});
-
-it('Check Data CSV upsert job completed', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ 'operation': 'get_job', 'id': '{{job_id}}' })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-		.expect((r) => assert.ok(r.body[0].status != 'ERROR'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-		.expect((r) => assert.ok(r.body[0].message.includes('successfully loaded 1 of 1 records')))
-.expect((r) => assert.ok(status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check Data CSV upsert job completed')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check Data CSV upsert job completed')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	await csvDataLoad(headersBulkLoadUser, 'upsert', generic.schema, generic.supp_tb,
+		'companyname, new_attr\nThe Chum Bucket, Another attr value\n',
+		'',
+		'successfully loaded 1 of 1 records');
 });
 
 it('Check row from Data CSV job was upserted', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'sql', 'sql': 'SELECT count(*) AS row_count FROM {{schema}}.{{supp_tb}}' })
+		.send({ 'operation': 'sql', 'sql': `SELECT count(*) AS row_count FROM ${generic.schema}.${generic.supp_tb}` })
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].row_count == 30))
 });
@@ -5901,60 +5774,26 @@ it('Check row from Data CSV job was upserted', async () => {
 it('Import CSV from S3 to table w/ full attr perms - update', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersBulkLoadUser)
 		.send({
 			'operation': 'import_from_s3',
 			'action': 'update',
 			'schema': 'dev',
 			'table': 'dog',
 			's3': {
-				'aws_access_key_id': '{{s3_key}}',
-				'aws_secret_access_key': '{{s3_secret}}',
+				'aws_access_key_id': `${generic.s3_key}`,
+				'aws_secret_access_key': `${generic.s3_secret}`,
 				'bucket': 'harperdb-integration-test-data',
 				'key': 'non_public_folder/dogs.csv',
 				'region': 'us-east-2'
 			},
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
+		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0,
+			'Expected to find "Starting job" in the response'))
 
-	//Unmatched Postman assertion: let id_index = jsonData.message.indexOf('id ');
-//Unmatched Postman assertion: let parsedId = jsonData.message.substring(id_index + 3, jsonData.message.length)
-//Unmatched Postman assertion: pm.environment.set("job_id", parsedId))
-});
-
-it('Check S3 CSV update job completed', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ 'operation': 'get_job', 'id': '{{job_id}}' })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-		.expect((r) => assert.ok(r.body[0].status != 'ERROR'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-		.expect((r) => assert.ok(r.body[0].message.includes('successfully loaded 9 of 12 records')))
-.expect((r) => assert.ok(status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 CSV update job completed')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 CSV update job completed')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	const id = await getJobId(response.body);
+	await checkJobCompleted(id, '', 'successfully loaded 9 of 12 records');
 });
 
 it('Check rows from S3 update were updated', async () => {
@@ -5977,35 +5816,37 @@ it('Drop bulk_load_user', async () => {
 		.send({ 'operation': 'drop_user', 'username': 'bulk_load_user' })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message))
-		.expect((r) => assert.ok(jsonData.message.includes('successfully deleted')))
+		.expect((r) => assert.ok(r.body.message.includes('successfully deleted')))
 });
 
 it('Drop bulk_load_user role', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ 'operation': 'drop_role', 'id': '{{role_id}}' })
+		.send({ 'operation': 'drop_role', 'id': 'bulk_load_user' })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message))
-		.expect((r) => assert.ok(jsonData.message.includes('successfully deleted')))
+		.expect((r) => assert.ok(r.body.message.includes('successfully deleted')))
 });
 
 it('Authentication - bad username', async () => {
+	const myHeaders = await createHeaders('bad_username', generic.password);
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(myHeaders)
 		.send({ 'operation': 'create_schema', 'schema': 'auth' })
 		.expect(401)
-		.expect((r) => assert.ok(r.body.error == 'Login failed'))
+		.expect((r) => assert.ok(r.text.includes("Login failed")))
 });
 
 it('Authentication - bad password', async () => {
+	const myHeaders = await createHeaders(generic.username, 'bad_password');
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(myHeaders)
 		.send({ 'operation': 'create_schema', 'schema': 'auth' })
 		.expect(401)
-		.expect((r) => assert.ok(r.body.error == 'Login failed'))
+		.expect((r) => assert.ok(r.text.includes("Login failed")))
 });
 
 it('NoSQL Add non SU role', async () => {
@@ -6167,10 +6008,7 @@ it('NoSQL Add non SU role', async () => {
 				}
 			},
 		})
-		.expect((r) => {
-			assert.ok(r.body.id == 'developer_test_5');
-			generic.role_id = r.body.id;
-		})
+		.expect((r) => assert.ok(r.body.id == 'developer_test_5'))
 		.expect(200)
 });
 
@@ -6182,7 +6020,7 @@ it('NoSQL Add User with new Role', async () => {
 			'operation': 'add_user',
 			'role': 'developer_test_5',
 			'username': 'test_user',
-			'password': '{{password}}',
+			'password': `${generic.password}`,
 			'active': true,
 		})
 		.expect(200)
@@ -6191,7 +6029,7 @@ it('NoSQL Add User with new Role', async () => {
 it('NoSQL try to get user info as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({ 'operation': 'list_users' })
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
@@ -6206,12 +6044,12 @@ it('NoSQL Try to read suppliers table as SU', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_value',
-			'table': '{{supp_tb}}',
-			'schema': '{{schema}}',
+			'table': `${generic.supp_tb}`,
+			'schema': `${generic.schema}`,
 			'hash_attribute': 'id',
-			'search_attribute': '{{supp_id}}',
+			'search_attribute': `${generic.supp_id}`,
 			'search_value': '*',
-			'get_attributes': ['{{supp_id}}'],
+			'get_attributes': [`${generic.supp_id}`],
 		})
 		.expect(200)
 });
@@ -6219,15 +6057,15 @@ it('NoSQL Try to read suppliers table as SU', async () => {
 it('NoSQL Try to read FULLY restricted suppliers table as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			'operation': 'search_by_value',
-			'table': '{{supp_tb}}',
-			'schema': '{{schema}}',
+			'table': `${generic.supp_tb}`,
+			'schema': `${generic.schema}`,
 			'hash_attribute': 'id',
-			'search_attribute': '{{supp_id}}',
+			'search_attribute': `${generic.supp_id}`,
 			'search_value': '*',
-			'get_attributes': ['{{supp_id}}'],
+			'get_attributes': [`${generic.supp_id}`],
 		})
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
@@ -6242,10 +6080,10 @@ it('NoSQL Try to read region table as SU', async () => {
 		.set(headers)
 		.send({
 			'operation': 'search_by_value',
-			'table': '{{regi_tb}}',
-			'schema': '{{schema}}',
+			'table': `${generic.regi_tb}`,
+			'schema': `${generic.schema}`,
 			'hash_attribute': 'id',
-			'search_attribute': '{{regi_id}}',
+			'search_attribute': 'regionid',
 			'search_value': '*',
 			'get_attributes': ['*'],
 		})
@@ -6255,13 +6093,13 @@ it('NoSQL Try to read region table as SU', async () => {
 it('NoSQL Try to read region table as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			'operation': 'search_by_value',
-			'table': '{{regi_tb}}',
-			'schema': '{{schema}}',
+			'table': `${generic.regi_tb}`,
+			'schema': `${generic.schema}`,
 			'hash_attribute': 'id',
-			'search_attribute': '{{regi_id}}',
+			'search_attribute': 'regionid',
 			'search_value': '*',
 			'get_attributes': ['*'],
 		})
@@ -6274,9 +6112,9 @@ it('NoSQL Try to insert into region table as SU', async () => {
 		.set(headers)
 		.send({
 			'operation': 'insert',
-			'schema': '{{schema}}',
-			'table': '{{regi_tb}}',
-			'records': [{ '{{regi_id}}': 16, 'regiondescription': 'test description' }],
+			'schema': `${generic.schema}`,
+			'table': `${generic.regi_tb}`,
+			'records': [{ 'regionid': 16, 'regiondescription': 'test description' }],
 		})
 		.expect(200)
 });
@@ -6284,18 +6122,18 @@ it('NoSQL Try to insert into region table as SU', async () => {
 it('NoSQL Try to insert into insert restricted region table as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			'operation': 'insert',
-			'schema': '{{schema}}',
-			'table': '{{regi_tb}}',
-			'records': [{ '{{regi_id}}': 17, 'regiondescription': 'test description' }],
+			'schema': `${generic.schema}`,
+			'table': `${generic.regi_tb}`,
+			'records': [{ 'regionid': 17, 'regiondescription': 'test description' }],
 		})
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
-	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == "insert"))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == "insert"))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'region'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
@@ -6304,12 +6142,12 @@ it('NoSQL Try to insert into insert restricted region table as test_user', async
 it('NoSQL Try to insert FULLY restricted attribute in categories table as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			'operation': 'insert',
-			'schema': '{{schema}}',
-			'table': '{{cate_tb}}',
-			'records': [{ '{{cate_id}}': 9, 'categoryname': 'test name', 'description': 'test description' }],
+			'schema': `${generic.schema}`,
+			'table': `${generic.cate_tb}`,
+			'records': [{ [generic.cate_id]: 9, 'categoryname': 'test name', 'description': 'test description' }],
 		})
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
@@ -6324,9 +6162,9 @@ it('NoSQL Try to insert into territories table as SU', async () => {
 		.set(headers)
 		.send({
 			'operation': 'insert',
-			'schema': '{{schema}}',
-			'table': '{{terr_tb}}',
-			'records': [{ '{{terr_id}}': 123456, 'territorydescription': 'test description' }],
+			'schema': `${generic.schema}`,
+			'table': `${generic.terr_tb}`,
+			'records': [{ [generic.terr_id]: 123456, 'territorydescription': 'test description' }],
 		})
 		.expect(200)
 });
@@ -6334,12 +6172,12 @@ it('NoSQL Try to insert into territories table as SU', async () => {
 it('NoSQL Try to insert into territories table as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			'operation': 'insert',
-			'schema': '{{schema}}',
-			'table': '{{terr_tb}}',
-			'records': [{ '{{terr_id}}': 1234567, 'territorydescription': 'test description' }],
+			'schema': `${generic.schema}`,
+			'table': `${generic.terr_tb}`,
+			'records': [{ [generic.terr_id]: 1234567, 'territorydescription': 'test description' }],
 		})
 		.expect(200)
 });
@@ -6350,9 +6188,9 @@ it('NoSQL Try to update territories table as SU', async () => {
 		.set(headers)
 		.send({
 			'operation': 'update',
-			'schema': '{{schema}}',
-			'table': '{{terr_tb}}',
-			'records': [{ '{{terr_id}}': 123456, 'territorydescription': 'test description updated' }],
+			'schema': `${generic.schema}`,
+			'table': `${generic.terr_tb}`,
+			'records': [{ [generic.terr_id]: 123456, 'territorydescription': 'test description updated' }],
 		})
 		.expect(200)
 });
@@ -6360,18 +6198,18 @@ it('NoSQL Try to update territories table as SU', async () => {
 it('NoSQL Try to update restricted territories table as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "update",
-			"schema": "{{schema}}",
-			"table": "{{terr_tb}}",
-			"records": [{ "{{terr_id}}": 1234567, "territorydescription": "test description updated" }]
+			"schema": `${generic.schema}`,
+			"table": `${generic.terr_tb}`,
+			"records": [{ [generic.terr_id]: 1234567, "territorydescription": "test description updated" }]
 		})
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
-	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == "update"))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == "update"))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'territories'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
@@ -6380,12 +6218,12 @@ it('NoSQL Try to update restricted territories table as test_user', async () => 
 it('NoSQL Try to update categories table as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "update",
-			"schema": "{{schema}}",
-			"table": "{{cate_tb}}",
-			"records": [{ "{{cate_id}}": 1, "description": "test description updated" }]
+			"schema": `${generic.schema}`,
+			"table": `${generic.cate_tb}`,
+			"records": [{ [generic.cate_id]: 1, "description": "test description updated" }]
 		})
 		.expect(200)
 });
@@ -6393,12 +6231,12 @@ it('NoSQL Try to update categories table as test_user', async () => {
 it('NoSQL Try to update categories table with new attr as test_user - expect error', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "update",
-			"schema": "{{schema}}",
-			"table": "{{cate_tb}}",
-			"records": [{ "{{cate_id}}": 1, "description": "test description updated", "active": true }]
+			"schema": `${generic.schema}`,
+			"table": `${generic.cate_tb}`,
+			"records": [{ [generic.cate_id]: 1, "description": "test description updated", "active": true }]
 		})
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
@@ -6410,13 +6248,13 @@ it('NoSQL Try to update categories table with new attr as test_user - expect err
 it('NoSQL Try to update FULLY restricted attrs in categories table as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "update",
-			"schema": "{{schema}}",
-			"table": "{{cate_tb}}",
+			"schema": `${generic.schema}`,
+			"table": `${generic.cate_tb}`,
 			"records": [{
-				"{{cate_id}}": 1,
+				[generic.cate_id]: 1,
 				"categoryname": "test name",
 				"description": "test description updated",
 				"picture": "test picture"
@@ -6434,20 +6272,20 @@ it('NoSQL Try to delete from categories table as SU', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "delete", "table": "{{cate_tb}}", "schema": "{{schema}}", "hash_values": [1] })
+		.send({ "operation": "delete", "table": `${generic.cate_tb}`, "schema": `${generic.schema}`, "hash_values": [1] })
 		.expect(200)
 });
 
 it('NoSQL Try to delete from restricted categories table as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
-		.send({ "operation": "delete", "table": "{{cate_tb}}", "schema": "{{schema}}", "hash_values": [2] })
+		.set(headersTestUser)
+		.send({ "operation": "delete", "table": `${generic.cate_tb}`, "schema": `${generic.schema}`, "hash_values": [2] })
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
-	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == "delete"))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == "delete"))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'categories'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
@@ -6456,21 +6294,21 @@ it('NoSQL Try to delete from restricted categories table as test_user', async ()
 it('NoSQL Try to read shippers table FULLY restricted attribute as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "search_by_value",
-			"table": "{{ship_tb}}",
-			"schema": "{{schema}}",
+			"table": `${generic.ship_tb}`,
+			"schema": `${generic.schema}`,
 			"hash_attribute": "id",
-			"search_attribute": "{{ship_id}}",
+			"search_attribute": `${generic.ship_id}`,
 			"search_value": "*",
 			"get_attributes": ["companyname"]
 		})
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
-	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")))
-	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")))
+	.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")))
+	.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")))
 
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
 });
@@ -6478,13 +6316,13 @@ it('NoSQL Try to read shippers table FULLY restricted attribute as test_user', a
 it('NoSQL Try to read ALL shippers table FULLY restricted attributes as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "search_by_value",
-			"table": "{{ship_tb}}",
-			"schema": "{{schema}}",
+			"table": `${generic.ship_tb}`,
+			"schema": `${generic.schema}`,
 			"hash_attribute": "id",
-			"search_attribute": "{{ship_id}}",
+			"search_attribute": `${generic.ship_id}`,
 			"search_value": "*",
 			"get_attributes": ["*"]
 		})
@@ -6498,18 +6336,18 @@ it('NoSQL Try to read ALL shippers table FULLY restricted attributes as test_use
 it('NoSQL Try to update shippers table FULLY restricted attributes as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "update",
-			"schema": "{{schema}}",
-			"table": "{{ship_tb}}",
-			"records": [{ "{{ship_id}}": 1, "companyname": "bad update name" }]
+			"schema": `${generic.schema}`,
+			"table": `${generic.ship_tb}`,
+			"records": [{ [generic.ship_id]: 1, "companyname": "bad update name" }]
 		})
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
-	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")))
-	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")))
+	.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")))
+	.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")))
 
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
 });
@@ -6517,19 +6355,19 @@ it('NoSQL Try to update shippers table FULLY restricted attributes as test_user'
 it('NoSQL Try to insert shippers table restricted attributes as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "insert",
-			"schema": "{{schema}}",
-			"table": "{{ship_tb}}",
-			"records": [{ "{{ship_id}}": 1, "companyname": "bad update name", "phone": "(503) 555-9831" }]
+			"schema": `${generic.schema}`,
+			"table": `${generic.ship_tb}`,
+			"records": [{ [generic.ship_id]: 1, "companyname": "bad update name", "phone": "(503) 555-9831" }]
 		})
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 3))
-	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")))
-	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")))
-	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'")))
+	.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")))
+	.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")))
+	.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'")))
 
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
 });
@@ -6537,12 +6375,12 @@ it('NoSQL Try to insert shippers table restricted attributes as test_user', asyn
 it('NoSQL Try to insert to categories table with FULLY restricted attribute as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "insert",
-			"schema": "{{schema}}",
-			"table": "{{cate_tb}}",
-			"records": [{ "{{cate_id}}": 4, "categoryname": "bad update name" }]
+			"schema": `${generic.schema}`,
+			"table": `${generic.cate_tb}`,
+			"records": [{ [generic.cate_id]: 4, "categoryname": "bad update name" }]
 		})
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
@@ -6554,12 +6392,12 @@ it('NoSQL Try to insert to categories table with FULLY restricted attribute as t
 it('NoSQL Try to insert categories table unrestricted attribute as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "insert",
-			"schema": "{{schema}}",
-			"table": "{{cate_tb}}",
-			"records": [{ "{{cate_id}}": 1, "description": "Cheese and cheese and cheese" }]
+			"schema": `${generic.schema}`,
+			"table": `${generic.cate_tb}`,
+			"records": [{ [generic.cate_id]: 1, "description": "Cheese and cheese and cheese" }]
 		})
 		.expect(200)
 });
@@ -6567,12 +6405,12 @@ it('NoSQL Try to insert categories table unrestricted attribute as test_user', a
 it('NoSQL Try to update categories table unrestricted attribute as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "update",
-			"schema": "{{schema}}",
-			"table": "{{cate_tb}}",
-			"records": [{ "{{cate_id}}": 2, "description": "Meats and cheeses" }]
+			"schema": `${generic.schema}`,
+			"table": `${generic.cate_tb}`,
+			"records": [{ [generic.cate_id]: 2, "description": "Meats and cheeses" }]
 		})
 		.expect(200)
 });
@@ -6580,12 +6418,12 @@ it('NoSQL Try to update categories table unrestricted attribute as test_user', a
 it('NoSQL Try to insert to categories table FULLY restricted attribute as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "insert",
-			"schema": "{{schema}}",
-			"table": "{{cate_tb}}",
-			"records": [{ "{{cate_id}}": 1, "categoryname": "Stuff and things" }]
+			"schema": `${generic.schema}`,
+			"table": `${generic.cate_tb}`,
+			"records": [{ [generic.cate_id]: 1, "categoryname": "Stuff and things" }]
 		})
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
@@ -6720,7 +6558,7 @@ it('NoSQL drop_schema - SU expect success', async () => {
 it('NoSQL Try to update timestamp value on dog table as test_user - expect fail', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "insert",
 			"schema": "dev",
@@ -6777,10 +6615,10 @@ it('NoSQL - Upsert - table perms true/no attribute perms set - expect success', 
 		.set(headers)
 		.send({
 			"operation": "upsert",
-			"schema": "{{schema}}",
-			"table": "{{cust_tb}}",
+			"schema": `${generic.schema}`,
+			"table": `${generic.cust_tb}`,
 			"records": [{
-				"{{cust_id}}": "FURIB",
+				[generic.cust_id]: "FURIB",
 				"region": "Durkastan",
 				"contactmame": "Hans Blix"
 			}, { "region": "Durkastan", "contactmame": "Hans Blix" }]
@@ -6798,9 +6636,9 @@ it('NoSQL - Upsert - table perms true/attr perms true - expect success', async (
 		.set(headers)
 		.send({
 			"operation": "upsert",
-			"schema": "{{schema}}",
-			"table": "{{cate_tb}}",
-			"records": [{ "{{cate_id}}": 8, "description": "Seaweed and fishies" }, { "description": "Junk food" }]
+			"schema": `${generic.schema}`,
+			"table": `${generic.cate_tb}`,
+			"records": [{ [generic.cate_id]: 8, "description": "Seaweed and fishies" }, { "description": "Junk food" }]
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.upserted_hashes.length == 2))
@@ -6815,10 +6653,10 @@ it('NoSQL - Upsert - table perms true/no attr perms and new attribute included -
 		.set(headers)
 		.send({
 			"operation": "upsert",
-			"schema": "{{schema}}",
-			"table": "{{cust_tb}}",
+			"schema": `${generic.schema}`,
+			"table": `${generic.cust_tb}`,
 			"records": [{
-				"{{cust_id}}": "FURIB",
+				[generic.cust_id]: "FURIB",
 				"region": "Durkastan",
 				"contactmame": "Hans Blix",
 				"active": false
@@ -6837,8 +6675,8 @@ it('NoSQL - Upsert - table perms true/false  - expect error', async () => {
 		.set(headers)
 		.send({
 			"operation": "upsert",
-			"schema": "{{schema}}",
-			"table": "{{terr_tb}}",
+			"schema": `${generic.schema}`,
+			"table": `${generic.terr_tb}`,
 			"records": [{ "regionid": 1, "territorydescription": "Westboro", "territoryid": 1581 }, {
 				"regionid": 55,
 				"territorydescription": "Denver Metro"
@@ -6850,7 +6688,7 @@ it('NoSQL - Upsert - table perms true/false  - expect error', async () => {
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == "territories"))
-		.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == "update"))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 0))
 });
@@ -6861,10 +6699,10 @@ it('NoSQL - Upsert - table perms true/attr perms true but new attribute included
 		.set(headers)
 		.send({
 			"operation": "upsert",
-			"schema": "{{schema}}",
-			"table": "{{cate_tb}}",
+			"schema": `${generic.schema}`,
+			"table": `${generic.cate_tb}`,
 			"records": [{
-				"{{cate_id}}": 8,
+				[generic.cate_id]: 8,
 				"description": "Seaweed and fishies",
 				"active": true
 			}, { "description": "Junk food", "active": false }]
@@ -6877,9 +6715,14 @@ it('NoSQL - Upsert - table perms true/attr perms true but new attribute included
 });
 
 it('NoSQL - Upsert - table perms true/some attr perms false - expect error', async () => {
+	const expected_attr_perm_errs = {
+		dog_name: "insert",
+		age: "update"
+	};
+
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "upsert",
 			"schema": "dev",
@@ -6894,18 +6737,16 @@ it('NoSQL - Upsert - table perms true/some attr perms false - expect error', asy
 		})
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
-	//Unmatched Postman assertion: const expected_attr_perm_errs = {
-	//Unmatched Postman assertion: dog_name: "insert",
-	//Unmatched Postman assertion: age: "update"
-	//Unmatched Postman assertion: }
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == "dev"))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == "dog"))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 0))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 2))
-	//Unmatched Postman assertion: jsonData.unauthorized_access[0].required_attribute_permissions.forEach(attr_perm_err => {
-	//Unmatched Postman assertion: pm.expect(attr_perm_err.required_permissions[0] == expected_attr_perm_errs[attr_perm_err.attribute_name])
-	//Unmatched Postman assertion: })
+		.expect((r) => {
+			r.body.unauthorized_access[0].required_attribute_permissions.forEach((attr_perm_err) => {
+				assert.ok(attr_perm_err.required_permissions[0] == expected_attr_perm_errs[attr_perm_err.attribute_name]);
+			})
+		})
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1))
 		.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'birthday' does not exist on 'dev.dog'"))
 });
@@ -6916,10 +6757,10 @@ it('NoSQL - Upsert - w/ null value as hash- expect error', async () => {
 		.set(headers)
 		.send({
 			"operation": "upsert",
-			"schema": "{{schema}}",
-			"table": "{{cust_tb}}",
+			"schema": `${generic.schema}`,
+			"table": `${generic.cust_tb}`,
 			"records": [{
-				"{{cust_id}}": "null",
+				[generic.cust_id]: "null",
 				"region": "Durkastan",
 				"contactmame": "Hans Blix",
 				"active": false
@@ -6935,10 +6776,10 @@ it('NoSQL - Upsert - w/ invalid attr name - expect error', async () => {
 		.set(headers)
 		.send({
 			"operation": "upsert",
-			"schema": "{{schema}}",
-			"table": "{{cust_tb}}",
+			"schema": `${generic.schema}`,
+			"table": `${generic.cust_tb}`,
 			"records": [{
-				"{{cust_id}}": "FURIB",
+				[generic.cust_id]: "FURIB",
 				"region": "Durkastan",
 				"contactmame": "Hans Blix",
 				"active/not active": false
@@ -7063,9 +6904,9 @@ const response = await request(envUrl)
 	.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
 	.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == "dev"))
 	.expect((r) => assert.ok(r.body.unauthorized_access[0].table == "dog_conditions"))
-.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_attribute_permissions.length == 1))
-.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name == "breed_id"))
-.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0] == "read"))
+.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 1))
+.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].attribute_name == "breed_id"))
+.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0] == "read"))
 });
 
 it("search by conditions - starts_with - unauth'd attrs in get / search", async () => {
@@ -7086,9 +6927,9 @@ const response = await request(envUrl)
 	.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
 	.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == "dev"))
 	.expect((r) => assert.ok(r.body.unauthorized_access[0].table == "dog_conditions"))
-.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_attribute_permissions.length == 1))
-.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name == "breed_id"))
-.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0] == "read"))
+.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 1))
+.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].attribute_name == "breed_id"))
+.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0] == "read"))
 });
 
 it('search by conditions - equals & contains - restricted attr', async () => {
@@ -7196,9 +7037,9 @@ const response = await request(envUrl)
 	.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
 	.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == "dev"))
 	.expect((r) => assert.ok(r.body.unauthorized_access[0].table == "dog_conditions"))
-.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_attribute_permissions.length == 1))
-.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_attribute_permissions[0].attribute_name == "breed_id"))
-.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0] == "read"))
+.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 1))
+.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].attribute_name == "breed_id"))
+.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0] == "read"))
 });
 
 it('NoSQL Alter non-SU role', async () => {
@@ -7206,7 +7047,7 @@ it('NoSQL Alter non-SU role', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			"operation": "alter_role", "id": "{{role_id}}", "role": "developer_test_5", "permission": {
+			"operation": "alter_role", "id": "developer_test_5", "role": "developer_test_5", "permission": {
 				"super_user": false,
 				"northnwd": {
 					"tables": {
@@ -7309,7 +7150,6 @@ it('NoSQL Alter non-SU role', async () => {
 			}
 		})
 		.expect(200)
-	generic.role_id = response.body.id;
 });
 
 it('NoSQL drop test user', async () => {
@@ -7324,7 +7164,7 @@ it('NoSQL drop_role', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "drop_role", "id": "{{role_id}}" })
+		.send({ "operation": "drop_role", "id": "developer_test_5" })
 		.expect(200)
 });
 
@@ -7362,7 +7202,7 @@ it('NoSQL Add User with cluster_user Role', async () => {
 			"operation": "add_user",
 			"role": "test_cluster_user_role",
 			"username": "test_cluster_user",
-			"password": "{{password}}",
+			"password": `${generic.password}`,
 			"active": true
 		})
 		.expect(200)
@@ -7374,7 +7214,7 @@ it('NoSQL alter cluster user, change password', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "alter_user", "username": "test_cluster_user", "password": "{{password}}111" })
+		.send({ "operation": "alter_user", "username": "test_cluster_user", "password": `${generic.password}111` })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message))
 		.expect((r) => assert.ok(r.body.message.includes('updated 1 of 1 records')))
@@ -7387,17 +7227,17 @@ it('NoSQL drop test_cluster_user', async () => {
 		.send({ "operation": "drop_user", "username": "test_cluster_user" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message))
-		.expect((r) => assert.ok(jsonData.message.includes('successfully deleted')))
+		.expect((r) => assert.ok(r.body.message.includes('successfully deleted')))
 });
 
 it('NoSQL drop cluster_user role', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "drop_role", "id": "{{cluster_user_role_id}}" })
+		.send({ "operation": "drop_role", "id": `${generic.cluster_user_role_id}` })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message))
-		.expect((r) => assert.ok(jsonData.message.includes('successfully deleted')))
+		.expect((r) => assert.ok(r.body.message.includes('successfully deleted')))
 });
 
 it('SQL Add non SU role', async () => {
@@ -7519,7 +7359,6 @@ it('SQL Add non SU role', async () => {
 			}
 		})
 		.expect(200)
-	generic.role_id = response.body.id;
 });
 
 it('SQL Add User with new Role', async () => {
@@ -7530,7 +7369,7 @@ it('SQL Add User with new Role', async () => {
 			"operation": "add_user",
 			"role": "developer_test_5",
 			"username": "test_user",
-			"password": "{{password}}",
+			"password": `${generic.password}`,
 			"active": true
 		})
 		.expect(200)
@@ -7545,11 +7384,10 @@ it('Add user that already exists', async () => {
 			"operation": "add_user",
 			"role": "developer_test_5",
 			"username": "test_user",
-			"password": "{{password}}",
+			"password": `${generic.password}`,
 			"active": true
 		})
 		.expect(409)
-
 		.expect((r) => assert.ok(r.body.error == "User test_user already exists"))
 });
 
@@ -7561,7 +7399,7 @@ it('Add user bad role name', async () => {
 			"operation": "add_user",
 			"role": "developer_test 5",
 			"username": "test_user1",
-			"password": "{{password}}",
+			"password": `${generic.password}`,
 			"active": true
 		})
 		.expect(400)
@@ -7611,15 +7449,15 @@ it('SQL Try to read suppliers table as SU', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "sql", "sql": "select * from {{schema}}.{{supp_tb}}" })
+		.send({ "operation": "sql", "sql": `select * from ${generic.schema}.${generic.supp_tb}` })
 		.expect(200)
 });
 
 it('SQL Try to read FULLY restricted suppliers table as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
-		.send({ "operation": "sql", "sql": "select * from {{schema}}.{{supp_tb}}" })
+		.set(headersTestUser)
+		.send({ "operation": "sql", "sql": `select * from ${generic.schema}.${generic.supp_tb}` })
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1))
@@ -7631,22 +7469,25 @@ it('SQL Try to read region table as SU', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "sql", "sql": "select * from {{schema}}.{{regi_tb}}" })
+		.send({ "operation": "sql", "sql": `select * from ${generic.schema}.${generic.regi_tb}` })
 		.expect(200)
 });
 
 it('SQL Try to read region table as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
-		.send({ "operation": "sql", "sql": "select * from {{schema}}.{{regi_tb}}" })
+		.set(headersTestUser)
+		.send({ "operation": "sql", "sql": `select * from ${generic.schema}.${generic.regi_tb}` })
+		.expect((r) => {
+			let permitted_attrs = ["regiondescription", "regionid", "__createdtime__", "__updatedtime__"];
+			r.body.forEach((obj) => {
+				Object.keys(obj).forEach((attr_name) => {
+					console.log(attr_name);
+					assert.ok(permitted_attrs.includes(attr_name));
+				})
+			})
+		})
 		.expect(200)
-
-//Unmatched Postman assertion: var permitted_attrs = ["regiondescription", "regionid"];//Unmatched Postman assertion: jsonData.forEach((obj) => {
-//Unmatched Postman assertion: Object.keys(obj).forEach(attr_name => {
-//Unmatched Postman assertion: pm.expect(permitted_attrs.includes(attr_name))
-//Unmatched Postman assertion: })
-//Unmatched Postman assertion: })
 });
 
 it('SQL Try to insert into region table as SU', async () => {
@@ -7663,7 +7504,7 @@ it('SQL Try to insert into region table as SU', async () => {
 it('SQL Try to insert into restricted region table as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "sql",
 			"sql": "insert into northnwd.region (regionid, regiondescription) values ('17', 'test description')"
@@ -7671,8 +7512,8 @@ it('SQL Try to insert into restricted region table as test_user', async () => {
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
-	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == "insert"))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == "insert"))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == "region"))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
@@ -7692,7 +7533,7 @@ it('SQL Try to insert into territories table as SU', async () => {
 it('SQL Try to insert into territories table with restricted attribute as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "sql",
 			"sql": "insert into northnwd.territories (regionid, territoryid, territorydescription) values ('1', '65', 'Im a test')"
@@ -7707,7 +7548,7 @@ it('SQL Try to insert into territories table with restricted attribute as test_u
 it('SQL Try to insert into territories table with allowed attributes as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "sql",
 			"sql": "insert into northnwd.territories (territoryid, territorydescription) values (165, 'Im a test')"
@@ -7731,7 +7572,7 @@ it('SQL Try to update territories table as SU', async () => {
 it('SQL Try to update restricted territories table as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "sql",
 			"sql": "update northnwd.territories set territorydescription = 'update test' where territoryid = 65"
@@ -7739,8 +7580,8 @@ it('SQL Try to update restricted territories table as test_user', async () => {
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
-	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == "update"))
+	.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1))
+	.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == "update"))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'territories'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
@@ -7749,7 +7590,7 @@ it('SQL Try to update restricted territories table as test_user', async () => {
 it('SQL Try to update categories table as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "sql",
 			"sql": "update northnwd.categories set description = 'update test' where categoryid = 2"
@@ -7760,7 +7601,7 @@ it('SQL Try to update categories table as test_user', async () => {
 it('SQL Try to update restricted attr in categories table as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "sql",
 			"sql": "update northnwd.categories set description = 'update test', picture = 'test picture' where categoryid = 2"
@@ -7783,13 +7624,13 @@ it('SQL Try to delete from categories table as SU', async () => {
 it('SQL Try to delete from restricted categories table as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({ "operation": "sql", "sql": "delete from northnwd.categories where categoryid = 2" })
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
-	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == "delete"))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == "delete"))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'categories'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
@@ -7798,8 +7639,8 @@ it('SQL Try to delete from restricted categories table as test_user', async () =
 it('SQL Try to read shippers table w/ FULLY restricted attributes as test_user - expect empty array', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
-		.send({ "operation": "sql", "sql": "select * from {{schema}}.{{ship_tb}}" })
+		.set(headersTestUser)
+		.send({ "operation": "sql", "sql": `select * from ${generic.schema}.${generic.ship_tb}` })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 0))
 });
@@ -7807,10 +7648,10 @@ it('SQL Try to read shippers table w/ FULLY restricted attributes as test_user -
 it('SQL Try to update shippers table restricted attribute as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "sql",
-			"sql": "update northnwd.{{ship_tb}} set companyname = 'bad update name' where {{ship_id}} = 1"
+			"sql": `update ${generic.schema}.${generic.ship_tb} set companyname = 'bad update name' where ${generic.ship_id} = 1`
 		})
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
@@ -7822,7 +7663,7 @@ it('SQL Try to update shippers table restricted attribute as test_user', async (
 it('SQL Try to insert into shippers table w/ FULLY restricted attributes as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "sql",
 			"sql": "insert into northnwd.shippers (shipperid, companyname, phone) values ('1', 'bad update name', '(503) 555-9831')"
@@ -7830,9 +7671,9 @@ it('SQL Try to insert into shippers table w/ FULLY restricted attributes as test
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 3))
-	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")))
-	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")))
-	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'")))
+	.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")))
+	.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")))
+	.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'")))
 
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
 });
@@ -7840,7 +7681,7 @@ it('SQL Try to insert into shippers table w/ FULLY restricted attributes as test
 it('SQL Try to insert categories table unrestricted attributes as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "sql",
 			"sql": "insert into northnwd.categories (categoryid, description) values ('9', 'Other food stuff')"
@@ -7851,17 +7692,17 @@ it('SQL Try to insert categories table unrestricted attributes as test_user', as
 it('SQL Try to read shippers table as test_user with restricted attribute in WHERE', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "sql",
-			"sql": "select shipperid from {{schema}}.{{ship_tb}} WHERE (phone IS NOT NULL AND shipperid = 0) OR companyname IS NOT NULL"
+			"sql": `select shipperid from ${generic.schema}.${generic.ship_tb} WHERE (phone IS NOT NULL AND shipperid = 0) OR companyname IS NOT NULL`
 		})
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 3))
-	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")))
-	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'")))
-	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")))
+		.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'")))
+		.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'")))
+		.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'")))
 
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
 });
@@ -7869,7 +7710,7 @@ it('SQL Try to read shippers table as test_user with restricted attribute in WHE
 it('Select with restricted CROSS SCHEMA JOIN as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "sql",
 			"sql": "SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id"
@@ -7878,7 +7719,7 @@ it('Select with restricted CROSS SCHEMA JOIN as test_user', async () => {
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'id' does not exist on 'other.owner'")))
-	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'name' does not exist on 'other.owner'")))
+	.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'name' does not exist on 'other.owner'")))
 
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
 });
@@ -7886,7 +7727,7 @@ it('Select with restricted CROSS SCHEMA JOIN as test_user', async () => {
 it('Select * with restricted CROSS SCHEMA JOIN as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			'operation': 'sql',
 			'sql': 'SELECT d.*, o.* FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id ORDER BY o.name, o.id LIMIT 5 OFFSET 1',
@@ -7895,14 +7736,14 @@ it('Select * with restricted CROSS SCHEMA JOIN as test_user', async () => {
 		.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.includes('Attribute \'id\' does not exist on \'other.owner\'')))
-		.expect((r) => assert.ok(jsonData.invalid_schema_items.includes('Attribute \'name\' does not exist on \'other.owner\'')))
+		.expect((r) => assert.ok(r.body.invalid_schema_items.includes('Attribute \'name\' does not exist on \'other.owner\'')))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
 });
 
 it('Select restricted attrs in CROSS 3 SCHEMA JOINS as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			'operation': 'sql',
 			'sql': 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name, b.id, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id',
@@ -7910,8 +7751,8 @@ it('Select restricted attrs in CROSS 3 SCHEMA JOINS as test_user', async () => {
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-		.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
-		.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == 'read'))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == 'read'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'another'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'breed'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
@@ -7922,7 +7763,7 @@ it('Select restricted attrs in CROSS 3 SCHEMA JOINS as test_user', async () => {
 it('Select with complex CROSS 3 SCHEMA JOINS as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			'operation': 'sql',
 			'sql': 'SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name, b.image FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name',
@@ -7930,8 +7771,8 @@ it('Select with complex CROSS 3 SCHEMA JOINS as test_user', async () => {
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-		.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
-		.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == 'read'))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == 'read'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'another'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'breed'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
@@ -7942,7 +7783,7 @@ it('Select with complex CROSS 3 SCHEMA JOINS as test_user', async () => {
 it('Select * w/ two table CROSS SCHEMA JOIN on table with FULLY restricted attributes as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "sql",
 			"sql": "SELECT d.*, o.* FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id ORDER BY o.name, o.id LIMIT 5 OFFSET 1"
@@ -7950,7 +7791,7 @@ it('Select * w/ two table CROSS SCHEMA JOIN on table with FULLY restricted attri
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
-	.expect((r) => assert.ok(jsonData.invalid_schema_items.includes("Attribute 'name' does not exist on 'other.owner'")))
+	.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'name' does not exist on 'other.owner'")))
 	.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'id' does not exist on 'other.owner'")))
 
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
@@ -7961,7 +7802,7 @@ it('SQL ALTER non SU role', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			"operation": "alter_role", "role": "developer_test_5", "id": "{{role_id}}", "permission": {
+			"operation": "alter_role", "role": "developer_test_5", "id": "developer_test_5", "permission": {
 				"super_user": false,
 				"northnwd": {
 					"tables": {
@@ -8080,7 +7921,7 @@ it('SQL ALTER non SU role', async () => {
 it('Select two table CROSS SCHEMA JOIN as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			operation: 'sql',
 			sql: 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id',
@@ -8089,7 +7930,8 @@ it('Select two table CROSS SCHEMA JOIN as test_user', async () => {
 		.expect((r) => {
 			assert.ok(r.body.length == 9);
 			const expected_attributes = ['id', 'dog_name', 'age', 'adorable', 'id1', 'name'];
-			//Important to test that only the id (returned as id1) and name attributes come back for 'other.owner' since user only has access to those two attributes
+			//Important to test that only the id (returned as id1) and name attributes come back for 'other.owner'
+			// since user only has access to those two attributes
 			r.body.forEach((row) => {
 				expected_attributes.forEach((attr) => {
 					assert.ok(row[attr]);
@@ -8104,27 +7946,30 @@ it('Select two table CROSS SCHEMA JOIN as test_user', async () => {
 it('Select * w/ two table CROSS SCHEMA JOIN as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "sql",
 			"sql": "SELECT d.*, o.* FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id ORDER BY o.name, o.id LIMIT 5 OFFSET 1"
 		})
-		.expect(200)
-	//Unmatched Postman assertion: var expected_names = ["David", "Kaylan", "Kyle", "Kyle", "Kyle"];
-	//Unmatched Postman assertion: var expected_attrs = ["__createdtime__", "age", "dog_name", "adorable", "owner_id", "__updatedtime__", "id", "weight_lbs", "breed_id", "name", "id1"]
-
 		.expect((r) => assert.ok(r.body.length == 5))
-//Unmatched Postman assertion: jsonData.forEach((obj, i) => {
-//Unmatched Postman assertion: pm.expect(obj.name == expected_names[i])
-//Unmatched Postman assertion: Object.keys(k => {
-//Unmatched Postman assertion: pm.expect(expected_attrs.includes(k) == true)
-
+		.expect((r) => {
+			let expected_names = ["David", "Kaylan", "Kyle", "Kyle", "Kyle"];
+			let expected_attrs = ["__createdtime__", "age", "dog_name", "adorable", "owner_id", "__updatedtime__", "id", "weight_lbs", "breed_id", "name", "id1"];
+			r.body.forEach((obj, i) => {
+				assert.ok(obj.name == expected_names[i]);
+				let keys = Object.keys(obj);
+				keys.forEach((key) => {
+					assert.ok(expected_attrs.includes(key));
+				})
+			})
+		})
+		.expect(200)
 });
 
 it('Select w/ CROSS 3 SCHEMA JOINS as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			operation: 'sql',
 			sql: 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name, b.id, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id',
@@ -8151,7 +7996,7 @@ it('Select w/ CROSS 3 SCHEMA JOINS as test_user', async () => {
 it('Select with complex CROSS 3 SCHEMA JOINS as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			operation: 'sql',
 			sql: 'SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name',
@@ -8182,7 +8027,7 @@ it('SQL ALTER non SU role with multi table join restrictions', async () => {
 		.send({
 			"operation": "alter_role",
 			"role": "developer_test_5",
-			"id": "{{role_id}}",
+			"id": "developer_test_5",
 			"permission": {
 				"super_user": false,
 				"dev": {
@@ -8236,7 +8081,7 @@ it('SQL ALTER non SU role with multi table join restrictions', async () => {
 it('Select with ALL RESTRICTED complex CROSS 3 SCHEMA JOINS as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "sql",
 			"sql": "SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name, b.country FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name"
@@ -8276,7 +8121,7 @@ it('SQL drop_role', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "drop_role", "id": "{{role_id}}" })
+		.send({ "operation": "drop_role", "id": "developer_test_5" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'developer_test_5 successfully deleted'))
 });
@@ -8285,7 +8130,7 @@ it('Drop non-existent role', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "drop_role", "id": "{{role_id}}" })
+		.send({ "operation": "drop_role", "id": "developer_test_5" })
 		.expect(404)
 		.expect((r) => assert.ok(r.body.error == 'Role not found'))
 });
@@ -8340,8 +8185,8 @@ it('Import dogs.xlsx from S3 - expect error', async () => {
 			"schema": "S3_DATA",
 			"table": "dogs",
 			"s3": {
-				"aws_access_key_id": "{{s3_key}}",
-				"aws_secret_access_key": "{{s3_secret}}",
+				"aws_access_key_id": `${generic.s3_key}`,
+				"aws_secret_access_key": `${generic.s3_secret}`,
 				"bucket": "harperdb-integration-test-data",
 				"key": "non_public_folder/dogs.xlsx",
 				"region": "us-east-2"
@@ -8361,63 +8206,18 @@ it('Import dogs.csv from S3', async () => {
 			"schema": "S3_DATA",
 			"table": "dogs",
 			"s3": {
-				"aws_access_key_id": "{{s3_key}}",
-				"aws_secret_access_key": "{{s3_secret}}",
+				"aws_access_key_id": `${generic.s3_key}`,
+				"aws_secret_access_key": `${generic.s3_secret}`,
 				"bucket": "harperdb-integration-test-data",
 				"key": "non_public_folder/dogs.csv",
 				"region": "us-east-2"
 			}
 		})
-		.expect(200)
-
-	//Unmatched Postman assertion: if (jsonData.message) {
 		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-	//Unmatched Postman assertion: eval(pm.globals.get("function:getJobId"))(jsonData, "Import owners.json from S3")
-	//Unmatched Postman assertion: } else {
-	//Unmatched Postman assertion: postman.setNextRequest("Import owners.json from S3")
-		.expect((r) => assert.ok(r.body.hasOwnProperty('message')))
-//Unmatched Postman assertion: }})
-});
-
-it('Check S3 dog data loaded', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: console.log("Error checking S3 import job.")
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].status != 'ERROR'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].message == "successfully loaded 12 of 12 records"))
-		.expect((r) => assert.ok(r.body[0].status == 'COMPLETE' || r.body[0].status == ERROR))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 dog data loaded')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 dog data loaded')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+
+	const id = await getJobId(response.body);
+	await checkJobCompleted(id, '', 'successfully loaded 12 of 12 records');
 });
 
 it('Import owners.json from S3', async () => {
@@ -8430,8 +8230,8 @@ it('Import owners.json from S3', async () => {
 			"schema": "S3_DATA",
 			"table": "owners",
 			"s3": {
-				"aws_access_key_id": "{{s3_key}}",
-				"aws_secret_access_key": "{{s3_secret}}",
+				"aws_access_key_id": `${generic.s3_key}`,
+				"aws_secret_access_key": `${generic.s3_secret}`,
 				"bucket": "harperdb-integration-test-data",
 				"key": "non_public_folder/owners.json",
 				"region": "us-east-2"
@@ -8439,54 +8239,8 @@ it('Import owners.json from S3', async () => {
 		})
 		.expect(200)
 
-	//Unmatched Postman assertion: if (jsonData.message) {
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-	//Unmatched Postman assertion: eval(pm.globals.get("function:getJobId"))(jsonData, "Import breed.json from S3")
-	//Unmatched Postman assertion: } else {
-	//Unmatched Postman assertion: postman.setNextRequest("Import breed.json from S3")
-		.expect((r) => assert.ok(r.body.hasOwnProperty('message')))
-//Unmatched Postman assertion: }})
-});
-
-it('Check S3 owners data loaded', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: console.log("Error checking S3 import job.")
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].status != 'ERROR'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].message == "successfully loaded 4 of 4 records"))
-		.expect((r) => assert.ok(r.body[0].status == 'COMPLETE' || r.body[0].status == ERROR))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 owners data loaded')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 owners data loaded')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	const id = await getJobId(response.body);
+	await checkJobCompleted(id, '', 'successfully loaded 4 of 4 records');
 });
 
 it('Import breed.json from S3', async () => {
@@ -8494,68 +8248,22 @@ it('Import breed.json from S3', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			"operation": "import_from_s3",
-			"action": "insert",
-			"schema": "S3_DATA",
-			"table": "breed",
-			"s3": {
-				"aws_access_key_id": "{{s3_key}}",
-				"aws_secret_access_key": "{{s3_secret}}",
-				"bucket": "harperdb-integration-test-data",
-				"key": "non_public_folder/breed.json",
-				"region": "us-east-2"
-			}
+			operation: 'import_from_s3',
+			action: 'insert',
+			schema: 'S3_DATA',
+			table: 'breed',
+			s3: {
+				aws_access_key_id: `${generic.s3_key}`,
+				aws_secret_access_key: `${generic.s3_secret}`,
+				bucket: 'harperdb-integration-test-data',
+				key: 'non_public_folder/breed.json',
+				region: 'us-east-2',
+			},
 		})
-		.expect(200)
+		.expect(200);
 
-	//Unmatched Postman assertion: if (jsonData.message) {
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-	//Unmatched Postman assertion: eval(pm.globals.get("function:getJobId"))(jsonData, "Import does_not_exist.csv from S3 - expect fail")
-	//Unmatched Postman assertion: } else {
-	//Unmatched Postman assertion: postman.setNextRequest("Import does_not_exist.csv from S3 - expect fail")
-		.expect((r) => assert.ok(r.body.hasOwnProperty('message')))
-//Unmatched Postman assertion: }})
-});
-
-it('Check S3 breed data loaded', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: console.log("Error checking S3 import job.")
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].status != 'ERROR'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].message == "successfully loaded 350 of 350 records"))
-		.expect((r) => assert.ok(r.body[0].status == 'COMPLETE' || r.body[0].status == ERROR))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 breed data loaded')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 breed data loaded')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	const id = await getJobId(response.body);
+	await checkJobCompleted(id, '', 'successfully loaded 350 of 350 records');
 });
 
 it('Import does_not_exist.csv from S3 - expect fail', async () => {
@@ -8568,8 +8276,8 @@ it('Import does_not_exist.csv from S3 - expect fail', async () => {
 			"schema": "S3_DATA",
 			"table": "owners",
 			"s3": {
-				"aws_access_key_id": "{{s3_key}}",
-				"aws_secret_access_key": "{{s3_secret}}",
+				"aws_access_key_id": `${generic.s3_key}`,
+				"aws_secret_access_key": `${generic.s3_secret}`,
 				"bucket": "harperdb-integration-test-data",
 				"key": "non_public_folder/does_not_exist.csv",
 				"region": "us-east-2"
@@ -8577,54 +8285,9 @@ it('Import does_not_exist.csv from S3 - expect fail', async () => {
 		})
 		.expect(200)
 
-	//Unmatched Postman assertion: if (jsonData.message) {
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-	//Unmatched Postman assertion: eval(pm.globals.get("function:getJobId"))(jsonData, "Import dogs_update.csv from S3")
-	//Unmatched Postman assertion: } else {
-	//Unmatched Postman assertion: postman.setNextRequest("Import dogs_update.csv from S3")
-		.expect((r) => assert.ok(r.body.hasOwnProperty('message')))
-//Unmatched Postman assertion: }})
-});
-
-it('Check for error from S3 does_not_exist.csv import', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: console.log("Error correctly found in response checking invalid S3 import job.")
-		.expect((r) => assert.ok(r.body[0].message == "The specified key does not exist."))
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].status == 'ERROR'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(status == ["ERROR"]))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check for error from S3 does_not_exist.csv import')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check for error from S3 does_not_exist.csv import')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	const id = await getJobId(response.body);
+	await checkJobCompleted(id, 'The specified key does not exist.');
+	
 });
 
 it('Import dogs_update.csv from S3', async () => {
@@ -8632,68 +8295,22 @@ it('Import dogs_update.csv from S3', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			"operation": "import_from_s3",
-			"action": "update",
-			"schema": "S3_DATA",
-			"table": "dogs",
-			"s3": {
-				"aws_access_key_id": "{{s3_key}}",
-				"aws_secret_access_key": "{{s3_secret}}",
-				"bucket": "harperdb-integration-test-data",
-				"key": "non_public_folder/dogs_update.csv",
-				"region": "us-east-2"
-			}
+			operation: 'import_from_s3',
+			action: 'update',
+			schema: 'S3_DATA',
+			table: 'dogs',
+			s3: {
+				aws_access_key_id: `${generic.s3_key}`,
+				aws_secret_access_key: `${generic.s3_secret}`,
+				bucket: 'harperdb-integration-test-data',
+				key: 'non_public_folder/dogs_update.csv',
+				region: 'us-east-2',
+			},
 		})
-		.expect(200)
+		.expect(200);
 
-	//Unmatched Postman assertion: if (jsonData.message) {
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-	//Unmatched Postman assertion: eval(pm.globals.get("function:getJobId"))(jsonData, "Import owners_update.json from S3")
-	//Unmatched Postman assertion: } else {
-	//Unmatched Postman assertion: postman.setNextRequest("Import owners_update.json from S3")
-		.expect((r) => assert.ok(r.body.hasOwnProperty('message')))
-//Unmatched Postman assertion: }})
-});
-
-it('Check S3 dogs update loaded', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: console.log("Error checking S3 import job.")
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].status != 'ERROR'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].message == "successfully loaded 12 of 12 records"))
-		.expect((r) => assert.ok(r.body[0].status == 'COMPLETE' || r.body[0].status == ERROR))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 dogs update loaded')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 dogs update loaded')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	const id = await getJobId(response.body);
+	await checkJobCompleted(id, '', 'successfully loaded 12 of 12 records');
 });
 
 it('Import owners_update.json from S3', async () => {
@@ -8706,8 +8323,8 @@ it('Import owners_update.json from S3', async () => {
 			"schema": "S3_DATA",
 			"table": "owners",
 			"s3": {
-				"aws_access_key_id": "{{s3_key}}",
-				"aws_secret_access_key": "{{s3_secret}}",
+				"aws_access_key_id": `${generic.s3_key}`,
+				"aws_secret_access_key": `${generic.s3_secret}`,
 				"bucket": "harperdb-integration-test-data",
 				"key": "non_public_folder/owners_update.json",
 				"region": "us-east-2"
@@ -8715,54 +8332,8 @@ it('Import owners_update.json from S3', async () => {
 		})
 		.expect(200)
 
-	//Unmatched Postman assertion: if (jsonData.message) {
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-	//Unmatched Postman assertion: eval(pm.globals.get("function:getJobId"))(jsonData, "Import large sensor_data.json from S3")
-	//Unmatched Postman assertion: } else {
-	//Unmatched Postman assertion: postman.setNextRequest("Import large sensor_data.json from S3")
-		.expect((r) => assert.ok(r.body.hasOwnProperty('message')))
-//Unmatched Postman assertion: }})
-});
-
-it('Check S3 owners update loaded', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: console.log("Error checking S3 import job.")
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].status != 'ERROR'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].message == "successfully loaded 4 of 4 records"))
-		.expect((r) => assert.ok(r.body[0].status == 'COMPLETE' || r.body[0].status == ERROR))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 owners update loaded')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 owners update loaded')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	const id = await getJobId(response.body);
+	await checkJobCompleted(id, '', 'successfully loaded 4 of 4 records');
 });
 
 it('Import large sensor_data.json from S3', async () => {
@@ -8775,8 +8346,8 @@ it('Import large sensor_data.json from S3', async () => {
 			"schema": "S3_DATA",
 			"table": "sensor",
 			"s3": {
-				"aws_access_key_id": "{{s3_key}}",
-				"aws_secret_access_key": "{{s3_secret}}",
+				"aws_access_key_id": `${generic.s3_key}`,
+				"aws_secret_access_key": `${generic.s3_secret}`,
 				"bucket": "harperdb-integration-test-data",
 				"key": "non_public_folder/sensor_data.json",
 				"region": "us-east-2"
@@ -8784,54 +8355,8 @@ it('Import large sensor_data.json from S3', async () => {
 		})
 		.expect(200)
 
-	//Unmatched Postman assertion: if (jsonData.message) {
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-	//Unmatched Postman assertion: eval(pm.globals.get("function:getJobId"))(jsonData, "Import large sensor_data.json for UPSERT from S3")
-	//Unmatched Postman assertion: } else {
-	//Unmatched Postman assertion: postman.setNextRequest("Import large sensor_data.json for UPSERT from S3")
-		.expect((r) => assert.ok(r.body.hasOwnProperty('message')))
-//Unmatched Postman assertion: }})
-});
-
-it('Check S3 large sensor_data loaded', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: console.log("Error checking S3 import job.")
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].status != 'ERROR'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].message == "successfully loaded 20020 of 20020 records"))
-		.expect((r) => assert.ok(r.body[0].status == 'COMPLETE' || r.body[0].status == ERROR))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 large sensor_data loaded')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 large sensor_data loaded')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	const id = await getJobId(response.body);
+	await checkJobCompleted(id, '', 'successfully loaded 20020 of 20020 records');
 });
 
 it('Import large sensor_data.json for UPSERT from S3', async () => {
@@ -8844,8 +8369,8 @@ it('Import large sensor_data.json for UPSERT from S3', async () => {
 			"schema": "S3_DATA",
 			"table": "sensor",
 			"s3": {
-				"aws_access_key_id": "{{s3_key}}",
-				"aws_secret_access_key": "{{s3_secret}}",
+				"aws_access_key_id": `${generic.s3_key}`,
+				"aws_secret_access_key": `${generic.s3_secret}`,
 				"bucket": "harperdb-integration-test-data",
 				"key": "non_public_folder/sensor_data.json",
 				"region": "us-east-2"
@@ -8853,54 +8378,8 @@ it('Import large sensor_data.json for UPSERT from S3', async () => {
 		})
 		.expect(200)
 
-	//Unmatched Postman assertion: if (jsonData.message) {
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-	//Unmatched Postman assertion: eval(pm.globals.get("function:getJobId"))(jsonData, "Import does_not_exist_UPDATE.csv from S3 - expect fail")
-	//Unmatched Postman assertion: } else {
-	//Unmatched Postman assertion: postman.setNextRequest("Import does_not_exist_UPDATE.csv from S3 - expect fail")
-		.expect((r) => assert.ok(r.body.hasOwnProperty('message')))
-//Unmatched Postman assertion: }})
-});
-
-it('Check S3 large sensor_data upserted', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: console.log("Error checking S3 import job.")
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].status != 'ERROR'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].message == "successfully loaded 20020 of 20020 records"))
-		.expect((r) => assert.ok(r.body[0].status == 'COMPLETE' || r.body[0].status == ERROR))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 large sensor_data upserted')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 large sensor_data upserted')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	const id = await getJobId(response.body);
+	await checkJobCompleted(id, '', 'successfully loaded 20020 of 20020 records');
 });
 
 it('Check rows from S3 upsert were updated', async () => {
@@ -8926,71 +8405,17 @@ it('Import does_not_exist_UPDATE.csv from S3 - expect fail', async () => {
 			"schema": "S3_DATA",
 			"table": "owners",
 			"s3": {
-				"aws_access_key_id": "{{s3_key}}",
-				"aws_secret_access_key": "{{s3_secret}}",
+				"aws_access_key_id": `${generic.s3_key}`,
+				"aws_secret_access_key": `${generic.s3_secret}`,
 				"bucket": "harperdb-integration-test-data",
 				"key": "non_public_folder/does_not_exist_UPDATE.csv",
 				"region": "us-east-2"
 			}
 		})
 		.expect(200)
-		.expect(200)
-	//Unmatched Postman assertion: var jobMsgIndex = jsonData.message.indexOf('Starting job')
-	//Unmatched Postman assertion: if (jobMsgIndex === 0) {
-		.expect((r) => assert.ok(jobMsgIndex == 0))
-	//Unmatched Postman assertion: eval(pm.globals.get("function:getJobId"))(jsonData, "Export to S3")
-	//Unmatched Postman assertion: } else {
-		.expect((r) => assert.ok(jobMsgIndex == 0))
-	//Unmatched Postman assertion: postman.setNextRequest("Export to S3")
-	//Unmatched Postman assertion: }
-	//Unmatched Postman assertion: if (jsonData.message) {
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-	//Unmatched Postman assertion: eval(pm.globals.get("function:getJobId"))(jsonData, "Export to S3")
-	//Unmatched Postman assertion: } else {
-	//Unmatched Postman assertion: postman.setNextRequest("Export to S3")
-		.expect((r) => assert.ok(r.body.hasOwnProperty('message')))
-//Unmatched Postman assertion: }})
-});
 
-it('Check for error from S3 does_not_exist_UPDATE.csv import', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: console.log("Error correctly found in response checking invalid S3 import job.")
-		.expect((r) => assert.ok(r.body[0].message == "The specified key does not exist."))
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].status == 'ERROR'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(status == ["ERROR"]))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check for error from S3 does_not_exist_UPDATE.csv import')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check for error from S3 does_not_exist_UPDATE.csv import')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	const id = await getJobId(response.body);
+	await checkJobCompleted(id, 'The specified key does not exist.', '');
 });
 
 it('Export to S3', async () => {
@@ -9001,8 +8426,8 @@ it('Export to S3', async () => {
 			"operation": "export_to_s3",
 			"format": "csv",
 			"s3": {
-				"aws_access_key_id": "{{s3_key}}",
-				"aws_secret_access_key": "{{s3_secret}}",
+				"aws_access_key_id": `${generic.s3_key}`,
+				"aws_secret_access_key": `${generic.s3_secret}`,
 				"bucket": "harperdb-integration-test-data",
 				"key": "non_public_folder/test_export",
 				"region": "us-east-2"
@@ -9010,51 +8435,12 @@ it('Export to S3', async () => {
 			"search_operation": { "operation": "sql", "sql": "SELECT * FROM S3_DATA.dogs LIMIT 1" }
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-//Unmatched Postman assertion: eval(pm.globals.get("function:getJobId"))(jsonData, "Create S3 test table")
-});
 
-it('Check S3 export', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: console.log("Error checking S3 import job.")
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].status != 'ERROR'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: pm.environment.set("next_request", "Create S3 test table")
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].result.ETag))
-		.expect((r) => assert.ok(r.body[0].result.VersionId))
-.expect((r) => assert.ok(status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 export')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 export')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	const id = await getJobId(response.body);
+	const jobResponse = await checkJob(id, 15);
+
+	assert.ok(jobResponse.body[0].result.ETag);
+	assert.ok(jobResponse.body[0].result.VersionId);
 });
 
 it('Export to S3 search_by_conditions', async () => {
@@ -9065,8 +8451,8 @@ it('Export to S3 search_by_conditions', async () => {
 			"operation": "export_to_s3",
 			"format": "csv",
 			"s3": {
-				"aws_access_key_id": "{{s3_key}}",
-				"aws_secret_access_key": "{{s3_secret}}",
+				"aws_access_key_id": `${generic.s3_key}`,
+				"aws_secret_access_key": `${generic.s3_secret}`,
 				"bucket": "harperdb-integration-test-data",
 				"key": "non_public_folder/test_export",
 				"region": "us-east-2"
@@ -9081,51 +8467,12 @@ it('Export to S3 search_by_conditions', async () => {
 			}
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-//Unmatched Postman assertion: eval(pm.globals.get("function:getJobId"))(jsonData, "Create S3 test table")
-});
 
-it('Check S3 export search_by_conditions', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: console.log("Error checking S3 import job.")
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].status != 'ERROR'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: pm.environment.set("next_request", "Export local search_by_conditions")
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].result.ETag))
-		.expect((r) => assert.ok(r.body[0].result.VersionId))
-.expect((r) => assert.ok(status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 export search_by_conditions')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check S3 export search_by_conditions')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	const id = await getJobId(response.body);
+	const jobResponse = await checkJob(id, 15);
+
+	assert.ok(jobResponse.body[0].result.ETag);
+	assert.ok(jobResponse.body[0].result.VersionId);
 });
 
 it('Export local search_by_conditions', async () => {
@@ -9147,51 +8494,12 @@ it('Export local search_by_conditions', async () => {
 			}
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-//Unmatched Postman assertion: eval(pm.globals.get("function:getJobId"))(jsonData, "Create S3 test table")
-});
 
-it('Check export local search_by_conditions', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: console.log("Error checking export local search_by_conditions")
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].status != 'ERROR'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case 'COMPLETE':
-//Unmatched Postman assertion: console.log(jsonData[0])
-//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-//Unmatched Postman assertion: pm.environment.set("next_request", "Create S3 test table")
-//Unmatched Postman assertion: }
-.expect((r) => assert.ok(r.body[0].message.message == "Successfully exported JSON locally."))
-.expect((r) => assert.ok(r.body[0].type == "export_local"))
-.expect((r) => assert.ok(status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check export local search_by_conditions')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check export local search_by_conditions')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	const id = await getJobId(response.body);
+	const jobResponse = await checkJob(id, 15);
+
+	assert.ok(jobResponse.body[0].result.message == 'Successfully exported JSON locally.');
+	assert.ok(jobResponse.body[0].type == 'export_local');
 });
 
 it('Create S3 test table', async () => {
@@ -9257,8 +8565,8 @@ it('Export S3 test table CSV', async () => {
 			"operation": "export_to_s3",
 			"format": "csv",
 			"s3": {
-				"aws_access_key_id": "{{s3_key}}",
-				"aws_secret_access_key": "{{s3_secret}}",
+				"aws_access_key_id": `${generic.s3_key}`,
+				"aws_secret_access_key": `${generic.s3_secret}`,
 				"bucket": "harperdb-integration-test-data",
 				"key": "non_public_folder/test_export_csv",
 				"region": "us-east-2"
@@ -9266,19 +8574,13 @@ it('Export S3 test table CSV', async () => {
 			"search_operation": { "operation": "sql", "sql": "SELECT * FROM S3_DATA.s3_test" }
 		})
 		.expect(200)
-//Unmatched Postman assertion: let message_parts = jsonData.message.spl})
 
-	it(' ')
-	//Unmatched Postman assertion: pm.environment.set('job_id', message_parts[4])
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-});
+	const id = await getJobId(response.body);
+	const jobResponse = await checkJob(id, 15);
 
-it('Wait for CSV export to complete', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
-//Unmatched Postman assertion: need here a call to checkJobCompleted(job_id, expectedErrorMessage, expectedCompletedMessage);
+	assert.ok(jobResponse.body[0].result.ETag);
+	assert.ok(jobResponse.body[0].result.VersionId);
+
 });
 
 it('Import S3 test table CSV', async () => {
@@ -9291,27 +8593,19 @@ it('Import S3 test table CSV', async () => {
 			"schema": "S3_DATA",
 			"table": "s3_test_csv_import",
 			"s3": {
-				"aws_access_key_id": "{{s3_key}}",
-				"aws_secret_access_key": "{{s3_secret}}",
+				"aws_access_key_id": `${generic.s3_key}`,
+				"aws_secret_access_key": `${generic.s3_secret}`,
 				"bucket": "harperdb-integration-test-data",
 				"key": "non_public_folder/test_export_csv.csv",
 				"region": "us-east-2"
 			}
 		})
 		.expect(200)
-//Unmatched Postman assertion: let message_parts = jsonData.message.spl})
 
-	it(' ')
-	//Unmatched Postman assertion: pm.environment.set('job_id', message_parts[4])
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-});
+	const id = await getJobId(response.body);
+	const jobResponse = await checkJob(id, 15);
 
-it('Wait for CSV import to complete', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
-//Unmatched Postman assertion: need here a call to checkJobCompleted(job_id, expectedErrorMessage, expectedCompletedMessage);
+	assert.ok(jobResponse.body[0].message.includes('successfully loaded'));
 });
 
 it('Confirm CSV records import', async () => {
@@ -9368,7 +8662,7 @@ it('Confirm CSV records import', async () => {
 					array: '',
 				},
 			];
-			assert.ok(r.body == expected_res);
+			assert.deepEqual(r.body, expected_res);
 		});
 });
 
@@ -9380,8 +8674,8 @@ it('Export S3 test table JSON', async () => {
 			"operation": "export_to_s3",
 			"format": "json",
 			"s3": {
-				"aws_access_key_id": "{{s3_key}}",
-				"aws_secret_access_key": "{{s3_secret}}",
+				"aws_access_key_id": `${generic.s3_key}`,
+				"aws_secret_access_key": `${generic.s3_secret}`,
 				"bucket": "harperdb-integration-test-data",
 				"key": "non_public_folder/test_export_json",
 				"region": "us-east-2"
@@ -9389,19 +8683,11 @@ it('Export S3 test table JSON', async () => {
 			"search_operation": { "operation": "sql", "sql": "SELECT * FROM S3_DATA.s3_test" }
 		})
 		.expect(200)
-//Unmatched Postman assertion: let message_parts = jsonData.message.spl})
 
-	it(' ')
-	//Unmatched Postman assertion: pm.environment.set('job_id', message_parts[4])
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-});
+	const id = await getJobId(response.body);
+	const jobResponse = await checkJob(id, 15);
 
-it('Wait for JSON export to complete', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
-//Unmatched Postman assertion: need here a call to checkJobCompleted(job_id, expectedErrorMessage, expectedCompletedMessage);
+	assert.ok(jobResponse.body[0].result.ETag);
 });
 
 it('Import S3 test table JSON', async () => {
@@ -9414,27 +8700,18 @@ it('Import S3 test table JSON', async () => {
 			"schema": "S3_DATA",
 			"table": "s3_test_json_import",
 			"s3": {
-				"aws_access_key_id": "{{s3_key}}",
-				"aws_secret_access_key": "{{s3_secret}}",
+				"aws_access_key_id": `${generic.s3_key}`,
+				"aws_secret_access_key": `${generic.s3_secret}`,
 				"bucket": "harperdb-integration-test-data",
 				"key": "non_public_folder/test_export_json.json",
 				"region": "us-east-2"
 			}
 		})
 		.expect(200)
-//Unmatched Postman assertion: let message_parts = jsonData.message.spl})
-
-	it(' ')
-	//Unmatched Postman assertion: pm.environment.set('job_id', message_parts[4])
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-});
-
-it('Wait for JSON import to complete', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
-//Unmatched Postman assertion: need here a call to checkJobCompleted(job_id, expectedErrorMessage, expectedCompletedMessage);
+	const id = await getJobId(response.body);
+	const jobResponse = await checkJob(id, 15);
+	
+	assert.ok(jobResponse.body[0].message.includes('successfully loaded'));
 });
 
 it('Confirm JSON records import', async () => {
@@ -9442,62 +8719,56 @@ it('Confirm JSON records import', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			"operation": "sql",
-			"sql": "select `one`, `object_array`, `id`, `address`, `object`, `lastname`, `firstname`, `array` FROM S3_DATA.s3_test_csv_import ORDER BY id ASC"
+			operation: 'sql',
+			sql: 'select `one`, `object_array`, `id`, `address`, `object`, `lastname`, `firstname`, `array` FROM S3_DATA.s3_test_csv_import ORDER BY id ASC',
 		})
-		.expect(200)
-	//Unmatched Postman assertion: let expected_res = [
-	//Unmatched Postman assertion: {
-	//Unmatched Postman assertion: "one": "only one",
-	//Unmatched Postman assertion: "object_array": "",
-	//Unmatched Postman assertion: "id": "a",
-	//Unmatched Postman assertion: "address": "1 North Street",
-	//Unmatched Postman assertion: "object": "",
-	//Unmatched Postman assertion: "lastname": "Dog",
-	//Unmatched Postman assertion: "firstname": "Harper",
-	//Unmatched Postman assertion: "array": ""
-	//Unmatched Postman assertion: },
-	//Unmatched Postman assertion: {
-	//Unmatched Postman assertion: "one": "",
-	//Unmatched Postman assertion: "object_array": "",
-	//Unmatched Postman assertion: "id": "b",
-	//Unmatched Postman assertion: "address": "",
-	//Unmatched Postman assertion: "object": {
-	//Unmatched Postman assertion: "name": "object",
-	//Unmatched Postman assertion: "number": 1,
-	//Unmatched Postman assertion: "array": [
-	//Unmatched Postman assertion: 1,
-	//Unmatched Postman assertion: "two"
-	//Unmatched Postman assertion: ]
-	//Unmatched Postman assertion: },
-	//Unmatched Postman assertion: "lastname": "",
-	//Unmatched Postman assertion: "firstname": "Harper",
-	//Unmatched Postman assertion: "array": [
-	//Unmatched Postman assertion: 1,
-	//Unmatched Postman assertion: 2,
-	//Unmatched Postman assertion: "three"
-	//Unmatched Postman assertion: ]
-	//Unmatched Postman assertion: },
-	//Unmatched Postman assertion: {
-	//Unmatched Postman assertion: "one": "",
-	//Unmatched Postman assertion: "object_array": [
-	//Unmatched Postman assertion: {
-	//Unmatched Postman assertion: "number": 1
-	//Unmatched Postman assertion: },
-	//Unmatched Postman assertion: {
-	//Unmatched Postman assertion: "number": "two",
-	//Unmatched Postman assertion: "count": 2
-	//Unmatched Postman assertion: }
-	//Unmatched Postman assertion: ],
-	//Unmatched Postman assertion: "id": "c",
-	//Unmatched Postman assertion: "address": "",
-	//Unmatched Postman assertion: "object": "",
-	//Unmatched Postman assertion: "lastname": "",
-	//Unmatched Postman assertion: "firstname": "",
-	//Unmatched Postman assertion: "array": ""
-	//Unmatched Postman assertion: }
-	//Unmatched Postman assertion: ]
-		.expect((r) => assert.ok(r.body == expected_res))
+		.expect(200);
+
+	let expected_res = [
+		{
+			one: 'only one',
+			object_array: '',
+			id: 'a',
+			address: '1 North Street',
+			object: '',
+			lastname: 'Dog',
+			firstname: 'Harper',
+			array: '',
+		},
+		{
+			one: '',
+			object_array: '',
+			id: 'b',
+			address: '',
+			object: {
+				name: 'object',
+				number: 1,
+				array: [1, 'two'],
+			},
+			lastname: '',
+			firstname: 'Harper',
+			array: [1, 2, 'three'],
+		},
+		{
+			one: '',
+			object_array: [
+				{
+					number: 1,
+				},
+				{
+					number: 'two',
+					count: 2,
+				},
+			],
+			id: 'c',
+			address: '',
+			object: '',
+			lastname: '',
+			firstname: '',
+			array: '',
+		},
+	];
+	assert.deepEqual(response.body, expected_res);
 });
 
 it('Drop S3 schema', async () => {
@@ -9586,7 +8857,6 @@ it('Jobs - Add non SU role', async () => {
 			}
 		})
 		.expect(200)
-	generic.role_id = response.body.id;
 });
 
 it('Jobs - Add User with new Role', async () => {
@@ -9597,7 +8867,7 @@ it('Jobs - Add User with new Role', async () => {
 			"operation": "add_user",
 			"role": "developer_test_5",
 			"username": "test_user",
-			"password": "{{password}}",
+			"password": `${generic.password}`,
 			"active": true
 		})
 		.expect(200)
@@ -9634,14 +8904,8 @@ it('Jobs - Insert into runners table', async () => {
 			"records": [{ "name": "Harper", "shoes": "Nike", "runner_id": "1", "age": 55 }]
 		})
 		.expect(200)
-//Unmatched Postman assertion: function pausecomp(millis)
-//Unmatched Postman assertion: {
-//Unmatched Postman assertion: var date = new Date()
-//Unmatched Postman assertion: var curDate = null;
-//Unmatched Postman assertion: do { curDate = new Date() }
-//Unmatched Postman assertion: while(curDate-date < millis)
-//Unmatched Postman assertion: }
-//Unmatched Postman assertion: pausecomp(100))
+
+	await setTimeout(200);
 });
 
 it('Jobs - Validate 1 entry in runners table', async () => {
@@ -9656,7 +8920,7 @@ it('Jobs - Validate 1 entry in runners table', async () => {
 it('Jobs - Test Remove Files Before with test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({ "operation": "delete_files_before", "date": "2018-06-14", "schema": "dog" })
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
@@ -9671,25 +8935,16 @@ it('Jobs - Test Remove Files Before with su and store job_id', async () => {
 		.set(headers)
 		.send({
 			"operation": "delete_files_before",
-			"date": "{{date_tomorrow}}",
+			"date": `${dateTomorrow}`,
 			"schema": "test_job",
 			"table": "runner"
 		})
 		.expect(200)
-		.expect((r) => {
-			let id_index = r.body.message.indexOf('id ');
-			let parsedId = r.body.message.substring(id_index + 3, r.body.message.length);
-			generic.job_id = parsedId;
 
-		})
-});
+	const id = await getJobId(response.body);
+	const jobResponse = await checkJob(id, 15);
 
-it('Jobs - Wait for remove files before', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
-//Unmatched Postman assertion: need here a call to checkJobCompleted(job_id, expectedErrorMessage, expectedCompletedMessage);
+	assert.ok(jobResponse.body[0].message == '1 of 1 record successfully deleted');
 });
 
 it('Jobs - Validate 0 entry in runners table', async () => {
@@ -9707,21 +8962,29 @@ it('Search Jobs by date', async () => {
 		.set(headers)
 		.send({
 			"operation": "search_jobs_by_start_date",
-			"from_date": "{{date_yesterday}}",
-			"to_date": "{{date_tomorrow}}"
+			"from_date": `${dateYesterday}`,
+			"to_date": `${dateTomorrow}`
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length > 0))
+
+
+	for (let item of response.body) {
+		if (item.user == `${generic.test_user_name}`) {
+			generic.job_id = item.id;
+			break;
+		}
+	}
 });
 
 it('Search Jobs by date - non-super user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "search_jobs_by_start_date",
-			"from_date": "{{date_yesterday}}",
-			"to_date": "{{date_tomorrow}}"
+			"from_date": `${dateYesterday}`,
+			"to_date": `${dateTomorrow}`
 		})
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
@@ -9734,7 +8997,7 @@ it('Search Jobs by job_id', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
+		.send({ "operation": "get_job", "id": `${generic.job_id}` })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
 });
@@ -9742,8 +9005,8 @@ it('Search Jobs by job_id', async () => {
 it('Search Jobs by job_id - non-super user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
+		.set(headersTestUser)
+		.send({ "operation": "get_job", "id": `${generic.job_id}` })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
 });
@@ -9751,11 +9014,11 @@ it('Search Jobs by job_id - non-super user', async () => {
 it('Jobs - Bulk CSV load into restricted region table as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "csv_data_load",
-			"schema": "{{schema}}",
-			"table": "{{regi_tb}}",
+			"schema": `${generic.schema}`,
+			"table": `${generic.regi_tb}`,
 			"data": "regionid, regiondescription\n'17', 'test description'\n"
 		})
 		.expect(403)
@@ -9767,8 +9030,8 @@ it('Jobs - Bulk CSV load into restricted region table as su', async () => {
 		.set(headers)
 		.send({
 			"operation": "csv_data_load",
-			"schema": "{{schema}}",
-			"table": "{{regi_tb}}",
+			"schema": `${generic.schema}`,
+			"table": `${generic.regi_tb}`,
 			"data": "regionid, regiondescription\n'17', 'test description'\n"
 		})
 		.expect(200)
@@ -9777,13 +9040,13 @@ it('Jobs - Bulk CSV load into restricted region table as su', async () => {
 it('Jobs - Bulk CSV Load - insert suppliers table restricted attribute as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "csv_file_load",
 			"action": "insert",
-			"schema": "{{schema}}",
-			"table": "{{supp_tb}}",
-			"file_path": "{{files_location}}Suppliers.csv"
+			"schema": `${generic.schema}`,
+			"table": `${generic.supp_tb}`,
+			"file_path": `${getCsvPath()}Suppliers.csv`
 		})
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
@@ -9801,7 +9064,7 @@ it('Jobs Test Export To Local using SQL as su', async () => {
 			"path": "./",
 			"filename": "test_export.json",
 			"format": "json",
-			"search_operation": { "operation": "sql", "sql": "select * from {{schema}}.{{ship_tb}}" }
+			"search_operation": { "operation": "sql", "sql": `select * from ${generic.schema}.${generic.ship_tb}` }
 		})
 		.expect(200)
 });
@@ -9817,9 +9080,9 @@ it('Jobs Test Export To Local using NoSQL as su', async () => {
 			"format": "json",
 			"search_operation": {
 				"operation": "search_by_hash",
-				"schema": "{{schema}}",
-				"table": "{{ship_tb}}",
-				"hash_attribute": "{{ship_id}}",
+				"schema": `${generic.schema}`,
+				"table": `${generic.ship_tb}`,
+				"hash_attribute": `${generic.ship_id}`,
 				"hash_values": [1],
 				"get_attributes": ["companyname"]
 			}
@@ -9830,13 +9093,13 @@ it('Jobs Test Export To Local using NoSQL as su', async () => {
 it('Jobs Test Export To Local using SQL as test_user on table with FULLY restricted attrs', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "export_local",
 			"path": "./",
 			"filename": "test_export.json",
 			"format": "json",
-			"search_operation": { "operation": "sql", "sql": "select * from {{schema}}.{{ship_tb}}" }
+			"search_operation": { "operation": "sql", "sql": `select * from ${generic.schema}.${generic.ship_tb}` }
 		})
 		.expect(200)
 });
@@ -9844,13 +9107,13 @@ it('Jobs Test Export To Local using SQL as test_user on table with FULLY restric
 it('Jobs Test Export To Local using SQL on RESTRICTED table as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "export_local",
 			"path": "./",
 			"filename": "test_export.json",
 			"format": "json",
-			"search_operation": { "operation": "sql", "sql": "select * from {{schema}}.{{supp_tb}}" }
+			"search_operation": { "operation": "sql", "sql": `select * from ${generic.schema}.${generic.supp_tb}` }
 		})
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
@@ -9862,13 +9125,13 @@ it('Jobs Test Export To Local using SQL on RESTRICTED table as test_user', async
 it('Jobs Test Export To Local using SQL as test_user on table w/ two attr perms', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "export_local",
 			"path": "./",
 			"filename": "test_export.json",
 			"format": "json",
-			"search_operation": { "operation": "sql", "sql": "select * from {{schema}}.{{regi_tb}}" }
+			"search_operation": { "operation": "sql", "sql": `select * from ${generic.schema}.${generic.regi_tb}` }
 		})
 		.expect(200)
 });
@@ -9876,7 +9139,7 @@ it('Jobs Test Export To Local using SQL as test_user on table w/ two attr perms'
 it('Jobs Test Export To Local using NoSQL as test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "export_local",
 			"path": "./",
@@ -9884,11 +9147,11 @@ it('Jobs Test Export To Local using NoSQL as test_user', async () => {
 			"format": "json",
 			"search_operation": {
 				"operation": "search_by_hash",
-				"schema": "{{schema}}",
-				"table": "{{supp_tb}}",
-				"hash_attribute": "{{supp_id}}",
+				"schema": `${generic.schema}`,
+				"table": `${generic.supp_tb}`,
+				"hash_attribute": `${generic.supp_id}`,
 				"hash_values": [1],
-				"get_attributes": ["{{supp_id}}"]
+				"get_attributes": [generic.supp_id]
 			}
 		})
 		.expect(403)
@@ -9908,7 +9171,7 @@ it('Jobs -  drop_role', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "drop_role", "id": "{{role_id}}" })
+		.send({ "operation": "drop_role", "id": "developer_test_5" })
 		.expect(200)
 });
 
@@ -9963,6 +9226,9 @@ it('Insert new records', async () => {
 });
 
 it('Insert additional new records', async () => {
+
+	generic.insert_timestamp = new Date().toISOString();
+
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
@@ -9985,52 +9251,16 @@ it('Delete records before', async () => {
 		.set(headers)
 		.send({
 			"operation": "delete_files_before",
-			"date": "{{insert_timestamp}}",
+			"date": `${generic.insert_timestamp}`,
 			"schema": "test_delete_before",
 			"table": "address"
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-//Unmatched Postman assertion: eval(pm.globals.get("function:getJobIdDelete"))(jsonData, null)
-});
 
-it('Check Delete Records Before Job Completed', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].status != 'ERROR'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].status == 'COMPLETE' || r.body[0].status == ERROR))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check Delete Records Before Job Completed')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check Delete Records Before Job Completed')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	const id = await getJobId(response.body);
+	const jobResponse = await checkJob(id, 15);
+
+	assert.ok(jobResponse.body[0].message.includes('records successfully deleted'));
 });
 
 it('Search by hash confirm', async () => {
@@ -10045,21 +9275,26 @@ it('Search by hash confirm', async () => {
 			"hash_values": [1, 2, 3, 4, 5, 6, 11, 12, 13],
 			"get_attributes": ["id", "address"]
 		})
-		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 3))
-//Unmatched Postman assertion: var ids = [];
-//Unmatched Postman assertion: jsonData.forEach((record) => {
-//Unmatched Postman assertion: ids.push(record.id)
-//Unmatched Postman assertion: })
-//Unmatched Postman assertion: pm.expect(ids.includes(11)).to.be.true;
-//Unmatched Postman assertion: pm.expect(ids.includes(12)).to.be.true;
-//Unmatched Postman assertion: pm.expect(ids.includes(13)).to.be.true;
-//Unmatched Postman assertion: pm.expect(ids.includes(1)).to.be.false;
-//Unmatched Postman assertion: pm.expect(ids.includes(2)).to.be.false;
-//Unmatched Postman assertion: pm.expect(ids.includes(3)).to.be.false;
-//Unmatched Postman assertion: pm.expect(ids.includes(4)).to.be.false;
-//Unmatched Postman assertion: pm.expect(ids.includes(5)).to.be.false;
-//Unmatched Postman assertion: pm.expect(ids.includes(6)).to.be.false;})
+		.expect((r) => {
+			let ids = [];
+
+			r.body.forEach((record) => {
+				ids.push(record.id);
+			});
+
+			assert.ok(ids.includes(11));
+			assert.ok(ids.includes(12));
+			assert.ok(ids.includes(13));
+
+			assert.ok(!ids.includes(1));
+			assert.ok(!ids.includes(2));
+			assert.ok(!ids.includes(3));
+			assert.ok(!ids.includes(4));
+			assert.ok(!ids.includes(5));
+			assert.ok(!ids.includes(6));
+		})
+		.expect(200)
 });
 
 it('Insert new records', async () => {
@@ -10085,6 +9320,9 @@ it('Insert new records', async () => {
 });
 
 it('Insert additional new records', async () => {
+
+	generic.insert_timestamp = new Date().toISOString();
+
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
@@ -10107,52 +9345,16 @@ it('Delete records before', async () => {
 		.set(headers)
 		.send({
 			"operation": "delete_files_before",
-			"date": "{{insert_timestamp}}",
+			"date": `${generic.insert_timestamp}`,
 			"schema": "test_delete_before",
 			"table": "address"
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-//Unmatched Postman assertion: eval(pm.globals.get("function:getJobIdDeleteA"))(jsonData, null)
-});
 
-it('Check Delete Records Before Alias Job Completed', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].status != 'ERROR'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].status == 'COMPLETE' || r.body[0].status == ERROR))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check Delete Records Before Alias Job Completed')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check Delete Records Before Alias Job Completed')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	const id = await getJobId(response.body);
+	const jobResponse = await checkJob(id, 15);
+
+	assert.ok(jobResponse.body[0].message.includes('records successfully deleted'));
 });
 
 it('Search by hash confirm', async () => {
@@ -10169,26 +9371,31 @@ it('Search by hash confirm', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 3))
-//Unmatched Postman assertion: var ids = [];
-//Unmatched Postman assertion: jsonData.forEach((record) => {
-//Unmatched Postman assertion: ids.push(record.id)
-//Unmatched Postman assertion: })
-//Unmatched Postman assertion: pm.expect(ids.includes("11a")).to.be.true;
-//Unmatched Postman assertion: pm.expect(ids.includes("12a")).to.be.true;
-//Unmatched Postman assertion: pm.expect(ids.includes("13a")).to.be.true;
-//Unmatched Postman assertion: pm.expect(ids.includes("1a")).to.be.false;
-//Unmatched Postman assertion: pm.expect(ids.includes("2a")).to.be.false;
-//Unmatched Postman assertion: pm.expect(ids.includes("3a")).to.be.false;
-//Unmatched Postman assertion: pm.expect(ids.includes("4a")).to.be.false;
-//Unmatched Postman assertion: pm.expect(ids.includes("5a")).to.be.false;
-//Unmatched Postman assertion: pm.expect(ids.includes("6a")).to.be.false;})
+		.expect((r) => {
+			let ids = [];
+
+			r.body.forEach((record) => {
+				ids.push(record.id);
+			});
+
+			assert.ok(ids.includes("11a"));
+			assert.ok(ids.includes("12a"));
+			assert.ok(ids.includes("13a"));
+
+			assert.ok(!ids.includes("1a"));
+			assert.ok(!ids.includes("2a"));
+			assert.ok(!ids.includes("3a"));
+			assert.ok(!ids.includes("4a"));
+			assert.ok(!ids.includes("5a"));
+			assert.ok(!ids.includes("6a"));
+		})
 });
 
 it('Create schema for drop test', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "create_schema", "schema": "{{drop_schema}}" })
+		.send({ "operation": "create_schema", "schema": `${generic.drop_schema}` })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "database 'drop_schema' successfully created"))
 });
@@ -10199,8 +9406,8 @@ it('Create table for drop test', async () => {
 		.set(headers)
 		.send({
 			"operation": "create_table",
-			"schema": "{{drop_schema}}",
-			"table": "{{drop_table}}",
+			"schema": `${generic.drop_schema}`,
+			"table": `${generic.drop_table}`,
 			"hash_attribute": "id"
 		})
 		.expect(200)
@@ -10213,8 +9420,8 @@ it('Insert records for drop test', async () => {
 		.set(headers)
 		.send({
 			"operation": "insert",
-			"schema": "{{drop_schema}}",
-			"table": "{{drop_table}}",
+			"schema": `${generic.drop_schema}`,
+			"table": `${generic.drop_table}`,
 			"records": [{ "id": 4, "address": "194 Greenbrook Drive" }, {
 				"id": 7,
 				"address": "195 Greenbrook Lane"
@@ -10228,7 +9435,7 @@ it('Drop schema', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "drop_schema", "schema": "{{drop_schema}}" })
+		.send({ "operation": "drop_schema", "schema": `${generic.drop_schema}` })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "successfully deleted 'drop_schema'"))
 });
@@ -10237,7 +9444,7 @@ it('Confirm drop schema', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "describe_schema", "schema": "{{drop_schema}}" })
+		.send({ "operation": "describe_schema", "schema": `${generic.drop_schema}` })
 		.expect(404)
 		.expect((r) => assert.ok(r.body.error == "database 'drop_schema' does not exist"))
 });
@@ -10246,7 +9453,7 @@ it('Create schema again', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "create_schema", "schema": "{{drop_schema}}" })
+		.send({ "operation": "create_schema", "schema": `${generic.drop_schema}` })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "database 'drop_schema' successfully created"))
 });
@@ -10257,8 +9464,8 @@ it('Create table again', async () => {
 		.set(headers)
 		.send({
 			"operation": "create_table",
-			"schema": "{{drop_schema}}",
-			"table": "{{drop_table}}",
+			"schema": `${generic.drop_schema}`,
+			"table": `${generic.drop_table}`,
 			"hash_attribute": "id"
 		})
 		.expect(200)
@@ -10269,7 +9476,7 @@ it('Confirm correct attributes', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "describe_table", "schema": "{{drop_schema}}", "table": "{{drop_table}}" })
+		.send({ "operation": "describe_table", "schema": `${generic.drop_schema}`, "table": `${generic.drop_table}` })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.attributes.length == 3))
 });
@@ -10278,7 +9485,7 @@ it('Clean up after drop schema tests', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "drop_schema", "schema": "{{drop_schema}}" })
+		.send({ "operation": "drop_schema", "schema": `${generic.drop_schema}` })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "successfully deleted 'drop_schema'"))
 });
@@ -10401,7 +9608,7 @@ it('Upsert some values', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.upserted_hashes.length == 1))
-		.expect((r) => assert.ok(r.body.upserted_hashes == ["123a"]))
+		.expect((r) => assert.deepEqual(r.body.upserted_hashes, ["123a"]))
 		.expect((r) => assert.ok(r.body.message == "upserted 1 of 1 records"))
 });
 
@@ -10445,7 +9652,7 @@ it('Update some values', async () => {
 		.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records', 'Expected response message to eql "updated 1 of 1 records"'))
 		.expect(200)
 		.expect((r) => assert.ok(r.body.update_hashes.length == 1))
-		.expect((r) => assert.ok(r.body.update_hashes == [1]))
+		.expect((r) => assert.deepEqual(r.body.update_hashes, [1]))
 });
 
 it('Search by hash confirm update', async () => {
@@ -10481,7 +9688,7 @@ it('Delete a record', async () => {
 		.send({ "operation": "delete", "schema": "drop_attr", "table": "test", "hash_values": [1] })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.deleted_hashes.length == 1))
-		.expect((r) => assert.ok(r.body.deleted_hashes == [1]))
+		.expect((r) => assert.deepEqual(r.body.deleted_hashes, [1]))
 		.expect((r) => assert.ok(r.body.message == "1 of 1 record successfully deleted"))
 });
 
@@ -10573,7 +9780,7 @@ it('Upsert some values', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.upserted_hashes.length == 1))
-		.expect((r) => assert.ok(r.body.upserted_hashes == ["123a"]))
+		.expect((r) => assert.deepEqual(r.body.upserted_hashes, ["123a"]))
 		.expect((r) => assert.ok(r.body.message == "upserted 1 of 1 records"))
 });
 
@@ -10617,7 +9824,7 @@ it('Update some values', async () => {
 		.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records', 'Expected response message to eql "updated 1 of 1 records"'))
 		.expect(200)
 		.expect((r) => assert.ok(r.body.update_hashes.length == 1))
-		.expect((r) => assert.ok(r.body.update_hashes == [1]))
+		.expect((r) => assert.deepEqual(r.body.update_hashes, [1]))
 });
 
 it('Search by hash confirm update', async () => {
@@ -10653,7 +9860,7 @@ it('Delete a record', async () => {
 		.send({ "operation": "delete", "schema": "drop_attr", "table": "test", "hash_values": [1] })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.deleted_hashes.length == 1))
-		.expect((r) => assert.ok(r.body.deleted_hashes == [1]))
+		.expect((r) => assert.deepEqual(r.body.deleted_hashes, [1]))
 		.expect((r) => assert.ok(r.body.message == "1 of 1 record successfully deleted"))
 });
 
@@ -10745,7 +9952,7 @@ it('Upsert some values', async () => {
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.upserted_hashes.length == 1))
-		.expect((r) => assert.ok(r.body.upserted_hashes == ["123a"]))
+		.expect((r) => assert.deepEqual(r.body.upserted_hashes, ["123a"]))
 		.expect((r) => assert.ok(r.body.message == "upserted 1 of 1 records"))
 });
 
@@ -10789,7 +9996,7 @@ it('Update some values', async () => {
 		.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records', 'Expected response message to eql "updated 1 of 1 records"'))
 		.expect(200)
 		.expect((r) => assert.ok(r.body.update_hashes.length == 1))
-		.expect((r) => assert.ok(r.body.update_hashes == [1]))
+		.expect((r) => assert.deepEqual(r.body.update_hashes, [1]))
 });
 
 it('Search by hash confirm update', async () => {
@@ -10825,7 +10032,7 @@ it('Delete a record', async () => {
 		.send({ "operation": "delete", "schema": "drop_attr", "table": "test", "hash_values": [1] })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.deleted_hashes.length == 1))
-		.expect((r) => assert.ok(r.body.deleted_hashes == [1]))
+		.expect((r) => assert.deepEqual(r.body.deleted_hashes, [1]))
 		.expect((r) => assert.ok(r.body.message == "1 of 1 record successfully deleted"))
 });
 
@@ -10859,8 +10066,8 @@ it('Insert new Employees', async () => {
 		.set(headers)
 		.send({
 			"operation": "insert",
-			"schema": "{{schema}}",
-			"table": "{{emps_tb}}",
+			"schema": `${generic.schema}`,
+			"table": `${generic.emps_tb}`,
 			"records": [{ "employeeid": 924, "address": "194 Greenbrook Drive" }, {
 				"employeeid": 925,
 				"address": "195 Greenbrook Lane"
@@ -10877,7 +10084,7 @@ it('Delete records ending in Lane', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "sql", "sql": "delete from {{schema}}.{{emps_tb}} where address like '%Lane'" })
+		.send({ "operation": "sql", "sql": `delete from ${generic.schema}.${generic.emps_tb} where address like '%Lane'` })
 		.expect(200)
 });
 
@@ -10885,16 +10092,16 @@ it('Verify records are deleted', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "sql", "sql": "SELECT * from {{schema}}.{{emps_tb}} where address like '%Lane'" })
+		.send({ "operation": "sql", "sql": `SELECT * from ${generic.schema}.${generic.emps_tb} where address like '%Lane'` })
 		.expect(200)
-.expect((r) => assert.ok(Array.isArray(jsonData) && jsonData.length === 0))
+		.expect((r) => assert.ok(Array.isArray(r.body) && r.body.length === 0))
 });
 
 it('NoSQL Delete', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "delete", "schema": "{{schema}}", "table": "{{emps_tb}}", "hash_values": [924, 927] })
+		.send({ "operation": "delete", "schema": `${generic.schema}`, "table": `${generic.emps_tb}`, "hash_values": [924, 927] })
 		.expect(200)
 		.expect((r) => {
 			let expected_result = {
@@ -10915,13 +10122,13 @@ it('NoSQL Verify records are deleted', async () => {
 		.set(headers)
 		.send({
 			"operation": "search_by_hash",
-			"schema": "{{schema}}",
-			"table": "{{emps_tb}}",
+			"schema": `${generic.schema}`,
+			"table": `${generic.emps_tb}`,
 			"hash_values": [924, 925, 926, 927],
 			"get_attributes": ["*"]
 		})
 		.expect(200)
-.expect((r) => assert.ok(Array.isArray(jsonData) && jsonData.length === 0))
+.expect((r) => assert.ok(Array.isArray(r.body) && r.body.length === 0))
 });
 
 it('Insert records with objects and arrays', async () => {
@@ -10930,8 +10137,8 @@ it('Insert records with objects and arrays', async () => {
 		.set(headers)
 		.send({
 			"operation": "insert",
-			"schema": "{{schema}}",
-			"table": "{{emps_tb}}",
+			"schema": `${generic.schema}`,
+			"table": `${generic.emps_tb}`,
 			"records": [{
 				"employeeid": 7924,
 				"address": [{ "height": 12, "weight": 46 }, { "shoe_size": 12, "iq": 46 }]
@@ -10950,8 +10157,8 @@ it('Delete records contaitng objects and arrays', async () => {
 		.set(headers)
 		.send({
 			operation: 'delete',
-			schema: '{{schema}}',
-			table: '{{emps_tb}}',
+			schema: `${generic.schema}`,
+			table: `${generic.emps_tb}`,
 			hash_values: [7924, 7925, 7926, 7927],
 		})
 		.expect(200)
@@ -10971,8 +10178,8 @@ it('Verify object and array records deleted', async () => {
 		.set(headers)
 		.send({
 			"operation": "search_by_hash",
-			"schema": "{{schema}}",
-			"table": "{{emps_tb}}",
+			"schema": `${generic.schema}`,
+			"table": `${generic.emps_tb}`,
 			"hash_values": [7924, 7925, 7926, 7925],
 			"get_attributes": ["employeeid", "address"]
 		})
@@ -11062,6 +10269,9 @@ it('Insert new records', async () => {
 });
 
 it('Insert additional new records', async () => {
+
+	generic.insert_timestamp = new Date().toISOString();
+
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
@@ -11084,52 +10294,16 @@ it('Delete records before', async () => {
 		.set(headers)
 		.send({
 			"operation": "delete_audit_logs_before",
-			"timestamp": "{{insert_timestamp}}",
+			"timestamp": `${generic.insert_timestamp}`,
 			"schema": "test_delete_before",
 			"table": "testerama"
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response'))
-//Unmatched Postman assertion: eval(pm.globals.get("function:getJobIdDelete"))(jsonData, null)
-});
 
-it('Check Delete Audit Logs Job Completed', async () => {
-	const response = await request(envUrl)
-		.post('')
-		.set(headers)
-		.send({ "operation": "get_job", "id": "{{job_id}}" })
-		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-		.expect((r) => assert.ok(r.body[0].hasOwnProperty('status')))
-	//Unmatched Postman assertion: let status = jsonData[0].status;
-	//Unmatched Postman assertion: switch(status){
-	//Unmatched Postman assertion: case 'ERROR':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].status != 'ERROR'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: case 'COMPLETE':
-	//Unmatched Postman assertion: console.log(jsonData[0])
-	//Unmatched Postman assertion: if(pm.environment.get("next_request")){
-	//Unmatched Postman assertion: postman.setNextRequest(pm.environment.get("next_request"))
-	//Unmatched Postman assertion: }
-		.expect((r) => assert.ok(r.body[0].status == 'COMPLETE' || r.body[0].status == ERROR))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: case '0':
-//Unmatched Postman assertion: case 0:
-//Unmatched Postman assertion: case 'IN_PROGRESS':
-//Unmatched Postman assertion: console.log('in progress, checking again')
-	await setTimeout(1000)
-	//Unmatched Postman assertion: postman.setNextRequest('Check Delete Audit Logs Job Completed')
-		.expect((r) => assert.ok(r.body[0].status == 'IN_PROGRESS' || r.body[0].status == 0 || r.body[0].status == '0'))
-	//Unmatched Postman assertion: break;
-	//Unmatched Postman assertion: default:
-	//Unmatched Postman assertion: postman.setNextRequest('Check Delete Audit Logs Job Completed')
-		.expect((r) => assert.ok(r.status == 'IN_PROGRESS' || r.status == 0 || r.status == '0' || r.status == 'ERROR' || r.status == 'COMPLETE'))
-//Unmatched Postman assertion: break;
-//Unmatched Postman assertion: }})
+	const id = await getJobId(response.body);
+	const jobResponse = await checkJob(id, 15);
+
+	assert.ok(jobResponse.body[0].message.includes('records successfully deleted'));
 });
 
 it('create test table', async () => {
@@ -11244,7 +10418,7 @@ it('Insert another record', async () => {
 			"operation": "insert",
 			"schema": "test_delete_before",
 			"table": "test_read",
-			"records": [{ "id": 4, "name": "Griff" }]
+			"records": [{ "id": 5, "name": "Griff" }]
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.inserted_hashes.length == 1))
@@ -11299,27 +10473,36 @@ it('Fetch all Transactions', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "read_audit_log", "schema": "test_delete_before", "table": "test_read" })
+		.send({ operation: 'read_audit_log', schema: 'test_delete_before', table: 'test_read' })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.length == 8))
-	//Unmatched Postman assertion: const expected_attrs = ["id", "name", "__updatedtime__"];
-	//Unmatched Postman assertion: const other_attrs = ["age", "__createdtime__"];
-	//Unmatched Postman assertion: const upsert_trans = jsonData[7]; console.log(upsert_trans)
-	//Unmatched Postman assertion: pm.expect(upsert_trans.operation == "upsert")
-	//Unmatched Postman assertion: pm.expect(upsert_trans.records.length == 3)
-	//Unmatched Postman assertion: pm.expect(upsert_trans.records[0].id == 4)
-	//Unmatched Postman assertion: Object.keys(upsert_trans.records[0]).forEach(key => {
-		.expect((r) => assert.ok([...expected_attrs, ...other_attrs]).includes(key))
+		.expect((r) => {
 
-	//Unmatched Postman assertion: pm.expect(upsert_trans.records[1].id == 5)
-	//Unmatched Postman assertion: Object.keys(upsert_trans.records[1]).forEach(key => {
-		.expect((r) => assert.ok([...expected_attrs, ...other_attrs]).includes(key))
+			assert.ok(r.body.length == 8);
 
-	//Unmatched Postman assertion: pm.expect(upsert_trans.records[2].id).to.be.string;
-	//Unmatched Postman assertion: Object.keys(upsert_trans.records[2]).forEach(key => {
-		.expect((r) => assert.ok([...expected_attrs, ...other_attrs]).includes(key))
-//Unmatched Postman assertion: })
-	await setTimeout(100)
+			const expected_attrs = ['id', 'name', '__updatedtime__'];
+			const other_attrs = ['age', '__createdtime__'];
+
+			const upsert_trans = r.body[7];
+
+			assert.ok(upsert_trans.operation == 'upsert');
+			assert.ok(upsert_trans.records.length == 3);
+
+			assert.ok(upsert_trans.records[0].id == 4);
+			Object.keys(upsert_trans.records[0]).forEach((key) => {
+				assert.ok([...expected_attrs, ...other_attrs].includes(key));
+			});
+
+			assert.ok(upsert_trans.records[1].id == 5);
+			Object.keys(upsert_trans.records[1]).forEach((key) => {
+				assert.ok([...expected_attrs, ...other_attrs].includes(key));
+			});
+
+			assert.ok(typeof upsert_trans.records[2].id === 'string');
+			Object.keys(upsert_trans.records[2]).forEach((key) => {
+				assert.ok([...expected_attrs, ...other_attrs].includes(key));
+			});
+		});
+	await setTimeout(100);
 });
 
 it('Fetch timestamp Transactions', async () => {
@@ -11334,7 +10517,6 @@ it('Fetch timestamp Transactions', async () => {
 			"search_values": []
 		})
 		.expect(200)
-	//Unmatched Postman assertion: let user = pm.environment.get("username")
 		.expect((r) => assert.ok(r.body.length == 8))
 
 	await setTimeout(100)
@@ -11524,7 +10706,6 @@ it('Add non-SU role', async () => {
 			}
 		})
 		.expect(200)
-	generic.role_id = response.body.id;
 });
 
 it('Add User with non-SU role', async () => {
@@ -11535,7 +10716,7 @@ it('Add User with non-SU role', async () => {
 			"operation": "add_user",
 			"role": "test_dev_role",
 			"username": "test_user",
-			"password": "{{password}}",
+			"password": `${generic.password}`,
 			"active": true
 		})
 		.expect(200)
@@ -11550,25 +10731,23 @@ it('Describe All - non-SU test_user', async () => {
 		.expect((r) => {
 			const keys = Object.keys(r.body);
 			assert.ok(keys.length == 3);
-			assert.ok(r.body.hasOwnProperty('another'))
+			assert.ok(r.body.hasOwnProperty('another'));
+			assert.ok(r.body.another.hasOwnProperty('breed'));
+			assert.ok(r.body.another.breed.schema == 'another');
+			assert.ok(r.body.another.breed.name == 'breed');
+			assert.ok(r.body.another.breed.attributes.length == 0);
+			assert.ok(r.body.another.breed.hash_attribute == 'id');
+			assert.ok(r.body.another.breed.record_count == 350);
+			assert.ok(r.body.another.breed.hasOwnProperty('clustering_stream_name'));
+			assert.ok(r.body.another.breed.hasOwnProperty('last_updated_record'));
+			assert.ok(r.body.hasOwnProperty('northnwd'));
+			assert.ok(r.body.northnwd.hasOwnProperty('categories'));
+			assert.ok(r.body.northnwd.hasOwnProperty('region'));
+			assert.ok(r.body.northnwd.hasOwnProperty('territories'));
+			assert.ok(Object.keys(r.body.northnwd).length == 3);
+			assert.ok(Object.keys(r.body.other).length == 1);
+			assert.ok(r.body.other.hasOwnProperty('owner'));
 		})
-
-	//Unmatched Postman assertion: pm.expect(json_response).to.haveOwnProperty('')
-	//Unmatched Postman assertion: pm.expect(json_response.another).to.haveOwnProperty('breed')
-	//Unmatched Postman assertion: pm.expect(json_response.another.breed.schema == 'another')
-	//Unmatched Postman assertion: pm.expect(json_response.another.breed.name == 'breed')
-	//Unmatched Postman assertion: pm.expect(json_response.another.breed.attributes.length == 0)
-	//Unmatched Postman assertion: pm.expect(json_response.another.breed.hash_attribute == 'id')
-	//Unmatched Postman assertion: pm.expect(json_response.another.breed.record_count == 350)
-		.expect((r) => assert.ok(r.body.another.breed.hasOwnProperty('clustering_stream_name')))
-		.expect((r) => assert.ok(r.body.another.breed.hasOwnProperty('last_updated_record')))
-	//Unmatched Postman assertion: pm.expect(json_response).to.haveOwnProperty('northnwd')
-		.expect((r) => assert.ok(r.body.northnwd.hasOwnProperty('categories')))
-		.expect((r) => assert.ok(r.body.northnwd.hasOwnProperty('region')))
-		.expect((r) => assert.ok(r.body.northnwd.hasOwnProperty('territories')))
-//Unmatched Postman assertion: pm.expect(Object.keys(json_response.northnwd).length == 3)
-//Unmatched Postman assertion: pm.expect(Object.keys(json_response.other).length == 1)
-//Unmatched Postman assertion: pm.expect(json_response.other).to.haveOwnProperty('owner'))
 });
 
 it('Describe Schema - restricted perms - non-SU test_user', async () => {
@@ -11589,11 +10768,12 @@ it('Describe Schema - non-SU test_user', async () => {
 		.set(headers)
 		.send({ "operation": "describe_schema", "schema": "northnwd" })
 		.expect(200)
-//Unmatched Postman assertion: var response_arr = Object.values(jsonResponse)
-//Unmatched Postman assertion: pm.expect(response_arr.length == 3)
-//Unmatched Postman assertion: pm.expect(jsonResponse).to.haveOwnProperty('categories')
-//Unmatched Postman assertion: pm.expect(jsonResponse).to.haveOwnProperty('region')
-//Unmatched Postman assertion: pm.expect(jsonResponse).to.haveOwnProperty('territories'))
+		.expect((r) => {
+			assert.ok(Object.values(r.body).length == 3);
+			assert.ok(r.body.hasOwnProperty('categories'));
+			assert.ok(r.body.hasOwnProperty('region'));
+			assert.ok(r.body.hasOwnProperty('territories'));
+		})
 });
 
 it('Describe Table - restricted perms - non-SU test_user', async () => {
@@ -11627,7 +10807,7 @@ it('Describe Table - non-SU test_user', async () => {
 it('Describe  SYSTEM schema as non-SU', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({ "operation": "describe_table", "schema": "system" })
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
@@ -11639,7 +10819,7 @@ it('Describe  SYSTEM schema as non-SU', async () => {
 it('Describe  SYSTEM table as non-SU', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({ "operation": "describe_table", "table": "hdb_user", "schema": "system" })
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
@@ -11654,11 +10834,13 @@ it('List Users does not return protected info', async () => {
 		.set(headers)
 		.send({ "operation": "list_users" })
 		.expect(200)
-//Unmatched Postman assertion: jsonResponse.forEach(user => {
-//Unmatched Postman assertion: pm.expect(user.password).to.be.undefined;
-//Unmatched Postman assertion: pm.expect(user.hash).to.be.undefined;
-//Unmatched Postman assertion: pm.expect(user.refresh_token).to.be.undefined;
-
+		.expect((r) => {
+			r.body.forEach((user) => {
+				assert.ok(!user.password);
+				assert.ok(!user.hash);
+				assert.ok(!user.refresh_token);
+			})
+		})
 });
 
 it('Drop test_user', async () => {
@@ -11674,7 +10856,7 @@ it('Drop_role - non-SU role', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "drop_role", "id": "{{role_id}}" })
+		.send({ "operation": "drop_role", "id": "test_dev_role" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "test_dev_role successfully deleted"))
 });
@@ -11685,7 +10867,6 @@ it('Add non-SU role with NO PERMS', async () => {
 		.set(headers)
 		.send({ "operation": "add_role", "role": "developer_test_no_perms", "permission": { "super_user": false } })
 		.expect(200)
-	generic.role_id = response.body.id;
 });
 
 it('Add User with new NO PERMS Role', async () => {
@@ -11696,7 +10877,7 @@ it('Add User with new NO PERMS Role', async () => {
 			"operation": "add_user",
 			"role": "developer_test_no_perms",
 			"username": "no_perms_user",
-			"password": "{{password}}",
+			"password": `${generic.password}`,
 			"active": true
 		})
 		.expect(200)
@@ -11705,16 +10886,16 @@ it('Add User with new NO PERMS Role', async () => {
 it('Describe All - test user NO PERMS', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersNoPermsUser)
 		.send({ "operation": "describe_all" })
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonResponse == {}))
+		.expect((r) => assert.deepEqual(r.body, {}))
 });
 
 it('Describe Schema - test user NO PERMS', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersNoPermsUser)
 		.send({ "operation": "describe_schema", "schema": "northnwd" })
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
@@ -11726,7 +10907,7 @@ it('Describe Schema - test user NO PERMS', async () => {
 it('Describe Table - test user NO PERMS', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersNoPermsUser)
 		.send({ "operation": "describe_table", "schema": "northnwd", "table": "region" })
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
@@ -11748,7 +10929,7 @@ it('Drop_role - NO PERMS role', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "drop_role", "id": "{{role_id}}" })
+		.send({ "operation": "drop_role", "id": "developer_test_no_perms" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'developer_test_no_perms successfully deleted'))
 });
@@ -11758,40 +10939,47 @@ it('Add non-SU role with perm for ONE table', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			"operation": "add_role",
-			"role": "developer_test_one_perm",
-			"permission": {
-				"super_user": false,
-				"northnwd": {
-					"tables": {
-						"employees": {
-							"read": true,
-							"insert": true,
-							"update": false,
-							"delete": false,
-							"attribute_permissions": [{
-								"attribute_name": "city",
-								"read": false,
-								"insert": true,
-								"update": false
-							}, {
-								"attribute_name": "firstname",
-								"read": true,
-								"insert": true,
-								"update": false
-							}, {
-								"attribute_name": "lastname",
-								"read": true,
-								"insert": true,
-								"update": false
-							}, { "attribute_name": "region", "read": false, "insert": false, "update": false }]
-						}
-					}
-				}
-			}
+			operation: 'add_role',
+			role: 'developer_test_one_perm',
+			permission: {
+				super_user: false,
+				northnwd: {
+					tables: {
+						employees: {
+							read: true,
+							insert: true,
+							update: false,
+							delete: false,
+							attribute_permissions: [
+								{
+									attribute_name: 'city',
+									read: false,
+									insert: true,
+									update: false,
+								},
+								{
+									attribute_name: 'firstname',
+									read: true,
+									insert: true,
+									update: false,
+								},
+								{
+									attribute_name: 'lastname',
+									read: true,
+									insert: true,
+									update: false,
+								},
+								{ attribute_name: 'region',
+									read: false,
+									insert: false,
+									update: false },
+							],
+						},
+					},
+				},
+			},
 		})
 		.expect(200)
-	generic.role_id = response.body.id;
 });
 
 it('Add User with new ONE PERM Role', async () => {
@@ -11802,7 +10990,7 @@ it('Add User with new ONE PERM Role', async () => {
 			"operation": "add_user",
 			"role": "developer_test_one_perm",
 			"username": "one_perm_user",
-			"password": "{{password}}",
+			"password": `${generic.password}`,
 			"active": true
 		})
 		.expect(200)
@@ -11811,20 +10999,22 @@ it('Add User with new ONE PERM Role', async () => {
 it('Describe All - test user ONE TABLE PERM', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersOnePermUser)
 		.send({ "operation": "describe_all" })
+		.expect((r) => {
+			assert.ok(Object.keys(r.body).length == 1);
+			assert.ok(Object.keys(r.body.northnwd).length == 1);
+			assert.ok(Object.keys(r.body.northnwd.employees).length == 11);
+			assert.ok(typeof r.body.northnwd.employees.db_size =='number');
+			assert.ok(r.body.northnwd.employees.attributes.length == 4);
+		})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(Object.keys(jsonResponse).length == 1)
-//Unmatched Postman assertion: pm.expect(Object.keys(jsonResponse.northnwd).length == 1)
-//Unmatched Postman assertion: pm.expect(Object.keys(jsonResponse.northnwd.employees).length == 11)
-//Unmatched Postman assertion: pm.expect(jsonResponse.northnwd.employees.db_size).to.be.a('number')
-//Unmatched Postman assertion: pm.expect(jsonResponse.northnwd.employees.attributes.length == 4)})
 });
 
 it('Describe Schema - restricted schema - non-SU test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersOnePermUser)
 		.send({ "operation": "describe_schema", "schema": "dev" })
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
@@ -11836,29 +11026,32 @@ it('Describe Schema - restricted schema - non-SU test_user', async () => {
 it('Describe Schema - non-SU test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
-		.send({ "operation": "describe_schema", "schema": "northnwd" })
+		.set(headersOnePermUser)
+		.send({ operation: 'describe_schema', schema: 'northnwd' })
 		.expect(200)
-//Unmatched Postman assertion: var expected_schema = {
-//Unmatched Postman assertion: northnwd: {
-//Unmatched Postman assertion: employees: ["employeeid", "city", "firstname", "lastname"]
-//Unmatched Postman assertion: }
-//Unmatched Postman assertion: }
+		.expect((r) => {
+			let expected_schema = {
+				northnwd: {
+					employees: ['employeeid', 'city', 'firstname', 'lastname'],
+				},
+			};
 
-//Unmatched Postman assertion: var response_arr = Object.values(jsonResponse)
-//Unmatched Postman assertion: pm.expect(response_arr.length == 1)
-//Unmatched Postman assertion: response_arr.forEach(table_data => {
-//Unmatched Postman assertion: const { name, schema, attributes } = table_data;
-//Unmatched Postman assertion: attributes.forEach(attr => {
-//Unmatched Postman assertion: pm.expect(expected_schema[schema][name].includes(attr.attribute) == true)
-//Unmatched Postman assertion: })
+			let response_arr = Object.values(r.body);
+			assert.ok(response_arr.length == 1);
 
+			response_arr.forEach((table_data) => {
+				const { name, schema, attributes } = table_data;
+				attributes.forEach((attr) => {
+					assert.ok(expected_schema[schema][name].includes(attr.attribute));
+				});
+			});
+		});
 });
 
 it('Describe Table - restricted table - non-SU test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersOnePermUser)
 		.send({ "operation": "describe_table", "schema": "northnwd", "table": "shippers" })
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
@@ -11870,18 +11063,20 @@ it('Describe Table - restricted table - non-SU test_user', async () => {
 it('Describe Table - non-SU test_user', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersOnePermUser)
 		.send({ "operation": "describe_table", "schema": "northnwd", "table": "employees" })
 		.expect(200)
-//Unmatched Postman assertion: let top_attributes = ["name", "schema", "id", "hash_attribute", "__updatedtime__", "__createdtime__", "attributes", "record_count"];
-//Unmatched Postman assertion: var expected_attributes = ["employeeid", "city", "firstname", "lastname"];
+		.expect((r) => {
+			let top_attributes = ["name", "schema", "id", "hash_attribute", "__updatedtime__", "__createdtime__", "attributes", "record_count"];
+			let expected_attributes = ["employeeid", "city", "firstname", "lastname"];
 
-//Unmatched Postman assertion: pm.expect(jsonResponse.schema == 'northnwd')
-//Unmatched Postman assertion: pm.expect(jsonResponse.name == 'employees')
-//Unmatched Postman assertion: jsonResponse.attributes.forEach(attr => {
-//Unmatched Postman assertion: pm.expect(expected_attributes.includes(attr.attribute) == true)
-//Unmatched Postman assertion: })
-//Unmatched Postman assertion: pm.expect(jsonResponse.attributes.length == 4)})
+			assert.ok(r.body.schema == 'northnwd');
+			assert.ok(r.body.name == 'employees');
+			r.body.attributes.forEach((attr) => {
+				assert.ok(expected_attributes.includes(attr.attribute));
+			})
+			assert.ok(r.body.attributes.length == 4);
+		})
 });
 
 it('Drop one_perm_user', async () => {
@@ -11897,7 +11092,7 @@ it('Drop_role - ONE TABLE PERMS role', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "drop_role", "id": "{{role_id}}" })
+		.send({ "operation": "drop_role", "id": "developer_test_one_perm" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == 'developer_test_one_perm successfully deleted'))
 });
@@ -12043,7 +11238,7 @@ it('Add role with non-boolean READ and UPDATE attribute perms - expect fail', as
 		.expect((r) => assert.ok(r.body.main_permissions.length == 0))
 		.expect((r) => assert.ok(r.body.schema_permissions.northnwd_categories.length == 2))
 		.expect((r) => assert.ok(r.body.schema_permissions.northnwd_categories.includes("READ attribute permission for 'description' must be a boolean")))
-			.expect((r) => assert.ok(r.body.schema_permissions.northnwd_categories.includes("UPDATE attribute permission for 'description' must be a boolean")))
+		.expect((r) => assert.ok(r.body.schema_permissions.northnwd_categories.includes("UPDATE attribute permission for 'description' must be a boolean")))
 		.expect(400)
 });
 
@@ -12415,7 +11610,6 @@ it('Add non-SU role', async () => {
 			}
 		})
 		.expect(200)
-	generic.role_id = response.body.id;
 });
 
 it('Add User with non-SU role', async () => {
@@ -12426,7 +11620,7 @@ it('Add User with non-SU role', async () => {
 			"operation": "add_user",
 			"role": "test_dev_role",
 			"username": "test_user",
-			"password": "{{password}}",
+			"password": `${generic.password}`,
 			"active": true
 		})
 		.expect(200)
@@ -12435,7 +11629,7 @@ it('Add User with non-SU role', async () => {
 it('system_information as non-SU - expect fail', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({ "operation": "system_information" })
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
@@ -12457,7 +11651,7 @@ it('Drop_role - non-SU role', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "drop_role", "id": "{{role_id}}" })
+		.send({ "operation": "drop_role", "id": "test_dev_role" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "test_dev_role successfully deleted"))
 });
@@ -12552,7 +11746,6 @@ it('Add non-SU role', async () => {
 			}
 		})
 		.expect(200)
-	generic.role_id = response.body.id;
 });
 
 it('Add User with non-SU role', async () => {
@@ -12563,7 +11756,7 @@ it('Add User with non-SU role', async () => {
 			"operation": "add_user",
 			"role": "test_dev_role",
 			"username": "test_user",
-			"password": "{{password}}",
+			"password": `${generic.password}`,
 			"active": true
 		})
 		.expect(200)
@@ -12578,14 +11771,16 @@ it('Query system table as SU', async () => {
 			"table": "hdb_user",
 			"schema": "system",
 			"search_attribute": "username",
-			"search_value": "{{username}}",
+			"search_value": `${generic.username}`,
 			"get_attributes": ["*"]
 		})
 		.expect(200)
-//Unmatched Postman assertion: var objKeysData = Object.keys(jsonData[0])
-		.expect((r) => assert.ok(r.body[0].username == environment["username"]))
-//Unmatched Postman assertion: pm.expect(objKeysData.includes("password")).to.be.true;
-//Unmatched Postman assertion: pm.expect(objKeysData.includes("role")).to.be.true;})
+		.expect((r) => {
+			let objKeysData = Object.keys(r.body[0])
+			assert.ok(r.body[0].username == generic.username);
+			assert.ok(objKeysData.includes("password"));
+			assert.ok(objKeysData.includes("role"));
+		})
 });
 
 it('Query system table non SU', async () => {
@@ -12597,14 +11792,14 @@ it('Query system table non SU', async () => {
 			"table": "hdb_user",
 			"schema": "system",
 			"search_attribute": "username",
-			"search_value": "{{username}}",
+			"search_value": `${generic.username}`,
 			"get_attributes": ["*"]
 		})
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
-	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == 'read'))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == 'read'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'system'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'hdb_user'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
@@ -12613,7 +11808,7 @@ it('Query system table non SU', async () => {
 it('Insert record system table as non SU', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "insert",
 			"schema": "system",
@@ -12628,8 +11823,8 @@ it('Insert record system table as non SU', async () => {
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 		.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions.length == 1))
-	.expect((r) => assert.ok(jsonData.unauthorized_access[0].required_table_permissions[0] == "insert"))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1))
+		.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == "insert"))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'system'))
 		.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'hdb_user'))
 		.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
@@ -12638,7 +11833,7 @@ it('Insert record system table as non SU', async () => {
 it('Update record system table as non SU ', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "update",
 			"schema": "system",
@@ -12657,7 +11852,7 @@ it('Update record system table as non SU ', async () => {
 it('Delete record system table as non SU ', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({ "operation": "delete", "schema": "system", "table": "hdb_user", "hash_values": ["admin1"] })
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "The 'system' database, tables and records are used internally by HarperDB and cannot be updated or removed."))
@@ -12675,7 +11870,7 @@ it('Drop system table as SU', async () => {
 it('Drop system table as non SU', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({ "operation": "drop_table", "schema": "system", "table": "hdb_user" })
 		.expect(403)
 		.expect((r) => assert.ok(r.body.error == "The 'system' database, tables and records are used internally by HarperDB and cannot be updated or removed."))
@@ -12694,7 +11889,7 @@ it('Drop_role - non-SU role', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "drop_role", "id": "{{role_id}}" })
+		.send({ "operation": "drop_role", "id": "test_dev_role" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "test_dev_role successfully deleted"))
 });
@@ -12854,7 +12049,6 @@ it('Add non-SU role for schema tests', async () => {
 			}
 		})
 		.expect(200)
-	generic.role_id = response.body.id;
 });
 
 it('Add test_user  with new role for schema error tests', async () => {
@@ -12865,7 +12059,7 @@ it('Add test_user  with new role for schema error tests', async () => {
 			"operation": "add_user",
 			"role": "test_schema_user",
 			"username": "test_user",
-			"password": "{{password}}",
+			"password": `${generic.password}`,
 			"active": true
 		})
 		.expect(200)
@@ -12874,11 +12068,11 @@ it('Add test_user  with new role for schema error tests', async () => {
 it('NoSQL - Non-SU search on schema that doesnt exist as test_user - expect error', async () => {
 const response = await request(envUrl)
 	.post('')
-	.set(headers)
+	.set(headersTestUser)
 	.send({
 		"operation": "search_by_value",
 		"schema": "rick_rolled",
-		"table": "{{regi_tb}}",
+		"table": `${generic.regi_tb}`,
 		"hash_attribute": "id",
 		"search_attribute": "id",
 		"search_value": "*",
@@ -12894,11 +12088,11 @@ const response = await request(envUrl)
 it('NoSQL - SU search on schema that doesnt exist as test_user - expect error', async () => {
 const response = await request(envUrl)
 	.post('')
-	.set(headers)
+	.set(headersTestUser)
 	.send({
 		"operation": "search_by_value",
 		"schema": "rick_rolled",
-		"table": "{{regi_tb}}",
+		"table": `${generic.regi_tb}`,
 		"hash_attribute": "id",
 		"search_attribute": "id",
 		"search_value": "*",
@@ -12911,7 +12105,7 @@ const response = await request(envUrl)
 it('NoSQL - Non-SU search on table that doesnt exist as test_user - expect error', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(headersTestUser)
 		.send({
 			"operation": "search_by_value",
 			"schema": "dev",
@@ -12948,8 +12142,8 @@ const response = await request(envUrl)
 it('SQL - Non-SU select on schema that doesnt exist as test_user - expect error', async () => {
 const response = await request(envUrl)
 	.post('')
-	.set(headers)
-	.send({ "operation": "sql", "sql": "SELECT * FROM rick_rolled.{{regi_tb}}" })
+	.set(headersTestUser)
+	.send({ "operation": "sql", "sql": `SELECT * FROM rick_rolled.${generic.regi_tb}` })
 	.expect(403)
 	.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
 	.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
@@ -12961,7 +12155,7 @@ it('SQL - SU search on schema that doesnt exist as error', async () => {
 const response = await request(envUrl)
 	.post('')
 	.set(headers)
-	.send({ "operation": "sql", "sql": "SELECT * FROM rick_rolled.{{regi_tb}}" })
+	.send({ "operation": "sql", "sql": `SELECT * FROM rick_rolled.${generic.regi_tb}` })
 	.expect(404)
 	.expect((r) => assert.ok(r.body.error == "database 'rick_rolled' does not exist"))
 });
@@ -12969,7 +12163,7 @@ const response = await request(envUrl)
 it('SQL - Non-SU search on table that doesnt exist as test_user - expect error', async () => {
 const response = await request(envUrl)
 	.post('')
-	.set(headers)
+	.set(headersTestUser)
 	.send({ "operation": "sql", "sql": "SELECT * FROM dev.rick_rolled" })
 	.expect(403)
 	.expect((r) => assert.ok(r.body.error == "This operation is not authorized due to role restrictions and/or invalid database items"))
@@ -12999,7 +12193,7 @@ it('Drop role for search schema error checks', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "drop_role", "id": "{{role_id}}" })
+		.send({ "operation": "drop_role", "id": "test_schema_user" })
 		.expect(200)
 });
 
@@ -13281,7 +12475,6 @@ it('Add non-SU role', async () => {
 			}
 		})
 		.expect(200)
-	generic.role_id = response.body.id;
 });
 
 it('Add non-SU role w/ same name', async () => {
@@ -13295,19 +12488,20 @@ it('Add non-SU role w/ same name', async () => {
 });
 
 it('Query HDB as bad user', async () => {
+	const myHeaders = await createHeaders('JohnnyBadUser', generic.password);
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
+		.set(myHeaders)
 		.send({
 			"operation": "search_by_value",
 			"table": "hdb_user",
 			"schema": "system",
 			"search_attribute": "username",
-			"search_value": "{{username}}",
+			"search_value": `${generic.username}`,
 			"get_attributes": ["*"]
 		})
 		.expect(401)
-		.expect((r) => assert.ok(r.body.error == "Login failed"))
+		.expect((r) => assert.ok(r.text.includes("Login failed")))
 });
 
 it('alter_role with bad data', async () => {
@@ -13317,7 +12511,7 @@ it('alter_role with bad data', async () => {
 		.send({
 			"operation": "alter_role",
 			"role": "bad_user_2",
-			"id": "{{role_id}}",
+			"id": "bad_user_2",
 			"permission": {
 				"super_user": false,
 				"crapschema": {
@@ -13367,13 +12561,16 @@ it('alter_role with bad data', async () => {
 			}
 		})
 		.expect(400)
-//Unmatched Postman assertion: pm.expect(jsonResponse.main_permissions.length == 2)
-//Unmatched Postman assertion: pm.expect(jsonResponse.main_permissions.includes("database 'crapschema' does not exist") == true)
-//Unmatched Postman assertion: pm.expect(jsonResponse.main_permissions.includes("Table 'dev.craptable' does not exist") == true)
+		.expect((r) => {
+			assert.ok(r.body.main_permissions.length == 2);
+			assert.ok(r.body.main_permissions.includes("database 'crapschema' does not exist"));
+			assert.ok(r.body.main_permissions.includes("Table 'dev.craptable' does not exist"));
 
-//Unmatched Postman assertion: pm.expect(jsonResponse.schema_permissions.dev_dog.length == 2)
-//Unmatched Postman assertion: pm.expect(jsonResponse.schema_permissions.dev_dog.includes("Invalid attribute 'name' in 'attribute_permissions'") == true)
-//Unmatched Postman assertion: pm.expect(jsonResponse.schema_permissions.dev_dog.includes("Invalid attribute 'crapattribute' in 'attribute_permissions'") == true))
+			assert.ok(r.body.schema_permissions.dev_dog.length == 2);
+			assert.ok(r.body.schema_permissions.dev_dog.includes("Invalid attribute 'name' in 'attribute_permissions'"));
+			assert.ok(r.body.schema_permissions.dev_dog.includes(
+				"Invalid attribute 'crapattribute' in 'attribute_permissions'"));
+		})
 });
 
 it('list_roles ensure role not changed', async () => {
@@ -13398,46 +12595,52 @@ it('alter_role good data', async () => {
 		.post('')
 		.set(headers)
 		.send({
-			"operation": "alter_role",
-			"role": "user_role_update",
-			"id": "{{role_id}}",
-			"permission": {
-				"super_user": false,
-				"{{schema}}": {
-					"tables": {
-						"{{cust_tb}}": {
-							"read": false,
-							"insert": false,
-							"update": false,
-							"delete": false,
-							"attribute_permissions": [{
-								"attribute_name": "fax",
-								"read": false,
-								"insert": false,
-								"update": false
-							}]
-						}
-					}
-				}
-			}
+			operation: 'alter_role',
+			role: 'user_role_update',
+			id: 'user_role_update',
+			permission: {
+				'super_user': false,
+				[generic.schema]: {
+					tables: {
+						[generic.cust_tb]: {
+							read: false,
+							insert: false,
+							update: false,
+							delete: false,
+							attribute_permissions: [
+								{
+									attribute_name: 'fax',
+									read: false,
+									insert: false,
+									update: false,
+								},
+							],
+						},
+					},
+				},
+			},
 		})
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(jsonResponse.role == "user_role_update")
-//Unmatched Postman assertion: pm.expect(jsonResponse.id == pm.variables.get("role_id"))
-//Unmatched Postman assertion: pm.expect(jsonResponse.permission.super_user == false)
-//Unmatched Postman assertion: pm.expect(jsonResponse.permission.northnwd.tables.customers).to.deep.eql({
-//Unmatched Postman assertion: "read": false,
-//Unmatched Postman assertion: "insert": false,
-//Unmatched Postman assertion: "update": false,
-//Unmatched Postman assertion: "delete": false,
-//Unmatched Postman assertion: "attribute_permissions": [
-//Unmatched Postman assertion: {
-//Unmatched Postman assertion: "attribute_name": "fax",
-//Unmatched Postman assertion: "read": false,
-//Unmatched Postman assertion: "insert": false,
-//Unmatched Postman assertion: "update": false
-//Unmatched Postman assertion: }
-//Unmatched Postman assertion: ]});
+		.expect((r) => {
+			assert.ok(r.body.role == 'user_role_update');
+			assert.ok(r.body.id == 'user_role_update');
+			assert.ok(r.body.permission.super_user == false);
+			assert.deepEqual(r.body.permission.northnwd.tables.customers,
+				{
+				read: false,
+				insert: false,
+				update: false,
+				delete: false,
+				attribute_permissions: [
+					{
+						attribute_name: 'fax',
+						read: false,
+						insert: false,
+						update: false,
+					},
+				],
+			});
+		});
 });
 
 it('list_roles ensure role was updated', async () => {
@@ -13470,7 +12673,7 @@ it('Drop_role for non-SU role', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "drop_role", "id": "{{role_id}}" })
+		.send({ "operation": "drop_role", "id": "user_role_update" })
 		.expect(200)
 });
 
@@ -13552,7 +12755,6 @@ it('Add non-SU role', async () => {
 			}
 		})
 		.expect(200)
-	generic.role_id = response.body.id;
 });
 
 it('Add User with new Role', async () => {
@@ -13563,7 +12765,7 @@ it('Add User with new Role', async () => {
 			"operation": "add_user",
 			"role": "developer_test_5",
 			"username": "test_user",
-			"password": "{{password}}",
+			"password": `${generic.password}`,
 			"active": true
 		})
 		.expect(200)
@@ -13577,7 +12779,7 @@ it('Alter User with empty role', async () => {
 			"operation": "alter_user",
 			"role": "",
 			"username": "test_user",
-			"password": "{{password}}",
+			"password": `${generic.password}`,
 			"active": true
 		})
 		.expect(500)
@@ -13588,7 +12790,7 @@ it('Alter User set active to false.', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "alter_user", "username": "test_user", "password": "{{password}}", "active": false })
+		.send({ "operation": "alter_user", "username": "test_user", "password": `${generic.password}`, "active": false })
 		.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records', 'Expected response message to eql "updated 1 of 1 records"'))
 		.expect(200)
 		.expect((r) => assert.ok(r.body.update_hashes[0] == "test_user"))
@@ -13623,7 +12825,7 @@ it('Drop test non-SU role', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "drop_role", "id": "{{role_id}}" })
+		.send({ "operation": "drop_role", "id": "developer_test_5" })
 		.expect(200)
 });
 
@@ -13715,13 +12917,17 @@ it('Confirm created attribute', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "describe_table", "table": "AttributeDropTest", "schema": "dev" })
+		.send({ operation: 'describe_table', table: 'AttributeDropTest', schema: 'dev' })
 		.expect(200)
-//Unmatched Postman assertion: let found = false;
-//Unmatched Postman assertion: jsonData.attributes.forEach((attr) => {
-//Unmatched Postman assertion: if (attr.attribute === 'created_attribute') {
-//Unmatched Postman assertion: found = true;
-//Unmatched Postman assertion: }//Unmatched Postman assertion: pm.expect(found).to.be.true;})
+		.expect((r) => {
+			let found = false;
+			r.body.attributes.forEach((attr) => {
+				if (attr.attribute === 'created_attribute') {
+					found = true;
+				}
+			});
+			assert.ok(found);
+		});
 });
 
 it('Create existing attribute', async () => {
@@ -13758,11 +12964,15 @@ it('Describe table DropAttributeTest', async () => {
 		.set(headers)
 		.send({ "operation": "describe_table", "table": "AttributeDropTest", "schema": "dev" })
 		.expect(200)
-//Unmatched Postman assertion: let found = false;
-//Unmatched Postman assertion: jsonData.attributes.forEach((attr) => {
-//Unmatched Postman assertion: if (attr.attribute === 'another_attribute') {
-//Unmatched Postman assertion: found = true;
-//Unmatched Postman assertion: }//Unmatched Postman assertion: pm.expect(found).to.be.false;})
+		.expect((r) => {
+			let found = false;
+			r.body.attributes.forEach((attr) => {
+				if (attr.attribute === 'another_attribute') {
+					found = true;
+				}
+			})
+			assert.ok(!found);
+		})
 });
 
 it('Get Fingerprint', async () => {
@@ -13887,7 +13097,7 @@ it('Cluster delete routes', async () => {
 			}]
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body == expected_result))
+		.expect((r) => assert.deepEqual(r.body, expected_result))
 });
 
 it('Cluster get routes confirm delete', async () => {
@@ -13914,10 +13124,12 @@ it('Read log', async () => {
 		.set(headers)
 		.send({ "operation": "read_log" })
 		.expect(200)
-//Unmatched Postman assertion: pm.expect(Array.isArray(json_data)).to.be.true;
-//Unmatched Postman assertion: pm.expect(json_data[0].hasOwnProperty('level')).to.be.true;
-//Unmatched Postman assertion: pm.expect(json_data[0].hasOwnProperty('message')).to.be.true;
-//Unmatched Postman assertion: pm.expect(json_data[0].hasOwnProperty('timestamp')).to.be.true;})
+		.expect((r) => {
+			assert.ok(Array.isArray(r.body));
+			assert.ok(r.body[0].hasOwnProperty('level'));
+			assert.ok(r.body[0].hasOwnProperty('message'));
+			assert.ok(r.body[0].hasOwnProperty('timestamp'));
+		})
 });
 
 it('Set Configuration', async () => {
@@ -13953,7 +13165,6 @@ it('Add non-SU role', async () => {
 		.set(headers)
 		.send({ "operation": "add_role", "role": "test_dev_role", "permission": { "super_user": false } })
 		.expect(200)
-	generic.role_id = response.body.id;
 });
 
 it('Add User with non-SU role', async () => {
@@ -13964,7 +13175,7 @@ it('Add User with non-SU role', async () => {
 			"operation": "add_user",
 			"role": "test_dev_role",
 			"username": "test_user",
-			"password": "{{password}}",
+			"password": `${generic.password}`,
 			"active": true
 		})
 		.expect(200)
@@ -14016,7 +13227,7 @@ it('Drop_role - non-SU role', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "drop_role", "id": "{{role_id}}" })
+		.send({ "operation": "drop_role", "id": "test_dev_role" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "test_dev_role successfully deleted"))
 });
@@ -14088,7 +13299,7 @@ it('Call create_authentication_tokens no pw', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "create_authentication_tokens", "username": "{{username}}" })
+		.send({ "operation": "create_authentication_tokens", "username": `${generic.username}` })
 		.expect(400)
 		.expect((r) => assert.ok(r.body["error"] === 'password is required'))
 });
@@ -14106,15 +13317,16 @@ it('Call create_authentication_tokens happy path', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "create_authentication_tokens", "username": "{{username}}", "password": "{{password}}" })
+		.send({ "operation": "create_authentication_tokens", "username": `${generic.username}`, "password": `${generic.password}` })
 		.expect(200)
-
-	//Unmatched Postman assertion: let attributes = ['operation_token', 'refresh_token'];
-
-	//Unmatched Postman assertion: attributes.forEach(attribute=>{
-		.expect((r) => assert.ok(r.body[attribute] != undefined))
-//Unmatched Postman assertion: pm.collectionVariables.set("operation_token", jsonData.operation_token)
-//Unmatched Postman assertion: pm.collectionVariables.set("refresh_token", jsonData.refresh_token))
+		.expect((r) => {
+			let attributes = ['operation_token', 'refresh_token'];
+			attributes.forEach((attribute) => {
+				assert.ok(r.body[attribute] != undefined);
+			});
+			generic.operation_token = r.body.operation_token;
+			generic.refresh_token = r.body.refresh_token;
+		})
 });
 
 it('test search_by_hash with valid jwt', async () => {
@@ -14123,9 +13335,9 @@ it('test search_by_hash with valid jwt', async () => {
 		.set(headers)
 		.send({
 			"operation": "search_by_hash",
-			"schema": "{{schema}}",
-			"table": "{{emps_tb}}",
-			"hash_attribute": "{{emps_id}}",
+			"schema": `${generic.schema}`,
+			"table": `${generic.emps_tb}`,
+			"hash_attribute": `${generic.emps_id}`,
 			"hash_values": [1],
 			"get_attributes": ["*"]
 		})
@@ -14140,9 +13352,9 @@ it('test search_by_hash with invalid jwt', async () => {
 		.set(headers)
 		.send({
 			"operation": "search_by_hash",
-			"schema": "{{schema}}",
-			"table": "{{emps_tb}}",
-			"hash_attribute": "{{emps_id}}",
+			"schema": `${generic.schema}`,
+			"table": `${generic.emps_tb}`,
+			"hash_attribute": `${generic.emps_id}`,
 			"hash_values": [1],
 			"get_attributes": ["*"]
 		})
@@ -14156,12 +13368,13 @@ it('test refresh_operation_token with correct token', async () => {
 		.set(headers)
 		.send({ "operation": "refresh_operation_token" })
 		.expect(200)
-
-	//Unmatched Postman assertion: let attributes = ['operation_token'];
-
-	//Unmatched Postman assertion: attributes.forEach(attribute=>{
-		.expect((r) => assert.ok(r.body[attribute] != undefined))
-//Unmatched Postman assertion: pm.collectionVariables.set("operation_token", jsonData.operation_token))
+		.expect((r) => {
+			let attributes = ['operation_token'];
+			attributes.forEach((attribute) => {
+				assert.ok(r.body[attribute] != undefined);
+			});
+			generic.operation_token = r.body.operation_token;
+		})
 });
 
 it('test refresh_operation_token with incorrect token', async () => {
@@ -14356,7 +13569,6 @@ it('restart service', async () => {
 		.send({ "operation": "restart_service", "service": "http_workers" })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message == "Restarting http_workers"))
-//Unmatched Postman assertion: // This timeout is here to give HDB time to restart before the next text is ran.
 	await setTimeout(60000);
 });
 
@@ -14368,7 +13580,6 @@ it('get custom function status', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body.hasOwnProperty('port')))
 		.expect((r) => assert.ok(r.body.hasOwnProperty('directory')))
-//Unmatched Postman assertion: pm.environment.set('cf_port', json_data.port))
 });
 
 it('call custom function', async () => {
@@ -14440,13 +13651,27 @@ it('drop custom functions project', async () => {
 });
 
 it('confirm project was dropped', async () => {
+	const expected_obj = {
+		"deploy-test-gh": {
+			"routes": [],
+			"helpers": []
+		},
+		"deploy-test-payload": {
+			"routes": [],
+			"helpers": []
+		},
+		"deploy-test-payload-tar-gz": {
+			"routes": [],
+			"helpers": []
+		}
+	};
+
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
 		.send({ "operation": "get_custom_functions" })
 		.expect(200)
-		.expect((r) => assert.ok(JSON.stringify(r.body) == '{"deploy-test-payload":{"routes":[],"helpers":[]},"deploy-test-payload-tar-gz":{"routes":[],"helpers":[]}'))
-		.expect((r) => assert.ok(r.body == expected_obj))
+		.expect((r) => assert.deepEqual(r.body, expected_obj))
 });
 
 it('deploy custom function', async () => {
@@ -14970,7 +14195,7 @@ it('csv_file_load with database', async () => {
 			"operation": "csv_file_load",
 			"database": "job_guy",
 			"table": "working",
-			"file_path": "{{files_location}}Suppliers.csv"
+			"file_path": `${getCsvPath()}Suppliers.csv`
 		})
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes("Starting job with id")))
@@ -14980,7 +14205,7 @@ it('csv_file_load without database error', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "csv_file_load", "table": "todo", "file_path": "{{files_location}}Suppliers.csv" })
+		.send({ "operation": "csv_file_load", "table": "todo", "file_path": `${getCsvPath()}Suppliers.csv` })
 		.expect((r) => assert.ok(r.body.error.includes("Table 'data.todo' does not exist")))
 		.expect(400)
 });
@@ -14989,7 +14214,7 @@ it('csv_file_load without database', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "csv_file_load", "table": "friends", "file_path": "{{files_location}}Suppliers.csv" })
+		.send({ "operation": "csv_file_load", "table": "friends", "file_path": `${getCsvPath()}Suppliers.csv` })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes("Starting job with id")))
 });
@@ -15058,8 +14283,8 @@ it('import_from_s3 without database', async () => {
 			"operation": "import_from_s3",
 			"table": "friends",
 			"s3": {
-				"aws_access_key_id": "{{s3_key}}",
-				"aws_secret_access_key": "{{s3_secret}}",
+				"aws_access_key_id": `${generic.s3_key}`,
+				"aws_secret_access_key": `${generic.s3_secret}`,
 				"bucket": "harperdb-integration-test-data",
 				"key": "non_public_folder/owners.json",
 				"region": "us-east-2"
@@ -15078,8 +14303,8 @@ it('import_from_s3 with database', async () => {
 			"database": "job_guy",
 			"table": "working",
 			"s3": {
-				"aws_access_key_id": "{{s3_key}}",
-				"aws_secret_access_key": "{{s3_secret}}",
+				"aws_access_key_id": `${generic.s3_key}`,
+				"aws_secret_access_key": `${generic.s3_secret}`,
 				"bucket": "harperdb-integration-test-data",
 				"key": "non_public_folder/owners.json",
 				"region": "us-east-2"
@@ -15097,8 +14322,8 @@ it('Export to S3 search_by_hash with ids', async () => {
 			"operation": "export_to_s3",
 			"format": "csv",
 			"s3": {
-				"aws_access_key_id": "{{s3_key}}",
-				"aws_secret_access_key": "{{s3_secret}}",
+				"aws_access_key_id": `${generic.s3_key}`,
+				"aws_secret_access_key": `${generic.s3_secret}`,
 				"bucket": "harperdb-integration-test-data",
 				"key": "non_public_folder/test_export",
 				"region": "us-east-2"
@@ -15257,11 +14482,10 @@ it('Restart service and wait', async () => {
 		.set(headers)
 		.send({ "operation": "restart_service", "service": "http_workers" })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.message.includes("Restarting")))
-//Unmatched Postman assertion: //wait for 31 seconds
-//Unmatched Postman assertion: console.log('waiting for 31 seconds for the restart of services')
-//Unmatched Postman assertion: //retry request if needed with:
-//Unmatched Postman assertion: // pm.setNextRequest(pm.info.requestId)
+		.expect((r) => {
+			assert.ok(r.body.message.includes("Restarting"));
+			console.log('waiting for 31 seconds for the restart of services');
+		})
 	await setTimeout(31000);
 });
 
@@ -15306,7 +14530,7 @@ it('Search and get attributes', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].id == "1"))
 		.expect((r) => assert.ok(r.body[0].price == 100))
-	.expect((r) => assert.ok(jsonData[0].taxRate ==0.19))
+		.expect((r) => assert.ok(r.body[0].taxRate == 0.19))
 		.expect((r) => assert.ok(r.body[0].totalPrice == 119))
 		.expect((r) => assert.ok(r.body[0].notIndexedTotalPrice == 119))
 		.expect((r) => assert.ok(r.body[0].jsTotalPrice == 119))
@@ -15342,7 +14566,7 @@ it('Search REST attribute select', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].id == "1"))
 		.expect((r) => assert.ok(r.body[0].price == 100))
-	.expect((r) => assert.ok(jsonData[0].taxRate ==0.19))
+		.expect((r) => assert.ok(r.body[0].taxRate == 0.19))
 		.expect((r) => assert.ok(r.body[0].totalPrice == 119))
 		.expect((r) => assert.ok(r.body[0].notIndexedTotalPrice == 119))
 		.expect((r) => assert.ok(r.body[0].jsTotalPrice == 119))
@@ -15355,7 +14579,7 @@ it('Search REST attribute 2 select', async () => {
 		.expect(200)
 		.expect((r) => assert.ok(r.body[0].id == "1"))
 		.expect((r) => assert.ok(r.body[0].price == 100))
-	.expect((r) => assert.ok(jsonData[0].taxRate ==0.19))
+		.expect((r) => assert.ok(r.body[0].taxRate == 0.19))
 		.expect((r) => assert.ok(r.body[0].totalPrice == 119))
 		.expect((r) => assert.ok(r.body[0].notIndexedTotalPrice == 119))
 		.expect((r) => assert.ok(r.body[0].jsTotalPrice == 119))
@@ -15368,7 +14592,7 @@ it('Delete data', async () => {
 		.send({ "operation": "delete", "table": "Product", "ids": ["1"] })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes('1 of 1 record successfully deleted')))
-//Unmatched Postman assertion: pm.expect(response.deleted_hashes == ['1']))
+		.expect((r) => assert.deepEqual(r.body.deleted_hashes, ['1']))
 });
 
 it('Delete table', async () => {
@@ -15443,12 +14667,11 @@ it('Restart service and wait', async () => {
 		.set(headers)
 		.send({ "operation": "restart_service", "service": "http_workers" })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.message.includes("Restarting")))
-//Unmatched Postman assertion: //wait for 31 seconds
-//Unmatched Postman assertion: console.log('waiting for 31 seconds for the restart of services')
+		.expect((r) => {
+			assert.ok(r.body.message.includes("Restarting"));
+			console.log('waiting for 31 seconds for the restart of services');
+		})
 	await setTimeout(31000)
-	//Unmatched Postman assertion: //retry request if needed with:
-	//Unmatched Postman assertion: // pm.setNextRequest(pm.info.requestId)
 });
 
 it('Insert one null into SubObject', async () => {
@@ -15508,11 +14731,14 @@ it('Shorthand query', async () => {
 	const response = await request(envUrlRest)
 		.post('/graphql')
 		.set(headers)
-		.send({ "query": "{ Related { id name } }" })
+		.send({ query: '{ Related { id name } }' })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.data.Related.length == 5))
-	//Unmatched Postman assertion: jsonData.data.Related.forEach((row, i) => {
-		.expect((r) => assert.ok(row.id == (i + 1).toString()))
+		.expect((r) => {
+			assert.ok(r.body.data.Related.length == 5);
+			r.body.data.Related.forEach((row, i) => {
+				assert.ok(row.id == (i + 1).toString());
+			});
+		});
 });
 
 it('Named query', async () => {
@@ -15521,9 +14747,12 @@ it('Named query', async () => {
 		.set(headers)
 		.send({ "query": "query GetRelated { Related { id name } }" })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.data.Related.length == 5))
-	//Unmatched Postman assertion: jsonData.data.Related.forEach((row, i) => {
-		.expect((r) => assert.ok(row.id == (i + 1).toString()))
+		.expect((r) => {
+			assert.ok(r.body.data.Related.length == 5);
+			r.body.data.Related.forEach((row, i) => {
+				assert.ok(row.id == (i + 1).toString());
+			})
+		})
 });
 
 it('Named query with operationName', async () => {
@@ -15532,9 +14761,12 @@ it('Named query with operationName', async () => {
 		.set(headers)
 		.send({ "query": "query GetRelated { Related { id, name } }", "operationName": "GetRelated" })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.data.Related.length == 5))
-	//Unmatched Postman assertion: jsonData.data.Related.forEach((row, i) => {
-		.expect((r) => assert.ok(row.id == (i + 1).toString()))
+		.expect((r) => {
+			assert.ok(r.body.data.Related.length == 5);
+			r.body.data.Related.forEach((row, i) => {
+				assert.ok(row.id == (i + 1).toString());
+			})
+		})
 });
 
 it('Named query with operationName 2', async () => {
@@ -15546,9 +14778,12 @@ it('Named query with operationName 2', async () => {
 			"operationName": "GetSubObject"
 		})
 		.expect(200)
-		.expect((r) => assert.ok(r.body.data.SubObject.length == 6))
-//Unmatched Postman assertion: jsonData.data.SubObject.forEach((row, i) => {
-.expect((r) => assert.ok(row.id == (i).toString()))
+		.expect((r) => {
+			assert.ok(r.body.data.SubObject.length == 6);
+			r.body.data.SubObject.forEach((row, i) => {
+				assert.ok(row.id == i.toString());
+			})
+		})
 });
 
 it('Query by primary key field', async () => {
@@ -15566,13 +14801,16 @@ it('Multi resource query', async () => {
 		.set(headers)
 		.send({ "query": "{ Related { id name } SubObject { id relatedId } }" })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.data.Related.length == 5))
-	//Unmatched Postman assertion: jsonData.data.Related.forEach((row, i) => {
-		.expect((r) => assert.ok(row.id == (i + 1).toString()))
-	//Unmatched Postman assertion: })
-		.expect((r) => assert.ok(r.body.data.SubObject.length == 6))
-//Unmatched Postman assertion: jsonData.data.SubObject.forEach((row, i) => {
-.expect((r) => assert.ok(row.id == (i).toString()))
+		.expect((r) => {
+			assert.ok(r.body.data.Related.length == 5);
+			r.body.data.Related.forEach((row, i) => {
+				assert.ok(row.id == (i + 1).toString());
+			})
+			assert.ok(r.body.data.SubObject.length == 6);
+			r.body.data.SubObject.forEach((row, i) => {
+				assert.ok(row.id == i.toString());
+			})
+		})
 });
 
 it('Query by variable non null no default', async () => {
@@ -15716,9 +14954,12 @@ it('Query with top level fragment', async () => {
 		.set(headers)
 		.send({ "query": "query Get { ...related } fragment related on Any { Related { id name } }" })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.data.Related.length == 5))
-	//Unmatched Postman assertion: jsonData.data.Related.forEach((row, i) => {
-		.expect((r) => assert.ok(row.id == (i + 1).toString()))
+		.expect((r) => {
+			assert.ok(r.body.data.Related.length == 5);
+			r.body.data.Related.forEach((row, i) => {
+				assert.ok(row.id == (i + 1).toString());
+			})
+		})
 });
 
 it('Query with top level nested fragment', async () => {
@@ -15727,9 +14968,12 @@ it('Query with top level nested fragment', async () => {
 		.set(headers)
 		.send({ "query": "query Get { ...related } fragment related on Any { ...nested } fragment nested on Any { Related { id name } }" })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.data.Related.length == 5))
-	//Unmatched Postman assertion: jsonData.data.Related.forEach((row, i) => {
-		.expect((r) => assert.ok(row.id == (i + 1).toString()))
+		.expect((r) => {
+			assert.ok(r.body.data.Related.length == 5);
+			r.body.data.Related.forEach((row, i) => {
+				assert.ok(row.id == (i + 1).toString());
+			})
+		})
 });
 
 it('Query w top level fragment multi resource', async () => {
@@ -15738,13 +14982,16 @@ it('Query w top level fragment multi resource', async () => {
 		.set(headers)
 		.send({ "query": "query Get { ...multiResourceFragment } fragment multiResourceFragment on Any { Related { id name } SubObject { id relatedId } }" })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.data.Related.length == 5))
-	//Unmatched Postman assertion: jsonData.data.Related.forEach((row, i) => {
-		.expect((r) => assert.ok(row.id == (i + 1).toString()))
-	//Unmatched Postman assertion: })
-		.expect((r) => assert.ok(r.body.data.SubObject.length == 6))
-//Unmatched Postman assertion: jsonData.data.SubObject.forEach((row, i) => {
-.expect((r) => assert.ok(row.id == (i).toString()))
+		.expect((r) => {
+			assert.ok(r.body.data.Related.length == 5);
+			r.body.data.Related.forEach((row, i) => {
+				assert.ok(row.id == (i + 1).toString());
+			})
+			assert.ok(r.body.data.SubObject.length == 6);
+			r.body.data.SubObject.forEach((row, i) => {
+				assert.ok(row.id == i.toString());
+			})
+		})
 });
 
 it('Query with inline fragment', async () => {
@@ -15771,8 +15018,11 @@ it('[rest] Named query Get Related', async () => {
 		.set(headers)
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 5))
-	//Unmatched Postman assertion: jsonData.forEach((row, i) => {
-		.expect((r) => assert.ok(row.id == (i + 1).toString()))
+		.expect((r) => {
+			r.body.forEach((row, i) => {
+				assert.ok(row.id == (i + 1).toString());
+			})
+		})
 });
 
 it('[rest] Named query Get SubObject', async () => {
@@ -15781,8 +15031,11 @@ it('[rest] Named query Get SubObject', async () => {
 		.set(headers)
 		.expect(200)
 		.expect((r) => assert.ok(r.body.length == 6))
-//Unmatched Postman assertion: jsonData.forEach((row, i) => {
-.expect((r) => assert.ok(row.id == (i).toString()))
+		.expect((r) => {
+			r.body.forEach((row, i) => {
+				assert.ok(row.id == i.toString());
+			})
+		})
 });
 
 it('[rest] Query by primary key field', async () => {
@@ -15874,7 +15127,7 @@ it('Describe all with invalid password', async () => {
 			'Content-Type': 'application/json'
 		})
 		.send({ "operation": "describe_all" })
-		.expect((r) => { assert.ok(r.text.includes('Login failed')) })
+		.expect((r) => assert.ok(r.text.includes('Login failed')))
 		.expect(401)
 });
 
@@ -15886,7 +15139,7 @@ it('Describe all with invalid username', async () => {
 			'Content-Type': 'application/json',
 		})
 		.send({ operation: 'describe_all' })
-		.expect((r) => { assert.ok(r.text.includes('Login failed')) })
+		.expect((r) => assert.ok(r.text.includes('Login failed')))
 		.expect(401);
 });
 
@@ -15916,7 +15169,7 @@ it('Describe all with long credentials', async () => {
 			'Content-Type': 'application/json',
 		})
 		.send({ operation: 'describe_all' })
-		.expect((r) => { assert.ok(r.text.includes('Login failed')) })
+		.expect((r) => assert.ok(r.text.includes('Login failed')))
 		.expect(401);
 });
 
@@ -15925,30 +15178,32 @@ it('Describe all without auth', async () => {
 		.post('')
 		.set({ 'Content-Type': 'application/json' })
 		.send({ "operation": "describe_all" })
-		.expect((r) => { assert.ok(r.text.includes('Must login')) })
+		.expect((r) => {
+			console.log('this is only for prod config, not dev. in dev mode it works without auth, so test fails');
+			assert.ok(r.text.includes('Must login'))
+		})
 		.expect(401)
-		// this is only for prod config, not dev. in dev mode it works without auth
 });
 
 it('Create auth token with valid credentials', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "create_authentication_tokens", "username": "{{username}}", "password": "{{password}}" })
+		.send({ "operation": "create_authentication_tokens", "username": `${generic.username}`, "password": `${generic.password}` })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.hasOwnProperty('operation_token')))
 		.expect((r) => assert.ok(r.body.operation_token))
-//Unmatched Postman assertion: pm.environment.set('my_operation_token', jsonData.operation_token)
+	generic.my_operation_token = response.body.operation_token;
 });
 
 it('Describe all with valid auth token', async () => {
 	const response = await request(envUrl)
 		.post('')
-		.set(headers)
-		.set('Authorization', 'Bearer {{my_operation_token}}')
+		.set('Content-Type', 'application/json')
+		.set('Authorization', `Bearer ${generic.my_operation_token}`)
 		.send({ "operation": "describe_all" })
 		.expect(200)
-		.expect((r) => assert.ok(r.body.length > 0))
+		.expect((r) => assert.ok(Object.keys(r.body).length > 0))
 });
 
 it('Create auth token with invalid credentials', async () => {
@@ -15964,7 +15219,7 @@ it('Create auth token with invalid credentials 2', async () => {
 	const response = await request(envUrl)
 		.post('')
 		.set(headers)
-		.send({ "operation": "create_authentication_tokens", "username": "", "password": "{{password}}" })
+		.send({ "operation": "create_authentication_tokens", "username": "", "password": `${generic.password}` })
 		.expect((r) => assert.ok(JSON.stringify(r.body).includes("invalid credentials")))
 		.expect(401)
 });
@@ -16003,11 +15258,8 @@ it('Restart service and wait', async () => {
 		.send({ operation: 'restart_service', service: 'http_workers' })
 		.expect(200)
 		.expect((r) => assert.ok(r.body.message.includes('Restarting')))
-	//Unmatched Postman assertion: //wait for 31 seconds
-	//Unmatched Postman assertion: console.log('waiting for 31 seconds for the restart of services')
+	console.log('waiting for 31 seconds for the restart of services');
 	await setTimeout(31000);
-	//Unmatched Postman assertion: //retry request if needed with:
-	//Unmatched Postman assertion: // pm.setNextRequest(pm.info.requestId)
 });
 
 it('Get open api', async () => {

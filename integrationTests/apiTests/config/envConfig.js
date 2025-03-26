@@ -1,3 +1,6 @@
+import { fileURLToPath } from 'url';
+import path from 'node:path';
+
 export let generic = {
     host: 'http://localhost',
     port: '9925',
@@ -36,7 +39,6 @@ export let generic = {
     regi_id: "regionid",
     user_id: "",
     test_user_name: "test_user",
-    role_id: "",
     job_id: "",
     next_request: "",
     "function:getJobId": "",
@@ -47,16 +49,38 @@ export let generic = {
     drop_schema: "drop_schema",
     drop_table: "drop_table",
     s3_key: "",
-    s3_secret: ""
+    s3_secret: "",
+    operation_token: "",
+    refresh_token: "",
+    my_operation_token: ""
 }
 
 export const envUrl = generic.host + ':' + generic.port;
 export const envUrlRest = generic.host + ':' + generic.portRest;
 
-const credentials = `${generic.username}:${generic.password}`;
-const encodedCredentials = Buffer.from(credentials).toString('base64');
 
-export const headers = {
-    Authorization: `Basic ${encodedCredentials}`,
-    'Content-Type': 'application/json'
+export const headers = await createHeaders(generic.username, generic.password);
+export const headersBulkLoadUser = await createHeaders('bulk_load_user', generic.password);
+export const headersTestUser = await createHeaders(generic.test_user_name, generic.password);
+export const headersNoPermsUser = await createHeaders('no_perms_user', generic.password);
+export const headersOnePermUser = await createHeaders('one_perm_user', generic.password);
+
+export async function createHeaders(username, password) {
+    const headers = {
+        Authorization: 'Basic ' + Buffer.from(username + ':' + password).toString('base64'),
+        'Content-Type': 'application/json'
+    }
+    return headers;
+}
+
+export const dateYesterday = new Date(new Date().getTime() - 86400000).toISOString();
+export const dateTomorrow = new Date(new Date().getTime() + 86400000).toISOString();
+
+
+export function getCsvPath() {
+    const __filename = fileURLToPath(import.meta.url);
+    const __dirname = path.dirname(__filename);
+    const myPath = path.resolve(__dirname + '/..' + generic.files_location) + '/';
+// const myPath = path.resolve(process.cwd() + generic.files_location);
+    return myPath;
 }

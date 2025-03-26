@@ -2,7 +2,7 @@ import {after, describe, it} from 'node:test';
 import assert from "node:assert";
 import request from 'supertest';
 import {checkTableInSchema, createSchema, describeSchema, dropSchema} from "../utils/schema.js";
-import {envUrl, generic, headers} from "../config/envConfig.js";
+import { envUrl, generic, getCsvPath, headers } from '../config/envConfig.js';
 import {createTable, dropTable} from "../utils/table.js";
 import {csvFileUpload, csvUrlLoad} from "../utils/csv.js";
 import {setTimeout as sleep} from 'node:timers/promises';
@@ -11,87 +11,81 @@ import {fileURLToPath} from 'url';
 
 describe('2. Data Load', () => {
 
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = path.dirname(__filename);
-    const myPath = path.resolve(__dirname + '/..' + generic.files_location) + '/';
-    // const myPath = path.resolve(process.cwd() + generic.files_location);
-
-
     //CSV Folder
 
     it('1 Upload Suppliers.csv', async () => {
         await csvFileUpload(generic.schema, generic.supp_tb,
-            myPath + 'Suppliers.csv');
+            getCsvPath() + 'Suppliers.csv');
     });
 
     it('2 Upload Region.csv', async () => {
         await csvFileUpload(generic.schema, generic.regi_tb,
-            myPath + 'Region.csv');
+            getCsvPath() + 'Region.csv');
     });
 
     it('3 Upload Territories.csv', async () => {
         await csvFileUpload(generic.schema, generic.terr_tb,
-            myPath + 'Territories.csv');
+            getCsvPath() + 'Territories.csv');
     });
 
     it('4 Upload EmployeeTerritories.csv', async () => {
         await csvFileUpload(generic.schema, generic.empt_tb,
-            myPath + 'EmployeeTerritories.csv');
+            getCsvPath() + 'EmployeeTerritories.csv');
     });
 
     it('5 Upload Shippers.csv', async () => {
         await csvFileUpload(generic.schema, generic.ship_tb,
-            myPath + 'Shippers.csv');
+            getCsvPath() + 'Shippers.csv');
     });
 
     it('6 Upload Categories.csv', async () => {
         await csvFileUpload(generic.schema, generic.cate_tb,
-            myPath + 'Categories.csv');
+            getCsvPath() + 'Categories.csv');
     });
 
     it('7 Upload Employees.csv', async () => {
         await csvFileUpload(generic.schema, generic.emps_tb,
-            myPath + 'Employees.csv');
+            getCsvPath() + 'Employees.csv');
     });
 
     it('8 Upload Customers.csv', async () => {
         await csvFileUpload(generic.schema, generic.cust_tb,
-            myPath + 'Customers.csv');
+            getCsvPath() + 'Customers.csv');
     });
 
     it('9 Upload Products.csv', async () => {
         await csvFileUpload(generic.schema, generic.prod_tb,
-            myPath + 'Products.csv');
+            getCsvPath() + 'Products.csv');
     });
 
     it('10 Upload Orderdetails.csv', async () => {
         await csvFileUpload(generic.schema, generic.ordd_tb,
-            myPath + 'Orderdetails.csv');
+            getCsvPath() + 'Orderdetails.csv');
     });
 
     it('11 Upload Orders.csv', async () => {
         await csvFileUpload(generic.schema, generic.ords_tb,
-            myPath + 'Orders.csv');
+            getCsvPath() + 'Orders.csv');
     });
 
     it('12 Upload Books.csv', async () => {
         await csvFileUpload(generic.schema_dev, 'books',
-            myPath + 'Books.csv');
+            getCsvPath() + 'Books.csv');
     });
 
     it('13 Upload BooksRatings.csv', async () => {
         await csvFileUpload(generic.schema_dev, 'ratings',
-            myPath + 'BooksRatings.csv');
+            getCsvPath() + 'BooksRatings.csv');
     });
 
     it('14 Upload movies.csv', async () => {
         await csvFileUpload(generic.schema_dev, 'movie',
-            myPath + 'movies.csv');
+            getCsvPath() + 'movies.csv');
     });
 
     it('15 Upload credits.csv', async () => {
         await csvFileUpload(generic.schema_dev, 'credits',
-            myPath + 'credits.csv');
+            getCsvPath() + 'credits.csv');
     });
 
 

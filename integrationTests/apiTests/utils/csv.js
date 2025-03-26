@@ -37,10 +37,10 @@ export async function csvUrlLoad(schemaName, tableName, fileUrl, expectedErrorMe
     await checkJobCompleted(id, expectedErrorMessage, expectedCompletedMessage);
 }
 
-export async function csvDataLoad(action, schemaName, tableName, data, expectedErrorMessage, expectedCompletedMessage) {
+export async function csvDataLoad(customHeaders, action, schemaName, tableName, data, expectedErrorMessage, expectedCompletedMessage) {
   const response = await request(envUrl)
     .post('')
-    .set(headers)
+    .set(customHeaders)
     .send({
       operation: 'csv_data_load',
       action: action,
@@ -50,5 +50,6 @@ export async function csvDataLoad(action, schemaName, tableName, data, expectedE
     })
     .expect(200)
   const id = await getJobId(response.body);
-  await checkJobCompleted(id, expectedErrorMessage, expectedCompletedMessage);
+  const message = await checkJobCompleted(id, expectedErrorMessage, expectedCompletedMessage);
+  return message;
 }
