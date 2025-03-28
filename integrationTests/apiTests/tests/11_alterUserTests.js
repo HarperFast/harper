@@ -1,0 +1,173 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert';
+import request from 'supertest';
+import { envUrl, generic, headers } from '../config/envConfig.js';
+
+describe('11. Alter User Tests', () => {
+	//Alter User Tests Folder
+
+	it('Add non-SU role', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'add_role',
+				role: 'developer_test_5',
+				permission: {
+					super_user: false,
+					northnwd: {
+						tables: {
+							customers: {
+								read: true,
+								insert: true,
+								update: true,
+								delete: true,
+								attribute_permissions: [],
+							},
+							suppliers: {
+								read: false,
+								insert: false,
+								update: false,
+								delete: false,
+								attribute_permissions: [],
+							},
+							region: {
+								read: true,
+								insert: false,
+								update: false,
+								delete: false,
+								attribute_permissions: [
+									{
+										attribute_name: 'regiondescription',
+										read: true,
+										insert: false,
+										update: false,
+									},
+								],
+							},
+							territories: {
+								read: true,
+								insert: true,
+								update: false,
+								delete: false,
+								attribute_permissions: [
+									{
+										attribute_name: 'territorydescription',
+										read: true,
+										insert: true,
+										update: false,
+									},
+								],
+							},
+							categories: {
+								read: true,
+								insert: true,
+								update: true,
+								delete: false,
+								attribute_permissions: [
+									{
+										attribute_name: 'description',
+										read: true,
+										insert: true,
+										update: true,
+									},
+								],
+							},
+							shippers: {
+								read: true,
+								insert: true,
+								update: true,
+								delete: true,
+								attribute_permissions: [
+									{
+										attribute_name: 'companyname',
+										read: false,
+										insert: false,
+										update: false,
+									},
+								],
+							},
+						},
+					},
+				},
+			})
+			.expect(200);
+	});
+
+	it('Add User with new Role', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'add_user',
+				role: 'developer_test_5',
+				username: 'test_user',
+				password: `${generic.password}`,
+				active: true,
+			})
+			.expect(200);
+	});
+
+	it('Alter User with empty role', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'alter_user',
+				role: '',
+				username: 'test_user',
+				password: `${generic.password}`,
+				active: true,
+			})
+			.expect((r) => assert.ok(r.body.error == 'If role is specified, it cannot be empty.'))
+			.expect(500);
+	});
+
+	it('Alter User set active to false.', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'alter_user', username: 'test_user', password: `${generic.password}`, active: false })
+			.expect((r) =>
+				assert.ok(
+					r.body.message == 'updated 1 of 1 records',
+					'Expected response message to eql "updated 1 of 1 records"'
+				)
+			)
+			.expect((r) => assert.ok(r.body.update_hashes[0] == 'test_user'))
+			.expect(200);
+	});
+
+	it('Check for active=false', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'list_users' })
+			.expect((r) => {
+				let found_user = undefined;
+				for (let user of r.body) {
+					if (user.username === 'test_user') {
+						found_user = user;
+					}
+				}
+				assert.ok(found_user.active == false);
+			})
+			.expect(200);
+	});
+
+	it('Drop test user', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_user', username: 'test_user' })
+			.expect(200);
+	});
+
+	it('Drop test non-SU role', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_role', id: 'developer_test_5' })
+			.expect(200);
+	});
+});

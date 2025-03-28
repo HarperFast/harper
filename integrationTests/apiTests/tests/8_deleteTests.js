@@ -1,0 +1,1136 @@
+import { describe, it } from 'node:test';
+import assert from 'node:assert';
+import request from 'supertest';
+import { envUrl, generic, headers } from '../config/envConfig.js';
+import { checkJob, getJobId } from '../utils/jobs.js';
+import { setTimeout } from 'node:timers/promises';
+
+describe('8. Delete Tests', () => {
+
+
+	//Delete Tests Folder
+
+
+	//Delete Records Before Tests
+
+	it('create test schema', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'create_schema', schema: 'test_delete_before' })
+			.expect((r) => assert.ok(r.body.message.includes('successfully created')))
+			.expect(200);
+		await setTimeout(500);
+	});
+
+	it('create test table', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'create_table', schema: 'test_delete_before', table: 'address', hash_attribute: 'id' })
+			.expect((r) => assert.ok(r.body.message.includes('successfully created')))
+			.expect(200);
+		await setTimeout(500);
+	});
+
+
+	//Delete Records Before Alias Tests
+
+	it('Insert new records', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'insert',
+				schema: 'test_delete_before',
+				table: 'address',
+				records: [
+					{ id: 1, address: '24 South st' },
+					{ id: 2, address: '6 Truck Lane' },
+					{
+						id: 3,
+						address: '19 Broadway',
+					},
+					{ id: 4, address: '34A Mountain View' },
+					{ id: 5, address: '234 Curtis St' },
+					{
+						id: 6,
+						address: '115 Way Rd',
+					},
+				],
+			})
+			.expect((r) => assert.ok(r.body.inserted_hashes.length == 6))
+			.expect(200);
+		await setTimeout(1000);
+	});
+
+	it('Insert additional new records', async () => {
+		generic.insert_timestamp = new Date().toISOString();
+
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'insert',
+				schema: 'test_delete_before',
+				table: 'address',
+				records: [
+					{ id: 11, address: '24 South st' },
+					{ id: 12, address: '6 Truck Lane' },
+					{
+						id: 13,
+						address: '19 Broadway',
+					},
+				],
+			})
+			.expect((r) => assert.ok(r.body.inserted_hashes.length == 3))
+			.expect(200);
+	});
+
+	it('Delete records before', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'delete_files_before',
+				date: `${generic.insert_timestamp}`,
+				schema: 'test_delete_before',
+				table: 'address',
+			})
+			.expect(200);
+
+		const id = await getJobId(response.body);
+		const jobResponse = await checkJob(id, 15);
+
+		assert.ok(jobResponse.body[0].message.includes('records successfully deleted'));
+	});
+
+	it('Search by hash confirm', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'search_by_hash',
+				schema: 'test_delete_before',
+				table: 'address',
+				hash_attribute: 'id',
+				hash_values: [1, 2, 3, 4, 5, 6, 11, 12, 13],
+				get_attributes: ['id', 'address'],
+			})
+			.expect((r) => assert.ok(r.body.length == 3))
+			.expect((r) => {
+				let ids = [];
+
+				r.body.forEach((record) => {
+					ids.push(record.id);
+				});
+
+				assert.ok(ids.includes(11));
+				assert.ok(ids.includes(12));
+				assert.ok(ids.includes(13));
+
+				assert.ok(!ids.includes(1));
+				assert.ok(!ids.includes(2));
+				assert.ok(!ids.includes(3));
+				assert.ok(!ids.includes(4));
+				assert.ok(!ids.includes(5));
+				assert.ok(!ids.includes(6));
+			})
+			.expect(200);
+	});
+
+	it('Insert new records', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'insert',
+				schema: 'test_delete_before',
+				table: 'address',
+				records: [
+					{ id: '1a', address: '24 South st' },
+					{ id: '2a', address: '6 Truck Lane' },
+					{
+						id: '3a',
+						address: '19 Broadway',
+					},
+					{ id: '4a', address: '34A Mountain View' },
+					{ id: '5a', address: '234 Curtis St' },
+					{
+						id: '6a',
+						address: '115 Way Rd',
+					},
+				],
+			})
+			.expect((r) => assert.ok(r.body.inserted_hashes.length == 6))
+			.expect(200);
+		await setTimeout(1000);
+	});
+
+	it('Insert additional new records', async () => {
+		generic.insert_timestamp = new Date().toISOString();
+
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'insert',
+				schema: 'test_delete_before',
+				table: 'address',
+				records: [
+					{ id: '11a', address: '24 South st' },
+					{ id: '12a', address: '6 Truck Lane' },
+					{
+						id: '13a',
+						address: '19 Broadway',
+					},
+				],
+			})
+			.expect((r) => assert.ok(r.body.inserted_hashes.length == 3))
+			.expect(200);
+	});
+
+	it('Delete records before', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'delete_files_before',
+				date: `${generic.insert_timestamp}`,
+				schema: 'test_delete_before',
+				table: 'address',
+			})
+			.expect(200);
+
+		const id = await getJobId(response.body);
+		const jobResponse = await checkJob(id, 15);
+
+		assert.ok(jobResponse.body[0].message.includes('records successfully deleted'));
+	});
+
+	it('Search by hash confirm', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'search_by_hash',
+				schema: 'test_delete_before',
+				table: 'address',
+				hash_attribute: 'id',
+				hash_values: ['1a', '2a', '3a', '4a', '5a', '6a', '11a', '12a', '13a'],
+				get_attributes: ['id', 'address'],
+			})
+			.expect((r) => assert.ok(r.body.length == 3))
+			.expect((r) => {
+				let ids = [];
+
+				r.body.forEach((record) => {
+					ids.push(record.id);
+				});
+
+				assert.ok(ids.includes('11a'));
+				assert.ok(ids.includes('12a'));
+				assert.ok(ids.includes('13a'));
+
+				assert.ok(!ids.includes('1a'));
+				assert.ok(!ids.includes('2a'));
+				assert.ok(!ids.includes('3a'));
+				assert.ok(!ids.includes('4a'));
+				assert.ok(!ids.includes('5a'));
+				assert.ok(!ids.includes('6a'));
+			})
+			.expect(200);
+	});
+
+
+	//Drop schema tests
+
+	it('Create schema for drop test', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'create_schema', schema: `${generic.drop_schema}` })
+			.expect((r) => assert.ok(r.body.message == "database 'drop_schema' successfully created"))
+			.expect(200);
+	});
+
+	it('Create table for drop test', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'create_table',
+				schema: `${generic.drop_schema}`,
+				table: `${generic.drop_table}`,
+				hash_attribute: 'id',
+			})
+			.expect((r) => assert.ok(r.body.message == "table 'drop_schema.drop_table' successfully created."))
+			.expect(200);
+	});
+
+	it('Insert records for drop test', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'insert',
+				schema: `${generic.drop_schema}`,
+				table: `${generic.drop_table}`,
+				records: [
+					{ id: 4, address: '194 Greenbrook Drive' },
+					{
+						id: 7,
+						address: '195 Greenbrook Lane',
+					},
+					{ id: 9, address: '196 Greenbrook Lane' },
+					{ id: 0, address: '197 Greenbrook Drive' },
+				],
+			})
+			.expect((r) => assert.ok(r.body.inserted_hashes.length == 4))
+			.expect(200);
+	});
+
+	it('Drop schema', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_schema', schema: `${generic.drop_schema}` })
+			.expect((r) => assert.ok(r.body.message == "successfully deleted 'drop_schema'"))
+			.expect(200);
+	});
+
+	it('Confirm drop schema', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'describe_schema', schema: `${generic.drop_schema}` })
+			.expect((r) => assert.ok(r.body.error == "database 'drop_schema' does not exist"))
+			.expect(404);
+	});
+
+	it('Create schema again', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'create_schema', schema: `${generic.drop_schema}` })
+			.expect((r) => assert.ok(r.body.message == "database 'drop_schema' successfully created"))
+			.expect(200);
+	});
+
+	it('Create table again', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'create_table',
+				schema: `${generic.drop_schema}`,
+				table: `${generic.drop_table}`,
+				hash_attribute: 'id',
+			})
+			.expect((r) => assert.ok(r.body.message == "table 'drop_schema.drop_table' successfully created."))
+			.expect(200);
+	});
+
+	it('Confirm correct attributes', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'describe_table', schema: `${generic.drop_schema}`, table: `${generic.drop_table}` })
+			.expect((r) => assert.ok(r.body.attributes.length == 3))
+			.expect(200);
+	});
+
+	it('Clean up after drop schema tests', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_schema', schema: `${generic.drop_schema}` })
+			.expect((r) => assert.ok(r.body.message == "successfully deleted 'drop_schema'"))
+			.expect(200);
+	});
+
+	it('Create schema for wildcard test', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'create_schema', schema: 'h*rper%1' })
+			.expect((r) => assert.ok(r.body.message == "database 'h*rper%1' successfully created"))
+			.expect(200);
+	});
+
+	it('Drop wildcard schema', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_schema', schema: 'h*rper%1' })
+			.expect((r) => assert.ok(r.body.message == "successfully deleted 'h*rper%1'"))
+			.expect(200);
+	});
+
+	it('Drop number table', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_table', schema: '123', table: '4' })
+			.expect((r) => assert.ok(r.body.message == "successfully deleted table '123.4'"))
+			.expect(200);
+	});
+
+	it('Drop number number table', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_table', schema: 1123, table: 1 })
+			.expect((r) => assert.ok(r.body.message == "successfully deleted table '1123.1'"))
+			.expect(200);
+	});
+
+	it('Drop number schema', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_schema', schema: '123' })
+			.expect((r) => assert.ok(r.body.message == "successfully deleted '123'"))
+			.expect(200);
+	});
+
+	it('Drop number number schema', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_schema', schema: 1123 })
+			.expect((r) => assert.ok(r.body.message == "successfully deleted '1123'"))
+			.expect(200);
+	});
+
+
+	//Post drop attribute tests
+
+	it('create schema drop_attr', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'create_schema', schema: 'drop_attr' })
+			.expect((r) => assert.ok(r.body.message.includes('successfully created')))
+			.expect(200);
+	});
+
+	it('create table test', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'create_table', schema: 'drop_attr', table: 'test', hash_attribute: 'id' })
+			.expect((r) => assert.ok(r.body.message.includes('successfully created')))
+			.expect(200);
+	});
+
+	it('Insert records into test table', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'insert',
+				schema: 'drop_attr',
+				table: 'test',
+				records: [
+					{ id: 1, address: '5 North Street', lastname: 'Dog', firstname: 'Harper' },
+					{
+						id: 2,
+						address: '4 North Street',
+						lastname: 'Dog',
+						firstname: 'Harper',
+					},
+					{ id: 3, address: '3 North Street', lastname: 'Dog', firstname: 'Harper' },
+					{
+						id: 4,
+						address: '2 North Street',
+						lastname: 'Dog',
+						firstname: 'Harper',
+					},
+					{ id: 5, address: '1 North Street', lastname: 'Dog', firstname: 'Harper' },
+				],
+			})
+			.expect((r) => assert.ok(r.body.inserted_hashes.length == 5))
+			.expect((r) => assert.ok(r.body.message == 'inserted 5 of 5 records'))
+			.expect(200);
+	});
+
+	it('Drop attribute lastname', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'lastname' })
+			.expect((r) => assert.ok(r.body.message == "successfully deleted attribute 'lastname'"))
+			.expect(200);
+	});
+
+	it('Upsert some values', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'upsert',
+				schema: 'drop_attr',
+				table: 'test',
+				records: [{ id: '123a', categoryid: 1, unitsnnorder: 0, unitsinstock: 39 }],
+			})
+			.expect((r) => assert.ok(r.body.upserted_hashes.length == 1))
+			.expect((r) => assert.deepEqual(r.body.upserted_hashes, ['123a']))
+			.expect((r) => assert.ok(r.body.message == 'upserted 1 of 1 records'))
+			.expect(200);
+	});
+
+	it('Search by hash confirm upsert', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'search_by_hash',
+				schema: 'drop_attr',
+				table: 'test',
+				hash_values: ['123a'],
+				get_attributes: ['*'],
+			})
+			.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
+			.expect((r) => assert.ok(r.body[0].id == '123a'))
+			.expect((r) => assert.ok(r.body[0].unitsinstock == 39))
+			.expect((r) => assert.ok(r.body[0].unitsnnorder == 0))
+			.expect(200);
+	});
+
+	it('Drop attribute unitsnnorder', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'unitsnnorder' })
+			.expect((r) => assert.ok(r.body.message == "successfully deleted attribute 'unitsnnorder'"))
+			.expect(200);
+	});
+
+	it('Update some values', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'update',
+				schema: 'drop_attr',
+				table: 'test',
+				records: [{ id: 1, lastname: 'thor' }],
+			})
+			.expect((r) =>
+				assert.ok(
+					r.body.message == 'updated 1 of 1 records',
+					'Expected response message to eql "updated 1 of 1 records"'
+				)
+			)
+			.expect((r) => assert.ok(r.body.update_hashes.length == 1))
+			.expect((r) => assert.deepEqual(r.body.update_hashes, [1]))
+			.expect(200);
+	});
+
+	it('Search by hash confirm update', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'search_by_hash',
+				schema: 'drop_attr',
+				table: 'test',
+				hash_values: [1],
+				get_attributes: ['*'],
+			})
+			.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
+			.expect((r) => assert.ok(r.body[0].id == 1))
+			.expect((r) => assert.ok(r.body[0].lastname == 'thor'))
+			.expect(200);
+	});
+
+	it('Drop attribute lastname', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'lastname' })
+			.expect((r) => assert.ok(r.body.message == "successfully deleted attribute 'lastname'"))
+			.expect(200);
+	});
+
+	it('Delete a record', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'delete', schema: 'drop_attr', table: 'test', hash_values: [1] })
+			.expect((r) => assert.ok(r.body.deleted_hashes.length == 1))
+			.expect((r) => assert.deepEqual(r.body.deleted_hashes, [1]))
+			.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted'))
+			.expect(200);
+	});
+
+	it('Search by hash confirm delete', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'search_by_hash',
+				schema: 'drop_attr',
+				table: 'test',
+				hash_values: [1],
+				get_attributes: ['*'],
+			})
+			.expect((r) => assert.ok(r.body.length == 0))
+			.expect(200);
+	});
+
+	it('Drop schema drop_attr', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_schema', schema: 'drop_attr' })
+			.expect((r) => assert.ok(r.body.message.includes('successfully deleted')))
+			.expect(200);
+	});
+
+	//Post drop attribute tests (second folder)
+
+	it('create schema drop_attr', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'create_schema', schema: 'drop_attr' })
+			.expect((r) => assert.ok(r.body.message.includes('successfully created')))
+			.expect(200);
+	});
+
+	it('create table test', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'create_table', schema: 'drop_attr', table: 'test', hash_attribute: 'id' })
+			.expect((r) => assert.ok(r.body.message.includes('successfully created')))
+			.expect(200);
+	});
+
+	it('Insert records into test table', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'insert',
+				schema: 'drop_attr',
+				table: 'test',
+				records: [
+					{ id: 1, address: '5 North Street', lastname: 'Dog', firstname: 'Harper' },
+					{
+						id: 2,
+						address: '4 North Street',
+						lastname: 'Dog',
+						firstname: 'Harper',
+					},
+					{ id: 3, address: '3 North Street', lastname: 'Dog', firstname: 'Harper' },
+					{
+						id: 4,
+						address: '2 North Street',
+						lastname: 'Dog',
+						firstname: 'Harper',
+					},
+					{ id: 5, address: '1 North Street', lastname: 'Dog', firstname: 'Harper' },
+				],
+			})
+			.expect((r) => assert.ok(r.body.inserted_hashes.length == 5))
+			.expect((r) => assert.ok(r.body.message == 'inserted 5 of 5 records'))
+			.expect(200);
+	});
+
+	it('Drop attribute lastname', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'lastname' })
+			.expect((r) => assert.ok(r.body.message == "successfully deleted attribute 'lastname'"))
+			.expect(200);
+	});
+
+	it('Upsert some values', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'upsert',
+				schema: 'drop_attr',
+				table: 'test',
+				records: [{ id: '123a', categoryid: 1, unitsnnorder: 0, unitsinstock: 39 }],
+			})
+			.expect((r) => assert.ok(r.body.upserted_hashes.length == 1))
+			.expect((r) => assert.deepEqual(r.body.upserted_hashes, ['123a']))
+			.expect((r) => assert.ok(r.body.message == 'upserted 1 of 1 records'))
+			.expect(200);
+	});
+
+	it('Search by hash confirm upsert', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'search_by_hash',
+				schema: 'drop_attr',
+				table: 'test',
+				hash_values: ['123a'],
+				get_attributes: ['*'],
+			})
+			.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
+			.expect((r) => assert.ok(r.body[0].id == '123a'))
+			.expect((r) => assert.ok(r.body[0].unitsinstock == 39))
+			.expect((r) => assert.ok(r.body[0].unitsnnorder == 0))
+			.expect(200);
+	});
+
+	it('Drop attribute unitsnnorder', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'unitsnnorder' })
+			.expect((r) => assert.ok(r.body.message == "successfully deleted attribute 'unitsnnorder'"))
+			.expect(200);
+	});
+
+	it('Update some values', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'update',
+				schema: 'drop_attr',
+				table: 'test',
+				records: [{ id: 1, lastname: 'thor' }],
+			})
+			.expect((r) =>
+				assert.ok(
+					r.body.message == 'updated 1 of 1 records',
+					'Expected response message to eql "updated 1 of 1 records"'
+				)
+			)
+			.expect((r) => assert.ok(r.body.update_hashes.length == 1))
+			.expect((r) => assert.deepEqual(r.body.update_hashes, [1]))
+			.expect(200);
+	});
+
+	it('Search by hash confirm update', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'search_by_hash',
+				schema: 'drop_attr',
+				table: 'test',
+				hash_values: [1],
+				get_attributes: ['*'],
+			})
+			.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
+			.expect((r) => assert.ok(r.body[0].id == 1))
+			.expect((r) => assert.ok(r.body[0].lastname == 'thor'))
+			.expect(200);
+	});
+
+	it('Drop attribute lastname', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'lastname' })
+			.expect((r) => assert.ok(r.body.message == "successfully deleted attribute 'lastname'"))
+			.expect(200);
+	});
+
+	it('Delete a record', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'delete', schema: 'drop_attr', table: 'test', hash_values: [1] })
+			.expect((r) => assert.ok(r.body.deleted_hashes.length == 1))
+			.expect((r) => assert.deepEqual(r.body.deleted_hashes, [1]))
+			.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted'))
+			.expect(200);
+	});
+
+	it('Search by hash confirm delete', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'search_by_hash',
+				schema: 'drop_attr',
+				table: 'test',
+				hash_values: [1],
+				get_attributes: ['*'],
+			})
+			.expect((r) => assert.ok(r.body.length == 0))
+			.expect(200);
+	});
+
+	it('Drop schema drop_attr', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_schema', schema: 'drop_attr' })
+			.expect((r) => assert.ok(r.body.message.includes('successfully deleted')))
+			.expect(200);
+	});
+
+	//Post drop attribute tests (third folder)
+
+	it('create schema drop_attr', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'create_schema', schema: 'drop_attr' })
+			.expect((r) => assert.ok(r.body.message.includes('successfully created')))
+			.expect(200);
+	});
+
+	it('create table test', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'create_table', schema: 'drop_attr', table: 'test', hash_attribute: 'id' })
+			.expect((r) => assert.ok(r.body.message.includes('successfully created')))
+			.expect(200);
+	});
+
+	it('Insert records into test table', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'insert',
+				schema: 'drop_attr',
+				table: 'test',
+				records: [
+					{ id: 1, address: '5 North Street', lastname: 'Dog', firstname: 'Harper' },
+					{
+						id: 2,
+						address: '4 North Street',
+						lastname: 'Dog',
+						firstname: 'Harper',
+					},
+					{ id: 3, address: '3 North Street', lastname: 'Dog', firstname: 'Harper' },
+					{
+						id: 4,
+						address: '2 North Street',
+						lastname: 'Dog',
+						firstname: 'Harper',
+					},
+					{ id: 5, address: '1 North Street', lastname: 'Dog', firstname: 'Harper' },
+				],
+			})
+			.expect((r) => assert.ok(r.body.inserted_hashes.length == 5))
+			.expect((r) => assert.ok(r.body.message == 'inserted 5 of 5 records'))
+			.expect(200);
+	});
+
+	it('Drop attribute lastname', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'lastname' })
+			.expect((r) => assert.ok(r.body.message == "successfully deleted attribute 'lastname'"))
+			.expect(200);
+	});
+
+	it('Upsert some values', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'upsert',
+				schema: 'drop_attr',
+				table: 'test',
+				records: [{ id: '123a', categoryid: 1, unitsnnorder: 0, unitsinstock: 39 }],
+			})
+			.expect((r) => assert.ok(r.body.upserted_hashes.length == 1))
+			.expect((r) => assert.deepEqual(r.body.upserted_hashes, ['123a']))
+			.expect((r) => assert.ok(r.body.message == 'upserted 1 of 1 records'))
+			.expect(200);
+	});
+
+	it('Search by hash confirm upsert', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'search_by_hash',
+				schema: 'drop_attr',
+				table: 'test',
+				hash_values: ['123a'],
+				get_attributes: ['*'],
+			})
+			.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
+			.expect((r) => assert.ok(r.body[0].id == '123a'))
+			.expect((r) => assert.ok(r.body[0].unitsinstock == 39))
+			.expect((r) => assert.ok(r.body[0].unitsnnorder == 0))
+			.expect(200);
+	});
+
+	it('Drop attribute unitsnnorder', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'unitsnnorder' })
+			.expect((r) => assert.ok(r.body.message == "successfully deleted attribute 'unitsnnorder'"))
+			.expect(200);
+	});
+
+	it('Update some values', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'update',
+				schema: 'drop_attr',
+				table: 'test',
+				records: [{ id: 1, lastname: 'thor' }],
+			})
+			.expect((r) =>
+				assert.ok(
+					r.body.message == 'updated 1 of 1 records',
+					'Expected response message to eql "updated 1 of 1 records"'
+				)
+			)
+			.expect((r) => assert.ok(r.body.update_hashes.length == 1))
+			.expect((r) => assert.deepEqual(r.body.update_hashes, [1]))
+			.expect(200);
+	});
+
+	it('Search by hash confirm update', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'search_by_hash',
+				schema: 'drop_attr',
+				table: 'test',
+				hash_values: [1],
+				get_attributes: ['*'],
+			})
+			.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
+			.expect((r) => assert.ok(r.body[0].id == 1))
+			.expect((r) => assert.ok(r.body[0].lastname == 'thor'))
+			.expect(200);
+	});
+
+	it('Drop attribute lastname', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'lastname' })
+			.expect((r) => assert.ok(r.body.message == "successfully deleted attribute 'lastname'"))
+			.expect(200);
+	});
+
+	it('Delete a record', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'delete', schema: 'drop_attr', table: 'test', hash_values: [1] })
+			.expect((r) => assert.ok(r.body.deleted_hashes.length == 1))
+			.expect((r) => assert.deepEqual(r.body.deleted_hashes, [1]))
+			.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted'))
+			.expect(200);
+	});
+
+	it('Search by hash confirm delete', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'search_by_hash',
+				schema: 'drop_attr',
+				table: 'test',
+				hash_values: [1],
+				get_attributes: ['*'],
+			})
+			.expect((r) => assert.ok(r.body.length == 0))
+			.expect(200);
+	});
+
+	it('Drop schema drop_attr', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_schema', schema: 'drop_attr' })
+			.expect((r) => assert.ok(r.body.message.includes('successfully deleted')))
+			.expect(200);
+	});
+
+
+	//Delete Tests Main Folder
+
+	it('Insert new Employees', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'insert',
+				schema: `${generic.schema}`,
+				table: `${generic.emps_tb}`,
+				records: [
+					{ employeeid: 924, address: '194 Greenbrook Drive' },
+					{
+						employeeid: 925,
+						address: '195 Greenbrook Lane',
+					},
+					{ employeeid: 926, address: '196 Greenbrook Lane' },
+					{
+						employeeid: 927,
+						address: '197 Greenbrook Drive',
+					},
+				],
+			})
+			.expect((r) => assert.ok(r.body.inserted_hashes.length == 4))
+			.expect(200);
+	});
+
+	it('Delete records ending in Lane', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'sql',
+				sql: `delete
+                                  from ${generic.schema}.${generic.emps_tb}
+                                  where address like '%Lane'`,
+			})
+			.expect(200);
+	});
+
+	it('Verify records are deleted', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'sql',
+				sql: `SELECT *
+                                  from ${generic.schema}.${generic.emps_tb}
+                                  where address like '%Lane'`,
+			})
+			.expect((r) => assert.ok(Array.isArray(r.body) && r.body.length === 0))
+			.expect(200);
+	});
+
+	it('NoSQL Delete', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'delete',
+				schema: `${generic.schema}`,
+				table: `${generic.emps_tb}`,
+				hash_values: [924, 927],
+			})
+			.expect((r) => {
+				let expected_result = {
+					message: '2 of 2 records successfully deleted',
+					deleted_hashes: [924, 927],
+					skipped_hashes: [],
+				};
+				assert.deepEqual(r.body, expected_result);
+			})
+			.expect(200);
+	});
+
+	it('NoSQL Verify records are deleted', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'search_by_hash',
+				schema: `${generic.schema}`,
+				table: `${generic.emps_tb}`,
+				hash_values: [924, 925, 926, 927],
+				get_attributes: ['*'],
+			})
+			.expect((r) => assert.ok(Array.isArray(r.body) && r.body.length === 0))
+			.expect(200);
+	});
+
+	it('Insert records with objects and arrays', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'insert',
+				schema: `${generic.schema}`,
+				table: `${generic.emps_tb}`,
+				records: [
+					{
+						employeeid: 7924,
+						address: [
+							{ height: 12, weight: 46 },
+							{ shoe_size: 12, iq: 46 },
+						],
+					},
+					{ employeeid: 7925, address: { number: 12, age: 46 } },
+					{
+						employeeid: 7926,
+						address: { numberArray: ['1', '2', '3'], string: 'Penny' },
+					},
+					{ employeeid: 7927, address: ['1', '2', '3'] },
+				],
+			})
+			.expect((r) => assert.ok(r.body.message == 'inserted 4 of 4 records'))
+			.expect(200);
+	});
+
+	it('Delete records contaitng objects and arrays', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'delete',
+				schema: `${generic.schema}`,
+				table: `${generic.emps_tb}`,
+				hash_values: [7924, 7925, 7926, 7927],
+			})
+			.expect((r) => {
+				let expected_result = {
+					message: '4 of 4 records successfully deleted',
+					deleted_hashes: [7924, 7925, 7926, 7927],
+					skipped_hashes: [],
+				};
+				assert.deepEqual(r.body, expected_result);
+			})
+			.expect(200);
+	});
+
+	it('Verify object and array records deleted', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({
+				operation: 'search_by_hash',
+				schema: `${generic.schema}`,
+				table: `${generic.emps_tb}`,
+				hash_values: [7924, 7925, 7926, 7925],
+				get_attributes: ['employeeid', 'address'],
+			})
+			.expect((r) => assert.deepEqual(r.body, []))
+			.expect(200);
+	});
+
+	it('test SQL deleteing with numeric hash in single quotes', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'sql', sql: "DELETE FROM dev.rando WHERE id IN ('987654321', '987654322')" })
+			.expect((r) => assert.ok(r.body.message.includes('2 of 2 records successfully deleted')))
+			.expect((r) => assert.ok(r.body.deleted_hashes.includes(987654321) && r.body.deleted_hashes.includes(987654322)))
+			.expect(200);
+	});
+
+	it('test SQL deleteing with numeric no condition', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'sql', sql: 'DELETE FROM dev.rando' })
+			.expect((r) => assert.ok(r.body.message.includes('2 of 2 records successfully deleted')))
+			.expect((r) => assert.ok(r.body.deleted_hashes.includes(987654323) && r.body.deleted_hashes.includes(987654324)))
+			.expect(200);
+	});
+});

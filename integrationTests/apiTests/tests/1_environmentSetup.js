@@ -4,7 +4,7 @@ import request from 'supertest';
 import {checkTableInSchema, createSchema, describeSchema, dropSchema} from "../utils/schema.js";
 import {generic, headers, envUrl} from "../config/envConfig.js";
 import {createTable, dropTable} from "../utils/table.js";
-import {setTimeout as sleep} from 'node:timers/promises';
+
 
 describe('1. Environment Setup', () => {
 
@@ -15,7 +15,6 @@ describe('1. Environment Setup', () => {
     it('Create schema confirm schema exists', async () => {
         await request(envUrl)
             .post('')
-            .set(headers)
             .set(headers)
             .send({
                 operation: 'describe_all'
