@@ -49,6 +49,9 @@ jobs:
     needs:
       - createInstances
       - registerInstances
+    uses: actions/setup-node@v4
+    with:
+      check-latest: true
     steps:
       - name: Run Integration Tests on Instances
         env:
@@ -65,7 +68,7 @@ jobs:
           do 
             echo "Starting work on: $public_dns_name"
             ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
-                "cd /home/ubuntu/harperdb/integrationTests/apiTests/tests && node temp.js"
+                "cd /home/ubuntu/harperdb/integrationTests/apiTests/tests && npm install && node temp.js"
             echo "Ending work on: $public_dns_name"
           done
   downloadLogs:
