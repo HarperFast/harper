@@ -8,4 +8,4 @@ cd /home/ubuntu/harperdb/integrationTests/apiTests
 
 npm install
 
-node tests/temp.js
+S3_KEY=$1 S3_SECRET=$2 node tests/temp.js
