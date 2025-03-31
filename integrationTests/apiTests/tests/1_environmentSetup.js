@@ -44,11 +44,11 @@ describe('1. Environment Setup', () => {
         await createSchema(generic.schema_another);
     });
 
-    it(`Create schema number ${generic.schema_number_string}`, async () => {
+    it(`Create schema number as string ${generic.schema_number_string}`, async () => {
         await createSchema(generic.schema_number_string);
     });
 
-    it(`Create schema number ${generic.schema_number}`, async () => {
+    it(`Create schema number as another string ${generic.schema_number}`, async () => {
         await createSchema(generic.schema_number);
     });
 
@@ -188,12 +188,16 @@ describe('1. Environment Setup', () => {
         await createTable(generic.schema_dev, 'sql_function', 'id');
     });
 
+    it(`Create table leading_zero in ${generic.schema_dev}`, async () => {
+        await createTable(generic.schema_dev, 'leading_zero', 'id');
+    });
+
     it(`Create table number "4" in ${generic.schema_number_string}`, async () => {
         await createTable(generic.schema_number_string, '4', 'id');
     });
 
-    it(`Create table number number 1 in ${generic.schema_number}`, async () => {
-        await createTable(generic.schema_number, 1, 'id');
+    it(`Create table number 1 as string in ${generic.schema_number}`, async () => {
+        await createTable(generic.schema_number, '1', 'id');
     });
 
     it('Describe schema ${generic.schema_number_string}', async () => {

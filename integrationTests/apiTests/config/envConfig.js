@@ -13,7 +13,7 @@ export let generic = {
     schema_other: "other",
     schema_another: "another",
     schema_number_string: "123",
-    schema_number: 1123,
+    schema_number: '1123',
     files_location: "/../../test/data/integrationTestsCsvs/",
     emps_tb: "employees",
     emps_id: "employeeid",

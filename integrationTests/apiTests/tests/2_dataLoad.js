@@ -559,11 +559,11 @@ describe('2. Data Load', () => {
               'operation': 'insert',
               'schema': 'dev',
               'table': 'leading_zero',
-              'records': [{ 'id': 0, 'some_attribute': 'some_att1', 'another_attribute': 'another_1' }, {
-                  'id': '011',
-                  'some_attribute': 'some_att2',
-                  'another_attribute': 'another_2',
-              }, { 'id': '00011', 'some_attribute': 'some_att3', 'another_attribute': 'another_3' }],
+              'records': [
+                { 'id': 0, 'some_attribute': 'some_att1', 'another_attribute': 'another_1' },
+                { 'id': '011', 'some_attribute': 'some_att2', 'another_attribute': 'another_2' },
+                { 'id': '00011', 'some_attribute': 'some_att3', 'another_attribute': 'another_3' }
+              ],
           })
           .expect((r) => assert.ok(r.body.message.includes('inserted 3')))
           .expect((r) => assert.deepEqual(r.body.inserted_hashes, [0, '011', '00011']))
@@ -721,7 +721,7 @@ describe('2. Data Load', () => {
               }],
           })
           .expect((r) => assert.ok(r.body.upserted_hashes.length == 11))
-          .expect((r) => assert.ok(r.body.skipped_hashes == 'undefined'))
+          .expect((r) => assert.ok(!r.body.skipped_hashes))
           .expect((r) => assert.ok(r.body.message == 'upserted 11 of 11 records'))
           .expect(200);
     });

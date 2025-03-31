@@ -380,7 +380,7 @@ describe('8. Delete Tests', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
-			.send({ operation: 'drop_table', schema: 1123, table: 1 })
+			.send({ operation: 'drop_table', schema: '1123', table: '1' })
 			.expect((r) => assert.ok(r.body.message == "successfully deleted table '1123.1'"))
 			.expect(200);
 	});
@@ -398,7 +398,7 @@ describe('8. Delete Tests', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
-			.send({ operation: 'drop_schema', schema: 1123 })
+			.send({ operation: 'drop_schema', schema: '1123' })
 			.expect((r) => assert.ok(r.body.message == "successfully deleted '1123'"))
 			.expect(200);
 	});
@@ -993,9 +993,7 @@ describe('8. Delete Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'sql',
-				sql: `delete
-                                  from ${generic.schema}.${generic.emps_tb}
-                                  where address like '%Lane'`,
+				sql: `delete from ${generic.schema}.${generic.emps_tb} where address like '%Lane'`,
 			})
 			.expect(200);
 	});
@@ -1006,9 +1004,7 @@ describe('8. Delete Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'sql',
-				sql: `SELECT *
-                                  from ${generic.schema}.${generic.emps_tb}
-                                  where address like '%Lane'`,
+				sql: `SELECT * from ${generic.schema}.${generic.emps_tb} where address like '%Lane'`,
 			})
 			.expect((r) => assert.ok(Array.isArray(r.body) && r.body.length === 0))
 			.expect(200);
@@ -1078,7 +1074,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Delete records contaitng objects and arrays', async () => {
+	it('Delete records containing objects and arrays', async () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
@@ -1114,7 +1110,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('test SQL deleteing with numeric hash in single quotes', async () => {
+	it('test SQL deleting with numeric hash in single quotes', async () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
@@ -1124,7 +1120,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('test SQL deleteing with numeric no condition', async () => {
+	it('test SQL deleting with numeric no condition', async () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
