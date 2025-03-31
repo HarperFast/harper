@@ -48,8 +48,8 @@ export let generic = {
     csv_tb_empty: "url_csv_no_data",
     drop_schema: "drop_schema",
     drop_table: "drop_table",
-    s3_key: "",
-    s3_secret: "",
+    s3_key: process.env.S3_KEY,
+    s3_secret: process.env.S3_SECRET,
     operation_token: "",
     refresh_token: "",
     my_operation_token: ""

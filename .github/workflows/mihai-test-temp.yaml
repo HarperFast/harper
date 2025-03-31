@@ -1,0 +1,85 @@
+on:
+  # Trigger analysis when pushing in main or pull requests, and when creating
+  # a pull request.
+  workflow_dispatch:
+name: Run API Tests with Node js
+jobs:
+  getNodeVersion:
+    runs-on: ubuntu-latest
+    outputs:
+      nodeVersion: ${{ steps.getNode.outputs.NODE_VERSION }}
+      harperdbVersion: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - id: getNode
+        name: Get node version
+        run: |
+          pwd
+          NODE_VERSION="$(node --version)"
+          NODE_VERSION="${NODE_VERSION:1}"
+          HARPERDB_VERSION=$(cat package.json | jq -r '.version')
+          echo "NODE_VERSION=$NODE_VERSION" >> $GITHUB_OUTPUT
+          echo "HARPERDB_VERSION=$HARPERDB_VERSION" >> $GITHUB_OUTPUT
+  createInstances:
+    needs:
+      - getNodeVersion
+    uses: ./.github/workflows/create-instances.yaml
+    with:
+      instanceCount: '1'
+      harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
+      installType: 'sourceCode'
+      callingWorkflow: ${{ github.workflow }}
+    secrets: inherit
+  registerInstances:
+    needs:
+      - createInstances
+      - getNodeVersion
+    uses: ./.github/workflows/install-and-register.yaml
+    with:
+      publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
+      harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
+      nodeVersion: ${{ needs.getNodeVersion.outputs.nodeVersion }}
+      installType: 'sourceCode'
+    secrets: inherit
+  runIntegrationTests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - createInstances
+    steps:
+      - name: Run Integration Tests on Instances
+        env:
+          CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+          S3_KEY : ${{ secrets.AWS_S3_INTEGRATION_TEST_DATA_ACCESS_KEY_ID }}
+          S3_SECRET : ${{ secrets.AWS_S3_INTEGRATION_TEST_DATA_SECRET_ACCESS_KEY }}
+        run: |
+          #!/bin/bash
+          cd ../
+          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+          public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
+
+          for public_dns_name in ${public_dns_names[@]}
+          do 
+            echo "Starting work on: $public_dns_name"
+            ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
+                "cd /home/ubuntu/harperdb/integrationTests/apiTests/tests && node temp.js"
+            echo "Ending work on: $public_dns_name"
+          done
+  downloadLogs:
+    if: always()
+    needs:
+      - runIntegrationTests
+      - createInstances
+    uses: ./.github/workflows/download-logs.yaml
+    with:
+      publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
+    secrets: inherit
+  destroyInstances:
+    if: always()
+    needs: downloadLogs
+    uses: ./.github/workflows/destroy-instances.yaml
+    with:
+      instanceCount: '1'
+      callingWorkflow: ${{ github.workflow }}
+    secrets: inherit
