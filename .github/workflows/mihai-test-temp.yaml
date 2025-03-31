@@ -1,6 +1,7 @@
 on:
   # Trigger analysis when pushing in main or pull requests, and when creating
   # a pull request.
+  push:
   workflow_dispatch:
 name: Run API Tests with Node js
 jobs:
