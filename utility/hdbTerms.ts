@@ -508,7 +508,7 @@ export const CONFIG_PARAMS = {
 	ANALYTICS_AGGREGATEPERIOD: 'analytics_aggregatePeriod',
 	AUTHENTICATION_AUTHORIZELOCAL: 'authentication_authorizeLocal',
 	AUTHENTICATION_CACHETTL: 'authentication_cacheTTL',
-	AUTHENTICATION_COOKIE_DOMAIN: 'authentication_cookie_domain',
+	AUTHENTICATION_COOKIE_DOMAINS: 'authentication_cookie_domains',
 	AUTHENTICATION_COOKIE_EXPIRES: 'authentication_cookie_expires',
 	AUTHENTICATION_ENABLESESSIONS: 'authentication_enableSessions',
 	AUTHENTICATION_OPERATIONTOKENTIMEOUT: 'authentication_operationTokenTimeout',

@@ -213,10 +213,11 @@ export async function authentication(request, next_handler) {
 				const expires = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_EXPIRES);
 				if (!session_id) {
 					session_id = uuid();
-					const domain = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_DOMAIN);
+					const domains = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_DOMAINS);
 					const expires_string = expires
 						? new Date(Date.now() + convertToMS(expires)).toUTCString()
 						: DEFAULT_COOKIE_EXPIRES;
+					const domain = domains?.find((domain) => headers.host?.endsWith(domain));
 					const cookie_prefix =
 						(origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
 					const cookie = `${cookie_prefix}${session_id}; Path=/; Expires=${expires_string}; ${domain ? 'Domain=' + domain + '; ' : ''}HttpOnly${
