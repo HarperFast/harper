@@ -49,10 +49,12 @@ jobs:
     needs:
       - createInstances
       - registerInstances
-    uses: actions/setup-node@v4
-    with:
-      check-latest: true
     steps:
+      - uses: actions/checkout@v4
+      - name: Install node
+        uses: actions/setup-node@v4
+        with:
+          check-latest: true
       - name: Run Integration Tests on Instances
         env:
           CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
