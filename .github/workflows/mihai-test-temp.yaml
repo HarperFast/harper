@@ -48,6 +48,7 @@ jobs:
     timeout-minutes: 20
     needs:
       - createInstances
+      - registerInstances
     steps:
       - name: Run Integration Tests on Instances
         env:
