@@ -50,11 +50,6 @@ jobs:
       - createInstances
       - registerInstances
     steps:
-      - uses: actions/checkout@v4
-      - name: Install node
-        uses: actions/setup-node@v4
-        with:
-          check-latest: true
       - name: Run Integration Tests on Instances
         env:
           CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
@@ -70,7 +65,7 @@ jobs:
           do 
             echo "Starting work on: $public_dns_name"
             ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
-                "cd /home/ubuntu/harperdb/integrationTests/apiTests/tests && npm install && node temp.js"
+                "cd /home/ubuntu/harperdb/integrationTests/apiTests/ && npm install && node tests/temp.js"
             echo "Ending work on: $public_dns_name"
           done
   downloadLogs:

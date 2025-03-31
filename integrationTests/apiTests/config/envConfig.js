@@ -6,7 +6,7 @@ export let generic = {
     port: '9925',
     portRest: '9926',
     username: 'admin',
-    password: 'admin',
+    password: 'Abc1234!',
     schema: "northnwd",
     schema_dev: "dev",
     schema_call: "call",
