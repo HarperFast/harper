@@ -1,7 +1,6 @@
 on:
   # Trigger analysis when pushing in main or pull requests, and when creating
   # a pull request.
-  push:
   workflow_dispatch:
 name: Run API Tests with Node js
 jobs:
@@ -65,7 +64,7 @@ jobs:
           do 
             echo "Starting work on: $public_dns_name"
             ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
-                "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/temp-ci-tests.sh && /home/ubuntu/harperdb/test/ci-tests/temp-ci-tests.sh ${S3_KEY} ${S3_SECRET}"
+                "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests-node-api-tests.sh && /home/ubuntu/harperdb/test/ci-tests/ci-tests-node-api-tests.sh ${S3_KEY} ${S3_SECRET}"
             echo "Ending work on: $public_dns_name"
           done
   downloadLogs:

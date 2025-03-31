@@ -17,9 +17,15 @@ node --test tests/1_environmentSetup.js
 
 **Run all tests under the 'tests' folder**
 
+Some of the tests are using AWS S3 to import data. For this, if we test locally, we need to specify the S3 secret key:
+
+```S3_KEY='value' S3_SECRET='value' node --test tests/testSuite.cjs```
+
+When running via Github Actions we grab the values from Github Secrets in the repo.
+
 defined in harperdb root folder in package.json in scripts:
 ```
-"test:supertest": "cd integrationTests/apiTests && node --test tests/testSuite.cjs"
+"test:supertest": "cd integrationTests/apiTests && S3_KEY='value' S3_SECRET='value' node --test tests/testSuite.cjs"
 ```
 from apiTests folder run:
 ```

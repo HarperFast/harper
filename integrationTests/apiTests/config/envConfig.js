@@ -59,13 +59,13 @@ export const envUrl = generic.host + ':' + generic.port;
 export const envUrlRest = generic.host + ':' + generic.portRest;
 
 
-export const headers = await createHeaders(generic.username, generic.password);
-export const headersBulkLoadUser = await createHeaders('bulk_load_user', generic.password);
-export const headersTestUser = await createHeaders(generic.test_user_name, generic.password);
-export const headersNoPermsUser = await createHeaders('no_perms_user', generic.password);
-export const headersOnePermUser = await createHeaders('one_perm_user', generic.password);
+export const headers = createHeaders(generic.username, generic.password);
+export const headersBulkLoadUser = createHeaders('bulk_load_user', generic.password);
+export const headersTestUser = createHeaders(generic.test_user_name, generic.password);
+export const headersNoPermsUser = createHeaders('no_perms_user', generic.password);
+export const headersOnePermUser = createHeaders('one_perm_user', generic.password);
 
-export async function createHeaders(username, password) {
+export function createHeaders(username, password) {
     const headers = {
         Authorization: 'Basic ' + Buffer.from(username + ':' + password).toString('base64'),
         'Content-Type': 'application/json'

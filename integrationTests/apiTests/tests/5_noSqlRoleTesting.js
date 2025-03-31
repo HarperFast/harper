@@ -623,7 +623,7 @@ describe('5. NoSQL Role Testing', () => {
 	//NoSQL Role Testing Main Folder
 
 	it('Authentication - bad username', async () => {
-		const myHeaders = await createHeaders('bad_username', generic.password);
+		const myHeaders = createHeaders('bad_username', generic.password);
 		const response = await request(envUrl)
 			.post('')
 			.set(myHeaders)
@@ -633,7 +633,7 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('Authentication - bad password', async () => {
-		const myHeaders = await createHeaders(generic.username, 'bad_password');
+		const myHeaders = createHeaders(generic.username, 'bad_password');
 		const response = await request(envUrl)
 			.post('')
 			.set(myHeaders)

@@ -2280,7 +2280,7 @@ describe('10. Other Role Tests', () => {
 	});
 
 	it('Query HDB as bad user', async () => {
-		const myHeaders = await createHeaders('JohnnyBadUser', generic.password);
+		const myHeaders = createHeaders('JohnnyBadUser', generic.password);
 		const response = await request(envUrl)
 			.post('')
 			.set(myHeaders)
