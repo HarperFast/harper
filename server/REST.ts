@@ -10,7 +10,7 @@ import { transaction } from '../resources/transaction';
 import { Headers, mergeHeaders } from '../server/serverHelpers/Headers';
 import { generateJsonApi } from '../resources/openApi';
 import { SimpleURLQuery } from '../resources/search';
-import { Context } from '../resources/ResourceInterface';
+import type { Context } from '../resources/ResourceInterface';
 
 interface Response {
 	status?: number;

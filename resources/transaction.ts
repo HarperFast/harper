@@ -1,7 +1,6 @@
-import { Request } from './ResourceInterface';
+import type { Request } from './ResourceInterface';
 import { _assignPackageExport } from '../globals';
-import { CONTEXT } from './Resource';
-import { DatabaseTransaction, FinishedTransaction, TRANSACTION_STATE } from './DatabaseTransaction';
+import { DatabaseTransaction, TRANSACTION_STATE } from './DatabaseTransaction';
 
 export function transaction<T>(context: Request, callback: (transaction: TransactionSet) => T, options?: any): T;
 export function transaction<T>(callback: (transaction: TransactionSet) => T): T;

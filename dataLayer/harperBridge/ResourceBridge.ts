@@ -15,7 +15,7 @@ import * as signalling from '../../utility/signalling';
 import { SchemaEventMsg } from '../../server/threads/itc';
 import { async_set_timeout } from '../../utility/common_utils';
 import { transaction } from '../../resources/transaction';
-import { Id } from '../../resources/ResourceInterface';
+import type { Id } from '../../resources/ResourceInterface';
 import { collapseData } from '../../resources/tracked';
 
 const { HDB_ERROR_MSGS } = hdb_errors;

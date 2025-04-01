@@ -3,7 +3,7 @@ import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility
 import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
 import { SKIP } from 'lmdb';
 import { INVALIDATED, EVICTED } from './Table';
-import { DirectCondition, Id } from './ResourceInterface';
+import type { DirectCondition, Id } from './ResourceInterface';
 import { MultiPartId } from './Resource';
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;

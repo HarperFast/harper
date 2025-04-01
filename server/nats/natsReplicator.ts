@@ -9,7 +9,7 @@ import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility';
 import env from '../../utility/environment/environmentManager';
 import * as hdb_terms from '../../utility/hdbTerms';
 import * as harper_logger from '../../utility/logging/harper_logger';
-import { Context } from '../../resources/ResourceInterface';
+import type { Context } from '../../resources/ResourceInterface';
 
 let nats_disabled;
 export function start() {
@@ -193,7 +193,10 @@ function publishSchema(Table) {
 class NATSTransaction {
 	user: string;
 	writes_by_db = new Map(); // TODO: short circuit of setting up a map if all the db paths are the same (99.9% of the time that will be the case)
-	constructor(protected transaction, protected options?) {}
+	constructor(
+		protected transaction,
+		protected options?
+	) {}
 	addWrite(database_path, write) {
 		write.expiresAt = this.context?.expiresAt;
 		let writes_for_path = this.writes_by_db.get(database_path);

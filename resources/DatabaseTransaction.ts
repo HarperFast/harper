@@ -1,4 +1,4 @@
-import { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
+import type { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
 import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import { ServerError } from '../utility/errors/hdbError';
 import * as harper_logger from '../utility/logging/harper_logger';

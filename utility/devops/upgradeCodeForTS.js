@@ -25,7 +25,7 @@ function processDirectory(dir) {
 			code = code.replace(/require\('([^']+)'\)/g, (match, moduleId) => {
 				return `require('${getModuleIdWithExtension(filePath, moduleId)}')`;
 			});
-			code = code.replace(/(import[^']*? from )'([^']+)'/g, (match, prefix, moduleId) => {
+			code = code.replace(/(import[^']+)'([^']+)'/g, (match, prefix, moduleId) => {
 				return `${prefix}'${getModuleIdWithExtension(filePath, moduleId)}'`;
 			});
 			/* Replace require with import
