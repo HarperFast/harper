@@ -229,8 +229,9 @@ export interface Metric {
 function storeMetric(table: Table, metric: Metric) {
 	const hostname = server.hostname;
 	let nodeId = nodeIds.get(hostname);
-	nodeId ? log.trace?.('storeMetric cached nodeId:', nodeId) : null;
-	if (!nodeId) {
+	if (nodeId) {
+		log.trace?.('storeMetric cached nodeId:', nodeId)
+	} else {
 		nodeId = stableNodeId(hostname);
 		log.trace?.('storeMetric new nodeId:', nodeId);
 		nodeIds.set(hostname, nodeId);
