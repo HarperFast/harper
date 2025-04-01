@@ -14,27 +14,39 @@ if (__filename.endsWith('dev.js')) {
 
 	const { PACKAGE_ROOT } = require('../utility/packageUtils');
 
-	const SRC_DIRECTORIES = ['bin', 'components', 'dataLayer', 'resources', 'server', 'sqlTranslator', 'upgrade', 'utility', 'validation'];
+	const SRC_DIRECTORIES = [
+		'bin',
+		'components',
+		'dataLayer',
+		'resources',
+		'server',
+		'sqlTranslator',
+		'upgrade',
+		'utility',
+		'validation',
+	];
 	const TS_DIRECTORY = 'ts-build';
 
 	if (isMainThread) {
 		let needsCompile = false;
 		let buildDirectoryExists = false;
 		if ((buildDirectoryExists = existsSync(join(PACKAGE_ROOT, TS_DIRECTORY)))) {
-			needsCompile = fg.sync(
-				SRC_DIRECTORIES.map((dir) => `${dir}/**/*.ts`),
-				{ cwd: PACKAGE_ROOT }
-			).some((file) => {
-				let sourceTime = 0;
-				let compiledTime = 0;
+			needsCompile = fg
+				.sync(
+					SRC_DIRECTORIES.map((dir) => `${dir}/**/*.ts`),
+					{ cwd: PACKAGE_ROOT }
+				)
+				.some((file) => {
+					let sourceTime = 0;
+					let compiledTime = 0;
 
-				try {
-					sourceTime = statSync(join(PACKAGE_ROOT, file)).mtimeMs - 5000;
-					compiledTime = statSync(join(PACKAGE_ROOT, TS_DIRECTORY, file.replace(/.ts$/, '.js'))).mtimeMs;
-				} catch (_) { }
+					try {
+						sourceTime = statSync(join(PACKAGE_ROOT, file)).mtimeMs - 5000;
+						compiledTime = statSync(join(PACKAGE_ROOT, TS_DIRECTORY, file.replace(/.ts$/, '.js'))).mtimeMs;
+					} catch (_) {}
 
-				return sourceTime > compiledTime;
-			});
+					return sourceTime > compiledTime;
+				});
 		} else {
 			needsCompile = true;
 		}
@@ -53,7 +65,7 @@ if (__filename.endsWith('dev.js')) {
 					try {
 						process.kill(+readFileSync(pidPath, 'utf8'), 0);
 						isRunning = true;
-					} catch (_) { }
+					} catch (_) {}
 				}
 
 				if (!isRunning) {
@@ -89,6 +101,9 @@ if (__filename.endsWith('dev.js')) {
 				alternate = join(PACKAGE_ROOT, relative(TS_DIRECTORY, path));
 			} else {
 				alternate = join(PACKAGE_ROOT, TS_DIRECTORY, path);
+			}
+			if (request.endsWith('.js') || request.endsWith('.ts')) {
+				request = request.slice(0, -3);
 			}
 			let base_filename = join(alternate, request);
 			let filename = base_filename + '.js';
