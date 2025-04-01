@@ -38,9 +38,9 @@ export class ResourceBridge extends LMDBBridge {
 	async searchByConditions(search_object: SearchByConditionsRequest) {
 		if (search_object.select !== undefined) search_object.get_attributes = search_object.select;
 		for (const condition of search_object.conditions || []) {
-			if ('attribute' in condition && condition?.attribute !== undefined) condition.search_attribute = condition.attribute;
-			if ('comparator' in condition && condition?.comparator !== undefined) condition.search_type = condition.comparator;
-			if ('value' in condition && condition?.value !== undefined) condition.search_value = condition.value;
+			if (condition?.attribute !== undefined) condition.search_attribute = condition.attribute;
+			if (condition?.comparator !== undefined) condition.search_type = condition.comparator;
+			if (condition?.value !== undefined) condition.search_value = condition.value;
 		}
 		const validation_error = search_validator(search_object, 'conditions');
 		if (validation_error) {
