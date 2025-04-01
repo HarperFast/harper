@@ -3,7 +3,7 @@ const path = require('path');
 const VAR_EXCLUSION_LIST = [];
 
 const DONT_CHANGE_COLON_VAR_FILES = ['ResourceBridge.ts', 'hdbTerms.ts'];
-const SAFE_VAR_TRANSFORM = ['search_object'];
+const SAFE_VAR_TRANSFORM = ['search_object', 'main_permissions', 'schema_permissions'];
 processDirectory(process.cwd().slice(0, process.cwd().indexOf('harperdb') + 'harperdb'.length));
 function processDirectory(dir) {
 	for (let entry of readdirSync(dir, { withFileTypes: true })) {

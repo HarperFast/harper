@@ -502,8 +502,8 @@ async function generateKeys() {
 	});
 
 	return {
-		public_key: pki.publicKeyFromPem(keys.publicKey),
-		private_key: pki.privateKeyFromPem(keys.privateKey),
+		publicKey: pki.publicKeyFromPem(keys.publicKey),
+		privateKey: pki.privateKeyFromPem(keys.privateKey),
 	};
 }
 
