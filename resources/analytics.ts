@@ -284,7 +284,10 @@ function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 	for (const [db, tables] of Object.entries(databases)) {
 		try {
 			const [firstTable] = Object.values(tables);
-			const dbAuditSize = firstTable.getAuditSize();
+			const dbAuditSize = firstTable?.getAuditSize();
+			if (!dbAuditSize) {
+				return;
+			}
 			const dbTotalSize = fs.statSync(firstTable.primaryStore.env.path).size;
 			const dbUsedSize = storeTableSizeMetrics(analyticsTable, db, tables);
 			const dbFree = dbTotalSize - dbUsedSize;
@@ -308,7 +311,10 @@ function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
 	for (const [db, tables] of Object.entries(databases)) {
 		try {
 			const [firstTable] = Object.values(tables);
-			const storageStats = firstTable.getStorageStats();
+			const storageStats = firstTable?.getStorageStats();
+			if (!storageStats) {
+				return;
+			}
 			const metric = {
 				database: db,
 				...storageStats,
@@ -317,7 +323,7 @@ function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
 			log.trace?.(`db ${db} storage volume metrics: ${JSON.stringify(metric)}`);
 		} catch (error) {
 			// a table or db was deleted, could get an error here
-			log.warn?.(`Error getting DB volumne metrics`, error);
+			log.warn?.(`Error getting DB volume metrics`, error);
 		}
 	}
 }
