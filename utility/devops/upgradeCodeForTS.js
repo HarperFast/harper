@@ -33,23 +33,28 @@ function processDirectory(dir) {
 				return `import ${names}from '${moduleId}'`;
 			});*/
 			// snakeCase -> camelCase
-			code = code.replace(/('[^'\n]*')|(\.*)([a-z]+_[a-z_]+)(:?)/g, (match, quoted, prefix, varName, suffix) => {
-				if (quoted) return match;
-				if (
-					prefix === '.' ||
-					(suffix === ':' &&
-						!SAFE_VAR_TRANSFORM.includes(varName) &&
-						(!isTypeScript || DONT_CHANGE_COLON_VAR_FILES.includes(entry.name)))
-				)
-					return match;
-				if (VAR_EXCLUSION_LIST.includes(varName)) return match;
-				let parts = varName.split('_');
-				let newVarName = [parts[0], ...parts.slice(1).map((name) => name.charAt(0).toUpperCase() + name.slice(1))].join(
-					''
-				);
-				if (code.includes('function ' + newVarName)) return match; // don't change if there is a colliding function name
-				return prefix + newVarName + suffix;
-			});
+			code = code.replace(
+				/('[^'\n]*')|(`[^`]*`)|(\.*)([a-z]+_[a-z_]+)(:?)/g,
+				(match, quoted, quoted2, prefix, varName, suffix) => {
+					if (quoted) return match;
+					if (quoted2) return match;
+					if (
+						prefix === '.' ||
+						(suffix === ':' &&
+							!SAFE_VAR_TRANSFORM.includes(varName) &&
+							(!isTypeScript || DONT_CHANGE_COLON_VAR_FILES.includes(entry.name)))
+					)
+						return match;
+					if (VAR_EXCLUSION_LIST.includes(varName)) return match;
+					let parts = varName.split('_');
+					let newVarName = [
+						parts[0],
+						...parts.slice(1).map((name) => name.charAt(0).toUpperCase() + name.slice(1)),
+					].join('');
+					if (code.includes('function ' + newVarName)) return match; // don't change if there is a colliding function name
+					return prefix + newVarName + suffix;
+				}
+			);
 			console.log('Writing', filePath);
 			writeFileSync(filePath, code);
 		}
