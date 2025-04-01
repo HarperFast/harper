@@ -582,7 +582,6 @@ function getRecords(search_object, return_key_value?) {
 				throw(error) {
 					finished_iteration();
 					return {
-						value: error,
 						done: true,
 					};
 				},
