@@ -583,7 +583,7 @@ function getAnalyticsTable() {
 		(AnalyticsTable = table({
 			table: 'hdb_analytics',
 			database: 'system',
-			audit: false,
+			audit: true,
 			trackDeletes: false,
 			attributes: [
 				{
