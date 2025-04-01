@@ -3,6 +3,7 @@ const path = require('path');
 const VAR_EXCLUSION_LIST = [];
 
 const DONT_CHANGE_COLON_VAR_FILES = ['ResourceBridge.ts', 'hdbTerms.ts'];
+const SAFE_VAR_TRANSFORM = ['search_object'];
 processDirectory(process.cwd().slice(0, process.cwd().indexOf('harperdb') + 'harperdb'.length));
 function processDirectory(dir) {
 	for (let entry of readdirSync(dir, { withFileTypes: true })) {
@@ -34,7 +35,12 @@ function processDirectory(dir) {
 			// snakeCase -> camelCase
 			code = code.replace(/('[^'\n]*')|(\.*)([a-z]+_[a-z_]+)(:?)/g, (match, quoted, prefix, varName, suffix) => {
 				if (quoted) return match;
-				if (prefix === '.' || (suffix === ':' && (!isTypeScript || DONT_CHANGE_COLON_VAR_FILES.includes(entry.name))))
+				if (
+					prefix === '.' ||
+					(suffix === ':' &&
+						!SAFE_VAR_TRANSFORM.includes(varName) &&
+						(!isTypeScript || DONT_CHANGE_COLON_VAR_FILES.includes(entry.name)))
+				)
 					return match;
 				if (VAR_EXCLUSION_LIST.includes(varName)) return match;
 				let parts = varName.split('_');
