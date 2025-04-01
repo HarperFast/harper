@@ -565,7 +565,10 @@ function copyArray(stored_array, target_array) {
 }
 export class Addition {
 	__op__ = 'add';
-	constructor(public value) {}
+	value: any;
+	constructor(value) {
+		this.value = value;
+	}
 	update(previous_value) {
 		return (+previous_value || 0) + this.value;
 	}

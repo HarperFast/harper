@@ -6,11 +6,11 @@ const configuredHashFunction = get(CONFIG_PARAMS.AUTHENTICATION_HASHFUNCTION)?.t
 
 const SALT_LENGTH = 16;
 const SALT_LENGTH_MD5 = 9;
-export enum HASH_FUNCTION {
-	MD5 = 'md5',
-	SHA256 = 'sha256',
-	ARGON2ID = 'argon2id',
-}
+export const HASH_FUNCTION = {
+	MD5: 'md5',
+	SHA256: 'sha256',
+	ARGON2ID: 'argon2id',
+};
 
 type HashFunction = (typeof HASH_FUNCTION)[keyof typeof HASH_FUNCTION];
 

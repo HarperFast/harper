@@ -11,11 +11,11 @@ import { convertToMS } from '../utility/common_utils';
 const MAX_OPTIMISTIC_SIZE = 100;
 const tracked_txns = new Set<DatabaseTransaction>();
 const MAX_OUTSTANDING_TXN_DURATION = convertToMS(env_mngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 25 seconds before we start rejecting them
-export enum TRANSACTION_STATE {
-	CLOSED, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
-	OPEN, // the transaction is open and can be used for reads and writes
-	LINGERING, // the transaction has completed a read, but can be used for immediate writes
-}
+export const TRANSACTION_STATE = {
+	CLOSED: 0, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
+	OPEN: 1, // the transaction is open and can be used for reads and writes
+	LINGERING: 2, // the transaction has completed a read, but can be used for immediate writes
+};
 let outstanding_commit, outstanding_commit_start;
 let confirmReplication;
 export function replicationConfirmation(callback) {

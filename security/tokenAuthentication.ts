@@ -26,10 +26,10 @@ const OPERATION_TOKEN_TIMEOUT: string = env.get(CONFIG_PARAMS.AUTHENTICATION_OPE
 const REFRESH_TOKEN_TIMEOUT: string = env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
 const RSA_ALGORITHM: string = 'RS256';
 
-enum TOKEN_TYPE {
-	OPERATION = 'operation',
-	REFRESH = 'refresh',
-}
+const TOKEN_TYPE = {
+	OPERATION: 'operation',
+	REFRESH: 'refresh',
+};
 
 interface JWTRSAKeys {
 	publicKey: string;

@@ -1185,7 +1185,10 @@ export function intersectionEstimate(store, left, right) {
 	return (left * right) / estimatedEntryCount(store);
 }
 export class SimpleURLQuery {
-	constructor(public url: string) {}
+	url: string;
+	constructor(url: string) {
+		this.url = url;
+	}
 	get() {
 		// this is a simple holder for the URL query, so we don't return anything (will be parsed later into a USP or Query object as needed)
 	}

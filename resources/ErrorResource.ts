@@ -6,7 +6,10 @@ import { Context } from './ResourceInterface';
  * if there is a problem with a resource, it is immediately apparent and can be fixed.
  */
 export class ErrorResource implements Resource {
-	constructor(public error: Error) {}
+	error: Error;
+	constructor(error: Error) {
+		this.error = error;
+	}
 	isError = true;
 	allowRead(): never {
 		throw this.error;
