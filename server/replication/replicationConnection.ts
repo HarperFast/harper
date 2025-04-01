@@ -142,14 +142,17 @@ export class NodeReplicationConnection extends EventEmitter {
 	session: any; // this is a promise that resolves to the session object, which is the object that handles the replication
 	sessionResolve: Function;
 	sessionReject: Function;
-	constructor(
-		public url: string,
-		public subscription: any,
-		public databaseName: string,
-		public nodeName?: string,
-		public authorization?: string
-	) {
+	url: string;
+	subscription: any;
+	databaseName: string;
+	nodeName?: string;
+	authorization?: string;
+	constructor(url: string, subscription: any, databaseName: string, nodeName?: string, authorization?: string) {
 		super();
+		this.url = url;
+		this.subscription = subscription;
+		this.databaseName = databaseName;
+		this.authorization = authorization;
 		this.nodeName = this.nodeName ?? urlToNodeName(url);
 	}
 

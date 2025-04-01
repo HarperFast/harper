@@ -11,7 +11,9 @@ import { CONFIG_PARAMS } from '../../utility/hdbTerms';
 import * as YAML from 'yaml';
 import logger from '../../utility/logging/logger';
 import { Blob } from '../../resources/blob';
-const { Transform } = require('json2csv');
+import { Transform } from 'json2csv';
+// TODO: Only load this if fastify is loaded
+import fp from 'fastify-plugin';
 const SERIALIZATION_BIGINT = env_mgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
 const JSONStringify = SERIALIZATION_BIGINT ? stringify : JSON.stringify;
 const JSONParse = SERIALIZATION_BIGINT ? parse : JSON.parse;
@@ -227,8 +229,6 @@ export function registerContentHandlers(app) {
 		}
 	});
 }
-// TODO: Only load this if fastify is loaded
-const fp = require('fastify-plugin');
 
 const registerFastifySerializers = fp(
 	function (fastify, opts, done) {

@@ -52,7 +52,7 @@ let log_fd;
 let hdb_properties;
 if (hdb_properties === undefined) initLogSettings();
 
-Object.assign(exports, {
+module.exports = {
 	notify,
 	fatal,
 	error,
@@ -68,10 +68,13 @@ Object.assign(exports, {
 	logCustomLevel,
 	closeLogFile,
 	logsAtLevel,
-	getLogFilePath: () => log_file_path,
+	getLogFilePath,
 	OUTPUTS,
 	AuthAuditLog,
-});
+};
+function getLogFilePath() {
+	return log_file_path;
+}
 _assignPackageExport('logger', module.exports);
 let logged_fd_err;
 
@@ -232,7 +235,7 @@ function loggerWithTag(tag, conditional) {
 		return !conditional || LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY[level]
 			? function (...args) {
 					return logger(tag_object, ...args);
-			  }
+				}
 			: null;
 	}
 }

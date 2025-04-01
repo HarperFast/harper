@@ -5,9 +5,10 @@
  */
 
 import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME } from '../utility/hdbTerms';
-import { Database, SKIP } from 'lmdb';
+import { SKIP } from 'lmdb';
+import type { Database } from 'lmdb';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility';
-import { sortBy } from 'lodash';
+import lodash from 'lodash';
 import type {
 	Query,
 	ResourceInterface,
@@ -18,7 +19,7 @@ import type {
 	Sort,
 	SubSelect,
 } from './ResourceInterface';
-import { validateAttribute } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows';
+import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows';
 import { Resource } from './Resource';
 import { DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction';
 import * as env_mngr from '../utility/environment/environmentManager';
@@ -49,6 +50,8 @@ import { appendHeader } from '../server/serverHelpers/Headers';
 import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject } from './blob';
 import { onStorageReclamation } from '../server/storageReclamation';
+const { sortBy } = lodash;
+const { validateAttribute } = lmdbProcessRows;
 
 type Attribute = {
 	name: string;
