@@ -96,7 +96,6 @@ interface BaseOperationRequestBody {
 	operation: OperationFunctionName;
 	bypass_auth: boolean;
 	hdb_user?: User;
-	hdb_auth_header?: string;
 	password?: string;
 	payload?: string;
 	sql?: string;
