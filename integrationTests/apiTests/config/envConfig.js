@@ -1,5 +1,7 @@
 import { fileURLToPath } from 'url';
 import path from 'node:path';
+import request from 'supertest';
+import assert from 'node:assert';
 
 export let generic = {
     host: 'http://localhost',
@@ -52,7 +54,9 @@ export let generic = {
     s3_secret: process.env.S3_SECRET,
     operation_token: "",
     refresh_token: "",
-    my_operation_token: ""
+    my_operation_token: "",
+    rootPath: "",
+    restartTimeout: 45000,
 }
 
 export const envUrl = generic.host + ':' + generic.port;

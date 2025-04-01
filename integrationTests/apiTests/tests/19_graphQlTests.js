@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import request from 'supertest';
-import { envUrl, envUrlRest, headers } from '../config/envConfig.js';
+import { envUrl, envUrlRest, generic, headers } from '../config/envConfig.js';
 import { setTimeout } from 'node:timers/promises';
 
 describe('19. GraphQL tests', () => {
@@ -62,13 +62,10 @@ describe('19. GraphQL tests', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
-			.send({ operation: 'restart_service', service: 'http_workers' })
-			.expect((r) => {
-				assert.ok(r.body.message.includes('Restarting'));
-				console.log('waiting for 31 seconds for the restart of services');
-			})
+			.send({ operation: 'restart' })
+			.expect((r) => assert.ok(r.body.message.includes('Restarting')))
 			.expect(200);
-		await setTimeout(31000);
+		await setTimeout(generic.restartTimeout);
 	});
 
 	it('Insert one null into SubObject', async () => {

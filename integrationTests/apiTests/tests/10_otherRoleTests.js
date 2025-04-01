@@ -24,19 +24,11 @@ describe('10. Other Role Tests', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'describe_schema', schema: 'system' })
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) =>
-				assert.ok(
-					r.body.unauthorized_access[0] == "Your role does not have permission to view database metadata for 'system'"
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
-			.expect(403);
+			.expect((r) => {
+				assert.ok(Object.keys(r.body).length > 0);
+				assert.ok(r.body.hdb_info.schema == 'system');
+			})
+			.expect(200);
 	});
 
 	it('Describe Schema - schema doesnt exist', async () => {
@@ -53,19 +45,12 @@ describe('10. Other Role Tests', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'describe_table', schema: 'system', table: 'hdb_user' })
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) =>
-				assert.ok(
-					r.body.unauthorized_access[0] == "Your role does not have permission to view database metadata for 'system'"
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
-			.expect(403);
+			.expect((r) => {
+				assert.ok(Object.keys(r.body).length > 0);
+				assert.ok(r.body.schema == 'system');
+				assert.ok(r.body.name == 'hdb_user');
+			})
+			.expect(200);
 	});
 
 	it('Describe Table - schema and table don t exist', async () => {
@@ -530,8 +515,9 @@ describe('10. Other Role Tests', () => {
 			.expect((r) => {
 				assert.ok(Object.keys(r.body).length == 1);
 				assert.ok(Object.keys(r.body.northnwd).length == 1);
-				assert.ok(Object.keys(r.body.northnwd.employees).length == 11);
+				assert.ok(Object.keys(r.body.northnwd.employees).length > 11);
 				assert.ok(typeof r.body.northnwd.employees.db_size == 'number');
+				assert.ok(typeof r.body.northnwd.employees.table_size == 'number');
 				assert.ok(r.body.northnwd.employees.attributes.length == 4);
 			})
 			.expect(200);

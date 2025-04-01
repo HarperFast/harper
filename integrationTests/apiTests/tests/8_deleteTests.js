@@ -376,13 +376,22 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop number number table', async () => {
+	it('Drop number as string table', async () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_table', schema: '1123', table: '1' })
 			.expect((r) => assert.ok(r.body.message == "successfully deleted table '1123.1'"))
 			.expect(200);
+	});
+
+	it('Drop number number table', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_table', schema: 1123, table: 1 })
+			.expect((r) => assert.ok(JSON.stringify(r.body).includes("'schema' must be a string. 'table' must be a string")))
+			.expect(400);
 	});
 
 	it('Drop number schema', async () => {
@@ -394,13 +403,22 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop number number schema', async () => {
+	it('Drop number as string schema', async () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_schema', schema: '1123' })
 			.expect((r) => assert.ok(r.body.message == "successfully deleted '1123'"))
 			.expect(200);
+	});
+
+	it('Drop number number schema', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_schema', schema: 1123 })
+			.expect((r) => assert.ok(JSON.stringify(r.body).includes("'schema' must be a string")))
+			.expect(400);
 	});
 
 

@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import request from 'supertest';
 import { envUrl, generic, headers } from '../config/envConfig.js';
+import { isDevEnv } from '../utils/env.js';
 
 describe('21. Authentication Tests', () => {
 	//Authentication Tests Folder
@@ -71,11 +72,15 @@ describe('21. Authentication Tests', () => {
 			.post('')
 			.set({ 'Content-Type': 'application/json' })
 			.send({ operation: 'describe_all' })
-			.expect((r) => {
-				console.log('this is only for prod config, not dev. in dev mode it works without auth, so test fails');
-				assert.ok(r.text.includes('Must login'));
+			.expect(async (r) => {
+				if (await isDevEnv()) {
+					assert.ok((Object.keys(r.body).length > 0));
+					assert.ok(r.status == 200);
+				} else {
+					assert.ok(r.text.includes('Must login'));
+					assert.ok(r.status == 401);
+				}
 			})
-			.expect(401);
 	});
 
 	it('Create auth token with valid credentials', async () => {
@@ -106,25 +111,25 @@ describe('21. Authentication Tests', () => {
 	it('Create auth token with invalid credentials', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set('Content-Type', 'application/json')
 			.send({ operation: 'create_authentication_tokens', username: `${generic.username}`, password: '' })
-			.expect((r) => assert.ok(JSON.stringify(r.body).includes('invalid credentials')))
-			.expect(401);
+			.expect((r) => assert.ok(JSON.stringify(r.body).includes("'password' is not allowed to be empty")))
+			.expect(400);
 	});
 
 	it('Create auth token with invalid credentials 2', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set('Content-Type', 'application/json')
 			.send({ operation: 'create_authentication_tokens', username: '', password: `${generic.password}` })
-			.expect((r) => assert.ok(JSON.stringify(r.body).includes('invalid credentials')))
-			.expect(401);
+			.expect((r) => assert.ok(JSON.stringify(r.body).includes("'username' is not allowed to be empty")))
+			.expect(400);
 	});
 
 	it('Create auth token with invalid credentials 3', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set('Content-Type', 'application/json')
 			.send({ operation: 'create_authentication_tokens', username: 'wrongusername', password: 'wrongpassword' })
 			.expect((r) => assert.ok(JSON.stringify(r.body).includes('invalid credentials')))
 			.expect(401);
@@ -133,9 +138,16 @@ describe('21. Authentication Tests', () => {
 	it('Create auth token with empty credentials', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set('Content-Type', 'application/json')
 			.send({ operation: 'create_authentication_tokens', username: '', password: '' })
-			.expect((r) => assert.ok(JSON.stringify(r.body).includes('invalid credentials')))
-			.expect(401);
+			.expect(async (r) => {
+				if (await isDevEnv()) {
+					assert.ok(JSON.stringify(r.body).includes("'username' is not allowed to be empty. 'password' is not allowed to be empty"));
+					assert.ok(r.status == 400);
+				} else {
+					assert.ok(JSON.stringify(r.body).includes("Must login"));
+					assert.ok(r.status == 401);
+				}
+			})
 	});
 });

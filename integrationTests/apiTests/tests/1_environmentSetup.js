@@ -52,6 +52,22 @@ describe('1. Environment Setup', () => {
         await createSchema(generic.schema_number);
     });
 
+    it(`Create schema as number - expect error`, async () => {
+        await request(envUrl)
+          .post('')
+          .set(headers)
+          .send({
+              operation: 'create_schema',
+              schema: 1123,
+          })
+          .expect((r) => {
+              const body = JSON.stringify(r.body);
+              assert.ok(body.includes("'schema' must be a string"));
+
+          })
+          .expect(400)
+    });
+
     it(`Create table ${generic.cust_tb}`, async () => {
         await createTable(generic.schema, generic.cust_tb, generic.cust_id);
     });
@@ -198,6 +214,24 @@ describe('1. Environment Setup', () => {
 
     it(`Create table number 1 as string in ${generic.schema_number}`, async () => {
         await createTable(generic.schema_number, '1', 'id');
+    });
+
+    it(`Create table as number - expect error`, async () => {
+        await request(envUrl)
+          .post('')
+          .set(headers)
+          .send({
+              operation: 'create_table',
+              database: 1123,
+              table: 1,
+              hash_attribute: 'id'
+          })
+          .expect((r) => {
+              const body = JSON.stringify(r.body);
+              assert.ok(body.includes("'schema' must be a string. 'table' must be a string"));
+
+          })
+          .expect(400)
     });
 
     it('Describe schema ${generic.schema_number_string}', async () => {

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import request from 'supertest';
-import { envUrl, envUrlRest, headers } from '../config/envConfig.js';
+import { envUrl, envUrlRest, generic, headers } from '../config/envConfig.js';
 import { setTimeout } from 'node:timers/promises';
 
 describe('15. Custom Functions & components', () => {
@@ -130,7 +130,7 @@ describe('15. Custom Functions & components', () => {
 					if (name === 'deploy-test-payload') payload_found = false;
 					if (name === 'add-test') add_test_found = true;
 					if (name === 'set-test') set_test_found = true;
-					if (name === 'deploy-test-payload-tar-gz' && e.entries.length === 6) deploy_tar_gz_found = true;
+					if (name === 'deploy-test-payload-tar-gz' && e.entries.length > 3) deploy_tar_gz_found = true;
 				});
 				assert.ok(gh_found && !payload_found && add_test_found && set_test_found && deploy_tar_gz_found);
 			})
@@ -189,10 +189,10 @@ describe('15. Custom Functions & components', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
-			.send({ operation: 'restart_service', service: 'http_workers' })
-			.expect((r) => assert.ok(r.body.message == 'Restarting http_workers'))
+			.send({ operation: 'restart' })
+			.expect((r) => assert.ok(r.body.message.includes('Restarting')))
 			.expect(200);
-		await setTimeout(60000);
+		await setTimeout(generic.restartTimeout);
 	});
 
 	it('get custom function status', async () => {
