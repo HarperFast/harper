@@ -836,38 +836,38 @@ const NEEDS_PARSER = /[()[\]|!<>.]|(=\w*=)/;
 const QUERY_PARSER = /([^?&|=<>!([{}\]),]*)([([{}\])|,&]|[=<>!]*)/g;
 const VALUE_PARSER = /([^&|=[\]{}]+)([[\]{}]|[&|=]*)/g;
 let last_index;
-let query_string;
+let queryString;
 /**
  * This is responsible for taking a query string (from a get()) and converting it to a standard query object
  * structure
- * @param query_string
+ * @param queryString
  */
 export function parseQuery(query_to_parse) {
 	if (!query_to_parse) return;
-	query_string = query_to_parse;
+	queryString = query_to_parse;
 	// TODO: We can remove this if we are sure all exits points end with lastIndex as zero (reaching the end of parsing will do that)
 	QUERY_PARSER.lastIndex = 0;
 	if (NEEDS_PARSER.test(query_to_parse)) {
 		try {
 			const query = parseBlock(new Query(), '');
-			if (last_index !== query_string.length) throw new SyntaxError(`Unable to parse query, unexpected end of query`);
+			if (last_index !== queryString.length) throw new SyntaxError(`Unable to parse query, unexpected end of query`);
 			return query;
 		} catch (error) {
 			error.statusCode = 400;
-			error.message = `Unable to parse query, ${error.message} at position ${last_index} in '${query_string}'`;
+			error.message = `Unable to parse query, ${error.message} at position ${last_index} in '${queryString}'`;
 			throw error;
 		}
 	} else {
 		return new URLSearchParams(query_to_parse);
 	}
 }
-function parseBlock(query, expected_end) {
+function parseBlock(query, expectedEnd) {
 	let parser = QUERY_PARSER;
 	let match;
 	let attribute, comparator, expecting_delimiter, expecting_value;
 	let valueDecoder = decodeURIComponent;
 	let last_binary_operator;
-	while ((match = parser.exec(query_string))) {
+	while ((match = parser.exec(queryString))) {
 		last_index = parser.lastIndex;
 		const [, value, operator] = match;
 		if (expecting_delimiter) {
@@ -914,11 +914,9 @@ function parseBlock(query, expected_end) {
 			case undefined:
 				if (attribute == null) {
 					if (attribute === undefined) {
-						if (expected_end)
+						if (expectedEnd)
 							throw new SyntaxError(
-								`expected '${expected_end}', but encountered ${
-									operator[0] ? "'" + operator[0] + "'" : 'end of string'
-								}}`
+								`expected '${expectedEnd}', but encountered ${operator[0] ? "'" + operator[0] + "'" : 'end of string'}}`
 							);
 						throw new SyntaxError(
 							`no comparison specified before ${operator ? "'" + operator + "'" : 'end of string'}`
@@ -1003,7 +1001,7 @@ function parseBlock(query, expected_end) {
 					default:
 						throw new SyntaxError(`unknown query function call ${value}`);
 				}
-				if (query_string[last_index] === ',') {
+				if (queryString[last_index] === ',') {
 					parser.lastIndex = ++last_index;
 				} else expecting_delimiter = true;
 				attribute = null;
@@ -1016,7 +1014,7 @@ function parseBlock(query, expected_end) {
 				entry = parseBlock([], '}');
 				entry.name = value;
 				query.push(entry);
-				if (query_string[last_index] === ',') {
+				if (queryString[last_index] === ',') {
 					parser.lastIndex = ++last_index;
 				} else expecting_delimiter = true;
 				break;
@@ -1035,14 +1033,14 @@ function parseBlock(query, expected_end) {
 					query.conditions.push(entry);
 					attribute = null;
 				} else query.push(entry);
-				if (query_string[last_index] === ',') {
+				if (queryString[last_index] === ',') {
 					parser.lastIndex = ++last_index;
 				} else expecting_delimiter = true;
 				break;
 			case ')':
 			case ']':
 			case '}':
-				if (expected_end === operator[0]) {
+				if (expectedEnd === operator[0]) {
 					// assert that it is expected
 					if (query.conditions) {
 						// finish condition
@@ -1062,18 +1060,18 @@ function parseBlock(query, expected_end) {
 						query.push(decodeProperty(value));
 					}
 					return query;
-				} else if (expected_end) throw new SyntaxError(`expected '${expected_end}', but encountered '${operator[0]}'`);
+				} else if (expectedEnd) throw new SyntaxError(`expected '${expectedEnd}', but encountered '${operator[0]}'`);
 				else throw new SyntaxError(`unexpected token '${operator[0]}'`);
 			default:
 				throw new SyntaxError(`unexpected operator '${operator}'`);
 		}
-		if (expected_end !== ')') {
+		if (expectedEnd !== ')') {
 			parser = attribute ? VALUE_PARSER : QUERY_PARSER;
 			parser.lastIndex = last_index;
 		}
-		if (last_index === query_string.length) return query;
+		if (last_index === queryString.length) return query;
 	}
-	if (expected_end) throw new SyntaxError(`expected '${expected_end}', but encountered end of string`);
+	if (expectedEnd) throw new SyntaxError(`expected '${expectedEnd}', but encountered end of string`);
 }
 function assignOperator(query, last_binary_operator) {
 	if (query.conditions.length > 0) {
