@@ -2,7 +2,14 @@ const { existsSync, writeFileSync, readdirSync, readFileSync } = require('fs');
 const path = require('path');
 
 const DONT_CHANGE_COLON_VAR_FILES = ['ResourceBridge.ts', 'hdbTerms.ts'];
-const SAFE_VAR_TRANSFORM = ['search_object', 'main_permissions', 'schema_permissions', 'writes_by_db', 'query_string'];
+const SAFE_VAR_TRANSFORM = [
+	'search_object',
+	'main_permissions',
+	'schema_permissions',
+	'writes_by_db',
+	'query_string',
+	'async_set_timeout',
+];
 const UNSAFE_VAR_TRANSFORM = [
 	'settings_path',
 	'install_user',

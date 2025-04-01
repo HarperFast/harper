@@ -43,7 +43,7 @@ describe('Test upgrade.js', () => {
 
 	before(() => {
 		upgrade_rw = rewire(`../../bin/upgrade`);
-		log_rw = upgrade_rw.__set__('hdb_logger', logger_fake);
+		log_rw = upgrade_rw.__set__('hdbLogger', logger_fake);
 		consoleLog_stub = sandbox.stub(console, 'log').returns();
 		printToLogAndConsole_stub = sandbox.stub().returns();
 		upgrade_rw.__set__('printToLogAndConsole', printToLogAndConsole_stub);
@@ -150,7 +150,7 @@ describe('Test upgrade.js', () => {
 		before(() => {
 			runUpgrade_orig = upgrade_rw.__get__('runUpgrade');
 			runUpgrade_stub = sandbox.stub().resolves();
-			upgrade_rw.__set__('hdb_logger.createLogFile', create_log_file_stub);
+			upgrade_rw.__set__('hdbLogger.createLogFile', create_log_file_stub);
 			upgrade_rw.__set__('runUpgrade', runUpgrade_stub);
 			checkIfRunning_stub = sandbox.stub().resolves();
 			upgrade_rw.__set__('checkIfRunning', checkIfRunning_stub);

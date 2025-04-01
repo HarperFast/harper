@@ -78,7 +78,7 @@ describe('Test run module', () => {
 		sandbox.stub(fs, 'writeFile');
 		test_util.preTestPrep();
 		run_rw = rewire('../../bin/run');
-		log_rw = run_rw.__set__('hdb_logger', logger_fake);
+		log_rw = run_rw.__set__('hdbLogger', logger_fake);
 		sandbox.stub(nats_config, 'generateNatsConfig');
 		env_mangr.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_ROTATION_ENABLED, false);
 	});
@@ -104,8 +104,8 @@ describe('Test run module', () => {
 		let run;
 
 		before(() => {
-			run_rw.__set__('check_jwt_tokens', check_jwt_tokens_stub);
-			run_rw.__set__('hdb_logger.createLogFile', create_log_file_stub);
+			run_rw.__set__('checkJwtTokens', check_jwt_tokens_stub);
+			run_rw.__set__('hdbLogger.createLogFile', create_log_file_stub);
 			is_hdb_installed_rw = run_rw.__set__('isHdbInstalled', is_hdb_installed_stub);
 			install_rw = run_rw.__set__('install', install_stub);
 			get_ver_update_info_stub = sandbox.stub(hdbInfoController, 'getVersionUpdateInfo');
@@ -383,7 +383,7 @@ describe('Test run module', () => {
 		let openCreateAuditEnvironment;
 
 		before(() => {
-			run_rw.__set__('lmdb_create_txn_environment', lmdb_create_txn_env_stub);
+			run_rw.__set__('lmdbCreateTxnEnvironment', lmdb_create_txn_env_stub);
 			openCreateAuditEnvironment = run_rw.__get__('openCreateAuditEnvironment');
 		});
 
