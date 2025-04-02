@@ -3,10 +3,8 @@
 const test_util = require('../test_utils');
 test_util.preTestPrep();
 const assert = require('assert');
-const async = require('async');
 const system_schema = require('../../json/systemSchema.json');
 const rewire = require('rewire');
-const schema = rewire('../../dataLayer/schemaDescribe');
 const global_schema = rewire('../../utility/globalSchema');
 
 const TEST_DATA_BIRD = [
@@ -143,58 +141,6 @@ const CAT_TABLE_HASH_ATTRIBUTE = 'id';
 const BIRD_TABLE_NAME = 'bird';
 const BIRD_TABLE_HASH_ATTRIBUTE = 'id';
 let test_env = [];
-
-describe.skip('Test setSchemaDataToGlobal function', function () {
-	it('Has data["systems"] in global.hdb_schema', function (done) {
-		global_schema.setSchemaDataToGlobal(() => {
-			assert.deepEqual(global.hdb_schema['system'], system_schema);
-			done();
-		});
-	});
-});
-
-describe.skip('Test returnSchema function', function () {
-	beforeEach(async function () {
-		test_env.push(
-			...(await test_util.createMockDB(DOG_TABLE_HASH_ATTRIBUTE, SCHEMA_NAME, DOG_TABLE_NAME, TEST_DATA_DOG))
-		);
-		test_env.push(
-			...(await test_util.createMockDB(BIRD_TABLE_HASH_ATTRIBUTE, SCHEMA_NAME, CAT_TABLE_NAME, TEST_DATA_CAT))
-		);
-		test_env.push(
-			...(await test_util.createMockDB(CAT_TABLE_HASH_ATTRIBUTE, SCHEMA_NAME, BIRD_TABLE_NAME, TEST_DATA_BIRD))
-		);
-	});
-
-	afterEach(async function () {
-		await test_util.tearDownMockDB(test_env);
-		test_env = [];
-	});
-
-	it('Can return system schema from global', function (done) {
-		let returnSchema = global_schema.__get__('returnSchema');
-		assert.deepEqual(returnSchema('system', 'hdb_table'), system_schema['hdb_table']);
-		assert.deepEqual(returnSchema('system', 'hdb_drop_schema'), system_schema['hdb_drop_schema']);
-		assert.deepEqual(returnSchema('system', 'hdb_attribute'), system_schema['hdb_attribute']);
-		assert.deepEqual(returnSchema('system', 'hdb_schema'), system_schema['hdb_schema']);
-		assert.deepEqual(returnSchema('system', 'hdb_user'), system_schema['hdb_user']);
-		assert.deepEqual(returnSchema('system', 'hdb_role'), system_schema['hdb_role']);
-		assert.deepEqual(returnSchema('system', 'hdb_job'), system_schema['hdb_job']);
-		assert.deepEqual(returnSchema('system', 'hdb_license'), system_schema['hdb_license']);
-		assert.deepEqual(returnSchema('system', 'hdb_nodes'), system_schema['hdb_nodes']);
-		assert.deepEqual(returnSchema('system', 'emptyTable'), system_schema['emptyTable']);
-		done();
-	});
-
-	it('Can return dev schema from global', function (done) {
-		let returnSchema = global_schema.__get__('returnSchema');
-		let temp = returnSchema('dev', 'dog');
-		assert.deepEqual(returnSchema('dev', 'dog'), global.hdb_schema['dev']['dog']);
-		assert.deepEqual(returnSchema('dev', 'cat'), global.hdb_schema['dev']['cat']);
-		assert.deepEqual(returnSchema('dev', 'bird'), global.hdb_schema['dev']['bird']);
-		done();
-	});
-});
 
 describe.skip('Test getTableSchema function', function () {
 	beforeEach(async function () {

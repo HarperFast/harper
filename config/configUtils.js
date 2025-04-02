@@ -325,6 +325,7 @@ function checkForUpdatedConfig(config_doc, config_file_path) {
 	if (!config_doc.hasIn(['analytics'])) {
 		config_doc.addIn(['analytics'], {
 			aggregatePeriod: 60,
+			replicate: false,
 		});
 
 		update_file = true;

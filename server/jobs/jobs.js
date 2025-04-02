@@ -161,7 +161,7 @@ async function addJob(json_body) {
 		['id']
 	);
 
-	let found_job = undefined;
+	let found_job;
 	try {
 		found_job = Array.from(await p_search_by_value(search_obj));
 	} catch (e) {
@@ -202,7 +202,7 @@ async function addJob(json_body) {
 		'id',
 		[new_job]
 	);
-	let insert_result = undefined;
+	let insert_result;
 	try {
 		insert_result = await p_insert(insert_object);
 	} catch (e) {
