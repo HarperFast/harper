@@ -239,7 +239,7 @@ async function getJobsInDateRange(json_body) {
 		throw new Error(`Invalid 'to' date, must be in ISO-8601 format (YYYY-MM-DD)`);
 	}
 
-	let job_search_sql = `select * from system.hdb_job where start_datetime > '${parsed_from_date.valueOf()}' and start_datetime < '${parsed_to_date.valueOf()}'`;
+	let job_search_sql = `select * from system.hdb_job where startDatetime > '${parsedFromDate.valueOf()}' and startDatetime < '${parsedToDate.valueOf()}'`;
 	let sql_search_obj = new SQL_Search_Object(job_search_sql, json_body.hdb_user);
 
 	try {
