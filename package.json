@@ -141,7 +141,7 @@
 		"recursive-iterator": "3.3.0",
 		"semver": "7.5.4",
 		"send": "^1.1.0",
-		"serve-static": "2.1.0",
+		"serve-static": "^2.2.0",
 		"ses": "1.1.0",
 		"stream-chain": "2.2.5",
 		"stream-json": "1.8.0",
