@@ -62,7 +62,7 @@ describe('Test logRotator module', () => {
 		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_ROTATION_MAXSIZE, '1K');
 		callLogger();
 		await log_rotator();
-		await hdb_utils.async_set_timeout(300);
+		await hdb_utils.asyncSetTimeout(300);
 		const set_interval_id = log_rotator.__get__('set_interval_id');
 		clearInterval(set_interval_id);
 		const rotated_log_name = log_notify_stub.args[0][0].split(path.sep).pop();
@@ -81,7 +81,7 @@ describe('Test logRotator module', () => {
 		const date_now_stub = sandbox.stub(Date, 'now').returns(1678001796297);
 		await log_rotator();
 		date_now_stub.restore();
-		await hdb_utils.async_set_timeout(300);
+		await hdb_utils.asyncSetTimeout(300);
 		const set_interval_id = log_rotator.__get__('set_interval_id');
 		clearInterval(set_interval_id);
 		const rotated_log_name = log_notify_stub.args[0][0].split(path.sep).pop();
@@ -98,7 +98,7 @@ describe('Test logRotator module', () => {
 		env_mgr.setProperty(hdb_terms.CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS, true);
 		callLogger();
 		await log_rotator();
-		await hdb_utils.async_set_timeout(300);
+		await hdb_utils.asyncSetTimeout(300);
 		const set_interval_id = log_rotator.__get__('set_interval_id');
 		clearInterval(set_interval_id);
 		const rotated_log_name = log_notify_stub.args[0][0].split(path.sep).pop();
