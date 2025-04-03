@@ -411,7 +411,7 @@ function verifyPerms(request_json, operation) {
 
 		//if we get here then error out
 		return permsResponse.handleUnauthorizedItem(
-			`User does not have access to perform '${request_json.operation}' against schema '${operation_schema}'`
+			`User does not have access to perform '${requestJson.operation}' against schema '${operationSchema}'`
 		);
 	}
 
