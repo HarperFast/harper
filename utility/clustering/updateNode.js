@@ -120,7 +120,7 @@ async function updateNode(req) {
 	if (skipped.length > 0) {
 		response.message = PART_SUCCESS_MSG;
 	} else {
-		response.message = `Successfully updated '${remote_node_name}'`;
+		response.message = `Successfully updated '${remoteNodeName}'`;
 	}
 
 	return response;
