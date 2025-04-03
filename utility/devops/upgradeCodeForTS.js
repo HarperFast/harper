@@ -2,6 +2,7 @@ const { existsSync, writeFileSync, readdirSync, readFileSync } = require('fs');
 const path = require('path');
 
 const DONT_CHANGE_COLON_VAR_FILES = ['ResourceBridge.ts', 'hdbTerms.ts'];
+const SKIP_FILES = ['commonErrors.js'];
 const SAFE_VAR_TRANSFORM = [
 	'search_object',
 	'main_permissions',
@@ -9,6 +10,7 @@ const SAFE_VAR_TRANSFORM = [
 	'writes_by_db',
 	'query_string',
 	'async_set_timeout',
+	'component_errors',
 ];
 const UNSAFE_VAR_TRANSFORM = [
 	'settings_path',
@@ -23,6 +25,12 @@ const UNSAFE_VAR_TRANSFORM = [
 	'cors_enabled',
 	'cors_accesslist',
 	'local_studio_on',
+	'hub_routes',
+	'leaf_routes',
+	'function_content',
+	'known_hosts',
+	'export_to_s3',
+	'export_local',
 ];
 processDirectory(process.cwd().slice(0, process.cwd().indexOf('harperdb') + 'harperdb'.length));
 function processDirectory(dir, type) {
@@ -52,20 +60,22 @@ function processDirectory(dir, type) {
 					return `import ${names}from '${moduleId}'`;
 				});*/
 				// snakeCase -> camelCase
-				code = code.replace(/('[^'\n]*')|(\.*)([a-z]+_[a-z_]+)(:?)/g, (match, quoted, prefix, varName, suffix) => {
-					if (quoted) return match;
-					if (
-						!SAFE_VAR_TRANSFORM.includes(varName) &&
-						(prefix === '.' ||
-							varName.includes('__') ||
-							UNSAFE_VAR_TRANSFORM.includes(varName) ||
-							(suffix === ':' && (!isTypeScript || DONT_CHANGE_COLON_VAR_FILES.includes(entry.name))))
-					)
-						return match;
-					let newVarName = camelCase(varName);
-					if (code.includes('function ' + newVarName)) return match; // don't change if there is a colliding function name
-					return prefix + newVarName + suffix;
-				});
+				if (!SKIP_FILES.includes(entry.name)) {
+					code = code.replace(/('[^'\n]*')|(\.*)([a-z]+_[a-z_\d]+)(:?)/g, (match, quoted, prefix, varName, suffix) => {
+						if (quoted) return match;
+						if (
+							!SAFE_VAR_TRANSFORM.includes(varName) &&
+							(prefix === '.' ||
+								varName.includes('__') ||
+								UNSAFE_VAR_TRANSFORM.includes(varName) ||
+								(suffix === ':' && (!isTypeScript || DONT_CHANGE_COLON_VAR_FILES.includes(entry.name))))
+						)
+							return match;
+						let newVarName = camelCase(varName);
+						if (code.includes('function ' + newVarName)) return match; // don't change if there is a colliding function name
+						return prefix + newVarName + suffix;
+					});
+				}
 			}
 			console.log('Writing', filePath);
 			writeFileSync(filePath, code);
