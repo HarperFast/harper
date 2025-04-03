@@ -54,7 +54,7 @@ async function addNode(req, skip_validation = false) {
 		if (!hdb_utils.isEmptyOrZeroLength(record)) {
 			throw handleHDBError(
 				new Error(),
-				`Node '${remote_node_name}' has already been added, perform update_node to proceed.`,
+				`Node '${remoteNodeName}' has already been added, perform update_node to proceed.`,
 				HTTP_STATUS_CODES.BAD_REQUEST,
 				undefined,
 				undefined,
@@ -144,7 +144,7 @@ async function addNode(req, skip_validation = false) {
 	if (skipped.length > 0) {
 		response.message = PART_SUCCESS_MSG;
 	} else {
-		response.message = `Successfully added '${remote_node_name}' to manifest`;
+		response.message = `Successfully added '${remoteNodeName}' to manifest`;
 	}
 
 	return response;

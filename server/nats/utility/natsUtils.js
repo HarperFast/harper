@@ -769,10 +769,10 @@ function requestErrorHandler(err, operation, remote_node) {
 	let err_msg;
 	switch (err.code) {
 		case ErrorCode.NoResponders:
-			err_msg = `Unable to ${operation}, node '${remote_node}' is not listening.`;
+			err_msg = `Unable to ${operation}, node '${remoteNode}' is not listening.`;
 			break;
 		case ErrorCode.Timeout:
-			err_msg = `Unable to ${operation}, node '${remote_node}' is listening but did not respond.`;
+			err_msg = `Unable to ${operation}, node '${remoteNode}' is listening but did not respond.`;
 			break;
 		default:
 			err_msg = err.message;
