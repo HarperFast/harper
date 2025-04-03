@@ -40,6 +40,9 @@ const UNSAFE_VAR_TRANSFORM = [
 	'node_name',
 	'failed_nodes',
 	'ms_to_time',
+	'system_info',
+	'current_load',
+	'no_projects',
 ];
 processDirectory(process.cwd().slice(0, process.cwd().indexOf('harperdb') + 'harperdb'.length));
 function processDirectory(dir, type) {
@@ -54,6 +57,9 @@ function processDirectory(dir, type) {
 			let isTypeScript = filePath.endsWith('.ts');
 			if (type === 'test') {
 				code = code.replace(/(__[sg]et__)\(\s*'([a-z_]+[\w.]*)'/g, (match, etter, varName) => {
+					if (UNSAFE_VAR_TRANSFORM.includes(varName)) {
+						return match;
+					}
 					return `${etter}('${camelCase(varName)}'`;
 				});
 			} else {
