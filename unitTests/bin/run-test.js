@@ -68,6 +68,7 @@ describe('Test run module', () => {
 
 		get_prob_stub = sandbox.stub(env_mangr, 'get');
 		get_prob_stub.withArgs('rootPath').returns('unit-test');
+		get_prob_stub.withArgs('logging_root').returns('unit-test');
 		spawn_stub = sandbox.stub(child_process, 'spawn').returns(fake_spawn);
 		start_all_services_stub = sandbox.stub(pm2_utils, 'startAllServices').resolves();
 		start_service_stub = sandbox.stub(pm2_utils, 'startService').resolves();
