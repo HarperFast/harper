@@ -25,53 +25,54 @@ const UNSAFE_VAR_TRANSFORM = [
 	'local_studio_on',
 ];
 processDirectory(process.cwd().slice(0, process.cwd().indexOf('harperdb') + 'harperdb'.length));
-function processDirectory(dir) {
+function processDirectory(dir, type) {
 	for (let entry of readdirSync(dir, { withFileTypes: true })) {
 		console.log('processing', entry.name);
 		if (entry.isDirectory()) {
-			if (
-				entry.name === 'node_modules' ||
-				entry.name === 'ts-build' ||
-				entry.name.startsWith('.') ||
-				entry.name.endsWith('Tests')
-			)
-				continue;
-			processDirectory(path.join(dir, entry.name));
+			if (entry.name === 'node_modules' || entry.name === 'ts-build' || entry.name.startsWith('.')) continue;
+			processDirectory(path.join(dir, entry.name), entry.name.endsWith('Tests') ? 'test' : type);
 		} else if (entry.isFile() && (entry.name.endsWith('.js') || entry.name.endsWith('.ts'))) {
 			let filePath = path.join(dir, entry.name);
 			let code = readFileSync(filePath, 'utf-8');
 			let isTypeScript = filePath.endsWith('.ts');
-			// add file extension
-			code = code.replace(/require\('([^']+)'\)/g, (match, moduleId) => {
-				return `require('${getModuleIdWithExtension(filePath, moduleId)}')`;
-			});
-			code = code.replace(/(import[^']+)'([^']+)'/g, (match, prefix, moduleId) => {
-				return `${prefix}'${getModuleIdWithExtension(filePath, moduleId)}'`;
-			});
-			/* Replace require with import
-			code = code.replace(/const ([^=]+)= require\('([^']+)'\)/g, (match, names, moduleId) => {
-				return `import ${names}from '${moduleId}'`;
-			});*/
-			// snakeCase -> camelCase
-			code = code.replace(/('[^'\n]*')|(\.*)([a-z]+_[a-z_]+)(:?)/g, (match, quoted, prefix, varName, suffix) => {
-				if (quoted) return match;
-				if (
-					!SAFE_VAR_TRANSFORM.includes(varName) &&
-					(prefix === '.' ||
-						varName.includes('__') ||
-						UNSAFE_VAR_TRANSFORM.includes(varName) ||
-						(suffix === ':' && (!isTypeScript || DONT_CHANGE_COLON_VAR_FILES.includes(entry.name))))
-				)
-					return match;
-				let parts = varName.split('_');
-				let newVarName = [parts[0], ...parts.slice(1).map((name) => name.charAt(0).toUpperCase() + name.slice(1))].join(
-					''
-				);
-				if (code.includes('function ' + newVarName)) return match; // don't change if there is a colliding function name
-				return prefix + newVarName + suffix;
-			});
+			if (type === 'test') {
+				code = code.replace(/(__[sg]et__)\(\s*'([a-z_]+[\w.]*)'/g, (match, etter, varName) => {
+					return `${etter}('${camelCase(varName)}'`;
+				});
+			} else {
+				// add file extension
+				code = code.replace(/require\('([^']+)'\)/g, (match, moduleId) => {
+					return `require('${getModuleIdWithExtension(filePath, moduleId)}')`;
+				});
+				code = code.replace(/(import[^']+)'([^']+)'/g, (match, prefix, moduleId) => {
+					return `${prefix}'${getModuleIdWithExtension(filePath, moduleId)}'`;
+				});
+				/* Replace require with import
+				code = code.replace(/const ([^=]+)= require\('([^']+)'\)/g, (match, names, moduleId) => {
+					return `import ${names}from '${moduleId}'`;
+				});*/
+				// snakeCase -> camelCase
+				code = code.replace(/('[^'\n]*')|(\.*)([a-z]+_[a-z_]+)(:?)/g, (match, quoted, prefix, varName, suffix) => {
+					if (quoted) return match;
+					if (
+						!SAFE_VAR_TRANSFORM.includes(varName) &&
+						(prefix === '.' ||
+							varName.includes('__') ||
+							UNSAFE_VAR_TRANSFORM.includes(varName) ||
+							(suffix === ':' && (!isTypeScript || DONT_CHANGE_COLON_VAR_FILES.includes(entry.name))))
+					)
+						return match;
+					let newVarName = camelCase(varName);
+					if (code.includes('function ' + newVarName)) return match; // don't change if there is a colliding function name
+					return prefix + newVarName + suffix;
+				});
+			}
 			console.log('Writing', filePath);
 			writeFileSync(filePath, code);
+			function camelCase(varName) {
+				let parts = varName.split('_');
+				return [parts[0], ...parts.slice(1).map((name) => name.charAt(0).toUpperCase() + name.slice(1))].join('');
+			} // eslint-disable-line
 		}
 	}
 
