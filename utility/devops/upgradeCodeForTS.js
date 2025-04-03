@@ -31,6 +31,8 @@ const UNSAFE_VAR_TRANSFORM = [
 	'known_hosts',
 	'export_to_s3',
 	'export_local',
+	'attribute_permissions',
+	'table_perms',
 ];
 processDirectory(process.cwd().slice(0, process.cwd().indexOf('harperdb') + 'harperdb'.length));
 function processDirectory(dir, type) {
