@@ -102,3 +102,9 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Overlap: None
 - Can be deferred: Potentially, we could load it on-demand
 - Eventual removal: We could write code to read the first bytes to determine what type of file it is and choose whether to gunzip it or not
+
+## chokidar
+- Need for usage: Reliable file watching. This is the industry standard file watcher and deals with the many edge cases that node.js's watch (file replacement and changing inode for example) and watchFile (nothing but a terrible poller on a timer) don't handle well.
+- 153KB
+- Security: No known issues.
+- Eventual removal: This is a very well maintained package and is the industry standard for file watching. We could remove with very careful usage of `watch`, but would probably require a lot of testing and edge case handling.
