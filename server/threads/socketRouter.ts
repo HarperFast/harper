@@ -10,7 +10,7 @@ import { createServer, Socket } from 'net';
 import * as hdb_terms from '../../utility/hdbTerms';
 import * as harper_logger from '../../utility/logging/harper_logger';
 import { unlinkSync, existsSync } from 'fs';
-import { recordAction } from '../../resources/analytics';
+import { recordHostname, recordAction } from '../../resources/analytics/write';
 import { isMainThread } from 'worker_threads';
 import { checkMemoryLimit } from '../../utility/registration/hdb_license';
 import { packageJson } from '../../utility/packageUtils';
@@ -41,6 +41,7 @@ if (isMainThread) {
 
 const LICENSE_NAG_PERIOD = 600000; // ten minutes
 export async function startHTTPThreads(thread_count = 2, dynamic_threads?: boolean) {
+	recordHostname().catch(err => harper_logger.error?.('Error recording hostname for analytics:', err));
 	try {
 		if (dynamic_threads) {
 			startHTTPWorker(0, 1, true);

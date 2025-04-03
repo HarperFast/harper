@@ -59,7 +59,7 @@ const {
 	ErrorCode,
 } = require('nats');
 
-const { recordAction } = require('../../../resources/analytics');
+const { recordAction } = require('../../../resources/analytics/write');
 const { encodeBlobsAsBuffers } = require('../../../resources/blob');
 
 const jc = JSONCodec();

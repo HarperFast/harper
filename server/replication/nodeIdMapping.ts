@@ -104,3 +104,4 @@ export function getIdOfRemoteNode(remote_node_name, audit_store) {
 	logger.trace?.('The remote node name map', remote_node_name, name_to_id, id);
 	return id;
 }
+

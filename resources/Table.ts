@@ -44,7 +44,7 @@ import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads'
 import { HAS_BLOBS, readAuditEntry, removeAuditEntry } from './auditStore';
 import { autoCast, convertToMS } from '../utility/common_utils';
 import { recordUpdater, removeEntry, PENDING_LOCAL_TIME } from './RecordEncoder';
-import { recordAction, recordActionBinary } from './analytics';
+import { recordAction, recordActionBinary } from './analytics/write';
 import { rebuildUpdateBefore } from './crdt';
 import { appendHeader } from '../server/serverHelpers/Headers';
 import fs from 'node:fs';

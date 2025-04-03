@@ -821,6 +821,10 @@ function createTLSSelector(type, mtls_options) {
 					secure_contexts.clear();
 					ca_certs.clear();
 					let best_quality = 0;
+					if (databases === undefined) {
+						resolve();
+						return;
+					}
 					for await (const cert of databases.system.hdb_certificate.search([])) {
 						const certificate = cert.certificate;
 						const cert_parsed = new X509Certificate(certificate);
@@ -926,7 +930,7 @@ function createTLSSelector(type, mtls_options) {
 					reject(error);
 				}
 			}
-			databases.system.hdb_certificate.subscribe({
+			databases?.system.hdb_certificate.subscribe({
 				listener: () => setTimeout(() => updateTLS(), 1500).unref(),
 				omitCurrent: true,
 			});

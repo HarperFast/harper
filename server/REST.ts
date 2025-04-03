@@ -1,5 +1,5 @@
 import { serialize, serializeMessage, getDeserializer } from '../server/serverHelpers/contentTypes';
-import { addAnalyticsListener, recordAction, recordActionBinary } from '../resources/analytics';
+import { addAnalyticsListener, recordAction, recordActionBinary } from '../resources/analytics/write';
 import * as harper_logger from '../utility/logging/harper_logger';
 import { ServerOptions } from 'http';
 import { ServerError, ClientError } from '../utility/errors/hdbError';

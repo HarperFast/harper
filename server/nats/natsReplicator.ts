@@ -54,7 +54,7 @@ function assignReplicationSource() {
 	if (subscribed_to_nodes) return;
 	subscribed_to_nodes = true;
 }
-const NEVER_REPLICATE_SYSTEM_TABLES = ['hdb_job', 'hdb_analytics', 'hdb_raw_analytics', 'hdb_info', 'hdb_license'];
+const NEVER_REPLICATE_SYSTEM_TABLES = ['hdb_job', 'hdb_raw_analytics', 'hdb_info', 'hdb_license'];
 /*
 onMessageFromWorkers((event) => {
 	if (event.type === 'nats_update') {

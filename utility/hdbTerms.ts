@@ -365,6 +365,7 @@ export const OPERATIONS_ENUM = {
 	SET_SSH_KNOWN_HOSTS: 'set_ssh_known_hosts',
 	GET_SSH_KNOWN_HOSTS: 'get_ssh_known_hosts',
 	GET_KEY: 'get_key',
+	GET_ANALYTICS: 'get_analytics',
 } as const;
 
 /** Defines valid file types that we are able to handle in 'import_from_s3' ops */
@@ -506,6 +507,7 @@ export const LEGACY_CONFIG_PARAMS = {
  */
 export const CONFIG_PARAMS = {
 	ANALYTICS_AGGREGATEPERIOD: 'analytics_aggregatePeriod',
+	ANALYTICS_REPLICATE: 'analytics_replicate',
 	AUTHENTICATION_AUTHORIZELOCAL: 'authentication_authorizeLocal',
 	AUTHENTICATION_CACHETTL: 'authentication_cacheTTL',
 	AUTHENTICATION_ENABLESESSIONS: 'authentication_enableSessions',
