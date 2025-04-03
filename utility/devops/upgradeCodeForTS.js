@@ -11,6 +11,12 @@ const SAFE_VAR_TRANSFORM = [
 	'query_string',
 	'async_set_timeout',
 	'component_errors',
+	'config_log_path',
+	'to_file',
+	'to_stream',
+	'level_defined',
+	'from_defined',
+	'until_defined',
 ];
 const UNSAFE_VAR_TRANSFORM = [
 	'settings_path',
@@ -43,6 +49,7 @@ const UNSAFE_VAR_TRANSFORM = [
 	'system_info',
 	'current_load',
 	'no_projects',
+	'log_to_file',
 ];
 processDirectory(process.cwd().slice(0, process.cwd().indexOf('harperdb') + 'harperdb'.length));
 function processDirectory(dir, type) {
