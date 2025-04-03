@@ -12,8 +12,8 @@ const serverHandlers_rw = rewire('../../../server/serverHelpers/serverHandlers')
 const auth = require('../../../security/fastifyAuth');
 const serverUtilities = require('../../../server/serverHelpers/serverUtilities');
 const logger = require('../../../utility/logging/harper_logger');
-const { handleHDBError, hdb_errors } = require('../../../utility/errors/hdbError');
-const { HTTP_STATUS_CODES } = hdb_errors;
+const { handleHDBError, hdbErrors } = require('../../../utility/errors/hdbError');
+const { HTTP_STATUS_CODES } = hdbErrors;
 
 let console_stub;
 let process_exit_stub;

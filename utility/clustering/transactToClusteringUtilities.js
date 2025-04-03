@@ -1,7 +1,7 @@
 'use strict';
 
-const common_utils = require(`../../utility/common_utils`);
-const env = require(`../../utility/environment/environmentManager`);
+const common_utils = require('../../utility/common_utils');
+const env = require('../../utility/environment/environmentManager');
 const hdb_terms = require('../hdbTerms');
 const nats_terms = require('../../server/nats/utility/natsTerms');
 const nats_utils = require('../../server/nats/utility/natsUtils');
