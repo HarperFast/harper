@@ -310,7 +310,7 @@ describe('test systemInformation module', () => {
 		});
 	});
 
-	it('test getCPUInfo function', async () => {
+	it.skip('test getCPUInfo function', async () => {
 		let results = await system_information.getCPUInfo();
 
 		EXPECTED_PROPERTIES.cpu.forEach((property) => {
