@@ -33,6 +33,7 @@ const UNSAFE_VAR_TRANSFORM = [
 	'export_local',
 	'attribute_permissions',
 	'table_perms',
+	'attribute_name',
 ];
 processDirectory(process.cwd().slice(0, process.cwd().indexOf('harperdb') + 'harperdb'.length));
 function processDirectory(dir, type) {
