@@ -76,20 +76,23 @@ function processDirectory(dir, type) {
 				});*/
 				// snakeCase -> camelCase
 				if (!SKIP_FILES.includes(entry.name)) {
-					code = code.replace(/('[^'\n]*')|(\.*)([a-z]+_[a-z_\d]+)(:?)/g, (match, quoted, prefix, varName, suffix) => {
-						if (quoted) return match;
-						if (
-							!SAFE_VAR_TRANSFORM.includes(varName) &&
-							(prefix === '.' ||
-								varName.includes('__') ||
-								UNSAFE_VAR_TRANSFORM.includes(varName) ||
-								(suffix === ':' && (!isTypeScript || DONT_CHANGE_COLON_VAR_FILES.includes(entry.name))))
-						)
-							return match;
-						let newVarName = camelCase(varName);
-						if (code.includes('function ' + newVarName)) return match; // don't change if there is a colliding function name
-						return prefix + newVarName + suffix;
-					});
+					code = code.replace(
+						/('[^'\n]*')|(\.*)([a-z][a-z\d]*_[a-z_\d]+)(:?)/g,
+						(match, quoted, prefix, varName, suffix) => {
+							if (quoted) return match;
+							if (
+								!SAFE_VAR_TRANSFORM.includes(varName) &&
+								(prefix === '.' ||
+									varName.includes('__') ||
+									UNSAFE_VAR_TRANSFORM.includes(varName) ||
+									(suffix === ':' && (!isTypeScript || DONT_CHANGE_COLON_VAR_FILES.includes(entry.name))))
+							)
+								return match;
+							let newVarName = camelCase(varName);
+							if (code.includes('function ' + newVarName)) return match; // don't change if there is a colliding function name
+							return prefix + newVarName + suffix;
+						}
+					);
 				}
 			}
 			console.log('Writing', filePath);
