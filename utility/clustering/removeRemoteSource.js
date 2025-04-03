@@ -37,7 +37,7 @@ async function removeRemoteSource(req) {
 		const remote_node = req.node_name;
 		let remote_node_record = await cluster_utils.getNodeRecord(remote_node);
 		if (hdb_utils.isEmptyOrZeroLength(remote_node_record)) {
-			const no_node_err = `No record found for node '${remote_node}'`;
+			const no_node_err = `No record found for node '${remoteNode}'`;
 			hdb_logger.error(no_node_err);
 			return new UpdateRemoteResponseObject(nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR, no_node_err);
 		}
@@ -67,7 +67,7 @@ async function removeRemoteSource(req) {
 
 		return new UpdateRemoteResponseObject(
 			nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.SUCCESS,
-			`Node ${node_name} successfully removed node '${remote_node}'.`
+			`Node ${node_name} successfully removed node '${remoteNode}'.`
 		);
 	} catch (err) {
 		hdb_logger.error(err);

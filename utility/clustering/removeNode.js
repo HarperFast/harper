@@ -46,7 +46,7 @@ async function removeNode(req) {
 	if (hdb_utils.isEmptyOrZeroLength(record)) {
 		throw handleHDBError(
 			new Error(),
-			`Node '${remote_node_name}' was not found.`,
+			`Node '${remoteNodeName}' was not found.`,
 			HTTP_STATUS_CODES.BAD_REQUEST,
 			undefined,
 			undefined,
@@ -78,7 +78,7 @@ async function removeNode(req) {
 
 	try {
 		// Send remove node request to remote node.
-		reply = await nats_utils.request(`${remote_node_name}.${nats_terms.REQUEST_SUFFIX}`, remote_payload);
+		reply = await nats_utils.request(`${remoteNodeName}.${nats_terms.REQUEST_SUFFIX}`, remote_payload);
 		hdb_logger.trace('Remove node reply from remote node:', remote_node_name, reply);
 	} catch (req_err) {
 		hdb_logger.error('removeNode received error from request:', req_err);
@@ -97,8 +97,8 @@ async function removeNode(req) {
 	// If an error is received from the remote node let user know.
 	if (reply?.status === nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR || remote_node_error) {
 		hdb_logger.error('Error returned from remote node:', remote_node_name, reply?.message);
-		return `Successfully removed '${remote_node_name}' from local manifest, however there was an error reaching remote node. Check the logs for more details.`;
+		return `Successfully removed '${remoteNodeName}' from local manifest, however there was an error reaching remote node. Check the logs for more details.`;
 	}
 
-	return `Successfully removed '${remote_node_name}' from manifest`;
+	return `Successfully removed '${remoteNodeName}' from manifest`;
 }
