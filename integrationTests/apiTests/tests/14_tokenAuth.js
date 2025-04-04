@@ -57,7 +57,7 @@ describe('14. Token Auth', () => {
 			.expect((r) => {
 				let attributes = ['operation_token', 'refresh_token'];
 				attributes.forEach((attribute) => {
-					assert.ok(r.body[attribute] != undefined);
+					assert.ok(r.body[attribute] !== undefined);
 				});
 				generic.operation_token = r.body.operation_token;
 				generic.refresh_token = r.body.refresh_token;
@@ -109,7 +109,7 @@ describe('14. Token Auth', () => {
 			.expect((r) => {
 				let attributes = ['operation_token'];
 				attributes.forEach((attribute) => {
-					assert.ok(r.body[attribute] != undefined);
+					assert.ok(r.body[attribute] !== undefined);
 				});
 				generic.operation_token = r.body.operation_token;
 			})
@@ -132,8 +132,8 @@ describe('14. Token Auth', () => {
 			.set(headers)
 			.send({ operation: 'create_authentication_tokens' })
 			.expect((r) => {
-				assert.ok(r.body.operation_token != undefined);
-				assert.ok(r.body.refresh_token != undefined);
+				assert.ok(r.body.operation_token !== undefined);
+				assert.ok(r.body.refresh_token !== undefined);
 				generic.operation_token = r.body.operation_token;
 				generic.refresh_token = r.body.refresh_token;
 			})

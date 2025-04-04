@@ -1303,7 +1303,7 @@ describe('4. NoSQL Tests', () => {
 			})
 			.expect((r) => assert.ok(r.body.upserted_hashes.length == 3))
 			.expect((r) => assert.deepEqual(r.body.upserted_hashes, [1, 100, 101]))
-			.expect((r) => assert.ok(r.body.skipped_hashes == 'undefined'))
+			.expect((r) => assert.ok(!r.body.skipped_hashes))
 			.expect((r) => assert.ok(r.body.message == 'upserted 3 of 3 records'))
 			.expect(200);
 	});
@@ -1375,7 +1375,7 @@ describe('4. NoSQL Tests', () => {
 				],
 			})
 			.expect((r) => assert.ok(r.body.upserted_hashes.length == 3))
-			.expect((r) => assert.ok(r.body.skipped_hashes == 'undefined'))
+			.expect((r) => assert.ok(!r.body.skipped_hashes))
 			.expect((r) => assert.ok(r.body.message == 'upserted 3 of 3 records'))
 			.expect(200);
 	});
@@ -2222,7 +2222,7 @@ describe('4. NoSQL Tests', () => {
 				const expected_hash_order = [7, 9, 10];
 				assert.ok(r.body.length == expected_hash_order.length);
 				r.body.forEach((row, i) => {
-					assert.ok(row.location.split(',')[1] == 'CO');
+					assert.ok(row.location.toString().split(', ')[1] == 'CO');
 					assert.ok(row.id == expected_hash_order[i]);
 				});
 			})

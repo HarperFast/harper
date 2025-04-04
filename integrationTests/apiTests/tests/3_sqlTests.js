@@ -2,9 +2,9 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import request from 'supertest';
 import { envUrl, generic, headers } from '../config/envConfig.js';
+import { setTimeout } from 'node:timers/promises';
 
 describe('3. SQL Tests', () => {
-
 	//SQL Tests Folder
 
 	//Invalid Attribute Check
@@ -78,8 +78,8 @@ describe('3. SQL Tests', () => {
 			.send({
 				operation: 'sql',
 				sql: `SELECT *
-                                  FROM ${generic.schema}.${generic.emps_tb}
-                                  WHERE ${generic.emps_id} = 190`,
+              FROM ${generic.schema}.${generic.emps_tb}
+              WHERE ${generic.emps_id} = 190`,
 			})
 			.expect((r) => assert.ok(r.body.length == 0))
 			.expect(200);
@@ -92,8 +92,8 @@ describe('3. SQL Tests', () => {
 			.send({
 				operation: 'sql',
 				sql: `SELECT *
-                                  FROM ${generic.schema}.${generic.emps_tb}
-                                  WHERE ${generic.emps_id} = 3`,
+              FROM ${generic.schema}.${generic.emps_tb}
+              WHERE ${generic.emps_id} = 3`,
 			})
 			.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
 			.expect((r) => assert.ok(typeof r.body[0] === 'object'))
@@ -117,9 +117,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-
 	//Date Function Check
-
 
 	it('insert initial date function data into table', async () => {
 		const response = await request(envUrl)
@@ -251,13 +249,13 @@ describe('3. SQL Tests', () => {
 				let c_date_plus1 = current_date.setUTCDate(current_day + 1);
 				let c_day_plus1 = new Date(c_date_plus1).getUTCDate();
 				r.body.forEach((row) => {
-					assert.ok(row.c_timestamp.match(/\d{13}$/));
+					assert.ok(row.c_timestamp.toString().match(/\d{13}$/));
 					assert.ok(new Date(row.add_day).getUTCDate() == c_day_plus1);
-					assert.ok(row.add_day.match(/\d{13}$/));
+					assert.ok(row.add_day.toString().match(/\d{13}$/));
 					assert.ok(new Date(row.sub_3_years).getFullYear() == 2017);
-					assert.ok(row.sub_3_years.match(/\d{13}$/));
+					assert.ok(row.sub_3_years.toString().match(/\d{13}$/));
 					assert.ok(new Date(row.today).getUTCDate() == current_day);
-					assert.ok(row.today.match(/\d{13}$/));
+					assert.ok(row.today.toString().match(/\d{13}$/));
 				});
 			})
 			.expect(200);
@@ -422,7 +420,6 @@ describe('3. SQL Tests', () => {
 			})
 			.expect(200);
 	});
-
 
 	//SQL INSERT/UPDATE with Expressions & Functions
 
@@ -650,7 +647,6 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-
 	//SQL Update dev.cat
 
 	it('Create table dev.cat for Update', async () => {
@@ -783,7 +779,7 @@ describe('3. SQL Tests', () => {
 			.set(headers)
 			.send({ operation: 'sql', sql: 'UPDATE dev.cat SET adorable = false WHERE owner_id != 2' })
 			.expect((r) => assert.ok(r.body.message == 'updated 5 of 5 records'))
-			.expect((r) => assert.ok(r.body.update_hashes.includes(3, 4, 6, 7, 8)))
+			.expect((r) => assert.ok([3, 4, 6, 7, 8].every((el) => r.body.update_hashes.includes(el))))
 			.expect(200);
 	});
 
@@ -820,7 +816,7 @@ describe('3. SQL Tests', () => {
 			.set(headers)
 			.send({ operation: 'sql', sql: 'UPDATE dev.cat SET adorable = true' })
 			.expect((r) => assert.ok(r.body.message == 'updated 9 of 9 records'))
-			.expect((r) => assert.ok(r.body.update_hashes.includes(1, 2, 3, 4, 5, 6, 7, 8, 9)))
+			.expect((r) => assert.ok([1, 2, 3, 4, 5, 6, 7, 8, 9].every((el) => r.body.update_hashes.includes(el))))
 			.expect((r) => assert.deepEqual(r.body.skipped_hashes, []))
 			.expect(200);
 	});
@@ -893,7 +889,7 @@ describe('3. SQL Tests', () => {
 				sql: 'UPDATE dev.cat SET outdoor_privilages = true WHERE outdoor_privilages IS null',
 			})
 			.expect((r) => assert.ok(r.body.message == 'updated 8 of 8 records'))
-			.expect((r) => assert.ok(r.body.update_hashes.includes(2, 3, 4, 5, 6, 7, 8, 9)))
+			.expect((r) => assert.ok([2, 3, 4, 5, 6, 7, 8, 9].every((el) => r.body.update_hashes.includes(el))))
 			.expect(200);
 	});
 
@@ -936,7 +932,6 @@ describe('3. SQL Tests', () => {
 			.expect((r) => assert.ok(r.body.message == "successfully deleted table 'dev.cat'"))
 			.expect(200);
 	});
-
 
 	//Geospatial
 
@@ -1783,7 +1778,7 @@ describe('3. SQL Tests', () => {
 				operation: 'sql',
 				sql: `select a.${generic.ords_id} as ords_id,
                      a.productid,
-                     d.companyname        as compname,
+                     d.companyname        as companyname,
                      d.contactmame,
                      b.productname,
                      sum(a.unitprice)     as unitprice,
@@ -1794,7 +1789,7 @@ describe('3. SQL Tests', () => {
                        join ${generic.schema}.${generic.ords_tb} c on a.${generic.ords_id} = c.${generic.ords_id}
                        join ${generic.schema}.${generic.cust_tb} d on c.${generic.cust_id} = d.${generic.cust_id}
               group by a.${generic.ords_id}, a.productid, d.companyname, d.contactmame, b.productname
-              order by ords_id desc, a.productid desc`,
+              order by ords_id, a.productid desc`,
 			})
 			.expect((r) => assert.ok(r.body[0].ords_id == 10248))
 			.expect((r) => assert.ok(r.body[1].ords_id == 10248))
@@ -1876,7 +1871,7 @@ describe('3. SQL Tests', () => {
 					const keys = Object.keys(row);
 					assert.ok(keys.length == 16);
 					Object.keys(row).forEach((key) => {
-						assert.ok(row[key] != undefined);
+						assert.ok(row[key] !== undefined);
 					});
 				});
 			})
@@ -1897,7 +1892,7 @@ describe('3. SQL Tests', () => {
 					const keys = Object.keys(row);
 					assert.ok(keys.length == 11);
 					Object.keys(row).forEach((key) => {
-						assert.ok(row[key] != undefined);
+						assert.ok(row[key] !== undefined);
 					});
 				});
 			})
@@ -1940,8 +1935,8 @@ describe('3. SQL Tests', () => {
 			.send({
 				operation: 'sql',
 				sql: `select extension, *
-                                  from ${generic.schema}.${generic.emps_tb}
-                                  order by extension desc`,
+              from ${generic.schema}.${generic.emps_tb}
+              order by extension desc`,
 			})
 			.expect((r) => assert.ok(r.body[0].firstname == 'Nancy'))
 			.expect(200);
@@ -2017,8 +2012,8 @@ describe('3. SQL Tests', () => {
 			.send({
 				operation: 'sql',
 				sql: `select *
-                                  from ${generic.schema}.${generic.prod_tb}
-                                  where unitprice < 81`,
+              from ${generic.schema}.${generic.prod_tb}
+              where unitprice < 81`,
 			})
 			.expect((r) => {
 				r.body.forEach((record) => {
@@ -2035,8 +2030,8 @@ describe('3. SQL Tests', () => {
 			.send({
 				operation: 'sql',
 				sql: `select *
-                                  from ${generic.schema}.${generic.prod_tb}
-                                  where unitprice <= 81`,
+              from ${generic.schema}.${generic.prod_tb}
+              where unitprice <= 81`,
 			})
 			.expect((r) => {
 				r.body.forEach((record) => {
@@ -2053,8 +2048,8 @@ describe('3. SQL Tests', () => {
 			.send({
 				operation: 'sql',
 				sql: `select *
-                                  from ${generic.schema}.${generic.prod_tb}
-                                  where unitprice > 81`,
+              from ${generic.schema}.${generic.prod_tb}
+              where unitprice > 81`,
 			})
 			.expect((r) => {
 				r.body.forEach((record) => {
@@ -2071,8 +2066,8 @@ describe('3. SQL Tests', () => {
 			.send({
 				operation: 'sql',
 				sql: `select *
-                                  from ${generic.schema}.${generic.prod_tb}
-                                  where unitprice >= 81`,
+              from ${generic.schema}.${generic.prod_tb}
+              where unitprice >= 81`,
 			})
 			.expect((r) => {
 				r.body.forEach((record) => {
@@ -2191,8 +2186,8 @@ describe('3. SQL Tests', () => {
 			.send({
 				operation: 'sql',
 				sql: `select address
-                                  from ${generic.schema}.${generic.emps_tb}
-                                  where ${generic.emps_id} = 1`,
+              from ${generic.schema}.${generic.emps_tb}
+              where ${generic.emps_id} = 1`,
 			})
 			.expect((r) => assert.ok(r.body[0].address == 'abc1234'))
 			.expect(200);
@@ -2250,8 +2245,8 @@ describe('3. SQL Tests', () => {
 			.send({
 				operation: 'sql',
 				sql: `SELECT *
-                                  FROM ${generic.schema}.${generic.emps_tb}
-                                  WHERE ${generic.emps_id} = 1`,
+              FROM ${generic.schema}.${generic.emps_tb}
+              WHERE ${generic.emps_id} = 1`,
 			})
 			.expect((r) => assert.ok(!r.body[0].address))
 			.expect((r) => assert.ok(r.body[0].hireDate == 0))
@@ -2282,8 +2277,8 @@ describe('3. SQL Tests', () => {
 			.send({
 				operation: 'sql',
 				sql: `select *
-                                  from ${generic.schema}.${generic.cust_tb}
-                                  where ${generic.cust_id} = 'arrayTest'`,
+              from ${generic.schema}.${generic.cust_tb}
+              where ${generic.cust_id} = 'arrayTest'`,
 			})
 			.expect((r) => assert.deepEqual(r.body[0].array, ['arr1', 'arr2', 'arr3']))
 			.expect((r) => assert.ok(r.body[0].customerid == 'arrayTest'))
@@ -2312,8 +2307,8 @@ describe('3. SQL Tests', () => {
 			.send({
 				operation: 'sql',
 				sql: `select *
-                                  from ${generic.schema}.${generic.cust_tb}
-                                  where ${generic.cust_id} = 'objTest'`,
+              from ${generic.schema}.${generic.cust_tb}
+              where ${generic.cust_id} = 'objTest'`,
 			})
 			.expect((r) => assert.deepEqual(r.body[0].object, { red: '1', white: '2', blue: '3' }))
 			.expect((r) => assert.ok(r.body[0].customerid == 'objTest'))
@@ -2327,7 +2322,7 @@ describe('3. SQL Tests', () => {
 			.send({
 				operation: 'sql',
 				slq: `select *
-                                  from ${generic.schema}.${generic.cust_tb}`,
+              from ${generic.schema}.${generic.cust_tb}`,
 			})
 			.expect((r) => assert.ok(r.body.error == "The 'sql' parameter is missing from the request body"))
 			.expect(400);
@@ -2464,8 +2459,8 @@ describe('3. SQL Tests', () => {
 			.send({
 				operation: 'sql',
 				sql: `select *
-                                  FROM ${generic.schema}.${generic.ords_tb} LIMIT 100
-                                  OFFSET 0`,
+              FROM ${generic.schema}.${generic.ords_tb} LIMIT 100
+              OFFSET 0`,
 			})
 			.expect((r) => assert.ok(r.body.length == 100))
 			.expect((r) => assert.ok(r.body[0].orderid == 10248))
@@ -2480,8 +2475,8 @@ describe('3. SQL Tests', () => {
 			.send({
 				operation: 'sql',
 				sql: `select *
-                                  FROM ${generic.schema}.${generic.ords_tb} LIMIT 100
-                                  OFFSET 100`,
+              FROM ${generic.schema}.${generic.ords_tb} LIMIT 100
+              OFFSET 100`,
 			})
 			.expect((r) => assert.ok(r.body.length == 100))
 			.expect((r) => assert.ok(r.body[0].orderid == 10348))
@@ -2581,16 +2576,16 @@ describe('3. SQL Tests', () => {
 			.send({
 				operation: 'sql',
 				sql: `select a.${generic.ords_id} as ords_id,
-                   a.productid,
-                   d.companyname        as companyname,
-                   d.contactmame,
-                   b.productname,
-                   ROUND(a.unitprice)   as unitprice
-            from ${generic.schema}.${generic.ordd_tb} a
-                     join ${generic.schema}.${generic.prod_tb} b on a.${generic.prod_id} = b.${generic.prod_id}
-                     join ${generic.schema}.${generic.ords_tb} c on a.${generic.ords_id} = c.${generic.ords_id}
-                     join ${generic.schema}.${generic.cust_tb} d on c.${generic.cust_id} = d.${generic.cust_id}
-            order by unitprice DESC LIMIT 25`,
+                     a.productid,
+                     d.companyname        as companyname,
+                     d.contactmame,
+                     b.productname,
+                     ROUND(a.unitprice)   as unitprice
+              from ${generic.schema}.${generic.ordd_tb} a
+                       join ${generic.schema}.${generic.prod_tb} b on a.${generic.prod_id} = b.${generic.prod_id}
+                       join ${generic.schema}.${generic.ords_tb} c on a.${generic.ords_id} = c.${generic.ords_id}
+                       join ${generic.schema}.${generic.cust_tb} d on c.${generic.cust_id} = d.${generic.cust_id}
+              order by unitprice DESC LIMIT 25`,
 			})
 			.expect((r) => assert.ok(r.body.length == 25))
 			.expect((r) => assert.ok(r.body[0].ords_id == 10518))

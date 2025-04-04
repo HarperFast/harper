@@ -196,7 +196,7 @@ describe('6. SQL Role Testing', () => {
 			.expect((r) => {
 				for (let user of r.body) {
 					if (user.username === 'test_user') {
-						assert.ok(generic.cluster_user_role_id == user.role.id);
+						assert.ok(user.role.id == 'developer_test_5');
 					}
 				}
 			})
@@ -220,7 +220,7 @@ describe('6. SQL Role Testing', () => {
 			.expect((r) => {
 				for (let user of r.body) {
 					if (user.username === 'test_user') {
-						assert.ok(generic.cluster_user_role_id == user.role.id);
+						assert.ok(user.role.id == 'developer_test_5');
 					}
 				}
 			})

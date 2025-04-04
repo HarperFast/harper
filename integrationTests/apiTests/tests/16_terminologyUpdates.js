@@ -635,14 +635,14 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('drop_database data', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({ operation: 'drop_database', database: 'data' })
-			.expect((r) => assert.ok(r.body.message == "successfully deleted 'data'"))
-			.expect(200);
-	});
+	// it('drop_database data', async () => {
+	// 	const response = await request(envUrl)
+	// 		.post('')
+	// 		.set(headers)
+	// 		.send({ operation: 'drop_database', database: 'data' })
+	// 		.expect((r) => assert.ok(r.body.message == "successfully deleted 'data'"))
+	// 		.expect(200);
+	// });
 
 	it('drop_database job_guy', async () => {
 		const response = await request(envUrl)

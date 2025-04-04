@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import request from 'supertest';
 import { envUrl, envUrlRest, generic, headers } from '../config/envConfig.js';
 import { setTimeout } from 'node:timers/promises';
+import { restartWithTimeout } from '../utils/restart.js';
 
 describe('19. GraphQL tests', () => {
 	//GraphQL tests Folder
@@ -17,16 +18,6 @@ describe('19. GraphQL tests', () => {
 				assert.ok(res.includes('Successfully added project') || res.includes('Project already exists'));
 			});
 	});
-
-  it('Add default component for openapi endpoint', async () => {
-    const response = await request(envUrl)
-      .post('')
-      .set(headers)
-      .send({ 'operation': 'add_component', 'project': 'myApp111' })
-      .expect((r) => assert.ok(JSON.stringify(r.body).includes('Successfully added project') ||
-        JSON.stringify(r.body).includes('Project already exists')))
-      .expect(200);
-  });
 
 	it('Set Component File schema.graphql', async () => {
 		const response = await request(envUrl)
@@ -59,13 +50,7 @@ describe('19. GraphQL tests', () => {
 	});
 
 	it('Restart service and wait', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({ operation: 'restart' })
-			.expect((r) => assert.ok(r.body.message.includes('Restarting')))
-			.expect(200);
-		await setTimeout(generic.restartTimeout);
+		await restartWithTimeout(generic.restartTimeout);
 	});
 
 	it('Insert one null into SubObject', async () => {

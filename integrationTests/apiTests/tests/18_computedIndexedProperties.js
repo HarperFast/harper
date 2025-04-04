@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import request from 'supertest';
 import { envUrl, envUrlRest, generic, headers } from '../config/envConfig.js';
 import { setTimeout } from 'node:timers/promises';
+import { restartWithTimeout } from '../utils/restart.js';
 
 describe('18. Computed indexed properties', () => {
 	//Computed indexed properties Folder
@@ -47,15 +48,7 @@ describe('18. Computed indexed properties', () => {
 	});
 
 	it('Restart service and wait', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({ operation: 'restart' })
-			.expect((r) => {
-				assert.ok(r.body.message.includes('Restarting'));
-				console.log('restart and wait for ' + generic.restartTimeout + 'milliseconds');
-			});
-		await setTimeout(generic.restartTimeout);
+		await restartWithTimeout(generic.restartTimeout);
 	});
 
 	it('Insert data', async () => {
@@ -109,7 +102,7 @@ describe('18. Computed indexed properties', () => {
 		const response = await request(envUrlRest)
 			.get('/Product/1')
 			.set(headers)
-			.expect((r) => assert.ok(r.body.message.includes('inserted 1 of 1 records')))
+			.expect((r) => assert.ok(r.body.id == 1))
 			.expect((r) => assert.ok(r.body.price == 100))
 			.expect((r) => assert.ok(r.body.taxRate == 0.19))
 			.expect(200);
@@ -119,7 +112,7 @@ describe('18. Computed indexed properties', () => {
 		const response = await request(envUrlRest)
 			.get('/Product/1?select(id,price,taxRate,totalPrice,notIndexedTotalPrice,jsTotalPrice)')
 			.set(headers)
-			.expect((r) => assert.ok(r.body.message.includes('inserted 1 of 1 records')))
+			.expect((r) => assert.ok(r.body.id == 1))
 			.expect((r) => assert.ok(r.body.price == 100))
 			.expect((r) => assert.ok(r.body.taxRate == 0.19))
 			.expect((r) => assert.ok(r.body.totalPrice == 119))
@@ -189,5 +182,9 @@ describe('18. Computed indexed properties', () => {
 			.send({ operation: 'drop_component', project: 'computed' })
 			.expect((r) => assert.ok(r.body.message.includes('Successfully dropped: computed')))
 			.expect(200);
+	});
+
+	it('Restart service and wait', async () => {
+		await restartWithTimeout(generic.restartTimeout);
 	});
 });

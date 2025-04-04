@@ -5,7 +5,7 @@ import {
 	createHeaders,
 	envUrl,
 	generic,
-	headers,
+	headers, headersImportantUser,
 	headersNoPermsUser,
 	headersOnePermUser,
 	headersTestUser,
@@ -195,7 +195,7 @@ describe('10. Other Role Tests', () => {
 	it('Describe All - non-SU test_user', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({ operation: 'describe_all' })
 			.expect((r) => {
 				const keys = Object.keys(r.body);
@@ -223,7 +223,7 @@ describe('10. Other Role Tests', () => {
 	it('Describe Schema - restricted perms - non-SU test_user', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({ operation: 'describe_schema', schema: 'dev' })
 			.expect((r) =>
 				assert.ok(
@@ -239,7 +239,7 @@ describe('10. Other Role Tests', () => {
 	it('Describe Schema - non-SU test_user', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({ operation: 'describe_schema', schema: 'northnwd' })
 			.expect((r) => {
 				assert.ok(Object.values(r.body).length == 3);
@@ -253,7 +253,7 @@ describe('10. Other Role Tests', () => {
 	it('Describe Table - restricted perms - non-SU test_user', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({ operation: 'describe_table', schema: 'northnwd', table: 'shippers' })
 			.expect((r) =>
 				assert.ok(
@@ -269,7 +269,7 @@ describe('10. Other Role Tests', () => {
 	it('Describe Table - non-SU test_user', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({ operation: 'describe_table', schema: 'northnwd', table: 'region' })
 			.expect((r) => assert.ok(r.body.hasOwnProperty('schema')))
 			.expect((r) => assert.ok(r.body.hasOwnProperty('name')))
@@ -1414,7 +1414,7 @@ describe('10. Other Role Tests', () => {
 	it('Query system table non SU', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({
 				operation: 'search_by_value',
 				table: 'hdb_user',
@@ -1790,7 +1790,7 @@ describe('10. Other Role Tests', () => {
 	it('NoSQL - SU search on schema that doesnt exist as test_user - expect error', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headersTestUser)
+			.set(headers)
 			.send({
 				operation: 'search_by_value',
 				schema: 'rick_rolled',
@@ -2073,7 +2073,7 @@ describe('10. Other Role Tests', () => {
 	it('Test Update role table non-SU doesnt work', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersImportantUser)
 			.send({
 				operation: 'update',
 				database: 'system',
@@ -2092,7 +2092,7 @@ describe('10. Other Role Tests', () => {
 	it('Test Update user table non-SU doesnt work', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersImportantUser)
 			.send({
 				operation: 'update',
 				database: 'system',
@@ -2111,7 +2111,7 @@ describe('10. Other Role Tests', () => {
 	it('Test insert when non-SU doesnt work', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersImportantUser)
 			.send({
 				operation: 'insert',
 				database: 'system',
@@ -2129,7 +2129,7 @@ describe('10. Other Role Tests', () => {
 	it('Test delete when non-SU doesnt work', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersImportantUser)
 			.send({ operation: 'delete', database: 'system', table: 'hdb_nodes', ids: ['my-node'] })
 			.expect((r) =>
 				assert.ok(
@@ -2289,7 +2289,7 @@ describe('10. Other Role Tests', () => {
 			.send({
 				operation: 'alter_role',
 				role: 'bad_user_2',
-				id: 'bad_user_2',
+				id: 'test_dev_role',
 				permission: {
 					super_user: false,
 					crapschema: {
@@ -2383,7 +2383,7 @@ describe('10. Other Role Tests', () => {
 			.send({
 				operation: 'alter_role',
 				role: 'user_role_update',
-				id: 'user_role_update',
+				id: 'test_dev_role',
 				permission: {
 					super_user: false,
 					[generic.schema]: {

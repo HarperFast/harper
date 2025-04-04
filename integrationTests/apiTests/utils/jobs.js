@@ -59,7 +59,7 @@ export async function checkJobCompleted(job_id, expectedErrorMessage, expectedCo
             assert.fail('Status was: ' + status);
         case 'IN_PROGRESS':
             console.log(status + ' checking again');
-            await sleep(1000);
+            await sleep(500);
             assert.ok(status == 'IN_PROGRESS' || status == 0 || status == '0');
             await checkJobCompleted(job_id, expectedErrorMessage, expectedCompletedMessage);
             break;
@@ -83,7 +83,7 @@ export async function checkJob(job_id, timeoutInSeconds) {
 				id: job_id,
 			})
 			.expect(200);
-		await setTimeout(1000);
+		await setTimeout(500);
     seconds++;
     console.log(seconds + ' ' + jobResponse.body[0].status);
 	} while (jobResponse.body[0].status == 'IN_PROGRESS' && seconds < timeoutInSeconds);

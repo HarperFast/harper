@@ -125,7 +125,7 @@ describe('1. Environment Setup', () => {
     });
 
     it(`Create table ${generic.ordd_tb}`, async () => {
-        await createTable(generic.schema, generic.ordd_tb, generic.ordd_id);
+        await createTable(generic.schema, generic.ordd_tb, 'orderdetailid');
     });
 
     it(`Create table ${generic.prod_tb}`, async () => {

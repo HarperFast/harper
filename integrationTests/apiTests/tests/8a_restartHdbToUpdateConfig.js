@@ -3,6 +3,7 @@ import request from 'supertest';
 import assert from 'node:assert';
 import { envUrl, generic, headers } from '../config/envConfig.js';
 import { setTimeout } from 'node:timers/promises';
+import { restartWithTimeout } from '../utils/restart.js';
 
 describe('8a. Restart HDB to update config', () => {
 	//Restart HDB to update config Folder
@@ -100,12 +101,6 @@ describe('8a. Restart HDB to update config', () => {
 	});
 
 	it('Restart for new settings', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({ operation: 'restart' })
-			.expect((r) => assert.ok(r.body.message.includes('Restarting')))
-			.expect(200);
-		await setTimeout(generic.restartTimeout);
+		await restartWithTimeout(generic.restartTimeout);
 	});
 });

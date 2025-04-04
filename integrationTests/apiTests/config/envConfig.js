@@ -22,7 +22,7 @@ export let generic = {
     ords_tb: "orders",
     ords_id: "orderid",
     ordd_tb: "order_details",
-    ordd_id: "orderdetailid",
+    ordd_id: "orderid",
     prod_tb: "products",
     prod_id: "productid",
     cust_tb: "customers",
@@ -68,6 +68,7 @@ export const headersBulkLoadUser = createHeaders('bulk_load_user', generic.passw
 export const headersTestUser = createHeaders(generic.test_user_name, generic.password);
 export const headersNoPermsUser = createHeaders('no_perms_user', generic.password);
 export const headersOnePermUser = createHeaders('one_perm_user', generic.password);
+export const headersImportantUser = createHeaders('important-user', 'password');
 
 export function createHeaders(username, password) {
     const headers = {

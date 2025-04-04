@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import request from 'supertest';
-import { envUrl, generic, headers } from '../config/envConfig.js';
+import { envUrl, generic, headers, headersTestUser } from '../config/envConfig.js';
 
 describe('12. Configuration', () => {
 
@@ -90,7 +90,7 @@ describe('12. Configuration', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'describe_table', table: 'AttributeDropTest', schema: 'dev' })
-			.expect((r) => assert.ok(r.body.another_attribute == undefined))
+			.expect((r) => assert.ok(!r.body.another_attribute))
 			.expect(200);
 	});
 
@@ -303,10 +303,10 @@ describe('12. Configuration', () => {
 
 	it('Cluster delete routes', async () => {
 		const expected_result = `{
-"message": "cluster routes successfully deleted",
-"deleted": [ { "host": "dev.wing","port": 11335 },{"host": "dev.pie","port": 11335 }],
-"skipped": [ { "host": "dev.pie", "port": 11221 }]
-}`;
+		"message": "cluster routes successfully deleted",
+		"deleted": [ { "host": "dev.wing","port": 11335 },{"host": "dev.pie","port": 11335 }],
+		"skipped": [ { "host": "dev.pie", "port": 11221 }]
+		}`;
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
@@ -321,7 +321,7 @@ describe('12. Configuration', () => {
 					},
 				],
 			})
-			.expect((r) => assert.deepEqual(r.body, expected_result))
+			.expect((r) => assert.deepEqual(r.body, JSON.parse(expected_result)))
 			.expect(200);
 	});
 
@@ -419,7 +419,7 @@ describe('12. Configuration', () => {
 	it('Configure Cluster non-SU', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({ operation: 'set_configuration', clustering_port: 99999 })
 			.expect((r) =>
 				assert.ok(
@@ -436,7 +436,7 @@ describe('12. Configuration', () => {
 	it('Set Configuration non-SU', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({ operation: 'set_configuration', clustering_port: 99999 })
 			.expect((r) =>
 				assert.ok(
@@ -453,7 +453,7 @@ describe('12. Configuration', () => {
 	it('Get Configuration non-SU', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({ operation: 'get_configuration' })
 			.expect((r) =>
 				assert.ok(

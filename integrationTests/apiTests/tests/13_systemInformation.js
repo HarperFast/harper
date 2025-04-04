@@ -14,7 +14,7 @@ describe('13. System Information', () => {
 			.expect((r) => {
 				let attributes = ['system', 'time', 'cpu', 'memory', 'disk', 'network', 'harperdb_processes', 'table_size'];
 				attributes.forEach((attribute) => {
-					assert.ok(r.body[attribute] != undefined);
+					assert.ok(r.body[attribute] !== undefined);
 				});
 			})
 			.expect(200);

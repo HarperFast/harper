@@ -272,7 +272,8 @@ describe('5. NoSQL Role Testing', () => {
 			})
 			.expect((r) =>
 				assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response')
-			);
+			)
+			.expect(200);
 
 		const id = await getJobId(response.body);
 		const errorMsg = await checkJobCompleted(
@@ -315,11 +316,9 @@ describe('5. NoSQL Role Testing', () => {
 			"Attribute 'small_image_url' does not exist on 'dev.books'",
 		];
 
-		errorMsg.invalid_schema_items
-			.forEach((item) => {
+		errorMsg.invalid_schema_items.forEach((item) => {
 				assert.ok(expected_invalid_items.includes(item));
 			})
-			.expect(200);
 	});
 
 	it('Import CSV from S3 to table w/ restricted attrs', async () => {
@@ -614,10 +613,11 @@ describe('5. NoSQL Role Testing', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
-			.send({ operation: 'drop_role', id: 'bulk_load_user' })
+			.send({ operation: 'drop_role', id: 'bulk_load_role' })
 			.expect((r) => assert.ok(r.body.message))
 			.expect((r) => assert.ok(r.body.message.includes('successfully deleted')))
 			.expect(200);
+	console.log(response.body);
 	});
 
 	//NoSQL Role Testing Main Folder
@@ -1342,7 +1342,7 @@ describe('5. NoSQL Role Testing', () => {
 	it('NoSQL create_schema - non-SU expect fail', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({ operation: 'create_schema', schema: 'test-schema' })
 			.expect((r) =>
 				assert.ok(
@@ -1368,7 +1368,7 @@ describe('5. NoSQL Role Testing', () => {
 	it('NoSQL create_table - non-SU expect fail', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({ operation: 'create_table', schema: 'test-schema', table: 'test-table', hash_attribute: 'id' })
 			.expect((r) =>
 				assert.ok(
@@ -1407,7 +1407,7 @@ describe('5. NoSQL Role Testing', () => {
 	it('NoSQL drop_attribute - non-SU expect fail', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({
 				operation: 'drop_attribute',
 				schema: 'test-schema',
@@ -1443,7 +1443,7 @@ describe('5. NoSQL Role Testing', () => {
 	it('NoSQL drop_table - non-SU expect fail', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({ operation: 'drop_table', schema: 'test-schema', table: 'test-table' })
 			.expect((r) =>
 				assert.ok(
@@ -1469,7 +1469,7 @@ describe('5. NoSQL Role Testing', () => {
 	it('NoSQL drop_schema - non-SU expect fail', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({ operation: 'drop_schema', schema: 'test-schema' })
 			.expect((r) =>
 				assert.ok(
@@ -1579,7 +1579,7 @@ describe('5. NoSQL Role Testing', () => {
 			})
 			.expect((r) => assert.ok(r.body.upserted_hashes.length == 2))
 			.expect((r) => assert.ok(r.body.upserted_hashes.includes('FURIB')))
-			.expect((r) => assert.ok(r.body.skipped_hashes == 'undefined'))
+			.expect((r) => assert.ok(!r.body.skipped_hashes))
 			.expect((r) => assert.ok(r.body.message == 'upserted 2 of 2 records'))
 			.expect(200);
 	});
@@ -1596,7 +1596,7 @@ describe('5. NoSQL Role Testing', () => {
 			})
 			.expect((r) => assert.ok(r.body.upserted_hashes.length == 2))
 			.expect((r) => assert.ok(r.body.upserted_hashes.includes(8)))
-			.expect((r) => assert.ok(r.body.skipped_hashes == 'undefined'))
+			.expect((r) => assert.ok(!r.body.skipped_hashes))
 			.expect((r) => assert.ok(r.body.message == 'upserted 2 of 2 records'))
 			.expect(200);
 	});
@@ -1621,7 +1621,7 @@ describe('5. NoSQL Role Testing', () => {
 			})
 			.expect((r) => assert.ok(r.body.upserted_hashes.length == 2))
 			.expect((r) => assert.ok(r.body.upserted_hashes.includes('FURIB')))
-			.expect((r) => assert.ok(r.body.skipped_hashes == 'undefined'))
+			.expect((r) => assert.ok(!r.body.skipped_hashes))
 			.expect((r) => assert.ok(r.body.message == 'upserted 2 of 2 records'))
 			.expect(200);
 	});
@@ -1629,7 +1629,7 @@ describe('5. NoSQL Role Testing', () => {
 	it('NoSQL - Upsert - table perms true/false  - expect error', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({
 				operation: 'upsert',
 				schema: `${generic.schema}`,
@@ -1660,7 +1660,7 @@ describe('5. NoSQL Role Testing', () => {
 	it('NoSQL - Upsert - table perms true/attr perms true but new attribute included - expect error', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({
 				operation: 'upsert',
 				schema: `${generic.schema}`,
@@ -1783,7 +1783,7 @@ describe('5. NoSQL Role Testing', () => {
 	it('search by conditions - equals - allowed attr', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1795,8 +1795,8 @@ describe('5. NoSQL Role Testing', () => {
 				assert.ok(r.body.length == 2);
 				r.body.forEach((row) => {
 					assert.ok([1, 2].includes(row.id));
-					assert.ok(row.location == undefined);
-					assert.ok(row.breed_id == undefined);
+					assert.ok(!row.location);
+					assert.ok(!row.breed_id);
 				});
 			})
 			.expect(200);
@@ -1805,7 +1805,7 @@ describe('5. NoSQL Role Testing', () => {
 	it('search by conditions - ends_with - allowed attr', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1817,8 +1817,8 @@ describe('5. NoSQL Role Testing', () => {
 				assert.ok(r.body.length == 4);
 				r.body.forEach((row) => {
 					assert.ok([...row.dog_name].pop() == 'y');
-					assert.ok(row.location == undefined);
-					assert.ok(row.breed_id == undefined);
+					assert.ok(!row.location);
+					assert.ok(!row.breed_id);
 				});
 			})
 			.expect(200);
@@ -1827,7 +1827,7 @@ describe('5. NoSQL Role Testing', () => {
 	it('search by conditions - equals - restricted attr', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1851,7 +1851,7 @@ describe('5. NoSQL Role Testing', () => {
 	it('search by conditions - contains - restricted attr', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1875,7 +1875,7 @@ describe('5. NoSQL Role Testing', () => {
 	it('search by conditions - starts_with - non-existent attr', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1899,7 +1899,7 @@ describe('5. NoSQL Role Testing', () => {
 	it("search by conditions - starts_with - unauth'd attr", async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1929,7 +1929,7 @@ describe('5. NoSQL Role Testing', () => {
 	it("search by conditions - starts_with - unauth'd attrs in get / search", async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1962,7 +1962,7 @@ describe('5. NoSQL Role Testing', () => {
 	it('search by conditions - equals & contains - restricted attr', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1993,7 +1993,7 @@ describe('5. NoSQL Role Testing', () => {
 	it('search by conditions - starts_with & between w/ sort', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -2028,7 +2028,7 @@ describe('5. NoSQL Role Testing', () => {
 	it('search by conditions - 4 conditions - restricted attrs', async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -2072,7 +2072,7 @@ describe('5. NoSQL Role Testing', () => {
 	it("search by conditions - 4 conditions - restricted/unauth'd attrs", async () => {
 		const response = await request(envUrl)
 			.post('')
-			.set(headers)
+			.set(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',

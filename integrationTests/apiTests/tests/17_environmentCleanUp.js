@@ -17,10 +17,6 @@ describe('17. Environment Clean Up', () => {
 		await setTimeout(1000);
 	});
 
-	it('confirm attribute count correct (disabled)', async () => {
-		const response = await request(envUrl).post('').set(headers).send({ operation: 'describe_all' }).expect(200);
-	});
-
 	it('VALIDATION Check Schema not found.', async () => {
 		const response = await request(envUrl)
 			.post('')

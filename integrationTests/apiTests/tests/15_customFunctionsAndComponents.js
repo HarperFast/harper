@@ -3,6 +3,7 @@ import assert from 'node:assert';
 import request from 'supertest';
 import { envUrl, envUrlRest, generic, headers } from '../config/envConfig.js';
 import { setTimeout } from 'node:timers/promises';
+import { restartWithTimeout } from '../utils/restart.js';
 
 describe('15. Custom Functions & components', () => {
 	//Custom Functions & components Folder
@@ -186,13 +187,7 @@ describe('15. Custom Functions & components', () => {
 	});
 
 	it('restart service', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({ operation: 'restart' })
-			.expect((r) => assert.ok(r.body.message.includes('Restarting')))
-			.expect(200);
-		await setTimeout(generic.restartTimeout);
+		await restartWithTimeout(generic.restartTimeout);
 	});
 
 	it('get custom function status', async () => {
@@ -320,9 +315,9 @@ describe('15. Custom Functions & components', () => {
 			.send({ operation: 'get_custom_functions' })
 			.expect((r) => {
 				assert.ok(r.body.hasOwnProperty('test-deploy'));
-				assert.ok(r.body['test-deploy']['routes'] != undefined);
+				assert.ok(r.body['test-deploy']['routes'] !== undefined);
 				assert.ok(r.body['test-deploy']['routes'][0] == 'examples');
-				assert.ok(r.body['test-deploy']['helpers'] != undefined);
+				assert.ok(r.body['test-deploy']['helpers'] !== undefined);
 				assert.ok(r.body['test-deploy']['helpers'][0] == 'example');
 			})
 			.expect(200);
