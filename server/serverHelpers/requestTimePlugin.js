@@ -1,4 +1,4 @@
-const { recordAction, recordActionBinary } = require('../../resources/analytics');
+const { recordAction, recordActionBinary } = require('../../resources/analytics/write');
 const fp = require('fastify-plugin');
 
 const ESTIMATED_HEADER_SIZE = 200; // it is very expensive to actually measure HTTP response header size (we change it

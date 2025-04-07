@@ -1,4 +1,3 @@
-'use strict';
 import LMDBBridge from './lmdbBridge/LMDBBridge';
 import search_validator from '../../validation/searchValidator';
 import { handleHDBError, ClientError, hdb_errors } from '../../utility/errors/hdbError';
@@ -15,25 +14,28 @@ import * as signalling from '../../utility/signalling';
 import { SchemaEventMsg } from '../../server/threads/itc';
 import { async_set_timeout } from '../../utility/common_utils';
 import { transaction } from '../../resources/transaction';
-import { Id } from '../../resources/ResourceInterface';
+import { Condition, Query, Context, Select, Id, DirectCondition } from '../../resources/ResourceInterface';
 import { collapseData } from '../../resources/tracked';
 
 const { HDB_ERROR_MSGS } = hdb_errors;
 const DEFAULT_DATABASE = 'data';
 const DELETE_CHUNK = 10000;
 const DELETE_PAUSE_MS = 10;
-let bridge: ResourceBridge;
+
+export type SearchByConditionsRequest = Query & Context & {
+	schema?: string;
+	database?: string;
+	table: string;
+	get_attributes: Select;
+	reverse?: boolean;
+};
+
 /**
  * Currently we are extending LMDBBridge so we can use the LMDB methods as a fallback until all our RAPI methods are
  * implemented
  */
 export class ResourceBridge extends LMDBBridge {
-	constructor(props) {
-		super(props);
-		bridge = this;
-	}
-
-	async searchByConditions(search_object) {
+	async searchByConditions(search_object: SearchByConditionsRequest) {
 		if (search_object.select !== undefined) search_object.get_attributes = search_object.select;
 		for (const condition of search_object.conditions || []) {
 			if (condition?.attribute !== undefined) condition.search_attribute = condition.attribute;
@@ -50,16 +52,18 @@ export class ResourceBridge extends LMDBBridge {
 		}
 
 		const conditions = search_object.conditions.map(mapCondition);
-		function mapCondition(condition) {
-			if (condition.conditions) {
+		function mapCondition(condition: Condition) {
+			if ('conditions' in condition && condition.conditions) {
 				condition.conditions = condition.conditions.map(mapCondition);
 				return condition;
-			} else
+			} else {
+				const c = condition as DirectCondition;
 				return {
-					attribute: condition.search_attribute ?? condition.attribute,
-					comparator: condition.search_type ?? condition.comparator,
-					value: condition.search_value !== undefined ? condition.search_value : condition.value, // null is valid value
+					attribute: c.search_attribute ?? c.attribute,
+					comparator: c.search_type ?? c.comparator,
+					value: c.search_value !== undefined ? c.search_value : c.value, // null is valid value
 				};
+			}
 		}
 
 		return table.search(
@@ -82,6 +86,7 @@ export class ResourceBridge extends LMDBBridge {
 			}
 		);
 	}
+
 	/**
 	 * Writes new table data to the system tables creates the environment file and creates two datastores to track created and updated
 	 * timestamps for new table data.
@@ -119,6 +124,7 @@ export class ResourceBridge extends LMDBBridge {
 			audit: table_create_obj.audit,
 		});
 	}
+
 	async createAttribute(create_attribute_obj) {
 		await getTable(create_attribute_obj).addAttributes([
 			{
@@ -128,6 +134,7 @@ export class ResourceBridge extends LMDBBridge {
 		]);
 		return `attribute ${create_attribute_obj.schema}.${create_attribute_obj.table}.${create_attribute_obj.attribute} successfully created.`;
 	}
+
 	async dropAttribute(drop_attribute_obj) {
 		const Table = getTable(drop_attribute_obj);
 		await Table.removeAttributes([drop_attribute_obj.attribute]);
@@ -156,9 +163,11 @@ export class ResourceBridge extends LMDBBridge {
 		}
 		return `successfully deleted ${drop_attribute_obj.schema}.${drop_attribute_obj.table}.${drop_attribute_obj.attribute}`;
 	}
+
 	dropTable(drop_table_object) {
 		getTable(drop_table_object).dropTable();
 	}
+
 	createSchema(create_schema_obj) {
 		database({
 			database: create_schema_obj.schema,
@@ -168,24 +177,28 @@ export class ResourceBridge extends LMDBBridge {
 			new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_SCHEMA, create_schema_obj.schema)
 		);
 	}
+
 	async dropSchema(drop_schema_obj) {
 		await dropDatabase(drop_schema_obj.schema);
 		signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, drop_schema_obj.schema));
 	}
+
 	async updateRecords(update_obj) {
 		update_obj.requires_existing = true;
 		return this.upsertRecords(update_obj);
 	}
+
 	async createRecords(update_obj) {
 		update_obj.requires_no_existing = true;
-		return bridge.upsertRecords(update_obj);
+		return this.upsertRecords(update_obj);
 	}
+
 	async upsertRecords(upsert_obj) {
 		const { schema_table, attributes } = insertUpdateValidate(upsert_obj);
 
 		let new_attributes;
 		const Table = getDatabases()[upsert_obj.schema][upsert_obj.table];
-		const context = {
+		const context: Context = {
 			user: upsert_obj.hdb_user,
 			expiresAt: upsert_obj.expiresAt,
 			originatingOperation: upsert_obj.operation,
@@ -260,9 +273,10 @@ export class ResourceBridge extends LMDBBridge {
 			};
 		});
 	}
+
 	async deleteRecords(delete_obj) {
 		const Table = getDatabases()[delete_obj.schema][delete_obj.table];
-		const context = { user: delete_obj.hdb_user };
+		const context: Context = { user: delete_obj.hdb_user };
 		if (delete_obj.replicateTo) context.replicateTo = delete_obj.replicateTo;
 		if (delete_obj.replicatedConfirmation) context.replicatedConfirmation = delete_obj.replicatedConfirmation;
 		return transaction(context, async (transaction) => {
@@ -367,13 +381,13 @@ export class ResourceBridge extends LMDBBridge {
 		return map;
 	}
 
-	searchByValue(search_object: SearchObject, comparator?) {
+	searchByValue(search_object: SearchObject, comparator?: string) {
 		if (comparator && VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[comparator] === undefined) {
 			throw new Error(`Value search comparator - ${comparator} - is not valid`);
 		}
 		if (search_object.select !== undefined) search_object.get_attributes = search_object.select;
-		if (search_object.attribute !== undefined) search_object.search_attribute = condition.attribute;
-		if (search_object.value !== undefined) search_object.search_value = condition.value;
+		if (search_object.attribute !== undefined) search_object.search_attribute = search_object.attribute;
+		if (search_object.value !== undefined) search_object.search_value = search_object.value;
 
 		const validation_error = search_validator(search_object, 'value');
 		if (validation_error) {
@@ -431,6 +445,7 @@ export class ResourceBridge extends LMDBBridge {
 			}
 		);
 	}
+
 	async getDataByValue(search_object: SearchObject, comparator) {
 		const map = new Map();
 		const table = getTable(search_object);
@@ -446,9 +461,11 @@ export class ResourceBridge extends LMDBBridge {
 		}
 		return map;
 	}
+
 	resetReadTxn(schema, table) {
 		getTable({ schema, table })?.primaryStore.resetReadTxn();
 	}
+
 	async deleteAuditLogsBefore(delete_obj) {
 		const table = getTable(delete_obj);
 		return table.deleteHistory(delete_obj.timestamp, delete_obj.cleanup_deleted_records);
@@ -474,7 +491,7 @@ export class ResourceBridge extends LMDBBridge {
 					});
 				}
 				return histories;
-			case READ_AUDIT_LOG_SEARCH_TYPES_ENUM.USERNAME:
+			case READ_AUDIT_LOG_SEARCH_TYPES_ENUM.USERNAME: {
 				const users = read_audit_log_obj.search_values;
 				// do a full table scan of the history and find users
 				for await (const entry of groupRecordsInHistory(table)) {
@@ -484,6 +501,7 @@ export class ResourceBridge extends LMDBBridge {
 					}
 				}
 				return histories;
+			}
 			default:
 				return groupRecordsInHistory(
 					table,

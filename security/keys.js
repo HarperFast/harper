@@ -1,6 +1,7 @@
 'use strict';
 
 const path = require('path');
+const { watch } = require('chokidar');
 const fs = require('fs-extra');
 const forge = require('node-forge');
 const net = require('net');
@@ -52,7 +53,7 @@ const {
 	getThisNodeName,
 	clearThisNodeName,
 } = require('../server/replication/replicator');
-const { readFileSync, watchFile, statSync } = require('node:fs');
+const { readFileSync, statSync } = require('node:fs');
 const env = require('../utility/environment/environmentManager');
 const { getTicketKeys, onMessageFromWorkers } = require('../server/threads/manageThreads');
 const harper_logger = require('../utility/logging/harper_logger');
@@ -267,11 +268,11 @@ function loadCertificates() {
  */
 function loadAndWatch(path, loadCert, type) {
 	let last_modified;
-	const loadFile = (stats, reload) => {
+	const loadFile = (path, stats) => {
 		try {
 			let modified = stats.mtimeMs;
 			if (modified && modified !== last_modified) {
-				if (reload && isMainThread) hdb_logger.warn(`Reloading ${type}:`, path);
+				if (last_modified && isMainThread) hdb_logger.warn(`Reloading ${type}:`, path);
 				last_modified = modified;
 				loadCert(readPEM(path));
 			}
@@ -279,9 +280,9 @@ function loadAndWatch(path, loadCert, type) {
 			hdb_logger.error(`Error loading ${type}:`, path, error);
 		}
 	};
-	if (fs.existsSync(path)) loadFile(statSync(path));
+	if (fs.existsSync(path)) loadFile(path, statSync(path));
 	else hdb_logger.error(`${type} file not found:`, path);
-	watchFile(path, { persistent: false }, loadFile);
+	watch(path, { persistent: false }).on('change', loadFile);
 }
 
 function getHost() {
@@ -821,6 +822,10 @@ function createTLSSelector(type, mtls_options) {
 					secure_contexts.clear();
 					ca_certs.clear();
 					let best_quality = 0;
+					if (databases === undefined) {
+						resolve();
+						return;
+					}
 					for await (const cert of databases.system.hdb_certificate.search([])) {
 						const certificate = cert.certificate;
 						const cert_parsed = new X509Certificate(certificate);
@@ -926,7 +931,7 @@ function createTLSSelector(type, mtls_options) {
 					reject(error);
 				}
 			}
-			databases.system.hdb_certificate.subscribe({
+			databases?.system.hdb_certificate.subscribe({
 				listener: () => setTimeout(() => updateTLS(), 1500).unref(),
 				omitCurrent: true,
 			});

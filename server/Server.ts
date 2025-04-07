@@ -1,6 +1,6 @@
 import { Socket } from 'net';
 import { _assignPackageExport } from '../globals';
-import type { Value } from '../resources/analytics';
+import type { Value } from '../resources/analytics/write';
 
 /**
  * This is the central interface by which we define entry points for different server protocol plugins to listen for
@@ -26,9 +26,10 @@ interface Server {
 	shards: Map<number, string[]>;
 	hostname: string;
 }
-interface ServerOptions {
+export interface ServerOptions {
 	port?: number;
 	securePort?: number;
+	isOperationsServer?: boolean;
 }
 interface WebSocketOptions extends ServerOptions {
 	subProtocol: string;

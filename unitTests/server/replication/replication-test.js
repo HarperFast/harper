@@ -584,5 +584,6 @@ describe('Replication', () => {
 		for (const child_process of child_processes) {
 			child_process.kill();
 		}
+		databases.system.hdb_nodes.primaryStore.clearSync(); // clear the nodes
 	});
 });

@@ -13,7 +13,6 @@ const papa_parse = require('papaparse');
 const moment = require('moment');
 const { inspect } = require('util');
 const is_number = require('is-number');
-const _ = require('lodash');
 const minimist = require('minimist');
 const https = require('https');
 const http = require('http');

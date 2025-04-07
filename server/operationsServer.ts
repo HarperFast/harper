@@ -22,6 +22,9 @@ import {
 	reqBodyValidationHandler,
 } from './serverHelpers/serverHandlers';
 import { registerContentHandlers } from './serverHelpers/contentTypes';
+import type { OperationFunctionName } from './serverHelpers/serverUtilities';
+import type { ParsedSqlObject } from '../sqlTranslator/index';
+import type { User } from '../resources/ResourceInterface';
 
 const DEFAULT_HEADERS_TIMEOUT = 60000;
 const REQ_MAX_BODY_SIZE = 1024 * 1024 * 1024; //this is 1GB in bytes
@@ -30,10 +33,8 @@ const TRUE_COMPARE_VAL = 'TRUE';
 const { CONFIG_PARAMS } = terms;
 let server;
 
-module.exports = {
-	hdbServer: operationsServer,
-	start: operationsServer,
-};
+export {operationsServer as hdbServer};
+export {operationsServer as start};
 
 /**
  * Builds a HarperDB server.
@@ -91,8 +92,30 @@ async function setUp() {
 	await hdb_license.getLicense();
 }
 
-interface PostBody {
-	operation: string;
+interface BaseOperationRequestBody {
+	operation: OperationFunctionName;
+	bypass_auth: boolean;
+	hdb_user?: User;
+	password?: string;
+	payload?: string;
+	sql?: string;
+	parsed_sql_object?: ParsedSqlObject;
+}
+
+type SearchOperation = BaseOperationRequestBody;
+
+interface SearchOperationRequestBody {
+	search_operation: SearchOperation;
+}
+
+export type OperationRequestBody = BaseOperationRequestBody & SearchOperationRequestBody;
+
+export interface OperationRequest {
+	body: OperationRequestBody;
+}
+
+export interface OperationResult {
+	message?: any;
 }
 
 /**
@@ -149,7 +172,7 @@ function buildServer(is_https: boolean): FastifyInstance {
 	});
 
 	// This handles all POST requests
-	app.post<{ Body: PostBody }>(
+	app.post<{ Body: OperationRequestBody }>(
 		'/',
 		{
 			preValidation: [reqBodyValidationHandler, authHandler],
