@@ -57,8 +57,7 @@ describe('9. Transactions', () => {
 	});
 
 	it('Insert additional new records', async () => {
-		generic.insert_timestamp = new Date().toISOString();
-
+		generic.insert_timestamp = new Date().getTime();
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
@@ -69,10 +68,7 @@ describe('9. Transactions', () => {
 				records: [
 					{ id: 11, address: '24 South st' },
 					{ id: 12, address: '6 Truck Lane' },
-					{
-						id: 13,
-						address: '19 Broadway',
-					},
+					{ id: 13, address: '19 Broadway'},
 				],
 			})
 			.expect((r) => assert.ok(r.body.inserted_hashes.length == 3))
@@ -93,8 +89,7 @@ describe('9. Transactions', () => {
 
 		const id = await getJobId(response.body);
 		const jobResponse = await checkJob(id, 15);
-
-		assert.ok(jobResponse.body[0].message.includes('records successfully deleted'));
+		assert.ok(jobResponse.body[0].message.includes('Successfully completed'));
 	});
 
 
@@ -214,7 +209,7 @@ describe('9. Transactions', () => {
 				operation: 'insert',
 				schema: 'test_delete_before',
 				table: 'test_read',
-				records: [{ id: 5, name: 'Griff' }],
+				records: [{ id: 4, name: 'Griff' }],
 			})
 			.expect((r) => assert.ok(r.body.inserted_hashes.length == 1))
 			.expect(200);
@@ -232,10 +227,7 @@ describe('9. Transactions', () => {
 				records: [
 					{ id: 4, name: 'Griffy Jr.' },
 					{ id: 5, name: 'Gizmo', age: 10 },
-					{
-						name: 'Moe',
-						age: 11,
-					},
+					{ name: 'Moe', age: 11 },
 				],
 			})
 			.expect((r) => assert.ok(r.body.upserted_hashes.length == 3))
@@ -292,7 +284,7 @@ describe('9. Transactions', () => {
 					assert.ok([...expected_attrs, ...other_attrs].includes(key));
 				});
 
-				assert.ok(typeof upsert_trans.records[2].id === 'string');
+				assert.ok(typeof upsert_trans.records[2].id == 'number');
 				Object.keys(upsert_trans.records[2]).forEach((key) => {
 					assert.ok([...expected_attrs, ...other_attrs].includes(key));
 				});

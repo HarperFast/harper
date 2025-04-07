@@ -849,8 +849,8 @@ describe('7. Jobs & Job Role Testing', () => {
 
 		const id = await getJobId(response.body);
 		const jobResponse = await checkJob(id, 15);
-
 		assert.ok(jobResponse.body[0].message == '1 of 1 record successfully deleted');
+		generic.job_id = id;
 	});
 
 	it('Jobs - Validate 0 entry in runners table', async () => {
@@ -872,13 +872,6 @@ describe('7. Jobs & Job Role Testing', () => {
 				to_date: `${dateTomorrow}`,
 			})
 			.expect((r) => assert.ok(r.body.length > 0));
-
-		for (let item of response.body) {
-			if (item.user == `${generic.test_user_name}`) {
-				generic.job_id = item.id;
-				break;
-			}
-		}
 	});
 
 	it('Search Jobs by date - non-super user', async () => {

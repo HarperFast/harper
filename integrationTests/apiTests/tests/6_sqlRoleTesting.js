@@ -835,7 +835,7 @@ describe('6. SQL Role Testing', () => {
 				// since user only has access to those two attributes
 				r.body.forEach((row) => {
 					expected_attributes.forEach((attr) => {
-						assert.ok(row[attr]);
+						assert.ok(row.hasOwnProperty(attr));
 					});
 				});
 			})

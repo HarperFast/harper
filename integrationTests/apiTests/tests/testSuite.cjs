@@ -10,6 +10,7 @@ require('./5_noSqlRoleTesting.js');
 require('./6_sqlRoleTesting.js');
 require('./7_jobsAndJobRoleTesting.js');
 require('./8_deleteTests.js');
+require('./8a_restartHdbToUpdateConfig.js');
 require('./9_transactions.js');
 require('./10_otherRoleTests.js');
 require('./11_alterUserTests.js');

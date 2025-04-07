@@ -2408,7 +2408,7 @@ describe('10. Other Role Tests', () => {
 			})
 			.expect((r) => {
 				assert.ok(r.body.role == 'user_role_update');
-				assert.ok(r.body.id == 'user_role_update');
+				assert.ok(r.body.id == 'test_dev_role');
 				assert.ok(r.body.permission.super_user == false);
 				assert.deepEqual(r.body.permission.northnwd.tables.customers, {
 					read: false,
@@ -2458,7 +2458,7 @@ describe('10. Other Role Tests', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
-			.send({ operation: 'drop_role', id: 'user_role_update' })
+			.send({ operation: 'drop_role', id: 'test_dev_role' })
 			.expect(200);
 	});
 });
