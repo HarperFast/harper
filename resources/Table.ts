@@ -339,6 +339,7 @@ export function makeTable(options) {
 						case 'delete':
 							return resource._writeDelete(options);
 						case 'publish':
+						case 'message':
 							return resource._writePublish(value, options);
 						case 'invalidate':
 							return resource._writeInvalidate(options);
