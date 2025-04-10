@@ -50,6 +50,10 @@ describe('18. Computed indexed properties', () => {
 		await restartWithTimeout(testData.restartTimeout);
 	});
 
+	it('Describe all', async () => {
+		const response = await request(envUrl).post('').set(headers).send({ operation: 'describe_all' }).expect(200);
+	});
+
 	it('Insert data', async () => {
 		const response = await request(envUrl)
 			.post('')

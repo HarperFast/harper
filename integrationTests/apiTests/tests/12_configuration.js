@@ -150,9 +150,12 @@ describe('12. Configuration', () => {
 				table: 'AttributeDropTest',
 				attribute: 'another_attribute',
 			})
-			.expect((r) => assert.ok(r.body.message == "successfully deleted attribute 'another_attribute'", r.text))
+			.expect((r) => {
+				console.log(r.text);
+				assert.ok(r.body.message == "successfully deleted attribute 'another_attribute'", r.text)
+			})
 			.expect(200);
-		await setTimeout(500);
+		await setTimeout(1000);
 	});
 
 	it('Describe table DropAttributeTest', async () => {
@@ -472,11 +475,19 @@ describe('12. Configuration', () => {
 			// .expect('content-type', 'text/html; charset=UTF-8')
 			.expect((r) => {
 				console.log('URL: ' + envUrl);
-				console.log('Headers: ' + r.headers);
+				console.log('Headers: ' + JSON.stringify(r.headers));
 				console.log('Body: ' + r.text)
 				// assert.ok(r.text.includes('<!doctype html>'), r.text);
 				// assert.ok(r.text.includes('Studio :: HarperDB'), r.text);
 			})
 			// .expect(200);
+
+		const response2 = await request('https://localhost:9925')
+			.get('')
+			.expect((r) => {
+				console.log('URL: https://localhost:9925');
+				console.log('Headers: ' + JSON.stringify(r.headers));
+				console.log('Body: ' + r.text)
+			})
 	});
 });
