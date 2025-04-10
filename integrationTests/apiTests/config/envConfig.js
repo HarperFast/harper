@@ -17,7 +17,6 @@ export let testData = {
     schema_another: "another",
     schema_number_string: "123",
     schema_number: '1123',
-    files_location: "/../../test/data/integrationTestsCsvs/",
     emps_tb: "employees",
     emps_id: "employeeid",
     ords_tb: "orders",
@@ -60,6 +59,8 @@ export let testData = {
     restartTimeout: 45000,
 }
 
+export const files_location = process.env.FILES_LOCATION ? process.env.FILES_LOCATION : "/../../test/data/integrationTestsCsvs/";
+
 export const envUrl = testData.host + ':' + testData.port;
 export const envUrlRest = testData.host + ':' + testData.portRest;
 
@@ -84,8 +85,13 @@ export const dateTomorrow = new Date(new Date().getTime() + 86400000).toISOStrin
 
 
 export function getCsvPath() {
-    const __filename = fileURLToPath(import.meta.url);
-    const __dirname = path.dirname(__filename);
-    const myPath = path.resolve(__dirname + '/..' + testData.files_location) + '/';
+    let myPath = '';
+    if(process.env.FILES_LOCATION) {
+        myPath = process.env.FILES_LOCATION;
+    } else {
+        const __filename = fileURLToPath(import.meta.url);
+        const __dirname = path.dirname(__filename);
+        myPath = path.resolve(__dirname + '/..' + files_location) + '/';
+    }
     return myPath;
 }
