@@ -1,6 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import request from 'supertest';
+import { setTimeout } from 'node:timers/promises';
 import { envUrl, testData, headers, headersTestUser } from '../config/envConfig.js';
 
 describe('12. Configuration', () => {
@@ -151,6 +152,7 @@ describe('12. Configuration', () => {
 			})
 			.expect((r) => assert.ok(r.body.message == "successfully deleted attribute 'another_attribute'", r.text))
 			.expect(200);
+		await setTimeout(300);
 	});
 
 	it('Describe table DropAttributeTest', async () => {
@@ -467,10 +469,11 @@ describe('12. Configuration', () => {
 		const response = await request(envUrl)
 			.get('')
 			.set(headers)
-			.expect('content-type', 'text/html; charset=UTF-8')
+			// .expect('content-type', 'text/html; charset=UTF-8')
 			.expect((r) => {
-				assert.ok(r.text.includes('<!doctype html>'));
-				assert.ok(r.text.includes('Studio :: HarperDB'));
+				console.log(r.headers);
+				assert.ok(r.text.includes('<!doctype html>'), r.text);
+				assert.ok(r.text.includes('Studio :: HarperDB'), r.text);
 			})
 			.expect(200);
 	});

@@ -45,6 +45,13 @@ from apiTests folder run:
 node --experimental-default-type="module" --stack-trace-limit=2 tests/testSuite.js
 ```
 
+Test Reports formats: spec, dot and tap
+
+add the following to the node command:
+```
+--test-reporter spec --test-reporter-destination report.txt --test-reporter spec --test-reporter-destination stdout
+```
+
 ***
 
 **To speed up the test execution, see the Test runner execution model** 
