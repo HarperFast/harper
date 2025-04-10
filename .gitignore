@@ -12,6 +12,7 @@ logs/*
 /bin/coverage/*
 coverage/*
 hdb_boot_properties.file
+integrationTests/apiTests/.env
 *test_export.json.json
 /unitTests/envDir/*
 /unitTests/apiTests/envDir/*

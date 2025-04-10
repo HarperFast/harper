@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import request from 'supertest';
-import { envUrl, generic, headers } from '../config/envConfig.js';
+import { envUrl, testData, headers } from '../config/envConfig.js';
 import { setTimeout } from 'node:timers/promises';
 
 describe('4. NoSQL Tests', () => {
@@ -22,7 +22,7 @@ describe('4. NoSQL Tests', () => {
 				table: 'invalid_attribute',
 				records: [{ 'id': 1, 'some`$`attribute': 'some_attribute' }],
 			})
-			.expect((r) => assert.ok(r.body.error == 'Attribute names cannot include backticks or forward slashes'))
+			.expect((r) => assert.ok(r.body.error == 'Attribute names cannot include backticks or forward slashes', r.text))
 			.expect(400);
 	});
 
@@ -36,7 +36,7 @@ describe('4. NoSQL Tests', () => {
 				table: 'invalid_attribute',
 				records: [{ 'id': 100, 'some/attribute': 'some_attribute' }],
 			})
-			.expect((r) => assert.ok(r.body.error == 'Attribute names cannot include backticks or forward slashes'))
+			.expect((r) => assert.ok(r.body.error == 'Attribute names cannot include backticks or forward slashes', r.text))
 			.expect(400);
 	});
 
@@ -93,7 +93,7 @@ describe('4. NoSQL Tests', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body.error == 'Attribute names cannot include backticks or forward slashes'))
+			.expect((r) => assert.ok(r.body.error == 'Attribute names cannot include backticks or forward slashes', r.text))
 			.expect(400);
 	});
 
@@ -113,7 +113,7 @@ describe('4. NoSQL Tests', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body.error == 'Attribute names cannot include backticks or forward slashes'))
+			.expect((r) => assert.ok(r.body.error == 'Attribute names cannot include backticks or forward slashes', r.text))
 			.expect(400);
 	});
 
@@ -133,7 +133,7 @@ describe('4. NoSQL Tests', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body.error == 'Attribute names cannot include backticks or forward slashes'))
+			.expect((r) => assert.ok(r.body.error == 'Attribute names cannot include backticks or forward slashes', r.text))
 			.expect(400);
 	});
 
@@ -190,7 +190,7 @@ describe('4. NoSQL Tests', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body.error == 'Attribute names cannot include backticks or forward slashes'))
+			.expect((r) => assert.ok(r.body.error == 'Attribute names cannot include backticks or forward slashes', r.text))
 			.expect(400);
 	});
 
@@ -203,13 +203,13 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_hash',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
-				hash_attribute: `${generic.emps_id}`,
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
+				hash_attribute: `${testData.emps_id}`,
 				hash_values: [100],
 				get_attributes: ['firstname', 'lastname'],
 			})
-			.expect((r) => assert.ok(r.body.length == 0))
+			.expect((r) => assert.ok(r.body.length == 0, r.text))
 			.expect(200);
 	});
 
@@ -219,14 +219,14 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_hash',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
-				hash_attribute: `${generic.emps_id}`,
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
+				hash_attribute: `${testData.emps_id}`,
 				hash_values: [1],
 				get_attributes: ['firstname', 'lastname'],
 			})
-			.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-			.expect((r) => assert.ok(typeof r.body[0] === 'object'))
+			.expect((r) => assert.ok(r.body.length == 1, r.text))
+			.expect((r) => assert.ok(typeof r.body[0] === 'object', r.text))
 			.expect(200);
 	});
 
@@ -236,15 +236,15 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_hash',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
-				hash_attribute: `${generic.emps_id}`,
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
+				hash_attribute: `${testData.emps_id}`,
 				hash_values: [1, 5],
 				get_attributes: ['firstname', 'lastname'],
 			})
-			.expect((r) => assert.ok(r.body.length == 2))
-			.expect((r) => assert.ok(typeof r.body[0] === 'object'))
-			.expect((r) => assert.ok(typeof r.body[1] === 'object'))
+			.expect((r) => assert.ok(r.body.length == 2, r.text))
+			.expect((r) => assert.ok(typeof r.body[0] === 'object', r.text))
+			.expect((r) => assert.ok(typeof r.body[1] === 'object', r.text))
 			.expect(200);
 	});
 
@@ -254,14 +254,14 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_value',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
-				hash_attribute: `${generic.emps_id}`,
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
+				hash_attribute: `${testData.emps_id}`,
 				search_attribute: 'lastname',
 				search_value: 'Xyz',
 				get_attributes: ['firstname', 'lastname'],
 			})
-			.expect((r) => assert.ok(r.body.length == 0))
+			.expect((r) => assert.ok(r.body.length == 0, r.text))
 			.expect(200);
 	});
 
@@ -271,15 +271,15 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_value',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
-				hash_attribute: `${generic.emps_id}`,
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
+				hash_attribute: `${testData.emps_id}`,
 				search_attribute: 'lastname',
 				search_value: 'King',
 				get_attributes: ['firstname', 'lastname'],
 			})
-			.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-			.expect((r) => assert.ok(typeof r.body[0] === 'object'))
+			.expect((r) => assert.ok(r.body.length == 1, r.text))
+			.expect((r) => assert.ok(typeof r.body[0] === 'object', r.text))
 			.expect(200);
 	});
 
@@ -289,16 +289,16 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_value',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
-				hash_attribute: `${generic.emps_id}`,
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
+				hash_attribute: `${testData.emps_id}`,
 				search_attribute: 'lastname',
 				search_value: 'D*',
 				get_attributes: ['firstname', 'lastname'],
 			})
-			.expect((r) => assert.ok(r.body.length == 2))
-			.expect((r) => assert.ok(typeof r.body[0] === 'object'))
-			.expect((r) => assert.ok(typeof r.body[1] === 'object'))
+			.expect((r) => assert.ok(r.body.length == 2, r.text))
+			.expect((r) => assert.ok(typeof r.body[0] === 'object', r.text))
+			.expect((r) => assert.ok(typeof r.body[1] === 'object', r.text))
 			.expect(200);
 	});
 
@@ -311,21 +311,21 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_value',
-				schema: `${generic.schema}`,
-				table: `${generic.ords_tb}`,
-				search_attribute: `${generic.ordd_id}`,
+				schema: `${testData.schema}`,
+				table: `${testData.ords_tb}`,
+				search_attribute: `${testData.ordd_id}`,
 				search_value: '*',
 				get_attributes: ['*'],
 				limit: 20,
 			})
-			.expect((r) => assert.ok(r.body.length == 20))
+			.expect((r) => assert.ok(r.body.length == 20, r.text))
 			.expect((r) => {
 				let ids = [
 					10248, 10249, 10250, 10251, 10252, 10253, 10254, 10255, 10256, 10257, 10258, 10259, 10260, 10261, 10262,
 					10263, 10264, 10265, 10266, 10267,
 				];
 				for (let x = 0, length = ids.length; x < length; x++) {
-					assert.ok(r.body[x].orderid == ids[x]);
+					assert.ok(r.body[x].orderid == ids[x], r.text);
 				}
 			})
 			.expect(200);
@@ -337,14 +337,14 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_value',
-				schema: `${generic.schema}`,
-				table: `${generic.ords_tb}`,
-				search_attribute: `${generic.ordd_id}`,
+				schema: `${testData.schema}`,
+				table: `${testData.ords_tb}`,
+				search_attribute: `${testData.ordd_id}`,
 				search_value: '*',
 				get_attributes: ['*'],
 				offset: 20,
 			})
-			.expect((r) => assert.ok(r.body.length == 810))
+			.expect((r) => assert.ok(r.body.length == 810, r.text))
 			.expect((r) => {
 				let ids = [
 					10268, 10269, 10270, 10271, 10272, 10273, 10274, 10275, 10276, 10277, 10278, 10279, 10280, 10281, 10282,
@@ -403,7 +403,7 @@ describe('4. NoSQL Tests', () => {
 					11063, 11064, 11065, 11066, 11067, 11068, 11069, 11070, 11071, 11072, 11073, 11074, 11075, 11076, 11077,
 				];
 				for (let x = 0, length = ids.length; x < length; x++) {
-					assert.ok(r.body[x].orderid == ids[x]);
+					assert.ok(r.body[x].orderid == ids[x], r.text);
 				}
 			})
 			.expect(200);
@@ -415,22 +415,22 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_value',
-				schema: `${generic.schema}`,
-				table: `${generic.ords_tb}`,
-				search_attribute: `${generic.ordd_id}`,
+				schema: `${testData.schema}`,
+				table: `${testData.ords_tb}`,
+				search_attribute: `${testData.ordd_id}`,
 				search_value: '*',
 				get_attributes: ['*'],
 				limit: 20,
 				offset: 20,
 			})
-			.expect((r) => assert.ok(r.body.length == 20))
+			.expect((r) => assert.ok(r.body.length == 20, r.text))
 			.expect((r) => {
 				let ids = [
 					10268, 10269, 10270, 10271, 10272, 10273, 10274, 10275, 10276, 10277, 10278, 10279, 10280, 10281, 10282,
 					10283, 10284, 10285, 10286, 10287,
 				];
 				for (let x = 0, length = ids.length; x < length; x++) {
-					assert.ok(r.body[x].orderid == ids[x]);
+					assert.ok(r.body[x].orderid == ids[x], r.text);
 				}
 			})
 			.expect(200);
@@ -442,14 +442,14 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_value',
-				schema: `${generic.schema}`,
-				table: `${generic.ords_tb}`,
-				search_attribute: `${generic.ordd_id}`,
+				schema: `${testData.schema}`,
+				table: `${testData.ords_tb}`,
+				search_attribute: `${testData.ordd_id}`,
 				search_value: '*',
 				get_attributes: ['*'],
 				reverse: true,
 			})
-			.expect((r) => assert.ok(r.body.length == 830))
+			.expect((r) => assert.ok(r.body.length == 830, r.text))
 			.expect((r) => {
 				let ids = [
 					11077, 11076, 11075, 11074, 11073, 11072, 11071, 11070, 11069, 11068, 11067, 11066, 11065, 11064, 11063,
@@ -510,7 +510,7 @@ describe('4. NoSQL Tests', () => {
 					10252, 10251, 10250, 10249, 10248,
 				];
 				for (let x = 0, length = ids.length; x < length; x++) {
-					assert.ok(r.body[x].orderid == ids[x]);
+					assert.ok(r.body[x].orderid == ids[x], r.text);
 				}
 			})
 			.expect(200);
@@ -522,15 +522,15 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_value',
-				schema: `${generic.schema}`,
-				table: `${generic.ords_tb}`,
-				search_attribute: `${generic.ordd_id}`,
+				schema: `${testData.schema}`,
+				table: `${testData.ords_tb}`,
+				search_attribute: `${testData.ordd_id}`,
 				search_value: '*',
 				get_attributes: ['*'],
 				reverse: true,
 				offset: 20,
 			})
-			.expect((r) => assert.ok(r.body.length == 810))
+			.expect((r) => assert.ok(r.body.length == 810, r.text))
 			.expect((r) => {
 				let ids = [
 					11057, 11056, 11055, 11054, 11053, 11052, 11051, 11050, 11049, 11048, 11047, 11046, 11045, 11044, 11043,
@@ -589,7 +589,7 @@ describe('4. NoSQL Tests', () => {
 					10262, 10261, 10260, 10259, 10258, 10257, 10256, 10255, 10254, 10253, 10252, 10251, 10250, 10249, 10248,
 				];
 				for (let x = 0, length = ids.length; x < length; x++) {
-					assert.ok(r.body[x].orderid == ids[x]);
+					assert.ok(r.body[x].orderid == ids[x], r.text);
 				}
 			})
 			.expect(200);
@@ -601,22 +601,22 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_value',
-				schema: `${generic.schema}`,
-				table: `${generic.ords_tb}`,
-				search_attribute: `${generic.ordd_id}`,
+				schema: `${testData.schema}`,
+				table: `${testData.ords_tb}`,
+				search_attribute: `${testData.ordd_id}`,
 				search_value: '*',
 				get_attributes: ['*'],
 				reverse: true,
 				limit: 20,
 			})
-			.expect((r) => assert.ok(r.body.length == 20))
+			.expect((r) => assert.ok(r.body.length == 20, r.text))
 			.expect((r) => {
 				let ids = [
 					11077, 11076, 11075, 11074, 11073, 11072, 11071, 11070, 11069, 11068, 11067, 11066, 11065, 11064, 11063,
 					11062, 11061, 11060, 11059, 11058,
 				];
 				for (let x = 0, length = ids.length; x < length; x++) {
-					assert.ok(r.body[x].orderid == ids[x]);
+					assert.ok(r.body[x].orderid == ids[x], r.text);
 				}
 			})
 			.expect(200);
@@ -628,23 +628,23 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_value',
-				schema: `${generic.schema}`,
-				table: `${generic.ords_tb}`,
-				search_attribute: `${generic.ordd_id}`,
+				schema: `${testData.schema}`,
+				table: `${testData.ords_tb}`,
+				search_attribute: `${testData.ordd_id}`,
 				search_value: '*',
 				get_attributes: ['*'],
 				reverse: true,
 				offset: 20,
 				limit: 20,
 			})
-			.expect((r) => assert.ok(r.body.length == 20))
+			.expect((r) => assert.ok(r.body.length == 20, r.text))
 			.expect((r) => {
 				let ids = [
 					11057, 11056, 11055, 11054, 11053, 11052, 11051, 11050, 11049, 11048, 11047, 11046, 11045, 11044, 11043,
 					11042, 11041, 11040, 11039, 11038,
 				];
 				for (let x = 0, length = ids.length; x < length; x++) {
-					assert.ok(r.body[x].orderid == ids[x]);
+					assert.ok(r.body[x].orderid == ids[x], r.text);
 				}
 			})
 			.expect(200);
@@ -658,11 +658,11 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'update',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
-				records: [{ [generic.emps_id]: 1, address: 'def1234' }],
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
+				records: [{ [testData.emps_id]: 1, address: 'def1234' }],
 			})
-			.expect((r) => assert.ok(r.body.update_hashes[0] == 1))
+			.expect((r) => assert.ok(r.body.update_hashes[0] == 1, r.text))
 			.expect(200);
 	});
 
@@ -672,14 +672,14 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_hash',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
-				hash_attribute: `${generic.emps_id}`,
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
+				hash_attribute: `${testData.emps_id}`,
 				hash_values: [1],
-				get_attributes: [`${generic.emps_id}`, 'address'],
+				get_attributes: [`${testData.emps_id}`, 'address'],
 			})
-			.expect((r) => assert.ok(r.body[0].employeeid == 1))
-			.expect((r) => assert.ok(r.body[0].address == 'def1234'))
+			.expect((r) => assert.ok(r.body[0].employeeid == 1, r.text))
+			.expect((r) => assert.ok(r.body[0].address == 'def1234', r.text))
 			.expect(200);
 	});
 
@@ -693,7 +693,7 @@ describe('4. NoSQL Tests', () => {
 				table: 'aggr',
 				records: [{ all: 4, dog_name: '.', owner_name: '..' }],
 			})
-			.expect((r) => assert.ok(r.body.update_hashes[0] == 4))
+			.expect((r) => assert.ok(r.body.update_hashes[0] == 4, r.text))
 			.expect(200);
 	});
 
@@ -703,11 +703,11 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'update',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
-				records: [{ [generic.emps_id]: 1, address: 'def1234', test_record: "I'mATest" }],
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
+				records: [{ [testData.emps_id]: 1, address: 'def1234', test_record: "I'mATest" }],
 			})
-			.expect((r) => assert.ok(r.body.update_hashes[0] == 1))
+			.expect((r) => assert.ok(r.body.update_hashes[0] == 1, r.text))
 			.expect(200);
 		await setTimeout(200);
 	});
@@ -718,24 +718,24 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'insert',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
 				records: [
 					{
-						[generic.emps_id]: 212,
+						[testData.emps_id]: 212,
 						address: 'def1234',
 						lastname: 'dobolina',
 						firstname: 'bob',
 					},
 					{
-						[generic.emps_id]: 212,
+						[testData.emps_id]: 212,
 						address: 'def1234',
 						lastname: 'dobolina2',
 						firstname: 'bob',
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body.skipped_hashes[0] == 212))
+			.expect((r) => assert.ok(r.body.skipped_hashes[0] == 212, r.text))
 			.expect(200);
 	});
 
@@ -745,12 +745,12 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'insert',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
 				records: [{ address: '1 North Street', lastname: 'Dog', firstname: 'Harper' }],
 			})
-			.expect((r) => assert.ok(r.body.inserted_hashes.length == 1))
-			.expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records'))
+			.expect((r) => assert.ok(r.body.inserted_hashes.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records', r.text))
 			.expect(200);
 	});
 
@@ -760,12 +760,12 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'insert',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
-				records: [{ [generic.emps_id]: '', address: '23 North Street', lastname: 'Cat', firstname: 'Brian' }],
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
+				records: [{ [testData.emps_id]: '', address: '23 North Street', lastname: 'Cat', firstname: 'Brian' }],
 			})
-			.expect((r) => assert.ok(r.body.inserted_hashes.length == 1))
-			.expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records'))
+			.expect((r) => assert.ok(r.body.inserted_hashes.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records', r.text))
 			.expect(200);
 	});
 
@@ -775,14 +775,14 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_hash',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
-				hash_attribute: `${generic.emps_id}`,
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
+				hash_attribute: `${testData.emps_id}`,
 				hash_values: [1],
 				get_attributes: ['address', 'test_record'],
 			})
-			.expect((r) => assert.ok(r.body[0].address == 'def1234'))
-			.expect((r) => assert.ok(r.body[0].test_record == "I'mATest"))
+			.expect((r) => assert.ok(r.body[0].address == 'def1234', r.text))
+			.expect((r) => assert.ok(r.body[0].test_record == "I'mATest", r.text))
 			.expect(200);
 	});
 
@@ -797,8 +797,8 @@ describe('4. NoSQL Tests', () => {
 				hash_values: [4],
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body[0].dog_name == '.'))
-			.expect((r) => assert.ok(r.body[0].owner_name == '..'))
+			.expect((r) => assert.ok(r.body[0].dog_name == '.', r.text))
+			.expect((r) => assert.ok(r.body[0].owner_name == '..', r.text))
 			.expect(200);
 	});
 
@@ -813,7 +813,7 @@ describe('4. NoSQL Tests', () => {
 				hash_values: [4],
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body.error == "database 'callABC' does not exist"))
+			.expect((r) => assert.ok(r.body.error == "database 'callABC' does not exist", r.text))
 			.expect(404);
 	});
 
@@ -828,7 +828,7 @@ describe('4. NoSQL Tests', () => {
 				hash_values: [4],
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body.error == "Table 'call.aggrABC' does not exist"))
+			.expect((r) => assert.ok(r.body.error == "Table 'call.aggrABC' does not exist", r.text))
 			.expect(404);
 	});
 
@@ -843,7 +843,7 @@ describe('4. NoSQL Tests', () => {
 				hash_values: 4,
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body.error == "'hash_values' must be an array"))
+			.expect((r) => assert.ok(r.body.error == "'hash_values' must be an array", r.text))
 			.expect(500);
 	});
 
@@ -858,7 +858,7 @@ describe('4. NoSQL Tests', () => {
 				hash_values: [4],
 				get_attributes: '*',
 			})
-			.expect((r) => assert.ok(r.body.error == "'get_attributes' must be an array"))
+			.expect((r) => assert.ok(r.body.error == "'get_attributes' must be an array", r.text))
 			.expect(500);
 	});
 
@@ -868,9 +868,9 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'update',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
-				records: [{ [generic.emps_id]: 2, address: 0, hireDate: null, notes: false }],
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
+				records: [{ [testData.emps_id]: 2, address: 0, hireDate: null, notes: false }],
 			})
 			.expect((r) =>
 				assert.ok(
@@ -878,7 +878,7 @@ describe('4. NoSQL Tests', () => {
 					'Expected response message to eql "updated 1 of 1 records"'
 				)
 			)
-			.expect((r) => assert.ok(r.body.update_hashes[0] == 2))
+			.expect((r) => assert.ok(r.body.update_hashes[0] == 2, r.text))
 			.expect(200);
 	});
 
@@ -888,15 +888,15 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_hash',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
-				hash_attribute: `${generic.emps_id}`,
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
+				hash_attribute: `${testData.emps_id}`,
 				hash_values: [2],
 				get_attributes: ['address', 'hireDate', 'notes'],
 			})
-			.expect((r) => assert.ok(r.body[0].address == 0))
-			.expect((r) => assert.ok(r.body[0].hireDate == null))
-			.expect((r) => assert.ok(r.body[0].notes == false))
+			.expect((r) => assert.ok(r.body[0].address == 0, r.text))
+			.expect((r) => assert.ok(r.body[0].hireDate == null, r.text))
+			.expect((r) => assert.ok(r.body[0].notes == false, r.text))
 			.expect(200);
 	});
 
@@ -906,13 +906,11 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'update',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
 				records: [{ address: '3000 Dog Place' }],
 			})
-			.expect((r) =>
-				assert.ok(r.body.error == 'a valid hash attribute must be provided with update record, check log for more info')
-			)
+			.expect((r) => assert.ok(r.body.error == 'a valid hash attribute must be provided with update record, check log for more info', r.text))
 			.expect(400);
 	});
 
@@ -922,13 +920,11 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'update',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
-				records: [{ [generic.emps_id]: '', address: '123 North Blvd', notes: 'This guy is the real deal' }],
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
+				records: [{ [testData.emps_id]: '', address: '123 North Blvd', notes: 'This guy is the real deal' }],
 			})
-			.expect((r) =>
-				assert.ok(r.body.error == 'a valid hash attribute must be provided with update record, check log for more info')
-			)
+			.expect((r) => assert.ok(r.body.error == 'a valid hash attribute must be provided with update record, check log for more info', r.text))
 			.expect(400);
 	});
 
@@ -938,25 +934,23 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'update',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
 				records: [
 					{
-						[generic.emps_id]: 2,
+						[testData.emps_id]: 2,
 						address: '123 North Blvd',
 						notes: 'This guy is the real deal',
 					},
 					{ address: '45 Lost St', notes: "This person doesn't even have an id!" },
 					{
-						[generic.emps_id]: 3,
+						[testData.emps_id]: 3,
 						address: '1 Main St',
 						notes: 'This guy okay',
 					},
 				],
 			})
-			.expect((r) =>
-				assert.ok(r.body.error == 'a valid hash attribute must be provided with update record, check log for more info')
-			)
+			.expect((r) => assert.ok(r.body.error == 'a valid hash attribute must be provided with update record, check log for more info', r.text))
 			.expect(400);
 	});
 
@@ -966,22 +960,22 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'update',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
-				records: [{ [generic.emps_id]: 'There is no way this exists', notes: 'who is this fella?' }],
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
+				records: [{ [testData.emps_id]: 'There is no way this exists', notes: 'who is this fella?' }],
 			})
 			.expect((r) => {
 				if (r.body.message === 'updated 0 of 1 records') {
-					assert.ok(r.body.message == 'updated 0 of 1 records');
-					assert.deepEqual(r.body.update_hashes, []);
-					assert.ok(r.body.skipped_hashes[0] == 'There is no way this exists');
+					assert.ok(r.body.message == 'updated 0 of 1 records', r.text);
+					assert.deepEqual(r.body.update_hashes, [], r.text);
+					assert.ok(r.body.skipped_hashes[0] == 'There is no way this exists', r.text);
 				} else if (r.body.message === 'updated 1 of 1 records') {
 					assert.ok(
 						r.body.message == 'updated 1 of 1 records',
 						'Expected response message to eql "updated 1 of 1 records"'
 					);
-					assert.ok(r.body.update_hashes[0] == 'There is no way this exists');
-					assert.deepEqual(r.body.skipped_hashes, []);
+					assert.ok(r.body.update_hashes[0] == 'There is no way this exists', r.text);
+					assert.deepEqual(r.body.skipped_hashes, [], r.text);
 				}
 			})
 			.expect(200);
@@ -1000,14 +994,14 @@ describe('4. NoSQL Tests', () => {
 					'Location ... Location ...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:*',
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body.length == 2))
+			.expect((r) => assert.ok(r.body.length == 2, r.text))
 			.expect((r) => {
 				r.body.forEach((record) => {
 					let keys = Object.keys(record);
 					if (keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1) {
-						assert.ok(keys.length == 5);
+						assert.ok(keys.length == 5, r.text);
 					} else {
-						assert.ok(keys.length == 3);
+						assert.ok(keys.length == 3, r.text);
 					}
 					assert.ok(
 						record.remarks.includes(
@@ -1033,14 +1027,14 @@ describe('4. NoSQL Tests', () => {
 					"**DON'T MISS THIS BEAUTIFUL DAVID WEEKLEY BELMONTE MODEL*ONE OF THE LARGEST LOTS IN CROSSWATER*GREAT FOR OUTDOOR FUN!*LUXURIOUS LIVING!*HIGH TECH HOME*CROWN MOLDING, CUSTOM PLANTATION SHUTTERS, 18'' TILE & CUSTOM WHITE OAK HARDWOOD FLOORING...",
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
+			.expect((r) => assert.ok(r.body.length == 1, r.text))
 			.expect((r) => {
 				r.body.forEach((record) => {
 					let keys = Object.keys(record);
 					if (keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1) {
-						assert.ok(keys.length == 5);
+						assert.ok(keys.length == 5, r.text);
 					} else {
-						assert.ok(keys.length == 3);
+						assert.ok(keys.length == 3, r.text);
 					}
 					assert.ok(
 						record.remarks.includes(
@@ -1066,16 +1060,16 @@ describe('4. NoSQL Tests', () => {
 				search_value: '*4 Bedroom/2.5+*',
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body.length == 3))
+			.expect((r) => assert.ok(r.body.length == 3, r.text))
 			.expect((r) => {
 				r.body.forEach((record) => {
 					let keys = Object.keys(record);
 					if (keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1) {
-						assert.ok(keys.length == 5);
+						assert.ok(keys.length == 5, r.text);
 					} else {
-						assert.ok(keys.length == 3);
+						assert.ok(keys.length == 3, r.text);
 					}
-					assert.ok(record.remarks.includes('4 Bedroom/2.5+'));
+					assert.ok(record.remarks.includes('4 Bedroom/2.5+'), r.text);
 				});
 			})
 			.expect(200);
@@ -1093,14 +1087,14 @@ describe('4. NoSQL Tests', () => {
 				search_value: '*',
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body.length == 11))
+			.expect((r) => assert.ok(r.body.length == 11, r.text))
 			.expect((r) => {
 				r.body.forEach((record) => {
 					let keys = Object.keys(record);
 					if (keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1) {
-						assert.ok(keys.length == 5);
+						assert.ok(keys.length == 5, r.text);
 					} else {
-						assert.ok(keys.length == 3);
+						assert.ok(keys.length == 3, r.text);
 					}
 				});
 			})
@@ -1120,14 +1114,14 @@ describe('4. NoSQL Tests', () => {
 					'***Spacious & updated 2-story home on large preserve lot nearly 1/2 acre! Concrete block constr. & desirable ICW location near JTB, shopping, dining & the beach! Great split BD flrpln w/soaring ceilings features 4BD + office, upstairs loft & 3 full BA.',
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
+			.expect((r) => assert.ok(r.body.length == 1, r.text))
 			.expect((r) => {
 				r.body.forEach((record) => {
 					let keys = Object.keys(record);
 					if (keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1) {
-						assert.ok(keys.length == 5);
+						assert.ok(keys.length == 5, r.text);
 					} else {
-						assert.ok(keys.length == 3);
+						assert.ok(keys.length == 3, r.text);
 					}
 					assert.ok(
 						record.remarks.includes(
@@ -1153,12 +1147,12 @@ describe('4. NoSQL Tests', () => {
 				hash_values: [0],
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
+			.expect((r) => assert.ok(r.body.length == 1, r.text))
 			.expect((r) => {
 				let record = r.body[0];
-				assert.ok(record.id == 0);
-				assert.ok(record.another_attribute == 'another_1');
-				assert.ok(record.some_attribute == 'some_att1');
+				assert.ok(record.id == 0, r.text);
+				assert.ok(record.another_attribute == 'another_1', r.text);
+				assert.ok(record.some_attribute == 'some_att1', r.text);
 			})
 			.expect(200);
 	});
@@ -1175,16 +1169,16 @@ describe('4. NoSQL Tests', () => {
 				hash_values: ['011', '00011'],
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body.length == 2))
+			.expect((r) => assert.ok(r.body.length == 2, r.text))
 			.expect((r) => {
 				let record = r.body[0];
-				assert.ok(record.id == '011');
-				assert.ok(record.another_attribute == 'another_2');
-				assert.ok(record.some_attribute == 'some_att2');
+				assert.ok(record.id == '011', r.text);
+				assert.ok(record.another_attribute == 'another_2', r.text);
+				assert.ok(record.some_attribute == 'some_att2', r.text);
 				let record2 = r.body[1];
-				assert.ok(record2.id == '00011');
-				assert.ok(record2.another_attribute == 'another_3');
-				assert.ok(record2.some_attribute == 'some_att3');
+				assert.ok(record2.id == '00011', r.text);
+				assert.ok(record2.another_attribute == 'another_3', r.text);
+				assert.ok(record2.some_attribute == 'some_att3', r.text);
 			})
 			.expect(200);
 	});
@@ -1201,10 +1195,10 @@ describe('4. NoSQL Tests', () => {
 				search_value: 0,
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-			.expect((r) => assert.ok(r.body[0].id == 0))
-			.expect((r) => assert.ok(r.body[0].another_attribute == 'another_1'))
-			.expect((r) => assert.ok(r.body[0].some_attribute == 'some_att1'))
+			.expect((r) => assert.ok(r.body.length == 1, r.text))
+			.expect((r) => assert.ok(r.body[0].id == 0, r.text))
+			.expect((r) => assert.ok(r.body[0].another_attribute == 'another_1', r.text))
+			.expect((r) => assert.ok(r.body[0].some_attribute == 'some_att1', r.text))
 			.expect(200);
 	});
 
@@ -1220,10 +1214,10 @@ describe('4. NoSQL Tests', () => {
 				search_value: '011',
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-			.expect((r) => assert.ok(r.body[0].id == '011'))
-			.expect((r) => assert.ok(r.body[0].another_attribute == 'another_2'))
-			.expect((r) => assert.ok(r.body[0].some_attribute == 'some_att2'))
+			.expect((r) => assert.ok(r.body.length == 1, r.text))
+			.expect((r) => assert.ok(r.body[0].id == '011', r.text))
+			.expect((r) => assert.ok(r.body[0].another_attribute == 'another_2', r.text))
+			.expect((r) => assert.ok(r.body[0].some_attribute == 'some_att2', r.text))
 			.expect(200);
 	});
 
@@ -1239,17 +1233,17 @@ describe('4. NoSQL Tests', () => {
 				search_value: '0*',
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body.length == 2))
+			.expect((r) => assert.ok(r.body.length == 2, r.text))
 			.expect((r) => {
 				let record2 = r.body[0];
-				assert.ok(record2.id == '00011');
-				assert.ok(record2.another_attribute == 'another_3');
-				assert.ok(record2.some_attribute == 'some_att3');
+				assert.ok(record2.id == '00011', r.text);
+				assert.ok(record2.another_attribute == 'another_3', r.text);
+				assert.ok(record2.some_attribute == 'some_att3', r.text);
 
 				let record1 = r.body[1];
-				assert.ok(record1.id == '011');
-				assert.ok(record1.another_attribute == 'another_2');
-				assert.ok(record1.some_attribute == 'some_att2');
+				assert.ok(record1.id == '011', r.text);
+				assert.ok(record1.another_attribute == 'another_2', r.text);
+				assert.ok(record1.some_attribute == 'some_att2', r.text);
 			})
 			.expect(200);
 	});
@@ -1260,8 +1254,8 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'upsert',
-				schema: `${generic.schema}`,
-				table: `${generic.prod_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.prod_tb}`,
 				records: [
 					{
 						categoryid: 1,
@@ -1301,10 +1295,10 @@ describe('4. NoSQL Tests', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body.upserted_hashes.length == 3))
-			.expect((r) => assert.deepEqual(r.body.upserted_hashes, [1, 100, 101]))
-			.expect((r) => assert.ok(!r.body.skipped_hashes))
-			.expect((r) => assert.ok(r.body.message == 'upserted 3 of 3 records'))
+			.expect((r) => assert.ok(r.body.upserted_hashes.length == 3, r.text))
+			.expect((r) => assert.deepEqual(r.body.upserted_hashes, [1, 100, 101], r.text))
+			.expect((r) => assert.ok(!r.body.skipped_hashes, r.text))
+			.expect((r) => assert.ok(r.body.message == 'upserted 3 of 3 records', r.text))
 			.expect(200);
 	});
 
@@ -1314,8 +1308,8 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_value',
-				schema: `${generic.schema}`,
-				table: `${generic.prod_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.prod_tb}`,
 				search_attribute: 'discontinued',
 				search_value: true,
 				get_attributes: ['*'],
@@ -1323,8 +1317,8 @@ describe('4. NoSQL Tests', () => {
 			.expect((r) => {
 				const expectedHashes = [1, 100, 101];
 				r.body.forEach((row) => {
-					assert.ok(expectedHashes.includes(row.productid));
-					assert.ok(row.discontinued);
+					assert.ok(expectedHashes.includes(row.productid), r.text);
+					assert.ok(row.discontinued, r.text);
 				});
 			})
 			.expect(200);
@@ -1336,8 +1330,8 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'upsert',
-				schema: `${generic.schema}`,
-				table: `${generic.prod_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.prod_tb}`,
 				records: [
 					{
 						categoryid: 1,
@@ -1374,9 +1368,9 @@ describe('4. NoSQL Tests', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body.upserted_hashes.length == 3))
-			.expect((r) => assert.ok(!r.body.skipped_hashes))
-			.expect((r) => assert.ok(r.body.message == 'upserted 3 of 3 records'))
+			.expect((r) => assert.ok(r.body.upserted_hashes.length == 3, r.text))
+			.expect((r) => assert.ok(!r.body.skipped_hashes, r.text))
+			.expect((r) => assert.ok(r.body.message == 'upserted 3 of 3 records', r.text))
 			.expect(200);
 	});
 
@@ -1384,12 +1378,12 @@ describe('4. NoSQL Tests', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
-			.send({ operation: 'delete', schema: `${generic.schema}`, table: `${generic.prod_tb}`, hash_values: [100] })
-			.expect((r) => assert.ok(r.body.deleted_hashes.length == 1))
-			.expect((r) => assert.deepEqual(r.body.deleted_hashes, [100]))
-			.expect((r) => assert.ok(r.body.skipped_hashes.length == 0))
-			.expect((r) => assert.deepEqual(r.body.skipped_hashes, []))
-			.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted'))
+			.send({ operation: 'delete', schema: `${testData.schema}`, table: `${testData.prod_tb}`, hash_values: [100] })
+			.expect((r) => assert.ok(r.body.deleted_hashes.length == 1, r.text))
+			.expect((r) => assert.deepEqual(r.body.deleted_hashes, [100], r.text))
+			.expect((r) => assert.ok(r.body.skipped_hashes.length == 0, r.text))
+			.expect((r) => assert.deepEqual(r.body.skipped_hashes, [], r.text))
+			.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted', r.text))
 			.expect(200);
 	});
 
@@ -1399,8 +1393,8 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'update',
-				schema: `${generic.schema}`,
-				table: `${generic.prod_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.prod_tb}`,
 				records: [
 					{ productid: 1, discontinued: true },
 					{
@@ -1417,11 +1411,11 @@ describe('4. NoSQL Tests', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body.update_hashes.length == 1))
-			.expect((r) => assert.deepEqual(r.body.update_hashes, [1]))
-			.expect((r) => assert.ok(r.body.skipped_hashes.length == 1))
-			.expect((r) => assert.deepEqual(r.body.skipped_hashes, [100]))
-			.expect((r) => assert.ok(r.body.message == 'updated 1 of 2 records'))
+			.expect((r) => assert.ok(r.body.update_hashes.length == 1, r.text))
+			.expect((r) => assert.deepEqual(r.body.update_hashes, [1], r.text))
+			.expect((r) => assert.ok(r.body.skipped_hashes.length == 1, r.text))
+			.expect((r) => assert.deepEqual(r.body.skipped_hashes, [100], r.text))
+			.expect((r) => assert.ok(r.body.message == 'updated 1 of 2 records', r.text))
 			.expect(200);
 	});
 
@@ -1431,8 +1425,8 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'update',
-				schema: `${generic.schema}`,
-				table: `${generic.prod_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.prod_tb}`,
 				records: [{ productid: 1, discontinued: 'False' }],
 			})
 			.expect((r) =>
@@ -1441,10 +1435,10 @@ describe('4. NoSQL Tests', () => {
 					'Expected response message to eql "updated 1 of 1 records"'
 				)
 			)
-			.expect((r) => assert.ok(r.body.update_hashes.length == 1))
-			.expect((r) => assert.deepEqual(r.body.update_hashes, [1]))
-			.expect((r) => assert.ok(r.body.skipped_hashes.length == 0))
-			.expect((r) => assert.deepEqual(r.body.skipped_hashes, []))
+			.expect((r) => assert.ok(r.body.update_hashes.length == 1, r.text))
+			.expect((r) => assert.deepEqual(r.body.update_hashes, [1], r.text))
+			.expect((r) => assert.ok(r.body.skipped_hashes.length == 0, r.text))
+			.expect((r) => assert.deepEqual(r.body.skipped_hashes, [], r.text))
 			.expect(200);
 	});
 
@@ -1454,11 +1448,11 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'update',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
-				records: [{ [generic.emps_id]: 1, __createdtime__: 'bad value' }],
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
+				records: [{ [testData.emps_id]: 1, __createdtime__: 'bad value' }],
 			})
-			.expect((r) => assert.ok(r.body.update_hashes[0] == 1))
+			.expect((r) => assert.ok(r.body.update_hashes[0] == 1, r.text))
 			.expect(200);
 	});
 
@@ -1468,14 +1462,14 @@ describe('4. NoSQL Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_hash',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
-				hash_attribute: `${generic.emps_id}`,
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
+				hash_attribute: `${testData.emps_id}`,
 				hash_values: [1],
-				get_attributes: [`${generic.emps_id}`, '__createdtime__'],
+				get_attributes: [`${testData.emps_id}`, '__createdtime__'],
 			})
-			.expect((r) => assert.ok(r.body[0].employeeid == 1))
-			.expect((r) => assert.ok(r.body[0].__createdtime__ != 'bad value'))
+			.expect((r) => assert.ok(r.body[0].employeeid == 1, r.text))
+			.expect((r) => assert.ok(r.body[0].__createdtime__ != 'bad value', r.text))
 			.expect(200);
 	});
 
@@ -1492,8 +1486,8 @@ describe('4. NoSQL Tests', () => {
 					{ id: 2222, dog_name: '' },
 				],
 			})
-			.expect((r) => assert.ok(r.body.message == 'inserted 2 of 2 records'))
-			.expect((r) => assert.deepEqual(r.body.inserted_hashes, [1111, 2222]))
+			.expect((r) => assert.ok(r.body.message == 'inserted 2 of 2 records', r.text))
+			.expect((r) => assert.deepEqual(r.body.inserted_hashes, [1111, 2222], r.text))
 			.expect(200);
 	});
 
@@ -1509,7 +1503,7 @@ describe('4. NoSQL Tests', () => {
 				search_value: ' ',
 				get_attributes: ['id', 'dog_name'],
 			})
-			.expect((r) => assert.deepEqual(r.body, [{ id: 1111, dog_name: ' ' }]))
+			.expect((r) => assert.deepEqual(r.body, [{ id: 1111, dog_name: ' ' }], r.text))
 			.expect(200);
 	});
 
@@ -1525,7 +1519,7 @@ describe('4. NoSQL Tests', () => {
 				search_value: '',
 				get_attributes: ['id', 'dog_name'],
 			})
-			.expect((r) => assert.deepEqual(r.body, [{ id: 2222, dog_name: '' }]))
+			.expect((r) => assert.deepEqual(r.body, [{ id: 2222, dog_name: '' }], r.text))
 			.expect(200);
 	});
 
@@ -1534,7 +1528,7 @@ describe('4. NoSQL Tests', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'delete', schema: 'dev', table: 'dog', hash_values: [1111, 2222] })
-			.expect((r) => assert.deepEqual(r.body.deleted_hashes, [1111, 2222]))
+			.expect((r) => assert.deepEqual(r.body.deleted_hashes, [1111, 2222], r.text))
 			.expect(200);
 	});
 
@@ -1550,7 +1544,7 @@ describe('4. NoSQL Tests', () => {
 				search_value: 'Hot Diddy Dawg',
 				get_attributes: ['id', 'name'],
 			})
-			.expect((r) => assert.deepEqual(r.body, [{ id: 987654321, name: 'Hot Diddy Dawg' }]))
+			.expect((r) => assert.deepEqual(r.body, [{ id: 987654321, name: 'Hot Diddy Dawg' }], r.text))
 			.expect(200);
 	});
 
@@ -1565,7 +1559,7 @@ describe('4. NoSQL Tests', () => {
 				hash_values: [987654321],
 				get_attributes: ['name'],
 			})
-			.expect((r) => assert.deepEqual(r.body, [{ name: 'Hot Diddy Dawg' }]))
+			.expect((r) => assert.deepEqual(r.body, [{ name: 'Hot Diddy Dawg' }], r.text))
 			.expect(200);
 	});
 
@@ -1574,7 +1568,7 @@ describe('4. NoSQL Tests', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'delete', schema: '123', table: '4', hash_values: [987654321] })
-			.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted'))
+			.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted', r.text))
 			.expect(200);
 	});
 
@@ -1589,10 +1583,10 @@ describe('4. NoSQL Tests', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'age', search_type: 'equals', search_value: 5 }],
 			})
-			.expect((r) => assert.ok(r.body.length == 2))
+			.expect((r) => assert.ok(r.body.length == 2, r.text))
 			.expect((r) => {
 				r.body.forEach((row) => {
-					assert.ok([1, 2].includes(row.id));
+					assert.ok([1, 2].includes(row.id), r.text);
 				});
 			})
 			.expect(200);
@@ -1609,10 +1603,10 @@ describe('4. NoSQL Tests', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'location', search_type: 'contains', search_value: 'Denver' }],
 			})
-			.expect((r) => assert.ok(r.body.length == 6))
+			.expect((r) => assert.ok(r.body.length == 6, r.text))
 			.expect((r) => {
 				r.body.forEach((row) => {
-					assert.ok(row.location.includes('Denver'));
+					assert.ok(row.location.includes('Denver'), r.text);
 				});
 			})
 			.expect(200);
@@ -1629,10 +1623,10 @@ describe('4. NoSQL Tests', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'location', search_type: 'starts_with', search_value: 'Denver' }],
 			})
-			.expect((r) => assert.ok(r.body.length == 6))
+			.expect((r) => assert.ok(r.body.length == 6, r.text))
 			.expect((r) => {
 				r.body.forEach((row) => {
-					assert.ok(row.location.startsWith('Denver'));
+					assert.ok(row.location.startsWith('Denver'), r.text);
 				});
 			})
 			.expect(200);
@@ -1649,10 +1643,10 @@ describe('4. NoSQL Tests', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'dog_name', search_type: 'ends_with', search_value: 'y' }],
 			})
-			.expect((r) => assert.ok(r.body.length == 4))
+			.expect((r) => assert.ok(r.body.length == 4, r.text))
 			.expect((r) => {
 				r.body.forEach((row) => {
-					assert.ok([...row.dog_name].pop() == 'y');
+					assert.ok([...row.dog_name].pop() == 'y', r.text);
 				});
 			})
 			.expect(200);
@@ -1669,10 +1663,10 @@ describe('4. NoSQL Tests', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'age', search_type: 'greater_than', search_value: 4 }],
 			})
-			.expect((r) => assert.ok(r.body.length == 6))
+			.expect((r) => assert.ok(r.body.length == 6, r.text))
 			.expect((r) => {
 				r.body.forEach((row) => {
-					assert.ok(row.age > 4);
+					assert.ok(row.age > 4, r.text);
 				});
 			})
 			.expect(200);
@@ -1689,10 +1683,10 @@ describe('4. NoSQL Tests', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'age', search_type: 'greater_than_equal', search_value: 4 }],
 			})
-			.expect((r) => assert.ok(r.body.length == 8))
+			.expect((r) => assert.ok(r.body.length == 8, r.text))
 			.expect((r) => {
 				r.body.forEach((row) => {
-					assert.ok(row.age >= 4);
+					assert.ok(row.age >= 4, r.text);
 				});
 			})
 			.expect(200);
@@ -1709,10 +1703,10 @@ describe('4. NoSQL Tests', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'age', search_type: 'less_than', search_value: 4 }],
 			})
-			.expect((r) => assert.ok(r.body.length == 2))
+			.expect((r) => assert.ok(r.body.length == 2, r.text))
 			.expect((r) => {
 				r.body.forEach((row) => {
-					assert.ok(row.age < 4);
+					assert.ok(row.age < 4, r.text);
 				});
 			})
 			.expect(200);
@@ -1729,10 +1723,10 @@ describe('4. NoSQL Tests', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'age', search_type: 'less_than_equal', search_value: 4 }],
 			})
-			.expect((r) => assert.ok(r.body.length == 4))
+			.expect((r) => assert.ok(r.body.length == 4, r.text))
 			.expect((r) => {
 				r.body.forEach((row) => {
-					assert.ok(row.age <= 4);
+					assert.ok(row.age <= 4, r.text);
 				});
 			})
 			.expect(200);
@@ -1749,10 +1743,10 @@ describe('4. NoSQL Tests', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'age', search_type: 'between', search_value: [2, 5] }],
 			})
-			.expect((r) => assert.ok(r.body.length == 5))
+			.expect((r) => assert.ok(r.body.length == 5, r.text))
 			.expect((r) => {
 				r.body.forEach((row) => {
-					assert.ok(row.age <= 5 && row.age >= 2);
+					assert.ok(row.age <= 5 && row.age >= 2, r.text);
 				});
 			})
 			.expect(200);
@@ -1769,10 +1763,10 @@ describe('4. NoSQL Tests', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'age', search_type: 'between', search_value: [5, 5] }],
 			})
-			.expect((r) => assert.ok(r.body.length == 2))
+			.expect((r) => assert.ok(r.body.length == 2, r.text))
 			.expect((r) => {
 				r.body.forEach((row) => {
-					assert.ok(row.age == 5);
+					assert.ok(row.age == 5, r.text);
 				});
 			})
 			.expect(200);
@@ -1789,10 +1783,10 @@ describe('4. NoSQL Tests', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'group', search_type: 'between', search_value: ['A', 'B'] }],
 			})
-			.expect((r) => assert.ok(r.body.length == 7))
+			.expect((r) => assert.ok(r.body.length == 7, r.text))
 			.expect((r) => {
 				r.body.forEach((row) => {
-					assert.ok(['A', 'B'].includes(row.group));
+					assert.ok(['A', 'B'].includes(row.group), r.text);
 				});
 			})
 			.expect(200);
@@ -1816,10 +1810,10 @@ describe('4. NoSQL Tests', () => {
 					{ search_attribute: 'age', search_type: 'equals', search_value: 5 },
 				],
 			})
-			.expect((r) => assert.ok(r.body.length == 2))
+			.expect((r) => assert.ok(r.body.length == 2, r.text))
 			.expect((r) => {
 				r.body.forEach((row) => {
-					assert.ok(row.age === 5 && row.group === 'A');
+					assert.ok(row.age === 5 && row.group === 'A', r.text);
 				});
 			})
 			.expect(200);
@@ -1848,10 +1842,10 @@ describe('4. NoSQL Tests', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body.length == 7))
+			.expect((r) => assert.ok(r.body.length == 7, r.text))
 			.expect((r) => {
 				r.body.forEach((row) => {
-					assert.ok(['A', 'B'].includes(row.group));
+					assert.ok(['A', 'B'].includes(row.group), r.text);
 				});
 			})
 			.expect(200);
@@ -1875,11 +1869,11 @@ describe('4. NoSQL Tests', () => {
 					{ search_attribute: 'group', search_type: 'equals', search_value: 'B' },
 				],
 			})
-			.expect((r) => assert.ok(r.body.length == 2))
+			.expect((r) => assert.ok(r.body.length == 2, r.text))
 			.expect((r) => {
 				r.body.forEach((row) => {
-					assert.ok(row.group == 'B');
-					assert.ok(row.location.includes('CO'));
+					assert.ok(row.group == 'B', r.text);
+					assert.ok(row.location.includes('CO'), r.text);
 				});
 			})
 			.expect(200);
@@ -1904,10 +1898,10 @@ describe('4. NoSQL Tests', () => {
 				],
 			})
 			.expect((r) => {
-				assert.ok(r.body.length == 2);
+				assert.ok(r.body.length == 2, r.text);
 				r.body.forEach((row) => {
-					assert.ok(row.group == 'B');
-					assert.ok(row.location.split(', ')[1] == 'CO');
+					assert.ok(row.group == 'B', r.text);
+					assert.ok(row.location.split(', ')[1] == 'CO', r.text);
 				});
 			})
 			.expect(200);
@@ -1932,10 +1926,10 @@ describe('4. NoSQL Tests', () => {
 				],
 			})
 			.expect((r) => {
-				assert.ok(r.body.length == 3);
+				assert.ok(r.body.length == 3, r.text);
 				r.body.forEach((row) => {
-					assert.ok(row.age >= 5);
-					assert.ok(row.location.split(',')[0] == 'Denver');
+					assert.ok(row.age >= 5, r.text);
+					assert.ok(row.location.split(',')[0] == 'Denver', r.text);
 				});
 			})
 			.expect(200);
@@ -1960,10 +1954,10 @@ describe('4. NoSQL Tests', () => {
 					{ search_attribute: 'age', search_type: 'greater_than', search_value: 5 },
 				],
 			})
-			.expect((r) => assert.ok(r.body.length == 8))
+			.expect((r) => assert.ok(r.body.length == 8, r.text))
 			.expect((r) => {
 				r.body.forEach((row) => {
-					assert.ok(row.age <= 4 || row.age > 5);
+					assert.ok(row.age <= 4 || row.age > 5, r.text);
 				});
 			})
 			.expect(200);
@@ -1988,10 +1982,10 @@ describe('4. NoSQL Tests', () => {
 					{ search_attribute: 'location', search_type: 'contains', search_value: 'CO' },
 				],
 			})
-			.expect((r) => assert.ok(r.body.length == 10))
+			.expect((r) => assert.ok(r.body.length == 10, r.text))
 			.expect((r) => {
 				r.body.forEach((row) => {
-					assert.ok(row.location.includes('CO') || row.location.includes('NC'));
+					assert.ok(row.location.includes('CO') || row.location.includes('NC'), r.text);
 				});
 			})
 			.expect(200);
@@ -2017,11 +2011,11 @@ describe('4. NoSQL Tests', () => {
 			})
 			.expect((r) => {
 				const expected_hash_order = [1, 2, 8, 5, 7, 11];
-				assert.ok(r.body.length == 6);
+				assert.ok(r.body.length == 6, r.text);
 				r.body.forEach((row, i) => {
-					assert.ok(['A', 'B', 'C'].includes(row.group));
-					assert.ok(row.location.split(',')[0] == 'Denver');
-					assert.ok(row.id == expected_hash_order[i]);
+					assert.ok(['A', 'B', 'C'].includes(row.group), r.text);
+					assert.ok(row.location.split(',')[0] == 'Denver', r.text);
+					assert.ok(row.id == expected_hash_order[i], r.text);
 				});
 			})
 			.expect(200);
@@ -2049,11 +2043,11 @@ describe('4. NoSQL Tests', () => {
 			})
 			.expect((r) => {
 				const expected_hash_order = [1, 2, 5, 7, 8, 11];
-				assert.ok(r.body.length == 6);
+				assert.ok(r.body.length == 6, r.text);
 				r.body.forEach((row, i) => {
-					assert.ok(['A', 'B', 'C'].includes(row.group));
-					assert.ok(row.location.split(',')[0] == 'Denver');
-					assert.ok(row.id == expected_hash_order[i]);
+					assert.ok(['A', 'B', 'C'].includes(row.group), r.text);
+					assert.ok(row.location.split(',')[0] == 'Denver', r.text);
+					assert.ok(row.id == expected_hash_order[i], r.text);
 				});
 			})
 			.expect(200);
@@ -2081,11 +2075,11 @@ describe('4. NoSQL Tests', () => {
 			})
 			.expect((r) => {
 				const expected_hash_order = [2, 5, 7, 8, 11];
-				assert.ok(r.body.length == 5);
+				assert.ok(r.body.length == 5, r.text);
 				r.body.forEach((row, i) => {
-					assert.ok(['A', 'B', 'C'].includes(row.group));
-					assert.ok(row.location.split(',')[0] == 'Denver');
-					assert.ok(row.id == expected_hash_order[i]);
+					assert.ok(['A', 'B', 'C'].includes(row.group), r.text);
+					assert.ok(row.location.split(',')[0] == 'Denver', r.text);
+					assert.ok(row.id == expected_hash_order[i], r.text);
 				});
 			})
 			.expect(200);
@@ -2113,11 +2107,11 @@ describe('4. NoSQL Tests', () => {
 			})
 			.expect((r) => {
 				const expected_hash_order = [1, 2, 5, 7];
-				assert.ok(r.body.length == 4);
+				assert.ok(r.body.length == 4, r.text);
 				r.body.forEach((row, i) => {
-					assert.ok(['A', 'B', 'C'].includes(row.group));
-					assert.ok(row.location.split(',')[0] == 'Denver');
-					assert.ok(row.id == expected_hash_order[i]);
+					assert.ok(['A', 'B', 'C'].includes(row.group), r.text);
+					assert.ok(row.location.split(',')[0] == 'Denver', r.text);
+					assert.ok(row.id == expected_hash_order[i], r.text);
 				});
 			})
 			.expect(200);
@@ -2146,11 +2140,11 @@ describe('4. NoSQL Tests', () => {
 			})
 			.expect((r) => {
 				const expected_hash_order = [2, 5, 7];
-				assert.ok(r.body.length == expected_hash_order.length);
+				assert.ok(r.body.length == expected_hash_order.length, r.text);
 				r.body.forEach((row, i) => {
-					assert.ok(['A', 'B', 'C'].includes(row.group));
-					assert.ok(row.location.split(',')[0] == 'Denver');
-					assert.ok(row.id == expected_hash_order[i]);
+					assert.ok(['A', 'B', 'C'].includes(row.group), r.text);
+					assert.ok(row.location.split(',')[0] == 'Denver', r.text);
+					assert.ok(row.id == expected_hash_order[i], r.text);
 				});
 			})
 			.expect(200);
@@ -2171,10 +2165,10 @@ describe('4. NoSQL Tests', () => {
 			})
 			.expect((r) => {
 				const expected_hash_order = [11, 1];
-				assert.ok(r.body.length == expected_hash_order.length);
+				assert.ok(r.body.length == expected_hash_order.length, r.text);
 				r.body.forEach((row, i) => {
-					assert.ok(row.location.split(',')[0] == 'Denver');
-					assert.ok(row.id == expected_hash_order[i]);
+					assert.ok(row.location.split(',')[0] == 'Denver', r.text);
+					assert.ok(row.id == expected_hash_order[i], r.text);
 				});
 			})
 			.expect(200);
@@ -2195,10 +2189,10 @@ describe('4. NoSQL Tests', () => {
 			})
 			.expect((r) => {
 				const expected_hash_order = [11, 1, 8];
-				assert.ok(r.body.length == expected_hash_order.length);
+				assert.ok(r.body.length == expected_hash_order.length, r.text);
 				r.body.forEach((row, i) => {
-					assert.ok(row.location.split(',')[0] == 'Denver');
-					assert.ok(row.id == expected_hash_order[i]);
+					assert.ok(row.location.split(',')[0] == 'Denver', r.text);
+					assert.ok(row.id == expected_hash_order[i], r.text);
 				});
 			})
 			.expect(200);
@@ -2220,10 +2214,10 @@ describe('4. NoSQL Tests', () => {
 			})
 			.expect((r) => {
 				const expected_hash_order = [7, 9, 10];
-				assert.ok(r.body.length == expected_hash_order.length);
+				assert.ok(r.body.length == expected_hash_order.length, r.text);
 				r.body.forEach((row, i) => {
-					assert.ok(row.location.toString().split(', ')[1] == 'CO');
-					assert.ok(row.id == expected_hash_order[i]);
+					assert.ok(row.location.toString().split(', ')[1] == 'CO', r.text);
+					assert.ok(row.id == expected_hash_order[i], r.text);
 				});
 			})
 			.expect(200);

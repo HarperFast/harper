@@ -1,5 +1,5 @@
 import request from 'supertest';
-import { envUrl, generic, headers } from '../config/envConfig.js';
+import { envUrl, headers } from '../config/envConfig.js';
 import assert from 'node:assert';
 
 export async function isDevEnv() {
@@ -8,7 +8,7 @@ export async function isDevEnv() {
 		.set(headers)
 		.send({ operation: 'get_configuration' })
 		.expect((r) => {
-			assert.ok(r.body.authentication);
+			assert.ok(r.body.authentication, r.text);
 		})
 		.expect(200);
 	return getConfig.body.authentication.authorizeLocal;

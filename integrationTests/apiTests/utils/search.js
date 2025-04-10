@@ -17,7 +17,7 @@ export async function searchByHash(schemaName, tableName, hashAttribute, hashVal
         .expect((r) => {
             const body = JSON.stringify(r.body);
             if (expectedMessage)
-                assert.ok(body.includes(expectedMessage));
+                assert.ok(body.includes(expectedMessage), r.text);
         })
         .expect(200)
 }

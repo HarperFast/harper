@@ -14,9 +14,9 @@ export async function insert(schemaName, tableName, records, expectedMessage) {
         })
         .expect((r) => {
             const body = JSON.stringify(r.body);
-            assert.ok(body.includes('inserted'));
+            assert.ok(body.includes('inserted'), r.text);
             if (expectedMessage)
-                assert.ok(body.includes(expectedMessage));
+                assert.ok(body.includes(expectedMessage), r.text);
         })
         .expect(200)
 }

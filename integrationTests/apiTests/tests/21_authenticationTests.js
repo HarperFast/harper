@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import request from 'supertest';
-import { envUrl, generic, headers } from '../config/envConfig.js';
+import { envUrl, testData, headers } from '../config/envConfig.js';
 import { isDevEnv } from '../utils/env.js';
 
 describe('21. Authentication Tests', () => {
@@ -15,7 +15,7 @@ describe('21. Authentication Tests', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set({
-				'Authorization': 'Basic ' + Buffer.from(generic.username + ':' + 'thisIsNotMyPassword').toString('base64'),
+				'Authorization': 'Basic ' + Buffer.from(testData.username + ':' + 'thisIsNotMyPassword').toString('base64'),
 				'Content-Type': 'application/json',
 			})
 			.send({ operation: 'describe_all' })
@@ -27,7 +27,7 @@ describe('21. Authentication Tests', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set({
-				'Authorization': 'Basic ' + Buffer.from('thisIsNotMyUsername' + ':' + generic.password).toString('base64'),
+				'Authorization': 'Basic ' + Buffer.from('thisIsNotMyUsername' + ':' + testData.password).toString('base64'),
 				'Content-Type': 'application/json',
 			})
 			.send({ operation: 'describe_all' })
@@ -74,11 +74,11 @@ describe('21. Authentication Tests', () => {
 			.send({ operation: 'describe_all' })
 			.expect(async (r) => {
 				if (await isDevEnv()) {
-					assert.ok((Object.keys(r.body).length > 0));
-					assert.ok(r.status == 200);
+					assert.ok((Object.keys(r.body).length > 0), r.text);
+					assert.ok(r.status == 200, r.text);
 				} else {
 					assert.ok(r.text.includes('Must login'));
-					assert.ok(r.status == 401);
+					assert.ok(r.status == 401, r.text);
 				}
 			})
 	});
@@ -89,22 +89,22 @@ describe('21. Authentication Tests', () => {
 			.set(headers)
 			.send({
 				operation: 'create_authentication_tokens',
-				username: `${generic.username}`,
-				password: `${generic.password}`,
+				username: `${testData.username}`,
+				password: `${testData.password}`,
 			})
-			.expect((r) => assert.ok(r.body.hasOwnProperty('operation_token')))
-			.expect((r) => assert.ok(r.body.operation_token))
+			.expect((r) => assert.ok(r.body.hasOwnProperty('operation_token'), r.text))
+			.expect((r) => assert.ok(r.body.operation_token, r.text))
 			.expect(200);
-		generic.my_operation_token = response.body.operation_token;
+		testData.my_operation_token = response.body.operation_token;
 	});
 
 	it('Describe all with valid auth token', async () => {
 		const response = await request(envUrl)
 			.post('')
 			.set('Content-Type', 'application/json')
-			.set('Authorization', `Bearer ${generic.my_operation_token}`)
+			.set('Authorization', `Bearer ${testData.my_operation_token}`)
 			.send({ operation: 'describe_all' })
-			.expect((r) => assert.ok(Object.keys(r.body).length > 0))
+			.expect((r) => assert.ok(Object.keys(r.body).length > 0, r.text))
 			.expect(200);
 	});
 
@@ -112,8 +112,8 @@ describe('21. Authentication Tests', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set('Content-Type', 'application/json')
-			.send({ operation: 'create_authentication_tokens', username: `${generic.username}`, password: '' })
-			.expect((r) => assert.ok(JSON.stringify(r.body).includes("'password' is not allowed to be empty")))
+			.send({ operation: 'create_authentication_tokens', username: `${testData.username}`, password: '' })
+			.expect((r) => assert.ok(JSON.stringify(r.body).includes("'password' is not allowed to be empty"), r.text))
 			.expect(400);
 	});
 
@@ -121,8 +121,8 @@ describe('21. Authentication Tests', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set('Content-Type', 'application/json')
-			.send({ operation: 'create_authentication_tokens', username: '', password: `${generic.password}` })
-			.expect((r) => assert.ok(JSON.stringify(r.body).includes("'username' is not allowed to be empty")))
+			.send({ operation: 'create_authentication_tokens', username: '', password: `${testData.password}` })
+			.expect((r) => assert.ok(JSON.stringify(r.body).includes("'username' is not allowed to be empty"), r.text))
 			.expect(400);
 	});
 
@@ -131,7 +131,7 @@ describe('21. Authentication Tests', () => {
 			.post('')
 			.set('Content-Type', 'application/json')
 			.send({ operation: 'create_authentication_tokens', username: 'wrongusername', password: 'wrongpassword' })
-			.expect((r) => assert.ok(JSON.stringify(r.body).includes('invalid credentials')))
+			.expect((r) => assert.ok(JSON.stringify(r.body).includes('invalid credentials'), r.text))
 			.expect(401);
 	});
 
@@ -142,11 +142,11 @@ describe('21. Authentication Tests', () => {
 			.send({ operation: 'create_authentication_tokens', username: '', password: '' })
 			.expect(async (r) => {
 				if (await isDevEnv()) {
-					assert.ok(JSON.stringify(r.body).includes("'username' is not allowed to be empty. 'password' is not allowed to be empty"));
-					assert.ok(r.status == 400);
+					assert.ok(JSON.stringify(r.body).includes("'username' is not allowed to be empty. 'password' is not allowed to be empty"), r.text);
+					assert.ok(r.status == 400, r.text);
 				} else {
-					assert.ok(JSON.stringify(r.body).includes("Must login"));
-					assert.ok(r.status == 401);
+					assert.ok(JSON.stringify(r.body).includes("Must login"), r.text);
+					assert.ok(r.status == 401, r.text);
 				}
 			})
 	});

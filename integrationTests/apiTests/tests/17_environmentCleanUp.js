@@ -12,7 +12,7 @@ describe('17. Environment Clean Up', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_schema', schema: 'northnwd' })
-			.expect((r) => assert.ok(r.body.message.includes('successfully delete')))
+			.expect((r) => assert.ok(r.body.message.includes('successfully delete'), r.text))
 			.expect(200);
 		await setTimeout(1000);
 	});
@@ -22,7 +22,7 @@ describe('17. Environment Clean Up', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'describe_all' })
-			.expect((r) => assert.ok(!r.body.hasOwnProperty('northnwd')))
+			.expect((r) => assert.ok(!r.body.hasOwnProperty('northnwd'), r.text))
 			.expect(200);
 	});
 
@@ -31,7 +31,7 @@ describe('17. Environment Clean Up', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_schema', schema: 'dev' })
-			.expect((r) => assert.ok(r.body.message.includes('successfully delete')))
+			.expect((r) => assert.ok(r.body.message.includes('successfully delete'), r.text))
 			.expect(200);
 	});
 
@@ -40,7 +40,7 @@ describe('17. Environment Clean Up', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_schema', schema: 'other' })
-			.expect((r) => assert.ok(r.body.message.includes('successfully delete')))
+			.expect((r) => assert.ok(r.body.message.includes('successfully delete'), r.text))
 			.expect(200);
 	});
 
@@ -49,7 +49,7 @@ describe('17. Environment Clean Up', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_schema', schema: 'another' })
-			.expect((r) => assert.ok(r.body.message.includes('successfully delete')))
+			.expect((r) => assert.ok(r.body.message.includes('successfully delete'), r.text))
 			.expect(200);
 	});
 
@@ -58,7 +58,7 @@ describe('17. Environment Clean Up', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_schema', schema: 'call' })
-			.expect((r) => assert.ok(r.body.message.includes('successfully delete')))
+			.expect((r) => assert.ok(r.body.message.includes('successfully delete'), r.text))
 			.expect(200);
 	});
 

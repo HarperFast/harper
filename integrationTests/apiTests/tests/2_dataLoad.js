@@ -1,7 +1,7 @@
-import {after, describe, it} from 'node:test';
+import {describe, it} from 'node:test';
 import assert from "node:assert";
 import request from 'supertest';
-import { envUrl, generic, getCsvPath, headers } from '../config/envConfig.js';
+import { envUrl, testData, getCsvPath, headers } from '../config/envConfig.js';
 import {createTable} from "../utils/table.js";
 import { csvDataLoad, csvFileUpload, csvUrlLoad } from '../utils/csv.js';
 import {insert} from "../utils/insert.js";
@@ -24,77 +24,77 @@ describe('2. Data Load', () => {
     //CSV Folder
 
     it('1 Upload Suppliers.csv', async () => {
-        await csvFileUpload(generic.schema, generic.supp_tb,
+        await csvFileUpload(testData.schema, testData.supp_tb,
             getCsvPath() + 'Suppliers.csv');
     });
 
     it('2 Upload Region.csv', async () => {
-        await csvFileUpload(generic.schema, generic.regi_tb,
+        await csvFileUpload(testData.schema, testData.regi_tb,
             getCsvPath() + 'Region.csv');
     });
 
     it('3 Upload Territories.csv', async () => {
-        await csvFileUpload(generic.schema, generic.terr_tb,
+        await csvFileUpload(testData.schema, testData.terr_tb,
             getCsvPath() + 'Territories.csv');
     });
 
     it('4 Upload EmployeeTerritories.csv', async () => {
-        await csvFileUpload(generic.schema, generic.empt_tb,
+        await csvFileUpload(testData.schema, testData.empt_tb,
             getCsvPath() + 'EmployeeTerritories.csv');
     });
 
     it('5 Upload Shippers.csv', async () => {
-        await csvFileUpload(generic.schema, generic.ship_tb,
+        await csvFileUpload(testData.schema, testData.ship_tb,
             getCsvPath() + 'Shippers.csv');
     });
 
     it('6 Upload Categories.csv', async () => {
-        await csvFileUpload(generic.schema, generic.cate_tb,
+        await csvFileUpload(testData.schema, testData.cate_tb,
             getCsvPath() + 'Categories.csv');
     });
 
     it('7 Upload Employees.csv', async () => {
-        await csvFileUpload(generic.schema, generic.emps_tb,
+        await csvFileUpload(testData.schema, testData.emps_tb,
             getCsvPath() + 'Employees.csv');
     });
 
     it('8 Upload Customers.csv', async () => {
-        await csvFileUpload(generic.schema, generic.cust_tb,
+        await csvFileUpload(testData.schema, testData.cust_tb,
             getCsvPath() + 'Customers.csv');
     });
 
     it('9 Upload Products.csv', async () => {
-        await csvFileUpload(generic.schema, generic.prod_tb,
+        await csvFileUpload(testData.schema, testData.prod_tb,
             getCsvPath() + 'Products.csv');
     });
 
     it('10 Upload Orderdetails.csv', async () => {
-        await csvFileUpload(generic.schema, generic.ordd_tb,
+        await csvFileUpload(testData.schema, testData.ordd_tb,
             getCsvPath() + 'Orderdetails.csv');
     });
 
     it('11 Upload Orders.csv', async () => {
-        await csvFileUpload(generic.schema, generic.ords_tb,
+        await csvFileUpload(testData.schema, testData.ords_tb,
             getCsvPath() + 'Orders.csv');
     });
 
     it('12 Upload Books.csv', async () => {
-        await csvFileUpload(generic.schema_dev, 'books',
+        await csvFileUpload(testData.schema_dev, 'books',
             getCsvPath() + 'Books.csv');
     });
 
     it('13 Upload BooksRatings.csv', async () => {
-        await csvFileUpload(generic.schema_dev, 'ratings',
+        await csvFileUpload(testData.schema_dev, 'ratings',
             getCsvPath() + 'BooksRatings.csv');
     });
 
     it('14 Upload movies.csv', async () => {
-        await csvFileUpload(generic.schema_dev, 'movie',
+        await csvFileUpload(testData.schema_dev, 'movie',
             getCsvPath() + 'movies.csv');
     });
 
     it('15 Upload credits.csv', async () => {
-        await csvFileUpload(generic.schema_dev, 'credits',
+        await csvFileUpload(testData.schema_dev, 'credits',
             getCsvPath() + 'credits.csv');
     });
 
@@ -102,11 +102,11 @@ describe('2. Data Load', () => {
     //CSV URL Load Folder
 
     it('Create CSV data table', async () => {
-        await createTable(generic.schema, generic.csv_tb, 'id');
+        await createTable(testData.schema, testData.csv_tb, 'id');
     });
 
     it('CSV url load', async () => {
-        await csvUrlLoad(generic.schema, generic.csv_tb,
+        await csvUrlLoad(testData.schema, testData.csv_tb,
             'https://harperdb-integration-test-data.s3.us-east-2.amazonaws.com/breeds.csv',
             '', 'successfully loaded 350 of 350 records');
     });
@@ -118,21 +118,21 @@ describe('2. Data Load', () => {
             .send({
                 operation: 'sql',
                 sql: `select count(*)
-                      from ${generic.schema}.${generic.csv_tb}`
+                      from ${testData.schema}.${testData.csv_tb}`
             })
             .expect((r) => {
-                assert.equal(r.body[0]['COUNT(*)'], 350, `${generic.csv_tb} count was not 350`);
+                assert.equal(r.body[0]['COUNT(*)'], 350, `${testData.csv_tb} count was not 350`);
             })
             .expect(200)
     });
 
 
     it('Create CSV data table empty', async () => {
-        await createTable(generic.schema, generic.csv_tb_empty, 'id');
+        await createTable(testData.schema, testData.csv_tb_empty, 'id');
     });
 
     it('CSV url load empty file', async () => {
-        await csvUrlLoad(generic.schema, generic.csv_tb_empty,
+        await csvUrlLoad(testData.schema, testData.csv_tb_empty,
             'https://s3.amazonaws.com/complimentarydata/breedsEmpty.csv');
     });
 
@@ -143,16 +143,16 @@ describe('2. Data Load', () => {
             .send({
                 operation: 'sql',
                 sql: `select count(*)
-                      from ${generic.schema}.${generic.csv_tb_empty}`
+                      from ${testData.schema}.${testData.csv_tb_empty}`
             })
             .expect((r) => {
-                assert.equal(r.body[0]['COUNT(*)'], 0, `${generic.csv_tb_empty} count was not 0`);
+                assert.equal(r.body[0]['COUNT(*)'], 0, `${testData.csv_tb_empty} count was not 0`);
             })
             .expect(200)
     });
 
     it('CSV file load bad attribute', async () => {
-        await csvUrlLoad(generic.schema, generic.csv_tb_empty,
+        await csvUrlLoad(testData.schema, testData.csv_tb_empty,
             'https://s3.amazonaws.com/complimentarydata/breeds-bad-column-name.csv',
             `Invalid column name 'id/', cancelling load operation`);
     });
@@ -162,23 +162,23 @@ describe('2. Data Load', () => {
     //JSON Folder
 
     it('Import data bulk insert into dev.long_text table', async () => {
-        await insert(generic.schema_dev, 'long_text',
+        await insert(testData.schema_dev, 'long_text',
           longTextJson.records, 'inserted 25');
     });
 
     it('Import data bulk confirm specific value exists', async () => {
-        await searchByHash(generic.schema_dev, 'long_text',
+        await searchByHash(testData.schema_dev, 'long_text',
           'id', [10], ['id', 'remarks'],
           '"id":10,"remarks":"Lovely updated home')
     });
 
     it('Import data bulk insert into call.aggr', async () => {
-        await insert(generic.schema_call, 'aggr',
+        await insert(testData.schema_call, 'aggr',
           dataBulkJson.records, 'inserted 10');
     });
 
     it('Insert dot & double dot data', async () => {
-        await insert(generic.schema_call, 'aggr',
+        await insert(testData.schema_call, 'aggr',
           [
               {
                   all: 11,
@@ -190,14 +190,14 @@ describe('2. Data Load', () => {
     });
 
     it('Insert confirm dot & double data', async () => {
-        await searchByHash(generic.schema_call, 'aggr', 'all',
+        await searchByHash(testData.schema_call, 'aggr', 'all',
           [11], ['all', 'dog_name', 'owner_name'],
           '"all":11,"dog_name":".","owner_name":".."');
 
     });
 
     it('Insert attributes into DropAttributeTest', async () => {
-        await insert(generic.schema_dev, 'AttributeDropTest',
+        await insert(testData.schema_dev, 'AttributeDropTest',
           [
               {
                   hashid: 1,
@@ -214,7 +214,7 @@ describe('2. Data Load', () => {
     });
 
     it('Insert confirm attributes added', async () => {
-        await searchByHash(generic.schema_dev, 'AttributeDropTest',
+        await searchByHash(testData.schema_dev, 'AttributeDropTest',
           'hashid', [1, 2],
           ['hashid', 'some_attribute', 'another_attribute'],
           '{"hashid":1,"some_attribute":"some_att1","another_attribute":"1"},' +
@@ -222,32 +222,32 @@ describe('2. Data Load', () => {
     });
 
     it('Import data bulk insert into dev.remarks_blob table', async () => {
-        await insert(generic.schema_dev, 'remarks_blob',
+        await insert(testData.schema_dev, 'remarks_blob',
           remarksJson.records, 'inserted 11');
     });
 
     it('Insert data into dev.dog', async () => {
-        await insert(generic.schema_dev, 'dog',
+        await insert(testData.schema_dev, 'dog',
           dogJson.records, 'inserted 9');
     });
 
     it('Insert data into dev.breed', async () => {
-        await insert(generic.schema_dev, 'breed',
+        await insert(testData.schema_dev, 'breed',
           breedJson.records, 'inserted 350');
     });
 
     it('Insert data into dev.owner', async () => {
-        await insert(generic.schema_dev, 'owner',
+        await insert(testData.schema_dev, 'owner',
           ownerJson.records, 'inserted 4');
     });
 
     it('Insert data into other.owner', async () => {
-        await insert(generic.schema_other, 'owner',
+        await insert(testData.schema_other, 'owner',
           ownerOnlyJson.records, 'inserted 4');
     });
 
     it('Insert data into another.breed', async () => {
-        await insert(generic.schema_another, 'breed',
+        await insert(testData.schema_another, 'breed',
           breedJson.records, 'inserted 350');
     });
 
@@ -261,7 +261,7 @@ describe('2. Data Load', () => {
     });
 
     it('csv_file_load with invalid attributes', async () => {
-        await csvFileUpload(generic.schema_dev, 'invalid_attribute',
+        await csvFileUpload(testData.schema_dev, 'invalid_attribute',
           getCsvPath() + 'InvalidAttributes.csv', 'Invalid column name');
     });
 
@@ -271,16 +271,16 @@ describe('2. Data Load', () => {
           .set(headers)
           .send({
               'operation': 'search_by_hash',
-              'schema': `${generic.schema}`,
-              'table': `${generic.supp_tb}`,
-              'hash_attribute': `${generic.supp_id}`,
+              'schema': `${testData.schema}`,
+              'table': `${testData.supp_tb}`,
+              'hash_attribute': `${testData.supp_id}`,
               'hash_values': [10],
               'get_attributes': ['supplierid', 'companyname', 'contactname'],
           })
           .expect((r) => {
-              assert.ok(r.body[0].companyname == 'Refrescos Americanas LTDA');
-              assert.ok(r.body[0].supplierid == 10);
-              assert.ok(r.body[0].contactname == 'Carlos Diaz');
+              assert.ok(r.body[0].companyname == 'Refrescos Americanas LTDA', r.text);
+              assert.ok(r.body[0].supplierid == 10, r.text);
+              assert.ok(r.body[0].contactname == 'Carlos Diaz', r.text);
           })
           .expect(200);
     });
@@ -291,17 +291,17 @@ describe('2. Data Load', () => {
           .set(headers)
           .send({
               operation: 'sql', sql: `SELECT *
-                              FROM ${generic.schema}.${generic.supp_tb}`,
+                              FROM ${testData.schema}.${testData.supp_tb}`,
           })
           .expect((r) => {
               let randomNumber = Math.floor(Math.random() * 29);
-              assert.ok(r.body[randomNumber] != null);
-              assert.ok(r.body.length == 29);
+              assert.ok(r.body[randomNumber] != null, r.text);
+              assert.ok(r.body.length == 29, r.text);
               let keys = Object.keys(r.body[randomNumber]);
               if (keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1) {
-                  assert.ok(keys.length == 14);
+                  assert.ok(keys.length == 14, r.text);
               } else {
-                  assert.ok(keys.length == 12);
+                  assert.ok(keys.length == 12, r.text);
 
               }
           })
@@ -315,11 +315,11 @@ describe('2. Data Load', () => {
           .send({
               'operation': 'csv_file_load',
               'action': 'insert',
-              'schema': `${generic.schema}`,
-              'table': `${generic.supp_tb}`,
+              'schema': `${testData.schema}`,
+              'table': `${testData.supp_tb}`,
               'file_path': `${getCsvPath()}Suppliers_wrong.csv`,
           })
-          .expect((r) => assert.ok(r.body.error.includes('No such file or directory')))
+          .expect((r) => assert.ok(r.body.error.includes('No such file or directory'), r.text))
           .expect(400);
     });
 
@@ -330,8 +330,8 @@ describe('2. Data Load', () => {
           .send({
               'operation': 'csv_data_load',
               'action': 'update',
-              'schema': `${generic.schema}`,
-              'table': `${generic.supp_tb}`,
+              'schema': `${testData.schema}`,
+              'table': `${testData.supp_tb}`,
               'data': 'supplierid,companyname\n19,The Chum Bucket\n',
           })
           .expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0,
@@ -347,15 +347,15 @@ describe('2. Data Load', () => {
           .set(headers)
           .send({
               'operation': 'search_by_hash',
-              'schema': `${generic.schema}`,
-              'table': `${generic.supp_tb}`,
-              'hash_attribute': `${generic.supp_id}`,
+              'schema': `${testData.schema}`,
+              'table': `${testData.supp_tb}`,
+              'hash_attribute': `${testData.supp_id}`,
               'hash_values': [19],
               'get_attributes': ['supplierid', 'companyname', 'contactname'],
           })
-          .expect((r) => assert.ok(r.body[0].supplierid == 19))
-          .expect((r) => assert.ok(r.body[0].contactname == 'Robb Merchant'))
-          .expect((r) => assert.ok(r.body[0].companyname == 'The Chum Bucket'))
+          .expect((r) => assert.ok(r.body[0].supplierid == 19, r.text))
+          .expect((r) => assert.ok(r.body[0].contactname == 'Robb Merchant', r.text))
+          .expect((r) => assert.ok(r.body[0].companyname == 'The Chum Bucket', r.text))
           .expect(200);
     });
 
@@ -367,12 +367,12 @@ describe('2. Data Load', () => {
           .set(headers)
           .send({
               'operation': 'insert',
-              'schema': `${generic.schema}`,
-              'table': `${generic.cust_tb}`,
+              'schema': `${testData.schema}`,
+              'table': `${testData.cust_tb}`,
               'records': [{ 'postalcode': { 'house': 30, 'street': 'South St' }, 'customerid': 'TEST1' }],
           })
-          .expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records'))
-          .expect((r) => assert.ok(r.body.inserted_hashes[0] == 'TEST1'))
+          .expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records', r.text))
+          .expect((r) => assert.ok(r.body.inserted_hashes[0] == 'TEST1', r.text))
           .expect(200);
     });
 
@@ -382,14 +382,14 @@ describe('2. Data Load', () => {
           .set(headers)
           .send({
               'operation': 'search_by_hash',
-              'schema': `${generic.schema}`,
-              'table': `${generic.cust_tb}`,
-              'hash_attribute': `${generic.supp_id}`,
+              'schema': `${testData.schema}`,
+              'table': `${testData.cust_tb}`,
+              'hash_attribute': `${testData.supp_id}`,
               'hash_values': ['TEST1'],
               'get_attributes': ['postalcode', 'customerid'],
           })
-          .expect((r) => assert.deepEqual(r.body[0].postalcode, { 'house': 30, 'street': 'South St' }))
-          .expect((r) => assert.ok(r.body[0].customerid == 'TEST1'))
+          .expect((r) => assert.deepEqual(r.body[0].postalcode, { 'house': 30, 'street': 'South St' }, r.text))
+          .expect((r) => assert.ok(r.body[0].customerid == 'TEST1', r.text))
           .expect(200);
     });
 
@@ -399,12 +399,12 @@ describe('2. Data Load', () => {
           .set(headers)
           .send({
               'operation': 'insert',
-              'schema': `${generic.schema}`,
-              'table': `${generic.cust_tb}`,
+              'schema': `${testData.schema}`,
+              'table': `${testData.cust_tb}`,
               'records': [{ 'postalcode': [1, 2, 3], 'customerid': 'TEST2' }],
           })
-          .expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records'))
-          .expect((r) => assert.ok(r.body.inserted_hashes[0] == 'TEST2'))
+          .expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records', r.text))
+          .expect((r) => assert.ok(r.body.inserted_hashes[0] == 'TEST2', r.text))
           .expect(200);
     });
 
@@ -414,14 +414,14 @@ describe('2. Data Load', () => {
           .set(headers)
           .send({
               'operation': 'search_by_hash',
-              'schema': `${generic.schema}`,
-              'table': `${generic.cust_tb}`,
-              'hash_attribute': `${generic.supp_id}`,
+              'schema': `${testData.schema}`,
+              'table': `${testData.cust_tb}`,
+              'hash_attribute': `${testData.supp_id}`,
               'hash_values': ['TEST2'],
               'get_attributes': ['postalcode', 'customerid'],
           })
-          .expect((r) => assert.deepEqual(r.body[0].postalcode, [1, 2, 3]))
-          .expect((r) => assert.ok(r.body[0].customerid == 'TEST2'))
+          .expect((r) => assert.deepEqual(r.body[0].postalcode, [1, 2, 3], r.text))
+          .expect((r) => assert.ok(r.body[0].customerid == 'TEST2', r.text))
           .expect(200);
     });
 
@@ -432,10 +432,10 @@ describe('2. Data Load', () => {
           .send({
               'operation': 'insert',
               'schema': 'not_a_schema',
-              'table': `${generic.cust_tb}`,
+              'table': `${testData.cust_tb}`,
               'records': [{ 'name': 'Harper', 'customerid': 1 }],
           })
-          .expect((r) => assert.ok(r.body.error == 'database \'not_a_schema\' does not exist'))
+          .expect((r) => assert.ok(r.body.error == 'database \'not_a_schema\' does not exist', r.text))
           .expect(400);
     });
 
@@ -445,11 +445,11 @@ describe('2. Data Load', () => {
           .set(headers)
           .send({
               'operation': 'insert',
-              'schema': `${generic.schema}`,
+              'schema': `${testData.schema}`,
               'table': 'not_a_table',
               'records': [{ 'name': 'Harper', 'customerid': 1 }],
           })
-          .expect((r) => assert.ok(r.body.error == 'Table \'northnwd.not_a_table\' does not exist'))
+          .expect((r) => assert.ok(r.body.error == 'Table \'northnwd.not_a_table\' does not exist', r.text))
           .expect(400);
     });
 
@@ -460,10 +460,10 @@ describe('2. Data Load', () => {
           .send({
               'operation': 'update',
               'schema': 'not_a_schema',
-              'table': `${generic.cust_tb}`,
+              'table': `${testData.cust_tb}`,
               'records': [{ 'name': 'Harper', 'customerid': 1 }],
           })
-          .expect((r) => assert.ok(r.body.error == 'database \'not_a_schema\' does not exist'))
+          .expect((r) => assert.ok(r.body.error == 'database \'not_a_schema\' does not exist', r.text))
           .expect(400);
     });
 
@@ -473,11 +473,11 @@ describe('2. Data Load', () => {
           .set(headers)
           .send({
               'operation': 'update',
-              'schema': `${generic.schema}`,
+              'schema': `${testData.schema}`,
               'table': 'not_a_table',
               'records': [{ 'name': 'Harper', 'customerid': 1 }],
           })
-          .expect((r) => assert.ok(r.body.error == 'Table \'northnwd.not_a_table\' does not exist'))
+          .expect((r) => assert.ok(r.body.error == 'Table \'northnwd.not_a_table\' does not exist', r.text))
           .expect(400);
     });
 
@@ -487,12 +487,12 @@ describe('2. Data Load', () => {
           .set(headers)
           .send({
               'operation': 'insert',
-              'schema': `${generic.schema}`,
-              'table': `${generic.emps_tb}`,
+              'schema': `${testData.schema}`,
+              'table': `${testData.emps_tb}`,
               'records': [{ '4289': 'Mutt', 'firstname': 'Test for number attribute', 'employeeid': 25 }],
           })
-          .expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records'))
-          .expect((r) => assert.ok(r.body.inserted_hashes[0] == 25))
+          .expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records', r.text))
+          .expect((r) => assert.ok(r.body.inserted_hashes[0] == 25, r.text))
           .expect(200);
     });
 
@@ -500,13 +500,13 @@ describe('2. Data Load', () => {
         const response = await request(envUrl)
           .post('')
           .set(headers)
-          .send({ 'operation': 'describe_table', 'table': `${generic.emps_tb}`, 'schema': `${generic.schema}` })
+          .send({ 'operation': 'describe_table', 'table': `${testData.emps_tb}`, 'schema': `${testData.schema}` })
           .expect((r) => {
               let found = false;
               r.body.attributes.forEach((obj) => {
                   if (Object.values(obj)[0] === '4289') found = true;
               });
-              assert.ok(found);
+              assert.ok(found, r.text);
           })
           .expect(200);
     });
@@ -517,8 +517,8 @@ describe('2. Data Load', () => {
           .set(headers)
           .send({
               'operation': 'insert',
-              'schema': `${generic.schema}`,
-              'table': `${generic.emps_tb}`,
+              'schema': `${testData.schema}`,
+              'table': `${testData.emps_tb}`,
               'records': [{
                   '4289': 'Mutt',
                   'firstname': 'Test for number attribute',
@@ -528,7 +528,7 @@ describe('2. Data Load', () => {
           })
           .expect((r) => {
               let longAttribute = 'transaction aborted due to attribute name IIetmyLabradorcomeoutsidewithmewhenIwastakingthebinsoutonemorningIlethimgoforawanderthinkinghewasjustgoingtopeeonthetelegraphpoleattheendofourdrivewaylikehealwaysdoesInsteadhesawhisopportunityandseizeditHekeptwalkingpastthetelegraphpolepasttheborderofour being too long. Attribute names cannot be longer than 250 bytes.';
-              assert.ok(r.body.error == longAttribute);
+              assert.ok(r.body.error == longAttribute, r.text);
           })
           .expect(400);
     });
@@ -547,7 +547,7 @@ describe('2. Data Load', () => {
                   'another_attribute': 'another_2',
               }],
           })
-          .expect((r) => assert.ok(r.body.message.includes('inserted 2')))
+          .expect((r) => assert.ok(r.body.message.includes('inserted 2'), r.text))
           .expect(200);
     });
 
@@ -565,8 +565,8 @@ describe('2. Data Load', () => {
                 { 'id': '00011', 'some_attribute': 'some_att3', 'another_attribute': 'another_3' }
               ],
           })
-          .expect((r) => assert.ok(r.body.message.includes('inserted 3')))
-          .expect((r) => assert.deepEqual(r.body.inserted_hashes, [0, '011', '00011']))
+          .expect((r) => assert.ok(r.body.message.includes('inserted 3'), r.text))
+          .expect((r) => assert.deepEqual(r.body.inserted_hashes, [0, '011', '00011'], r.text))
           .expect(200);
     });
 
@@ -583,7 +583,7 @@ describe('2. Data Load', () => {
                   'name': 'The Coolest Dawg',
               }, { 'id': 987654323, 'name': 'Sup Dawg' }, { 'id': 987654324, 'name': 'Snoop Dawg' }],
           })
-          .expect((r) => assert.ok(r.body.message.includes('inserted 4')))
+          .expect((r) => assert.ok(r.body.message.includes('inserted 4'), r.text))
           .expect(200);
     });
 
@@ -595,8 +595,8 @@ describe('2. Data Load', () => {
               'operation': 'sql',
               'sql': 'UPDATE dev.rando set active = true WHERE id IN (\'987654321\', \'987654322\')',
           })
-          .expect((r) => assert.ok(r.body.message.includes('updated 2')))
-          .expect((r) => assert.ok(r.body.update_hashes.includes(987654321) && r.body.update_hashes.includes(987654322)))
+          .expect((r) => assert.ok(r.body.message.includes('updated 2'), r.text))
+          .expect((r) => assert.ok(r.body.update_hashes.includes(987654321) && r.body.update_hashes.includes(987654322), r.text))
           .expect(200);
     });
 
@@ -720,9 +720,9 @@ describe('2. Data Load', () => {
                   'location': 'Denver, CO',
               }],
           })
-          .expect((r) => assert.ok(r.body.upserted_hashes.length == 11))
-          .expect((r) => assert.ok(!r.body.skipped_hashes))
-          .expect((r) => assert.ok(r.body.message == 'upserted 11 of 11 records'))
+          .expect((r) => assert.ok(r.body.upserted_hashes.length == 11, r.text))
+          .expect((r) => assert.ok(!r.body.skipped_hashes, r.text))
+          .expect((r) => assert.ok(r.body.message == 'upserted 11 of 11 records', r.text))
           .expect(200);
     });
 
@@ -739,7 +739,7 @@ describe('2. Data Load', () => {
                   'name': 'The Coolest Dawg',
               }, { 'id': 987654323, 'name': 'Sup Dawg' }, { 'id': 987654324, 'name': 'Snoop Dawg' }],
           })
-          .expect((r) => assert.ok(r.body.message.includes('inserted 4')))
+          .expect((r) => assert.ok(r.body.message.includes('inserted 4'), r.text))
           .expect(200);
     });
 
@@ -748,7 +748,7 @@ describe('2. Data Load', () => {
           .post('')
           .set(headers)
           .send({ 'operation': 'insert', 'schema': 123, 'table': 4, 'records': [{ 'name': 'Hot Dawg' }] })
-          .expect((r) => assert.ok(r.body.message.includes('inserted 1')))
+          .expect((r) => assert.ok(r.body.message.includes('inserted 1'), r.text))
           .expect(200);
     });
 
@@ -762,7 +762,7 @@ describe('2. Data Load', () => {
               'table': '4',
               'records': [{ 'id': 987654321, 'name': 'Hot Dawg' }],
           })
-          .expect((r) => assert.ok(r.body.message.includes('updated 1')))
+          .expect((r) => assert.ok(r.body.message.includes('updated 1'), r.text))
           .expect(200);
     });
 
@@ -776,7 +776,7 @@ describe('2. Data Load', () => {
               'table': 4,
               'records': [{ 'id': 987654321, 'name': 'Hot Diddy Dawg' }],
           })
-          .expect((r) => assert.ok(r.body.message.includes('updated 1')))
+          .expect((r) => assert.ok(r.body.message.includes('updated 1'), r.text))
           .expect(200);
     });
 
@@ -792,7 +792,7 @@ describe('2. Data Load', () => {
                   'name': 'The Coolest Dawg',
               }, { 'id': 987654323, 'name': 'Sup Dawg' }, { 'id': 987654324, 'name': 'Snoop Dawg' }],
           })
-          .expect((r) => assert.ok(r.body.error == '\'table\' is required'))
+          .expect((r) => assert.ok(r.body.error == '\'table\' is required', r.text))
           .expect(400);
     });
 
@@ -801,7 +801,7 @@ describe('2. Data Load', () => {
           .post('')
           .set(headers)
           .send({ 'operation': 'insert', 'schema': '123', 'table': '4' })
-          .expect((r) => assert.ok(r.body.error == '\'records\' is required'))
+          .expect((r) => assert.ok(r.body.error == '\'records\' is required', r.text))
           .expect(400);
     });
 
@@ -817,7 +817,7 @@ describe('2. Data Load', () => {
                   'name': 'The Coolest Dawg',
               }, { 'id': 987654323, 'name': 'Sup Dawg' }, { 'id': 987654324, 'name': 'Snoop Dawg' }],
           })
-          .expect((r) => assert.ok(r.body.error == '\'table\' is required'))
+          .expect((r) => assert.ok(r.body.error == '\'table\' is required', r.text))
           .expect(400);
     });
 
@@ -826,7 +826,7 @@ describe('2. Data Load', () => {
           .post('')
           .set(headers)
           .send({ 'operation': 'upsert', 'schema': '123', 'table': '4' })
-          .expect((r) => assert.ok(r.body.error == '\'records\' is required'))
+          .expect((r) => assert.ok(r.body.error == '\'records\' is required', r.text))
           .expect(400);
     });
 
@@ -842,7 +842,7 @@ describe('2. Data Load', () => {
                   'name': 'The Coolest Dawg',
               }, { 'id': 987654323, 'name': 'Sup Dawg' }, { 'id': 987654324, 'name': 'Snoop Dawg' }],
           })
-          .expect((r) => assert.ok(r.body.error == '\'table\' is required'))
+          .expect((r) => assert.ok(r.body.error == '\'table\' is required', r.text))
           .expect(400);
     });
 
@@ -851,7 +851,7 @@ describe('2. Data Load', () => {
           .post('')
           .set(headers)
           .send({ 'operation': 'upsert', 'schema': '123', 'table': '4' })
-          .expect((r) => assert.ok(r.body.error == '\'records\' is required'))
+          .expect((r) => assert.ok(r.body.error == '\'records\' is required', r.text))
           .expect(400);
     });
 

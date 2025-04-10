@@ -1,6 +1,14 @@
 on:
   # Trigger analysis when pushing in main or pull requests, and when creating
   # a pull request.
+  push:
+    branches:
+      - main
+      - 'release_*'
+  pull_request:
+    types: [ opened, synchronize, reopened ]
+  schedule:
+    - cron: '30 5 * * 1-5'
   workflow_dispatch:
 name: Run API Tests with Node js
 jobs:
@@ -49,7 +57,7 @@ jobs:
       - createInstances
       - registerInstances
     steps:
-      - name: Run Integration Tests on Instances
+      - name: Run Integration Tests with Node js on Instances
         env:
           CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
           S3_KEY : ${{ secrets.AWS_S3_INTEGRATION_TEST_DATA_ACCESS_KEY_ID }}
@@ -84,3 +92,14 @@ jobs:
       instanceCount: '1'
       callingWorkflow: ${{ github.workflow }}
     secrets: inherit
+  sendSlackMessage:
+    uses: ./.github/workflows/post-to-slack-channel.yaml
+    if: ${{ failure() && github.event_name == 'schedule' }}
+    secrets: inherit
+    needs:
+      - destroyInstances
+      - downloadLogs
+      - runIntegrationTests
+      - registerInstances
+      - createInstances
+      - getNodeVersion

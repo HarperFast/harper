@@ -1,5 +1,4 @@
 import request from "supertest";
-import assert from "node:assert";
 import {checkJobCompleted, getJobId} from "./jobs.js";
 import {envUrl, headers} from "../config/envConfig.js";
 
@@ -16,8 +15,6 @@ export async function csvFileUpload(schemaName, tableName, filePath, expectedErr
         })
         .expect(200)
     const id = await getJobId(response.body);
-    console.log(response.body);
-    console.log(id);
     await checkJobCompleted(id, expectedErrorMessage, expectedCompletedMessage);
 }
 

@@ -1,9 +1,10 @@
 import { fileURLToPath } from 'url';
 import path from 'node:path';
-import request from 'supertest';
-import assert from 'node:assert';
+import { configDotenv } from 'dotenv';
 
-export let generic = {
+configDotenv();
+
+export let testData = {
     host: 'http://localhost',
     port: '9925',
     portRest: '9926',
@@ -59,15 +60,15 @@ export let generic = {
     restartTimeout: 45000,
 }
 
-export const envUrl = generic.host + ':' + generic.port;
-export const envUrlRest = generic.host + ':' + generic.portRest;
+export const envUrl = testData.host + ':' + testData.port;
+export const envUrlRest = testData.host + ':' + testData.portRest;
 
 
-export const headers = createHeaders(generic.username, generic.password);
-export const headersBulkLoadUser = createHeaders('bulk_load_user', generic.password);
-export const headersTestUser = createHeaders(generic.test_user_name, generic.password);
-export const headersNoPermsUser = createHeaders('no_perms_user', generic.password);
-export const headersOnePermUser = createHeaders('one_perm_user', generic.password);
+export const headers = createHeaders(testData.username, testData.password);
+export const headersBulkLoadUser = createHeaders('bulk_load_user', testData.password);
+export const headersTestUser = createHeaders(testData.test_user_name, testData.password);
+export const headersNoPermsUser = createHeaders('no_perms_user', testData.password);
+export const headersOnePermUser = createHeaders('one_perm_user', testData.password);
 export const headersImportantUser = createHeaders('important-user', 'password');
 
 export function createHeaders(username, password) {
@@ -85,7 +86,6 @@ export const dateTomorrow = new Date(new Date().getTime() + 86400000).toISOStrin
 export function getCsvPath() {
     const __filename = fileURLToPath(import.meta.url);
     const __dirname = path.dirname(__filename);
-    const myPath = path.resolve(__dirname + '/..' + generic.files_location) + '/';
-// const myPath = path.resolve(process.cwd() + generic.files_location);
+    const myPath = path.resolve(__dirname + '/..' + testData.files_location) + '/';
     return myPath;
 }

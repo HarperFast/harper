@@ -1,8 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import request from 'supertest';
-import { envUrl, envUrlRest, generic, headers } from '../config/envConfig.js';
-import { setTimeout } from 'node:timers/promises';
+import { envUrl, envUrlRest, testData, headers } from '../config/envConfig.js';
 import { restartWithTimeout } from '../utils/restart.js';
 
 describe('18. Computed indexed properties', () => {
@@ -13,7 +12,7 @@ describe('18. Computed indexed properties', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'add_component', project: 'computed' })
-			.expect((r) => assert.ok(r.body.message.includes('Successfully added project: computed')))
+			.expect((r) => assert.ok(r.body.message.includes('Successfully added project: computed'), r.text))
 			.expect(200);
 	});
 
@@ -28,7 +27,7 @@ describe('18. Computed indexed properties', () => {
 				payload:
 					'type Product @table @export { \n\t id: ID @primaryKey \n\t price: Float \n\t taxRate: Float \n\t totalPrice: Float @computed(from: "price + (price * taxRate)") @indexed \n\t notIndexedTotalPrice: Float @computed(from: "price + (price * taxRate)") \n\t jsTotalPrice: Float @computed @indexed \n } \n\n',
 			})
-			.expect((r) => assert.ok(r.body.message.includes('Successfully set component: schema.graphql')))
+			.expect((r) => assert.ok(r.body.message.includes('Successfully set component: schema.graphql'), r.text))
 			.expect(200);
 	});
 
@@ -43,12 +42,12 @@ describe('18. Computed indexed properties', () => {
 				payload:
 					"tables.Product.setComputedAttribute('jsTotalPrice', (record) => { \n\t return record.price + (record.price * record.taxRate) \n }) \n\n",
 			})
-			.expect((r) => assert.ok(r.body.message.includes('Successfully set component: resources.js')))
+			.expect((r) => assert.ok(r.body.message.includes('Successfully set component: resources.js'), r.text))
 			.expect(200);
 	});
 
 	it('Restart service and wait', async () => {
-		await restartWithTimeout(generic.restartTimeout);
+		await restartWithTimeout(testData.restartTimeout);
 	});
 
 	it('Insert data', async () => {
@@ -56,7 +55,7 @@ describe('18. Computed indexed properties', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'insert', table: 'Product', records: [{ id: '1', price: 100, taxRate: 0.19 }] })
-			.expect((r) => assert.ok(r.body.message.includes('inserted 1 of 1 records')))
+			.expect((r) => assert.ok(r.body.message.includes('inserted 1 of 1 records'), r.text))
 			.expect(200);
 	});
 
@@ -71,9 +70,9 @@ describe('18. Computed indexed properties', () => {
 				search_attribute: 'id',
 				search_value: '1',
 			})
-			.expect((r) => assert.ok(r.body[0].id == '1'))
-			.expect((r) => assert.ok(r.body[0].price == 100))
-			.expect((r) => assert.ok(r.body[0].taxRate == 0.19))
+			.expect((r) => assert.ok(r.body[0].id == '1', r.text))
+			.expect((r) => assert.ok(r.body[0].price == 100, r.text))
+			.expect((r) => assert.ok(r.body[0].taxRate == 0.19, r.text))
 			.expect(200);
 	});
 
@@ -89,12 +88,12 @@ describe('18. Computed indexed properties', () => {
 				search_value: '1',
 				get_attributes: ['id', 'price', 'taxRate', 'totalPrice', 'notIndexedTotalPrice', 'jsTotalPrice'],
 			})
-			.expect((r) => assert.ok(r.body[0].id == '1'))
-			.expect((r) => assert.ok(r.body[0].price == 100))
-			.expect((r) => assert.ok(r.body[0].taxRate == 0.19))
-			.expect((r) => assert.ok(r.body[0].totalPrice == 119))
-			.expect((r) => assert.ok(r.body[0].notIndexedTotalPrice == 119))
-			.expect((r) => assert.ok(r.body[0].jsTotalPrice == 119))
+			.expect((r) => assert.ok(r.body[0].id == '1', r.text))
+			.expect((r) => assert.ok(r.body[0].price == 100, r.text))
+			.expect((r) => assert.ok(r.body[0].taxRate == 0.19, r.text))
+			.expect((r) => assert.ok(r.body[0].totalPrice == 119, r.text))
+			.expect((r) => assert.ok(r.body[0].notIndexedTotalPrice == 119, r.text))
+			.expect((r) => assert.ok(r.body[0].jsTotalPrice == 119, r.text))
 			.expect(200);
 	});
 
@@ -102,9 +101,9 @@ describe('18. Computed indexed properties', () => {
 		const response = await request(envUrlRest)
 			.get('/Product/1')
 			.set(headers)
-			.expect((r) => assert.ok(r.body.id == 1))
-			.expect((r) => assert.ok(r.body.price == 100))
-			.expect((r) => assert.ok(r.body.taxRate == 0.19))
+			.expect((r) => assert.ok(r.body.id == 1, r.text))
+			.expect((r) => assert.ok(r.body.price == 100, r.text))
+			.expect((r) => assert.ok(r.body.taxRate == 0.19, r.text))
 			.expect(200);
 	});
 
@@ -112,12 +111,12 @@ describe('18. Computed indexed properties', () => {
 		const response = await request(envUrlRest)
 			.get('/Product/1?select(id,price,taxRate,totalPrice,notIndexedTotalPrice,jsTotalPrice)')
 			.set(headers)
-			.expect((r) => assert.ok(r.body.id == 1))
-			.expect((r) => assert.ok(r.body.price == 100))
-			.expect((r) => assert.ok(r.body.taxRate == 0.19))
-			.expect((r) => assert.ok(r.body.totalPrice == 119))
-			.expect((r) => assert.ok(r.body.notIndexedTotalPrice == 119))
-			.expect((r) => assert.ok(r.body.jsTotalPrice == 119))
+			.expect((r) => assert.ok(r.body.id == 1, r.text))
+			.expect((r) => assert.ok(r.body.price == 100, r.text))
+			.expect((r) => assert.ok(r.body.taxRate == 0.19, r.text))
+			.expect((r) => assert.ok(r.body.totalPrice == 119, r.text))
+			.expect((r) => assert.ok(r.body.notIndexedTotalPrice == 119, r.text))
+			.expect((r) => assert.ok(r.body.jsTotalPrice == 119, r.text))
 			.expect(200);
 	});
 
@@ -125,12 +124,12 @@ describe('18. Computed indexed properties', () => {
 		const response = await request(envUrlRest)
 			.get('/Product/?jsTotalPrice=119&select(id,price,taxRate,totalPrice,notIndexedTotalPrice,jsTotalPrice)')
 			.set(headers)
-			.expect((r) => assert.ok(r.body[0].id == '1'))
-			.expect((r) => assert.ok(r.body[0].price == 100))
-			.expect((r) => assert.ok(r.body[0].taxRate == 0.19))
-			.expect((r) => assert.ok(r.body[0].totalPrice == 119))
-			.expect((r) => assert.ok(r.body[0].notIndexedTotalPrice == 119))
-			.expect((r) => assert.ok(r.body[0].jsTotalPrice == 119))
+			.expect((r) => assert.ok(r.body[0].id == '1', r.text))
+			.expect((r) => assert.ok(r.body[0].price == 100, r.text))
+			.expect((r) => assert.ok(r.body[0].taxRate == 0.19, r.text))
+			.expect((r) => assert.ok(r.body[0].totalPrice == 119, r.text))
+			.expect((r) => assert.ok(r.body[0].notIndexedTotalPrice == 119, r.text))
+			.expect((r) => assert.ok(r.body[0].jsTotalPrice == 119, r.text))
 			.expect(200);
 	});
 
@@ -138,12 +137,12 @@ describe('18. Computed indexed properties', () => {
 		const response = await request(envUrlRest)
 			.get('/Product/?totalPrice=119&select(id,price,taxRate,totalPrice,notIndexedTotalPrice,jsTotalPrice)')
 			.set(headers)
-			.expect((r) => assert.ok(r.body[0].id == '1'))
-			.expect((r) => assert.ok(r.body[0].price == 100))
-			.expect((r) => assert.ok(r.body[0].taxRate == 0.19))
-			.expect((r) => assert.ok(r.body[0].totalPrice == 119))
-			.expect((r) => assert.ok(r.body[0].notIndexedTotalPrice == 119))
-			.expect((r) => assert.ok(r.body[0].jsTotalPrice == 119))
+			.expect((r) => assert.ok(r.body[0].id == '1', r.text))
+			.expect((r) => assert.ok(r.body[0].price == 100, r.text))
+			.expect((r) => assert.ok(r.body[0].taxRate == 0.19, r.text))
+			.expect((r) => assert.ok(r.body[0].totalPrice == 119, r.text))
+			.expect((r) => assert.ok(r.body[0].notIndexedTotalPrice == 119, r.text))
+			.expect((r) => assert.ok(r.body[0].jsTotalPrice == 119, r.text))
 			.expect(200);
 	});
 
@@ -152,8 +151,8 @@ describe('18. Computed indexed properties', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'delete', table: 'Product', ids: ['1'] })
-			.expect((r) => assert.ok(r.body.message.includes('1 of 1 record successfully deleted')))
-			.expect((r) => assert.deepEqual(r.body.deleted_hashes, ['1']))
+			.expect((r) => assert.ok(r.body.message.includes('1 of 1 record successfully deleted'), r.text))
+			.expect((r) => assert.deepEqual(r.body.deleted_hashes, ['1'], r.text))
 			.expect(200);
 	});
 
@@ -162,7 +161,7 @@ describe('18. Computed indexed properties', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_table', table: 'Product' })
-			.expect((r) => assert.ok(r.body.message.includes(`successfully deleted table 'data.Product'`)))
+			.expect((r) => assert.ok(r.body.message.includes(`successfully deleted table 'data.Product'`), r.text))
 			.expect(200);
 	});
 
@@ -171,7 +170,7 @@ describe('18. Computed indexed properties', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_schema', schema: 'data' })
-			.expect((r) => assert.ok(r.body.message.includes(`successfully deleted 'data'`)))
+			.expect((r) => assert.ok(r.body.message.includes(`successfully deleted 'data'`), r.text))
 			.expect(200);
 	});
 
@@ -180,11 +179,11 @@ describe('18. Computed indexed properties', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_component', project: 'computed' })
-			.expect((r) => assert.ok(r.body.message.includes('Successfully dropped: computed')))
+			.expect((r) => assert.ok(r.body.message.includes('Successfully dropped: computed'), r.text))
 			.expect(200);
 	});
 
 	it('Restart service and wait', async () => {
-		await restartWithTimeout(generic.restartTimeout);
+		await restartWithTimeout(testData.restartTimeout);
 	});
 });

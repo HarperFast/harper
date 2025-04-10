@@ -10,10 +10,10 @@ describe('20. REST tests', () => {
 		const response = await request(envUrlRest)
 			.get('/Related/?select(id,name)')
 			.set(headers)
-			.expect((r) => assert.ok(r.body.length == 5))
+			.expect((r) => assert.ok(r.body.length == 5, r.text))
 			.expect((r) => {
 				r.body.forEach((row, i) => {
-					assert.ok(row.id == (i + 1).toString());
+					assert.ok(row.id == (i + 1).toString(), r.text);
 				});
 			})
 			.expect(200);
@@ -23,10 +23,10 @@ describe('20. REST tests', () => {
 		const response = await request(envUrlRest)
 			.get('/SubObject/?select(id,relatedId)')
 			.set(headers)
-			.expect((r) => assert.ok(r.body.length == 6))
+			.expect((r) => assert.ok(r.body.length == 6, r.text))
 			.expect((r) => {
 				r.body.forEach((row, i) => {
-					assert.ok(row.id == i.toString());
+					assert.ok(row.id == i.toString(), r.text);
 				});
 			})
 			.expect(200);
@@ -36,7 +36,7 @@ describe('20. REST tests', () => {
 		const response = await request(envUrlRest)
 			.get('/Related/?id==1&select(id,name)')
 			.set(headers)
-			.expect((r) => assert.ok(r.body[0].id == '1'))
+			.expect((r) => assert.ok(r.body[0].id == '1', r.text))
 			.expect(200);
 	});
 
@@ -44,7 +44,7 @@ describe('20. REST tests', () => {
 		const response = await request(envUrlRest)
 			.get('/Related/?id==2&select(id,name)')
 			.set(headers)
-			.expect((r) => assert.ok(r.body[0].id == '2'))
+			.expect((r) => assert.ok(r.body[0].id == '2', r.text))
 			.expect(200);
 	});
 
@@ -52,7 +52,7 @@ describe('20. REST tests', () => {
 		const response = await request(envUrlRest)
 			.get('/SubObject/?any==any-2&select(id,any)')
 			.set(headers)
-			.expect((r) => assert.ok(r.body[0].id == '2'))
+			.expect((r) => assert.ok(r.body[0].id == '2', r.text))
 			.expect(200);
 	});
 
@@ -60,8 +60,8 @@ describe('20. REST tests', () => {
 		const response = await request(envUrlRest)
 			.get('/SubObject/?any==null&select(id,any)')
 			.set(headers)
-			.expect((r) => assert.ok(r.body[0].id == '0'))
-			.expect((r) => assert.ok(r.body[0].any == null))
+			.expect((r) => assert.ok(r.body[0].id == '0', r.text))
+			.expect((r) => assert.ok(r.body[0].any == null, r.text))
 			.expect(200);
 	});
 
@@ -69,7 +69,7 @@ describe('20. REST tests', () => {
 		const response = await request(envUrlRest)
 			.get('/SubObject/?related.name==name-2&select(id,any)')
 			.set(headers)
-			.expect((r) => assert.ok(r.body[0].id == '2'))
+			.expect((r) => assert.ok(r.body[0].id == '2', r.text))
 			.expect(200);
 	});
 
@@ -77,7 +77,7 @@ describe('20. REST tests', () => {
 		const response = await request(envUrlRest)
 			.get('/SubObject/?any==any-2&related.name==name-2&select(id,any)')
 			.set(headers)
-			.expect((r) => assert.ok(r.body[0].id == '2'))
+			.expect((r) => assert.ok(r.body[0].id == '2', r.text))
 			.expect(200);
 	});
 
@@ -85,7 +85,7 @@ describe('20. REST tests', () => {
 		const response = await request(envUrlRest)
 			.get('/SubObject/?related.id==2&select(id,any)')
 			.set(headers)
-			.expect((r) => assert.ok(r.body[0].id == '2'))
+			.expect((r) => assert.ok(r.body[0].id == '2', r.text))
 			.expect(200);
 	});
 
@@ -93,7 +93,7 @@ describe('20. REST tests', () => {
 		const response = await request(envUrlRest)
 			.get('/SubObject/?related.subObject.any==any-2&select(id,any)')
 			.set(headers)
-			.expect((r) => assert.ok(r.body[0].id == '2'))
+			.expect((r) => assert.ok(r.body[0].id == '2', r.text))
 			.expect(200);
 	});
 
@@ -101,7 +101,7 @@ describe('20. REST tests', () => {
 		const response = await request(envUrlRest)
 			.get('/Related/?id==3')
 			.set(headers)
-			.expect((r) => assert.ok(r.body[0].id == '3'))
+			.expect((r) => assert.ok(r.body[0].id == '3', r.text))
 			.expect(200);
 	});
 });

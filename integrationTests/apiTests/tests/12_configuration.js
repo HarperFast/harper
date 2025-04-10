@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import request from 'supertest';
-import { envUrl, generic, headers, headersTestUser } from '../config/envConfig.js';
+import { envUrl, testData, headers, headersTestUser } from '../config/envConfig.js';
 
 describe('12. Configuration', () => {
 
@@ -16,7 +16,7 @@ describe('12. Configuration', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'create_table', schema: 'dev', table: 'create_attr_test', hash_attribute: 'id' })
-			.expect((r) => assert.ok(r.body.message.includes('successfully created')))
+			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 	});
 
@@ -25,7 +25,7 @@ describe('12. Configuration', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'create_attribute', schema: 'dev', table: 'create_attr_test', attribute: 'owner_id' })
-			.expect((r) => assert.ok(r.body.message == "attribute 'dev.create_attr_test.owner_id' successfully created."))
+			.expect((r) => assert.ok(r.body.message == "attribute 'dev.create_attr_test.owner_id' successfully created.", r.text))
 			.expect(200);
 	});
 
@@ -69,7 +69,7 @@ describe('12. Configuration', () => {
 					{ id: 9, dog_name: 'Bode', age: 8 },
 				],
 			})
-			.expect((r) => assert.ok(r.body.message == 'inserted 9 of 9 records'))
+			.expect((r) => assert.ok(r.body.message == 'inserted 9 of 9 records', r.text))
 			.expect(200);
 	});
 
@@ -78,7 +78,7 @@ describe('12. Configuration', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'sql', sql: 'select * from dev.create_attr_test where owner_id = 1' })
-			.expect((r) => assert.ok(r.body.length == 3))
+			.expect((r) => assert.ok(r.body.length == 3, r.text))
 			.expect(200);
 	});
 
@@ -90,7 +90,7 @@ describe('12. Configuration', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'describe_table', table: 'AttributeDropTest', schema: 'dev' })
-			.expect((r) => assert.ok(!r.body.another_attribute))
+			.expect((r) => assert.ok(!r.body.another_attribute, r.text))
 			.expect(200);
 	});
 
@@ -104,9 +104,7 @@ describe('12. Configuration', () => {
 				table: 'AttributeDropTest',
 				attribute: 'created_attribute',
 			})
-			.expect((r) =>
-				assert.ok(r.body.message == "attribute 'dev.AttributeDropTest.created_attribute' successfully created.")
-			)
+			.expect((r) => assert.ok(r.body.message == "attribute 'dev.AttributeDropTest.created_attribute' successfully created.", r.text))
 			.expect(200);
 	});
 
@@ -122,7 +120,7 @@ describe('12. Configuration', () => {
 						found = true;
 					}
 				});
-				assert.ok(found);
+				assert.ok(found, r.text);
 			})
 			.expect(200);
 	});
@@ -137,7 +135,7 @@ describe('12. Configuration', () => {
 				table: 'AttributeDropTest',
 				attribute: 'created_attribute',
 			})
-			.expect((r) => assert.ok(r.body.error == "attribute 'created_attribute' already exists in dev.AttributeDropTest"))
+			.expect((r) => assert.ok(r.body.error == "attribute 'created_attribute' already exists in dev.AttributeDropTest", r.text))
 			.expect(400);
 	});
 
@@ -151,7 +149,7 @@ describe('12. Configuration', () => {
 				table: 'AttributeDropTest',
 				attribute: 'another_attribute',
 			})
-			.expect((r) => assert.ok(r.body.message == "successfully deleted attribute 'another_attribute'"))
+			.expect((r) => assert.ok(r.body.message == "successfully deleted attribute 'another_attribute'", r.text))
 			.expect(200);
 	});
 
@@ -167,7 +165,7 @@ describe('12. Configuration', () => {
 						found = true;
 					}
 				});
-				assert.ok(!found);
+				assert.ok(!found, r.text);
 			})
 			.expect(200);
 	});
@@ -177,8 +175,8 @@ describe('12. Configuration', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'get_fingerprint' })
-			.expect((r) => assert.ok(r.body.hasOwnProperty('message')))
-			.expect((r) => assert.ok(r.body.message))
+			.expect((r) => assert.ok(r.body.hasOwnProperty('message'), r.text))
+			.expect((r) => assert.ok(r.body.message, r.text))
 			.expect(200);
 	});
 
@@ -191,7 +189,7 @@ describe('12. Configuration', () => {
 				key: 'uFFG7xAZG11ec9d335bfe27c4ec5555310bd4a27f',
 				company: 'harperdb.io',
 			})
-			.expect((r) => assert.ok(r.body['error'] == 'There was an error parsing the license key.'))
+			.expect((r) => assert.ok(r.body['error'] == 'There was an error parsing the license key.', r.text))
 			.expect(500);
 	});
 
@@ -200,10 +198,10 @@ describe('12. Configuration', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'registration_info' })
-			.expect((r) => assert.ok(r.body.hasOwnProperty('registered')))
-			.expect((r) => assert.ok(r.body.hasOwnProperty('version')))
-			.expect((r) => assert.ok(r.body.hasOwnProperty('ram_allocation')))
-			.expect((r) => assert.ok(r.body.hasOwnProperty('license_expiration_date')))
+			.expect((r) => assert.ok(r.body.hasOwnProperty('registered'), r.text))
+			.expect((r) => assert.ok(r.body.hasOwnProperty('version'), r.text))
+			.expect((r) => assert.ok(r.body.hasOwnProperty('ram_allocation'), r.text))
+			.expect((r) => assert.ok(r.body.hasOwnProperty('license_expiration_date'), r.text))
 			.expect(200);
 	});
 
@@ -212,7 +210,7 @@ describe('12. Configuration', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'set_license', key: '', company: 'harperdb.io' })
-			.expect((r) => assert.ok(r.body['error'] == 'Invalid key or company specified for license file.'))
+			.expect((r) => assert.ok(r.body['error'] == 'Invalid key or company specified for license file.', r.text))
 			.expect(500);
 	});
 
@@ -221,13 +219,13 @@ describe('12. Configuration', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'get_configuration' })
-			.expect((r) => assert.ok(r.body.clustering))
-			.expect((r) => assert.ok(r.body.componentsRoot))
-			.expect((r) => assert.ok(r.body.logging))
-			.expect((r) => assert.ok(r.body.localStudio))
-			.expect((r) => assert.ok(r.body.operationsApi))
-			.expect((r) => assert.ok(r.body.operationsApi.network.port))
-			.expect((r) => assert.ok(r.body.threads))
+			.expect((r) => assert.ok(r.body.clustering, r.text))
+			.expect((r) => assert.ok(r.body.componentsRoot, r.text))
+			.expect((r) => assert.ok(r.body.logging, r.text))
+			.expect((r) => assert.ok(r.body.localStudio, r.text))
+			.expect((r) => assert.ok(r.body.operationsApi, r.text))
+			.expect((r) => assert.ok(r.body.operationsApi.network.port, r.text))
+			.expect((r) => assert.ok(r.body.threads, r.text))
 			.expect(200);
 	});
 
@@ -266,7 +264,7 @@ describe('12. Configuration', () => {
 					{ host: 'dev.pie', port: 11335 },
 				],
 			})
-			.expect((r) => assert.ok(JSON.stringify(r.body) == expected))
+			.expect((r) => assert.ok(JSON.stringify(r.body) == expected, r.text))
 			.expect(200);
 	});
 
@@ -281,9 +279,7 @@ describe('12. Configuration', () => {
 						'[{"host":"dev.chicken","port":11334},{"host":"dev.wing","port":11335}]'
 				)
 			)
-			.expect((r) =>
-				assert.ok(JSON.stringify(r.body.clustering.leafServer.network.routes) == '[{"host":"dev.pie","port":11335}]')
-			)
+			.expect((r) => assert.ok(JSON.stringify(r.body.clustering.leafServer.network.routes) == '[{"host":"dev.pie","port":11335}]', r.text))
 			.expect(200);
 	});
 
@@ -321,7 +317,7 @@ describe('12. Configuration', () => {
 					},
 				],
 			})
-			.expect((r) => assert.deepEqual(r.body, JSON.parse(expected_result)))
+			.expect((r) => assert.deepEqual(r.body, JSON.parse(expected_result), r.text))
 			.expect(200);
 	});
 
@@ -330,7 +326,7 @@ describe('12. Configuration', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'cluster_get_routes' })
-			.expect((r) => assert.ok(JSON.stringify(r.body) == '{"hub":[{"host":"dev.chicken","port":11334}],"leaf":[]}'))
+			.expect((r) => assert.ok(JSON.stringify(r.body) == '{"hub":[{"host":"dev.chicken","port":11334}],"leaf":[]}', r.text))
 			.expect(200);
 	});
 
@@ -354,10 +350,10 @@ describe('12. Configuration', () => {
 			.set(headers)
 			.send({ operation: 'read_log' })
 			.expect((r) => {
-				assert.ok(Array.isArray(r.body));
-				assert.ok(r.body[0].hasOwnProperty('level'));
-				assert.ok(r.body[0].hasOwnProperty('message'));
-				assert.ok(r.body[0].hasOwnProperty('timestamp'));
+				assert.ok(Array.isArray(r.body), r.text);
+				assert.ok(r.body[0].hasOwnProperty('level'), r.text);
+				assert.ok(r.body[0].hasOwnProperty('message'), r.text);
+				assert.ok(r.body[0].hasOwnProperty('timestamp'), r.text);
 			})
 			.expect(200);
 	});
@@ -381,7 +377,7 @@ describe('12. Configuration', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'get_configuration' })
-			.expect((r) => assert.ok(r.body.logging.rotation.maxSize == '12M'))
+			.expect((r) => assert.ok(r.body.logging.rotation.maxSize == '12M', r.text))
 			.expect(200);
 	});
 
@@ -390,7 +386,7 @@ describe('12. Configuration', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'set_configuration', http_cors: 'spinach' })
-			.expect((r) => assert.ok(r.body.error == "HarperDB config file validation error: 'http.cors' must be a boolean"))
+			.expect((r) => assert.ok(r.body.error == "HarperDB config file validation error: 'http.cors' must be a boolean", r.text))
 			.expect(400);
 	});
 
@@ -410,7 +406,7 @@ describe('12. Configuration', () => {
 				operation: 'add_user',
 				role: 'test_dev_role',
 				username: 'test_user',
-				password: `${generic.password}`,
+				password: `${testData.password}`,
 				active: true,
 			})
 			.expect(200);
@@ -421,15 +417,9 @@ describe('12. Configuration', () => {
 			.post('')
 			.set(headersTestUser)
 			.send({ operation: 'set_configuration', clustering_port: 99999 })
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.unauthorized_access[0] == "Operation 'setConfiguration' is restricted to 'super_user' roles")
-			)
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'setConfiguration' is restricted to 'super_user' roles", r.text))
 			.expect(403);
 	});
 
@@ -438,15 +428,9 @@ describe('12. Configuration', () => {
 			.post('')
 			.set(headersTestUser)
 			.send({ operation: 'set_configuration', clustering_port: 99999 })
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.unauthorized_access[0] == "Operation 'setConfiguration' is restricted to 'super_user' roles")
-			)
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'setConfiguration' is restricted to 'super_user' roles", r.text))
 			.expect(403);
 	});
 
@@ -455,15 +439,9 @@ describe('12. Configuration', () => {
 			.post('')
 			.set(headersTestUser)
 			.send({ operation: 'get_configuration' })
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.unauthorized_access[0] == "Operation 'getConfiguration' is restricted to 'super_user' roles")
-			)
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'getConfiguration' is restricted to 'super_user' roles", r.text))
 			.expect(403);
 	});
 
@@ -472,7 +450,7 @@ describe('12. Configuration', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_user', username: 'test_user' })
-			.expect((r) => assert.ok(r.body.message == 'test_user successfully deleted'))
+			.expect((r) => assert.ok(r.body.message == 'test_user successfully deleted', r.text))
 			.expect(200);
 	});
 
@@ -481,7 +459,7 @@ describe('12. Configuration', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_role', id: 'test_dev_role' })
-			.expect((r) => assert.ok(r.body.message == 'test_dev_role successfully deleted'))
+			.expect((r) => assert.ok(r.body.message == 'test_dev_role successfully deleted', r.text))
 			.expect(200);
 	});
 

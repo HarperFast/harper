@@ -1,8 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import request from 'supertest';
-import { envUrl, envUrlRest, generic, headers } from '../config/envConfig.js';
-import { setTimeout } from 'node:timers/promises';
+import { envUrl, envUrlRest, testData, headers } from '../config/envConfig.js';
 import { restartWithTimeout } from '../utils/restart.js';
 
 describe('22. OpenAPI', () => {
@@ -18,7 +17,7 @@ describe('22. OpenAPI', () => {
 	});
 
 	it('Restart service and wait', async () => {
-		await restartWithTimeout(generic.restartTimeout);
+		await restartWithTimeout(testData.restartTimeout);
 	});
 
 	it('Get open api', async () => {
@@ -28,23 +27,23 @@ describe('22. OpenAPI', () => {
 			.expect((r) => {
 				let openapi_text = JSON.stringify(r.body.openapi);
 				console.log(openapi_text);
-				assert.ok(openapi_text);
-				assert.ok(r.body.info.title.includes('HarperDB HTTP REST interface'));
-				assert.ok(r.body.paths);
-				assert.ok(r.body.paths.hasOwnProperty('/TableName/'));
-				assert.ok(r.body.paths.hasOwnProperty('/TableName/{id}'));
-				assert.ok(r.body.paths.hasOwnProperty('/Greeting/'));
+				assert.ok(openapi_text, r.text);
+				assert.ok(r.body.info.title.includes('HarperDB HTTP REST interface'), r.text);
+				assert.ok(r.body.paths, r.text);
+				assert.ok(r.body.paths.hasOwnProperty('/TableName/'), r.text);
+				assert.ok(r.body.paths.hasOwnProperty('/TableName/{id}'), r.text);
+				assert.ok(r.body.paths.hasOwnProperty('/Greeting/'), r.text);
 
 				let paths_text = JSON.stringify(r.body.paths);
-				assert.ok(paths_text.includes('post'));
-				assert.ok(paths_text.includes('get'));
-				assert.ok(r.body.components);
-				assert.ok(r.body.components.schemas);
-				assert.ok(r.body.components.schemas.TableName);
-				assert.ok(r.body.components.schemas.Greeting);
-				assert.ok(r.body.components.securitySchemes);
-				assert.ok(r.body.components.securitySchemes.basicAuth);
-				assert.ok(r.body.components.securitySchemes.bearerAuth);
+				assert.ok(paths_text.includes('post'), r.text);
+				assert.ok(paths_text.includes('get'), r.text);
+				assert.ok(r.body.components, r.text);
+				assert.ok(r.body.components.schemas, r.text);
+				assert.ok(r.body.components.schemas.TableName, r.text);
+				assert.ok(r.body.components.schemas.Greeting, r.text);
+				assert.ok(r.body.components.securitySchemes, r.text);
+				assert.ok(r.body.components.securitySchemes.basicAuth, r.text);
+				assert.ok(r.body.components.securitySchemes.bearerAuth, r.text);
 			})
 			.expect(200);
 	});

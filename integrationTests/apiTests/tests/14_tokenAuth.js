@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import request from 'supertest';
-import { envUrl, generic, headers } from '../config/envConfig.js';
+import { envUrl, testData, headers } from '../config/envConfig.js';
 import { isDevEnv } from '../utils/env.js';
 
 describe('14. Token Auth', () => {
@@ -14,10 +14,10 @@ describe('14. Token Auth', () => {
 			.send({ operation: 'create_authentication_tokens' })
 			.expect(async (r) => {
 				if (await isDevEnv()) {
-					assert.ok(r.status == 200);
+					assert.ok(r.status == 200, r.text);
 				} else {
-					assert.ok(r.body['error'] === 'Must login');
-					assert.ok(r.status == 401);
+					assert.ok(r.body['error'] === 'Must login', r.text);
+					assert.ok(r.status == 401, r.text);
 				}
 			})
 	});
@@ -26,8 +26,8 @@ describe('14. Token Auth', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set({ 'Content-Type': 'application/json' })
-			.send({ operation: 'create_authentication_tokens', username: `${generic.username}` })
-			.expect((r) => assert.ok(r.body['error'] === 'invalid credentials'))
+			.send({ operation: 'create_authentication_tokens', username: `${testData.username}` })
+			.expect((r) => assert.ok(r.body['error'] === 'invalid credentials', r.text))
 			.expect(401);
 	});
 
@@ -41,7 +41,7 @@ describe('14. Token Auth', () => {
 				password: 'bad',
 				bypass_auth: true
 			})
-			.expect((r) => assert.ok(r.body['error'] === 'invalid credentials'))
+			.expect((r) => assert.ok(r.body['error'] === 'invalid credentials', r.text))
 			.expect(401);
 	});
 
@@ -51,16 +51,16 @@ describe('14. Token Auth', () => {
 			.set({ 'Content-Type': 'application/json' })
 			.send({
 				operation: 'create_authentication_tokens',
-				username: `${generic.username}`,
-				password: `${generic.password}`,
+				username: `${testData.username}`,
+				password: `${testData.password}`,
 			})
 			.expect((r) => {
 				let attributes = ['operation_token', 'refresh_token'];
 				attributes.forEach((attribute) => {
-					assert.ok(r.body[attribute] !== undefined);
+					assert.ok(r.body[attribute] !== undefined, r.text);
 				});
-				generic.operation_token = r.body.operation_token;
-				generic.refresh_token = r.body.refresh_token;
+				testData.operation_token = r.body.operation_token;
+				testData.refresh_token = r.body.refresh_token;
 			})
 			.expect(200);
 	});
@@ -69,17 +69,17 @@ describe('14. Token Auth', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set('Content-Type', 'application/json')
-			.set('Authorization', `Bearer ${generic.operation_token}`)
+			.set('Authorization', `Bearer ${testData.operation_token}`)
 			.send({
 				operation: 'search_by_hash',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
-				hash_attribute: `${generic.emps_id}`,
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
+				hash_attribute: `${testData.emps_id}`,
 				hash_values: [1],
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
-			.expect((r) => assert.ok(r.body[0].employeeid == 1))
+			.expect((r) => assert.ok(r.body.length == 1, r.text))
+			.expect((r) => assert.ok(r.body[0].employeeid == 1, r.text))
 			.expect(200);
 	});
 
@@ -90,9 +90,9 @@ describe('14. Token Auth', () => {
 			.set('Authorization', 'Bearer BAD_TOKEN')
 			.send({
 				operation: 'search_by_hash',
-				schema: `${generic.schema}`,
-				table: `${generic.emps_tb}`,
-				hash_attribute: `${generic.emps_id}`,
+				schema: `${testData.schema}`,
+				table: `${testData.emps_tb}`,
+				hash_attribute: `${testData.emps_id}`,
 				hash_values: [1],
 				get_attributes: ['*'],
 			})
@@ -104,14 +104,14 @@ describe('14. Token Auth', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set('Content-Type', 'application/json')
-			.set('Authorization', `Bearer ${generic.refresh_token}`)
+			.set('Authorization', `Bearer ${testData.refresh_token}`)
 			.send({ operation: 'refresh_operation_token' })
 			.expect((r) => {
 				let attributes = ['operation_token'];
 				attributes.forEach((attribute) => {
-					assert.ok(r.body[attribute] !== undefined);
+					assert.ok(r.body[attribute] !== undefined, r.text);
 				});
-				generic.operation_token = r.body.operation_token;
+				testData.operation_token = r.body.operation_token;
 			})
 			.expect(200);
 	});
@@ -132,10 +132,10 @@ describe('14. Token Auth', () => {
 			.set(headers)
 			.send({ operation: 'create_authentication_tokens' })
 			.expect((r) => {
-				assert.ok(r.body.operation_token !== undefined);
-				assert.ok(r.body.refresh_token !== undefined);
-				generic.operation_token = r.body.operation_token;
-				generic.refresh_token = r.body.refresh_token;
+				assert.ok(r.body.operation_token !== undefined, r.text);
+				assert.ok(r.body.refresh_token !== undefined, r.text);
+				testData.operation_token = r.body.operation_token;
+				testData.refresh_token = r.body.refresh_token;
 			})
 			.expect(200);
 	});

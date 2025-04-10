@@ -1,8 +1,7 @@
 import { describe, it } from 'node:test';
 import request from 'supertest';
 import assert from 'node:assert';
-import { envUrl, generic, headers } from '../config/envConfig.js';
-import { setTimeout } from 'node:timers/promises';
+import { envUrl, testData, headers } from '../config/envConfig.js';
 import { restartWithTimeout } from '../utils/restart.js';
 
 describe('8a. Restart HDB to update config', () => {
@@ -39,8 +38,8 @@ describe('8a. Restart HDB to update config', () => {
 			.set(headers)
 			.send({ operation: 'get_configuration' })
 			.expect((r) => {
-				assert.ok(r.body.rootPath);
-				generic.rootPath = r.body.rootPath;
+				assert.ok(r.body.rootPath, r.text);
+				testData.rootPath = r.body.rootPath;
 			})
 			.expect(200)
 	});
@@ -77,9 +76,9 @@ describe('8a. Restart HDB to update config', () => {
 
 				clustering_user: 'cluster_user1',
 
-				clustering_tls_certificate: `${generic.rootPath}/keys/natsCertificate.pem`,
-				clustering_tls_certificateAuthority: `${generic.rootPath}/keys/natsCaCertificate.pem`,
-				clustering_tls_privateKey: `${generic.rootPath}/keys/privateKey.pem`,
+				clustering_tls_certificate: `${testData.rootPath}/keys/natsCertificate.pem`,
+				clustering_tls_certificateAuthority: `${testData.rootPath}/keys/natsCaCertificate.pem`,
+				clustering_tls_privateKey: `${testData.rootPath}/keys/privateKey.pem`,
 				clustering_tls_insecure: true,
 				clustering_tls_verify: true,
 			})
@@ -101,6 +100,6 @@ describe('8a. Restart HDB to update config', () => {
 	});
 
 	it('Restart for new settings', async () => {
-		await restartWithTimeout(generic.restartTimeout);
+		await restartWithTimeout(testData.restartTimeout);
 	});
 });

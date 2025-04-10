@@ -14,7 +14,7 @@ describe('13. System Information', () => {
 			.expect((r) => {
 				let attributes = ['system', 'time', 'cpu', 'memory', 'disk', 'network', 'harperdb_processes', 'table_size'];
 				attributes.forEach((attribute) => {
-					assert.ok(r.body[attribute] !== undefined);
+					assert.ok(r.body[attribute] !== undefined, r.text);
 				});
 			})
 			.expect(200);
@@ -25,26 +25,26 @@ describe('13. System Information', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'system_information', attributes: ['memory', 'time'] })
-			.expect((r) => assert.ok(!r.body.system))
-			.expect((r) => assert.ok(!r.body.cpu))
-			.expect((r) => assert.ok(!r.body.disk))
-			.expect((r) => assert.ok(!r.body.network))
-			.expect((r) => assert.ok(!r.body.harperdb_processes))
-			.expect((r) => assert.ok(!r.body.table_size))
-			.expect((r) => assert.ok(r.body.hasOwnProperty('time')))
-			.expect((r) => assert.ok(r.body.hasOwnProperty('memory')))
-			.expect((r) => assert.ok(r.body.time.hasOwnProperty('current')))
-			.expect((r) => assert.ok(r.body.time.hasOwnProperty('uptime')))
-			.expect((r) => assert.ok(r.body.time.hasOwnProperty('timezone')))
-			.expect((r) => assert.ok(r.body.time.hasOwnProperty('timezoneName')))
-			.expect((r) => assert.ok(r.body.memory.hasOwnProperty('total')))
-			.expect((r) => assert.ok(r.body.memory.hasOwnProperty('free')))
-			.expect((r) => assert.ok(r.body.memory.hasOwnProperty('used')))
-			.expect((r) => assert.ok(r.body.memory.hasOwnProperty('active')))
-			.expect((r) => assert.ok(r.body.memory.hasOwnProperty('swaptotal')))
-			.expect((r) => assert.ok(r.body.memory.hasOwnProperty('swapused')))
-			.expect((r) => assert.ok(r.body.memory.hasOwnProperty('swapfree')))
-			.expect((r) => assert.ok(r.body.memory.hasOwnProperty('available')))
+			.expect((r) => assert.ok(!r.body.system, r.text))
+			.expect((r) => assert.ok(!r.body.cpu, r.text))
+			.expect((r) => assert.ok(!r.body.disk, r.text))
+			.expect((r) => assert.ok(!r.body.network, r.text))
+			.expect((r) => assert.ok(!r.body.harperdb_processes, r.text))
+			.expect((r) => assert.ok(!r.body.table_size, r.text))
+			.expect((r) => assert.ok(r.body.hasOwnProperty('time'), r.text))
+			.expect((r) => assert.ok(r.body.hasOwnProperty('memory'), r.text))
+			.expect((r) => assert.ok(r.body.time.hasOwnProperty('current'), r.text))
+			.expect((r) => assert.ok(r.body.time.hasOwnProperty('uptime'), r.text))
+			.expect((r) => assert.ok(r.body.time.hasOwnProperty('timezone'), r.text))
+			.expect((r) => assert.ok(r.body.time.hasOwnProperty('timezoneName'), r.text))
+			.expect((r) => assert.ok(r.body.memory.hasOwnProperty('total'), r.text))
+			.expect((r) => assert.ok(r.body.memory.hasOwnProperty('free'), r.text))
+			.expect((r) => assert.ok(r.body.memory.hasOwnProperty('used'), r.text))
+			.expect((r) => assert.ok(r.body.memory.hasOwnProperty('active'), r.text))
+			.expect((r) => assert.ok(r.body.memory.hasOwnProperty('swaptotal'), r.text))
+			.expect((r) => assert.ok(r.body.memory.hasOwnProperty('swapused'), r.text))
+			.expect((r) => assert.ok(r.body.memory.hasOwnProperty('swapfree'), r.text))
+			.expect((r) => assert.ok(r.body.memory.hasOwnProperty('available'), r.text))
 			.expect(200);
 	});
 });

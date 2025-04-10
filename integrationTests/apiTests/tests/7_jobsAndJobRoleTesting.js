@@ -5,7 +5,7 @@ import {
 	dateTomorrow,
 	dateYesterday,
 	envUrl,
-	generic,
+	testData,
 	getCsvPath,
 	headers,
 	headersTestUser,
@@ -71,16 +71,14 @@ describe('7. Jobs & Job Role Testing', () => {
 				schema: 'S3_DATA',
 				table: 'dogs',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/dogs.xlsx',
 					region: 'us-east-2',
 				},
 			})
-			.expect((r) =>
-				assert.ok(r.body.error == "S3 key must include one of the following valid file extensions - '.csv', '.json'")
-			)
+			.expect((r) => assert.ok(r.body.error == "S3 key must include one of the following valid file extensions - '.csv', '.json'", r.text))
 			.expect(400);
 	});
 
@@ -94,16 +92,14 @@ describe('7. Jobs & Job Role Testing', () => {
 				schema: 'S3_DATA',
 				table: 'dogs',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/dogs.csv',
 					region: 'us-east-2',
 				},
 			})
-			.expect((r) =>
-				assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response')
-			)
+			.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, r.text))
 			.expect(200);
 
 		const id = await getJobId(response.body);
@@ -120,8 +116,8 @@ describe('7. Jobs & Job Role Testing', () => {
 				schema: 'S3_DATA',
 				table: 'owners',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/owners.json',
 					region: 'us-east-2',
@@ -143,8 +139,8 @@ describe('7. Jobs & Job Role Testing', () => {
 				schema: 'S3_DATA',
 				table: 'breed',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/breed.json',
 					region: 'us-east-2',
@@ -166,8 +162,8 @@ describe('7. Jobs & Job Role Testing', () => {
 				schema: 'S3_DATA',
 				table: 'owners',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/does_not_exist.csv',
 					region: 'us-east-2',
@@ -189,8 +185,8 @@ describe('7. Jobs & Job Role Testing', () => {
 				schema: 'S3_DATA',
 				table: 'dogs',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/dogs_update.csv',
 					region: 'us-east-2',
@@ -212,8 +208,8 @@ describe('7. Jobs & Job Role Testing', () => {
 				schema: 'S3_DATA',
 				table: 'owners',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/owners_update.json',
 					region: 'us-east-2',
@@ -235,8 +231,8 @@ describe('7. Jobs & Job Role Testing', () => {
 				schema: 'S3_DATA',
 				table: 'sensor',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/sensor_data.json',
 					region: 'us-east-2',
@@ -258,8 +254,8 @@ describe('7. Jobs & Job Role Testing', () => {
 				schema: 'S3_DATA',
 				table: 'sensor',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/sensor_data.json',
 					region: 'us-east-2',
@@ -278,7 +274,7 @@ describe('7. Jobs & Job Role Testing', () => {
 			.send({ operation: 'sql', sql: 'SELECT * FROM S3_DATA.sensor' })
 			.expect((r) => {
 				r.body.forEach((row) => {
-					assert.ok(row.__updatedtime__ > row.__createdtime__);
+					assert.ok(row.__updatedtime__ > row.__createdtime__, r.text);
 				});
 			})
 			.expect(200);
@@ -294,8 +290,8 @@ describe('7. Jobs & Job Role Testing', () => {
 				schema: 'S3_DATA',
 				table: 'owners',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/does_not_exist_UPDATE.csv',
 					region: 'us-east-2',
@@ -315,8 +311,8 @@ describe('7. Jobs & Job Role Testing', () => {
 				operation: 'export_to_s3',
 				format: 'csv',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/test_export',
 					region: 'us-east-2',
@@ -328,8 +324,8 @@ describe('7. Jobs & Job Role Testing', () => {
 		const id = await getJobId(response.body);
 		const jobResponse = await checkJob(id, 15);
 
-		assert.ok(jobResponse.body[0].result.ETag);
-		assert.ok(jobResponse.body[0].result.VersionId);
+		assert.ok(jobResponse.body[0].result.ETag, jobResponse.text);
+		assert.ok(jobResponse.body[0].result.VersionId, jobResponse.text);
 	});
 
 	it('Export to S3 search_by_conditions', async () => {
@@ -340,8 +336,8 @@ describe('7. Jobs & Job Role Testing', () => {
 				operation: 'export_to_s3',
 				format: 'csv',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/test_export',
 					region: 'us-east-2',
@@ -360,8 +356,8 @@ describe('7. Jobs & Job Role Testing', () => {
 		const id = await getJobId(response.body);
 		const jobResponse = await checkJob(id, 15);
 
-		assert.ok(jobResponse.body[0].result.ETag);
-		assert.ok(jobResponse.body[0].result.VersionId);
+		assert.ok(jobResponse.body[0].result.ETag, jobResponse.text);
+		assert.ok(jobResponse.body[0].result.VersionId, jobResponse.text);
 	});
 
 	it('Export local search_by_conditions', async () => {
@@ -387,8 +383,8 @@ describe('7. Jobs & Job Role Testing', () => {
 		const id = await getJobId(response.body);
 		const jobResponse = await checkJob(id, 15);
 
-		assert.ok(jobResponse.body[0].result.message == 'Successfully exported JSON locally.');
-		assert.ok(jobResponse.body[0].type == 'export_local');
+		assert.ok(jobResponse.body[0].result.message == 'Successfully exported JSON locally.', jobResponse.text);
+		assert.ok(jobResponse.body[0].type == 'export_local', jobResponse.text);
 	});
 
 	it('Create S3 test table', async () => {
@@ -445,8 +441,8 @@ describe('7. Jobs & Job Role Testing', () => {
 					{ id: 'c', object_array: [{ number: 1 }, { number: 'two', count: 2 }] },
 				],
 			})
-			.expect((r) => assert.ok(r.body.inserted_hashes.length == 3))
-			.expect((r) => assert.ok(r.body.message == 'inserted 3 of 3 records'))
+			.expect((r) => assert.ok(r.body.inserted_hashes.length == 3, r.text))
+			.expect((r) => assert.ok(r.body.message == 'inserted 3 of 3 records', r.text))
 			.expect(200);
 	});
 
@@ -458,8 +454,8 @@ describe('7. Jobs & Job Role Testing', () => {
 				operation: 'export_to_s3',
 				format: 'csv',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/test_export_csv',
 					region: 'us-east-2',
@@ -471,8 +467,8 @@ describe('7. Jobs & Job Role Testing', () => {
 		const id = await getJobId(response.body);
 		const jobResponse = await checkJob(id, 15);
 
-		assert.ok(jobResponse.body[0].result.ETag);
-		assert.ok(jobResponse.body[0].result.VersionId);
+		assert.ok(jobResponse.body[0].result.ETag, jobResponse.text);
+		assert.ok(jobResponse.body[0].result.VersionId, jobResponse.text);
 	});
 
 	it('Import S3 test table CSV', async () => {
@@ -485,8 +481,8 @@ describe('7. Jobs & Job Role Testing', () => {
 				schema: 'S3_DATA',
 				table: 's3_test_csv_import',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/test_export_csv.csv',
 					region: 'us-east-2',
@@ -497,7 +493,7 @@ describe('7. Jobs & Job Role Testing', () => {
 		const id = await getJobId(response.body);
 		const jobResponse = await checkJob(id, 15);
 
-		assert.ok(jobResponse.body[0].message.includes('successfully loaded'));
+		assert.ok(jobResponse.body[0].message.includes('successfully loaded'), jobResponse.text);
 	});
 
 	it('Confirm CSV records import', async () => {
@@ -553,7 +549,7 @@ describe('7. Jobs & Job Role Testing', () => {
 						array: '',
 					},
 				];
-				assert.deepEqual(r.body, expected_res);
+				assert.deepEqual(r.body, expected_res, r.text);
 			})
 			.expect(200);
 	});
@@ -566,8 +562,8 @@ describe('7. Jobs & Job Role Testing', () => {
 				operation: 'export_to_s3',
 				format: 'json',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/test_export_json',
 					region: 'us-east-2',
@@ -579,7 +575,7 @@ describe('7. Jobs & Job Role Testing', () => {
 		const id = await getJobId(response.body);
 		const jobResponse = await checkJob(id, 15);
 
-		assert.ok(jobResponse.body[0].result.ETag);
+		assert.ok(jobResponse.body[0].result.ETag, jobResponse.text);
 	});
 
 	it('Import S3 test table JSON', async () => {
@@ -592,8 +588,8 @@ describe('7. Jobs & Job Role Testing', () => {
 				schema: 'S3_DATA',
 				table: 's3_test_json_import',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/test_export_json.json',
 					region: 'us-east-2',
@@ -603,7 +599,7 @@ describe('7. Jobs & Job Role Testing', () => {
 		const id = await getJobId(response.body);
 		const jobResponse = await checkJob(id, 15);
 
-		assert.ok(jobResponse.body[0].message.includes('successfully loaded'));
+		assert.ok(jobResponse.body[0].message.includes('successfully loaded'), jobResponse.text);
 	});
 
 	it('Confirm JSON records import', async () => {
@@ -660,7 +656,7 @@ describe('7. Jobs & Job Role Testing', () => {
 				array: '',
 			},
 		];
-		assert.deepEqual(response.body, expected_res);
+		assert.deepEqual(response.body, expected_res, response.text);
 	});
 
 	it('Drop S3 schema', async () => {
@@ -769,7 +765,7 @@ describe('7. Jobs & Job Role Testing', () => {
 				operation: 'add_user',
 				role: 'developer_test_5',
 				username: 'test_user',
-				password: `${generic.password}`,
+				password: `${testData.password}`,
 				active: true,
 			})
 			.expect(200);
@@ -780,7 +776,7 @@ describe('7. Jobs & Job Role Testing', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'create_schema', schema: 'test_job' })
-			.expect((r) => assert.ok(r.body.message.includes('successfully created')))
+			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 		await setTimeout(500);
 	});
@@ -813,7 +809,7 @@ describe('7. Jobs & Job Role Testing', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'sql', sql: 'select * from test_job.runner' })
-			.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
+			.expect((r) => assert.ok(r.body.length == 1, r.text))
 			.expect(200);
 	});
 
@@ -822,16 +818,10 @@ describe('7. Jobs & Job Role Testing', () => {
 			.post('')
 			.set(headersTestUser)
 			.send({ operation: 'delete_files_before', date: '2018-06-14', schema: 'dog' })
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.unauthorized_access[0] == "Operation 'deleteFilesBefore' is restricted to 'super_user' roles")
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'deleteFilesBefore' is restricted to 'super_user' roles", r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -849,8 +839,8 @@ describe('7. Jobs & Job Role Testing', () => {
 
 		const id = await getJobId(response.body);
 		const jobResponse = await checkJob(id, 15);
-		assert.ok(jobResponse.body[0].message == '1 of 1 record successfully deleted');
-		generic.job_id = id;
+		assert.ok(jobResponse.body[0].message == '1 of 1 record successfully deleted', jobResponse.text);
+		testData.job_id = id;
 	});
 
 	it('Jobs - Validate 0 entry in runners table', async () => {
@@ -858,7 +848,7 @@ describe('7. Jobs & Job Role Testing', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'sql', sql: 'select * from test_job.runner' })
-			.expect((r) => assert.ok(r.body.length == 0))
+			.expect((r) => assert.ok(r.body.length == 0, r.text))
 			.expect(200);
 	});
 
@@ -871,7 +861,7 @@ describe('7. Jobs & Job Role Testing', () => {
 				from_date: `${dateYesterday}`,
 				to_date: `${dateTomorrow}`,
 			})
-			.expect((r) => assert.ok(r.body.length > 0));
+			.expect((r) => assert.ok(r.body.length > 0, r.text));
 	});
 
 	it('Search Jobs by date - non-super user', async () => {
@@ -883,18 +873,10 @@ describe('7. Jobs & Job Role Testing', () => {
 				from_date: `${dateYesterday}`,
 				to_date: `${dateTomorrow}`,
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) =>
-				assert.ok(
-					r.body.unauthorized_access[0] == "Operation 'handleGetJobsByStartDate' is restricted to 'super_user' roles"
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'handleGetJobsByStartDate' is restricted to 'super_user' roles", r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -902,8 +884,8 @@ describe('7. Jobs & Job Role Testing', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
-			.send({ operation: 'get_job', id: `${generic.job_id}` })
-			.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
+			.send({ operation: 'get_job', id: `${testData.job_id}` })
+			.expect((r) => assert.ok(r.body.length == 1, r.text))
 			.expect(200);
 	});
 
@@ -911,8 +893,8 @@ describe('7. Jobs & Job Role Testing', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headersTestUser)
-			.send({ operation: 'get_job', id: `${generic.job_id}` })
-			.expect((r) => assert.ok(r.body.length == 1, 'Expected response message length to eql 1'))
+			.send({ operation: 'get_job', id: `${testData.job_id}` })
+			.expect((r) => assert.ok(r.body.length == 1, r.text))
 			.expect(200);
 	});
 
@@ -922,8 +904,8 @@ describe('7. Jobs & Job Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'csv_data_load',
-				schema: `${generic.schema}`,
-				table: `${generic.regi_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.regi_tb}`,
 				data: "regionid, regiondescription\n'17', 'test description'\n",
 			})
 			.expect(403);
@@ -935,8 +917,8 @@ describe('7. Jobs & Job Role Testing', () => {
 			.set(headers)
 			.send({
 				operation: 'csv_data_load',
-				schema: `${generic.schema}`,
-				table: `${generic.regi_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.regi_tb}`,
 				data: "regionid, regiondescription\n'17', 'test description'\n",
 			})
 			.expect(200);
@@ -949,18 +931,14 @@ describe('7. Jobs & Job Role Testing', () => {
 			.send({
 				operation: 'csv_file_load',
 				action: 'insert',
-				schema: `${generic.schema}`,
-				table: `${generic.supp_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.supp_tb}`,
 				file_path: `${getCsvPath()}Suppliers.csv`,
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Table 'northnwd.suppliers' does not exist"))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Table 'northnwd.suppliers' does not exist", r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -976,7 +954,7 @@ describe('7. Jobs & Job Role Testing', () => {
 				search_operation: {
 					operation: 'sql',
 					sql: `select *
-                                    from ${generic.schema}.${generic.ship_tb}`,
+                                    from ${testData.schema}.${testData.ship_tb}`,
 				},
 			})
 			.expect(200);
@@ -993,9 +971,9 @@ describe('7. Jobs & Job Role Testing', () => {
 				format: 'json',
 				search_operation: {
 					operation: 'search_by_hash',
-					schema: `${generic.schema}`,
-					table: `${generic.ship_tb}`,
-					hash_attribute: `${generic.ship_id}`,
+					schema: `${testData.schema}`,
+					table: `${testData.ship_tb}`,
+					hash_attribute: `${testData.ship_id}`,
 					hash_values: [1],
 					get_attributes: ['companyname'],
 				},
@@ -1015,7 +993,7 @@ describe('7. Jobs & Job Role Testing', () => {
 				search_operation: {
 					operation: 'sql',
 					sql: `select *
-                                    from ${generic.schema}.${generic.ship_tb}`,
+                                    from ${testData.schema}.${testData.ship_tb}`,
 				},
 			})
 			.expect(200);
@@ -1033,17 +1011,13 @@ describe('7. Jobs & Job Role Testing', () => {
 				search_operation: {
 					operation: 'sql',
 					sql: `select *
-                                    from ${generic.schema}.${generic.supp_tb}`,
+                                    from ${testData.schema}.${testData.supp_tb}`,
 				},
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Table 'northnwd.suppliers' does not exist"))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Table 'northnwd.suppliers' does not exist", r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1059,7 +1033,7 @@ describe('7. Jobs & Job Role Testing', () => {
 				search_operation: {
 					operation: 'sql',
 					sql: `select *
-                                    from ${generic.schema}.${generic.regi_tb}`,
+                                    from ${testData.schema}.${testData.regi_tb}`,
 				},
 			})
 			.expect(200);
@@ -1076,21 +1050,15 @@ describe('7. Jobs & Job Role Testing', () => {
 				format: 'json',
 				search_operation: {
 					operation: 'search_by_hash',
-					schema: `${generic.schema}`,
-					table: `${generic.supp_tb}`,
-					hash_attribute: `${generic.supp_id}`,
+					schema: `${testData.schema}`,
+					table: `${testData.supp_tb}`,
+					hash_attribute: `${testData.supp_id}`,
 					hash_values: [1],
-					get_attributes: [generic.supp_id],
+					get_attributes: [testData.supp_id],
 				},
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) =>
-				assert.ok(r.body.unauthorized_access[0] == "Operation 'export_local' is restricted to 'super_user' roles")
-			)
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'export_local' is restricted to 'super_user' roles", r.text))
 			.expect(403);
 	});
 
@@ -1115,7 +1083,7 @@ describe('7. Jobs & Job Role Testing', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_schema', schema: 'test_job' })
-			.expect((r) => assert.ok(r.body.message.includes('successfully delete')))
+			.expect((r) => assert.ok(r.body.message.includes('successfully delete'), r.text))
 			.expect(200);
 	});
 });

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import request from 'supertest';
-import { envUrl, generic, headers } from '../config/envConfig.js';
+import { envUrl, testData, headers } from '../config/envConfig.js';
 import { checkJob, getJobId } from '../utils/jobs.js';
 import { setTimeout } from 'node:timers/promises';
 
@@ -23,7 +23,7 @@ describe('9. Transactions', () => {
 				table: 'testerama',
 				hash_attribute: 'id',
 			})
-			.expect((r) => assert.ok(r.body.message.includes('successfully created')))
+			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 		await setTimeout(500);
 	});
@@ -51,13 +51,13 @@ describe('9. Transactions', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body.inserted_hashes.length == 6))
+			.expect((r) => assert.ok(r.body.inserted_hashes.length == 6, r.text))
 			.expect(200);
 		await setTimeout(1000);
 	});
 
 	it('Insert additional new records', async () => {
-		generic.insert_timestamp = new Date().getTime();
+		testData.insert_timestamp = new Date().getTime();
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
@@ -71,7 +71,7 @@ describe('9. Transactions', () => {
 					{ id: 13, address: '19 Broadway'},
 				],
 			})
-			.expect((r) => assert.ok(r.body.inserted_hashes.length == 3))
+			.expect((r) => assert.ok(r.body.inserted_hashes.length == 3, r.text))
 			.expect(200);
 	});
 
@@ -81,7 +81,7 @@ describe('9. Transactions', () => {
 			.set(headers)
 			.send({
 				operation: 'delete_audit_logs_before',
-				timestamp: `${generic.insert_timestamp}`,
+				timestamp: `${testData.insert_timestamp}`,
 				schema: 'test_delete_before',
 				table: 'testerama',
 			})
@@ -89,7 +89,7 @@ describe('9. Transactions', () => {
 
 		const id = await getJobId(response.body);
 		const jobResponse = await checkJob(id, 15);
-		assert.ok(jobResponse.body[0].message.includes('Successfully completed'));
+		assert.ok(jobResponse.body[0].message.includes('Successfully completed'), jobResponse.text);
 	});
 
 
@@ -105,7 +105,7 @@ describe('9. Transactions', () => {
 				table: 'test_read',
 				hash_attribute: 'id',
 			})
-			.expect((r) => assert.ok(r.body.message.includes('successfully created')))
+			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 		await setTimeout(500);
 	});
@@ -123,7 +123,7 @@ describe('9. Transactions', () => {
 					{ id: 2, name: 'Kato', age: 6 },
 				],
 			})
-			.expect((r) => assert.ok(r.body.inserted_hashes.length == 2))
+			.expect((r) => assert.ok(r.body.inserted_hashes.length == 2, r.text))
 			.expect(200);
 		await setTimeout(100);
 	});
@@ -138,7 +138,7 @@ describe('9. Transactions', () => {
 				table: 'test_read',
 				records: [{ id: 3, name: 'Riley', age: 7 }],
 			})
-			.expect((r) => assert.ok(r.body.inserted_hashes.length == 1))
+			.expect((r) => assert.ok(r.body.inserted_hashes.length == 1, r.text))
 			.expect(200);
 		await setTimeout(100);
 	});
@@ -156,7 +156,7 @@ describe('9. Transactions', () => {
 					{ id: 2, name: 'Kato B' },
 				],
 			})
-			.expect((r) => assert.ok(r.body.update_hashes.length == 2))
+			.expect((r) => assert.ok(r.body.update_hashes.length == 2, r.text))
 			.expect(200);
 		await setTimeout(100);
 	});
@@ -171,7 +171,7 @@ describe('9. Transactions', () => {
 				table: 'test_read',
 				records: [{ id: 'blerrrrr', name: 'Rosco' }],
 			})
-			.expect((r) => assert.ok(r.body.inserted_hashes.length == 1))
+			.expect((r) => assert.ok(r.body.inserted_hashes.length == 1, r.text))
 			.expect(200);
 		await setTimeout(100);
 	});
@@ -186,7 +186,7 @@ describe('9. Transactions', () => {
 				table: 'test_read',
 				records: [{ id: 'blerrrrr', breed: 'Mutt' }],
 			})
-			.expect((r) => assert.ok(r.body.update_hashes.length == 1))
+			.expect((r) => assert.ok(r.body.update_hashes.length == 1, r.text))
 			.expect(200);
 		await setTimeout(100);
 	});
@@ -196,7 +196,7 @@ describe('9. Transactions', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'delete', schema: 'test_delete_before', table: 'test_read', hash_values: [3, 1] })
-			.expect((r) => assert.ok(r.body.deleted_hashes.length == 2))
+			.expect((r) => assert.ok(r.body.deleted_hashes.length == 2, r.text))
 			.expect(200);
 		await setTimeout(100);
 	});
@@ -211,7 +211,7 @@ describe('9. Transactions', () => {
 				table: 'test_read',
 				records: [{ id: 4, name: 'Griff' }],
 			})
-			.expect((r) => assert.ok(r.body.inserted_hashes.length == 1))
+			.expect((r) => assert.ok(r.body.inserted_hashes.length == 1, r.text))
 			.expect(200);
 		await setTimeout(100);
 	});
@@ -230,7 +230,7 @@ describe('9. Transactions', () => {
 					{ name: 'Moe', age: 11 },
 				],
 			})
-			.expect((r) => assert.ok(r.body.upserted_hashes.length == 3))
+			.expect((r) => assert.ok(r.body.upserted_hashes.length == 3, r.text))
 			.expect(200);
 		await setTimeout(100);
 	});
@@ -247,12 +247,12 @@ describe('9. Transactions', () => {
 				search_values: [5],
 			})
 			.expect((r) => {
-				assert.ok(r.body['5'].length == 1);
+				assert.ok(r.body['5'].length == 1, r.text);
 				const transaction = r.body['5'][0];
-				assert.ok(transaction.operation == 'upsert');
-				assert.ok(transaction.records.length == 1);
+				assert.ok(transaction.operation == 'upsert', r.text);
+				assert.ok(transaction.records.length == 1, r.text);
 				Object.keys(transaction.records[0]).forEach((key) => {
-					assert.ok(['id', 'name', 'age', '__updatedtime__', '__createdtime__'].includes(key));
+					assert.ok(['id', 'name', 'age', '__updatedtime__', '__createdtime__'].includes(key), r.text);
 				});
 			});
 		await setTimeout(100);
@@ -264,29 +264,29 @@ describe('9. Transactions', () => {
 			.set(headers)
 			.send({ operation: 'read_audit_log', schema: 'test_delete_before', table: 'test_read' })
 			.expect((r) => {
-				assert.ok(r.body.length == 8);
+				assert.ok(r.body.length == 8, r.text);
 
 				const expected_attrs = ['id', 'name', '__updatedtime__'];
 				const other_attrs = ['age', '__createdtime__'];
 
 				const upsert_trans = r.body[7];
 
-				assert.ok(upsert_trans.operation == 'upsert');
-				assert.ok(upsert_trans.records.length == 3);
+				assert.ok(upsert_trans.operation == 'upsert', r.text);
+				assert.ok(upsert_trans.records.length == 3, r.text);
 
-				assert.ok(upsert_trans.records[0].id == 4);
+				assert.ok(upsert_trans.records[0].id == 4, r.text);
 				Object.keys(upsert_trans.records[0]).forEach((key) => {
-					assert.ok([...expected_attrs, ...other_attrs].includes(key));
+					assert.ok([...expected_attrs, ...other_attrs].includes(key), r.text);
 				});
 
-				assert.ok(upsert_trans.records[1].id == 5);
+				assert.ok(upsert_trans.records[1].id == 5, r.text);
 				Object.keys(upsert_trans.records[1]).forEach((key) => {
-					assert.ok([...expected_attrs, ...other_attrs].includes(key));
+					assert.ok([...expected_attrs, ...other_attrs].includes(key), r.text);
 				});
 
-				assert.ok(typeof upsert_trans.records[2].id == 'number');
+				assert.ok(typeof upsert_trans.records[2].id == 'number', r.text);
 				Object.keys(upsert_trans.records[2]).forEach((key) => {
-					assert.ok([...expected_attrs, ...other_attrs].includes(key));
+					assert.ok([...expected_attrs, ...other_attrs].includes(key), r.text);
 				});
 			});
 		await setTimeout(100);
@@ -303,7 +303,7 @@ describe('9. Transactions', () => {
 				search_type: 'timestamp',
 				search_values: [],
 			})
-			.expect((r) => assert.ok(r.body.length == 8))
+			.expect((r) => assert.ok(r.body.length == 8, r.text))
 			.expect(200);
 		await setTimeout(100);
 	});
@@ -317,9 +317,9 @@ describe('9. Transactions', () => {
 				schema: 'test_delete_before',
 				table: 'test_read',
 				search_type: 'username',
-				search_values: [`${generic.username}`],
+				search_values: [`${testData.username}`],
 			})
-			.expect((r) => assert.ok(r.body[generic.username].length == 8))
+			.expect((r) => assert.ok(r.body[testData.username].length == 8, r.text))
 			.expect(200);
 		await setTimeout(100);
 	});
@@ -335,8 +335,8 @@ describe('9. Transactions', () => {
 				search_type: 'hash_value',
 				search_values: [1, 'blerrrrr'],
 			})
-			.expect((r) => assert.ok(r.body['1'].length == 3))
-			.expect((r) => assert.ok(r.body['blerrrrr'].length == 2))
+			.expect((r) => assert.ok(r.body['1'].length == 3, r.text))
+			.expect((r) => assert.ok(r.body['blerrrrr'].length == 2, r.text))
 			.expect(200);
 		await setTimeout(100);
 	});

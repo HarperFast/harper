@@ -1,8 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import request from 'supertest';
-import { envUrl, envUrlRest, generic, headers } from '../config/envConfig.js';
-import { setTimeout } from 'node:timers/promises';
+import { envUrl, envUrlRest, testData, headers } from '../config/envConfig.js';
 import { restartWithTimeout } from '../utils/restart.js';
 
 describe('19. GraphQL tests', () => {
@@ -15,7 +14,7 @@ describe('19. GraphQL tests', () => {
 			.send({ operation: 'add_component', project: 'appGraphQL' })
 			.expect((r) => {
 				const res = JSON.stringify(r.body);
-				assert.ok(res.includes('Successfully added project') || res.includes('Project already exists'));
+				assert.ok(res.includes('Successfully added project') || res.includes('Project already exists'), r.text);
 			});
 	});
 
@@ -30,7 +29,7 @@ describe('19. GraphQL tests', () => {
 				payload:
 					'type VariedProps @table @export { \n\t id: ID @primaryKey \n\t name: String @indexed \n } \n\n type SimpleRecord @table @export { \n\t id: ID @primaryKey \n\t name: String @indexed \n } \n\n type FourProp @table(audit: "1d", replicated: false) @export { \n\t id: ID @primaryKey \n\t name: String @indexed \n\t age: Int @indexed \n\t title: String \n\t birthday: Date @indexed \n\t ageInMonths: Int @computed @indexed \n\t nameTitle: Int @computed(from: "name + \' \' + title") \n } \n\n type Related @table @export(rest: true, mqtt: false) { \n\t id: ID @primaryKey \n\t name: String @indexed \n\t otherTable: [SubObject] @relationship(to: relatedId) \n\t subObject: SubObject @relationship(from: "subObjectId") \n\t subObjectId: ID @indexed \n } \n\n type ManyToMany @table @export(mqtt: true, rest: false) { \n\t id: ID @primaryKey \n\t name: String @indexed \n\t subObjectIds: [ID] @indexed \n\t subObjects: [SubObject] @relationship(from: "subObjectIds") \n } \n\n type HasTimeStampsNoPK @table @export { \n\t created: Float @createdTime \n\t updated: Float @updatedTime \n } \n\n type SomeObject { \n\t name: String \n } \n\n type SubObject @table(audit: false) @export { \n\t id: ID @primaryKey \n\t subObject: SomeObject \n\t subArray: [SomeObject] \n\t any: Any \n\t relatedId: ID @indexed \n\t related: Related @relationship(from: "relatedId") \n\t manyToMany: [ManyToMany] @relationship(to: subObjectIds) \n } \n\n type NestedIdObject @table @export {  \n\t id: [ID]! @primaryKey \n\t name: String \n } \n\n type SimpleCache @table { \n\t id: ID @primaryKey \n } \n\n type HasBigInt @table @export { \n\t id: BigInt @primaryKey \n\t name: String @indexed \n\t anotherBigint: BigInt \n } \n\n type Conflicted1 @table @export(name: "Conflicted") { \n\t id: ID @primaryKey \n } \n\n type Conflicted2 @table @export(name: "Conflicted") { \n\t id: ID @primaryKey \n } \n\n',
 			})
-			.expect((r) => assert.ok(r.body.message.includes('Successfully set component: schema.graphql')))
+			.expect((r) => assert.ok(r.body.message.includes('Successfully set component: schema.graphql'), r.text))
 			.expect(200);
 	});
 
@@ -45,12 +44,12 @@ describe('19. GraphQL tests', () => {
 				payload:
 					"rest: true\ngraphqlSchema:\n  files: '*.graphql'\njsResource:\n  files: resources.js\nstatic:\n  root: web\n  files: web/**\nroles:\n  files: roles.yaml\ngraphql: true",
 			})
-			.expect((r) => assert.ok(r.body.message.includes('Successfully set component: config.yaml')))
+			.expect((r) => assert.ok(r.body.message.includes('Successfully set component: config.yaml'), r.text))
 			.expect(200);
 	});
 
 	it('Restart service and wait', async () => {
-		await restartWithTimeout(generic.restartTimeout);
+		await restartWithTimeout(testData.restartTimeout);
 	});
 
 	it('Insert one null into SubObject', async () => {
@@ -58,7 +57,7 @@ describe('19. GraphQL tests', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'insert', table: 'SubObject', records: [{ id: '0', relatedId: '1', any: null }] })
-			.expect((r) => assert.ok(r.body.message.includes('inserted 1 of 1 records')))
+			.expect((r) => assert.ok(r.body.message.includes('inserted 1 of 1 records'), r.text))
 			.expect(200);
 	});
 
@@ -87,7 +86,7 @@ describe('19. GraphQL tests', () => {
 					{ id: '5', name: 'name-5', nestedIdObjectId: ['a', '5'], subObjectId: '5' },
 				],
 			})
-			.expect((r) => assert.ok(r.body.message.includes('inserted 5 of 5 records')))
+			.expect((r) => assert.ok(r.body.message.includes('inserted 5 of 5 records'), r.text))
 			.expect(200);
 	});
 
@@ -114,7 +113,7 @@ describe('19. GraphQL tests', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body.message.includes('inserted 5 of 5 records')))
+			.expect((r) => assert.ok(r.body.message.includes('inserted 5 of 5 records'), r.text))
 			.expect(200);
 	});
 
@@ -124,9 +123,9 @@ describe('19. GraphQL tests', () => {
 			.set(headers)
 			.send({ query: '{ Related { id name } }' })
 			.expect((r) => {
-				assert.ok(r.body.data.Related.length == 5);
+				assert.ok(r.body.data.Related.length == 5, r.text);
 				r.body.data.Related.forEach((row, i) => {
-					assert.ok(row.id == (i + 1).toString());
+					assert.ok(row.id == (i + 1).toString(), r.text);
 				});
 			})
 			.expect(200);
@@ -138,9 +137,9 @@ describe('19. GraphQL tests', () => {
 			.set(headers)
 			.send({ query: 'query GetRelated { Related { id name } }' })
 			.expect((r) => {
-				assert.ok(r.body.data.Related.length == 5);
+				assert.ok(r.body.data.Related.length == 5, r.text);
 				r.body.data.Related.forEach((row, i) => {
-					assert.ok(row.id == (i + 1).toString());
+					assert.ok(row.id == (i + 1).toString(), r.text);
 				});
 			})
 			.expect(200);
@@ -152,9 +151,9 @@ describe('19. GraphQL tests', () => {
 			.set(headers)
 			.send({ query: 'query GetRelated { Related { id, name } }', operationName: 'GetRelated' })
 			.expect((r) => {
-				assert.ok(r.body.data.Related.length == 5);
+				assert.ok(r.body.data.Related.length == 5, r.text);
 				r.body.data.Related.forEach((row, i) => {
-					assert.ok(row.id == (i + 1).toString());
+					assert.ok(row.id == (i + 1).toString(), r.text);
 				});
 			})
 			.expect(200);
@@ -169,9 +168,9 @@ describe('19. GraphQL tests', () => {
 				operationName: 'GetSubObject',
 			})
 			.expect((r) => {
-				assert.ok(r.body.data.SubObject.length == 6);
+				assert.ok(r.body.data.SubObject.length == 6, r.text);
 				r.body.data.SubObject.forEach((row, i) => {
-					assert.ok(row.id == i.toString());
+					assert.ok(row.id == i.toString(), r.text);
 				});
 			})
 			.expect(200);
@@ -182,7 +181,7 @@ describe('19. GraphQL tests', () => {
 			.post('/graphql')
 			.set(headers)
 			.send({ query: '{ Related(id: "1") { id name } }' })
-			.expect((r) => assert.ok(r.body.data.Related[0].id == '1'))
+			.expect((r) => assert.ok(r.body.data.Related[0].id == '1', r.text))
 			.expect(200);
 	});
 
@@ -192,13 +191,13 @@ describe('19. GraphQL tests', () => {
 			.set(headers)
 			.send({ query: '{ Related { id name } SubObject { id relatedId } }' })
 			.expect((r) => {
-				assert.ok(r.body.data.Related.length == 5);
+				assert.ok(r.body.data.Related.length == 5, r.text);
 				r.body.data.Related.forEach((row, i) => {
-					assert.ok(row.id == (i + 1).toString());
+					assert.ok(row.id == (i + 1).toString(), r.text);
 				});
-				assert.ok(r.body.data.SubObject.length == 6);
+				assert.ok(r.body.data.SubObject.length == 6, r.text);
 				r.body.data.SubObject.forEach((row, i) => {
-					assert.ok(row.id == i.toString());
+					assert.ok(row.id == i.toString(), r.text);
 				});
 			})
 			.expect(200);
@@ -209,7 +208,7 @@ describe('19. GraphQL tests', () => {
 			.post('/graphql')
 			.set(headers)
 			.send({ query: 'query Get($id: ID!) { Related(id: $id) { id name } }', variables: { id: '1' } })
-			.expect((r) => assert.ok(r.body.data.Related[0].id == '1'))
+			.expect((r) => assert.ok(r.body.data.Related[0].id == '1', r.text))
 			.expect(200);
 	});
 
@@ -218,7 +217,7 @@ describe('19. GraphQL tests', () => {
 			.post('/graphql')
 			.set(headers)
 			.send({ query: 'query Get($id: ID! = "1") { Related(id: $id) { id name } }', variables: { id: '1' } })
-			.expect((r) => assert.ok(r.body.data.Related[0].id == '1'))
+			.expect((r) => assert.ok(r.body.data.Related[0].id == '1', r.text))
 			.expect(200);
 	});
 
@@ -227,7 +226,7 @@ describe('19. GraphQL tests', () => {
 			.post('/graphql')
 			.set(headers)
 			.send({ query: 'query Get($any: Any) { SubObject(any: $any) { id any } }' })
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '0'))
+			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '0', r.text))
 			.expect(200);
 	});
 
@@ -239,7 +238,7 @@ describe('19. GraphQL tests', () => {
 				query: 'query Get($any: Any = "any-1") { SubObject(any: $any) { id any } }',
 				variables: { any: 'any-2' },
 			})
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '2'))
+			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '2', r.text))
 			.expect(200);
 	});
 
@@ -251,7 +250,7 @@ describe('19. GraphQL tests', () => {
 				query: 'query Get($any: Any = "any-1") { SubObject(any: $any) { id any } }',
 				variables: { any: null },
 			})
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '0'))
+			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '0', r.text))
 			.expect(200);
 	});
 
@@ -260,7 +259,7 @@ describe('19. GraphQL tests', () => {
 			.post('/graphql')
 			.set(headers)
 			.send({ query: '{ SubObject(related: { name: "name-2" }) { id any } }' })
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '2'))
+			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '2', r.text))
 			.expect(200);
 	});
 
@@ -269,7 +268,7 @@ describe('19. GraphQL tests', () => {
 			.post('/graphql')
 			.set(headers)
 			.send({ query: '{ SubObject(any: "any-1", related: { name: "name-1" }) { id any } }' })
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '1'))
+			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '1', r.text))
 			.expect(200);
 	});
 
@@ -278,7 +277,7 @@ describe('19. GraphQL tests', () => {
 			.post('/graphql')
 			.set(headers)
 			.send({ query: '{ SubObject(related: { id: "2" }) { id any } }' })
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '2'))
+			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '2', r.text))
 			.expect(200);
 	});
 
@@ -287,7 +286,7 @@ describe('19. GraphQL tests', () => {
 			.post('/graphql')
 			.set(headers)
 			.send({ query: '{ SubObject(related: { subObject: { any: "any-3" } }) { id any } }' })
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '3'))
+			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '3', r.text))
 			.expect(200);
 	});
 
@@ -299,7 +298,7 @@ describe('19. GraphQL tests', () => {
 				query: 'query Get($subObject: Any) { SubObject(related: { subObject: $subObject }) { id any } }',
 				variables: { subObject: { any: 'any-3' } },
 			})
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '3'))
+			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '3', r.text))
 			.expect(200);
 	});
 
@@ -311,7 +310,7 @@ describe('19. GraphQL tests', () => {
 				query: 'query Get($related: Any) { SubObject(related: $related) { id any } }',
 				variables: { related: { subObject: { any: 'any-3' } } },
 			})
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '3'))
+			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '3', r.text))
 			.expect(200);
 	});
 
@@ -323,7 +322,7 @@ describe('19. GraphQL tests', () => {
 				query: 'query Get($name: String) { SubObject(related: { name: $name }) { id any } }',
 				variables: { name: 'name-2' },
 			})
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '2'))
+			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '2', r.text))
 			.expect(200);
 	});
 
@@ -335,7 +334,7 @@ describe('19. GraphQL tests', () => {
 				query: 'query Get($related: Any) { SubObject(related: $related) { id any } }',
 				variables: { related: { name: 'name-2' } },
 			})
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '2'))
+			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '2', r.text))
 			.expect(200);
 	});
 
@@ -345,9 +344,9 @@ describe('19. GraphQL tests', () => {
 			.set(headers)
 			.send({ query: 'query Get { ...related } fragment related on Any { Related { id name } }' })
 			.expect((r) => {
-				assert.ok(r.body.data.Related.length == 5);
+				assert.ok(r.body.data.Related.length == 5, r.text);
 				r.body.data.Related.forEach((row, i) => {
-					assert.ok(row.id == (i + 1).toString());
+					assert.ok(row.id == (i + 1).toString(), r.text);
 				});
 			})
 			.expect(200);
@@ -362,9 +361,9 @@ describe('19. GraphQL tests', () => {
 					'query Get { ...related } fragment related on Any { ...nested } fragment nested on Any { Related { id name } }',
 			})
 			.expect((r) => {
-				assert.ok(r.body.data.Related.length == 5);
+				assert.ok(r.body.data.Related.length == 5, r.text);
 				r.body.data.Related.forEach((row, i) => {
-					assert.ok(row.id == (i + 1).toString());
+					assert.ok(row.id == (i + 1).toString(), r.text);
 				});
 			})
 			.expect(200);
@@ -379,13 +378,13 @@ describe('19. GraphQL tests', () => {
 					'query Get { ...multiResourceFragment } fragment multiResourceFragment on Any { Related { id name } SubObject { id relatedId } }',
 			})
 			.expect((r) => {
-				assert.ok(r.body.data.Related.length == 5);
+				assert.ok(r.body.data.Related.length == 5, r.text);
 				r.body.data.Related.forEach((row, i) => {
-					assert.ok(row.id == (i + 1).toString());
+					assert.ok(row.id == (i + 1).toString(), r.text);
 				});
-				assert.ok(r.body.data.SubObject.length == 6);
+				assert.ok(r.body.data.SubObject.length == 6, r.text);
 				r.body.data.SubObject.forEach((row, i) => {
-					assert.ok(row.id == i.toString());
+					assert.ok(row.id == i.toString(), r.text);
 				});
 			})
 			.expect(200);
@@ -396,7 +395,7 @@ describe('19. GraphQL tests', () => {
 			.post('/graphql')
 			.set(headers)
 			.send({ query: 'query Get { Related(id: "1") { ...on Related { id name } } }' })
-			.expect((r) => assert.ok(r.body.data.Related[0].id == '1'))
+			.expect((r) => assert.ok(r.body.data.Related[0].id == '1', r.text))
 			.expect(200);
 	});
 
@@ -408,7 +407,7 @@ describe('19. GraphQL tests', () => {
 				query:
 					'query Get { Related(id: "2") { ...relatedFields otherTable { ...id } } } fragment relatedFields on Related { ...id name } fragment id on Any { id }',
 			})
-			.expect((r) => assert.ok(r.body.data.Related[0].id == '2'))
+			.expect((r) => assert.ok(r.body.data.Related[0].id == '2', r.text))
 			.expect(200);
 	});
 });

@@ -1,4 +1,4 @@
-name: 'Run Docker CI Tests with Postman'
+name: 'Run Docker CI Tests with Node js'
 
 on:
   push:
@@ -10,7 +10,7 @@ on:
   # paths:
   #   - 'utility/Docker/Dockerfile'
   schedule:
-    - cron: '0 13 * * 1-5'
+    - cron: '0 5 * * 1-5'
   workflow_dispatch:
 
 jobs:
@@ -62,7 +62,10 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ needs.build.outputs.nodeVersion }}
-      - name: Run Tests with Postman
+      - name: Run Tests with Node js
+        env:
+          S3_KEY: ${{ secrets.AWS_S3_INTEGRATION_TEST_DATA_ACCESS_KEY_ID }}
+          S3_SECRET: ${{ secrets.AWS_S3_INTEGRATION_TEST_DATA_SECRET_ACCESS_KEY }}
         timeout-minutes: 20
         run: |
           pushd utility/Docker
@@ -79,14 +82,11 @@ jobs:
           harper_running=$(ss -tln | grep 9925 | awk '{print $4}' | cut -f2 -d:)
           if [ -z $harper_running ]; then exit 1; fi
 
-          npm --loglevel=error install -g newman
-          npm --loglevel=error install -g newman-reporter-html
-          npm --loglevel=error install -g newman-reporter-htmlextra
-
           # Run integration tests from the Docker host
           docker cp test/data/integrationTestsCsvs/ $containerId:/home/harperdb/
-          cd ./integrationTests/
-          newman run HarperDB_Integration_Tests.json -e Int_test_env_var.json --reporters cli,html,htmlextra --reporter-cli-show-timestamps --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --env-var "files_location=/home/harperdb/integrationTestsCsvs/" --env-var "username=admin" --env-var "password=Abc1234!"
+          cd ./integrationTests/apiTests
+          npm install
+          S3_KEY=${S3_KEY} S3_SECRET=${S3_SECRET} node --experimental-default-type="module" --stack-trace-limit=2 tests/testSuite.js
 
       - name: Create artifact
         if: always()

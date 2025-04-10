@@ -4,7 +4,7 @@ import request from 'supertest';
 import {
 	createHeaders,
 	envUrl,
-	generic,
+	testData,
 	getCsvPath,
 	headers,
 	headersBulkLoadUser,
@@ -129,7 +129,7 @@ describe('5. NoSQL Role Testing', () => {
 					},
 				},
 			})
-			.expect((r) => assert.ok(r.body.id))
+			.expect((r) => assert.ok(r.body.id, r.text))
 			.expect(200);
 	});
 
@@ -141,7 +141,7 @@ describe('5. NoSQL Role Testing', () => {
 				operation: 'add_user',
 				role: 'bulk_load_role',
 				username: 'bulk_load_user',
-				password: `${generic.password}`,
+				password: `${testData.password}`,
 				active: true,
 			})
 			.expect(200);
@@ -151,39 +151,41 @@ describe('5. NoSQL Role Testing', () => {
 		const errorMsg = await csvDataLoad(
 			headersBulkLoadUser,
 			'update',
-			generic.schema,
-			generic.supp_tb,
+			testData.schema,
+			testData.supp_tb,
 			'supplierid,companyname, rando\n19,The Chum Bucket, Another attr value\n',
 			'This operation is not authorized due to role restrictions and/or invalid database items'
 		);
-		assert.ok(errorMsg.unauthorized_access.length == 0);
-		assert.ok(errorMsg.invalid_schema_items.length == 1);
-		assert.ok(errorMsg.invalid_schema_items[0] == "Attribute ' rando' does not exist on 'northnwd.suppliers'");
+		const resText = JSON.stringify(errorMsg);
+		assert.ok(errorMsg.unauthorized_access.length == 0, resText);
+		assert.ok(errorMsg.invalid_schema_items.length == 1, resText);
+		assert.ok(errorMsg.invalid_schema_items[0] == "Attribute ' rando' does not exist on 'northnwd.suppliers'", resText);
 	});
 
 	it('CSV Data Load - upsert - to table w/ some restricted attrs & new attr', async () => {
 		const errorMsg = await csvDataLoad(
 			headersBulkLoadUser,
 			'upsert',
-			generic.schema_dev,
+			testData.schema_dev,
 			'dog',
 			'id,dog_name,adorable,age,rando\n19,doggy,true,22,Another attr value\n',
 			'This operation is not authorized due to role restrictions and/or invalid database items'
 		);
-		assert.ok(errorMsg.unauthorized_access.length == 1);
+		const resText = JSON.stringify(errorMsg);
+		assert.ok(errorMsg.unauthorized_access.length == 1, resText);
 		const unauth_obj = errorMsg.unauthorized_access[0];
-		assert.ok(unauth_obj.schema == 'dev');
-		assert.ok(unauth_obj.table == 'dog');
-		assert.ok(unauth_obj.required_table_permissions.length == 0);
-		assert.ok(unauth_obj.required_attribute_permissions.length == 2);
-		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'adorable');
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'update');
-		assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'age');
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1);
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert');
-		assert.ok(errorMsg.invalid_schema_items.length == 1);
-		assert.ok(errorMsg.invalid_schema_items[0] == "Attribute 'rando' does not exist on 'dev.dog'");
+		assert.ok(unauth_obj.schema == 'dev', resText);
+		assert.ok(unauth_obj.table == 'dog', resText);
+		assert.ok(unauth_obj.required_table_permissions.length == 0, resText);
+		assert.ok(unauth_obj.required_attribute_permissions.length == 2, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'adorable', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'update', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'age', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert', resText);
+		assert.ok(errorMsg.invalid_schema_items.length == 1, resText);
+		assert.ok(errorMsg.invalid_schema_items[0] == "Attribute 'rando' does not exist on 'dev.dog'", resText);
 	});
 
 	it('CSV URL Load - upsert - to table w/ restricted attrs', async () => {
@@ -193,13 +195,11 @@ describe('5. NoSQL Role Testing', () => {
 			.send({
 				operation: 'csv_url_load',
 				action: 'upsert',
-				schema: `${generic.schema}`,
-				table: `${generic.csv_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.csv_tb}`,
 				csv_url: 'https://harperdb-integration-test-data.s3.us-east-2.amazonaws.com/breeds.csv',
 			})
-			.expect((r) =>
-				assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response')
-			);
+			.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, r.text));
 
 		const id = await getJobId(response.body);
 		const errorMsg = await checkJobCompleted(
@@ -207,21 +207,22 @@ describe('5. NoSQL Role Testing', () => {
 			'This operation is not authorized due to role restrictions and/or invalid database items'
 		);
 
-		assert.ok(errorMsg.unauthorized_access.length == 1);
+		const resText = JSON.stringify(errorMsg);
+		assert.ok(errorMsg.unauthorized_access.length == 1, resText);
 		const unauth_obj = errorMsg.unauthorized_access[0];
 
-		assert.ok(unauth_obj.schema == 'northnwd');
-		assert.ok(unauth_obj.table == 'url_csv_data');
-		assert.ok(unauth_obj.required_table_permissions.length == 0);
-		assert.ok(unauth_obj.required_attribute_permissions.length == 2);
-		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'name');
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'update');
-		assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'section');
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1);
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert');
-		assert.ok(errorMsg.invalid_schema_items.length == 1);
-		assert.ok(errorMsg.invalid_schema_items[0] == "Attribute 'country' does not exist on 'northnwd.url_csv_data'");
+		assert.ok(unauth_obj.schema == 'northnwd', resText);
+		assert.ok(unauth_obj.table == 'url_csv_data', resText);
+		assert.ok(unauth_obj.required_table_permissions.length == 0, resText);
+		assert.ok(unauth_obj.required_attribute_permissions.length == 2, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'name', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'update', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'section', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert', resText);
+		assert.ok(errorMsg.invalid_schema_items.length == 1, resText);
+		assert.ok(errorMsg.invalid_schema_items[0] == "Attribute 'country' does not exist on 'northnwd.url_csv_data'", resText);
 	});
 
 	it('CSV URL Load - update - to table w/ restricted attrs', async () => {
@@ -231,32 +232,30 @@ describe('5. NoSQL Role Testing', () => {
 			.send({
 				operation: 'csv_url_load',
 				action: 'update',
-				schema: `${generic.schema}`,
-				table: `${generic.csv_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.csv_tb}`,
 				csv_url: 'https://harperdb-integration-test-data.s3.us-east-2.amazonaws.com/breeds.csv',
 			})
-			.expect((r) =>
-				assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response')
-			);
+			.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, r.text));
 
 		const id = await getJobId(response.body);
 		const errorMsg = await checkJobCompleted(
 			id,
 			'This operation is not authorized due to role restrictions and/or invalid database items'
 		);
-
-		assert.ok(errorMsg.unauthorized_access.length == 1);
+		const resText = JSON.stringify(errorMsg);
+		assert.ok(errorMsg.unauthorized_access.length == 1, resText);
 		const unauth_obj = errorMsg.unauthorized_access[0];
 
-		assert.ok(unauth_obj.schema == 'northnwd');
-		assert.ok(unauth_obj.table == 'url_csv_data');
-		assert.ok(unauth_obj.required_table_permissions.length == 0);
-		assert.ok(unauth_obj.required_attribute_permissions.length == 1);
-		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'name');
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'update');
-		assert.ok(errorMsg.invalid_schema_items.length == 1);
-		assert.ok(errorMsg.invalid_schema_items[0] == "Attribute 'country' does not exist on 'northnwd.url_csv_data'");
+		assert.ok(unauth_obj.schema == 'northnwd', resText);
+		assert.ok(unauth_obj.table == 'url_csv_data', resText);
+		assert.ok(unauth_obj.required_table_permissions.length == 0, resText);
+		assert.ok(unauth_obj.required_attribute_permissions.length == 1, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'name', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'update', resText);
+		assert.ok(errorMsg.invalid_schema_items.length == 1, resText);
+		assert.ok(errorMsg.invalid_schema_items[0] == "Attribute 'country' does not exist on 'northnwd.url_csv_data'", resText);
 	});
 
 	it('CSV File Load to table w/ restricted attrs', async () => {
@@ -270,9 +269,7 @@ describe('5. NoSQL Role Testing', () => {
 				table: 'books',
 				file_path: `${getCsvPath()}` + 'Books.csv',
 			})
-			.expect((r) =>
-				assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response')
-			)
+			.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, r.text))
 			.expect(200);
 
 		const id = await getJobId(response.body);
@@ -280,21 +277,21 @@ describe('5. NoSQL Role Testing', () => {
 			id,
 			'This operation is not authorized due to role restrictions and/or invalid database items'
 		);
-
-		assert.ok(errorMsg.unauthorized_access.length == 1);
+		const resText = JSON.stringify(errorMsg);
+		assert.ok(errorMsg.unauthorized_access.length == 1, resText);
 		const unauth_obj = errorMsg.unauthorized_access[0];
 
-		assert.ok(unauth_obj.schema == 'dev');
-		assert.ok(unauth_obj.table == 'books');
-		assert.ok(unauth_obj.required_table_permissions.length == 0);
-		assert.ok(unauth_obj.required_attribute_permissions.length == 2);
-		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'id');
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert');
-		assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'books_count');
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1);
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert');
-		assert.ok(errorMsg.invalid_schema_items.length == 17);
+		assert.ok(unauth_obj.schema == 'dev', resText);
+		assert.ok(unauth_obj.table == 'books', resText);
+		assert.ok(unauth_obj.required_table_permissions.length == 0, resText);
+		assert.ok(unauth_obj.required_attribute_permissions.length == 2, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'id', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'books_count', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert', resText);
+		assert.ok(errorMsg.invalid_schema_items.length == 17, resText);
 
 		const expected_invalid_items = [
 			"Attribute 'authors' does not exist on 'dev.books'",
@@ -317,7 +314,7 @@ describe('5. NoSQL Role Testing', () => {
 		];
 
 		errorMsg.invalid_schema_items.forEach((item) => {
-				assert.ok(expected_invalid_items.includes(item));
+				assert.ok(expected_invalid_items.includes(item), resText);
 			})
 	});
 
@@ -331,44 +328,42 @@ describe('5. NoSQL Role Testing', () => {
 				schema: 'dev',
 				table: 'dog',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/dogs.csv',
 					region: 'us-east-2',
 				},
 			})
-			.expect((r) =>
-				assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response')
-			);
+			.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, r.text));
 
 		const id = await getJobId(response.body);
 		const errorMsg = await checkJobCompleted(
 			id,
 			'This operation is not authorized due to role restrictions and/or invalid database items'
 		);
-
-		assert.ok(errorMsg.unauthorized_access.length == 1);
+		const resText = JSON.stringify(errorMsg);
+		assert.ok(errorMsg.unauthorized_access.length == 1, resText);
 		const unauth_obj = errorMsg.unauthorized_access[0];
 
-		assert.ok(unauth_obj.schema == 'dev');
-		assert.ok(unauth_obj.table == 'dog');
-		assert.ok(unauth_obj.required_table_permissions.length == 0);
-		assert.ok(unauth_obj.required_attribute_permissions.length == 2);
-		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'owner_id');
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert');
-		assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'age');
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1);
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert');
+		assert.ok(unauth_obj.schema == 'dev', resText);
+		assert.ok(unauth_obj.table == 'dog', resText);
+		assert.ok(unauth_obj.required_table_permissions.length == 0, resText);
+		assert.ok(unauth_obj.required_attribute_permissions.length == 2, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'owner_id', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'age', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert', resText);
 
-		assert.ok(errorMsg.invalid_schema_items.length == 2);
+		assert.ok(errorMsg.invalid_schema_items.length == 2, resText);
 		const expected_invalid_items = [
 			"Attribute 'breed_id' does not exist on 'dev.dog'",
 			"Attribute 'weight_lbs' does not exist on 'dev.dog'",
 		];
 		errorMsg.invalid_schema_items.forEach((item) => {
-			assert.ok(expected_invalid_items.includes(item));
+			assert.ok(expected_invalid_items.includes(item), resText);
 		});
 	});
 
@@ -382,39 +377,37 @@ describe('5. NoSQL Role Testing', () => {
 				schema: 'dev',
 				table: 'owner',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/owners_update.json',
 					region: 'us-east-2',
 				},
 			})
-			.expect((r) =>
-				assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response')
-			);
+			.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, r.text));
 
 		const id = await getJobId(response.body);
 		const errorMsg = await checkJobCompleted(
 			id,
 			'This operation is not authorized due to role restrictions and/or invalid database items'
 		);
-
-		assert.ok(errorMsg.unauthorized_access.length == 1);
+		const resText = JSON.stringify(errorMsg);
+		assert.ok(errorMsg.unauthorized_access.length == 1, resText);
 		const unauth_obj = errorMsg.unauthorized_access[0];
 
-		assert.ok(unauth_obj.schema == 'dev');
-		assert.ok(unauth_obj.table == 'owner');
-		assert.ok(unauth_obj.required_table_permissions.length == 0);
-		assert.ok(unauth_obj.required_attribute_permissions.length == 2);
-		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'id');
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 2);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert');
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[1] == 'update');
-		assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'name');
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 2);
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert');
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[1] == 'update');
-		assert.ok(errorMsg.invalid_schema_items.length == 0);
+		assert.ok(unauth_obj.schema == 'dev', resText);
+		assert.ok(unauth_obj.table == 'owner', resText);
+		assert.ok(unauth_obj.required_table_permissions.length == 0, resText);
+		assert.ok(unauth_obj.required_attribute_permissions.length == 2, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'id', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 2, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[1] == 'update', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'name', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 2, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[1] == 'update', resText);
+		assert.ok(errorMsg.invalid_schema_items.length == 0, resText);
 	});
 
 	it('Import JSON from S3 - insert - to table w/ restricted attrs', async () => {
@@ -427,37 +420,35 @@ describe('5. NoSQL Role Testing', () => {
 				schema: 'dev',
 				table: 'owner',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/owners_update.json',
 					region: 'us-east-2',
 				},
 			})
-			.expect((r) =>
-				assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response')
-			);
+			.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, r.text));
 
 		const id = await getJobId(response.body);
 		const errorMsg = await checkJobCompleted(
 			id,
 			'This operation is not authorized due to role restrictions and/or invalid database items'
 		);
-
-		assert.ok(errorMsg.unauthorized_access.length == 1);
+		const resText = JSON.stringify(errorMsg);
+		assert.ok(errorMsg.unauthorized_access.length == 1, resText);
 		const unauth_obj = errorMsg.unauthorized_access[0];
 
-		assert.ok(unauth_obj.schema == 'dev');
-		assert.ok(unauth_obj.table == 'owner');
-		assert.ok(unauth_obj.required_table_permissions.length == 0);
-		assert.ok(unauth_obj.required_attribute_permissions.length == 2);
-		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'id');
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert');
-		assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'name');
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1);
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert');
-		assert.ok(errorMsg.invalid_schema_items.length == 0);
+		assert.ok(unauth_obj.schema == 'dev', resText);
+		assert.ok(unauth_obj.table == 'owner', resText);
+		assert.ok(unauth_obj.required_table_permissions.length == 0, resText);
+		assert.ok(unauth_obj.required_attribute_permissions.length == 2, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'id', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'name', resText);
+		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1, resText);
+		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert', resText);
+		assert.ok(errorMsg.invalid_schema_items.length == 0, resText);
 	});
 
 	it('Alter non-SU bulk_load_role', async () => {
@@ -532,7 +523,7 @@ describe('5. NoSQL Role Testing', () => {
 					},
 				},
 			})
-			.expect((r) => assert.ok(r.body.id == 'bulk_load_role'))
+			.expect((r) => assert.ok(r.body.id == 'bulk_load_role', r.text))
 			.expect(200);
 	});
 
@@ -540,8 +531,8 @@ describe('5. NoSQL Role Testing', () => {
 		await csvDataLoad(
 			headersBulkLoadUser,
 			'upsert',
-			generic.schema,
-			generic.supp_tb,
+			testData.schema,
+			testData.supp_tb,
 			'companyname, new_attr\nThe Chum Bucket, Another attr value\n',
 			'',
 			'successfully loaded 1 of 1 records'
@@ -555,9 +546,9 @@ describe('5. NoSQL Role Testing', () => {
 			.send({
 				operation: 'sql',
 				sql: `SELECT count(*) AS row_count
-                                  FROM ${generic.schema}.${generic.supp_tb}`,
+                                  FROM ${testData.schema}.${testData.supp_tb}`,
 			})
-			.expect((r) => assert.ok(r.body[0].row_count == 30))
+			.expect((r) => assert.ok(r.body[0].row_count == 30, r.text))
 			.expect(200);
 	});
 
@@ -571,16 +562,14 @@ describe('5. NoSQL Role Testing', () => {
 				schema: 'dev',
 				table: 'dog',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/dogs.csv',
 					region: 'us-east-2',
 				},
 			})
-			.expect((r) =>
-				assert.ok(r.body.message.indexOf('Starting job') == 0, 'Expected to find "Starting job" in the response')
-			);
+			.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, r.text));
 
 		const id = await getJobId(response.body);
 		await checkJobCompleted(id, '', 'successfully loaded 9 of 12 records');
@@ -593,7 +582,7 @@ describe('5. NoSQL Role Testing', () => {
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.dog' })
 			.expect((r) => {
 				r.body.forEach((row) => {
-					assert.ok(row.__updatedtime__ > row.__createdtime__);
+					assert.ok(row.__updatedtime__ > row.__createdtime__, r.text);
 				});
 			})
 			.expect(200);
@@ -604,8 +593,8 @@ describe('5. NoSQL Role Testing', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_user', username: 'bulk_load_user' })
-			.expect((r) => assert.ok(r.body.message))
-			.expect((r) => assert.ok(r.body.message.includes('successfully deleted')))
+			.expect((r) => assert.ok(r.body.message, r.text))
+			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))
 			.expect(200);
 	});
 
@@ -614,8 +603,8 @@ describe('5. NoSQL Role Testing', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_role', id: 'bulk_load_role' })
-			.expect((r) => assert.ok(r.body.message))
-			.expect((r) => assert.ok(r.body.message.includes('successfully deleted')))
+			.expect((r) => assert.ok(r.body.message, r.text))
+			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))
 			.expect(200);
 	console.log(response.body);
 	});
@@ -623,7 +612,7 @@ describe('5. NoSQL Role Testing', () => {
 	//NoSQL Role Testing Main Folder
 
 	it('Authentication - bad username', async () => {
-		const myHeaders = createHeaders('bad_username', generic.password);
+		const myHeaders = createHeaders('bad_username', testData.password);
 		const response = await request(envUrl)
 			.post('')
 			.set(myHeaders)
@@ -633,7 +622,7 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('Authentication - bad password', async () => {
-		const myHeaders = createHeaders(generic.username, 'bad_password');
+		const myHeaders = createHeaders(testData.username, 'bad_password');
 		const response = await request(envUrl)
 			.post('')
 			.set(myHeaders)
@@ -828,7 +817,7 @@ describe('5. NoSQL Role Testing', () => {
 					},
 				},
 			})
-			.expect((r) => assert.ok(r.body.id == 'developer_test_5'))
+			.expect((r) => assert.ok(r.body.id == 'developer_test_5', r.text))
 			.expect(200);
 	});
 
@@ -840,7 +829,7 @@ describe('5. NoSQL Role Testing', () => {
 				operation: 'add_user',
 				role: 'developer_test_5',
 				username: 'test_user',
-				password: `${generic.password}`,
+				password: `${testData.password}`,
 				active: true,
 			})
 			.expect(200);
@@ -851,16 +840,10 @@ describe('5. NoSQL Role Testing', () => {
 			.post('')
 			.set(headersTestUser)
 			.send({ operation: 'list_users' })
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.unauthorized_access[0] == "Operation 'listUsersExternal' is restricted to 'super_user' roles")
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'listUsersExternal' is restricted to 'super_user' roles", r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -870,12 +853,12 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_value',
-				table: `${generic.supp_tb}`,
-				schema: `${generic.schema}`,
+				table: `${testData.supp_tb}`,
+				schema: `${testData.schema}`,
 				hash_attribute: 'id',
-				search_attribute: `${generic.supp_id}`,
+				search_attribute: `${testData.supp_id}`,
 				search_value: '*',
-				get_attributes: [`${generic.supp_id}`],
+				get_attributes: [`${testData.supp_id}`],
 			})
 			.expect(200);
 	});
@@ -886,21 +869,17 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'search_by_value',
-				table: `${generic.supp_tb}`,
-				schema: `${generic.schema}`,
+				table: `${testData.supp_tb}`,
+				schema: `${testData.schema}`,
 				hash_attribute: 'id',
-				search_attribute: `${generic.supp_id}`,
+				search_attribute: `${testData.supp_id}`,
 				search_value: '*',
-				get_attributes: [`${generic.supp_id}`],
+				get_attributes: [`${testData.supp_id}`],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Table 'northnwd.suppliers' does not exist"))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Table 'northnwd.suppliers' does not exist", r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -910,8 +889,8 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headers)
 			.send({
 				operation: 'search_by_value',
-				table: `${generic.regi_tb}`,
-				schema: `${generic.schema}`,
+				table: `${testData.regi_tb}`,
+				schema: `${testData.schema}`,
 				hash_attribute: 'id',
 				search_attribute: 'regionid',
 				search_value: '*',
@@ -926,8 +905,8 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'search_by_value',
-				table: `${generic.regi_tb}`,
-				schema: `${generic.schema}`,
+				table: `${testData.regi_tb}`,
+				schema: `${testData.schema}`,
 				hash_attribute: 'id',
 				search_attribute: 'regionid',
 				search_value: '*',
@@ -942,8 +921,8 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headers)
 			.send({
 				operation: 'insert',
-				schema: `${generic.schema}`,
-				table: `${generic.regi_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.regi_tb}`,
 				records: [{ regionid: 16, regiondescription: 'test description' }],
 			})
 			.expect(200);
@@ -955,21 +934,17 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'insert',
-				schema: `${generic.schema}`,
-				table: `${generic.regi_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.regi_tb}`,
 				records: [{ regionid: 17, regiondescription: 'test description' }],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == 'insert'))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd'))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'region'))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == 'insert', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'region', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -979,20 +954,14 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'insert',
-				schema: `${generic.schema}`,
-				table: `${generic.cate_tb}`,
-				records: [{ [generic.cate_id]: 9, categoryname: 'test name', description: 'test description' }],
+				schema: `${testData.schema}`,
+				table: `${testData.cate_tb}`,
+				records: [{ [testData.cate_id]: 9, categoryname: 'test name', description: 'test description' }],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items[0] == "Attribute 'categoryname' does not exist on 'northnwd.categories'")
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'categoryname' does not exist on 'northnwd.categories'", r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1002,9 +971,9 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headers)
 			.send({
 				operation: 'insert',
-				schema: `${generic.schema}`,
-				table: `${generic.terr_tb}`,
-				records: [{ [generic.terr_id]: 123456, territorydescription: 'test description' }],
+				schema: `${testData.schema}`,
+				table: `${testData.terr_tb}`,
+				records: [{ [testData.terr_id]: 123456, territorydescription: 'test description' }],
 			})
 			.expect(200);
 	});
@@ -1015,9 +984,9 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'insert',
-				schema: `${generic.schema}`,
-				table: `${generic.terr_tb}`,
-				records: [{ [generic.terr_id]: 1234567, territorydescription: 'test description' }],
+				schema: `${testData.schema}`,
+				table: `${testData.terr_tb}`,
+				records: [{ [testData.terr_id]: 1234567, territorydescription: 'test description' }],
 			})
 			.expect(200);
 	});
@@ -1028,9 +997,9 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headers)
 			.send({
 				operation: 'update',
-				schema: `${generic.schema}`,
-				table: `${generic.terr_tb}`,
-				records: [{ [generic.terr_id]: 123456, territorydescription: 'test description updated' }],
+				schema: `${testData.schema}`,
+				table: `${testData.terr_tb}`,
+				records: [{ [testData.terr_id]: 123456, territorydescription: 'test description updated' }],
 			})
 			.expect(200);
 	});
@@ -1041,21 +1010,17 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'update',
-				schema: `${generic.schema}`,
-				table: `${generic.terr_tb}`,
-				records: [{ [generic.terr_id]: 1234567, territorydescription: 'test description updated' }],
+				schema: `${testData.schema}`,
+				table: `${testData.terr_tb}`,
+				records: [{ [testData.terr_id]: 1234567, territorydescription: 'test description updated' }],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == 'update'))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd'))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'territories'))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == 'update', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'territories', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1065,9 +1030,9 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'update',
-				schema: `${generic.schema}`,
-				table: `${generic.cate_tb}`,
-				records: [{ [generic.cate_id]: 1, description: 'test description updated' }],
+				schema: `${testData.schema}`,
+				table: `${testData.cate_tb}`,
+				records: [{ [testData.cate_id]: 1, description: 'test description updated' }],
 			})
 			.expect(200);
 	});
@@ -1078,20 +1043,14 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'update',
-				schema: `${generic.schema}`,
-				table: `${generic.cate_tb}`,
-				records: [{ [generic.cate_id]: 1, description: 'test description updated', active: true }],
+				schema: `${testData.schema}`,
+				table: `${testData.cate_tb}`,
+				records: [{ [testData.cate_id]: 1, description: 'test description updated', active: true }],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items[0] == "Attribute 'active' does not exist on 'northnwd.categories'")
-			)
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'active' does not exist on 'northnwd.categories'", r.text))
 			.expect(403);
 	});
 
@@ -1101,32 +1060,22 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'update',
-				schema: `${generic.schema}`,
-				table: `${generic.cate_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.cate_tb}`,
 				records: [
 					{
-						[generic.cate_id]: 1,
+						[testData.cate_id]: 1,
 						categoryname: 'test name',
 						description: 'test description updated',
 						picture: 'test picture',
 					},
 				],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
-			.expect((r) =>
-				assert.ok(
-					r.body.invalid_schema_items.includes("Attribute 'categoryname' does not exist on 'northnwd.categories'")
-				)
-			)
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items.includes("Attribute 'picture' does not exist on 'northnwd.categories'"))
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'categoryname' does not exist on 'northnwd.categories'"), r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'picture' does not exist on 'northnwd.categories'"), r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1134,7 +1083,7 @@ describe('5. NoSQL Role Testing', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
-			.send({ operation: 'delete', table: `${generic.cate_tb}`, schema: `${generic.schema}`, hash_values: [1] })
+			.send({ operation: 'delete', table: `${testData.cate_tb}`, schema: `${testData.schema}`, hash_values: [1] })
 			.expect(200);
 	});
 
@@ -1142,18 +1091,14 @@ describe('5. NoSQL Role Testing', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headersTestUser)
-			.send({ operation: 'delete', table: `${generic.cate_tb}`, schema: `${generic.schema}`, hash_values: [2] })
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == 'delete'))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd'))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'categories'))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
+			.send({ operation: 'delete', table: `${testData.cate_tb}`, schema: `${testData.schema}`, hash_values: [2] })
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == 'delete', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'categories', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1163,26 +1108,18 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'search_by_value',
-				table: `${generic.ship_tb}`,
-				schema: `${generic.schema}`,
+				table: `${testData.ship_tb}`,
+				schema: `${testData.schema}`,
 				hash_attribute: 'id',
-				search_attribute: `${generic.ship_id}`,
+				search_attribute: `${testData.ship_id}`,
 				search_value: '*',
 				get_attributes: ['companyname'],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'"))
-			)
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'"))
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'"), r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'"), r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1192,23 +1129,17 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'search_by_value',
-				table: `${generic.ship_tb}`,
-				schema: `${generic.schema}`,
+				table: `${testData.ship_tb}`,
+				schema: `${testData.schema}`,
 				hash_attribute: 'id',
-				search_attribute: `${generic.ship_id}`,
+				search_attribute: `${testData.ship_id}`,
 				search_value: '*',
 				get_attributes: ['*'],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items[0] == "Attribute 'shipperid' does not exist on 'northnwd.shippers'")
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'shipperid' does not exist on 'northnwd.shippers'", r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1218,23 +1149,15 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'update',
-				schema: `${generic.schema}`,
-				table: `${generic.ship_tb}`,
-				records: [{ [generic.ship_id]: 1, companyname: 'bad update name' }],
+				schema: `${testData.schema}`,
+				table: `${testData.ship_tb}`,
+				records: [{ [testData.ship_id]: 1, companyname: 'bad update name' }],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'"))
-			)
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'"))
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'"), r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'"), r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1244,26 +1167,16 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'insert',
-				schema: `${generic.schema}`,
-				table: `${generic.ship_tb}`,
-				records: [{ [generic.ship_id]: 1, companyname: 'bad update name', phone: '(503) 555-9831' }],
+				schema: `${testData.schema}`,
+				table: `${testData.ship_tb}`,
+				records: [{ [testData.ship_id]: 1, companyname: 'bad update name', phone: '(503) 555-9831' }],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 3))
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'"))
-			)
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'"))
-			)
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'"))
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 3, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'"), r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'"), r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'"), r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1273,20 +1186,14 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'insert',
-				schema: `${generic.schema}`,
-				table: `${generic.cate_tb}`,
-				records: [{ [generic.cate_id]: 4, categoryname: 'bad update name' }],
+				schema: `${testData.schema}`,
+				table: `${testData.cate_tb}`,
+				records: [{ [testData.cate_id]: 4, categoryname: 'bad update name' }],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items[0] == "Attribute 'categoryname' does not exist on 'northnwd.categories'")
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'categoryname' does not exist on 'northnwd.categories'", r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1296,9 +1203,9 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'insert',
-				schema: `${generic.schema}`,
-				table: `${generic.cate_tb}`,
-				records: [{ [generic.cate_id]: 1, description: 'Cheese and cheese and cheese' }],
+				schema: `${testData.schema}`,
+				table: `${testData.cate_tb}`,
+				records: [{ [testData.cate_id]: 1, description: 'Cheese and cheese and cheese' }],
 			})
 			.expect(200);
 	});
@@ -1309,9 +1216,9 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'update',
-				schema: `${generic.schema}`,
-				table: `${generic.cate_tb}`,
-				records: [{ [generic.cate_id]: 2, description: 'Meats and cheeses' }],
+				schema: `${testData.schema}`,
+				table: `${testData.cate_tb}`,
+				records: [{ [testData.cate_id]: 2, description: 'Meats and cheeses' }],
 			})
 			.expect(200);
 	});
@@ -1322,20 +1229,14 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'insert',
-				schema: `${generic.schema}`,
-				table: `${generic.cate_tb}`,
-				records: [{ [generic.cate_id]: 1, categoryname: 'Stuff and things' }],
+				schema: `${testData.schema}`,
+				table: `${testData.cate_tb}`,
+				records: [{ [testData.cate_id]: 1, categoryname: 'Stuff and things' }],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items[0] == "Attribute 'categoryname' does not exist on 'northnwd.categories'")
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'categoryname' does not exist on 'northnwd.categories'", r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1344,16 +1245,10 @@ describe('5. NoSQL Role Testing', () => {
 			.post('')
 			.set(headersTestUser)
 			.send({ operation: 'create_schema', schema: 'test-schema' })
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.unauthorized_access[0] == "Operation 'createSchema' is restricted to 'super_user' roles")
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'createSchema' is restricted to 'super_user' roles", r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1370,16 +1265,10 @@ describe('5. NoSQL Role Testing', () => {
 			.post('')
 			.set(headersTestUser)
 			.send({ operation: 'create_table', schema: 'test-schema', table: 'test-table', hash_attribute: 'id' })
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.unauthorized_access[0] == "Operation 'createTable' is restricted to 'super_user' roles")
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'createTable' is restricted to 'super_user' roles", r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1414,16 +1303,10 @@ describe('5. NoSQL Role Testing', () => {
 				table: 'test-table',
 				attribute: 'test_attribute',
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.unauthorized_access[0] == "Operation 'dropAttribute' is restricted to 'super_user' roles")
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'dropAttribute' is restricted to 'super_user' roles", r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1445,16 +1328,10 @@ describe('5. NoSQL Role Testing', () => {
 			.post('')
 			.set(headersTestUser)
 			.send({ operation: 'drop_table', schema: 'test-schema', table: 'test-table' })
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.unauthorized_access[0] == "Operation 'dropTable' is restricted to 'super_user' roles")
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'dropTable' is restricted to 'super_user' roles", r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1471,16 +1348,10 @@ describe('5. NoSQL Role Testing', () => {
 			.post('')
 			.set(headersTestUser)
 			.send({ operation: 'drop_schema', schema: 'test-schema' })
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.unauthorized_access[0] == "Operation 'dropSchema' is restricted to 'super_user' roles")
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'dropSchema' is restricted to 'super_user' roles", r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1534,8 +1405,8 @@ describe('5. NoSQL Role Testing', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body.message == 'updated 2 of 2 records'))
-			.expect((r) => assert.ok(r.body.update_hashes.length == 2))
+			.expect((r) => assert.ok(r.body.message == 'updated 2 of 2 records', r.text))
+			.expect((r) => assert.ok(r.body.update_hashes.length == 2, r.text))
 			.expect(200);
 	});
 
@@ -1555,8 +1426,8 @@ describe('5. NoSQL Role Testing', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body.message == 'updated 2 of 2 records'))
-			.expect((r) => assert.ok(r.body.update_hashes.length == 2))
+			.expect((r) => assert.ok(r.body.message == 'updated 2 of 2 records', r.text))
+			.expect((r) => assert.ok(r.body.update_hashes.length == 2, r.text))
 			.expect(200);
 	});
 
@@ -1566,21 +1437,21 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headers)
 			.send({
 				operation: 'upsert',
-				schema: `${generic.schema}`,
-				table: `${generic.cust_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.cust_tb}`,
 				records: [
 					{
-						[generic.cust_id]: 'FURIB',
+						[testData.cust_id]: 'FURIB',
 						region: 'Durkastan',
 						contactmame: 'Hans Blix',
 					},
 					{ region: 'Durkastan', contactmame: 'Hans Blix' },
 				],
 			})
-			.expect((r) => assert.ok(r.body.upserted_hashes.length == 2))
-			.expect((r) => assert.ok(r.body.upserted_hashes.includes('FURIB')))
-			.expect((r) => assert.ok(!r.body.skipped_hashes))
-			.expect((r) => assert.ok(r.body.message == 'upserted 2 of 2 records'))
+			.expect((r) => assert.ok(r.body.upserted_hashes.length == 2, r.text))
+			.expect((r) => assert.ok(r.body.upserted_hashes.includes('FURIB'), r.text))
+			.expect((r) => assert.ok(!r.body.skipped_hashes, r.text))
+			.expect((r) => assert.ok(r.body.message == 'upserted 2 of 2 records', r.text))
 			.expect(200);
 	});
 
@@ -1590,14 +1461,14 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headers)
 			.send({
 				operation: 'upsert',
-				schema: `${generic.schema}`,
-				table: `${generic.cate_tb}`,
-				records: [{ [generic.cate_id]: 8, description: 'Seaweed and fishies' }, { description: 'Junk food' }],
+				schema: `${testData.schema}`,
+				table: `${testData.cate_tb}`,
+				records: [{ [testData.cate_id]: 8, description: 'Seaweed and fishies' }, { description: 'Junk food' }],
 			})
-			.expect((r) => assert.ok(r.body.upserted_hashes.length == 2))
-			.expect((r) => assert.ok(r.body.upserted_hashes.includes(8)))
-			.expect((r) => assert.ok(!r.body.skipped_hashes))
-			.expect((r) => assert.ok(r.body.message == 'upserted 2 of 2 records'))
+			.expect((r) => assert.ok(r.body.upserted_hashes.length == 2, r.text))
+			.expect((r) => assert.ok(r.body.upserted_hashes.includes(8), r.text))
+			.expect((r) => assert.ok(!r.body.skipped_hashes, r.text))
+			.expect((r) => assert.ok(r.body.message == 'upserted 2 of 2 records', r.text))
 			.expect(200);
 	});
 
@@ -1607,11 +1478,11 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headers)
 			.send({
 				operation: 'upsert',
-				schema: `${generic.schema}`,
-				table: `${generic.cust_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.cust_tb}`,
 				records: [
 					{
-						[generic.cust_id]: 'FURIB',
+						[testData.cust_id]: 'FURIB',
 						region: 'Durkastan',
 						contactmame: 'Hans Blix',
 						active: false,
@@ -1619,10 +1490,10 @@ describe('5. NoSQL Role Testing', () => {
 					{ region: 'Durkastan', contactmame: 'Sam Johnson', active: true },
 				],
 			})
-			.expect((r) => assert.ok(r.body.upserted_hashes.length == 2))
-			.expect((r) => assert.ok(r.body.upserted_hashes.includes('FURIB')))
-			.expect((r) => assert.ok(!r.body.skipped_hashes))
-			.expect((r) => assert.ok(r.body.message == 'upserted 2 of 2 records'))
+			.expect((r) => assert.ok(r.body.upserted_hashes.length == 2, r.text))
+			.expect((r) => assert.ok(r.body.upserted_hashes.includes('FURIB'), r.text))
+			.expect((r) => assert.ok(!r.body.skipped_hashes, r.text))
+			.expect((r) => assert.ok(r.body.message == 'upserted 2 of 2 records', r.text))
 			.expect(200);
 	});
 
@@ -1632,8 +1503,8 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'upsert',
-				schema: `${generic.schema}`,
-				table: `${generic.terr_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.terr_tb}`,
 				records: [
 					{ regionid: 1, territorydescription: 'Westboro', territoryid: 1581 },
 					{
@@ -1642,18 +1513,14 @@ describe('5. NoSQL Role Testing', () => {
 					},
 				],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd'))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'territories'))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == 'update'))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'territories', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == 'update', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1663,27 +1530,21 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headersTestUser)
 			.send({
 				operation: 'upsert',
-				schema: `${generic.schema}`,
-				table: `${generic.cate_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.cate_tb}`,
 				records: [
 					{
-						[generic.cate_id]: 8,
+						[testData.cate_id]: 8,
 						description: 'Seaweed and fishies',
 						active: true,
 					},
 					{ description: 'Junk food', active: false },
 				],
 			})
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items[0] == "Attribute 'active' does not exist on 'northnwd.categories'")
-			)
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'active' does not exist on 'northnwd.categories'", r.text))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
 			.expect(403);
 	});
 
@@ -1712,23 +1573,19 @@ describe('5. NoSQL Role Testing', () => {
 					{ adorable: true, dog_name: 'Penny', owner_id: 2, age: 5, id: 10, birthday: '10/11/19' },
 				],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'dev'))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'dog'))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 0))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 2))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'dev', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'dog', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 0, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 2, r.text))
 			.expect((r) => {
 				r.body.unauthorized_access[0].required_attribute_permissions.forEach((attr_perm_err) => {
-					assert.ok(attr_perm_err.required_permissions[0] == expected_attr_perm_errs[attr_perm_err.attribute_name]);
+					assert.ok(attr_perm_err.required_permissions[0] == expected_attr_perm_errs[attr_perm_err.attribute_name], r.text);
 				});
 			})
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'birthday' does not exist on 'dev.dog'"))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'birthday' does not exist on 'dev.dog'", r.text))
 			.expect(403);
 	});
 
@@ -1738,11 +1595,11 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headers)
 			.send({
 				operation: 'upsert',
-				schema: `${generic.schema}`,
-				table: `${generic.cust_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.cust_tb}`,
 				records: [
 					{
-						[generic.cust_id]: 'null',
+						[testData.cust_id]: 'null',
 						region: 'Durkastan',
 						contactmame: 'Hans Blix',
 						active: false,
@@ -1764,11 +1621,11 @@ describe('5. NoSQL Role Testing', () => {
 			.set(headers)
 			.send({
 				operation: 'upsert',
-				schema: `${generic.schema}`,
-				table: `${generic.cust_tb}`,
+				schema: `${testData.schema}`,
+				table: `${testData.cust_tb}`,
 				records: [
 					{
-						[generic.cust_id]: 'FURIB',
+						[testData.cust_id]: 'FURIB',
 						'region': 'Durkastan',
 						'contactmame': 'Hans Blix',
 						'active/not active': false,
@@ -1776,7 +1633,7 @@ describe('5. NoSQL Role Testing', () => {
 					{ 'region': 'Durkastan', 'contactmame': 'Sam Johnson', 'active/not active': false },
 				],
 			})
-			.expect((r) => assert.ok(r.body.error == 'Attribute names cannot include backticks or forward slashes'))
+			.expect((r) => assert.ok(r.body.error == 'Attribute names cannot include backticks or forward slashes', r.text))
 			.expect(400);
 	});
 
@@ -1792,11 +1649,11 @@ describe('5. NoSQL Role Testing', () => {
 				conditions: [{ search_attribute: 'age', search_type: 'equals', search_value: 5 }],
 			})
 			.expect((r) => {
-				assert.ok(r.body.length == 2);
+				assert.ok(r.body.length == 2, r.text);
 				r.body.forEach((row) => {
-					assert.ok([1, 2].includes(row.id));
-					assert.ok(!row.location);
-					assert.ok(!row.breed_id);
+					assert.ok([1, 2].includes(row.id), r.text);
+					assert.ok(!row.location, r.text);
+					assert.ok(!row.breed_id, r.text);
 				});
 			})
 			.expect(200);
@@ -1814,11 +1671,11 @@ describe('5. NoSQL Role Testing', () => {
 				conditions: [{ search_attribute: 'dog_name', search_type: 'ends_with', search_value: 'y' }],
 			})
 			.expect((r) => {
-				assert.ok(r.body.length == 4);
+				assert.ok(r.body.length == 4, r.text);
 				r.body.forEach((row) => {
-					assert.ok([...row.dog_name].pop() == 'y');
-					assert.ok(!row.location);
-					assert.ok(!row.breed_id);
+					assert.ok([...row.dog_name].pop() == 'y', r.text);
+					assert.ok(!row.location, r.text);
+					assert.ok(!row.breed_id, r.text);
 				});
 			})
 			.expect(200);
@@ -1835,16 +1692,10 @@ describe('5. NoSQL Role Testing', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'location', search_type: 'equals', search_value: 'Denver, CO' }],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items[0] == "Attribute 'location' does not exist on 'dev.dog_conditions'")
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1859,16 +1710,10 @@ describe('5. NoSQL Role Testing', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'location', search_type: 'contains', search_value: 'Denver' }],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items[0] == "Attribute 'location' does not exist on 'dev.dog_conditions'")
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1883,16 +1728,10 @@ describe('5. NoSQL Role Testing', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'random_attr', search_type: 'starts_with', search_value: 1 }],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items[0] == "Attribute 'random_attr' does not exist on 'dev.dog_conditions'")
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'random_attr' does not exist on 'dev.dog_conditions'", r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -1907,22 +1746,14 @@ describe('5. NoSQL Role Testing', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'breed_id', search_type: 'starts_with', search_value: 1 }],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'dev'))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'dog_conditions'))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].attribute_name == 'breed_id')
-			)
-			.expect((r) =>
-				assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0] == 'read')
-			)
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'dev', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'dog_conditions', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].attribute_name == 'breed_id', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0] == 'read', r.text))
 			.expect(403);
 	});
 
@@ -1937,25 +1768,15 @@ describe('5. NoSQL Role Testing', () => {
 				get_attributes: ['id', 'dog_name', 'location'],
 				conditions: [{ search_attribute: 'breed_id', search_type: 'starts_with', search_value: 1 }],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items[0] == "Attribute 'location' does not exist on 'dev.dog_conditions'")
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'dev'))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'dog_conditions'))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].attribute_name == 'breed_id')
-			)
-			.expect((r) =>
-				assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0] == 'read')
-			)
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'dev', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'dog_conditions', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].attribute_name == 'breed_id', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0] == 'read', r.text))
 			.expect(403);
 	});
 
@@ -1977,16 +1798,10 @@ describe('5. NoSQL Role Testing', () => {
 					{ search_attribute: 'location', search_type: 'contains', search_value: 'CO' },
 				],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items[0] == "Attribute 'location' does not exist on 'dev.dog_conditions'")
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -2012,16 +1827,10 @@ describe('5. NoSQL Role Testing', () => {
 					{ search_attribute: 'location', search_type: 'starts_with', search_value: 'Denver' },
 				],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items[0] == "Attribute 'location' does not exist on 'dev.dog_conditions'")
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -2053,19 +1862,11 @@ describe('5. NoSQL Role Testing', () => {
 					{ search_attribute: 'age', search_type: 'greater_than', search_value: 1 },
 				],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items[0] == "Attribute 'group_id' does not exist on 'dev.dog_conditions'")
-			)
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items[1] == "Attribute 'location' does not exist on 'dev.dog_conditions'")
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0))
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'group_id' does not exist on 'dev.dog_conditions'", r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[1] == "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
 			.expect(403);
 	});
 
@@ -2093,28 +1894,16 @@ describe('5. NoSQL Role Testing', () => {
 					{ search_attribute: 'location', search_type: 'contains', search_value: 'enver,' },
 				],
 			})
-			.expect((r) =>
-				assert.ok(
-					r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items'
-				)
-			)
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2))
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items[0] == "Attribute 'group_id' does not exist on 'dev.dog_conditions'")
-			)
-			.expect((r) =>
-				assert.ok(r.body.invalid_schema_items[1] == "Attribute 'location' does not exist on 'dev.dog_conditions'")
-			)
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'dev'))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'dog_conditions'))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 1))
-			.expect((r) =>
-				assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].attribute_name == 'breed_id')
-			)
-			.expect((r) =>
-				assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0] == 'read')
-			)
+			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2, r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'group_id' does not exist on 'dev.dog_conditions'", r.text))
+			.expect((r) => assert.ok(r.body.invalid_schema_items[1] == "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'dev', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'dog_conditions', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 1, r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].attribute_name == 'breed_id', r.text))
+			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0] == 'read', r.text))
 			.expect(403);
 	});
 
@@ -2266,8 +2055,8 @@ describe('5. NoSQL Role Testing', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'add_role', role: 'test_cluster_user_role', permission: { cluster_user: true } })
-			.expect((r) => assert.ok(r.body.id));
-		generic.cluster_user_role_id = response.body.id;
+			.expect((r) => assert.ok(r.body.id, r.text));
+		testData.cluster_user_role_id = response.body.id;
 	});
 
 	it('NoSQL Add cluster_user with another permission, expect fail', async () => {
@@ -2279,15 +2068,15 @@ describe('5. NoSQL Role Testing', () => {
 				role: 'cluster_user_bad',
 				permission: { cluster_user: true, super_user: true },
 			})
-			.expect((r) => assert.ok(r.body.error == 'Errors in the role permissions JSON provided'))
-			.expect((r) => assert.ok(r.body.main_permissions.length == 1))
+			.expect((r) => assert.ok(r.body.error == 'Errors in the role permissions JSON provided', r.text))
+			.expect((r) => assert.ok(r.body.main_permissions.length == 1, r.text))
 			.expect((r) =>
 				assert.ok(
 					r.body.main_permissions[0] ==
 						"Roles cannot have both 'super_user' and 'cluster_user' values included in their permissions set."
 				)
 			)
-			.expect((r) => assert.ok(Object.keys(r.body.schema_permissions).length == 0))
+			.expect((r) => assert.ok(Object.keys(r.body.schema_permissions).length == 0, r.text))
 			.expect(400);
 	});
 
@@ -2299,11 +2088,11 @@ describe('5. NoSQL Role Testing', () => {
 				operation: 'add_user',
 				role: 'test_cluster_user_role',
 				username: 'test_cluster_user',
-				password: `${generic.password}`,
+				password: `${testData.password}`,
 				active: true,
 			})
-			.expect((r) => assert.ok(r.body.message))
-			.expect((r) => assert.ok(r.body.message.includes('successfully added')))
+			.expect((r) => assert.ok(r.body.message, r.text))
+			.expect((r) => assert.ok(r.body.message.includes('successfully added'), r.text))
 			.expect(200);
 	});
 
@@ -2311,9 +2100,9 @@ describe('5. NoSQL Role Testing', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
-			.send({ operation: 'alter_user', username: 'test_cluster_user', password: `${generic.password}111` })
-			.expect((r) => assert.ok(r.body.message))
-			.expect((r) => assert.ok(r.body.message.includes('updated 1 of 1 records')))
+			.send({ operation: 'alter_user', username: 'test_cluster_user', password: `${testData.password}111` })
+			.expect((r) => assert.ok(r.body.message, r.text))
+			.expect((r) => assert.ok(r.body.message.includes('updated 1 of 1 records'), r.text))
 			.expect(200);
 	});
 
@@ -2322,8 +2111,8 @@ describe('5. NoSQL Role Testing', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_user', username: 'test_cluster_user' })
-			.expect((r) => assert.ok(r.body.message))
-			.expect((r) => assert.ok(r.body.message.includes('successfully deleted')))
+			.expect((r) => assert.ok(r.body.message, r.text))
+			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))
 			.expect(200);
 	});
 
@@ -2331,9 +2120,9 @@ describe('5. NoSQL Role Testing', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
-			.send({ operation: 'drop_role', id: `${generic.cluster_user_role_id}` })
-			.expect((r) => assert.ok(r.body.message))
-			.expect((r) => assert.ok(r.body.message.includes('successfully deleted')))
+			.send({ operation: 'drop_role', id: `${testData.cluster_user_role_id}` })
+			.expect((r) => assert.ok(r.body.message, r.text))
+			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))
 			.expect(200);
 	});
 });

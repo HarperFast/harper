@@ -8,4 +8,4 @@ cd /home/ubuntu/harperdb/integrationTests/apiTests
 
 npm install
 
-S3_KEY=$1 S3_SECRET=$2 node tests/testSuite.cjs
+S3_KEY=$1 S3_SECRET=$2 node --experimental-default-type="module" --stack-trace-limit=2 tests/testSuite.js

@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import request from 'supertest';
-import { envUrl, generic, getCsvPath, headers } from '../config/envConfig.js';
+import { envUrl, testData, getCsvPath, headers } from '../config/envConfig.js';
 import { setTimeout } from 'node:timers/promises';
 
 describe('16. Terminology Updates', () => {
@@ -12,7 +12,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'create_database', schema: 'tuckerdoodle' })
-			.expect((r) => assert.ok(r.body.message == "database 'tuckerdoodle' successfully created"))
+			.expect((r) => assert.ok(r.body.message == "database 'tuckerdoodle' successfully created", r.text))
 			.expect(200);
 	});
 
@@ -21,7 +21,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'create_table', database: 'tuckerdoodle', table: 'todo', hash_attribute: 'id' })
-			.expect((r) => assert.ok(r.body.message == "table 'tuckerdoodle.todo' successfully created."))
+			.expect((r) => assert.ok(r.body.message == "table 'tuckerdoodle.todo' successfully created.", r.text))
 			.expect(200);
 	});
 
@@ -30,7 +30,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'create_table', database: 'tuckerdoodle', table: 'done', hash_attribute: 'id' })
-			.expect((r) => assert.ok(r.body.message == "table 'tuckerdoodle.done' successfully created."))
+			.expect((r) => assert.ok(r.body.message == "table 'tuckerdoodle.done' successfully created.", r.text))
 			.expect(200);
 	});
 
@@ -39,7 +39,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'create_table', table: 'friends', hash_attribute: 'id' })
-			.expect((r) => assert.ok(r.body.message == "table 'data.friends' successfully created."))
+			.expect((r) => assert.ok(r.body.message == "table 'data.friends' successfully created.", r.text))
 			.expect(200);
 	});
 
@@ -48,7 +48,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'create_table', table: 'frogs', primary_key: 'id' })
-			.expect((r) => assert.ok(r.body.message == "table 'data.frogs' successfully created."))
+			.expect((r) => assert.ok(r.body.message == "table 'data.frogs' successfully created.", r.text))
 			.expect(200);
 	});
 
@@ -57,7 +57,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'create_attribute', database: 'tuckerdoodle', table: 'todo', attribute: 'date' })
-			.expect((r) => assert.ok(r.body.message == "attribute 'tuckerdoodle.todo.date' successfully created."))
+			.expect((r) => assert.ok(r.body.message == "attribute 'tuckerdoodle.todo.date' successfully created.", r.text))
 			.expect(200);
 	});
 
@@ -66,7 +66,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'create_attribute', table: 'friends', attribute: 'name' })
-			.expect((r) => assert.ok(r.body.message == "attribute 'data.friends.name' successfully created."))
+			.expect((r) => assert.ok(r.body.message == "attribute 'data.friends.name' successfully created.", r.text))
 			.expect(200);
 	});
 
@@ -75,7 +75,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'describe_database', database: 'tuckerdoodle' })
-			.expect((r) => assert.ok(r.body.hasOwnProperty('todo')))
+			.expect((r) => assert.ok(r.body.hasOwnProperty('todo'), r.text))
 			.expect(200);
 	});
 
@@ -84,7 +84,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'describe_database' })
-			.expect((r) => assert.ok(r.body.hasOwnProperty('friends')))
+			.expect((r) => assert.ok(r.body.hasOwnProperty('friends'), r.text))
 			.expect(200);
 	});
 
@@ -93,8 +93,8 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'describe_table', database: 'tuckerdoodle', table: 'todo' })
-			.expect((r) => assert.ok(r.body.schema == 'tuckerdoodle'))
-			.expect((r) => assert.ok(r.body.name == 'todo'))
+			.expect((r) => assert.ok(r.body.schema == 'tuckerdoodle', r.text))
+			.expect((r) => assert.ok(r.body.name == 'todo', r.text))
 			.expect(200);
 	});
 
@@ -103,8 +103,8 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'describe_table', table: 'friends' })
-			.expect((r) => assert.ok(r.body.schema == 'data'))
-			.expect((r) => assert.ok(r.body.name == 'friends'))
+			.expect((r) => assert.ok(r.body.schema == 'data', r.text))
+			.expect((r) => assert.ok(r.body.name == 'friends', r.text))
 			.expect(200);
 	});
 
@@ -118,7 +118,7 @@ describe('16. Terminology Updates', () => {
 				table: 'todo',
 				records: [{ id: 1, task: 'Get bone' }],
 			})
-			.expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records'))
+			.expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records', r.text))
 			.expect(200);
 	});
 
@@ -134,7 +134,7 @@ describe('16. Terminology Updates', () => {
 					{ id: 2, task: 'Mr. Potato Head' },
 				],
 			})
-			.expect((r) => assert.ok(r.body.message == 'inserted 2 of 2 records'))
+			.expect((r) => assert.ok(r.body.message == 'inserted 2 of 2 records', r.text))
 			.expect(200);
 	});
 
@@ -155,7 +155,7 @@ describe('16. Terminology Updates', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body.message == 'inserted 4 of 4 records'))
+			.expect((r) => assert.ok(r.body.message == 'inserted 4 of 4 records', r.text))
 			.expect(200);
 	});
 
@@ -164,7 +164,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'delete', table: 'frogs', ids: [2] })
-			.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted'))
+			.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted', r.text))
 			.expect(200);
 		await setTimeout(1000);
 	});
@@ -174,9 +174,9 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'describe_table', table: 'frogs' })
-			.expect((r) => assert.ok(r.body.schema == 'data'))
-			.expect((r) => assert.ok(r.body.name == 'frogs'))
-			.expect((r) => assert.ok(r.body.record_count == 3))
+			.expect((r) => assert.ok(r.body.schema == 'data', r.text))
+			.expect((r) => assert.ok(r.body.name == 'frogs', r.text))
+			.expect((r) => assert.ok(r.body.record_count == 3, r.text))
 			.expect(200);
 	});
 
@@ -185,7 +185,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'search_by_id', table: 'friends', ids: [1], get_attributes: ['*'] })
-			.expect((r) => assert.ok(r.body[0].id == 1))
+			.expect((r) => assert.ok(r.body[0].id == 1, r.text))
 			.expect(200);
 	});
 
@@ -194,7 +194,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'search_by_hash', table: 'friends', ids: [1], get_attributes: ['*'] })
-			.expect((r) => assert.ok(r.body[0].id == 1))
+			.expect((r) => assert.ok(r.body[0].id == 1, r.text))
 			.expect(200);
 	});
 
@@ -203,7 +203,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'delete', table: 'friends', ids: [2] })
-			.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted'))
+			.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted', r.text))
 			.expect(200);
 	});
 
@@ -217,7 +217,7 @@ describe('16. Terminology Updates', () => {
 				table: 'todo',
 				records: [{ id: 1, task: 'Get extra large bone' }],
 			})
-			.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records'))
+			.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records', r.text))
 			.expect(200);
 	});
 
@@ -226,7 +226,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'update', table: 'friends', records: [{ id: 1, task: 'Mr Sheriff Woody' }] })
-			.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records'))
+			.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records', r.text))
 			.expect(200);
 	});
 
@@ -240,7 +240,7 @@ describe('16. Terminology Updates', () => {
 				table: 'todo',
 				records: [{ id: 2, task: 'Chase cat' }],
 			})
-			.expect((r) => assert.ok(r.body.message == 'upserted 1 of 1 records'))
+			.expect((r) => assert.ok(r.body.message == 'upserted 1 of 1 records', r.text))
 			.expect(200);
 	});
 
@@ -249,7 +249,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'upsert', table: 'friends', records: [{ id: 2, name: 'Mr Potato Head' }] })
-			.expect((r) => assert.ok(r.body.message == 'upserted 1 of 1 records'))
+			.expect((r) => assert.ok(r.body.message == 'upserted 1 of 1 records', r.text))
 			.expect(200);
 	});
 
@@ -258,7 +258,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'search_by_hash', table: 'friends', hash_values: [1], get_attributes: ['*'] })
-			.expect((r) => assert.ok(r.body[0].id == 1))
+			.expect((r) => assert.ok(r.body[0].id == 1, r.text))
 			.expect(200);
 	});
 
@@ -273,7 +273,7 @@ describe('16. Terminology Updates', () => {
 				hash_values: [1],
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body[0].id == 1))
+			.expect((r) => assert.ok(r.body[0].id == 1, r.text))
 			.expect(200);
 	});
 
@@ -288,7 +288,7 @@ describe('16. Terminology Updates', () => {
 				search_value: '*Sheriff Woody',
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body[0].id == 1))
+			.expect((r) => assert.ok(r.body[0].id == 1, r.text))
 			.expect(200);
 	});
 
@@ -304,7 +304,7 @@ describe('16. Terminology Updates', () => {
 				search_value: 'Get*',
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body[0].id == 1))
+			.expect((r) => assert.ok(r.body[0].id == 1, r.text))
 			.expect(200);
 	});
 
@@ -318,7 +318,7 @@ describe('16. Terminology Updates', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'task', search_type: 'equals', search_value: 'Mr Sheriff Woody' }],
 			})
-			.expect((r) => assert.ok(r.body[0].id == 1))
+			.expect((r) => assert.ok(r.body[0].id == 1, r.text))
 			.expect(200);
 	});
 
@@ -339,7 +339,7 @@ describe('16. Terminology Updates', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body[0].id == 1))
+			.expect((r) => assert.ok(r.body[0].id == 1, r.text))
 			.expect(200);
 	});
 
@@ -348,7 +348,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'delete', database: 'tuckerdoodle', table: 'todo', hash_values: [1] })
-			.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted'))
+			.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted', r.text))
 			.expect(200);
 	});
 
@@ -357,7 +357,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'delete', table: 'friends', hash_values: [1] })
-			.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted'))
+			.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted', r.text))
 			.expect(200);
 	});
 
@@ -366,7 +366,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_attribute', database: 'tuckerdoodle', table: 'todo', attribute: 'date' })
-			.expect((r) => assert.ok(r.body.message == "successfully deleted attribute 'date'"))
+			.expect((r) => assert.ok(r.body.message == "successfully deleted attribute 'date'", r.text))
 			.expect(200);
 	});
 
@@ -375,7 +375,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_attribute', table: 'friends', attribute: 'name' })
-			.expect((r) => assert.ok(r.body.message == "successfully deleted attribute 'name'"))
+			.expect((r) => assert.ok(r.body.message == "successfully deleted attribute 'name'", r.text))
 			.expect(200);
 	});
 
@@ -384,7 +384,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_table', database: 'tuckerdoodle', table: 'todo' })
-			.expect((r) => assert.ok(r.body.message == "successfully deleted table 'tuckerdoodle.todo'"))
+			.expect((r) => assert.ok(r.body.message == "successfully deleted table 'tuckerdoodle.todo'", r.text))
 			.expect(200);
 	});
 
@@ -393,7 +393,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_database', database: 'tuckerdoodle' })
-			.expect((r) => assert.ok(r.body.message == "successfully deleted 'tuckerdoodle'"))
+			.expect((r) => assert.ok(r.body.message == "successfully deleted 'tuckerdoodle'", r.text))
 			.expect(200);
 	});
 
@@ -402,7 +402,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'create_database', database: 'job_guy' })
-			.expect((r) => assert.ok(r.body.message == "database 'job_guy' successfully created"))
+			.expect((r) => assert.ok(r.body.message == "database 'job_guy' successfully created", r.text))
 			.expect(200);
 	});
 
@@ -411,7 +411,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'create_table', database: 'job_guy', table: 'working', hash_attribute: 'id' })
-			.expect((r) => assert.ok(r.body.message == "table 'job_guy.working' successfully created."))
+			.expect((r) => assert.ok(r.body.message == "table 'job_guy.working' successfully created.", r.text))
 			.expect(200);
 	});
 
@@ -425,7 +425,7 @@ describe('16. Terminology Updates', () => {
 				table: 'working',
 				date: '2050-01-25T23:05:27.464',
 			})
-			.expect((r) => assert.ok(r.body.message.includes('Starting job with id')))
+			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
 	});
 
@@ -434,7 +434,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'delete_records_before', table: 'friends', date: '2050-01-25T23:05:27.464' })
-			.expect((r) => assert.ok(r.body.message.includes('Starting job with id')))
+			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
 		await setTimeout(2000);
 	});
@@ -449,7 +449,7 @@ describe('16. Terminology Updates', () => {
 				table: 'working',
 				timestamp: 1690553291764,
 			})
-			.expect((r) => assert.ok(r.body.message.includes('Starting job with id')))
+			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
 		await setTimeout(5000);
 	});
@@ -459,7 +459,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'delete_audit_logs_before', table: 'friends', timestamp: 1690553291764 })
-			.expect((r) => assert.ok(r.body.message.includes('Starting job with id')))
+			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
 		await setTimeout(5000);
 	});
@@ -474,7 +474,7 @@ describe('16. Terminology Updates', () => {
 				table: 'working',
 				file_path: `${getCsvPath()}Suppliers.csv`,
 			})
-			.expect((r) => assert.ok(r.body.message.includes('Starting job with id')))
+			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
 	});
 
@@ -483,7 +483,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'csv_file_load', table: 'todo', file_path: `${getCsvPath()}Suppliers.csv` })
-			.expect((r) => assert.ok(r.body.error.includes("Table 'data.todo' does not exist")))
+			.expect((r) => assert.ok(r.body.error.includes("Table 'data.todo' does not exist"), r.text))
 			.expect(400);
 	});
 
@@ -492,7 +492,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'csv_file_load', table: 'friends', file_path: `${getCsvPath()}Suppliers.csv` })
-			.expect((r) => assert.ok(r.body.message.includes('Starting job with id')))
+			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
 	});
 
@@ -505,7 +505,7 @@ describe('16. Terminology Updates', () => {
 				table: 'friends',
 				data: 'id,name,section,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n',
 			})
-			.expect((r) => assert.ok(r.body.message.includes('Starting job with id')))
+			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
 	});
 
@@ -519,7 +519,7 @@ describe('16. Terminology Updates', () => {
 				table: 'working',
 				data: 'id,name,section,country,image\n1,ENGLISH POINTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/001g07.jpg\n2,ENGLISH SETTER,British and Irish Pointers and Setters,GREAT BRITAIN,http://www.fci.be/Nomenclature/Illustrations/002g07.jpg\n3,KERRY BLUE TERRIER,Large and medium sized Terriers,IRELAND,\n',
 			})
-			.expect((r) => assert.ok(r.body.message.includes('Starting job with id')))
+			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
 	});
 
@@ -533,7 +533,7 @@ describe('16. Terminology Updates', () => {
 				table: 'friends',
 				csv_url: 'https://harperdb-integration-test-data.s3.us-east-2.amazonaws.com/breeds.csv',
 			})
-			.expect((r) => assert.ok(r.body.message.includes('Starting job with id')))
+			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
 	});
 
@@ -548,7 +548,7 @@ describe('16. Terminology Updates', () => {
 				table: 'working',
 				csv_url: 'https://harperdb-integration-test-data.s3.us-east-2.amazonaws.com/breeds.csv',
 			})
-			.expect((r) => assert.ok(r.body.message.includes('Starting job with id')))
+			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
 	});
 
@@ -560,14 +560,14 @@ describe('16. Terminology Updates', () => {
 				operation: 'import_from_s3',
 				table: 'friends',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/owners.json',
 					region: 'us-east-2',
 				},
 			})
-			.expect((r) => assert.ok(r.body.message.includes('Starting job with id')))
+			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
 	});
 
@@ -580,14 +580,14 @@ describe('16. Terminology Updates', () => {
 				database: 'job_guy',
 				table: 'working',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/owners.json',
 					region: 'us-east-2',
 				},
 			})
-			.expect((r) => assert.ok(r.body.message.includes('Starting job with id')))
+			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
 	});
 
@@ -599,15 +599,15 @@ describe('16. Terminology Updates', () => {
 				operation: 'export_to_s3',
 				format: 'csv',
 				s3: {
-					aws_access_key_id: `${generic.s3_key}`,
-					aws_secret_access_key: `${generic.s3_secret}`,
+					aws_access_key_id: `${testData.s3_key}`,
+					aws_secret_access_key: `${testData.s3_secret}`,
 					bucket: 'harperdb-integration-test-data',
 					key: 'non_public_folder/test_export',
 					region: 'us-east-2',
 				},
 				search_operation: { operation: 'search_by_hash', table: 'friends', ids: [1], get_attributes: ['*'] },
 			})
-			.expect((r) => assert.ok(r.body.message.includes('Starting job with id')))
+			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
 	});
 
@@ -622,7 +622,7 @@ describe('16. Terminology Updates', () => {
 				format: 'json',
 				search_operation: { operation: 'search_by_hash', table: 'friends', ids: [1], get_attributes: ['*'] },
 			})
-			.expect((r) => assert.ok(r.body.message.includes('Starting job with id')))
+			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
 	});
 
@@ -631,7 +631,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_table', table: 'friends' })
-			.expect((r) => assert.ok(r.body.message == "successfully deleted table 'data.friends'"))
+			.expect((r) => assert.ok(r.body.message == "successfully deleted table 'data.friends'", r.text))
 			.expect(200);
 	});
 
@@ -640,7 +640,7 @@ describe('16. Terminology Updates', () => {
 	// 		.post('')
 	// 		.set(headers)
 	// 		.send({ operation: 'drop_database', database: 'data' })
-	// 		.expect((r) => assert.ok(r.body.message == "successfully deleted 'data'"))
+	// 		.expect((r) => assert.ok(r.body.message == "successfully deleted 'data'", r.text))
 	// 		.expect(200);
 	// });
 
@@ -649,7 +649,7 @@ describe('16. Terminology Updates', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'drop_database', database: 'job_guy' })
-			.expect((r) => assert.ok(r.body.message == "successfully deleted 'job_guy'"))
+			.expect((r) => assert.ok(r.body.message == "successfully deleted 'job_guy'", r.text))
 			.expect(200);
 	});
 });

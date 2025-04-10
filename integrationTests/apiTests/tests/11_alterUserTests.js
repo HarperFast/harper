@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import request from 'supertest';
-import { envUrl, generic, headers } from '../config/envConfig.js';
+import { envUrl, testData, headers } from '../config/envConfig.js';
 
 describe('11. Alter User Tests', () => {
 	//Alter User Tests Folder
@@ -102,7 +102,7 @@ describe('11. Alter User Tests', () => {
 				operation: 'add_user',
 				role: 'developer_test_5',
 				username: 'test_user',
-				password: `${generic.password}`,
+				password: `${testData.password}`,
 				active: true,
 			})
 			.expect(200);
@@ -116,10 +116,10 @@ describe('11. Alter User Tests', () => {
 				operation: 'alter_user',
 				role: '',
 				username: 'test_user',
-				password: `${generic.password}`,
+				password: `${testData.password}`,
 				active: true,
 			})
-			.expect((r) => assert.ok(r.body.error == 'If role is specified, it cannot be empty.'))
+			.expect((r) => assert.ok(r.body.error == 'If role is specified, it cannot be empty.', r.text))
 			.expect(500);
 	});
 
@@ -127,14 +127,14 @@ describe('11. Alter User Tests', () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
-			.send({ operation: 'alter_user', username: 'test_user', password: `${generic.password}`, active: false })
+			.send({ operation: 'alter_user', username: 'test_user', password: `${testData.password}`, active: false })
 			.expect((r) =>
 				assert.ok(
 					r.body.message == 'updated 1 of 1 records',
 					'Expected response message to eql "updated 1 of 1 records"'
 				)
 			)
-			.expect((r) => assert.ok(r.body.update_hashes[0] == 'test_user'))
+			.expect((r) => assert.ok(r.body.update_hashes[0] == 'test_user', r.text))
 			.expect(200);
 	});
 
@@ -150,7 +150,7 @@ describe('11. Alter User Tests', () => {
 						found_user = user;
 					}
 				}
-				assert.ok(found_user.active == false);
+				assert.ok(found_user.active == false, r.text);
 			})
 			.expect(200);
 	});
