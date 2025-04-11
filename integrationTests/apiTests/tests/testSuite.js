@@ -20,6 +20,7 @@ describe('Main Test Suite', async () => {
 	await import('./15_customFunctionsAndComponents.js');
 	await import('./16_terminologyUpdates.js');
 	await import('./17_environmentCleanUp.js');
+	await import('./17a_addComponents.js');
 	await import('./18_computedIndexedProperties.js');
 	await import('./19_graphQlTests.js');
 	await import('./20_restTests.js');

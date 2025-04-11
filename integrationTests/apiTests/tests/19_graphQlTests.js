@@ -7,51 +7,6 @@ import { restartWithTimeout } from '../utils/restart.js';
 describe('19. GraphQL tests', () => {
 	//GraphQL tests Folder
 
-	it('Add component for graphql and rest tests', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({ operation: 'add_component', project: 'appGraphQL' })
-			.expect((r) => {
-				const res = JSON.stringify(r.body);
-				assert.ok(res.includes('Successfully added project') || res.includes('Project already exists'), r.text);
-			});
-	});
-
-	it('Set Component File schema.graphql', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({
-				operation: 'set_component_file',
-				project: 'appGraphQL',
-				file: 'schema.graphql',
-				payload:
-					'type VariedProps @table @export { \n\t id: ID @primaryKey \n\t name: String @indexed \n } \n\n type SimpleRecord @table @export { \n\t id: ID @primaryKey \n\t name: String @indexed \n } \n\n type FourProp @table(audit: "1d", replicated: false) @export { \n\t id: ID @primaryKey \n\t name: String @indexed \n\t age: Int @indexed \n\t title: String \n\t birthday: Date @indexed \n\t ageInMonths: Int @computed @indexed \n\t nameTitle: Int @computed(from: "name + \' \' + title") \n } \n\n type Related @table @export(rest: true, mqtt: false) { \n\t id: ID @primaryKey \n\t name: String @indexed \n\t otherTable: [SubObject] @relationship(to: relatedId) \n\t subObject: SubObject @relationship(from: "subObjectId") \n\t subObjectId: ID @indexed \n } \n\n type ManyToMany @table @export(mqtt: true, rest: false) { \n\t id: ID @primaryKey \n\t name: String @indexed \n\t subObjectIds: [ID] @indexed \n\t subObjects: [SubObject] @relationship(from: "subObjectIds") \n } \n\n type HasTimeStampsNoPK @table @export { \n\t created: Float @createdTime \n\t updated: Float @updatedTime \n } \n\n type SomeObject { \n\t name: String \n } \n\n type SubObject @table(audit: false) @export { \n\t id: ID @primaryKey \n\t subObject: SomeObject \n\t subArray: [SomeObject] \n\t any: Any \n\t relatedId: ID @indexed \n\t related: Related @relationship(from: "relatedId") \n\t manyToMany: [ManyToMany] @relationship(to: subObjectIds) \n } \n\n type NestedIdObject @table @export {  \n\t id: [ID]! @primaryKey \n\t name: String \n } \n\n type SimpleCache @table { \n\t id: ID @primaryKey \n } \n\n type HasBigInt @table @export { \n\t id: BigInt @primaryKey \n\t name: String @indexed \n\t anotherBigint: BigInt \n } \n\n type Conflicted1 @table @export(name: "Conflicted") { \n\t id: ID @primaryKey \n } \n\n type Conflicted2 @table @export(name: "Conflicted") { \n\t id: ID @primaryKey \n } \n\n',
-			})
-			.expect((r) => assert.ok(r.body.message.includes('Successfully set component: schema.graphql'), r.text))
-			.expect(200);
-	});
-
-	it('Set Component File config.yaml', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({
-				operation: 'set_component_file',
-				project: 'appGraphQL',
-				file: 'config.yaml',
-				payload:
-					"rest: true\ngraphqlSchema:\n  files: '*.graphql'\njsResource:\n  files: resources.js\nstatic:\n  root: web\n  files: web/**\nroles:\n  files: roles.yaml\ngraphql: true",
-			})
-			.expect((r) => assert.ok(r.body.message.includes('Successfully set component: config.yaml'), r.text))
-			.expect(200);
-	});
-
-	it('Restart service and wait', async () => {
-		await restartWithTimeout(testData.restartTimeout);
-	});
-
 	it('Insert one null into SubObject', async () => {
 		const response = await request(envUrl)
 			.post('')

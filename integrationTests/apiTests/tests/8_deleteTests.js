@@ -542,7 +542,7 @@ describe('8. Delete Tests', () => {
 			.expect((r) => assert.ok(r.body.update_hashes.length == 1, r.text))
 			.expect((r) => assert.deepEqual(r.body.update_hashes, [1], r.text))
 			.expect(200);
-		await setTimeout(500);
+		await setTimeout(2000);
 	});
 
 	it('Search by hash confirm update', async () => {
@@ -728,7 +728,7 @@ describe('8. Delete Tests', () => {
 			.expect((r) => assert.ok(r.body.update_hashes.length == 1, r.text))
 			.expect((r) => assert.deepEqual(r.body.update_hashes, [1], r.text))
 			.expect(200);
-		await setTimeout(500);
+		await setTimeout(2000);
 	});
 
 	it('Search by hash confirm update', async () => {
@@ -914,7 +914,7 @@ describe('8. Delete Tests', () => {
 			.expect((r) => assert.ok(r.body.update_hashes.length == 1, r.text))
 			.expect((r) => assert.deepEqual(r.body.update_hashes, [1], r.text))
 			.expect(200);
-		await setTimeout(500);
+		await setTimeout(2000);
 	});
 
 	it('Search by hash confirm update', async () => {

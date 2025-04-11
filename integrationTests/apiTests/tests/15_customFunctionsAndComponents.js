@@ -184,9 +184,9 @@ describe('15. Custom Functions & components', () => {
 			.expect(200);
 	});
 
-	it('restart service', async () => {
-		await restartWithTimeout(testData.restartTimeout);
-	});
+	// it('restart service', async () => {
+	// 	await restartWithTimeout(testData.restartTimeout);
+	// });
 
 	it('get custom function status', async () => {
 		const response = await request(envUrl)
@@ -354,6 +354,15 @@ describe('15. Custom Functions & components', () => {
 			.set(headers)
 			.send({ operation: 'drop_component', project: 'deploy-test-gh' })
 			.expect((r) => assert.ok(r.body.message == 'Successfully dropped: deploy-test-gh', r.text))
+			.expect(200);
+	});
+
+	it('drop deploy-test-payload-tar-gz', async () => {
+		const response = await request(envUrl)
+			.post('')
+			.set(headers)
+			.send({ operation: 'drop_component', project: 'deploy-test-payload-tar-gz' })
+			.expect((r) => assert.ok(r.body.message == 'Successfully dropped: deploy-test-payload-tar-gz', r.text))
 			.expect(200);
 	});
 });

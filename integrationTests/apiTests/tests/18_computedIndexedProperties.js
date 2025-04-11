@@ -7,53 +7,6 @@ import { restartWithTimeout } from '../utils/restart.js';
 describe('18. Computed indexed properties', () => {
 	//Computed indexed properties Folder
 
-	it('Add component', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({ operation: 'add_component', project: 'computed' })
-			.expect((r) => assert.ok(r.body.message.includes('Successfully added project: computed'), r.text))
-			.expect(200);
-	});
-
-	it('Set Component File schema.graphql', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({
-				operation: 'set_component_file',
-				project: 'computed',
-				file: 'schema.graphql',
-				payload:
-					'type Product @table @export { \n\t id: ID @primaryKey \n\t price: Float \n\t taxRate: Float \n\t totalPrice: Float @computed(from: "price + (price * taxRate)") @indexed \n\t notIndexedTotalPrice: Float @computed(from: "price + (price * taxRate)") \n\t jsTotalPrice: Float @computed @indexed \n } \n\n',
-			})
-			.expect((r) => assert.ok(r.body.message.includes('Successfully set component: schema.graphql'), r.text))
-			.expect(200);
-	});
-
-	it('Set Component File resources.js', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({
-				operation: 'set_component_file',
-				project: 'computed',
-				file: 'resources.js',
-				payload:
-					"tables.Product.setComputedAttribute('jsTotalPrice', (record) => { \n\t return record.price + (record.price * record.taxRate) \n }) \n\n",
-			})
-			.expect((r) => assert.ok(r.body.message.includes('Successfully set component: resources.js'), r.text))
-			.expect(200);
-	});
-
-	it('Restart service and wait', async () => {
-		await restartWithTimeout(testData.restartTimeout);
-	});
-
-	it('Describe all', async () => {
-		const response = await request(envUrl).post('').set(headers).send({ operation: 'describe_all' }).expect(200);
-	});
-
 	it('Insert data', async () => {
 		const response = await request(envUrl)
 			.post('')
@@ -169,15 +122,6 @@ describe('18. Computed indexed properties', () => {
 			.expect(200);
 	});
 
-	it('Delete schema', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({ operation: 'drop_schema', schema: 'data' })
-			.expect((r) => assert.ok(r.body.message.includes(`successfully deleted 'data'`), r.text))
-			.expect(200);
-	});
-
 	it('Drop component', async () => {
 		const response = await request(envUrl)
 			.post('')
@@ -185,9 +129,5 @@ describe('18. Computed indexed properties', () => {
 			.send({ operation: 'drop_component', project: 'computed' })
 			.expect((r) => assert.ok(r.body.message.includes('Successfully dropped: computed'), r.text))
 			.expect(200);
-	});
-
-	it('Restart service and wait', async () => {
-		await restartWithTimeout(testData.restartTimeout);
 	});
 });

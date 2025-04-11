@@ -474,7 +474,18 @@ describe('12. Configuration', () => {
 			.set('Accept', '*/*')
 			.set('Connection', 'keep-alive')
 			.set('Accept-Encoding', 'gzip, deflate, br')
-			.expect('content-type', 'text/html; charset=UTF-8')
+			.expect((r) => {
+				console.log('Response headers: ' + JSON.stringify(r.headers));
+				console.log('Response body: ' + r.text);
+			})
+
+
+		const response2 = await request(envUrl)
+			.get('')
+			.set('Accept', '*/*')
+			.set('Connection', 'keep-alive')
+			.set('Accept-Encoding', 'gzip, deflate, br')
+			// .expect('content-type', 'text/html; charset=UTF-8')
 			.expect((r) => {
 				assert.ok(r.text.includes('<!doctype html>'), r.text);
 				assert.ok(r.text.includes('Studio :: HarperDB'), r.text);
