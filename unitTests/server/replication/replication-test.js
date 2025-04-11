@@ -15,11 +15,13 @@ const { clusterStatus } = require('../../../utility/clustering/clusterStatus');
 const { ResourceBridge } = require('../../../dataLayer/harperBridge/ResourceBridge');
 const { open } = require('lmdb');
 const { transaction } = require('../../../resources/transaction');
+const { AUDIT_STORE_OPTIONS, readAuditEntry } = require('../../../resources/auditStore');
 OpenDBIObject = require('../../../utility/lmdb/OpenDBIObject');
 
 describe('Replication', () => {
 	let TestTable;
 	const test_stores = [];
+	const test_audit_stores = [];
 	let child_processes = [];
 	let node_count = 2;
 	let db_count = 3;
@@ -52,15 +54,17 @@ describe('Replication', () => {
 		TestTable = await createTestTable(database_config.data.path + '/test-replication-0');
 
 		for (let i = 0; i < db_count; i++) {
+			let path = database_config.data.path + '/test-replication-' + i + '/test.mdb';
 			test_stores.push(
 				open(
-					database_config.data.path + '/test-replication-' + i + '/test.mdb',
+					path,
 					Object.assign(new OpenDBIObject(false, true), {
 						name: 'TestTable/',
 						compression: { startingOffset: 32 },
 					})
 				)
 			);
+			test_audit_stores.push(open(path, { name: '__txns__', ...AUDIT_STORE_OPTIONS }));
 		}
 		await new Promise((resolve) => setTimeout(resolve, 10));
 
@@ -123,6 +127,27 @@ describe('Replication', () => {
 			break;
 		} while (true);
 	});
+	it('A message to one table should replicate', async function () {
+		let name = 'message ' + Math.random();
+		let startTime = Date.now();
+		await TestTable.publish('1', {
+			id: '1',
+			name,
+		});
+		let retries = 10;
+		do {
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			for (let entry of test_audit_stores[1].getRange({ reverse: true })) {
+				if (entry.key > startTime) {
+					let auditEntry = readAuditEntry(entry.value);
+					assert.equal(auditEntry.type, 'message');
+					return; //success
+				}
+			}
+			assert(--retries > 0);
+		} while (true);
+	});
+
 	it.skip('A write to one table with replicated confirmation', async function () {
 		console.log('replicated confirmation');
 		this.timeout(5000);
