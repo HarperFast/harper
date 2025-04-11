@@ -149,7 +149,7 @@ function configValidator(config_json, skip_fs_validation = false) {
 				authorizeLocal: boolean,
 				cacheTTL: number.required(),
 				cookie: Joi.object({
-					domain: string.optional(),
+					domains: array.items(string).optional(),
 					expires: string.optional(),
 				}),
 				enableSessions: boolean,
