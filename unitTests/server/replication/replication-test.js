@@ -380,6 +380,7 @@ describe('Replication', () => {
 				await TestTable.put({
 					id: '10', // should be forced to replicate and only store the record on node-2
 					name,
+					blob: await createBlob('this is a test'.repeat(1000)),
 				});
 
 				let retries = 20;
@@ -401,6 +402,7 @@ describe('Replication', () => {
 				// now verify that the record can be loaded on-demand here
 				result = await TestTable.get('10');
 				assert.equal(result.name, name);
+				assert.equal(await result.blob.text(), 'this is a test'.repeat(1000));
 			});
 		});
 		describe('id-based sharding by residency list', function () {
@@ -424,6 +426,7 @@ describe('Replication', () => {
 				await TestTable.put({
 					id: '10', // should be forced to replicate and only store the record on node-2
 					name,
+					blob: await createBlob('this is a test'.repeat(1000)),
 				});
 
 				let retries = 20;
@@ -445,6 +448,7 @@ describe('Replication', () => {
 				// now verify that the record can be loaded on-demand here
 				result = await TestTable.get('10');
 				assert.equal(result.name, name);
+				assert.equal(await result.blob.text(), 'this is a test'.repeat(1000));
 			});
 		});
 		describe('record-based sharding', function () {
