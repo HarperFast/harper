@@ -198,8 +198,15 @@ export function resetDatabases() {
 		if (store.needsDeletion && !path.endsWith('system.mdb')) {
 			store.close();
 			database_envs.delete(path);
-			delete databases[store.databaseName];
-			db_removal_listeners.forEach((listener) => listener(store.databaseName));
+			const db = databases[store.databaseName];
+			for (const table_name in db) {
+				const table = db[table_name];
+				if (table.primaryStore.path === path) {
+					delete databases[store.databaseName];
+					db_removal_listeners.forEach((listener) => listener(store.databaseName));
+					break;
+				}
+			}
 		}
 	}
 	return databases;
