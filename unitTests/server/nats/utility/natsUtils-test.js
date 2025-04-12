@@ -334,6 +334,7 @@ describe('Test natsUtils module', () => {
 
 		it('Test getJetStream returns JetStream client if if a connection does not exist', async () => {
 			nats_utils.__set__('nats_connection', undefined);
+			nats_utils.__set__('nats_connection_promise', undefined);
 			const result = await nats_utils.getJetStream();
 			expect(result).to.haveOwnProperty('nc');
 			expect(result).to.haveOwnProperty('opts');
