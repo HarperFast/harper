@@ -90,7 +90,7 @@ async function createSchemaStructure(schema_create_object) {
 
 	await harperBridge.createSchema(schema_create_object);
 
-	return `database '${schema_create_object.schema}' successfully created`;
+	return `database '${schemaCreateObject.schema}' successfully created`;
 }
 
 async function createTable(create_table_object) {
@@ -150,7 +150,7 @@ async function createTableStructure(create_table_object) {
 			await harperBridge.createTable(table_system_data, create_table_object);
 		}
 
-		return `table '${create_table_object.schema}.${create_table_object.table}' successfully created.`;
+		return `table '${createTableObject.schema}.${createTableObject.table}' successfully created.`;
 	} catch (err) {
 		throw err;
 	}
@@ -202,7 +202,7 @@ async function dropSchema(drop_schema_object) {
 	// Streams are part of Nats and are used by clustering, they are 'message stores' that track transactions on a table.
 	await nats_utils.purgeSchemaTableStreams(drop_schema_object.schema, tables);
 	let response = await replicateOperation(drop_schema_object);
-	response.message = `successfully deleted '${drop_schema_object.schema}'`;
+	response.message = `successfully deleted '${dropSchemaObject.schema}'`;
 	return response;
 }
 
@@ -240,7 +240,7 @@ async function dropTable(drop_table_object) {
 	await nats_utils.purgeTableStream(drop_table_object.schema, drop_table_object.table);
 
 	let response = await replicateOperation(drop_table_object);
-	response.message = `successfully deleted table '${drop_table_object.schema}.${drop_table_object.table}'`;
+	response.message = `successfully deleted table '${dropTableObject.schema}.${dropTableObject.table}'`;
 	return response;
 }
 
@@ -295,7 +295,7 @@ async function dropAttribute(drop_attribute_object) {
 	if (hdb_terms.TIME_STAMP_NAMES.indexOf(drop_attribute_object.attribute) >= 0) {
 		throw handleHDBError(
 			new Error(),
-			`cannot drop internal timestamp attribute: ${drop_attribute_object.attribute}`,
+			`cannot drop internal timestamp attribute: ${dropAttributeObject.attribute}`,
 			HTTP_STATUS_CODES.BAD_REQUEST,
 			undefined,
 			undefined,
@@ -316,9 +316,9 @@ async function dropAttribute(drop_attribute_object) {
 			)
 		);
 
-		return `successfully deleted attribute '${drop_attribute_object.attribute}'`;
+		return `successfully deleted attribute '${dropAttributeObject.attribute}'`;
 	} catch (err) {
-		logger.error(`Got an error deleting attribute ${util.inspect(drop_attribute_object)}.`);
+		logger.error(`Got an error deleting attribute ${util.inspect(dropAttributeObject)}.`);
 		throw err;
 	}
 }
@@ -347,7 +347,7 @@ async function createAttribute(create_attribute_object) {
 		if (name === create_attribute_object.attribute) {
 			throw handleHDBError(
 				new Error(),
-				`attribute '${create_attribute_object.attribute}' already exists in ${create_attribute_object.schema}.${create_attribute_object.table}`,
+				`attribute '${createAttributeObject.attribute}' already exists in ${createAttributeObject.schema}.${create_attribute_object.table}`,
 				HTTP_STATUS_CODES.BAD_REQUEST,
 				undefined,
 				undefined,
@@ -367,7 +367,7 @@ async function createAttribute(create_attribute_object) {
 		)
 	);
 
-	return `attribute '${create_attribute_object.schema}.${create_attribute_object.table}.${create_attribute_object.attribute}' successfully created.`;
+	return `attribute '${createAttributeObject.schema}.${createAttributeObject.table}.${createAttributeObject.attribute}' successfully created.`;
 }
 
 function getBackup(get_backup_object) {
