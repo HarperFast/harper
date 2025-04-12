@@ -61,6 +61,9 @@ const UNSAFE_VAR_TRANSFORM = [
 	'uri_encoded_d_hash',
 	'uri_encoded_name',
 	'sys_name_encoded',
+	'operation_token',
+	'refresh_token',
+	'refresh_operation_token',
 ];
 processDirectory(process.cwd().slice(0, process.cwd().indexOf('harperdb') + 'harperdb'.length));
 function processDirectory(dir, type) {
