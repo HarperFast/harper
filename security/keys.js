@@ -602,9 +602,9 @@ async function generateCertAuthority(private_key, public_key, write_key = true) 
 }
 
 async function generateCertsKeys() {
-	const { private_key, public_key } = await generateKeys();
-	const ca_cert = await generateCertAuthority(private_key, public_key);
-	const public_cert = await generateCertificates(private_key, public_key, ca_cert);
+	const { privateKey, publicKey } = await generateKeys();
+	const ca_cert = await generateCertAuthority(privateKey, publicKey);
+	const public_cert = await generateCertificates(privateKey, publicKey, ca_cert);
 	await createCertificateTable(public_cert, ca_cert);
 	updateConfigCert();
 }
@@ -652,10 +652,10 @@ async function reviewSelfSignedCert() {
 
 		const tls_private_key = env_manager.get(CONFIG_PARAMS.TLS_PRIVATEKEY);
 		const keys_path = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
-		let private_key;
+		let privateKey;
 		let key_name = relative(keys_path, tls_private_key);
 		try {
-			private_key = pki.privateKeyFromPem(await fs.readFile(tls_private_key));
+			privateKey = pki.privateKeyFromPem(await fs.readFile(tls_private_key));
 		} catch (err) {
 			hdb_logger.warn(
 				'Unable to parse the TLS key',
@@ -665,16 +665,16 @@ async function reviewSelfSignedCert() {
 			);
 			// Currently we can only parse RSA keys, so if it's not an RSA key, we need to generate a new one
 			// There is a ticket to add support for other key types CORE-2457
-			({ private_key } = await generateKeys());
+			({ privateKey } = await generateKeys());
 
 			// If there is an existing private key, we will save the new one with a unique name
 			if (await fs.exists(path.join(keys_path, certificates_terms.PRIVATEKEY_PEM_NAME)))
 				key_name = `privateKey${uuidv4().split('-')[0]}.pem`;
 
-			await fs.writeFile(path.join(keys_path, key_name), pki.privateKeyToPem(private_key));
+			await fs.writeFile(path.join(keys_path, key_name), pki.privateKeyToPem(privateKey));
 		}
 
-		const hdb_ca = await generateCertAuthority(private_key, pki.setRsaPublicKey(private_key.n, private_key.e), false);
+		const hdb_ca = await generateCertAuthority(privateKey, pki.setRsaPublicKey(privateKey.n, privateKey.e), false);
 
 		await setCertTable({
 			name: hdb_ca.subject.getField('CN').value,
