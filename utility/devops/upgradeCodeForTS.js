@@ -5,8 +5,6 @@ const DONT_CHANGE_COLON_VAR_FILES = ['ResourceBridge.ts', 'hdbTerms.ts'];
 const SKIP_FILES = ['commonErrors.js'];
 const SAFE_VAR_TRANSFORM = [
 	'search_object',
-	'main_permissions',
-	'schema_permissions',
 	'writes_by_db',
 	'query_string',
 	'async_set_timeout',
@@ -69,6 +67,12 @@ const UNSAFE_VAR_TRANSFORM = [
 	'private_key',
 	'super_user',
 	'cluster_user',
+	'number_written',
+	'job_id',
+	'main_permissions',
+	'schema_permissions',
+	'hash_values',
+	'operation_json',
 ];
 processDirectory(process.cwd().slice(0, process.cwd().indexOf('harperdb') + 'harperdb'.length));
 function processDirectory(dir, type) {
