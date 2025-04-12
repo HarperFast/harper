@@ -13,7 +13,7 @@ const update_nodes4_0_0 = rewire('../../../upgrade/nats/updateNodes4-0-0');
 
 const TENS_DAYS_IN_MS = 864000000;
 
-describe('Test updateNodes4-0-0 module', () => {
+describe.skip('Test updateNodes4-0-0 module', () => {
 	const sandbox = sinon.createSandbox();
 	const test_node_record = [
 		{

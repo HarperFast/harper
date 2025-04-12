@@ -335,7 +335,7 @@ class SubscriptionsSession {
 		// each publish gets it own context so that each publish gets it own transaction
 		return publish(message, data, this.createContext());
 	}
-	createContext() {
+	createContext(): any {
 		const context = {
 			session: this,
 			socket: this.socket,

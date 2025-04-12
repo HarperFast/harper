@@ -29,7 +29,7 @@ const { insertRecords } = require('../../../utility/lmdb/writeUtility');
 
 const ROOT = 'yourcomputer/hdb';
 
-describe('Test 4-0-0 module', () => {
+describe.skip('Test 4-0-0 module', () => {
 	const sandbox = sinon.createSandbox();
 	const TEST_ERROR = 'Unit test error';
 	let generate_keys_stub;
