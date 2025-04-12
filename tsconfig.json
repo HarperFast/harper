@@ -10,5 +10,6 @@
 		"module": "NodeNext",
 		"sourceMap": true,
 		"strict": true,
+		"rootDir": "."
 	}
 }
