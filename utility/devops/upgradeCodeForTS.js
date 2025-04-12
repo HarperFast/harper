@@ -50,6 +50,9 @@ const UNSAFE_VAR_TRANSFORM = [
 	'current_load',
 	'no_projects',
 	'log_to_file',
+	'cert_file',
+	'key_file',
+	'ca_file',
 ];
 processDirectory(process.cwd().slice(0, process.cwd().indexOf('harperdb') + 'harperdb'.length));
 function processDirectory(dir, type) {
