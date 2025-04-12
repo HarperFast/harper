@@ -1,6 +1,6 @@
-import { readdirSync, promises, readFileSync, existsSync, symlinkSync, rmSync, mkdirSync, realpathSync } from 'fs';
-import { join, relative, basename, dirname } from 'path';
-import { isMainThread } from 'worker_threads';
+import { readdirSync, promises, readFileSync, existsSync, symlinkSync, rmSync, mkdirSync, realpathSync } from 'node:fs';
+import { join, basename, dirname } from 'node:path';
+import { isMainThread } from 'node:worker_threads';
 import { parseDocument } from 'yaml';
 import * as env from '../utility/environment/environmentManager';
 import { PACKAGE_ROOT } from '../utility/packageUtils';
@@ -20,7 +20,6 @@ import harper_logger from '../utility/logging/harper_logger';
 import { secureImport } from '../security/jsLoader';
 import { server } from '../server/Server';
 import { Resources } from '../resources/Resources';
-import { handleHDBError } from '../utility/errors/hdbError';
 import { table } from '../resources/databases';
 import { startSocketServer } from '../server/threads/socketRouter';
 import { getHdbBasePath } from '../utility/environment/environmentManager';
@@ -194,7 +193,7 @@ export async function loadComponent(
 		}
 
 		const parent_comp_name: string = comp_name;
-		let has_functionality = is_root;
+		const componentFunctionality = {};
 		// iterate through the app handlers so they can each do their own loading process
 		for (const component_name in config) {
 			comp_name = component_name;
@@ -216,7 +215,7 @@ export async function loadComponent(
 					}
 					if (component_path) {
 						extension_module = await loadComponent(component_path, resources, origin, false);
-						has_functionality = true;
+						componentFunctionality[component_name] = true;
 					} else {
 						throw new Error(`Unable to find package ${component_name}:${pkg}`);
 					}
@@ -276,9 +275,6 @@ export async function loadComponent(
 						})) || extension_module;
 				loaded_components.set(extension_module, true);
 
-				// a loader is configured to specify a glob of files to be loaded, we pass each of those to the plugin
-				// handling files ourselves allows us to pass files to sandboxed modules that might not otherwise have
-				// access to the file system.
 				if (
 					(extension_module.handleFile ||
 						extension_module.handleDirectory ||
@@ -286,92 +282,15 @@ export async function loadComponent(
 						extension_module.setupDirectory) &&
 					component_config.files != undefined
 				) {
-					if (component_config.files.includes('..')) throw handleHDBError('Can not reference parent directories');
-					const files = join(folder, component_config.files).replace(/\\/g, '/'); // must normalize to slashes for fast-glob to work
-					const end_of_fixed_path = files.indexOf('/*');
-					if (
-						end_of_fixed_path > -1 &&
-						component_config.files !== DEFAULT_CONFIG[component_name]?.files &&
-						!existsSync(files.slice(0, end_of_fixed_path))
-					)
-						throw new Error(
-							`The path '${files.slice(
-								0,
-								end_of_fixed_path
-							)}' does not exist and cannot be used as the base of the resolved 'files' path value '${
-								component_config.files
-							}'`
-						);
-					const app_name = basename(folder);
-					let base_url_path = component_config.path || '/';
-					base_url_path = base_url_path.startsWith('/')
-						? base_url_path
-						: base_url_path.startsWith('./')
-							? '/' + app_name + base_url_path.slice(2)
-							: base_url_path === '.'
-								? '/' + app_name
-								: '/' + app_name + '/' + base_url_path;
-					let root_path, root_file_path;
-					let root_end;
-					if (component_config.root) {
-						let root_path = component_config.root;
-						if (root_path.startsWith('/')) root_path = root_path.slice(1);
-						if (root_path.endsWith('/')) root_path = root_path.slice(0, -1);
-						root_path += '/';
-						root_file_path = join(folder, root_path);
-					} else if ((root_end = files.indexOf('/*')) > -1) {
-						root_file_path = files.slice(0, root_end + 1);
-						root_path = relative(folder, root_file_path);
-					} else if (component_config.files.indexOf('/') > -1) {
-						root_file_path = files.slice(0, files.lastIndexOf('/') + 1);
-						root_path = relative(folder, root_file_path);
-					}
-					let directory_handled = false;
-					if (isMainThread && extension_module.setupDirectory) {
-						directory_handled = await extension_module.setupDirectory?.(base_url_path, root_file_path, resources);
-					}
-					if (resources.isWorker && extension_module.handleDirectory) {
-						directory_handled = await extension_module.handleDirectory?.(base_url_path, root_file_path, resources);
-					}
-					if (directory_handled) {
-						has_functionality = true;
-						continue;
-					}
-					for (const entry of await fg(files, { onlyFiles: false, objectMode: true })) {
-						const { path, dirent } = entry;
-						has_functionality = true;
-						let relative_path = relative(folder, path).replace(/\\/g, '/');
-						if (root_path) {
-							if (relative_path.startsWith(root_path)) relative_path = relative_path.slice(root_path.length + 1);
-							else
-								throw new Error(
-									`The root path '${component_config.root}' does not reference a valid part of the file path '${relative_path}'.` +
-										`The root path should be used to indicate the relative path/part of the file path for determining the exported web path.`
-								);
-						}
-						const url_path = base_url_path + (base_url_path.endsWith('/') ? '' : '/') + relative_path;
-						try {
-							if (dirent.isFile()) {
-								const contents = await readFile(path);
-								if (isMainThread) await extension_module.setupFile?.(contents, url_path, path, resources);
-								if (resources.isWorker) await extension_module.handleFile?.(contents, url_path, path, resources);
-							} else {
-								// some plugins may want to just handle whole directories
-								if (isMainThread) await extension_module.setupDirectory?.(url_path, path, resources);
-								if (resources.isWorker) await extension_module.handleDirectory?.(url_path, path, resources);
-							}
-						} catch (error) {
-							const message = `Could not load ${dirent.isFile() ? 'file' : 'directory'} '${path}'${
-								component_config.module ? ` using '${component_config.module}'` : ''
-							} for application '${folder}' due to:\n`;
-							error.message = `${message}${error.message}`;
-							error.stack = `${message}${error.stack}`;
-							error_reporter?.(error);
-							harper_logger.error(error);
-							resources.set(component_config.path || '/', new ErrorResource(error));
-							component_errors.set(is_root ? component_name : basename(folder), error.message);
-						}
-					}
+					const component = new Component({
+						config: component_config,
+						name: component_name,
+						directory: folder,
+						module: extension_module,
+						resources,
+					});
+
+					componentFunctionality[component_name] = await processResourceExtensionComponent(component);
 				}
 			} catch (error) {
 				error.message = `Could not load component '${component_name}' for application '${basename(folder)}' due to: ${
@@ -396,11 +315,16 @@ export async function loadComponent(
 			loaded_paths.set(resolved_folder, extension_module);
 			return extension_module;
 		}
-		if (!has_functionality && resources.isWorker) {
+		if (Object.values(componentFunctionality).every((functionality) => !functionality) && resources.isWorker) {
 			const error_message = `${folder} did not load any modules, resources, or files, is this a valid component?`;
 			error_reporter?.(new Error(error_message));
 			(getWorkerIndex() === 0 ? console : harper_logger).error(error_message);
 			component_errors.set(basename(folder), error_message);
+		}
+
+		for (const [componentName, functionality] of Object.entries(componentFunctionality)) {
+			if (!functionality)
+				harper_logger.warn(`Component ${componentName} from (${basename(folder)}) did not load any functionality.`);
 		}
 	} catch (error) {
 		console.error(`Could not load application directory ${folder}`, error);
@@ -408,4 +332,474 @@ export async function loadComponent(
 		error_reporter?.(error);
 		resources.set('', new ErrorResource(error));
 	}
+}
+
+interface ComponentConfig {
+	files: string | string[] | Readonly<{ source: string; only: 'all' | 'files' | 'directories'; ignore?: string[] }>;
+	/** @deprecated */ path?: string;
+	urlPath?: string;
+	/** @deprecated */ root?: string;
+	[key: string]: any;
+}
+
+interface ComponentModule {
+	setupDirectory?: (urlPath: string, absolutePath: string, resources: Resources) => Promise<undefined | boolean>;
+	handleDirectory?: (urlPath: string, absolutePath: string, resources: Resources) => Promise<undefined | boolean>;
+	setupFile?: (contents: Buffer, urlPath: string, absolutePath: string, resources: Resources) => Promise<void>;
+	handleFile?: (contents: Buffer, urlPath: string, absolutePath: string, resources: Resources) => Promise<void>;
+}
+
+interface ComponentDetails {
+	config: ComponentConfig;
+	name: string;
+	directory: string;
+	module: ComponentModule;
+	resources: Resources;
+}
+
+export class Component {
+	readonly config: Readonly<ComponentConfig>;
+	readonly name: string;
+	readonly directory: string;
+	readonly module: Readonly<ComponentModule>;
+	readonly resources: Resources;
+	readonly globOptions: { source: string[]; onlyFiles: boolean; onlyDirectories: boolean; ignore: string[] };
+	readonly patternRoots: string[];
+	readonly baseURLPath: string;
+
+	constructor(options: ComponentDetails) {
+		// TO DO: Unfortunately `readonly` is a TS only thing and doesn't actually enforce that these properties can't be modified.
+		// Freeze these things so they can't be changed. likely do this at the end of the constructor
+		this.config = options.config;
+		this.name = options.name;
+		this.directory = options.directory;
+		this.module = options.module;
+		this.resources = options.resources;
+
+		// Config option basic validation
+		if (
+			!isNonEmptyString(this.config.files) &&
+			!isArrayOfNonEmptyStrings(this.config.files) &&
+			!isObject(this.config.files)
+		) {
+			throw new InvalidFilesOptionError(this);
+		}
+
+		// Validating the `files` object
+		if (typeof this.config.files === 'object' && !Array.isArray(this.config.files)) {
+			if (
+				this.config.files.source === undefined ||
+				(!isArrayOfNonEmptyStrings(this.config.files.source) && !isNonEmptyString(this.config.files.source))
+			) {
+				throw new InvalidFilesSourceOptionError(this);
+			}
+
+			if (
+				this.config.files.only !== undefined &&
+				(typeof this.config.files.only !== 'string' ||
+					!['all', 'files', 'directories'].includes(this.config.files.only))
+			) {
+				throw new InvalidFilesOnlyOptionError(this);
+			}
+
+			if (
+				this.config.files.ignore !== undefined &&
+				!isArrayOfNonEmptyStrings(this.config.files.ignore) &&
+				!isNonEmptyString(this.config.files.ignore)
+			) {
+				throw new InvalidFileIgnoreOptionError(this);
+			}
+		}
+
+		// Validate the deprecated options too
+		if (this.config.root !== undefined && !isNonEmptyString(this.config.root)) {
+			throw new InvalidRootOptionError(this);
+		}
+
+		if (this.config.path !== undefined && !isNonEmptyString(this.config.path)) {
+			throw new InvalidPathOptionError(this);
+		}
+
+		// Handle deprecated `path` option
+		if (this.config.path) {
+			harper_logger.warn(`Resource extension 'path' option is deprecated. Please replace with 'urlPath'.`);
+			this.config.urlPath = this.config.path;
+		}
+
+		// Validate the `urlPath`
+		if (
+			this.config.urlPath !== undefined &&
+			(!isNonEmptyString(this.config.urlPath) ||
+				(typeof this.config.urlPath === 'string' && this.config.urlPath.includes('..')))
+		) {
+			throw new InvalidURLPathOptionError(this);
+		}
+
+		this.globOptions = this.deriveGlobOptions();
+		this.patternRoots = derivePatternRoots(this.globOptions.source);
+		this.baseURLPath = resolveBaseURLPath(this.name, this.config.urlPath);
+	}
+
+	private deriveGlobOptions() {
+		const globOptions = { source: [], onlyFiles: false, onlyDirectories: false, ignore: [] };
+
+		if (typeof this.config.files === 'object' && !Array.isArray(this.config.files)) {
+			globOptions.source = [].concat(this.config.files.source);
+			globOptions.ignore = this.config.files.ignore || [];
+			switch (this.config.files.only) {
+				case 'all':
+					globOptions.onlyFiles = false;
+					globOptions.onlyDirectories = false;
+					break;
+				case 'files':
+					globOptions.onlyFiles = true;
+					globOptions.onlyDirectories = false;
+					break;
+				case 'directories':
+					globOptions.onlyFiles = false;
+					globOptions.onlyDirectories = true;
+					break;
+			}
+		} else {
+			globOptions.source = [].concat(this.config.files);
+		}
+
+		// Validate and transform glob patterns
+		globOptions.source = globOptions.source.map((pattern) => {
+			if (pattern.includes('..')) {
+				throw new InvalidGlobPattern(this, pattern);
+			}
+
+			if (pattern.startsWith('/')) {
+				harper_logger.warn(
+					`Leading '/' in 'files' glob pattern is deprecated. For backwards compatibility purposes, it is currently transformed to the relative path of the component, but in the future will result in an error. Please replace with a relative path such as './' or removing the leading path separator all together ('./static/*' -> 'static/*').`
+				);
+
+				pattern = pattern === '/' ? './' : pattern.slice(1);
+			}
+
+			return pattern;
+		});
+
+		return globOptions;
+	}
+}
+
+export class ComponentProcessingError extends Error {
+	constructor(message: string, component: ComponentDetails) {
+		super(`Component ${component.name} (from ${basename(component.directory)}) ${message}`);
+	}
+}
+
+export class InvalidFilesOptionError extends ComponentProcessingError {
+	constructor(component: ComponentDetails) {
+		super(`'files' option must be a non-empty string, an array of non-empty strings, or an object.`, component);
+	}
+}
+
+export class InvalidFilesSourceOptionError extends ComponentProcessingError {
+	constructor(component: ComponentDetails) {
+		super(`'files' object must have a non-empty 'source' property.`, component);
+	}
+}
+
+export class InvalidFilesOnlyOptionError extends ComponentProcessingError {
+	constructor(component: ComponentDetails) {
+		super(`'files.only' option must be one of 'all', 'files', or 'directories'.`, component);
+	}
+}
+
+export class InvalidFileIgnoreOptionError extends ComponentProcessingError {
+	constructor(component: ComponentDetails) {
+		super(`'files.ignore' option must be a non-empty string or an array of non-empty strings.`, component);
+	}
+}
+
+export class InvalidGlobPattern extends ComponentProcessingError {
+	constructor(component: ComponentDetails, pattern: string) {
+		super(`'files' glob pattern must not contain '..'. Received: '${pattern}'`, component);
+	}
+}
+
+export class InvalidRootOptionError extends ComponentProcessingError {
+	constructor(component: ComponentDetails) {
+		super(
+			`deprecated 'root' option must be a non-empty string. Consider removing and updating 'files' glob pattern instead.`,
+			component
+		);
+	}
+}
+
+export class InvalidRootOptionUseError extends ComponentProcessingError {
+	constructor(component: ComponentDetails) {
+		super(
+			`the 'root' option is deprecated and only supported if 'files' is a singular, non-empty string. Please remove the 'root' option and modify the 'files' glob pattern instead.`,
+			component
+		);
+	}
+}
+
+export class InvalidPathOptionError extends ComponentProcessingError {
+	constructor(component: ComponentDetails) {
+		super(`deprecated 'path' option must be a non-empty string. Consider replacing with 'urlPath'.`, component);
+	}
+}
+
+export class InvalidURLPathOptionError extends ComponentProcessingError {
+	constructor(component: ComponentDetails) {
+		super(`'urlPath' option must be a non-empty string that must not contain '..'.`, component);
+	}
+}
+
+function isNonEmptyString(value: unknown): value is string {
+	return typeof value === 'string' && value.trim() !== '';
+}
+
+function isArrayOfNonEmptyStrings(value: unknown): value is string[] {
+	return Array.isArray(value) && value.length !== 0 && value.every((item) => isNonEmptyString(item));
+}
+
+function isObject(value: unknown): value is Record<string, unknown> {
+	return typeof value === 'object' && value !== null && !Array.isArray(value);
+}
+
+async function handleRoots(component: Component) {
+	if (component.config.root) {
+		harper_logger.warn(
+			`Resource extension 'root' option is deprecated. Due to backwards compatibility reasons it does not act as assumed. The glob pattern will always be evaluated from the component directory root. The option is only used for the initial root directory handling. Please remove and modify the 'files' glob pattern instead.`
+		);
+	}
+
+	// For backwards compatibility, we need to evaluate the root path via the existing logic. This is only valid if `root` is defined, and `files` is a strings that doesn't contain `**/*`,
+	// And if that existing logic does not produce a reasonable root path to evaluate, we can consider the configure "new" and evaluate it based on a new process
+
+	let rootPaths = [];
+
+	if (component.config.root && typeof component.config.files !== 'string') {
+		throw new InvalidRootOptionUseError(component);
+	}
+
+	// This starts old root handling
+	let rootPath = component.config.root;
+
+	if (rootPath) {
+		// trim any leading slashes
+		if (rootPath.startsWith('/')) {
+			rootPath = rootPath.slice(1);
+		}
+		// add a trailing slash if it doesn't exist
+		if (!rootPath.endsWith('/')) {
+			rootPath += '/';
+		}
+	}
+
+	const pattern = component.config.files;
+
+	// This is still old root handling logic - operate only a singular pattern
+	if (typeof pattern === 'string' && !pattern.includes('**/*')) {
+		if (pattern.indexOf('/*') > -1) {
+			rootPath = pattern.slice(0, pattern.indexOf('/*') + 1);
+		} else if (pattern.indexOf('/') > -1) {
+			rootPath = pattern.slice(0, pattern.lastIndexOf('/') + 1);
+		}
+	}
+
+	if (rootPath) rootPaths.push(rootPath);
+
+	// If old handling did not result in a root path, now use the patternRoots derived from the processed glob patterns
+	if (rootPaths.length === 0) {
+		// Return early if we are only processing files
+		if (isObject(component.config.files) && component.config.files.only === 'files') {
+			return false;
+		}
+
+		rootPaths = component.patternRoots;
+	}
+
+	let hasFunctionality = false;
+
+	for (const rootPath of rootPaths) {
+		if (!rootPath) continue;
+		const rootPathAbsolute = join(component.directory, rootPath);
+
+		if (isMainThread && component.module.setupDirectory) {
+			hasFunctionality = await component.module.setupDirectory(
+				component.baseURLPath,
+				rootPathAbsolute,
+				component.resources
+			);
+		}
+		if (component.resources.isWorker && component.module.handleDirectory) {
+			hasFunctionality = await component.module.handleDirectory(
+				component.baseURLPath,
+				rootPathAbsolute,
+				component.resources
+			);
+		}
+	}
+
+	return hasFunctionality;
+}
+
+/**
+ * Process a Resource Extension component by evaluating the files glob pattern
+ * and then calling the appropriate setup/handle functions.
+ */
+export async function processResourceExtensionComponent(component: Component) {
+	let hasFunctionality = false;
+
+	hasFunctionality = await handleRoots(component);
+
+	// Return early if roots were functional
+	if (hasFunctionality) return hasFunctionality;
+
+	const matches = await fg(component.globOptions.source, {
+		cwd: component.directory,
+		objectMode: true,
+		onlyFiles: component.globOptions.onlyFiles,
+		onlyDirectories: component.globOptions.onlyDirectories,
+		ignore: component.globOptions.ignore,
+	});
+
+	for (const entry of matches) {
+		let entryPathPart = entry.path;
+
+		if (entryPathPart !== '/') {
+			for (const root of component.patternRoots) {
+				if (entry.path.startsWith(root)) {
+					entryPathPart = entry.path.slice(root.length);
+					break;
+				}
+			}
+		}
+
+		const urlPath = join(component.baseURLPath, entryPathPart);
+		const absolutePath = join(component.directory, entry.path);
+
+		if (entry.dirent.isDirectory()) {
+			if (isMainThread && component.module.setupDirectory) {
+				await component.module.setupDirectory(urlPath, absolutePath, component.resources);
+				hasFunctionality = true;
+			}
+			if (component.resources.isWorker && component.module.handleDirectory) {
+				await component.module.handleDirectory(urlPath, absolutePath, component.resources);
+				hasFunctionality = true;
+			}
+		} else if (entry.dirent.isFile()) {
+			const contents = await readFile(absolutePath);
+			if (isMainThread && component.module.setupFile) {
+				await component.module.setupFile(contents, urlPath, absolutePath, component.resources);
+				hasFunctionality = true;
+			} else if (component.resources.isWorker && component.module.handleFile) {
+				await component.module.handleFile(contents, urlPath, absolutePath, component.resources);
+				hasFunctionality = true;
+			}
+		} else {
+			harper_logger.error(
+				`Entry received from glob pattern match for component ${component.name} is neither a file nor a directory:`,
+				entry
+			);
+		}
+	}
+
+	return hasFunctionality;
+}
+
+// Note: It may make sense to put these function into the Component class, but for now they are kept separate for testing and reusability.
+
+/**
+ * Resolve the base URL path based on the component name and `urlPath` configuration option.
+ *
+ * For example, resolving the component config `urlPath` value for component `test-component`:
+ * - `undefined`, `''`, `'/'` -> `'/'`
+ * - `'static'`, `'/static/'`, `'/static'`, `'static/'` -> `'/static/'`
+ * - `'v1/static'`, `'/v1/static/'`, `'/v1/static'`, `'v1/static/'` -> `'/v1/static/'`
+ * - `'./static'`, `'./static/'` -> `'/test-component/static/'`
+ * - `'.'`, `'./'` -> `'/test-component/'`
+ * - `'..'`, `'../'`, `'../static'`, `'./..'` -> Error
+ */
+export function resolveBaseURLPath(name: string, urlPath?: string) {
+	if (urlPath?.includes('..')) {
+		throw new Error(`urlPath must not contain '..'. Received: '${urlPath}'`);
+	}
+
+	let baseURLPath = urlPath || '/';
+
+	if (baseURLPath === '.' || baseURLPath.startsWith('./')) {
+		baseURLPath = `/${name}${baseURLPath.slice(1)}`;
+	}
+
+	if (!baseURLPath.startsWith('/')) {
+		baseURLPath = `/${baseURLPath}`;
+	}
+
+	if (!baseURLPath.endsWith('/')) {
+		baseURLPath = `${baseURLPath}/`;
+	}
+
+	return baseURLPath;
+}
+
+/**
+ * Derive the pattern roots from the list of patterns.
+ *
+ * @param patterns
+ * @returns
+ */
+export function derivePatternRoots(patterns: string[]): Array<string | null> {
+	const patternRoots = new Set<string | null>();
+
+	for (const pattern of patterns) {
+		patternRoots.add(derivePatternRoot(pattern));
+	}
+
+	return Array.from(patternRoots);
+}
+
+/**
+ * Derives non-ambiguous root paths from a pattern.
+ *
+ * The pattern should not have leading `/` or contain `..`
+ *
+ * @param pattern
+ * @returns
+ */
+export function derivePatternRoot(pattern: string): string | null {
+	if (pattern.startsWith('/')) {
+		throw new Error(`Pattern must not start with '/'. Received: '${pattern}'`);
+	} else if (pattern.includes('..')) {
+		throw new Error(`Pattern must not contain '..'. Received: '${pattern}'`);
+	}
+
+	if (['*', `./*`, '**', `./**`, `**/*`, `./**/*`].includes(pattern)) {
+		return '/';
+	}
+
+	const ambiguousCharacters = ['\\', '[', ']', '(', ')', '{', '}', '@', '!', '+', '?', '|', '^', '$'];
+	let root = '';
+
+	for (const c of pattern) {
+		if (ambiguousCharacters.includes(c)) {
+			if (root.includes('/')) {
+				root = root.slice(0, root.lastIndexOf('/') + 1);
+			} else {
+				root = null;
+			}
+			break;
+		}
+
+		if (c === '*') {
+			if (!root.includes('/')) root = null;
+			break;
+		}
+
+		root += c;
+	}
+
+	// static pattern of a file or directory
+	if (root === pattern) {
+		root = '/';
+	}
+
+	return root;
 }

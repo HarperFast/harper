@@ -1,4 +1,3 @@
-import { pathToFileURL } from 'url';
 import { secureImport } from '../security/jsLoader';
 import { dirname } from 'path';
 

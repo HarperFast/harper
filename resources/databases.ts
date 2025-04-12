@@ -175,10 +175,8 @@ export function getDatabases(): Databases {
 		NON_REPLICATING_SYSTEM_TABLES.push('hdb_analytics');
 	} else {
 		// auditing must be enabled for replication
-		if (databases.system?.['hdb_analytics']) {
-			databases.system['hdb_analytics'].enableAuditing();
-			databases.system['hdb_analytics_hostname'].enableAuditing();
-		}
+		databases.system?.hdb_analytics?.enableAuditing();
+		databases.system?.hdb_analytics_hostname?.enableAuditing();
 	}
 	if (databases.system) {
 		for (const table_name of NON_REPLICATING_SYSTEM_TABLES) {
