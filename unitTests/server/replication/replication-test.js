@@ -15,6 +15,7 @@ const { clusterStatus } = require('../../../utility/clustering/clusterStatus');
 const { ResourceBridge } = require('../../../dataLayer/harperBridge/ResourceBridge');
 const { open } = require('lmdb');
 const { transaction } = require('../../../resources/transaction');
+const readLog = require('../../../utility/logging/readLog');
 OpenDBIObject = require('../../../utility/lmdb/OpenDBIObject');
 
 describe('Replication', () => {
@@ -232,6 +233,21 @@ describe('Replication', () => {
 		let node2NewTestTable = test_stores[1].openDB('NewTestTable/', new OpenDBIObject(false, true));
 		let result = await node2NewTestTable.get('4').value;
 		assert.equal(result.name, name);
+	});
+	it('read_log should be replicated', async function () {
+		let result = await readLog({
+			operation: 'read_log',
+			order: 'desc',
+			limit: 100,
+			replicated: true,
+		});
+		assert(result.length > 0);
+		let nodes = new Set();
+		for (let entry of result) {
+			nodes.add(entry.node);
+		}
+		assert(nodes.has('node-1'));
+		assert(nodes.has('node-2'));
 	});
 	it('Should handle high load', async function () {
 		this.timeout(10000);
