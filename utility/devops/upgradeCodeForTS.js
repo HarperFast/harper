@@ -66,6 +66,7 @@ const UNSAFE_VAR_TRANSFORM = [
 	'refresh_operation_token',
 	'is_authority',
 	'private_key_name',
+	'private_key',
 	'super_user',
 	'cluster_user',
 ];
