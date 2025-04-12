@@ -53,6 +53,9 @@ const UNSAFE_VAR_TRANSFORM = [
 	'cert_file',
 	'key_file',
 	'ca_file',
+	'pid_file_path',
+	'config_file',
+	'server_name',
 ];
 processDirectory(process.cwd().slice(0, process.cwd().indexOf('harperdb') + 'harperdb'.length));
 function processDirectory(dir, type) {
