@@ -64,6 +64,10 @@ const UNSAFE_VAR_TRANSFORM = [
 	'operation_token',
 	'refresh_token',
 	'refresh_operation_token',
+	'is_authority',
+	'private_key_name',
+	'super_user',
+	'cluster_user',
 ];
 processDirectory(process.cwd().slice(0, process.cwd().indexOf('harperdb') + 'harperdb'.length));
 function processDirectory(dir, type) {
