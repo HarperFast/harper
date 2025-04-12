@@ -225,8 +225,8 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(1);
-			expect(test_result.http_resp_msg.mainPermissions).to.include(TEST_SCHEMA_OP_ERROR.SCHEMA_NOT_FOUND('blah'));
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
+			expect(test_result.http_resp_msg.main_permissions).to.include(TEST_SCHEMA_OP_ERROR.SCHEMA_NOT_FOUND('blah'));
 		});
 
 		it('NOMINAL - should return error for invalid structure_user = "wut" ADD_ROLE object', () => {
@@ -235,8 +235,8 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role_json, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(1);
-			expect(test_result.http_resp_msg.mainPermissions).to.eql([
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
+			expect(test_result.http_resp_msg.main_permissions).to.eql([
 				TEST_ROLE_PERMS_ERROR.STRUCTURE_USER_ROLE_TYPE_ERROR('structure_user'),
 			]);
 		});
@@ -268,8 +268,8 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(1);
-			expect(test_result.http_resp_msg.mainPermissions).to.include(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
+			expect(test_result.http_resp_msg.main_permissions).to.include(
 				TEST_ROLE_PERMS_ERROR.INVALID_ROLE_JSON_KEYS(['super_admin'])
 			);
 		});
@@ -282,8 +282,8 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(1);
-			expect(test_result.http_resp_msg.mainPermissions).to.include(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
+			expect(test_result.http_resp_msg.main_permissions).to.include(
 				TEST_ROLE_PERMS_ERROR.INVALID_ROLE_JSON_KEYS(['super_admin', 'invalid_key'])
 			);
 		});
@@ -295,8 +295,8 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(1);
-			expect(test_result.http_resp_msg.mainPermissions).to.include("Role can't be blank");
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
+			expect(test_result.http_resp_msg.main_permissions).to.include("Role can't be blank");
 		});
 
 		it('Permission key missing from role_obj - expect error returned', () => {
@@ -306,8 +306,8 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(1);
-			expect(test_result.http_resp_msg.mainPermissions).to.include("Permission can't be blank");
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
+			expect(test_result.http_resp_msg.main_permissions).to.include("Permission can't be blank");
 		});
 
 		it('Role and permissions key missing from role_obj - expect error returned', () => {
@@ -318,9 +318,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(2);
-			expect(test_result.http_resp_msg.mainPermissions).to.include("Permission can't be blank");
-			expect(test_result.http_resp_msg.mainPermissions).to.include("Role can't be blank");
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(2);
+			expect(test_result.http_resp_msg.main_permissions).to.include("Permission can't be blank");
+			expect(test_result.http_resp_msg.main_permissions).to.include("Role can't be blank");
 		});
 
 		it('Role id missing from alter_role_obj - expect error returned', () => {
@@ -330,8 +330,8 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAlterRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(1);
-			expect(test_result.http_resp_msg.mainPermissions).to.include("Id can't be blank");
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
+			expect(test_result.http_resp_msg.main_permissions).to.include("Id can't be blank");
 		});
 
 		it('Permission key missing from alter_role_obj - expect error returned', () => {
@@ -341,8 +341,8 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAlterRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(1);
-			expect(test_result.http_resp_msg.mainPermissions).to.include("Permission can't be blank");
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(1);
+			expect(test_result.http_resp_msg.main_permissions).to.include("Permission can't be blank");
 		});
 
 		it('Id and permissions key missing from alter_role_obj - expect error returned', () => {
@@ -353,9 +353,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAlterRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(2);
-			expect(test_result.http_resp_msg.mainPermissions).to.include("Permission can't be blank");
-			expect(test_result.http_resp_msg.mainPermissions).to.include("Id can't be blank");
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(2);
+			expect(test_result.http_resp_msg.main_permissions).to.include("Permission can't be blank");
+			expect(test_result.http_resp_msg.main_permissions).to.include("Id can't be blank");
 		});
 
 		it('SU permission true w/ permissions - expect error thrown', () => {
@@ -364,7 +364,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_msg.mainPermissions[0]).to.equal(
+			expect(test_result.http_resp_msg.main_permissions[0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.SU_CU_ROLE_NO_PERMS_ALLOWED('super_user')
 			);
 			expect(test_result.statusCode).to.equal(400);
@@ -377,7 +377,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_msg.mainPermissions[0]).to.equal(
+			expect(test_result.http_resp_msg.main_permissions[0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.SU_CU_ROLE_NO_PERMS_ALLOWED('cluster_user')
 			);
 			expect(test_result.statusCode).to.equal(400);
@@ -392,7 +392,7 @@ describe('Test role_validation module ', () => {
 
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
-			expect(test_result.http_resp_msg.mainPermissions[0]).to.equal(TEST_ROLE_PERMS_ERROR.SU_CU_ROLE_COMBINED_ERROR);
+			expect(test_result.http_resp_msg.main_permissions[0]).to.equal(TEST_ROLE_PERMS_ERROR.SU_CU_ROLE_COMBINED_ERROR);
 			expect(test_result.statusCode).to.equal(400);
 		});
 
@@ -413,9 +413,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('read')
 			);
 		});
@@ -427,9 +427,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('insert')
 			);
 		});
@@ -441,9 +441,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('update')
 			);
 		});
@@ -455,9 +455,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('delete')
 			);
 		});
@@ -472,18 +472,18 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY].length).to.equal(4);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(4);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('read')
 			);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('insert')
 			);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('update')
 			);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('delete')
 			);
 		});
@@ -496,12 +496,12 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY].length).to.equal(2);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(2);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('read')
 			);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('insert')
 			);
 		});
@@ -516,16 +516,16 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY].length).to.equal(2);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(2);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('read')
 			);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('insert')
 			);
-			expect(test_result.http_resp_msg.schemaPermissions[CAT_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[CAT_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.schema_permissions[CAT_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[CAT_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_MISSING('update')
 			);
 		});
@@ -538,9 +538,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY][0]).to.equal(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.ATTR_PERM_MISSING('read', 'age')
 			);
 		});
@@ -552,9 +552,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY][0]).to.equal(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.ATTR_PERM_MISSING('insert', 'age')
 			);
 		});
@@ -566,9 +566,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY][0]).to.equal(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.ATTR_PERM_MISSING('update', 'age')
 			);
 		});
@@ -580,9 +580,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY][0]).to.equal(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.ATTR_PERM_MISSING_NAME
 			);
 		});
@@ -595,9 +595,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY][0]).to.equal(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY][0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('read')
 			);
 		});
@@ -609,9 +609,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY][0]).to.equal(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY][0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('insert')
 			);
 		});
@@ -623,9 +623,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY][0]).to.equal(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY][0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('update')
 			);
 		});
@@ -637,9 +637,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY][0]).to.include(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY][0]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('delete')
 			);
 		});
@@ -654,18 +654,18 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY].length).to.equal(4);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(4);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('read')
 			);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('insert')
 			);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('update')
 			);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('delete')
 			);
 		});
@@ -678,12 +678,12 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY].length).to.equal(2);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(2);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('read')
 			);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('insert')
 			);
 		});
@@ -698,16 +698,16 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY].length).to.equal(2);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY].length).to.equal(2);
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('read')
 			);
-			expect(test_result.http_resp_msg.schemaPermissions[DOG_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.schema_permissions[DOG_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('insert')
 			);
-			expect(test_result.http_resp_msg.schemaPermissions[CAT_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[CAT_TABLE_KEY]).to.include(
+			expect(test_result.http_resp_msg.schema_permissions[CAT_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[CAT_TABLE_KEY]).to.include(
 				TEST_ROLE_PERMS_ERROR.TABLE_PERM_NOT_BOOLEAN('update')
 			);
 		});
@@ -720,9 +720,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY][0]).to.equal(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.ATTR_PERM_NOT_BOOLEAN('read', 'age')
 			);
 		});
@@ -734,9 +734,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY][0]).to.equal(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.ATTR_PERM_NOT_BOOLEAN('insert', 'age')
 			);
 		});
@@ -748,9 +748,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY][0]).to.equal(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.ATTR_PERM_NOT_BOOLEAN('update', 'age')
 			);
 		});
@@ -762,9 +762,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY][0]).to.equal(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.INVALID_ATTRIBUTE_IN_PERMS(12345)
 			);
 		});
@@ -777,9 +777,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY][0]).to.equal(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.MISMATCHED_TABLE_ATTR_PERMS('dev.owners')
 			);
 		});
@@ -794,13 +794,13 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY][0]).to.equal(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.MISMATCHED_TABLE_ATTR_PERMS('dev.owners')
 			);
-			expect(test_result.http_resp_msg.schemaPermissions[CAT_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[CAT_TABLE_KEY][0]).to.equal(
+			expect(test_result.http_resp_msg.schema_permissions[CAT_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[CAT_TABLE_KEY][0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.MISMATCHED_TABLE_ATTR_PERMS('dev.cats')
 			);
 		});
@@ -814,9 +814,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY][0]).to.equal(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.INVALID_PERM_KEY(invalid_key)
 			);
 		});
@@ -829,9 +829,9 @@ describe('Test role_validation module ', () => {
 			const test_result = customValidate_rw(test_role, getAddRoleConstraints());
 
 			expect(test_result.statusCode).to.equal(400);
-			expect(test_result.http_resp_msg.mainPermissions.length).to.equal(0);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY].length).to.equal(1);
-			expect(test_result.http_resp_msg.schemaPermissions[OWNER_TABLE_KEY][0]).to.equal(
+			expect(test_result.http_resp_msg.main_permissions.length).to.equal(0);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY].length).to.equal(1);
+			expect(test_result.http_resp_msg.schema_permissions[OWNER_TABLE_KEY][0]).to.equal(
 				TEST_ROLE_PERMS_ERROR.INVALID_ATTR_PERM_KEY(invalid_key)
 			);
 		});
