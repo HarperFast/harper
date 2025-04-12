@@ -357,8 +357,8 @@ class SQLSearch {
 				col.as_orig = col.as
 					? col.as
 					: col.expression.tableid
-					? `${col.aggregatorid}(${col.expression.tableid}.${col.expression.columnid})`
-					: `${col.aggregatorid}(${col.expression.columnid})`;
+						? `${col.aggregatorid}(${col.expression.tableid}.${col.expression.columnid})`
+						: `${col.aggregatorid}(${col.expression.columnid})`;
 				col.as = `[${col.as_orig}]`;
 			}
 		});
@@ -909,7 +909,7 @@ class SQLSearch {
 			let hash = this.data[`${table.databaseid_orig}_${table.as ? table.as_orig : table.tableid_orig}`].__hash_name;
 			const table_key = table.as ? table.as_orig : table.tableid_orig;
 			hash_attributes.push({
-				key: `'${table_key}.${hash}'`,
+				key: `'${tableKey}.${hash}'`,
 				schema: table.databaseid_orig,
 				table: table.as ? table.as_orig : table.tableid_orig,
 				keys: new Set(),
