@@ -185,7 +185,7 @@ async function dropSchema(drop_schema_object) {
 	}
 
 	//we refresh and assign the entire schema metadata to global in order to make sure we have the latest
-	let schema = await schema_metadata_validator.schema_describe.describeSchema({ schema: drop_schema_object.schema });
+	let schema = await schema_metadata_validator.schemaDescribe.describeSchema({ schema: drop_schema_object.schema });
 	//global.hdb_schema[drop_schema_object.schema] = schema;
 
 	// Get all the tables that belong to schema.
