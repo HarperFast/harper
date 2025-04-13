@@ -73,6 +73,9 @@ const UNSAFE_VAR_TRANSFORM = [
 	'schema_permissions',
 	'hash_values',
 	'operation_json',
+	'from_date',
+	'to_date',
+	'db_size',
 ];
 processDirectory(process.cwd().slice(0, process.cwd().indexOf('harperdb') + 'harperdb'.length));
 function processDirectory(dir, type) {
