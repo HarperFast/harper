@@ -73,7 +73,7 @@ export async function setNode(req: object) {
 
 		await hdb_nodes.delete(node_record_id);
 
-		return `Successfully removed '${node_record_id}' from cluster`;
+		return `Successfully removed '${nodeRecordId}' from cluster`;
 	}
 
 	if (!url) throw new ClientError('url required for this operation');
