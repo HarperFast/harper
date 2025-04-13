@@ -79,6 +79,8 @@ const UNSAFE_VAR_TRANSFORM = [
 	'start_datetime',
 	'stream_name',
 	'node_domain_name',
+	'written_hashes',
+	'skipped_hashes',
 ];
 processDirectory(process.cwd().slice(0, process.cwd().indexOf('harperdb') + 'harperdb'.length));
 function processDirectory(dir, type) {
