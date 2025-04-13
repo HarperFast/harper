@@ -81,6 +81,15 @@ const UNSAFE_VAR_TRANSFORM = [
 	'node_domain_name',
 	'written_hashes',
 	'skipped_hashes',
+	'cert_auth',
+	'target_hostname',
+	'is_self_signed',
+	'revoked_certificates',
+	'verify_tls',
+	'expires_in',
+	'new_attributes',
+	'hdb_user',
+	'hdb_auth_user',
 ];
 processDirectory(process.cwd().slice(0, process.cwd().indexOf('harperdb') + 'harperdb'.length));
 function processDirectory(dir, type) {
