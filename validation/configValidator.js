@@ -148,9 +148,13 @@ function configValidator(config_json, skip_fs_validation = false) {
 			Joi.object({
 				authorizeLocal: boolean,
 				cacheTTL: number.required(),
+				cookie: Joi.object({
+					domains: array.items(string).optional(),
+					expires: string.optional(),
+				}),
 				enableSessions: boolean,
-        hashFunction: string.valid('md5', 'sha256', 'argon2id').optional().empty(null),
-      }),
+				hashFunction: string.valid('md5', 'sha256', 'argon2id').optional().empty(null),
+			}),
 			boolean
 		).optional(),
 		analytics: Joi.object({

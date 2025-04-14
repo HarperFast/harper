@@ -16,11 +16,13 @@ const { ResourceBridge } = require('../../../dataLayer/harperBridge/ResourceBrid
 const { open } = require('lmdb');
 const { transaction } = require('../../../resources/transaction');
 const readLog = require('../../../utility/logging/readLog');
+const { AUDIT_STORE_OPTIONS, readAuditEntry } = require('../../../resources/auditStore');
 OpenDBIObject = require('../../../utility/lmdb/OpenDBIObject');
 
 describe('Replication', () => {
 	let TestTable;
 	const test_stores = [];
+	const test_audit_stores = [];
 	let child_processes = [];
 	let node_count = 2;
 	let db_count = 3;
@@ -53,15 +55,17 @@ describe('Replication', () => {
 		TestTable = await createTestTable(database_config.data.path + '/test-replication-0');
 
 		for (let i = 0; i < db_count; i++) {
+			let path = database_config.data.path + '/test-replication-' + i + '/test.mdb';
 			test_stores.push(
 				open(
-					database_config.data.path + '/test-replication-' + i + '/test.mdb',
+					path,
 					Object.assign(new OpenDBIObject(false, true), {
 						name: 'TestTable/',
 						compression: { startingOffset: 32 },
 					})
 				)
 			);
+			test_audit_stores.push(open(path, { name: '__txns__', ...AUDIT_STORE_OPTIONS }));
 		}
 		await new Promise((resolve) => setTimeout(resolve, 10));
 
@@ -124,6 +128,27 @@ describe('Replication', () => {
 			break;
 		} while (true);
 	});
+	it('A message to one table should replicate', async function () {
+		let name = 'message ' + Math.random();
+		let startTime = Date.now();
+		await TestTable.publish('1', {
+			id: '1',
+			name,
+		});
+		let retries = 10;
+		do {
+			await new Promise((resolve) => setTimeout(resolve, 200));
+			for (let entry of test_audit_stores[1].getRange({ reverse: true })) {
+				if (entry.key > startTime) {
+					let auditEntry = readAuditEntry(entry.value);
+					assert.equal(auditEntry.type, 'message');
+					return; //success
+				}
+			}
+			assert(--retries > 0);
+		} while (true);
+	});
+
 	it.skip('A write to one table with replicated confirmation', async function () {
 		console.log('replicated confirmation');
 		this.timeout(5000);
@@ -371,6 +396,7 @@ describe('Replication', () => {
 				await TestTable.put({
 					id: '10', // should be forced to replicate and only store the record on node-2
 					name,
+					blob: await createBlob('this is a test'.repeat(1000)),
 				});
 
 				let retries = 20;
@@ -392,6 +418,7 @@ describe('Replication', () => {
 				// now verify that the record can be loaded on-demand here
 				result = await TestTable.get('10');
 				assert.equal(result.name, name);
+				assert.equal(await result.blob.text(), 'this is a test'.repeat(1000));
 			});
 		});
 		describe('id-based sharding by residency list', function () {
@@ -415,6 +442,7 @@ describe('Replication', () => {
 				await TestTable.put({
 					id: '10', // should be forced to replicate and only store the record on node-2
 					name,
+					blob: await createBlob('this is a test'.repeat(1000)),
 				});
 
 				let retries = 20;
@@ -436,6 +464,7 @@ describe('Replication', () => {
 				// now verify that the record can be loaded on-demand here
 				result = await TestTable.get('10');
 				assert.equal(result.name, name);
+				assert.equal(await result.blob.text(), 'this is a test'.repeat(1000));
 			});
 		});
 		describe('record-based sharding', function () {

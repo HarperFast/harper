@@ -142,7 +142,14 @@ async function restartService(req) {
 			for (let node of server.nodes) {
 				if (node.name === getThisNodeName()) continue;
 				// for now, only one at a time
-				let { job_id } = await sendOperationToNode(node, req);
+				let job_id;
+				try {
+					({ job_id } = await sendOperationToNode(node, req));
+				} catch (err) {
+					// If request to node fails, add the error to the response and continue to the next node
+					replicated_responses.push({ node: node.name, message: err.message });
+					continue;
+				}
 				// wait for the job to finish by polling for the completion of the job
 				replicated_responses.push(
 					await new Promise((resolve, reject) => {
