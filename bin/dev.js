@@ -59,7 +59,10 @@ if (__filename.endsWith('dev.js')) {
 				if (!isRunning) {
 					console.log('Starting background TypeScript compilation...');
 					const tscProcess = spawn('npx', ['tsc', '--watch'], { detached: true, cwd: PACKAGE_ROOT, stdio: 'ignore' });
-					writeFileSync(pidPath, tscProcess.pid.toString());
+					tscProcess.on('error', (error) => {
+						console.error('Error trying to compile TypeScript', error);
+					});
+					if (tscProcess.pid) writeFileSync(pidPath, tscProcess.pid.toString());
 					tscProcess.unref();
 				}
 			}
