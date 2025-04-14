@@ -5,8 +5,7 @@
  */
 
 import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME } from '../utility/hdbTerms';
-import { SKIP } from 'lmdb';
-import type { Database } from 'lmdb';
+import { SKIP, type Database } from 'lmdb';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility';
 import lodash from 'lodash';
 import type {
