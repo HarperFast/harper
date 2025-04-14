@@ -241,7 +241,7 @@ function returnObject(action, written_hashes, object, skipped, new_attributes, t
 	let return_object = {
 		message: `${action} ${written_hashes.length} of ${written_hashes.length + skipped.length} records`,
 		new_attributes,
-		txn_time,
+		txn_time: txn_time,
 	};
 
 	if (action === INSERT_ACTION) {
