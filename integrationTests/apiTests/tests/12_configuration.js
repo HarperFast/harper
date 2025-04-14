@@ -155,7 +155,7 @@ describe('12. Configuration', () => {
 				assert.ok(r.body.message == "successfully deleted attribute 'another_attribute'", r.text)
 			})
 			.expect(200);
-		await setTimeout(2000);
+		await setTimeout(5000);
 	});
 
 	it('Describe table DropAttributeTest', async () => {
@@ -471,6 +471,8 @@ describe('12. Configuration', () => {
 	it('Test local studio HTML is returned', async () => {
 		const response = await request(envUrl)
 			.get('')
+			.set(headers)
+			.set('content-type','text/html; charset=UTF-8')
 			.set('Accept', '*/*')
 			.set('Connection', 'keep-alive')
 			.set('Accept-Encoding', 'gzip, deflate, br')
@@ -478,14 +480,7 @@ describe('12. Configuration', () => {
 				console.log('Response headers: ' + JSON.stringify(r.headers));
 				console.log('Response body: ' + r.text);
 			})
-
-
-		const response2 = await request(envUrl)
-			.get('')
-			.set('Accept', '*/*')
-			.set('Connection', 'keep-alive')
-			.set('Accept-Encoding', 'gzip, deflate, br')
-			// .expect('content-type', 'text/html; charset=UTF-8')
+			.expect('content-type', 'text/html; charset=UTF-8')
 			.expect((r) => {
 				assert.ok(r.text.includes('<!doctype html>'), r.text);
 				assert.ok(r.text.includes('Studio :: HarperDB'), r.text);

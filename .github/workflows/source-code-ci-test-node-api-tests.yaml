@@ -10,7 +10,7 @@ on:
   schedule:
     - cron: '30 5 * * 1-5'
   workflow_dispatch:
-name: Run API Tests with Node js
+name: Run Source Code CI Tests and API Tests with Node js
 jobs:
   getNodeVersion:
     runs-on: ubuntu-latest
@@ -50,12 +50,62 @@ jobs:
       nodeVersion: ${{ needs.getNodeVersion.outputs.nodeVersion }}
       installType: 'sourceCode'
     secrets: inherit
-  runIntegrationTests:
+  runUnitTests:
     runs-on: ubuntu-latest
     timeout-minutes: 20
     needs:
       - createInstances
       - registerInstances
+      - getNodeVersion
+    steps:
+      - name: Run Unit Tests on Instances
+        env:
+          CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+        run: |
+          #!/bin/bash
+
+          cd ../
+          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+          public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
+
+          for public_dns_name in ${public_dns_names[@]}
+          do 
+            echo "Starting work on: $public_dns_name"
+            ssh -i private_key -o ConnectTimeout=30 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
+              "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/source-code-unit-tests.sh && /home/ubuntu/harperdb/test/ci-tests/source-code-unit-tests.sh"
+            echo "Ending work on: $public_dns_name"
+          done
+        shell: bash
+  runSonarScans:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - runUnitTests
+      - createInstances
+    steps:
+      - uses: actions/checkout@v4
+      - name: 'Download coverage file'
+        env:
+          CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+        run: |
+          #!/bin/bash
+          mkdir coverage
+          cd ../
+          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+          public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
+          public_dns_name="${public_dns_names[0]}"
+          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/coverage/lcov.info" "harperdb/coverage/lcov.info"
+      - name: SonarCloud Scan
+        uses: sonarsource/sonarcloud-github-action@master
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  runIntegrationTests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - runUnitTests
+      - createInstances
     steps:
       - name: Run Integration Tests with Node js on Instances
         env:
@@ -99,6 +149,7 @@ jobs:
     needs:
       - destroyInstances
       - downloadLogs
+      - runUnitTests
       - runIntegrationTests
       - registerInstances
       - createInstances
