@@ -113,8 +113,8 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 
 
 	it('Restart service and wait', async () => {
-		// await restartWithTimeout(testData.restartTimeout);
-		await restartServiceHttpWorkersWithTimeout(testData.restartTimeout);
+		await restartServiceHttpWorkersWithTimeout(15000);
+		await restartWithTimeout(testData.restartTimeout);
 	});
 
 	it('Describe all', async () => {
