@@ -546,6 +546,7 @@ describe('8. Delete Tests', () => {
 	});
 
 	it('Search by hash confirm update', async () => {
+		await setTimeout(2000);
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
@@ -732,6 +733,7 @@ describe('8. Delete Tests', () => {
 	});
 
 	it('Search by hash confirm update', async () => {
+		await setTimeout(2000);
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
@@ -918,6 +920,7 @@ describe('8. Delete Tests', () => {
 	});
 
 	it('Search by hash confirm update', async () => {
+		await setTimeout(2000);
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
