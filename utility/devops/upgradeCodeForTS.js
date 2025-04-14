@@ -140,6 +140,18 @@ function processDirectory(dir, type) {
 							return prefix + newVarName + suffix;
 						}
 					);
+					code = code.replace(/Object\.assign\(exports, {([^}]*)}\);/g, (t, exportNames) => {
+						return exportNames
+							.split(/,\s*/)
+							.map((exportName) => {
+								exportName = exportName.trim();
+								if (!exportName) return '';
+								let parts = exportName.split(/:\s+/);
+								if (parts.length > 1) return 'exports.' + parts[0] + ' = ' + parts[1] + ';';
+								return 'exports.' + exportName + ' = ' + exportName + ';';
+							})
+							.join('\n');
+					});
 				}
 			}
 			console.log('Writing', filePath);
