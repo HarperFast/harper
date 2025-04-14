@@ -1,6 +1,6 @@
 import type { ResourceInterface, SubscriptionRequest, Id, Context, Query } from './ResourceInterface';
 import { randomUUID } from 'crypto';
-import { Transaction } from './DatabaseTransaction';
+import type { Transaction } from './DatabaseTransaction';
 import { IterableEventQueue } from './IterableEventQueue';
 import { _assignPackageExport } from '../globals';
 import { ClientError } from '../utility/errors/hdbError';
