@@ -10,6 +10,7 @@ on:
   schedule:
     - cron: '30 5 * * 1-5'
   workflow_dispatch:
+  
 name: Run Source Code CI Tests and API Tests with Node js
 jobs:
   getNodeVersion:
