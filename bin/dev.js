@@ -62,7 +62,7 @@ if (__filename.endsWith('dev.js')) {
 					tscProcess.on('error', (error) => {
 						console.error('Error trying to compile TypeScript', error);
 					});
-					if (tscProcess.pid) writeFileSync(pidPath, tscProcess.pid.toString());
+					if (tscProcess.pid) writeFileSync(pidPath, String(tscProcess.pid), 'utf-8');
 					tscProcess.unref();
 				}
 			}
