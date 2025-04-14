@@ -19,13 +19,10 @@ const config_utils = require('../config/configUtils');
 const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
 const nats_config = require('../server/nats/utility/natsConfig');
 const upgrade = require('./upgrade');
-const log_rotator = require('../utility/logging/logRotator');
 const { compactOnStart } = require('./copyDb');
 const minimist = require('minimist');
 const keys = require('../security/keys');
-const {
-	startHTTPThreads,
-} = require('../server/threads/socketRouter');
+const { startHTTPThreads } = require('../server/threads/socketRouter');
 
 const hdbInfoController = require('../dataLayer/hdbInfoController');
 const { isMainThread } = require('worker_threads');
@@ -214,7 +211,6 @@ async function main(called_by_install = false) {
 				: (env.get(hdb_terms.CONFIG_PARAMS.THREADS_COUNT) ?? env.get(hdb_terms.CONFIG_PARAMS.THREADS))
 		);
 
-		if (env.get(terms.CONFIG_PARAMS.LOGGING_ROTATION_ENABLED)) await log_rotator();
 		if (!is_scripted) started();
 	} catch (err) {
 		console.error(err);

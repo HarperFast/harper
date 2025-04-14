@@ -9,6 +9,7 @@ const fs = require('fs-extra');
 const { once } = require('events');
 const { handleHDBError, hdb_errors } = require('../errors/hdbError');
 const { PACKAGE_ROOT } = require('../../utility/packageUtils');
+const { replicateOperation } = require('../../server/replication/replicator');
 
 // Install log is created in harperdb/logs because the hdb folder doesn't exist initially during the install process.
 const INSTALL_LOG_LOCATION = path.join(PACKAGE_ROOT, `logs`);
@@ -35,6 +36,8 @@ async function readLog(request) {
 			true
 		);
 	}
+	// start pulling logs from the other nodes now so it can be done in parallel
+	let when_replicated_response = replicateOperation(request);
 
 	const log_path = env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
 	const log_name = request.log_name === undefined ? hdb_terms.LOG_NAMES.HDB : request.log_name;
@@ -237,7 +240,35 @@ async function readLog(request) {
 	}
 
 	await once(read_log_input_stream, 'close');
-
+	let replicated_response = await when_replicated_response;
+	if (replicated_response.replicated) {
+		// if this was a replicated request, add our node name to each of our own lines
+		for (let line of result) {
+			line.node = server.hostname;
+		}
+		// and then add the lines from the other nodes
+		for (let node_result of replicated_response.replicated) {
+			let node = node_result.node;
+			if (node_result.status === 'failed') {
+				// if the node failed to replicate, add an error line
+				pushLineToResult(
+					{
+						timestamp: new Date().toISOString(),
+						level: 'error',
+						node,
+						message: `Error retrieving logs: ${node_result.reason}`,
+					},
+					order,
+					result
+				);
+			} else {
+				for (let line of node_result.results) {
+					line.node = node;
+					pushLineToResult(line, order, result);
+				}
+			}
+		}
+	}
 	return result;
 }
 
