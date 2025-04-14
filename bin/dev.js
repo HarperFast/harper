@@ -1,4 +1,5 @@
-if (__filename.endsWith('dev.js') && process.versions.node < '23') {
+// once we have typestrip working, we can auto disable compilation with process.versions.node < '23'
+if (__filename.endsWith('dev.js') && !process.env.HARPER_SKIP_COMPILE) {
 	const fg = require('fast-glob');
 	const { tmpdir } = require('node:os');
 	const { relative, join } = require('node:path');
