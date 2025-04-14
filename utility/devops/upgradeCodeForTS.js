@@ -1,5 +1,6 @@
 const { existsSync, writeFileSync, readdirSync, readFileSync } = require('fs');
 const path = require('path');
+const PRIMITIVES = ['true', 'false', 'null', 'NaN', 'undefined'];
 
 const DONT_CHANGE_COLON_VAR_FILES = ['ResourceBridge.ts', 'hdbTerms.ts'];
 const SKIP_FILES = ['commonErrors.js'];
@@ -151,6 +152,10 @@ function processDirectory(dir, type) {
 								return 'exports.' + exportName + ' = ' + exportName + ';';
 							})
 							.join('\n');
+					});
+					code = code.replace(/(\s+)(\w+): (\w+),/g, (t, s, propName, varName) => {
+						if (propName === varName && !PRIMITIVES.includes(propName)) return s + propName + ',';
+						return t;
 					});
 				}
 			}
