@@ -176,7 +176,13 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 	}
 
 	parser.on('packet', async (packet) => {
-		if (user?.then) user = await user;
+		try {
+			if (user?.then) user = await user;
+		} catch (error) {
+			socket.close?.(1008, 'Unauthorized');
+			mqtt_log.info?.(error); // should already be handled elsewhere
+			return;
+		}
 		const command = packet.cmd;
 		if (session) {
 			if (session.then) await session;

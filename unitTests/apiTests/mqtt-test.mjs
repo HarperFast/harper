@@ -655,9 +655,6 @@ describe('test MQTT connections and commands', () => {
 				})[0].listen(8885, resolve);
 				server.on('error', reject);
 			});
-			let bad_client = connect('wss://localhost:8885', {
-				clientId: 'test-bad-mtls',
-			});
 
 			const private_key_path = env_get('tls_privateKey');
 			let cert, ca;
@@ -665,12 +662,17 @@ describe('test MQTT connections and commands', () => {
 				if (certificate.is_authority) ca = certificate.certificate;
 				else cert = certificate.certificate;
 			}
+			let bad_client = connect('wss://localhost:8885', {
+				reconnectPeriod: 0,
+				clientId: 'test-bad-mtls',
+			});
 			let client = connect('wss://localhost:8885', {
 				key: readFileSync(private_key_path),
 				// if they have a CA, we append it, so it is included
 				cert,
 				ca,
 				clean: true,
+				reconnectPeriod: 0,
 				clientId: 'test-client-mtls',
 			});
 			await new Promise((resolve, reject) => {

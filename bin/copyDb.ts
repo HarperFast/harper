@@ -57,7 +57,11 @@ export async function compactOnStart() {
 			await copyDb(database_name, copy_dest);
 
 			console.log('Backing up', database_name, 'to', backup_dest);
-			await move(db_path, backup_dest, { overwrite: true });
+			try {
+				await move(db_path, backup_dest, { overwrite: true });
+			} catch (error) {
+				console.log('Error moving database', db_path, 'to', backup_dest, error);
+			}
 		}
 		try {
 			resetDatabases();
