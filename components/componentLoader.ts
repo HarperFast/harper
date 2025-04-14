@@ -191,7 +191,7 @@ export async function loadComponent(
 			}
 		} catch (error) {
 			harper_logger.error('Error symlinking harperdb module', error);
-			if (error.code == 'EPERM' && require('os').platform() === 'win32') {
+			if (error.code == 'EPERM' && process.platform === 'win32') {
 				harper_logger.error('You may need to enable developer mode in "Settings" / "Update & Security" / "For developers", in order to enable symlinks so components can use `import from "harperdb"`');
 			}
 		}
