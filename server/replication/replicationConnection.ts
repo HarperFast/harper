@@ -496,8 +496,10 @@ export function replicateOverWS(ws, options, authorization) {
 					case TABLE_FIXED_STRUCTURE:
 						const table_name = message[3];
 						if (!tables) {
-							if (database_name) logger.error?.(connection_id, 'No tables found for', database_name);
+							if (database_name) logger.error?.(connection_id, 'No database found for', database_name);
 							else logger.error?.(connection_id, 'Database name never received');
+							close();
+							return;
 						}
 						let table = tables[table_name];
 						table = ensureTableIfChanged(
