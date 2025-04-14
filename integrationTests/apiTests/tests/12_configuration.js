@@ -141,7 +141,6 @@ describe('12. Configuration', () => {
 	});
 
 	it('Drop Attribute', async () => {
-		await setTimeout(3000);
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
@@ -156,7 +155,7 @@ describe('12. Configuration', () => {
 				assert.ok(r.body.message == "successfully deleted attribute 'another_attribute'", r.text)
 			})
 			.expect(200);
-		await setTimeout(3000);
+		await setTimeout(5000);
 		await request(envUrl)
 			.post('')
 			.set(headers)
@@ -167,11 +166,10 @@ describe('12. Configuration', () => {
 				attribute: 'another_attribute',
 			})
 			.expect(200);
-		await setTimeout(3000);
 	});
 
 	it('Describe table DropAttributeTest - deleted attr test', async () => {
-		await setTimeout(15000);
+		await setTimeout(9000);
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
