@@ -75,7 +75,8 @@ export const headersImportantUser = createHeaders('important-user', 'password');
 export function createHeaders(username, password) {
     const headers = {
         Authorization: 'Basic ' + Buffer.from(username + ':' + password).toString('base64'),
-        'Content-Type': 'application/json'
+        'Content-Type': 'application/json',
+        'Connection': 'keep-alive'
     }
     return headers;
 }
