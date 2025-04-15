@@ -142,7 +142,7 @@ describe('12. Configuration', () => {
 		await setTimeout(3000);
 	});
 
-	it('Drop Attribute', async () => {
+	it('Drop Attribute - twice', async () => {
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
@@ -156,14 +156,7 @@ describe('12. Configuration', () => {
 				console.log(r.text);
 				assert.ok(r.body.message == "successfully deleted attribute 'another_attribute'", r.text)
 			})
-			.expect(200);
-		await setTimeout(5000);
-	});
-
-	it('Drop Attribute - same attribute again', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+			.expect(200)
 			.send({
 				operation: 'drop_attribute',
 				schema: 'dev',
@@ -174,14 +167,23 @@ describe('12. Configuration', () => {
 				console.log(r.text);
 				assert.ok(r.body.message == "successfully deleted attribute 'another_attribute'", r.text)
 			})
-		await setTimeout(5000);
+			.expect(200)
 	});
 
-	it('Describe table DropAttributeTest - deleted attr test', async () => {
+	it('Drop Attribute and Describe table DropAttributeTest', async () => {
 		await setTimeout(9000);
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
+			.send({
+				operation: 'drop_attribute',
+				schema: 'dev',
+				table: 'AttributeDropTest',
+				attribute: 'another_attribute',
+			})
+			.expect((r) => {
+				console.log(r.text);
+			})
 			.send({ operation: 'describe_table', table: 'AttributeDropTest', schema: 'dev' })
 			.expect((r) => {
 				let found = false;
