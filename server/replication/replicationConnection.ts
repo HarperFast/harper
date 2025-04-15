@@ -1743,7 +1743,8 @@ export function replicateOverWS(ws, options, authorization) {
 				} else {
 					has_changes = true;
 					if (!schema_defined) ensure_attribute.indexed = true; // if it is a dynamic schema, we need to index (all) the attributes
-					attributes[i] = ensure_attribute;
+					if (existing_attribute) attributes[attributes.indexOf(existing_attribute)] = ensure_attribute;
+					else attributes.push(ensure_attribute);
 				}
 			}
 		}
