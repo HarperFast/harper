@@ -441,8 +441,8 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 		return slicedBlob;
 	}
 	save(targetTable: any): Promise<void> {
-		const store = targetTable?.primaryStore?.rootStore;
-		if (!store) throw new Error('No target table specified');
+		currentStore = targetTable?.primaryStore?.rootStore;
+		if (!currentStore) throw new Error('No target table specified');
 		return saveBlob(this).saving ?? Promise.resolve();
 	}
 }
