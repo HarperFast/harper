@@ -207,7 +207,6 @@ describe('10. Other Role Tests', () => {
 				assert.ok(r.body.another.breed.attributes.length == 0, r.text);
 				assert.ok(r.body.another.breed.hash_attribute == 'id', r.text);
 				assert.ok(r.body.another.breed.record_count == 350, r.text);
-				assert.ok(r.body.another.breed.hasOwnProperty('clustering_stream_name'), r.text);
 				assert.ok(r.body.another.breed.hasOwnProperty('last_updated_record'), r.text);
 				assert.ok(r.body.hasOwnProperty('northnwd'), r.text);
 				assert.ok(r.body.northnwd.hasOwnProperty('categories'), r.text);
@@ -267,7 +266,6 @@ describe('10. Other Role Tests', () => {
 			.expect((r) => assert.ok(r.body.hasOwnProperty('name'), r.text))
 			.expect((r) => assert.ok(r.body.hasOwnProperty('attributes'), r.text))
 			.expect((r) => assert.ok(r.body.hasOwnProperty('hash_attribute'), r.text))
-			.expect((r) => assert.ok(r.body.hasOwnProperty('clustering_stream_name'), r.text))
 			.expect((r) => assert.ok(r.body.hasOwnProperty('record_count'), r.text))
 			.expect((r) => assert.ok(r.body.hasOwnProperty('last_updated_record'), r.text))
 			.expect((r) => assert.ok(r.body.attributes.length == 2, r.text))

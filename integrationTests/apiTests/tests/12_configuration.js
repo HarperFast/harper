@@ -155,21 +155,10 @@ describe('12. Configuration', () => {
 				assert.ok(r.body.message == "successfully deleted attribute 'another_attribute'", r.text)
 			})
 			.expect(200);
-		await setTimeout(5000);
-		await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({
-				operation: 'drop_attribute',
-				schema: 'dev',
-				table: 'AttributeDropTest',
-				attribute: 'another_attribute',
-			})
-			.expect(200);
+		await setTimeout(3000);
 	});
 
 	it('Describe table DropAttributeTest - deleted attr test', async () => {
-		await setTimeout(9000);
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
@@ -235,128 +224,12 @@ describe('12. Configuration', () => {
 			.post('')
 			.set(headers)
 			.send({ operation: 'get_configuration' })
-			.expect((r) => assert.ok(r.body.clustering, r.text))
 			.expect((r) => assert.ok(r.body.componentsRoot, r.text))
 			.expect((r) => assert.ok(r.body.logging, r.text))
 			.expect((r) => assert.ok(r.body.localStudio, r.text))
 			.expect((r) => assert.ok(r.body.operationsApi, r.text))
 			.expect((r) => assert.ok(r.body.operationsApi.network.port, r.text))
 			.expect((r) => assert.ok(r.body.threads, r.text))
-			.expect(200);
-	});
-
-	it('Cluster set routes hub', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({
-				operation: 'cluster_set_routes',
-				server: 'hub',
-				routes: [
-					{ host: 'dev.chicken', port: 11334 },
-					{ host: 'dev.wing', port: 11335 },
-				],
-			})
-			.expect((r) =>
-				assert.ok(
-					JSON.stringify(r.body) ==
-						'{"message":"cluster routes successfully set","set":[{"host":"dev.chicken","port":11334},{"host":"dev.wing","port":11335}],"skipped":[]}'
-				)
-			)
-			.expect(200);
-	});
-
-	it('Cluster set routes leaf', async () => {
-		const expected =
-			'{"message":"cluster routes successfully set","set":[{"host":"dev.pie","port":11335}],"skipped":[{"host":"dev.chicken","port":11334}]}';
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({
-				operation: 'cluster_set_routes',
-				server: 'leaf',
-				routes: [
-					{ host: 'dev.chicken', port: 11334 },
-					{ host: 'dev.pie', port: 11335 },
-				],
-			})
-			.expect((r) => assert.ok(JSON.stringify(r.body) == expected, r.text))
-			.expect(200);
-	});
-
-	it('Confirm routes set', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({ operation: 'get_configuration' })
-			.expect((r) =>
-				assert.ok(
-					JSON.stringify(r.body.clustering.hubServer.cluster.network.routes) ==
-						'[{"host":"dev.chicken","port":11334},{"host":"dev.wing","port":11335}]'
-				)
-			)
-			.expect((r) => assert.ok(JSON.stringify(r.body.clustering.leafServer.network.routes) == '[{"host":"dev.pie","port":11335}]', r.text))
-			.expect(200);
-	});
-
-	it('Cluster get routes', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({ operation: 'cluster_get_routes' })
-			.expect((r) =>
-				assert.ok(
-					JSON.stringify(r.body) ==
-						'{"hub":[{"host":"dev.chicken","port":11334},{"host":"dev.wing","port":11335}],"leaf":[{"host":"dev.pie","port":11335}]}'
-				)
-			)
-			.expect(200);
-	});
-
-	it('Cluster delete routes', async () => {
-		const expected_result = `{
-		"message": "cluster routes successfully deleted",
-		"deleted": [ { "host": "dev.wing","port": 11335 },{"host": "dev.pie","port": 11335 }],
-		"skipped": [ { "host": "dev.pie", "port": 11221 }]
-		}`;
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({
-				operation: 'cluster_delete_routes',
-				routes: [
-					{ host: 'dev.wing', port: 11335 },
-					{ host: 'dev.pie', port: 11335 },
-					{
-						host: 'dev.pie',
-						port: 11221,
-					},
-				],
-			})
-			.expect((r) => assert.deepEqual(r.body, JSON.parse(expected_result), r.text))
-			.expect(200);
-	});
-
-	it('Cluster get routes confirm delete', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({ operation: 'cluster_get_routes' })
-			.expect((r) => assert.ok(JSON.stringify(r.body) == '{"hub":[{"host":"dev.chicken","port":11334}],"leaf":[]}', r.text))
-			.expect(200);
-	});
-
-	it('Cluster delete last route', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({ operation: 'cluster_delete_routes', routes: [{ host: 'dev.chicken', port: 11334 }] })
-			.expect((r) =>
-				assert.ok(
-					JSON.stringify(r.body) ==
-						'{"message":"cluster routes successfully deleted","deleted":[{"host":"dev.chicken","port":11334}],"skipped":[]}'
-				)
-			)
 			.expect(200);
 	});
 
@@ -426,28 +299,6 @@ describe('12. Configuration', () => {
 				active: true,
 			})
 			.expect(200);
-	});
-
-	it('Configure Cluster non-SU', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
-			.send({ operation: 'set_configuration', clustering_port: 99999 })
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'setConfiguration' is restricted to 'super_user' roles", r.text))
-			.expect(403);
-	});
-
-	it('Set Configuration non-SU', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
-			.send({ operation: 'set_configuration', clustering_port: 99999 })
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'setConfiguration' is restricted to 'super_user' roles", r.text))
-			.expect(403);
 	});
 
 	it('Get Configuration non-SU', async () => {

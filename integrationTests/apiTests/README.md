@@ -30,7 +30,10 @@ or we can remove them from the command line and add them in the .env file in the
 S3_KEY=value
 S3_SECRET=value
 ```
-
+So then (having the .env file set) we can just run:
+```
+node --experimental-default-type="module" --stack-trace-limit=2 --test tests/testSuite.js
+```
 To run a test from the IDE that uses the environment variables specified in the .env file, use the Run Configuration saved as RunATestWithEnvFile.run.xml.
 Replace the Test file and the Test name with your test.  
 

@@ -6,18 +6,6 @@ import { restartServiceHttpWorkersWithTimeout, restartWithTimeout } from '../uti
 
 describe('17a. Add components for computed props, graphQL, and open api', () => {
 
-	it('Disable Nats clustering', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
-			.send({
-				operation: 'set_configuration',
-				clustering_enabled: false
-			})
-			.expect((r) => assert.ok(r.text.includes('Configuration successfully set')))
-			.expect(200);
-	});
-
 	it('Add component for computed properties', async () => {
 		const response = await request(envUrl)
 			.post('')
@@ -112,9 +100,8 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 
 
 
-	it('Restart service and wait', async () => {
-		await restartServiceHttpWorkersWithTimeout(15000);
-		await restartWithTimeout(testData.restartTimeout);
+	it('Restart Service: http workers and wait', async () => {
+		await restartServiceHttpWorkersWithTimeout(testData.restartTimeout);
 	});
 
 	it('Describe all', async () => {

@@ -19,7 +19,7 @@ jobs:
   #  Build HarperDB
   ####################
   build:
-    uses: ./.github/workflows/build-with-node22.yaml
+    uses: ./.github/workflows/build.yaml
     # These values should only be used to debug the workflow
     # with:
     #   preferDownload: true

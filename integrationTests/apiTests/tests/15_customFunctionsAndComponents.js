@@ -184,10 +184,6 @@ describe('15. Custom Functions & components', () => {
 			.expect(200);
 	});
 
-	// it('restart service', async () => {
-	// 	await restartWithTimeout(testData.restartTimeout);
-	// });
-
 	it('get custom function status', async () => {
 		const response = await request(envUrl)
 			.post('')

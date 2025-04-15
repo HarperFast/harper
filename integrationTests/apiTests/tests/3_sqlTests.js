@@ -2,6 +2,7 @@ import { describe, it } from 'node:test';
 import assert from 'node:assert';
 import request from 'supertest';
 import { envUrl, testData, headers } from '../config/envConfig.js';
+import { setTimeout } from 'node:timers/promises';
 
 describe('3. SQL Tests', () => {
 	//SQL Tests Folder
@@ -655,6 +656,7 @@ describe('3. SQL Tests', () => {
 			.send({ operation: 'create_table', schema: 'dev', table: 'cat', hash_attribute: 'id' })
 			.expect((r) => assert.ok(r.body.message == "table 'dev.cat' successfully created.", r.text))
 			.expect(200);
+		await setTimeout(200);
 	});
 
 	it('Insert data into dev.cat', async () => {
