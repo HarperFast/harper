@@ -138,6 +138,7 @@ describe('12. Configuration', () => {
 			})
 			.expect((r) => assert.ok(r.body.error == "attribute 'created_attribute' already exists in dev.AttributeDropTest", r.text))
 			.expect(400);
+		await setTimeout(3000);
 	});
 
 	it('Drop Attribute', async () => {
@@ -155,7 +156,7 @@ describe('12. Configuration', () => {
 				assert.ok(r.body.message == "successfully deleted attribute 'another_attribute'", r.text)
 			})
 			.expect(200);
-		await setTimeout(3000);
+		await setTimeout(9000);
 	});
 
 	it('Describe table DropAttributeTest - deleted attr test', async () => {
