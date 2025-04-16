@@ -7,7 +7,7 @@
 
 ***
 
-**How to run the tests**
+## How to run the tests
 
 Note: Harper needs to be running before starting the tests
 
