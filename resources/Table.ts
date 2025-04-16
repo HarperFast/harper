@@ -906,14 +906,14 @@ export function makeTable(options) {
 		 * This retrieves the data of this resource. By default, with no argument, just return `this`.
 		 * @param query - If included, specifies a query to perform on the record
 		 */
-		get(query?: Query | string): Promise<object | void> | object | void {
+		async get(query?: Query | string): Promise<object | void> | object | void {
 			if (typeof query === 'string') return this.getProperty(query);
 			if (this.isCollection) {
 				return this.search(query);
 			}
 			if (this.getId() === null) {
 				if (query?.conditions) return this.search(query); // if there is a query, assume it was meant to be a root level query
-				return {
+				const description = {
 					// basically a describe call
 					records: './', // an href to the records themselves
 					name: table_name,
@@ -921,6 +921,12 @@ export function makeTable(options) {
 					auditSize: audit_store?.getStats().entryCount,
 					attributes,
 				};
+				if (this.getContext()?.includeExpensiveRecordCountEstimates) {
+					const record_count = await TableResource.getRecordCount();
+					description.recordCount = record_count.recordCount;
+					description.estimatedRecordRange = record_count.estimatedRange;
+				}
+				return description;
 			}
 			if (query?.property) return this.getProperty(query.property);
 			if (this.doesExist() || query?.ensureLoaded === false || this.getContext()?.returnNonexistent) {

@@ -5,6 +5,7 @@ import { decode, encode, DecoderStream } from 'cbor-x';
 import { getVariables } from './utility.js';
 import { setupTestApp } from './setupTestApp.mjs';
 import http from 'node:http';
+import { Request } from '../../ts-build/server/serverHelpers/Request.js';
 const { authorization, url } = getVariables();
 
 describe('test REST calls', () => {
@@ -142,6 +143,18 @@ describe('test REST calls', () => {
 			assert.equal(response.status, 200);
 			assert.equal(response.data.attributes.length, 7);
 			assert.equal(response.data.name, 'FourProp');
+			assert.equal(response.data.recordCount, undefined);
+		});
+		it('table describe with root url and includeExpensiveRecordCountEstimates', async () => {
+			Request.prototype.includeExpensiveRecordCountEstimates = true;
+			let response = await axios('http://localhost:9926/FourProp');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.attributes.length, 7);
+			assert.equal(response.data.name, 'FourProp');
+			assert(response.data.recordCount > 0);
+		});
+		after(() => {
+			Request.prototype.includeExpensiveRecordCountEstimates = false;
 		});
 	});
 	describe('querying with query parameters', function () {
