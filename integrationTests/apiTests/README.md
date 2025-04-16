@@ -9,16 +9,18 @@
 
 ## How to run the tests
 
-Note: Harper needs to be running before starting the tests
+> Note: Harper needs to be running before starting the tests
 
-Run the tests from /integrationTests/apiTests folder:
+Use the Node.js test runner to run the tests from the `/integrationTests/apiTests` folder.
 
+If using a Node.js versions less than v22, include `--experimental-default-type="module"` in order to automatically support ESM syntax. 
+
+```sh
+node --test tests/1_environmentSetup.js
 ```
-node --experimental-default-type="module" --stack-trace-limit=2 tests/1_environmentSetup.js
-```
-```
-node --experimental-default-type="module" --stack-trace-limit=2 --test tests/1_environmentSetup.js
-```
+
+For more information, review the [Node.js test runner](https://nodejs.org/docs/latest/api/test.html#running-tests-from-the-command-line) documentation.
+
 
 **Run all tests under the 'tests' folder**
 
