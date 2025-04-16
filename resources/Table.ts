@@ -2724,6 +2724,7 @@ export function makeTable(options) {
 				$record: (object, context, entry) => (entry ? { value: object } : object),
 			};
 			for (const attribute of this.attributes) {
+				if (attribute.isPrimaryKey) primary_key_attribute = attribute;
 				attribute.resolve = null; // reset this
 				const relationship = attribute.relationship;
 				const computed = attribute.computed;
