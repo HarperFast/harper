@@ -22,7 +22,7 @@ node --test tests/1_environmentSetup.js
 For more information, review the [Node.js test runner](https://nodejs.org/docs/latest/api/test.html#running-tests-from-the-command-line) documentation.
 
 
-**Run all tests under the 'tests' folder**
+### Run all tests
 
 Some of the tests are using AWS S3 to import data. For this, if we test locally, we need to specify the S3 secret key:
 
