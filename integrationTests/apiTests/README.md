@@ -1,8 +1,9 @@
 # API Integration Tests
-### Test Framework composed of: 
-* **SuperTest**
-* **Node's Test Runner**
-* **Node assert**
+
+## Test Framework composed of: 
+* [**SuperTest**](https://www.npmjs.com/package/supertest)
+* [**Node.js Test Runner**](http://nodejs.org/docs/latest/api/test.html)
+* [**Node.js `assert`**](https://nodejs.org/docs/latest/api/assert.html)
 
 ***
 
