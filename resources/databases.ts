@@ -345,7 +345,11 @@ export function readMetaDb(
 					harper_logger.error(`Error trying to update attribute`, attribute, existing_attributes, indices, error);
 				}
 			}
-			if (!table) {
+			if (table) {
+				table.schemaVersion++;
+				table.attributes.splice(0, table.attributes.length, ...attributes);
+				table.updatedAttributes();
+			} else {
 				table = setTable(
 					tables,
 					table_name,
