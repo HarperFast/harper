@@ -913,7 +913,7 @@ export function makeTable(options) {
 			}
 			if (this.getId() === null) {
 				if (query?.conditions) return this.search(query); // if there is a query, assume it was meant to be a root level query
-				return {
+				const description = {
 					// basically a describe call
 					records: './', // an href to the records themselves
 					name: table_name,
@@ -921,6 +921,14 @@ export function makeTable(options) {
 					auditSize: audit_store?.getStats().entryCount,
 					attributes,
 				};
+				if (this.getContext()?.includeExpensiveRecordCountEstimates) {
+					return TableResource.getRecordCount().then((record_count) => {
+						description.recordCount = record_count.recordCount;
+						description.estimatedRecordRange = record_count.estimatedRange;
+						return description;
+					});
+				}
+				return description;
 			}
 			if (query?.property) return this.getProperty(query.property);
 			if (this.doesExist() || query?.ensureLoaded === false || this.getContext()?.returnNonexistent) {

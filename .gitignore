@@ -17,6 +17,7 @@ hdb_boot_properties.file
 /unitTests/apiTests/envDir/*
 /unitTests/testApp/node_modules/*
 /unitTests/server/nats/tempTestDir/*
+/bin/unit-test/keys/*
 coverage.json
 unitTests/server/nats/tempTestDir/*
 dependencies/*

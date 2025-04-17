@@ -65,7 +65,12 @@ function resolvePath(relative_path) {
 		return path.join(hdb_utils.getHomeDir(), relative_path.slice(1));
 	}
 	const env = require('../utility/environment/environmentManager');
-	return path.resolve(env.getHdbBasePath(), relative_path);
+	try {
+		return path.resolve(env.getHdbBasePath(), relative_path);
+	} catch(error) {
+		console.error('Unable to resolve path', relative_path, error);
+		return relative_path;
+	}
 }
 
 /**

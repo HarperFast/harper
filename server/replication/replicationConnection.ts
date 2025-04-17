@@ -1402,7 +1402,7 @@ export function replicateOverWS(ws, options, authorization) {
 		// start the save immediately
 		const finished = local_blob.save({
 			// need to pass in the table, but this is table-like enough for it to get the root store
-			primaryStore: table_subscription_to_replicator.auditStore
+			primaryStore: table_subscription_to_replicator.auditStore,
 		});
 		if (finished) {
 			finished.blobId = blob_id;
@@ -1733,12 +1733,8 @@ export function replicateOverWS(ws, options, authorization) {
 		const attributes = existing_table.attributes || [];
 		for (let i = 0; i < table_definition.attributes?.length; i++) {
 			const ensure_attribute = table_definition.attributes[i];
-			const existing_attribute = attributes[i];
-			if (
-				!existing_attribute ||
-				existing_attribute.name !== ensure_attribute.name ||
-				existing_attribute.type !== ensure_attribute.type
-			) {
+			const existing_attribute = attributes.find((attr) => attr.name === ensure_attribute.name);
+			if (!existing_attribute || existing_attribute.type !== ensure_attribute.type) {
 				// a difference in the attribute definitions was found
 				if (was_schema_defined) {
 					// if the schema is defined, we will not change, we will honor our local definition, as it is just going to cause a battle between nodes if there are differences that we try to propagate
@@ -1750,7 +1746,8 @@ export function replicateOverWS(ws, options, authorization) {
 				} else {
 					has_changes = true;
 					if (!schema_defined) ensure_attribute.indexed = true; // if it is a dynamic schema, we need to index (all) the attributes
-					attributes[i] = ensure_attribute;
+					if (existing_attribute) attributes[attributes.indexOf(existing_attribute)] = ensure_attribute;
+					else attributes.push(ensure_attribute);
 				}
 			}
 		}
