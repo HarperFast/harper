@@ -1,25 +1,28 @@
 # API Integration Tests
-### Test Framework composed of: 
-* **SuperTest**
-* **Node's Test Runner**
-* **Node assert**
+
+## Test Framework composed of: 
+* [**SuperTest**](https://www.npmjs.com/package/supertest)
+* [**Node.js Test Runner**](http://nodejs.org/docs/latest/api/test.html)
+* [**Node.js `assert`**](https://nodejs.org/docs/latest/api/assert.html)
 
 ***
 
-**How to run the tests**
+## How to run the tests
 
-Note: Harper needs to be running before starting the tests
+> Note: Harper needs to be running before starting the tests
 
-Run the tests from /integrationTests/apiTests folder:
+Use the Node.js test runner to run the tests from the `/integrationTests/apiTests` folder.
 
-```
-node --experimental-default-type="module" --stack-trace-limit=2 tests/1_environmentSetup.js
-```
-```
-node --experimental-default-type="module" --stack-trace-limit=2 --test tests/1_environmentSetup.js
+If using a Node.js versions less than v22, include `--experimental-default-type="module"` in order to automatically support ESM syntax. 
+
+```sh
+node --test tests/1_environmentSetup.js
 ```
 
-**Run all tests under the 'tests' folder**
+For more information, review the [Node.js test runner](https://nodejs.org/docs/latest/api/test.html#running-tests-from-the-command-line) documentation.
+
+
+### Run all tests
 
 Some of the tests are using AWS S3 to import data. For this, if we test locally, we need to specify the S3 secret key:
 

@@ -542,11 +542,11 @@ describe('8. Delete Tests', () => {
 			.expect((r) => assert.ok(r.body.update_hashes.length == 1, r.text))
 			.expect((r) => assert.deepEqual(r.body.update_hashes, [1], r.text))
 			.expect(200);
-		await setTimeout(2000);
+		await setTimeout(3000);
 	});
 
 	it('Search by hash confirm update', async () => {
-		await setTimeout(2000);
+		await setTimeout(3000);
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
@@ -729,11 +729,11 @@ describe('8. Delete Tests', () => {
 			.expect((r) => assert.ok(r.body.update_hashes.length == 1, r.text))
 			.expect((r) => assert.deepEqual(r.body.update_hashes, [1], r.text))
 			.expect(200);
-		await setTimeout(2000);
+		await setTimeout(3000);
 	});
 
 	it('Search by hash confirm update', async () => {
-		await setTimeout(2000);
+		await setTimeout(3000);
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
@@ -916,11 +916,11 @@ describe('8. Delete Tests', () => {
 			.expect((r) => assert.ok(r.body.update_hashes.length == 1, r.text))
 			.expect((r) => assert.deepEqual(r.body.update_hashes, [1], r.text))
 			.expect(200);
-		await setTimeout(2000);
+		await setTimeout(3000);
 	});
 
 	it('Search by hash confirm update', async () => {
-		await setTimeout(2000);
+		await setTimeout(3000);
 		const response = await request(envUrl)
 			.post('')
 			.set(headers)
