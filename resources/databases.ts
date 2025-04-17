@@ -332,7 +332,7 @@ export function readMetaDb(
 				root_store.databaseName = database_name;
 				primary_store.tableId = table_id;
 			}
-			let attributes_updated;
+			let attributes_updated: boolean;
 			for (const attribute of attributes) {
 				attribute.attribute = attribute.name;
 				try {
