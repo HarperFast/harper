@@ -906,7 +906,7 @@ export function makeTable(options) {
 		 * This retrieves the data of this resource. By default, with no argument, just return `this`.
 		 * @param query - If included, specifies a query to perform on the record
 		 */
-		async get(query?: Query | string): Promise<object | void> | object | void {
+		get(query?: Query | string): Promise<object | void> | object | void {
 			if (typeof query === 'string') return this.getProperty(query);
 			if (this.isCollection) {
 				return this.search(query);
@@ -922,9 +922,10 @@ export function makeTable(options) {
 					attributes,
 				};
 				if (this.getContext()?.includeExpensiveRecordCountEstimates) {
-					const record_count = await TableResource.getRecordCount();
-					description.recordCount = record_count.recordCount;
-					description.estimatedRecordRange = record_count.estimatedRange;
+					return TableResource.getRecordCount().then((record_count) => {
+						description.recordCount = record_count.recordCount;
+						description.estimatedRecordRange = record_count.estimatedRange;
+					});
 				}
 				return description;
 			}
