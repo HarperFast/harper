@@ -1,7 +1,6 @@
-import request from "supertest";
-import assert from "node:assert";
+import assert from "node:assert/strict";
 import { setTimeout, setTimeout as sleep } from 'node:timers/promises';
-import {envUrl, headers} from "../config/envConfig.js";
+import { req } from './request.js';
 
 
 export async function getJobId(jsonData) {
@@ -15,9 +14,7 @@ export async function getJobId(jsonData) {
 let errorMessage = "";
 
 export async function checkJobCompleted(job_id, expectedErrorMessage, expectedCompletedMessage) {
-    const response = await request(envUrl)
-        .post('')
-        .set(headers)
+    const response = await req()
         .send({
             operation: 'get_job',
             id: job_id
@@ -78,9 +75,7 @@ export async function checkJob(job_id, timeoutInSeconds) {
 	let jobResponse = null;
   let seconds = 0;
 	do {
-		jobResponse = await request(envUrl)
-			.post('')
-			.set(headers)
+		jobResponse = await req()
 			.send({
 				operation: 'get_job',
 				id: job_id,

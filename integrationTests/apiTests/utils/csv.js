@@ -1,11 +1,10 @@
 import request from "supertest";
 import {checkJobCompleted, getJobId} from "./jobs.js";
-import {envUrl, headers} from "../config/envConfig.js";
+import {envUrl} from "../config/envConfig.js";
+import { req } from './request.js';
 
 export async function csvFileUpload(schemaName, tableName, filePath, expectedErrorMessage, expectedCompletedMessage) {
-    const response = await request(envUrl)
-        .post('')
-        .set(headers)
+  const response = await req()
         .send({
             operation: 'csv_file_load',
             action: 'insert',
@@ -19,9 +18,7 @@ export async function csvFileUpload(schemaName, tableName, filePath, expectedErr
 }
 
 export async function csvUrlLoad(schemaName, tableName, fileUrl, expectedErrorMessage, expectedCompletedMessage) {
-    const response = await request(envUrl)
-        .post('')
-        .set(headers)
+  const response = await req()
         .send({
             operation: 'csv_url_load',
             action: 'insert',

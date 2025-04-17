@@ -1,15 +1,13 @@
 import { describe, it } from 'node:test';
-import assert from 'node:assert';
-import request from 'supertest';
-import { envUrl, testData, headers } from '../config/envConfig.js';
+import assert from 'node:assert/strict';
+import { testData } from '../config/envConfig.js';
+import { req } from '../utils/request.js';
 
 describe('11. Alter User Tests', () => {
 	//Alter User Tests Folder
 
 	it('Add non-SU role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'add_role',
 				role: 'developer_test_5',
@@ -95,9 +93,7 @@ describe('11. Alter User Tests', () => {
 	});
 
 	it('Add User with new Role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'add_user',
 				role: 'developer_test_5',
@@ -109,9 +105,7 @@ describe('11. Alter User Tests', () => {
 	});
 
 	it('Alter User with empty role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'alter_user',
 				role: '',
@@ -119,29 +113,24 @@ describe('11. Alter User Tests', () => {
 				password: `${testData.password}`,
 				active: true,
 			})
-			.expect((r) => assert.ok(r.body.error == 'If role is specified, it cannot be empty.', r.text))
+			.expect((r) => assert.equal(r.body.error, 'If role is specified, it cannot be empty.', r.text))
 			.expect(500);
 	});
 
 	it('Alter User set active to false.', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'alter_user', username: 'test_user', password: `${testData.password}`, active: false })
 			.expect((r) =>
-				assert.ok(
-					r.body.message == 'updated 1 of 1 records',
+				assert.equal(r.body.message, 'updated 1 of 1 records',
 					'Expected response message to eql "updated 1 of 1 records"'
 				)
 			)
-			.expect((r) => assert.ok(r.body.update_hashes[0] == 'test_user', r.text))
+			.expect((r) => assert.equal(r.body.update_hashes[0], 'test_user', r.text))
 			.expect(200);
 	});
 
 	it('Check for active=false', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'list_users' })
 			.expect((r) => {
 				let found_user = undefined;
@@ -150,23 +139,19 @@ describe('11. Alter User Tests', () => {
 						found_user = user;
 					}
 				}
-				assert.ok(found_user.active == false, r.text);
+				assert.equal(found_user.active, false, r.text);
 			})
 			.expect(200);
 	});
 
 	it('Drop test user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_user', username: 'test_user' })
 			.expect(200);
 	});
 
 	it('Drop test non-SU role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_role', id: 'developer_test_5' })
 			.expect(200);
 	});

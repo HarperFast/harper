@@ -1,24 +1,20 @@
 import { describe, it } from 'node:test';
-import assert from 'node:assert';
-import request from 'supertest';
-import { envUrl, envUrlRest, testData, headers } from '../config/envConfig.js';
-import { restartServiceHttpWorkersWithTimeout, restartWithTimeout } from '../utils/restart.js';
+import assert from 'node:assert/strict';
+import { testData } from '../config/envConfig.js';
+import { restartServiceHttpWorkersWithTimeout } from '../utils/restart.js';
+import { req } from '../utils/request.js';
 
 describe('17a. Add components for computed props, graphQL, and open api', () => {
 
 	it('Add component for computed properties', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'add_component', project: 'computed' })
 			.expect((r) => assert.ok(r.body.message.includes('Successfully added project: computed'), r.text))
 			.expect(200);
 	});
 
 	it('Set Component File schema.graphql', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'set_component_file',
 				project: 'computed',
@@ -31,9 +27,7 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 	});
 
 	it('Set Component File resources.js', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'set_component_file',
 				project: 'computed',
@@ -48,9 +42,7 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 
 
 	it('Add component for graphql and rest tests', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'add_component', project: 'appGraphQL' })
 			.expect((r) => {
 				const res = JSON.stringify(r.body);
@@ -59,9 +51,7 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 	});
 
 	it('Set Component File schema.graphql', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'set_component_file',
 				project: 'appGraphQL',
@@ -74,9 +64,7 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 	});
 
 	it('Set Component File config.yaml', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'set_component_file',
 				project: 'appGraphQL',
@@ -90,9 +78,7 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 
 
 	it('Add default component for openapi endpoint', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ 'operation': 'add_component', 'project': 'myApp111' })
 			.expect((r) => assert.ok(JSON.stringify(r.body).includes('Successfully added project') ||
 				JSON.stringify(r.body).includes('Project already exists')))
@@ -105,6 +91,6 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 	});
 
 	it('Describe all', async () => {
-		const response = await request(envUrl).post('').set(headers).send({ operation: 'describe_all' }).expect(200);
+		await req().send({ operation: 'describe_all' }).expect(200);
 	});
 });

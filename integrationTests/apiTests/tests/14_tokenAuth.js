@@ -1,38 +1,39 @@
 import { describe, it } from 'node:test';
-import assert from 'node:assert';
+import assert from 'node:assert/strict';
 import request from 'supertest';
-import { envUrl, testData, headers } from '../config/envConfig.js';
+import { envUrl, testData } from '../config/envConfig.js';
 import { isDevEnv } from '../utils/env.js';
+import { req } from '../utils/request.js';
 
 describe('14. Token Auth', () => {
 	//Token Auth Folder
 
 	it('Call create_authentication_tokens no username/pw', async () => {
-		const response = await request(envUrl)
+		await request(envUrl)
 			.post('')
 			.set({ 'Content-Type': 'application/json' })
 			.send({ operation: 'create_authentication_tokens' })
 			.expect(async (r) => {
 				if (await isDevEnv()) {
-					assert.ok(r.status == 200, r.text);
+					assert.equal(r.status, 200, r.text);
 				} else {
-					assert.ok(r.body['error'] === 'Must login', r.text);
-					assert.ok(r.status == 401, r.text);
+					assert.equal(r.body['error'], 'Must login', r.text);
+					assert.equal(r.status, 401, r.text);
 				}
 			})
 	});
 
 	it('Call create_authentication_tokens no pw', async () => {
-		const response = await request(envUrl)
+		await request(envUrl)
 			.post('')
 			.set({ 'Content-Type': 'application/json' })
 			.send({ operation: 'create_authentication_tokens', username: `${testData.username}` })
-			.expect((r) => assert.ok(r.body['error'] === 'invalid credentials', r.text))
+			.expect((r) => assert.equal(r.body['error'],  'invalid credentials', r.text))
 			.expect(401);
 	});
 
 	it('Call create_authentication_tokens bad credentials', async () => {
-		const response = await request(envUrl)
+		await request(envUrl)
 			.post('')
 			.set({ 'Content-Type': 'application/json' })
 			.send({
@@ -41,12 +42,12 @@ describe('14. Token Auth', () => {
 				password: 'bad',
 				bypass_auth: true
 			})
-			.expect((r) => assert.ok(r.body['error'] === 'invalid credentials', r.text))
+			.expect((r) => assert.equal(r.body['error'], 'invalid credentials', r.text))
 			.expect(401);
 	});
 
 	it('Call create_authentication_tokens happy path', async () => {
-		const response = await request(envUrl)
+		await request(envUrl)
 			.post('')
 			.set({ 'Content-Type': 'application/json' })
 			.send({
@@ -57,7 +58,7 @@ describe('14. Token Auth', () => {
 			.expect((r) => {
 				let attributes = ['operation_token', 'refresh_token'];
 				attributes.forEach((attribute) => {
-					assert.ok(r.body[attribute] !== undefined, r.text);
+					assert.notEqual(r.body[attribute], undefined, r.text);
 				});
 				testData.operation_token = r.body.operation_token;
 				testData.refresh_token = r.body.refresh_token;
@@ -66,7 +67,7 @@ describe('14. Token Auth', () => {
 	});
 
 	it('test search_by_hash with valid jwt', async () => {
-		const response = await request(envUrl)
+		await request(envUrl)
 			.post('')
 			.set('Content-Type', 'application/json')
 			.set('Authorization', `Bearer ${testData.operation_token}`)
@@ -78,13 +79,13 @@ describe('14. Token Auth', () => {
 				hash_values: [1],
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body.length == 1, r.text))
-			.expect((r) => assert.ok(r.body[0].employeeid == 1, r.text))
+			.expect((r) => assert.equal(r.body.length, 1, r.text))
+			.expect((r) => assert.equal(r.body[0].employeeid, 1, r.text))
 			.expect(200);
 	});
 
 	it('test search_by_hash with invalid jwt', async () => {
-		const response = await request(envUrl)
+		await request(envUrl)
 			.post('')
 			.set('Content-Type', 'application/json')
 			.set('Authorization', 'Bearer BAD_TOKEN')
@@ -101,7 +102,7 @@ describe('14. Token Auth', () => {
 	});
 
 	it('test refresh_operation_token with correct token', async () => {
-		const response = await request(envUrl)
+		await request(envUrl)
 			.post('')
 			.set('Content-Type', 'application/json')
 			.set('Authorization', `Bearer ${testData.refresh_token}`)
@@ -109,7 +110,7 @@ describe('14. Token Auth', () => {
 			.expect((r) => {
 				let attributes = ['operation_token'];
 				attributes.forEach((attribute) => {
-					assert.ok(r.body[attribute] !== undefined, r.text);
+					assert.notEqual(r.body[attribute], undefined, r.text);
 				});
 				testData.operation_token = r.body.operation_token;
 			})
@@ -117,7 +118,7 @@ describe('14. Token Auth', () => {
 	});
 
 	it('test refresh_operation_token with incorrect token', async () => {
-		const response = await request(envUrl)
+		await request(envUrl)
 			.post('')
 			.set('Content-Type', 'application/json')
 			.set('Authorization', 'Bearer bad token')
@@ -127,13 +128,11 @@ describe('14. Token Auth', () => {
 	});
 
 	it('Create token with current user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_authentication_tokens' })
 			.expect((r) => {
-				assert.ok(r.body.operation_token !== undefined, r.text);
-				assert.ok(r.body.refresh_token !== undefined, r.text);
+				assert.notEqual(r.body.operation_token, undefined, r.text);
+				assert.notEqual(r.body.refresh_token, undefined, r.text);
 				testData.operation_token = r.body.operation_token;
 				testData.refresh_token = r.body.refresh_token;
 			})

@@ -1,131 +1,105 @@
 import { describe, it } from 'node:test';
-import assert from 'node:assert';
-import request from 'supertest';
-import { envUrl, testData, getCsvPath, headers } from '../config/envConfig.js';
+import assert from 'node:assert/strict';
+import { testData, getCsvPath } from '../config/envConfig.js';
 import { setTimeout } from 'node:timers/promises';
+import { req } from '../utils/request.js';
 
 describe('16. Terminology Updates', () => {
 	//Terminology Updates Folder
 
 	it('create_database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_database', schema: 'tuckerdoodle' })
-			.expect((r) => assert.ok(r.body.message == "database 'tuckerdoodle' successfully created", r.text))
+			.expect((r) => assert.equal(r.body.message, "database 'tuckerdoodle' successfully created", r.text))
 			.expect(200);
 	});
 
 	it('create_table todo with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_table', database: 'tuckerdoodle', table: 'todo', hash_attribute: 'id' })
-			.expect((r) => assert.ok(r.body.message == "table 'tuckerdoodle.todo' successfully created.", r.text))
+			.expect((r) => assert.equal(r.body.message, "table 'tuckerdoodle.todo' successfully created.", r.text))
 			.expect(200);
 	});
 
 	it('create_table done with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_table', database: 'tuckerdoodle', table: 'done', hash_attribute: 'id' })
-			.expect((r) => assert.ok(r.body.message == "table 'tuckerdoodle.done' successfully created.", r.text))
+			.expect((r) => assert.equal(r.body.message, "table 'tuckerdoodle.done' successfully created.", r.text))
 			.expect(200);
 	});
 
 	it('create_table friends without database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_table', table: 'friends', hash_attribute: 'id' })
-			.expect((r) => assert.ok(r.body.message == "table 'data.friends' successfully created.", r.text))
+			.expect((r) => assert.equal(r.body.message, "table 'data.friends' successfully created.", r.text))
 			.expect(200);
 	});
 
 	it('create_table frogs using primary_key', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_table', table: 'frogs', primary_key: 'id' })
-			.expect((r) => assert.ok(r.body.message == "table 'data.frogs' successfully created.", r.text))
+			.expect((r) => assert.equal(r.body.message, "table 'data.frogs' successfully created.", r.text))
 			.expect(200);
 	});
 
 	it('create_attribute with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_attribute', database: 'tuckerdoodle', table: 'todo', attribute: 'date' })
-			.expect((r) => assert.ok(r.body.message == "attribute 'tuckerdoodle.todo.date' successfully created.", r.text))
+			.expect((r) => assert.equal(r.body.message, "attribute 'tuckerdoodle.todo.date' successfully created.", r.text))
 			.expect(200);
 	});
 
 	it('create_attribute without database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_attribute', table: 'friends', attribute: 'name' })
-			.expect((r) => assert.ok(r.body.message == "attribute 'data.friends.name' successfully created.", r.text))
+			.expect((r) => assert.equal(r.body.message, "attribute 'data.friends.name' successfully created.", r.text))
 			.expect(200);
 	});
 
 	it('describe_database with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'describe_database', database: 'tuckerdoodle' })
 			.expect((r) => assert.ok(r.body.hasOwnProperty('todo'), r.text))
 			.expect(200);
 	});
 
 	it('describe_database without database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'describe_database' })
 			.expect((r) => assert.ok(r.body.hasOwnProperty('friends'), r.text))
 			.expect(200);
 	});
 
 	it('describe_table with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'describe_table', database: 'tuckerdoodle', table: 'todo' })
-			.expect((r) => assert.ok(r.body.schema == 'tuckerdoodle', r.text))
-			.expect((r) => assert.ok(r.body.name == 'todo', r.text))
+			.expect((r) => assert.equal(r.body.schema, 'tuckerdoodle', r.text))
+			.expect((r) => assert.equal(r.body.name, 'todo', r.text))
 			.expect(200);
 	});
 
 	it('describe_table without database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'describe_table', table: 'friends' })
-			.expect((r) => assert.ok(r.body.schema == 'data', r.text))
-			.expect((r) => assert.ok(r.body.name == 'friends', r.text))
+			.expect((r) => assert.equal(r.body.schema, 'data', r.text))
+			.expect((r) => assert.equal(r.body.name, 'friends', r.text))
 			.expect(200);
 	});
 
 	it('insert with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'insert',
 				database: 'tuckerdoodle',
 				table: 'todo',
 				records: [{ id: 1, task: 'Get bone' }],
 			})
-			.expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records', r.text))
+			.expect((r) => assert.equal(r.body.message, 'inserted 1 of 1 records', r.text))
 			.expect(200);
 	});
 
 	it('insert without database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'insert',
 				table: 'friends',
@@ -134,14 +108,12 @@ describe('16. Terminology Updates', () => {
 					{ id: 2, task: 'Mr. Potato Head' },
 				],
 			})
-			.expect((r) => assert.ok(r.body.message == 'inserted 2 of 2 records', r.text))
+			.expect((r) => assert.equal(r.body.message, 'inserted 2 of 2 records', r.text))
 			.expect(200);
 	});
 
 	it('insert table frog setup for describe', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'insert',
 				table: 'frogs',
@@ -155,117 +127,97 @@ describe('16. Terminology Updates', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body.message == 'inserted 4 of 4 records', r.text))
+			.expect((r) => assert.equal(r.body.message, 'inserted 4 of 4 records', r.text))
 			.expect(200);
 	});
 
 	it('delete table frog setup for describe', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'delete', table: 'frogs', ids: [2] })
-			.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted', r.text))
+			.expect((r) => assert.equal(r.body.message, '1 of 1 record successfully deleted', r.text))
 			.expect(200);
 		await setTimeout(1000);
 	});
 
 	it('describe_table frog confirm record count', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'describe_table', table: 'frogs' })
-			.expect((r) => assert.ok(r.body.schema == 'data', r.text))
-			.expect((r) => assert.ok(r.body.name == 'frogs', r.text))
-			.expect((r) => assert.ok(r.body.record_count == 3, r.text))
+			.expect((r) => {
+				assert.equal(r.body.schema, 'data', r.text);
+				assert.equal(r.body.name, 'frogs', r.text);
+				assert.equal(r.body.record_count, 3, r.text);
+			})
 			.expect(200);
 	});
 
 	it('search_by_id', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'search_by_id', table: 'friends', ids: [1], get_attributes: ['*'] })
-			.expect((r) => assert.ok(r.body[0].id == 1, r.text))
+			.expect((r) => assert.equal(r.body[0].id, 1, r.text))
 			.expect(200);
 	});
 
 	it('search_by_hash with ids', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'search_by_hash', table: 'friends', ids: [1], get_attributes: ['*'] })
-			.expect((r) => assert.ok(r.body[0].id == 1, r.text))
+			.expect((r) => assert.equal(r.body[0].id, 1, r.text))
 			.expect(200);
 	});
 
 	it('delete with ids', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'delete', table: 'friends', ids: [2] })
-			.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted', r.text))
+			.expect((r) => assert.equal(r.body.message, '1 of 1 record successfully deleted', r.text))
 			.expect(200);
 	});
 
 	it('update with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'update',
 				database: 'tuckerdoodle',
 				table: 'todo',
 				records: [{ id: 1, task: 'Get extra large bone' }],
 			})
-			.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records', r.text))
+			.expect((r) => assert.equal(r.body.message, 'updated 1 of 1 records', r.text))
 			.expect(200);
 	});
 
 	it('update without database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'update', table: 'friends', records: [{ id: 1, task: 'Mr Sheriff Woody' }] })
-			.expect((r) => assert.ok(r.body.message == 'updated 1 of 1 records', r.text))
+			.expect((r) => assert.equal(r.body.message, 'updated 1 of 1 records', r.text))
 			.expect(200);
 	});
 
 	it('upsert with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'upsert',
 				database: 'tuckerdoodle',
 				table: 'todo',
 				records: [{ id: 2, task: 'Chase cat' }],
 			})
-			.expect((r) => assert.ok(r.body.message == 'upserted 1 of 1 records', r.text))
+			.expect((r) => assert.equal(r.body.message, 'upserted 1 of 1 records', r.text))
 			.expect(200);
 	});
 
 	it('upsert without database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'upsert', table: 'friends', records: [{ id: 2, name: 'Mr Potato Head' }] })
-			.expect((r) => assert.ok(r.body.message == 'upserted 1 of 1 records', r.text))
+			.expect((r) => assert.equal(r.body.message, 'upserted 1 of 1 records', r.text))
 			.expect(200);
 	});
 
 	it('search_by_hash without database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'search_by_hash', table: 'friends', hash_values: [1], get_attributes: ['*'] })
-			.expect((r) => assert.ok(r.body[0].id == 1, r.text))
+			.expect((r) => assert.equal(r.body[0].id, 1, r.text))
 			.expect(200);
 	});
 
 	it('search_by_hash with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'search_by_hash',
 				database: 'tuckerdoodle',
@@ -273,14 +225,12 @@ describe('16. Terminology Updates', () => {
 				hash_values: [1],
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body[0].id == 1, r.text))
+			.expect((r) => assert.equal(r.body[0].id, 1, r.text))
 			.expect(200);
 	});
 
 	it('search_by_value without database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'search_by_value',
 				table: 'friends',
@@ -288,14 +238,12 @@ describe('16. Terminology Updates', () => {
 				search_value: '*Sheriff Woody',
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body[0].id == 1, r.text))
+			.expect((r) => assert.equal(r.body[0].id, 1, r.text))
 			.expect(200);
 	});
 
 	it('search_by_value with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'search_by_value',
 				database: 'tuckerdoodle',
@@ -304,28 +252,24 @@ describe('16. Terminology Updates', () => {
 				search_value: 'Get*',
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body[0].id == 1, r.text))
+			.expect((r) => assert.equal(r.body[0].id, 1, r.text))
 			.expect(200);
 	});
 
 	it('search_by_conditions without database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'search_by_conditions',
 				table: 'friends',
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'task', search_type: 'equals', search_value: 'Mr Sheriff Woody' }],
 			})
-			.expect((r) => assert.ok(r.body[0].id == 1, r.text))
+			.expect((r) => assert.equal(r.body[0].id, 1, r.text))
 			.expect(200);
 	});
 
 	it('search_by_conditions with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'search_by_conditions',
 				database: 'tuckerdoodle',
@@ -339,86 +283,68 @@ describe('16. Terminology Updates', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body[0].id == 1, r.text))
+			.expect((r) => assert.equal(r.body[0].id, 1, r.text))
 			.expect(200);
 	});
 
 	it('delete with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'delete', database: 'tuckerdoodle', table: 'todo', hash_values: [1] })
-			.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted', r.text))
+			.expect((r) => assert.equal(r.body.message, '1 of 1 record successfully deleted', r.text))
 			.expect(200);
 	});
 
 	it('delete without database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'delete', table: 'friends', hash_values: [1] })
-			.expect((r) => assert.ok(r.body.message == '1 of 1 record successfully deleted', r.text))
+			.expect((r) => assert.equal(r.body.message, '1 of 1 record successfully deleted', r.text))
 			.expect(200);
 	});
 
 	it('drop_attribute with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_attribute', database: 'tuckerdoodle', table: 'todo', attribute: 'date' })
-			.expect((r) => assert.ok(r.body.message == "successfully deleted attribute 'date'", r.text))
+			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'date'", r.text))
 			.expect(200);
 	});
 
 	it('drop_attribute without database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_attribute', table: 'friends', attribute: 'name' })
-			.expect((r) => assert.ok(r.body.message == "successfully deleted attribute 'name'", r.text))
+			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'name'", r.text))
 			.expect(200);
 	});
 
 	it('drop_table with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_table', database: 'tuckerdoodle', table: 'todo' })
-			.expect((r) => assert.ok(r.body.message == "successfully deleted table 'tuckerdoodle.todo'", r.text))
+			.expect((r) => assert.equal(r.body.message, "successfully deleted table 'tuckerdoodle.todo'", r.text))
 			.expect(200);
 	});
 
 	it('drop_database tuckerdoodle', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_database', database: 'tuckerdoodle' })
-			.expect((r) => assert.ok(r.body.message == "successfully deleted 'tuckerdoodle'", r.text))
+			.expect((r) => assert.equal(r.body.message, "successfully deleted 'tuckerdoodle'", r.text))
 			.expect(200);
 	});
 
 	it('create_database "job_guy" for jobs', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_database', database: 'job_guy' })
-			.expect((r) => assert.ok(r.body.message == "database 'job_guy' successfully created", r.text))
+			.expect((r) => assert.equal(r.body.message, "database 'job_guy' successfully created", r.text))
 			.expect(200);
 	});
 
 	it('create_table "working" for jobs', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_table', database: 'job_guy', table: 'working', hash_attribute: 'id' })
-			.expect((r) => assert.ok(r.body.message == "table 'job_guy.working' successfully created.", r.text))
+			.expect((r) => assert.equal(r.body.message, "table 'job_guy.working' successfully created.", r.text))
 			.expect(200);
 	});
 
 	it('delete_records_before with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'delete_records_before',
 				database: 'job_guy',
@@ -430,9 +356,7 @@ describe('16. Terminology Updates', () => {
 	});
 
 	it('delete_records_before without database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'delete_records_before', table: 'friends', date: '2050-01-25T23:05:27.464' })
 			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
@@ -440,9 +364,7 @@ describe('16. Terminology Updates', () => {
 	});
 
 	it('delete_audit_logs_before with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'delete_audit_logs_before',
 				database: 'job_guy',
@@ -455,9 +377,7 @@ describe('16. Terminology Updates', () => {
 	});
 
 	it('delete_audit_logs_before without database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'delete_audit_logs_before', table: 'friends', timestamp: 1690553291764 })
 			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
@@ -465,9 +385,7 @@ describe('16. Terminology Updates', () => {
 	});
 
 	it('csv_file_load with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'csv_file_load',
 				database: 'job_guy',
@@ -479,27 +397,21 @@ describe('16. Terminology Updates', () => {
 	});
 
 	it('csv_file_load without database error', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'csv_file_load', table: 'todo', file_path: `${getCsvPath()}Suppliers.csv` })
 			.expect((r) => assert.ok(r.body.error.includes("Table 'data.todo' does not exist"), r.text))
 			.expect(400);
 	});
 
 	it('csv_file_load without database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'csv_file_load', table: 'friends', file_path: `${getCsvPath()}Suppliers.csv` })
 			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
 	});
 
 	it('csv_data_load without database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'csv_data_load',
 				table: 'friends',
@@ -510,9 +422,7 @@ describe('16. Terminology Updates', () => {
 	});
 
 	it('csv_data_load with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'csv_data_load',
 				database: 'job_guy',
@@ -524,9 +434,7 @@ describe('16. Terminology Updates', () => {
 	});
 
 	it('csv_url_load without database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'csv_url_load',
 				action: 'insert',
@@ -538,9 +446,7 @@ describe('16. Terminology Updates', () => {
 	});
 
 	it('csv_url_load with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'csv_url_load',
 				action: 'insert',
@@ -553,9 +459,7 @@ describe('16. Terminology Updates', () => {
 	});
 
 	it('import_from_s3 without database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'import_from_s3',
 				table: 'friends',
@@ -572,9 +476,7 @@ describe('16. Terminology Updates', () => {
 	});
 
 	it('import_from_s3 with database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'import_from_s3',
 				database: 'job_guy',
@@ -592,9 +494,7 @@ describe('16. Terminology Updates', () => {
 	});
 
 	it('Export to S3 search_by_hash with ids', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'export_to_s3',
 				format: 'csv',
@@ -612,9 +512,7 @@ describe('16. Terminology Updates', () => {
 	});
 
 	it('Export locally search_by_hash with ids', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'export_local',
 				path: './',
@@ -627,20 +525,16 @@ describe('16. Terminology Updates', () => {
 	});
 
 	it('drop_table without database', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_table', table: 'friends' })
-			.expect((r) => assert.ok(r.body.message == "successfully deleted table 'data.friends'", r.text))
+			.expect((r) => assert.equal(r.body.message, "successfully deleted table 'data.friends'", r.text))
 			.expect(200);
 	});
 
 	it('drop_database job_guy', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_database', database: 'job_guy' })
-			.expect((r) => assert.ok(r.body.message == "successfully deleted 'job_guy'", r.text))
+			.expect((r) => assert.equal(r.body.message, "successfully deleted 'job_guy'", r.text))
 			.expect(200);
 	});
 });

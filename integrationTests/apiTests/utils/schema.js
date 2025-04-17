@@ -1,11 +1,8 @@
-import request from 'supertest';
-import assert from "node:assert";
-import {envUrl, headers} from "../config/envConfig.js";
+import assert from 'node:assert/strict';
+import { req } from './request.js';
 
 export async function createSchema(schemaName) {
-    await request(envUrl)
-        .post('')
-        .set(headers)
+    await req()
         .send({
             operation: 'create_schema',
             schema: schemaName
@@ -19,9 +16,7 @@ export async function createSchema(schemaName) {
 }
 
 export async function dropSchema(schemaName, failTest) {
-    await request(envUrl)
-        .post('')
-        .set(headers)
+    await req()
         .send({
             operation: 'drop_schema',
             schema: schemaName
@@ -37,9 +32,7 @@ export async function dropSchema(schemaName, failTest) {
 }
 
 export async function describeSchema(schemaName) {
-    await request(envUrl)
-        .post('')
-        .set(headers)
+    await req()
         .send({
             operation: 'describe_schema',
             schema: schemaName
@@ -53,9 +46,7 @@ export async function describeSchema(schemaName) {
 }
 
 export async function checkTableInSchema(schemaName, checkTableName) {
-    await request(envUrl)
-        .post('')
-        .set(headers)
+    await req()
         .send({
             operation: 'describe_schema',
             schema: schemaName

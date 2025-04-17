@@ -1,8 +1,9 @@
 import { describe, it } from 'node:test';
-import assert from 'node:assert';
+import assert from 'node:assert/strict';
 import request from 'supertest';
 import { setTimeout } from 'node:timers/promises';
 import { envUrl, testData, headers, headersTestUser } from '../config/envConfig.js';
+import { req, reqAsNonSU } from '../utils/request.js';
 
 describe('12. Configuration', () => {
 
@@ -13,27 +14,21 @@ describe('12. Configuration', () => {
 	//Create_Attribute tests
 
 	it('Create table for tests', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_table', schema: 'dev', table: 'create_attr_test', hash_attribute: 'id' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 	});
 
 	it('Create Attribute for secondary indexing test', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_attribute', schema: 'dev', table: 'create_attr_test', attribute: 'owner_id' })
-			.expect((r) => assert.ok(r.body.message == "attribute 'dev.create_attr_test.owner_id' successfully created.", r.text))
+			.expect((r) => assert.equal(r.body.message, "attribute 'dev.create_attr_test.owner_id' successfully created.", r.text))
 			.expect(200);
 	});
 
 	it('Insert data for secondary indexing test', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'insert',
 				schema: 'dev',
@@ -70,16 +65,14 @@ describe('12. Configuration', () => {
 					{ id: 9, dog_name: 'Bode', age: 8 },
 				],
 			})
-			.expect((r) => assert.ok(r.body.message == 'inserted 9 of 9 records', r.text))
+			.expect((r) => assert.equal(r.body.message, 'inserted 9 of 9 records', r.text))
 			.expect(200);
 	});
 
 	it('Confirm attribute secondary indexing works', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'sql', sql: 'select * from dev.create_attr_test where owner_id = 1' })
-			.expect((r) => assert.ok(r.body.length == 3, r.text))
+			.expect((r) => assert.equal(r.body.length, 3, r.text))
 			.expect(200);
 	});
 
@@ -87,33 +80,26 @@ describe('12. Configuration', () => {
 	//Configuration Main Folder
 
 	it('Describe table DropAttributeTest - attr not exist', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'describe_table', table: 'AttributeDropTest', schema: 'dev' })
 			.expect((r) => assert.ok(!r.body.another_attribute, r.text))
 			.expect(200);
-		console.log(response.text);
 	});
 
 	it('Create Attribute', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'create_attribute',
 				schema: 'dev',
 				table: 'AttributeDropTest',
 				attribute: 'created_attribute',
 			})
-			.expect((r) => assert.ok(r.body.message == "attribute 'dev.AttributeDropTest.created_attribute' successfully created.", r.text))
+			.expect((r) => assert.equal(r.body.message, "attribute 'dev.AttributeDropTest.created_attribute' successfully created.", r.text))
 			.expect(200);
 	});
 
 	it('Confirm created attribute', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'describe_table', table: 'AttributeDropTest', schema: 'dev' })
 			.expect((r) => {
 				let found = false;
@@ -128,24 +114,20 @@ describe('12. Configuration', () => {
 	});
 
 	it('Create existing attribute', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'create_attribute',
 				schema: 'dev',
 				table: 'AttributeDropTest',
 				attribute: 'created_attribute',
 			})
-			.expect((r) => assert.ok(r.body.error == "attribute 'created_attribute' already exists in dev.AttributeDropTest", r.text))
+			.expect((r) => assert.equal(r.body.error, "attribute 'created_attribute' already exists in dev.AttributeDropTest", r.text))
 			.expect(400);
 		await setTimeout(3000);
 	});
 
 	it('Drop Attribute - twice', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'drop_attribute',
 				schema: 'dev',
@@ -154,7 +136,7 @@ describe('12. Configuration', () => {
 			})
 			.expect((r) => {
 				console.log(r.text);
-				assert.ok(r.body.message == "successfully deleted attribute 'another_attribute'", r.text)
+				assert.equal(r.body.message, "successfully deleted attribute 'another_attribute'", r.text)
 			})
 			.expect(200)
 			.send({
@@ -165,16 +147,14 @@ describe('12. Configuration', () => {
 			})
 			.expect((r) => {
 				console.log(r.text);
-				assert.ok(r.body.message == "successfully deleted attribute 'another_attribute'", r.text)
+				assert.equal(r.body.message, "successfully deleted attribute 'another_attribute'", r.text)
 			})
 			.expect(200)
 	});
 
 	it('Drop Attribute and Describe table DropAttributeTest', async () => {
 		await setTimeout(9000);
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'drop_attribute',
 				schema: 'dev',
@@ -198,9 +178,7 @@ describe('12. Configuration', () => {
 	});
 
 	it('Get Fingerprint', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'get_fingerprint' })
 			.expect((r) => assert.ok(r.body.hasOwnProperty('message'), r.text))
 			.expect((r) => assert.ok(r.body.message, r.text))
@@ -208,57 +186,51 @@ describe('12. Configuration', () => {
 	});
 
 	it('Set License', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'set_license',
 				key: 'uFFG7xAZG11ec9d335bfe27c4ec5555310bd4a27f',
 				company: 'harperdb.io',
 			})
-			.expect((r) => assert.ok(r.body['error'] == 'There was an error parsing the license key.', r.text))
+			.expect((r) => assert.equal(r.body['error'], 'There was an error parsing the license key.', r.text))
 			.expect(500);
 	});
 
 	it('Get Registration Info', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'registration_info' })
-			.expect((r) => assert.ok(r.body.hasOwnProperty('registered'), r.text))
-			.expect((r) => assert.ok(r.body.hasOwnProperty('version'), r.text))
-			.expect((r) => assert.ok(r.body.hasOwnProperty('ram_allocation'), r.text))
-			.expect((r) => assert.ok(r.body.hasOwnProperty('license_expiration_date'), r.text))
+			.expect((r) => {
+				assert.ok(r.body.hasOwnProperty('registered'), r.text);
+				assert.ok(r.body.hasOwnProperty('version'), r.text);
+				assert.ok(r.body.hasOwnProperty('ram_allocation'), r.text);
+				assert.ok(r.body.hasOwnProperty('license_expiration_date'), r.text);
+			})
 			.expect(200);
 	});
 
 	it('Set License Bad Key', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'set_license', key: '', company: 'harperdb.io' })
-			.expect((r) => assert.ok(r.body['error'] == 'Invalid key or company specified for license file.', r.text))
+			.expect((r) => assert.equal(r.body['error'], 'Invalid key or company specified for license file.', r.text))
 			.expect(500);
 	});
 
 	it('Get Configuration', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'get_configuration' })
-			.expect((r) => assert.ok(r.body.componentsRoot, r.text))
-			.expect((r) => assert.ok(r.body.logging, r.text))
-			.expect((r) => assert.ok(r.body.localStudio, r.text))
-			.expect((r) => assert.ok(r.body.operationsApi, r.text))
-			.expect((r) => assert.ok(r.body.operationsApi.network.port, r.text))
-			.expect((r) => assert.ok(r.body.threads, r.text))
+			.expect((r) => {
+				assert.ok(r.body.componentsRoot, r.text);
+				assert.ok(r.body.logging, r.text);
+				assert.ok(r.body.localStudio, r.text);
+				assert.ok(r.body.operationsApi, r.text);
+				assert.ok(r.body.operationsApi.network.port, r.text);
+				assert.ok(r.body.threads, r.text);
+			})
 			.expect(200);
 	});
 
 	it('Read log', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'read_log' })
 			.expect((r) => {
 				assert.ok(Array.isArray(r.body), r.text);
@@ -270,49 +242,37 @@ describe('12. Configuration', () => {
 	});
 
 	it('Set Configuration', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'set_configuration', logging_rotation_maxSize: '12M' })
 			.expect((r) =>
-				assert.ok(
-					r.body.message ==
-						'Configuration successfully set. You must restart HarperDB for new config settings to take effect.'
+				assert.equal(r.body.message, 'Configuration successfully set. You must restart HarperDB for new config settings to take effect.'
 				)
 			)
 			.expect(200);
 	});
 
 	it('Confirm Configuration', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'get_configuration' })
-			.expect((r) => assert.ok(r.body.logging.rotation.maxSize == '12M', r.text))
+			.expect((r) => assert.equal(r.body.logging.rotation.maxSize, '12M', r.text))
 			.expect(200);
 	});
 
 	it('Set Configuration Bad Data', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'set_configuration', http_cors: 'spinach' })
-			.expect((r) => assert.ok(r.body.error == "HarperDB config file validation error: 'http.cors' must be a boolean", r.text))
+			.expect((r) => assert.equal(r.body.error, "HarperDB config file validation error: 'http.cors' must be a boolean", r.text))
 			.expect(400);
 	});
 
 	it('Add non-SU role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'add_role', role: 'test_dev_role', permission: { super_user: false } })
 			.expect(200);
 	});
 
 	it('Add User with non-SU role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'add_user',
 				role: 'test_dev_role',
@@ -324,36 +284,32 @@ describe('12. Configuration', () => {
 	});
 
 	it('Get Configuration non-SU', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({ operation: 'get_configuration' })
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'getConfiguration' is restricted to 'super_user' roles", r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.unauthorized_access.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0], "Operation 'getConfiguration' is restricted to 'super_user' roles", r.text);
+			})
 			.expect(403);
 	});
 
 	it('Drop test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_user', username: 'test_user' })
-			.expect((r) => assert.ok(r.body.message == 'test_user successfully deleted', r.text))
+			.expect((r) => assert.equal(r.body.message, 'test_user successfully deleted', r.text))
 			.expect(200);
 	});
 
 	it('Drop_role - non-SU role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_role', id: 'test_dev_role' })
-			.expect((r) => assert.ok(r.body.message == 'test_dev_role successfully deleted', r.text))
+			.expect((r) => assert.equal(r.body.message, 'test_dev_role successfully deleted', r.text))
 			.expect(200);
 	});
 
 	it('Test local studio HTML is returned', async () => {
-		const response = await request(envUrl)
+		await request(envUrl)
 			.get('')
 			.set(headers)
 			.set('content-type','text/html; charset=UTF-8')

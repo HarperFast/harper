@@ -1,9 +1,9 @@
 import {describe, it} from 'node:test';
-import assert from "node:assert";
-import request from 'supertest';
-import {checkTableInSchema, createSchema, describeSchema, dropSchema} from "../utils/schema.js";
-import {testData, headers, envUrl} from "../config/envConfig.js";
+import assert from 'node:assert/strict';
+import {checkTableInSchema, createSchema, describeSchema} from "../utils/schema.js";
+import {testData} from "../config/envConfig.js";
 import {createTable} from "../utils/table.js";
+import { req } from '../utils/request.js';
 
 
 describe('1. Environment Setup', () => {
@@ -13,14 +13,11 @@ describe('1. Environment Setup', () => {
     });
 
     it('Create schema confirm schema exists', async () => {
-        await request(envUrl)
-            .post('')
-            .set(headers)
+        await req()
             .send({
                 operation: 'describe_all'
             })
             .expect((r) => {
-                // console.log(r.headers);
                 const keys = Object.keys(r.body);
                 assert.notEqual(keys.indexOf(testData.schema), -1, `${testData.schema} was not found`);
                 assert.ok(keys.includes(testData.schema), `${testData.schema} was not found`);
@@ -53,9 +50,7 @@ describe('1. Environment Setup', () => {
     });
 
     it(`Create schema as number - expect error`, async () => {
-        await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               operation: 'create_schema',
               schema: 1123,
@@ -73,9 +68,7 @@ describe('1. Environment Setup', () => {
     });
 
     it('Search by hash empty table', async () => {
-        await request(envUrl)
-            .post('')
-            .set(headers)
+        await req()
             .send({
                 operation: 'sql',
                 sql: `select *
@@ -217,9 +210,7 @@ describe('1. Environment Setup', () => {
     });
 
     it(`Create table as number - expect error`, async () => {
-        await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               operation: 'create_table',
               database: 1123,
@@ -235,9 +226,7 @@ describe('1. Environment Setup', () => {
     });
 
     it('Describe schema ${testData.schema_number_string}', async () => {
-        await request(envUrl)
-            .post('')
-            .set(headers)
+        await req()
             .send({
                 operation: 'describe_schema',
                 schema: testData.schema_number_string
@@ -251,9 +240,7 @@ describe('1. Environment Setup', () => {
     });
 
     it('Describe table number "4"', async () => {
-        await request(envUrl)
-            .post('')
-            .set(headers)
+        await req()
             .send({
                 operation: 'describe_table',
                 schema: testData.schema_number_string,

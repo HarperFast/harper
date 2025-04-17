@@ -1,16 +1,12 @@
 import { describe, it } from 'node:test';
-import assert from 'node:assert';
-import request from 'supertest';
-import { envUrl, envUrlRest, testData, headers } from '../config/envConfig.js';
-import { restartWithTimeout } from '../utils/restart.js';
+import assert from 'node:assert/strict';
+import { reqRest } from '../utils/request.js';
 
 describe('22. OpenAPI', () => {
 	//OpenAPI Folder
 
 	it('Get open api', async () => {
-		const response = await request(envUrlRest)
-			.get('/openapi')
-			.set(headers)
+		await reqRest('/openapi')
 			.expect((r) => {
 				let openapi_text = JSON.stringify(r.body.openapi);
 				console.log(openapi_text);

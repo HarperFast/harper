@@ -1,8 +1,6 @@
-import { fileURLToPath } from 'url';
+import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import { configDotenv } from 'dotenv';
-
-configDotenv();
+import 'dotenv/config';
 
 export let testData = {
     host: 'http://localhost',
@@ -59,10 +57,8 @@ export let testData = {
     restartTimeout: 45000,
 }
 
-export const files_location = process.env.FILES_LOCATION ? process.env.FILES_LOCATION : "/../../test/data/integrationTestsCsvs/";
-
-export const envUrl = testData.host + ':' + testData.port;
-export const envUrlRest = testData.host + ':' + testData.portRest;
+export const envUrl = `${testData.host}:${testData.port}`;
+export const envUrlRest = `${testData.host}:${testData.portRest}`;
 
 
 export const headers = createHeaders(testData.username, testData.password);
@@ -74,7 +70,7 @@ export const headersImportantUser = createHeaders('important-user', 'password');
 
 export function createHeaders(username, password) {
     const headers = {
-        Authorization: 'Basic ' + Buffer.from(username + ':' + password).toString('base64'),
+        'Authorization': `Basic ${Buffer.from(`${username}:${password}`).toString('base64')}`,
         'Content-Type': 'application/json',
         'Connection': 'keep-alive'
     }
@@ -92,7 +88,9 @@ export function getCsvPath() {
     } else {
         const __filename = fileURLToPath(import.meta.url);
         const __dirname = path.dirname(__filename);
-        myPath = path.resolve(__dirname + '/..' + files_location) + '/';
+        myPath = path.resolve(__dirname + '/../../../test/data/integrationTestsCsvs/') + '/';
     }
+    console.log(myPath);
     return myPath;
+
 }

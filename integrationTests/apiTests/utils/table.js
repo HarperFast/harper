@@ -1,11 +1,8 @@
-import request from 'supertest';
-import assert from "node:assert";
-import { envUrl, headers } from '../config/envConfig.js';
+import assert from 'node:assert/strict';
+import { req } from './request.js';
 
 export async function createTable(databaseName, tableName, hashAttribute) {
-    await request(envUrl)
-        .post('')
-        .set(headers)
+    await req()
         .send({
             operation: 'create_table',
             database: databaseName,
@@ -21,9 +18,7 @@ export async function createTable(databaseName, tableName, hashAttribute) {
 }
 
 export async function dropTable(schemaName, tableName, failTest) {
-    await request(envUrl)
-        .post('')
-        .set(headers)
+    await req()
         .send({
             operation: 'drop_table',
             schema: schemaName,

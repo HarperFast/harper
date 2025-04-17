@@ -1,11 +1,8 @@
-import request from 'supertest';
-import assert from "node:assert";
-import {envUrl, headers} from "../config/envConfig.js";
+import assert from 'node:assert/strict';
+import { req } from './request.js';
 
 export async function insert(schemaName, tableName, records, expectedMessage) {
-    await request(envUrl)
-        .post('')
-        .set(headers)
+    await req()
         .send({
             operation: 'insert',
             schema: schemaName,

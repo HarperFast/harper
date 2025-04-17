@@ -1,11 +1,8 @@
-import request from 'supertest';
-import { envUrl, headers } from '../config/envConfig.js';
-import assert from 'node:assert';
+import assert from 'node:assert/strict';
+import { req } from './request.js';
 
 export async function isDevEnv() {
-	const getConfig = await request(envUrl)
-		.post('')
-		.set(headers)
+	const getConfig = await req()
 		.send({ operation: 'get_configuration' })
 		.expect((r) => {
 			assert.ok(r.body.authentication, r.text);

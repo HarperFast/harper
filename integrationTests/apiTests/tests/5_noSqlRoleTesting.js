@@ -1,17 +1,16 @@
 import { describe, it } from 'node:test';
-import assert from 'node:assert';
-import request from 'supertest';
+import assert from 'node:assert/strict';
 import {
 	createHeaders,
-	envUrl,
 	testData,
 	getCsvPath,
-	headers,
 	headersBulkLoadUser,
 	headersTestUser,
 } from '../config/envConfig.js';
 import { csvDataLoad } from '../utils/csv.js';
 import { checkJobCompleted, getJobId } from '../utils/jobs.js';
+import { req, reqAsNonSU } from '../utils/request.js';
+
 
 describe('5. NoSQL Role Testing', () => {
 
@@ -21,9 +20,7 @@ describe('5. NoSQL Role Testing', () => {
 	//Bulk Load Perms Tests
 
 	it('Add non-SU bulk_load_role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'add_role',
 				role: 'bulk_load_role',
@@ -134,9 +131,7 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('Add user with new bulk_load_role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'add_user',
 				role: 'bulk_load_role',
@@ -157,9 +152,9 @@ describe('5. NoSQL Role Testing', () => {
 			'This operation is not authorized due to role restrictions and/or invalid database items'
 		);
 		const resText = JSON.stringify(errorMsg);
-		assert.ok(errorMsg.unauthorized_access.length == 0, resText);
-		assert.ok(errorMsg.invalid_schema_items.length == 1, resText);
-		assert.ok(errorMsg.invalid_schema_items[0] == "Attribute ' rando' does not exist on 'northnwd.suppliers'", resText);
+		assert.equal(errorMsg.unauthorized_access.length, 0, resText);
+		assert.equal(errorMsg.invalid_schema_items.length, 1, resText);
+		assert.equal(errorMsg.invalid_schema_items[0], "Attribute ' rando' does not exist on 'northnwd.suppliers'", resText);
 	});
 
 	it('CSV Data Load - upsert - to table w/ some restricted attrs & new attr', async () => {
@@ -172,26 +167,24 @@ describe('5. NoSQL Role Testing', () => {
 			'This operation is not authorized due to role restrictions and/or invalid database items'
 		);
 		const resText = JSON.stringify(errorMsg);
-		assert.ok(errorMsg.unauthorized_access.length == 1, resText);
+		assert.equal(errorMsg.unauthorized_access.length, 1, resText);
 		const unauth_obj = errorMsg.unauthorized_access[0];
-		assert.ok(unauth_obj.schema == 'dev', resText);
-		assert.ok(unauth_obj.table == 'dog', resText);
-		assert.ok(unauth_obj.required_table_permissions.length == 0, resText);
-		assert.ok(unauth_obj.required_attribute_permissions.length == 2, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'adorable', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'update', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'age', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert', resText);
-		assert.ok(errorMsg.invalid_schema_items.length == 1, resText);
-		assert.ok(errorMsg.invalid_schema_items[0] == "Attribute 'rando' does not exist on 'dev.dog'", resText);
+		assert.equal(unauth_obj.schema, 'dev', resText);
+		assert.equal(unauth_obj.table, 'dog', resText);
+		assert.equal(unauth_obj.required_table_permissions.length, 0, resText);
+		assert.equal(unauth_obj.required_attribute_permissions.length, 2, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].attribute_name, 'adorable', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].required_permissions.length, 1, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].required_permissions[0], 'update', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[1].attribute_name, 'age', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[1].required_permissions.length, 1, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[1].required_permissions[0], 'insert', resText);
+		assert.equal(errorMsg.invalid_schema_items.length, 1, resText);
+		assert.equal(errorMsg.invalid_schema_items[0], "Attribute 'rando' does not exist on 'dev.dog'", resText);
 	});
 
 	it('CSV URL Load - upsert - to table w/ restricted attrs', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersBulkLoadUser)
+		const response = await reqAsNonSU(headersBulkLoadUser)
 			.send({
 				operation: 'csv_url_load',
 				action: 'upsert',
@@ -199,7 +192,7 @@ describe('5. NoSQL Role Testing', () => {
 				table: `${testData.csv_tb}`,
 				csv_url: 'https://harperdb-integration-test-data.s3.us-east-2.amazonaws.com/breeds.csv',
 			})
-			.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, r.text));
+			.expect((r) => assert.equal(r.body.message.indexOf('Starting job'), 0, r.text));
 
 		const id = await getJobId(response.body);
 		const errorMsg = await checkJobCompleted(
@@ -208,27 +201,25 @@ describe('5. NoSQL Role Testing', () => {
 		);
 
 		const resText = JSON.stringify(errorMsg);
-		assert.ok(errorMsg.unauthorized_access.length == 1, resText);
+		assert.equal(errorMsg.unauthorized_access.length, 1, resText);
 		const unauth_obj = errorMsg.unauthorized_access[0];
 
-		assert.ok(unauth_obj.schema == 'northnwd', resText);
-		assert.ok(unauth_obj.table == 'url_csv_data', resText);
-		assert.ok(unauth_obj.required_table_permissions.length == 0, resText);
-		assert.ok(unauth_obj.required_attribute_permissions.length == 2, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'name', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'update', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'section', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert', resText);
-		assert.ok(errorMsg.invalid_schema_items.length == 1, resText);
-		assert.ok(errorMsg.invalid_schema_items[0] == "Attribute 'country' does not exist on 'northnwd.url_csv_data'", resText);
+		assert.equal(unauth_obj.schema, 'northnwd', resText);
+		assert.equal(unauth_obj.table, 'url_csv_data', resText);
+		assert.equal(unauth_obj.required_table_permissions.length, 0, resText);
+		assert.equal(unauth_obj.required_attribute_permissions.length, 2, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].attribute_name, 'name', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].required_permissions.length, 1, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].required_permissions[0], 'update', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[1].attribute_name, 'section', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[1].required_permissions.length, 1, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[1].required_permissions[0], 'insert', resText);
+		assert.equal(errorMsg.invalid_schema_items.length, 1, resText);
+		assert.equal(errorMsg.invalid_schema_items[0], "Attribute 'country' does not exist on 'northnwd.url_csv_data'", resText);
 	});
 
 	it('CSV URL Load - update - to table w/ restricted attrs', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersBulkLoadUser)
+		const response = await reqAsNonSU(headersBulkLoadUser)
 			.send({
 				operation: 'csv_url_load',
 				action: 'update',
@@ -236,7 +227,7 @@ describe('5. NoSQL Role Testing', () => {
 				table: `${testData.csv_tb}`,
 				csv_url: 'https://harperdb-integration-test-data.s3.us-east-2.amazonaws.com/breeds.csv',
 			})
-			.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, r.text));
+			.expect((r) => assert.equal(r.body.message.indexOf('Starting job'), 0, r.text));
 
 		const id = await getJobId(response.body);
 		const errorMsg = await checkJobCompleted(
@@ -244,24 +235,22 @@ describe('5. NoSQL Role Testing', () => {
 			'This operation is not authorized due to role restrictions and/or invalid database items'
 		);
 		const resText = JSON.stringify(errorMsg);
-		assert.ok(errorMsg.unauthorized_access.length == 1, resText);
+		assert.equal(errorMsg.unauthorized_access.length, 1, resText);
 		const unauth_obj = errorMsg.unauthorized_access[0];
 
-		assert.ok(unauth_obj.schema == 'northnwd', resText);
-		assert.ok(unauth_obj.table == 'url_csv_data', resText);
-		assert.ok(unauth_obj.required_table_permissions.length == 0, resText);
-		assert.ok(unauth_obj.required_attribute_permissions.length == 1, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'name', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'update', resText);
-		assert.ok(errorMsg.invalid_schema_items.length == 1, resText);
-		assert.ok(errorMsg.invalid_schema_items[0] == "Attribute 'country' does not exist on 'northnwd.url_csv_data'", resText);
+		assert.equal(unauth_obj.schema, 'northnwd', resText);
+		assert.equal(unauth_obj.table, 'url_csv_data', resText);
+		assert.equal(unauth_obj.required_table_permissions.length, 0, resText);
+		assert.equal(unauth_obj.required_attribute_permissions.length, 1, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].attribute_name, 'name', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].required_permissions.length, 1, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].required_permissions[0], 'update', resText);
+		assert.equal(errorMsg.invalid_schema_items.length, 1, resText);
+		assert.equal(errorMsg.invalid_schema_items[0], "Attribute 'country' does not exist on 'northnwd.url_csv_data'", resText);
 	});
 
 	it('CSV File Load to table w/ restricted attrs', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersBulkLoadUser)
+		const response = await reqAsNonSU(headersBulkLoadUser)
 			.send({
 				operation: 'csv_file_load',
 				action: 'insert',
@@ -269,7 +258,7 @@ describe('5. NoSQL Role Testing', () => {
 				table: 'books',
 				file_path: `${getCsvPath()}` + 'Books.csv',
 			})
-			.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, r.text))
+			.expect((r) => assert.equal(r.body.message.indexOf('Starting job'), 0, r.text))
 			.expect(200);
 
 		const id = await getJobId(response.body);
@@ -278,20 +267,20 @@ describe('5. NoSQL Role Testing', () => {
 			'This operation is not authorized due to role restrictions and/or invalid database items'
 		);
 		const resText = JSON.stringify(errorMsg);
-		assert.ok(errorMsg.unauthorized_access.length == 1, resText);
+		assert.equal(errorMsg.unauthorized_access.length, 1, resText);
 		const unauth_obj = errorMsg.unauthorized_access[0];
 
-		assert.ok(unauth_obj.schema == 'dev', resText);
-		assert.ok(unauth_obj.table == 'books', resText);
-		assert.ok(unauth_obj.required_table_permissions.length == 0, resText);
-		assert.ok(unauth_obj.required_attribute_permissions.length == 2, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'id', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'books_count', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert', resText);
-		assert.ok(errorMsg.invalid_schema_items.length == 17, resText);
+		assert.equal(unauth_obj.schema, 'dev', resText);
+		assert.equal(unauth_obj.table, 'books', resText);
+		assert.equal(unauth_obj.required_table_permissions.length, 0, resText);
+		assert.equal(unauth_obj.required_attribute_permissions.length, 2, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].attribute_name, 'id', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].required_permissions.length, 1, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].required_permissions[0], 'insert', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[1].attribute_name, 'books_count', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[1].required_permissions.length, 1, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[1].required_permissions[0], 'insert', resText);
+		assert.equal(errorMsg.invalid_schema_items.length, 17, resText);
 
 		const expected_invalid_items = [
 			"Attribute 'authors' does not exist on 'dev.books'",
@@ -319,9 +308,7 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('Import CSV from S3 to table w/ restricted attrs', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersBulkLoadUser)
+		const response = await reqAsNonSU(headersBulkLoadUser)
 			.send({
 				operation: 'import_from_s3',
 				action: 'insert',
@@ -335,7 +322,7 @@ describe('5. NoSQL Role Testing', () => {
 					region: 'us-east-2',
 				},
 			})
-			.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, r.text));
+			.expect((r) => assert.equal(r.body.message.indexOf('Starting job'), 0, r.text));
 
 		const id = await getJobId(response.body);
 		const errorMsg = await checkJobCompleted(
@@ -343,21 +330,21 @@ describe('5. NoSQL Role Testing', () => {
 			'This operation is not authorized due to role restrictions and/or invalid database items'
 		);
 		const resText = JSON.stringify(errorMsg);
-		assert.ok(errorMsg.unauthorized_access.length == 1, resText);
+		assert.equal(errorMsg.unauthorized_access.length, 1, resText);
 		const unauth_obj = errorMsg.unauthorized_access[0];
 
-		assert.ok(unauth_obj.schema == 'dev', resText);
-		assert.ok(unauth_obj.table == 'dog', resText);
-		assert.ok(unauth_obj.required_table_permissions.length == 0, resText);
-		assert.ok(unauth_obj.required_attribute_permissions.length == 2, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'owner_id', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'age', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert', resText);
+		assert.equal(unauth_obj.schema, 'dev', resText);
+		assert.equal(unauth_obj.table, 'dog', resText);
+		assert.equal(unauth_obj.required_table_permissions.length, 0, resText);
+		assert.equal(unauth_obj.required_attribute_permissions.length, 2, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].attribute_name, 'owner_id', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].required_permissions.length, 1, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].required_permissions[0], 'insert', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[1].attribute_name, 'age', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[1].required_permissions.length, 1, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[1].required_permissions[0], 'insert', resText);
 
-		assert.ok(errorMsg.invalid_schema_items.length == 2, resText);
+		assert.equal(errorMsg.invalid_schema_items.length, 2, resText);
 		const expected_invalid_items = [
 			"Attribute 'breed_id' does not exist on 'dev.dog'",
 			"Attribute 'weight_lbs' does not exist on 'dev.dog'",
@@ -368,9 +355,7 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('Import JSON from S3 - upsert - to table w/ restricted attrs', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersBulkLoadUser)
+		const response = await reqAsNonSU(headersBulkLoadUser)
 			.send({
 				operation: 'import_from_s3',
 				action: 'upsert',
@@ -384,7 +369,7 @@ describe('5. NoSQL Role Testing', () => {
 					region: 'us-east-2',
 				},
 			})
-			.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, r.text));
+			.expect((r) => assert.equal(r.body.message.indexOf('Starting job'), 0, r.text));
 
 		const id = await getJobId(response.body);
 		const errorMsg = await checkJobCompleted(
@@ -392,28 +377,26 @@ describe('5. NoSQL Role Testing', () => {
 			'This operation is not authorized due to role restrictions and/or invalid database items'
 		);
 		const resText = JSON.stringify(errorMsg);
-		assert.ok(errorMsg.unauthorized_access.length == 1, resText);
+		assert.equal(errorMsg.unauthorized_access.length, 1, resText);
 		const unauth_obj = errorMsg.unauthorized_access[0];
 
-		assert.ok(unauth_obj.schema == 'dev', resText);
-		assert.ok(unauth_obj.table == 'owner', resText);
-		assert.ok(unauth_obj.required_table_permissions.length == 0, resText);
-		assert.ok(unauth_obj.required_attribute_permissions.length == 2, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'id', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 2, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[1] == 'update', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'name', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 2, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[1] == 'update', resText);
-		assert.ok(errorMsg.invalid_schema_items.length == 0, resText);
+		assert.equal(unauth_obj.schema, 'dev', resText);
+		assert.equal(unauth_obj.table, 'owner', resText);
+		assert.equal(unauth_obj.required_table_permissions.length, 0, resText);
+		assert.equal(unauth_obj.required_attribute_permissions.length, 2, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].attribute_name, 'id', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].required_permissions.length, 2, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].required_permissions[0], 'insert', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].required_permissions[1], 'update', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[1].attribute_name, 'name', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[1].required_permissions.length, 2, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[1].required_permissions[0], 'insert', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[1].required_permissions[1], 'update', resText);
+		assert.equal(errorMsg.invalid_schema_items.length, 0, resText);
 	});
 
 	it('Import JSON from S3 - insert - to table w/ restricted attrs', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersBulkLoadUser)
+		const response = await reqAsNonSU(headersBulkLoadUser)
 			.send({
 				operation: 'import_from_s3',
 				action: 'insert',
@@ -427,7 +410,7 @@ describe('5. NoSQL Role Testing', () => {
 					region: 'us-east-2',
 				},
 			})
-			.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, r.text));
+			.expect((r) => assert.equal(r.body.message.indexOf('Starting job'), 0, r.text));
 
 		const id = await getJobId(response.body);
 		const errorMsg = await checkJobCompleted(
@@ -435,26 +418,24 @@ describe('5. NoSQL Role Testing', () => {
 			'This operation is not authorized due to role restrictions and/or invalid database items'
 		);
 		const resText = JSON.stringify(errorMsg);
-		assert.ok(errorMsg.unauthorized_access.length == 1, resText);
+		assert.equal(errorMsg.unauthorized_access.length, 1, resText);
 		const unauth_obj = errorMsg.unauthorized_access[0];
 
-		assert.ok(unauth_obj.schema == 'dev', resText);
-		assert.ok(unauth_obj.table == 'owner', resText);
-		assert.ok(unauth_obj.required_table_permissions.length == 0, resText);
-		assert.ok(unauth_obj.required_attribute_permissions.length == 2, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].attribute_name == 'id', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions.length == 1, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[0].required_permissions[0] == 'insert', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[1].attribute_name == 'name', resText);
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions.length == 1, resText);
-		assert.ok(unauth_obj.required_attribute_permissions[1].required_permissions[0] == 'insert', resText);
-		assert.ok(errorMsg.invalid_schema_items.length == 0, resText);
+		assert.equal(unauth_obj.schema, 'dev', resText);
+		assert.equal(unauth_obj.table, 'owner', resText);
+		assert.equal(unauth_obj.required_table_permissions.length, 0, resText);
+		assert.equal(unauth_obj.required_attribute_permissions.length, 2, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].attribute_name, 'id', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].required_permissions.length, 1, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[0].required_permissions[0], 'insert', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[1].attribute_name, 'name', resText);
+		assert.equal(unauth_obj.required_attribute_permissions[1].required_permissions.length, 1, resText);
+		assert.equal(unauth_obj.required_attribute_permissions[1].required_permissions[0], 'insert', resText);
+		assert.equal(errorMsg.invalid_schema_items.length, 0, resText);
 	});
 
 	it('Alter non-SU bulk_load_role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'alter_role',
 				id: 'bulk_load_role',
@@ -523,7 +504,7 @@ describe('5. NoSQL Role Testing', () => {
 					},
 				},
 			})
-			.expect((r) => assert.ok(r.body.id == 'bulk_load_role', r.text))
+			.expect((r) => assert.equal(r.body.id, 'bulk_load_role', r.text))
 			.expect(200);
 	});
 
@@ -540,22 +521,18 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('Check row from Data CSV job was upserted', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'sql',
 				sql: `SELECT count(*) AS row_count
                                   FROM ${testData.schema}.${testData.supp_tb}`,
 			})
-			.expect((r) => assert.ok(r.body[0].row_count == 30, r.text))
+			.expect((r) => assert.equal(r.body[0].row_count, 30, r.text))
 			.expect(200);
 	});
 
 	it('Import CSV from S3 to table w/ full attr perms - update', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersBulkLoadUser)
+		const response = await reqAsNonSU(headersBulkLoadUser)
 			.send({
 				operation: 'import_from_s3',
 				action: 'update',
@@ -569,16 +546,14 @@ describe('5. NoSQL Role Testing', () => {
 					region: 'us-east-2',
 				},
 			})
-			.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, r.text));
+			.expect((r) => assert.equal(r.body.message.indexOf('Starting job'), 0, r.text));
 
 		const id = await getJobId(response.body);
 		await checkJobCompleted(id, '', 'successfully loaded 9 of 12 records');
 	});
 
 	it('Check rows from S3 update were updated', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.dog' })
 			.expect((r) => {
 				r.body.forEach((row) => {
@@ -589,9 +564,7 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('Drop bulk_load_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_user', username: 'bulk_load_user' })
 			.expect((r) => assert.ok(r.body.message, r.text))
 			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))
@@ -599,23 +572,18 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('Drop bulk_load_user role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_role', id: 'bulk_load_role' })
 			.expect((r) => assert.ok(r.body.message, r.text))
 			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))
 			.expect(200);
-	console.log(response.body);
 	});
 
 	//NoSQL Role Testing Main Folder
 
 	it('Authentication - bad username', async () => {
 		const myHeaders = createHeaders('bad_username', testData.password);
-		const response = await request(envUrl)
-			.post('')
-			.set(myHeaders)
+		await reqAsNonSU(myHeaders)
 			.send({ operation: 'create_schema', schema: 'auth' })
 			.expect((r) => assert.ok(r.text.includes('Login failed')))
 			.expect(401);
@@ -623,18 +591,14 @@ describe('5. NoSQL Role Testing', () => {
 
 	it('Authentication - bad password', async () => {
 		const myHeaders = createHeaders(testData.username, 'bad_password');
-		const response = await request(envUrl)
-			.post('')
-			.set(myHeaders)
+		await reqAsNonSU(myHeaders)
 			.send({ operation: 'create_schema', schema: 'auth' })
 			.expect((r) => assert.ok(r.text.includes('Login failed')))
 			.expect(401);
 	});
 
 	it('NoSQL Add non SU role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'add_role',
 				role: 'developer_test_5',
@@ -817,14 +781,12 @@ describe('5. NoSQL Role Testing', () => {
 					},
 				},
 			})
-			.expect((r) => assert.ok(r.body.id == 'developer_test_5', r.text))
+			.expect((r) => assert.equal(r.body.id, 'developer_test_5', r.text))
 			.expect(200);
 	});
 
 	it('NoSQL Add User with new Role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'add_user',
 				role: 'developer_test_5',
@@ -836,21 +798,19 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('NoSQL try to get user info as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({ operation: 'list_users' })
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'listUsersExternal' is restricted to 'super_user' roles", r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.unauthorized_access.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0], "Operation 'listUsersExternal' is restricted to 'super_user' roles", r.text);
+				assert.equal(r.body.invalid_schema_items.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL Try to read suppliers table as SU', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'search_by_value',
 				table: `${testData.supp_tb}`,
@@ -864,9 +824,7 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('NoSQL Try to read FULLY restricted suppliers table as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_value',
 				table: `${testData.supp_tb}`,
@@ -876,17 +834,17 @@ describe('5. NoSQL Role Testing', () => {
 				search_value: '*',
 				get_attributes: [`${testData.supp_id}`],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Table 'northnwd.suppliers' does not exist", r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
+				assert.equal(r.body.invalid_schema_items[0], "Table 'northnwd.suppliers' does not exist", r.text);
+				assert.equal(r.body.unauthorized_access.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL Try to read region table as SU', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'search_by_value',
 				table: `${testData.regi_tb}`,
@@ -900,9 +858,7 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('NoSQL Try to read region table as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_value',
 				table: `${testData.regi_tb}`,
@@ -916,9 +872,7 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('NoSQL Try to insert into region table as SU', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
@@ -929,46 +883,44 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('NoSQL Try to insert into insert restricted region table as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
 				table: `${testData.regi_tb}`,
 				records: [{ regionid: 17, regiondescription: 'test description' }],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == 'insert', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'region', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.unauthorized_access.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0].required_table_permissions.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0].required_table_permissions[0], 'insert', r.text);
+				assert.equal(r.body.unauthorized_access[0].schema, 'northnwd', r.text);
+				assert.equal(r.body.unauthorized_access[0].table, 'region', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL Try to insert FULLY restricted attribute in categories table as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
 				table: `${testData.cate_tb}`,
 				records: [{ [testData.cate_id]: 9, categoryname: 'test name', description: 'test description' }],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'categoryname' does not exist on 'northnwd.categories'", r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
+				assert.equal(r.body.invalid_schema_items[0], "Attribute 'categoryname' does not exist on 'northnwd.categories'", r.text);
+				assert.equal(r.body.unauthorized_access.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL Try to insert into territories table as SU', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
@@ -979,9 +931,7 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('NoSQL Try to insert into territories table as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
@@ -992,9 +942,7 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('NoSQL Try to update territories table as SU', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'update',
 				schema: `${testData.schema}`,
@@ -1005,29 +953,27 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('NoSQL Try to update restricted territories table as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'update',
 				schema: `${testData.schema}`,
 				table: `${testData.terr_tb}`,
 				records: [{ [testData.terr_id]: 1234567, territorydescription: 'test description updated' }],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == 'update', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'territories', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.unauthorized_access.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0].required_table_permissions.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0].required_table_permissions[0], 'update', r.text);
+				assert.equal(r.body.unauthorized_access[0].schema, 'northnwd', r.text);
+				assert.equal(r.body.unauthorized_access[0].table, 'territories', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL Try to update categories table as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'update',
 				schema: `${testData.schema}`,
@@ -1038,26 +984,24 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('NoSQL Try to update categories table with new attr as test_user - expect error', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'update',
 				schema: `${testData.schema}`,
 				table: `${testData.cate_tb}`,
 				records: [{ [testData.cate_id]: 1, description: 'test description updated', active: true }],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'active' does not exist on 'northnwd.categories'", r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.unauthorized_access.length, 0, r.text);
+				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
+				assert.equal(r.body.invalid_schema_items[0], "Attribute 'active' does not exist on 'northnwd.categories'", r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL Try to update FULLY restricted attrs in categories table as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'update',
 				schema: `${testData.schema}`,
@@ -1071,41 +1015,39 @@ describe('5. NoSQL Role Testing', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'categoryname' does not exist on 'northnwd.categories'"), r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'picture' does not exist on 'northnwd.categories'"), r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 2, r.text);
+				assert.ok(r.body.invalid_schema_items.includes("Attribute 'categoryname' does not exist on 'northnwd.categories'"), r.text);
+				assert.ok(r.body.invalid_schema_items.includes("Attribute 'picture' does not exist on 'northnwd.categories'"), r.text);
+				assert.equal(r.body.unauthorized_access.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL Try to delete from categories table as SU', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'delete', table: `${testData.cate_tb}`, schema: `${testData.schema}`, hash_values: [1] })
 			.expect(200);
 	});
 
 	it('NoSQL Try to delete from restricted categories table as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({ operation: 'delete', table: `${testData.cate_tb}`, schema: `${testData.schema}`, hash_values: [2] })
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == 'delete', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'categories', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.unauthorized_access.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0].required_table_permissions.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0].required_table_permissions[0], 'delete', r.text);
+				assert.equal(r.body.unauthorized_access[0].schema, 'northnwd', r.text);
+				assert.equal(r.body.unauthorized_access[0].table, 'categories', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL Try to read shippers table FULLY restricted attribute as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_value',
 				table: `${testData.ship_tb}`,
@@ -1115,18 +1057,18 @@ describe('5. NoSQL Role Testing', () => {
 				search_value: '*',
 				get_attributes: ['companyname'],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'"), r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'"), r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 2, r.text);
+				assert.ok(r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'"), r.text);
+				assert.ok(r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'"), r.text);
+				assert.equal(r.body.unauthorized_access.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL Try to read ALL shippers table FULLY restricted attributes as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_value',
 				table: `${testData.ship_tb}`,
@@ -1136,71 +1078,71 @@ describe('5. NoSQL Role Testing', () => {
 				search_value: '*',
 				get_attributes: ['*'],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'shipperid' does not exist on 'northnwd.shippers'", r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
+				assert.equal(r.body.invalid_schema_items[0], "Attribute 'shipperid' does not exist on 'northnwd.shippers'", r.text);
+				assert.equal(r.body.unauthorized_access.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL Try to update shippers table FULLY restricted attributes as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'update',
 				schema: `${testData.schema}`,
 				table: `${testData.ship_tb}`,
 				records: [{ [testData.ship_id]: 1, companyname: 'bad update name' }],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'"), r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'"), r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 2, r.text);
+				assert.ok(r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'"), r.text);
+				assert.ok(r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'"), r.text);
+				assert.equal(r.body.unauthorized_access.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL Try to insert shippers table restricted attributes as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
 				table: `${testData.ship_tb}`,
 				records: [{ [testData.ship_id]: 1, companyname: 'bad update name', phone: '(503) 555-9831' }],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 3, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'"), r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'"), r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'"), r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 3, r.text);
+				assert.ok(r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'"), r.text);
+				assert.ok(r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'"), r.text);
+				assert.ok(r.body.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'"), r.text);
+				assert.equal(r.body.unauthorized_access.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL Try to insert to categories table with FULLY restricted attribute as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
 				table: `${testData.cate_tb}`,
 				records: [{ [testData.cate_id]: 4, categoryname: 'bad update name' }],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'categoryname' does not exist on 'northnwd.categories'", r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
+				assert.equal(r.body.invalid_schema_items[0], "Attribute 'categoryname' does not exist on 'northnwd.categories'", r.text);
+				assert.equal(r.body.unauthorized_access.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL Try to insert categories table unrestricted attribute as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
@@ -1211,9 +1153,7 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('NoSQL Try to update categories table unrestricted attribute as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'update',
 				schema: `${testData.schema}`,
@@ -1224,66 +1164,60 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('NoSQL Try to insert to categories table FULLY restricted attribute as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
 				table: `${testData.cate_tb}`,
 				records: [{ [testData.cate_id]: 1, categoryname: 'Stuff and things' }],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'categoryname' does not exist on 'northnwd.categories'", r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
+				assert.equal(r.body.invalid_schema_items[0], "Attribute 'categoryname' does not exist on 'northnwd.categories'", r.text);
+				assert.equal(r.body.unauthorized_access.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL create_schema - non-SU expect fail', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({ operation: 'create_schema', schema: 'test-schema' })
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'createSchema' is restricted to 'super_user' roles", r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.unauthorized_access.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0], "Operation 'createSchema' is restricted to 'super_user' roles", r.text);
+				assert.equal(r.body.invalid_schema_items.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL create_schema - SU expect success', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_schema', schema: 'test-schema' })
 			.expect(200);
 	});
 
 	it('NoSQL create_table - non-SU expect fail', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({ operation: 'create_table', schema: 'test-schema', table: 'test-table', hash_attribute: 'id' })
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'createTable' is restricted to 'super_user' roles", r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.unauthorized_access.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0], "Operation 'createTable' is restricted to 'super_user' roles", r.text);
+				assert.equal(r.body.invalid_schema_items.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL create_table - SU expect success', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_table', schema: 'test-schema', table: 'test-table', hash_attribute: 'id' })
 			.expect(200);
 	});
 
 	it('Insert record to evaluate dropAttribute', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'insert',
 				schema: 'test-schema',
@@ -1294,26 +1228,24 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('NoSQL drop_attribute - non-SU expect fail', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'drop_attribute',
 				schema: 'test-schema',
 				table: 'test-table',
 				attribute: 'test_attribute',
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'dropAttribute' is restricted to 'super_user' roles", r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.unauthorized_access.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0], "Operation 'dropAttribute' is restricted to 'super_user' roles", r.text);
+				assert.equal(r.body.invalid_schema_items.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL drop_attribute - SU expect success', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'drop_attribute',
 				schema: 'test-schema',
@@ -1324,49 +1256,43 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('NoSQL drop_table - non-SU expect fail', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({ operation: 'drop_table', schema: 'test-schema', table: 'test-table' })
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'dropTable' is restricted to 'super_user' roles", r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.unauthorized_access.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0], "Operation 'dropTable' is restricted to 'super_user' roles", r.text);
+				assert.equal(r.body.invalid_schema_items.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL drop_table - SU expect success', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_table', schema: 'test-schema', table: 'test-table' })
 			.expect(200);
 	});
 
 	it('NoSQL drop_schema - non-SU expect fail', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({ operation: 'drop_schema', schema: 'test-schema' })
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'dropSchema' is restricted to 'super_user' roles", r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.unauthorized_access.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0], "Operation 'dropSchema' is restricted to 'super_user' roles", r.text);
+				assert.equal(r.body.invalid_schema_items.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL drop_schema - SU expect success', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_schema', schema: 'test-schema' })
 			.expect(200);
 	});
 
 	it('NoSQL Try to update timestamp value on dog table as test_user - expect fail', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'insert',
 				schema: 'dev',
@@ -1380,18 +1306,14 @@ describe('5. NoSQL Role Testing', () => {
 				],
 			})
 			.expect((r) =>
-				assert.ok(
-					r.body.error ==
-						"Internal timestamp attributes - '__createdtime_' and '__updatedtime__' - cannot be inserted to or updated by HDB users."
+				assert.equal(r.body.error, "Internal timestamp attributes - '__createdtime_' and '__updatedtime__' - cannot be inserted to or updated by HDB users."
 				)
 			)
 			.expect(403);
 	});
 
 	it('NoSQL Try to update attr w/ timestamp value in update row as SU  - expect success', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'update',
 				schema: 'dev',
@@ -1405,15 +1327,13 @@ describe('5. NoSQL Role Testing', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body.message == 'updated 2 of 2 records', r.text))
-			.expect((r) => assert.ok(r.body.update_hashes.length == 2, r.text))
+			.expect((r) => assert.equal(r.body.message, 'updated 2 of 2 records', r.text))
+			.expect((r) => assert.equal(r.body.update_hashes.length, 2, r.text))
 			.expect(200);
 	});
 
 	it('NoSQL Try to update timestamp value on dog table as SU - expect', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'update',
 				schema: 'dev',
@@ -1426,15 +1346,13 @@ describe('5. NoSQL Role Testing', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body.message == 'updated 2 of 2 records', r.text))
-			.expect((r) => assert.ok(r.body.update_hashes.length == 2, r.text))
+			.expect((r) => assert.equal(r.body.message, 'updated 2 of 2 records', r.text))
+			.expect((r) => assert.equal(r.body.update_hashes.length, 2, r.text))
 			.expect(200);
 	});
 
 	it('NoSQL - Upsert - table perms true/no attribute perms set - expect success', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'upsert',
 				schema: `${testData.schema}`,
@@ -1448,34 +1366,34 @@ describe('5. NoSQL Role Testing', () => {
 					{ region: 'Durkastan', contactmame: 'Hans Blix' },
 				],
 			})
-			.expect((r) => assert.ok(r.body.upserted_hashes.length == 2, r.text))
-			.expect((r) => assert.ok(r.body.upserted_hashes.includes('FURIB'), r.text))
-			.expect((r) => assert.ok(!r.body.skipped_hashes, r.text))
-			.expect((r) => assert.ok(r.body.message == 'upserted 2 of 2 records', r.text))
+			.expect((r) => {
+				assert.equal(r.body.upserted_hashes.length, 2, r.text);
+				assert.ok(r.body.upserted_hashes.includes('FURIB'), r.text);
+				assert.ok(!r.body.skipped_hashes, r.text);
+				assert.equal(r.body.message, 'upserted 2 of 2 records', r.text);
+			})
 			.expect(200);
 	});
 
 	it('NoSQL - Upsert - table perms true/attr perms true - expect success', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'upsert',
 				schema: `${testData.schema}`,
 				table: `${testData.cate_tb}`,
 				records: [{ [testData.cate_id]: 8, description: 'Seaweed and fishies' }, { description: 'Junk food' }],
 			})
-			.expect((r) => assert.ok(r.body.upserted_hashes.length == 2, r.text))
-			.expect((r) => assert.ok(r.body.upserted_hashes.includes(8), r.text))
-			.expect((r) => assert.ok(!r.body.skipped_hashes, r.text))
-			.expect((r) => assert.ok(r.body.message == 'upserted 2 of 2 records', r.text))
+			.expect((r) => {
+				assert.equal(r.body.upserted_hashes.length, 2, r.text);
+				assert.ok(r.body.upserted_hashes.includes(8), r.text);
+				assert.ok(!r.body.skipped_hashes, r.text);
+				assert.equal(r.body.message, 'upserted 2 of 2 records', r.text);
+			})
 			.expect(200);
 	});
 
 	it('NoSQL - Upsert - table perms true/no attr perms and new attribute included - expect success', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'upsert',
 				schema: `${testData.schema}`,
@@ -1490,17 +1408,17 @@ describe('5. NoSQL Role Testing', () => {
 					{ region: 'Durkastan', contactmame: 'Sam Johnson', active: true },
 				],
 			})
-			.expect((r) => assert.ok(r.body.upserted_hashes.length == 2, r.text))
-			.expect((r) => assert.ok(r.body.upserted_hashes.includes('FURIB'), r.text))
-			.expect((r) => assert.ok(!r.body.skipped_hashes, r.text))
-			.expect((r) => assert.ok(r.body.message == 'upserted 2 of 2 records', r.text))
+			.expect((r) => {
+				assert.equal(r.body.upserted_hashes.length, 2, r.text);
+				assert.ok(r.body.upserted_hashes.includes('FURIB'), r.text);
+				assert.ok(!r.body.skipped_hashes, r.text);
+				assert.equal(r.body.message, 'upserted 2 of 2 records', r.text);
+			})
 			.expect(200);
 	});
 
 	it('NoSQL - Upsert - table perms true/false  - expect error', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'upsert',
 				schema: `${testData.schema}`,
@@ -1513,21 +1431,21 @@ describe('5. NoSQL Role Testing', () => {
 					},
 				],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'northnwd', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'territories', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions[0] == 'update', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 0, r.text);
+				assert.equal(r.body.unauthorized_access.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0].schema, 'northnwd', r.text);
+				assert.equal(r.body.unauthorized_access[0].table, 'territories', r.text);
+				assert.equal(r.body.unauthorized_access[0].required_table_permissions.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0].required_table_permissions[0], 'update', r.text);
+				assert.equal(r.body.unauthorized_access[0].required_attribute_permissions.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL - Upsert - table perms true/attr perms true but new attribute included - expect error', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'upsert',
 				schema: `${testData.schema}`,
@@ -1541,10 +1459,12 @@ describe('5. NoSQL Role Testing', () => {
 					{ description: 'Junk food', active: false },
 				],
 			})
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'active' does not exist on 'northnwd.categories'", r.text))
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => {
+				assert.equal(r.body.unauthorized_access.length, 0, r.text);
+				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
+				assert.equal(r.body.invalid_schema_items[0], "Attribute 'active' does not exist on 'northnwd.categories'", r.text);
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+			})
 			.expect(403);
 	});
 
@@ -1554,9 +1474,7 @@ describe('5. NoSQL Role Testing', () => {
 			age: 'update',
 		};
 
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'upsert',
 				schema: 'dev',
@@ -1573,26 +1491,24 @@ describe('5. NoSQL Role Testing', () => {
 					{ adorable: true, dog_name: 'Penny', owner_id: 2, age: 5, id: 10, birthday: '10/11/19' },
 				],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'dev', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'dog', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_table_permissions.length == 0, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 2, r.text))
 			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.unauthorized_access.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0].schema, 'dev', r.text);
+				assert.equal(r.body.unauthorized_access[0].table, 'dog', r.text);
+				assert.equal(r.body.unauthorized_access[0].required_table_permissions.length, 0, r.text);
+				assert.equal(r.body.unauthorized_access[0].required_attribute_permissions.length, 2, r.text);
 				r.body.unauthorized_access[0].required_attribute_permissions.forEach((attr_perm_err) => {
-					assert.ok(attr_perm_err.required_permissions[0] == expected_attr_perm_errs[attr_perm_err.attribute_name], r.text);
+					assert.equal(attr_perm_err.required_permissions[0], expected_attr_perm_errs[attr_perm_err.attribute_name], r.text);
 				});
+				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
+				assert.equal(r.body.invalid_schema_items[0], "Attribute 'birthday' does not exist on 'dev.dog'", r.text);
 			})
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'birthday' does not exist on 'dev.dog'", r.text))
 			.expect(403);
 	});
 
 	it('NoSQL - Upsert - w/ null value as hash- expect error', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'upsert',
 				schema: `${testData.schema}`,
@@ -1608,17 +1524,14 @@ describe('5. NoSQL Role Testing', () => {
 				],
 			})
 			.expect((r) =>
-				assert.ok(
-					r.body.error == "Invalid hash value: 'null' is not a valid hash attribute value, check log for more info"
+				assert.equal(r.body.error, "Invalid hash value: 'null' is not a valid hash attribute value, check log for more info"
 				)
 			)
 			.expect(400);
 	});
 
 	it('NoSQL - Upsert - w/ invalid attr name - expect error', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'upsert',
 				schema: `${testData.schema}`,
@@ -1633,14 +1546,12 @@ describe('5. NoSQL Role Testing', () => {
 					{ 'region': 'Durkastan', 'contactmame': 'Sam Johnson', 'active/not active': false },
 				],
 			})
-			.expect((r) => assert.ok(r.body.error == 'Attribute names cannot include backticks or forward slashes', r.text))
+			.expect((r) => assert.equal(r.body.error, 'Attribute names cannot include backticks or forward slashes', r.text))
 			.expect(400);
 	});
 
 	it('search by conditions - equals - allowed attr', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1649,7 +1560,7 @@ describe('5. NoSQL Role Testing', () => {
 				conditions: [{ search_attribute: 'age', search_type: 'equals', search_value: 5 }],
 			})
 			.expect((r) => {
-				assert.ok(r.body.length == 2, r.text);
+				assert.equal(r.body.length, 2, r.text);
 				r.body.forEach((row) => {
 					assert.ok([1, 2].includes(row.id), r.text);
 					assert.ok(!row.location, r.text);
@@ -1660,9 +1571,7 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('search by conditions - ends_with - allowed attr', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1671,9 +1580,9 @@ describe('5. NoSQL Role Testing', () => {
 				conditions: [{ search_attribute: 'dog_name', search_type: 'ends_with', search_value: 'y' }],
 			})
 			.expect((r) => {
-				assert.ok(r.body.length == 4, r.text);
+				assert.equal(r.body.length, 4, r.text);
 				r.body.forEach((row) => {
-					assert.ok([...row.dog_name].pop() == 'y', r.text);
+					assert.equal([...row.dog_name].pop(), 'y', r.text);
 					assert.ok(!row.location, r.text);
 					assert.ok(!row.breed_id, r.text);
 				});
@@ -1682,9 +1591,7 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('search by conditions - equals - restricted attr', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1692,17 +1599,17 @@ describe('5. NoSQL Role Testing', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'location', search_type: 'equals', search_value: 'Denver, CO' }],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
+				assert.equal(r.body.invalid_schema_items[0], "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text);
+				assert.equal(r.body.unauthorized_access.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('search by conditions - contains - restricted attr', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1710,17 +1617,17 @@ describe('5. NoSQL Role Testing', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'location', search_type: 'contains', search_value: 'Denver' }],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
+				assert.equal(r.body.invalid_schema_items[0], "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text);
+				assert.equal(r.body.unauthorized_access.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('search by conditions - starts_with - non-existent attr', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1728,17 +1635,17 @@ describe('5. NoSQL Role Testing', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'random_attr', search_type: 'starts_with', search_value: 1 }],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'random_attr' does not exist on 'dev.dog_conditions'", r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
+				assert.equal(r.body.invalid_schema_items[0], "Attribute 'random_attr' does not exist on 'dev.dog_conditions'", r.text);
+				assert.equal(r.body.unauthorized_access.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it("search by conditions - starts_with - unauth'd attr", async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1746,21 +1653,21 @@ describe('5. NoSQL Role Testing', () => {
 				get_attributes: ['*'],
 				conditions: [{ search_attribute: 'breed_id', search_type: 'starts_with', search_value: 1 }],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'dev', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'dog_conditions', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].attribute_name == 'breed_id', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0] == 'read', r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 0, r.text);
+				assert.equal(r.body.unauthorized_access.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0].schema, 'dev', r.text);
+				assert.equal(r.body.unauthorized_access[0].table, 'dog_conditions', r.text);
+				assert.equal(r.body.unauthorized_access[0].required_attribute_permissions.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0].required_attribute_permissions[0].attribute_name, 'breed_id', r.text);
+				assert.equal(r.body.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0], 'read', r.text);
+			})
 			.expect(403);
 	});
 
 	it("search by conditions - starts_with - unauth'd attrs in get / search", async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1768,22 +1675,22 @@ describe('5. NoSQL Role Testing', () => {
 				get_attributes: ['id', 'dog_name', 'location'],
 				conditions: [{ search_attribute: 'breed_id', search_type: 'starts_with', search_value: 1 }],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'dev', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'dog_conditions', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].attribute_name == 'breed_id', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0] == 'read', r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
+				assert.equal(r.body.invalid_schema_items[0], "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text);
+				assert.equal(r.body.unauthorized_access.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0].schema, 'dev', r.text);
+				assert.equal(r.body.unauthorized_access[0].table, 'dog_conditions', r.text);
+				assert.equal(r.body.unauthorized_access[0].required_attribute_permissions.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0].required_attribute_permissions[0].attribute_name, 'breed_id', r.text);
+				assert.equal(r.body.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0], 'read', r.text);
+			})
 			.expect(403);
 	});
 
 	it('search by conditions - equals & contains - restricted attr', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1798,17 +1705,17 @@ describe('5. NoSQL Role Testing', () => {
 					{ search_attribute: 'location', search_type: 'contains', search_value: 'CO' },
 				],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text)
+				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
+				assert.equal(r.body.invalid_schema_items[0], "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text);
+				assert.equal(r.body.unauthorized_access.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('search by conditions - starts_with & between w/ sort', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1827,17 +1734,17 @@ describe('5. NoSQL Role Testing', () => {
 					{ search_attribute: 'location', search_type: 'starts_with', search_value: 'Denver' },
 				],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
+				assert.equal(r.body.invalid_schema_items[0], "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text);
+				assert.equal(r.body.unauthorized_access.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('search by conditions - 4 conditions - restricted attrs', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1862,18 +1769,18 @@ describe('5. NoSQL Role Testing', () => {
 					{ search_attribute: 'age', search_type: 'greater_than', search_value: 1 },
 				],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'group_id' does not exist on 'dev.dog_conditions'", r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[1] == "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text)
+				assert.equal(r.body.invalid_schema_items.length, 2, r.text);
+				assert.equal(r.body.invalid_schema_items[0], "Attribute 'group_id' does not exist on 'dev.dog_conditions'", r.text);
+				assert.equal(r.body.invalid_schema_items[1], "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text);
+				assert.equal(r.body.unauthorized_access.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it("search by conditions - 4 conditions - restricted/unauth'd attrs", async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1894,23 +1801,23 @@ describe('5. NoSQL Role Testing', () => {
 					{ search_attribute: 'location', search_type: 'contains', search_value: 'enver,' },
 				],
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 2, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Attribute 'group_id' does not exist on 'dev.dog_conditions'", r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[1] == "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].schema == 'dev', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].table == 'dog_conditions', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].attribute_name == 'breed_id', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0] == 'read', r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 2, r.text);
+				assert.equal(r.body.invalid_schema_items[0], "Attribute 'group_id' does not exist on 'dev.dog_conditions'", r.text);
+				assert.equal(r.body.invalid_schema_items[1], "Attribute 'location' does not exist on 'dev.dog_conditions'", r.text);
+				assert.equal(r.body.unauthorized_access.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0].schema, 'dev', r.text);
+				assert.equal(r.body.unauthorized_access[0].table, 'dog_conditions', r.text);
+				assert.equal(r.body.unauthorized_access[0].required_attribute_permissions.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0].required_attribute_permissions[0].attribute_name, 'breed_id', r.text);
+				assert.equal(r.body.unauthorized_access[0].required_attribute_permissions[0].required_permissions[0], 'read', r.text);
+			})
 			.expect(403);
 	});
 
 	it('NoSQL Alter non-SU role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'alter_role',
 				id: 'developer_test_5',
@@ -2035,55 +1942,44 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('NoSQL drop test user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_user', username: 'test_user' })
 			.expect(200);
 	});
 
 	it('NoSQL drop_role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_role', id: 'developer_test_5' })
 			.expect(200);
 	});
 
 	it('NoSQL Add cluster_user Role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'add_role', role: 'test_cluster_user_role', permission: { cluster_user: true } })
-			.expect((r) => assert.ok(r.body.id, r.text));
-		testData.cluster_user_role_id = response.body.id;
+			.expect((r) => {
+				assert.ok(r.body.id, r.text);
+				testData.cluster_user_role_id = r.body.id;
+			});
 	});
 
 	it('NoSQL Add cluster_user with another permission, expect fail', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'add_role',
 				role: 'cluster_user_bad',
 				permission: { cluster_user: true, super_user: true },
 			})
-			.expect((r) => assert.ok(r.body.error == 'Errors in the role permissions JSON provided', r.text))
-			.expect((r) => assert.ok(r.body.main_permissions.length == 1, r.text))
-			.expect((r) =>
-				assert.ok(
-					r.body.main_permissions[0] ==
-						"Roles cannot have both 'super_user' and 'cluster_user' values included in their permissions set."
-				)
-			)
-			.expect((r) => assert.ok(Object.keys(r.body.schema_permissions).length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'Errors in the role permissions JSON provided', r.text);
+				assert.equal(r.body.main_permissions.length, 1, r.text);
+				assert.equal(r.body.main_permissions[0], "Roles cannot have both 'super_user' and 'cluster_user' values included in their permissions set.", r.text);
+				assert.equal(Object.keys(r.body.schema_permissions).length, 0, r.text);
+			})
 			.expect(400);
 	});
 
 	it('NoSQL Add User with cluster_user Role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'add_user',
 				role: 'test_cluster_user_role',
@@ -2097,9 +1993,7 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('NoSQL alter cluster user, change password', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'alter_user', username: 'test_cluster_user', password: `${testData.password}111` })
 			.expect((r) => assert.ok(r.body.message, r.text))
 			.expect((r) => assert.ok(r.body.message.includes('updated 1 of 1 records'), r.text))
@@ -2107,9 +2001,7 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('NoSQL drop test_cluster_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_user', username: 'test_cluster_user' })
 			.expect((r) => assert.ok(r.body.message, r.text))
 			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))
@@ -2117,9 +2009,7 @@ describe('5. NoSQL Role Testing', () => {
 	});
 
 	it('NoSQL drop cluster_user role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_role', id: `${testData.cluster_user_role_id}` })
 			.expect((r) => assert.ok(r.body.message, r.text))
 			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))

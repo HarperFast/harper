@@ -1,7 +1,6 @@
 import {describe, it} from 'node:test';
-import assert from "node:assert";
-import request from 'supertest';
-import { envUrl, testData, getCsvPath, headers } from '../config/envConfig.js';
+import assert from 'node:assert/strict';
+import { testData, getCsvPath, headers } from '../config/envConfig.js';
 import {createTable} from "../utils/table.js";
 import { csvDataLoad, csvFileUpload, csvUrlLoad } from '../utils/csv.js';
 import {insert} from "../utils/insert.js";
@@ -14,6 +13,7 @@ import ownerJson from '../json/owner.json' with {type: "json"};
 import ownerOnlyJson from '../json/ownerOnly.json' with {type: "json"};
 import {searchByHash} from "../utils/search.js";
 import { checkJobCompleted, getJobId } from '../utils/jobs.js';
+import { req } from '../utils/request.js';
 
 
 
@@ -112,9 +112,7 @@ describe('2. Data Load', () => {
     });
 
     it('Confirm all CSV records loaded', async () => {
-        await request(envUrl)
-            .post('')
-            .set(headers)
+        await req()
             .send({
                 operation: 'sql',
                 sql: `select count(*)
@@ -137,9 +135,7 @@ describe('2. Data Load', () => {
     });
 
     it('Confirm 0 CSV records loaded', async () => {
-        await request(envUrl)
-            .post('')
-            .set(headers)
+        await req()
             .send({
                 operation: 'sql',
                 sql: `select count(*)
@@ -266,9 +262,7 @@ describe('2. Data Load', () => {
     });
 
     it('search for specific value from CSV load', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'search_by_hash',
               'schema': `${testData.schema}`,
@@ -278,30 +272,28 @@ describe('2. Data Load', () => {
               'get_attributes': ['supplierid', 'companyname', 'contactname'],
           })
           .expect((r) => {
-              assert.ok(r.body[0].companyname == 'Refrescos Americanas LTDA', r.text);
-              assert.ok(r.body[0].supplierid == 10, r.text);
-              assert.ok(r.body[0].contactname == 'Carlos Diaz', r.text);
+              assert.equal(r.body[0].companyname, 'Refrescos Americanas LTDA', r.text);
+              assert.equal(r.body[0].supplierid, 10, r.text);
+              assert.equal(r.body[0].contactname, 'Carlos Diaz', r.text);
           })
           .expect(200);
     });
 
     it('search for random value from CSV load', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               operation: 'sql', sql: `SELECT *
                               FROM ${testData.schema}.${testData.supp_tb}`,
           })
           .expect((r) => {
               let randomNumber = Math.floor(Math.random() * 29);
-              assert.ok(r.body[randomNumber] != null, r.text);
-              assert.ok(r.body.length == 29, r.text);
+              assert.notEqual(r.body[randomNumber], null, r.text);
+              assert.equal(r.body.length, 29, r.text);
               let keys = Object.keys(r.body[randomNumber]);
               if (keys.indexOf('__updatedtime__') > -1 && keys.indexOf('__createdtime__') > -1) {
-                  assert.ok(keys.length == 14, r.text);
+                  assert.equal(keys.length, 14, r.text);
               } else {
-                  assert.ok(keys.length == 12, r.text);
+                  assert.equal(keys.length, 12, r.text);
 
               }
           })
@@ -309,9 +301,7 @@ describe('2. Data Load', () => {
     });
 
     it('check error on invalid file', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'csv_file_load',
               'action': 'insert',
@@ -324,9 +314,7 @@ describe('2. Data Load', () => {
     });
 
     it('csv bulk load update', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        const response = await req()
           .send({
               'operation': 'csv_data_load',
               'action': 'update',
@@ -334,7 +322,7 @@ describe('2. Data Load', () => {
               'table': `${testData.supp_tb}`,
               'data': 'supplierid,companyname\n19,The Chum Bucket\n',
           })
-          .expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0,
+          .expect((r) => assert.equal(r.body.message.indexOf('Starting job'), 0,
             'Expected to find "Starting job" in the response'));
 
         const id = await getJobId(response.body);
@@ -342,9 +330,7 @@ describe('2. Data Load', () => {
     });
 
     it('csv bulk load update confirm', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'search_by_hash',
               'schema': `${testData.schema}`,
@@ -353,33 +339,31 @@ describe('2. Data Load', () => {
               'hash_values': [19],
               'get_attributes': ['supplierid', 'companyname', 'contactname'],
           })
-          .expect((r) => assert.ok(r.body[0].supplierid == 19, r.text))
-          .expect((r) => assert.ok(r.body[0].contactname == 'Robb Merchant', r.text))
-          .expect((r) => assert.ok(r.body[0].companyname == 'The Chum Bucket', r.text))
+          .expect((r) => {
+            assert.equal(r.body[0].supplierid, 19, r.text);
+            assert.equal(r.body[0].contactname, 'Robb Merchant', r.text);
+            assert.equal(r.body[0].companyname, 'The Chum Bucket', r.text);
+          })
           .expect(200);
     });
 
     //Data Load Main Folder
 
     it('Insert object into table', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'insert',
               'schema': `${testData.schema}`,
               'table': `${testData.cust_tb}`,
               'records': [{ 'postalcode': { 'house': 30, 'street': 'South St' }, 'customerid': 'TEST1' }],
           })
-          .expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records', r.text))
-          .expect((r) => assert.ok(r.body.inserted_hashes[0] == 'TEST1', r.text))
+          .expect((r) => assert.equal(r.body.message, 'inserted 1 of 1 records', r.text))
+          .expect((r) => assert.equal(r.body.inserted_hashes[0], 'TEST1', r.text))
           .expect(200);
     });
 
     it('Insert object confirm ', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'search_by_hash',
               'schema': `${testData.schema}`,
@@ -389,29 +373,25 @@ describe('2. Data Load', () => {
               'get_attributes': ['postalcode', 'customerid'],
           })
           .expect((r) => assert.deepEqual(r.body[0].postalcode, { 'house': 30, 'street': 'South St' }, r.text))
-          .expect((r) => assert.ok(r.body[0].customerid == 'TEST1', r.text))
+          .expect((r) => assert.equal(r.body[0].customerid, 'TEST1', r.text))
           .expect(200);
     });
 
     it('Insert array into table', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'insert',
               'schema': `${testData.schema}`,
               'table': `${testData.cust_tb}`,
               'records': [{ 'postalcode': [1, 2, 3], 'customerid': 'TEST2' }],
           })
-          .expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records', r.text))
-          .expect((r) => assert.ok(r.body.inserted_hashes[0] == 'TEST2', r.text))
+          .expect((r) => assert.equal(r.body.message, 'inserted 1 of 1 records', r.text))
+          .expect((r) => assert.equal(r.body.inserted_hashes[0], 'TEST2', r.text))
           .expect(200);
     });
 
     it('Insert array confirm ', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'search_by_hash',
               'schema': `${testData.schema}`,
@@ -421,85 +401,73 @@ describe('2. Data Load', () => {
               'get_attributes': ['postalcode', 'customerid'],
           })
           .expect((r) => assert.deepEqual(r.body[0].postalcode, [1, 2, 3], r.text))
-          .expect((r) => assert.ok(r.body[0].customerid == 'TEST2', r.text))
+          .expect((r) => assert.equal(r.body[0].customerid, 'TEST2', r.text))
           .expect(200);
     });
 
     it('Insert value into schema that doesnt exist', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'insert',
               'schema': 'not_a_schema',
               'table': `${testData.cust_tb}`,
               'records': [{ 'name': 'Harper', 'customerid': 1 }],
           })
-          .expect((r) => assert.ok(r.body.error == 'database \'not_a_schema\' does not exist', r.text))
+          .expect((r) => assert.equal(r.body.error, 'database \'not_a_schema\' does not exist', r.text))
           .expect(400);
     });
 
     it('Insert value into table that doesnt exist', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'insert',
               'schema': `${testData.schema}`,
               'table': 'not_a_table',
               'records': [{ 'name': 'Harper', 'customerid': 1 }],
           })
-          .expect((r) => assert.ok(r.body.error == 'Table \'northnwd.not_a_table\' does not exist', r.text))
+          .expect((r) => assert.equal(r.body.error, 'Table \'northnwd.not_a_table\' does not exist', r.text))
           .expect(400);
     });
 
     it('Update value in schema that doesn\'t exist', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'update',
               'schema': 'not_a_schema',
               'table': `${testData.cust_tb}`,
               'records': [{ 'name': 'Harper', 'customerid': 1 }],
           })
-          .expect((r) => assert.ok(r.body.error == 'database \'not_a_schema\' does not exist', r.text))
+          .expect((r) => assert.equal(r.body.error, 'database \'not_a_schema\' does not exist', r.text))
           .expect(400);
     });
 
     it('Update value in table that doesn\'t exist', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'update',
               'schema': `${testData.schema}`,
               'table': 'not_a_table',
               'records': [{ 'name': 'Harper', 'customerid': 1 }],
           })
-          .expect((r) => assert.ok(r.body.error == 'Table \'northnwd.not_a_table\' does not exist', r.text))
+          .expect((r) => assert.equal(r.body.error, 'Table \'northnwd.not_a_table\' does not exist', r.text))
           .expect(400);
     });
 
     it('Set attribute to number', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'insert',
               'schema': `${testData.schema}`,
               'table': `${testData.emps_tb}`,
               'records': [{ '4289': 'Mutt', 'firstname': 'Test for number attribute', 'employeeid': 25 }],
           })
-          .expect((r) => assert.ok(r.body.message == 'inserted 1 of 1 records', r.text))
-          .expect((r) => assert.ok(r.body.inserted_hashes[0] == 25, r.text))
+          .expect((r) => assert.equal(r.body.message, 'inserted 1 of 1 records', r.text))
+          .expect((r) => assert.equal(r.body.inserted_hashes[0], 25, r.text))
           .expect(200);
     });
 
     it('Set attribute to number confirm', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({ 'operation': 'describe_table', 'table': `${testData.emps_tb}`, 'schema': `${testData.schema}` })
           .expect((r) => {
               let found = false;
@@ -512,9 +480,7 @@ describe('2. Data Load', () => {
     });
 
     it('Set attribute name greater than 250 bytes', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'insert',
               'schema': `${testData.schema}`,
@@ -528,15 +494,13 @@ describe('2. Data Load', () => {
           })
           .expect((r) => {
               let longAttribute = 'transaction aborted due to attribute name IIetmyLabradorcomeoutsidewithmewhenIwastakingthebinsoutonemorningIlethimgoforawanderthinkinghewasjustgoingtopeeonthetelegraphpoleattheendofourdrivewaylikehealwaysdoesInsteadhesawhisopportunityandseizeditHekeptwalkingpastthetelegraphpolepasttheborderofour being too long. Attribute names cannot be longer than 250 bytes.';
-              assert.ok(r.body.error == longAttribute, r.text);
+              assert.equal(r.body.error, longAttribute, r.text);
           })
           .expect(400);
     });
 
     it('insert valid records into dev.invalid_attributes', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'insert',
               'schema': 'dev',
@@ -552,9 +516,7 @@ describe('2. Data Load', () => {
     });
 
     it('insert records into dev.leading_zero', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'insert',
               'schema': 'dev',
@@ -571,9 +533,7 @@ describe('2. Data Load', () => {
     });
 
     it('insert test records into dev.rando', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'insert',
               'schema': 'dev',
@@ -588,9 +548,7 @@ describe('2. Data Load', () => {
     });
 
     it('test SQL updating with numeric hash in single quotes', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'sql',
               'sql': 'UPDATE dev.rando set active = true WHERE id IN (\'987654321\', \'987654322\')',
@@ -601,9 +559,7 @@ describe('2. Data Load', () => {
     });
 
     it('Upsert dog data for conditions search tests', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'upsert',
               'schema': 'dev',
@@ -720,16 +676,16 @@ describe('2. Data Load', () => {
                   'location': 'Denver, CO',
               }],
           })
-          .expect((r) => assert.ok(r.body.upserted_hashes.length == 11, r.text))
-          .expect((r) => assert.ok(!r.body.skipped_hashes, r.text))
-          .expect((r) => assert.ok(r.body.message == 'upserted 11 of 11 records', r.text))
+          .expect((r) => {
+            assert.equal(r.body.upserted_hashes.length, 11, r.text);
+            assert.ok(!r.body.skipped_hashes, r.text);
+            assert.equal(r.body.message, 'upserted 11 of 11 records', r.text);
+          })
           .expect(200);
     });
 
     it('Insert test records into 123.4', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'insert',
               'schema': '123',
@@ -744,18 +700,14 @@ describe('2. Data Load', () => {
     });
 
     it('Insert records into 123.4 number schema table', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({ 'operation': 'insert', 'schema': 123, 'table': 4, 'records': [{ 'name': 'Hot Dawg' }] })
           .expect((r) => assert.ok(r.body.message.includes('inserted 1'), r.text))
           .expect(200);
     });
 
     it('Update test records in 123.4', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'update',
               'schema': '123',
@@ -767,9 +719,7 @@ describe('2. Data Load', () => {
     });
 
     it('Update records in 123.4 number schema table', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'update',
               'schema': 123,
@@ -781,9 +731,7 @@ describe('2. Data Load', () => {
     });
 
     it('Insert records missing table', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'insert',
               'schema': '123',
@@ -792,23 +740,19 @@ describe('2. Data Load', () => {
                   'name': 'The Coolest Dawg',
               }, { 'id': 987654323, 'name': 'Sup Dawg' }, { 'id': 987654324, 'name': 'Snoop Dawg' }],
           })
-          .expect((r) => assert.ok(r.body.error == '\'table\' is required', r.text))
+          .expect((r) => assert.equal(r.body.error, '\'table\' is required', r.text))
           .expect(400);
     });
 
     it('Insert records missing records', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({ 'operation': 'insert', 'schema': '123', 'table': '4' })
-          .expect((r) => assert.ok(r.body.error == '\'records\' is required', r.text))
+          .expect((r) => assert.equal(r.body.error, '\'records\' is required', r.text))
           .expect(400);
     });
 
     it('Upsert records missing table', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'upsert',
               'schema': '123',
@@ -817,23 +761,19 @@ describe('2. Data Load', () => {
                   'name': 'The Coolest Dawg',
               }, { 'id': 987654323, 'name': 'Sup Dawg' }, { 'id': 987654324, 'name': 'Snoop Dawg' }],
           })
-          .expect((r) => assert.ok(r.body.error == '\'table\' is required', r.text))
+          .expect((r) => assert.equal(r.body.error, '\'table\' is required', r.text))
           .expect(400);
     });
 
     it('Upsert records missing records', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({ 'operation': 'upsert', 'schema': '123', 'table': '4' })
-          .expect((r) => assert.ok(r.body.error == '\'records\' is required', r.text))
+          .expect((r) => assert.equal(r.body.error, '\'records\' is required', r.text))
           .expect(400);
     });
 
     it('Update records missing table', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({
               'operation': 'update',
               'schema': '123',
@@ -842,20 +782,15 @@ describe('2. Data Load', () => {
                   'name': 'The Coolest Dawg',
               }, { 'id': 987654323, 'name': 'Sup Dawg' }, { 'id': 987654324, 'name': 'Snoop Dawg' }],
           })
-          .expect((r) => assert.ok(r.body.error == '\'table\' is required', r.text))
+          .expect((r) => assert.equal(r.body.error, '\'table\' is required', r.text))
           .expect(400);
     });
 
     it('Update records missing records', async () => {
-        const response = await request(envUrl)
-          .post('')
-          .set(headers)
+        await req()
           .send({ 'operation': 'upsert', 'schema': '123', 'table': '4' })
-          .expect((r) => assert.ok(r.body.error == '\'records\' is required', r.text))
+          .expect((r) => assert.equal(r.body.error, '\'records\' is required', r.text))
           .expect(400);
     });
-
-
-
 
 });

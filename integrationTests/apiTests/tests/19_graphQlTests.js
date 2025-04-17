@@ -1,25 +1,19 @@
 import { describe, it } from 'node:test';
-import assert from 'node:assert';
-import request from 'supertest';
-import { envUrl, envUrlRest, testData, headers } from '../config/envConfig.js';
-import { restartWithTimeout } from '../utils/restart.js';
+import assert from 'node:assert/strict';
+import { req, reqGraphQl } from '../utils/request.js';
 
 describe('19. GraphQL tests', () => {
 	//GraphQL tests Folder
 
 	it('Insert one null into SubObject', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'insert', table: 'SubObject', records: [{ id: '0', relatedId: '1', any: null }] })
 			.expect((r) => assert.ok(r.body.message.includes('inserted 1 of 1 records'), r.text))
 			.expect(200);
 	});
 
 	it('Insert into table Related', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'insert',
 				table: 'Related',
@@ -46,9 +40,7 @@ describe('19. GraphQL tests', () => {
 	});
 
 	it('Insert into table SubObject', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'insert',
 				table: 'SubObject',
@@ -73,296 +65,248 @@ describe('19. GraphQL tests', () => {
 	});
 
 	it('Shorthand query', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({ query: '{ Related { id name } }' })
 			.expect((r) => {
-				assert.ok(r.body.data.Related.length == 5, r.text);
+				assert.equal(r.body.data.Related.length, 5, r.text);
 				r.body.data.Related.forEach((row, i) => {
-					assert.ok(row.id == (i + 1).toString(), r.text);
+					assert.equal(row.id, (i + 1).toString(), r.text);
 				});
 			})
 			.expect(200);
 	});
 
 	it('Named query', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({ query: 'query GetRelated { Related { id name } }' })
 			.expect((r) => {
-				assert.ok(r.body.data.Related.length == 5, r.text);
+				assert.equal(r.body.data.Related.length, 5, r.text);
 				r.body.data.Related.forEach((row, i) => {
-					assert.ok(row.id == (i + 1).toString(), r.text);
+					assert.equal(row.id, (i + 1).toString(), r.text);
 				});
 			})
 			.expect(200);
 	});
 
 	it('Named query with operationName', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({ query: 'query GetRelated { Related { id, name } }', operationName: 'GetRelated' })
 			.expect((r) => {
-				assert.ok(r.body.data.Related.length == 5, r.text);
+				assert.equal(r.body.data.Related.length, 5, r.text);
 				r.body.data.Related.forEach((row, i) => {
-					assert.ok(row.id == (i + 1).toString(), r.text);
+					assert.equal(row.id, (i + 1).toString(), r.text);
 				});
 			})
 			.expect(200);
 	});
 
 	it('Named query with operationName 2', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({
 				query: 'query GetRelated { Related { id, name } } query GetSubObject { SubObject { id relatedId } }',
 				operationName: 'GetSubObject',
 			})
 			.expect((r) => {
-				assert.ok(r.body.data.SubObject.length == 6, r.text);
+				assert.equal(r.body.data.SubObject.length, 6, r.text);
 				r.body.data.SubObject.forEach((row, i) => {
-					assert.ok(row.id == i.toString(), r.text);
+					assert.equal(row.id, i.toString(), r.text);
 				});
 			})
 			.expect(200);
 	});
 
 	it('Query by primary key field', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({ query: '{ Related(id: "1") { id name } }' })
-			.expect((r) => assert.ok(r.body.data.Related[0].id == '1', r.text))
+			.expect((r) => assert.equal(r.body.data.Related[0].id, '1', r.text))
 			.expect(200);
 	});
 
 	it('Multi resource query', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({ query: '{ Related { id name } SubObject { id relatedId } }' })
 			.expect((r) => {
-				assert.ok(r.body.data.Related.length == 5, r.text);
+				assert.equal(r.body.data.Related.length, 5, r.text);
 				r.body.data.Related.forEach((row, i) => {
-					assert.ok(row.id == (i + 1).toString(), r.text);
+					assert.equal(row.id, (i + 1).toString(), r.text);
 				});
-				assert.ok(r.body.data.SubObject.length == 6, r.text);
+				assert.equal(r.body.data.SubObject.length, 6, r.text);
 				r.body.data.SubObject.forEach((row, i) => {
-					assert.ok(row.id == i.toString(), r.text);
+					assert.equal(row.id, i.toString(), r.text);
 				});
 			})
 			.expect(200);
 	});
 
 	it('Query by variable non null no default', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({ query: 'query Get($id: ID!) { Related(id: $id) { id name } }', variables: { id: '1' } })
-			.expect((r) => assert.ok(r.body.data.Related[0].id == '1', r.text))
+			.expect((r) => assert.equal(r.body.data.Related[0].id, '1', r.text))
 			.expect(200);
 	});
 
 	it('Query by variable non null with default with var', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({ query: 'query Get($id: ID! = "1") { Related(id: $id) { id name } }', variables: { id: '1' } })
-			.expect((r) => assert.ok(r.body.data.Related[0].id == '1', r.text))
+			.expect((r) => assert.equal(r.body.data.Related[0].id, '1', r.text))
 			.expect(200);
 	});
 
 	it('Query by var nullable no default no var', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({ query: 'query Get($any: Any) { SubObject(any: $any) { id any } }' })
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '0', r.text))
+			.expect((r) => assert.equal(r.body.data.SubObject[0].id, '0', r.text))
 			.expect(200);
 	});
 
 	it('Query by var nullable w default with var', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({
 				query: 'query Get($any: Any = "any-1") { SubObject(any: $any) { id any } }',
 				variables: { any: 'any-2' },
 			})
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '2', r.text))
+			.expect((r) => assert.equal(r.body.data.SubObject[0].id, '2', r.text))
 			.expect(200);
 	});
 
 	it('Query by var w default with null var', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({
 				query: 'query Get($any: Any = "any-1") { SubObject(any: $any) { id any } }',
 				variables: { any: null },
 			})
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '0', r.text))
+			.expect((r) => assert.equal(r.body.data.SubObject[0].id, '0', r.text))
 			.expect(200);
 	});
 
 	it('Query by nested attribute', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({ query: '{ SubObject(related: { name: "name-2" }) { id any } }' })
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '2', r.text))
+			.expect((r) => assert.equal(r.body.data.SubObject[0].id, '2', r.text))
 			.expect(200);
 	});
 
 	it('Query by multiple nested attributes', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({ query: '{ SubObject(any: "any-1", related: { name: "name-1" }) { id any } }' })
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '1', r.text))
+			.expect((r) => assert.equal(r.body.data.SubObject[0].id, '1', r.text))
 			.expect(200);
 	});
 
 	it('Query by nested attribute primary key', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({ query: '{ SubObject(related: { id: "2" }) { id any } }' })
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '2', r.text))
+			.expect((r) => assert.equal(r.body.data.SubObject[0].id, '2', r.text))
 			.expect(200);
 	});
 
 	it('Query by doubly nested attribute', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({ query: '{ SubObject(related: { subObject: { any: "any-3" } }) { id any } }' })
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '3', r.text))
+			.expect((r) => assert.equal(r.body.data.SubObject[0].id, '3', r.text))
 			.expect(200);
 	});
 
 	it('Query by doubly nested attribute as var sub level', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({
 				query: 'query Get($subObject: Any) { SubObject(related: { subObject: $subObject }) { id any } }',
 				variables: { subObject: { any: 'any-3' } },
 			})
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '3', r.text))
+			.expect((r) => assert.equal(r.body.data.SubObject[0].id, '3', r.text))
 			.expect(200);
 	});
 
 	it('Query by doubly nested attribute as var top-level', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({
 				query: 'query Get($related: Any) { SubObject(related: $related) { id any } }',
 				variables: { related: { subObject: { any: 'any-3' } } },
 			})
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '3', r.text))
+			.expect((r) => assert.equal(r.body.data.SubObject[0].id, '3', r.text))
 			.expect(200);
 	});
 
 	it('Query by nested attribute as var sub level', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({
 				query: 'query Get($name: String) { SubObject(related: { name: $name }) { id any } }',
 				variables: { name: 'name-2' },
 			})
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '2', r.text))
+			.expect((r) => assert.equal(r.body.data.SubObject[0].id, '2', r.text))
 			.expect(200);
 	});
 
 	it('Query by nested attribute as var top level', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({
 				query: 'query Get($related: Any) { SubObject(related: $related) { id any } }',
 				variables: { related: { name: 'name-2' } },
 			})
-			.expect((r) => assert.ok(r.body.data.SubObject[0].id == '2', r.text))
+			.expect((r) => assert.equal(r.body.data.SubObject[0].id, '2', r.text))
 			.expect(200);
 	});
 
 	it('Query with top level fragment', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({ query: 'query Get { ...related } fragment related on Any { Related { id name } }' })
 			.expect((r) => {
-				assert.ok(r.body.data.Related.length == 5, r.text);
+				assert.equal(r.body.data.Related.length, 5, r.text);
 				r.body.data.Related.forEach((row, i) => {
-					assert.ok(row.id == (i + 1).toString(), r.text);
+					assert.equal(row.id, (i + 1).toString(), r.text);
 				});
 			})
 			.expect(200);
 	});
 
 	it('Query with top level nested fragment', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({
 				query:
 					'query Get { ...related } fragment related on Any { ...nested } fragment nested on Any { Related { id name } }',
 			})
 			.expect((r) => {
-				assert.ok(r.body.data.Related.length == 5, r.text);
+				assert.equal(r.body.data.Related.length, 5, r.text);
 				r.body.data.Related.forEach((row, i) => {
-					assert.ok(row.id == (i + 1).toString(), r.text);
+					assert.equal(row.id, (i + 1).toString(), r.text);
 				});
 			})
 			.expect(200);
 	});
 
 	it('Query w top level fragment multi resource', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({
 				query:
 					'query Get { ...multiResourceFragment } fragment multiResourceFragment on Any { Related { id name } SubObject { id relatedId } }',
 			})
 			.expect((r) => {
-				assert.ok(r.body.data.Related.length == 5, r.text);
+				assert.equal(r.body.data.Related.length, 5, r.text);
 				r.body.data.Related.forEach((row, i) => {
-					assert.ok(row.id == (i + 1).toString(), r.text);
+					assert.equal(row.id, (i + 1).toString(), r.text);
 				});
-				assert.ok(r.body.data.SubObject.length == 6, r.text);
+				assert.equal(r.body.data.SubObject.length, 6, r.text);
 				r.body.data.SubObject.forEach((row, i) => {
-					assert.ok(row.id == i.toString(), r.text);
+					assert.equal(row.id, i.toString(), r.text);
 				});
 			})
 			.expect(200);
 	});
 
 	it('Query with inline fragment', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({ query: 'query Get { Related(id: "1") { ...on Related { id name } } }' })
-			.expect((r) => assert.ok(r.body.data.Related[0].id == '1', r.text))
+			.expect((r) => assert.equal(r.body.data.Related[0].id, '1', r.text))
 			.expect(200);
 	});
 
 	it('Query with nested fragments', async () => {
-		const response = await request(envUrlRest)
-			.post('/graphql')
-			.set(headers)
+		await reqGraphQl()
 			.send({
 				query:
 					'query Get { Related(id: "2") { ...relatedFields otherTable { ...id } } } fragment relatedFields on Related { ...id name } fragment id on Any { id }',
 			})
-			.expect((r) => assert.ok(r.body.data.Related[0].id == '2', r.text))
+			.expect((r) => assert.equal(r.body.data.Related[0].id, '2', r.text))
 			.expect(200);
 	});
 });

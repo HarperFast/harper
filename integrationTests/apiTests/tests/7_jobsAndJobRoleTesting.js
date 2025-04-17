@@ -1,17 +1,15 @@
 import { describe, it } from 'node:test';
-import assert from 'node:assert';
-import request from 'supertest';
+import assert from 'node:assert/strict';
 import {
 	dateTomorrow,
 	dateYesterday,
-	envUrl,
 	testData,
 	getCsvPath,
-	headers,
 	headersTestUser,
 } from '../config/envConfig.js';
 import { checkJob, checkJobCompleted, getJobId } from '../utils/jobs.js';
 import { setTimeout } from 'node:timers/promises';
+import { req, reqAsNonSU } from '../utils/request.js';
 
 describe('7. Jobs & Job Role Testing', () => {
 
@@ -22,49 +20,37 @@ describe('7. Jobs & Job Role Testing', () => {
 	//S3 Operations
 
 	it('Create schema for S3 test', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_schema', schema: 'S3_DATA' })
 			.expect(200);
 	});
 
 	it('Create dogs table for S3 test', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_table', schema: 'S3_DATA', table: 'dogs', hash_attribute: 'id' })
 			.expect(200);
 	});
 
 	it('Create breed table for S3 test', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_table', schema: 'S3_DATA', table: 'breed', hash_attribute: 'id' })
 			.expect(200);
 	});
 
 	it('Create owners table for S3 test', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_table', schema: 'S3_DATA', table: 'owners', hash_attribute: 'id' })
 			.expect(200);
 	});
 
 	it('Create sensor table for S3 test', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_table', schema: 'S3_DATA', table: 'sensor', hash_attribute: 'id' })
 			.expect(200);
 	});
 
 	it('Import dogs.xlsx from S3 - expect error', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'import_from_s3',
 				action: 'insert',
@@ -78,14 +64,12 @@ describe('7. Jobs & Job Role Testing', () => {
 					region: 'us-east-2',
 				},
 			})
-			.expect((r) => assert.ok(r.body.error == "S3 key must include one of the following valid file extensions - '.csv', '.json'", r.text))
+			.expect((r) => assert.equal(r.body.error, "S3 key must include one of the following valid file extensions - '.csv', '.json'", r.text))
 			.expect(400);
 	});
 
 	it('Import dogs.csv from S3', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		const response = await req()
 			.send({
 				operation: 'import_from_s3',
 				action: 'insert',
@@ -99,7 +83,7 @@ describe('7. Jobs & Job Role Testing', () => {
 					region: 'us-east-2',
 				},
 			})
-			.expect((r) => assert.ok(r.body.message.indexOf('Starting job') == 0, r.text))
+			.expect((r) => assert.equal(r.body.message.indexOf('Starting job'), 0, r.text))
 			.expect(200);
 
 		const id = await getJobId(response.body);
@@ -107,9 +91,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Import owners.json from S3', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		const response = await req()
 			.send({
 				operation: 'import_from_s3',
 				action: 'insert',
@@ -130,9 +112,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Import breed.json from S3', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		const response = await req()
 			.send({
 				operation: 'import_from_s3',
 				action: 'insert',
@@ -153,9 +133,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Import does_not_exist.csv from S3 - expect fail', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		const response = await req()
 			.send({
 				operation: 'import_from_s3',
 				action: 'insert',
@@ -176,9 +154,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Import dogs_update.csv from S3', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		const response = await req()
 			.send({
 				operation: 'import_from_s3',
 				action: 'update',
@@ -199,9 +175,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Import owners_update.json from S3', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		const response = await req()
 			.send({
 				operation: 'import_from_s3',
 				action: 'update',
@@ -222,9 +196,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Import large sensor_data.json from S3', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		const response = await req()
 			.send({
 				operation: 'import_from_s3',
 				action: 'insert',
@@ -245,9 +217,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Import large sensor_data.json for UPSERT from S3', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		const response = await req()
 			.send({
 				operation: 'import_from_s3',
 				action: 'upsert',
@@ -268,9 +238,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Check rows from S3 upsert were updated', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM S3_DATA.sensor' })
 			.expect((r) => {
 				r.body.forEach((row) => {
@@ -281,9 +249,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Import does_not_exist_UPDATE.csv from S3 - expect fail', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		const response = await req()
 			.send({
 				operation: 'import_from_s3',
 				action: 'update',
@@ -304,9 +270,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Export to S3', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		const response = await req()
 			.send({
 				operation: 'export_to_s3',
 				format: 'csv',
@@ -329,9 +293,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Export to S3 search_by_conditions', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		const response = await req()
 			.send({
 				operation: 'export_to_s3',
 				format: 'csv',
@@ -361,9 +323,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Export local search_by_conditions', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		const response = await req()
 			.send({
 				operation: 'export_local',
 				path: './',
@@ -383,30 +343,24 @@ describe('7. Jobs & Job Role Testing', () => {
 		const id = await getJobId(response.body);
 		const jobResponse = await checkJob(id, 15);
 
-		assert.ok(jobResponse.body[0].result.message == 'Successfully exported JSON locally.', jobResponse.text);
-		assert.ok(jobResponse.body[0].type == 'export_local', jobResponse.text);
+		assert.equal(jobResponse.body[0].result.message, 'Successfully exported JSON locally.', jobResponse.text);
+		assert.equal(jobResponse.body[0].type, 'export_local', jobResponse.text);
 	});
 
 	it('Create S3 test table', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_table', schema: 'S3_DATA', table: 's3_test', hash_attribute: 'id' })
 			.expect(200);
 	});
 
 	it('Create S3 CSV import test table', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_table', schema: 'S3_DATA', table: 's3_test_csv_import', hash_attribute: 'id' })
 			.expect(200);
 	});
 
 	it('Create S3 JSON import test table', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'create_table',
 				schema: 'S3_DATA',
@@ -417,9 +371,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Insert records S3 test table', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'insert',
 				schema: 'S3_DATA',
@@ -441,15 +393,13 @@ describe('7. Jobs & Job Role Testing', () => {
 					{ id: 'c', object_array: [{ number: 1 }, { number: 'two', count: 2 }] },
 				],
 			})
-			.expect((r) => assert.ok(r.body.inserted_hashes.length == 3, r.text))
-			.expect((r) => assert.ok(r.body.message == 'inserted 3 of 3 records', r.text))
+			.expect((r) => assert.equal(r.body.inserted_hashes.length, 3, r.text))
+			.expect((r) => assert.equal(r.body.message, 'inserted 3 of 3 records', r.text))
 			.expect(200);
 	});
 
 	it('Export S3 test table CSV', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		const response = await req()
 			.send({
 				operation: 'export_to_s3',
 				format: 'csv',
@@ -472,9 +422,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Import S3 test table CSV', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		const response = await req()
 			.send({
 				operation: 'import_from_s3',
 				action: 'insert',
@@ -497,9 +445,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Confirm CSV records import', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'sql',
 				sql: 'select `one`, `object_array`, `id`, `address`, `object`, `lastname`, `firstname`, `array` FROM S3_DATA.s3_test_csv_import ORDER BY id ASC',
@@ -555,9 +501,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Export S3 test table JSON', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		const response = await req()
 			.send({
 				operation: 'export_to_s3',
 				format: 'json',
@@ -579,9 +523,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Import S3 test table JSON', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		const response = await req()
 			.send({
 				operation: 'import_from_s3',
 				action: 'insert',
@@ -603,9 +545,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Confirm JSON records import', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		const response = await req()
 			.send({
 				operation: 'sql',
 				sql: 'select `one`, `object_array`, `id`, `address`, `object`, `lastname`, `firstname`, `array` FROM S3_DATA.s3_test_csv_import ORDER BY id ASC',
@@ -660,9 +600,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Drop S3 schema', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_schema', schema: 'S3_DATA' })
 			.expect(200);
 	});
@@ -670,9 +608,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	//Jobs & Job Role Testing Main Folder
 
 	it('Jobs - Add non SU role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'add_role',
 				role: 'developer_test_5',
@@ -758,9 +694,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Jobs - Add User with new Role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'add_user',
 				role: 'developer_test_5',
@@ -772,9 +706,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Jobs - Add jobs test schema', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_schema', schema: 'test_job' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
@@ -782,18 +714,14 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Jobs - Add runner table', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'create_table', schema: 'test_job', table: 'runner', hash_attribute: 'runner_id' })
 			.expect(200);
 		await setTimeout(500);
 	});
 
 	it('Jobs - Insert into runners table', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'insert',
 				schema: 'test_job',
@@ -805,30 +733,26 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Jobs - Validate 1 entry in runners table', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'sql', sql: 'select * from test_job.runner' })
-			.expect((r) => assert.ok(r.body.length == 1, r.text))
+			.expect((r) => assert.equal(r.body.length, 1, r.text))
 			.expect(200);
 	});
 
 	it('Jobs - Test Remove Files Before with test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({ operation: 'delete_files_before', date: '2018-06-14', schema: 'dog' })
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'deleteFilesBefore' is restricted to 'super_user' roles", r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.unauthorized_access.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0], "Operation 'deleteFilesBefore' is restricted to 'super_user' roles", r.text);
+				assert.equal(r.body.invalid_schema_items.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('Jobs - Test Remove Files Before with su and store job_id', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		const response = await req()
 			.send({
 				operation: 'delete_files_before',
 				date: `${dateTomorrow}`,
@@ -839,23 +763,19 @@ describe('7. Jobs & Job Role Testing', () => {
 
 		const id = await getJobId(response.body);
 		const jobResponse = await checkJob(id, 15);
-		assert.ok(jobResponse.body[0].message == '1 of 1 record successfully deleted', jobResponse.text);
+		assert.equal(jobResponse.body[0].message, '1 of 1 record successfully deleted', jobResponse.text);
 		testData.job_id = id;
 	});
 
 	it('Jobs - Validate 0 entry in runners table', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'sql', sql: 'select * from test_job.runner' })
-			.expect((r) => assert.ok(r.body.length == 0, r.text))
+			.expect((r) => assert.equal(r.body.length, 0, r.text))
 			.expect(200);
 	});
 
 	it('Search Jobs by date', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'search_jobs_by_start_date',
 				from_date: `${dateYesterday}`,
@@ -865,43 +785,37 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Search Jobs by date - non-super user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_jobs_by_start_date',
 				from_date: `${dateYesterday}`,
 				to_date: `${dateTomorrow}`,
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'handleGetJobsByStartDate' is restricted to 'super_user' roles", r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.unauthorized_access.length, 1, r.text);
+				assert.equal(r.body.unauthorized_access[0], "Operation 'handleGetJobsByStartDate' is restricted to 'super_user' roles", r.text);
+				assert.equal(r.body.invalid_schema_items.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('Search Jobs by job_id', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'get_job', id: `${testData.job_id}` })
-			.expect((r) => assert.ok(r.body.length == 1, r.text))
+			.expect((r) => assert.equal(r.body.length, 1, r.text))
 			.expect(200);
 	});
 
 	it('Search Jobs by job_id - non-super user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({ operation: 'get_job', id: `${testData.job_id}` })
-			.expect((r) => assert.ok(r.body.length == 1, r.text))
+			.expect((r) => assert.equal(r.body.length, 1, r.text))
 			.expect(200);
 	});
 
 	it('Jobs - Bulk CSV load into restricted region table as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'csv_data_load',
 				schema: `${testData.schema}`,
@@ -912,9 +826,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Jobs - Bulk CSV load into restricted region table as su', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'csv_data_load',
 				schema: `${testData.schema}`,
@@ -925,9 +837,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Jobs - Bulk CSV Load - insert suppliers table restricted attribute as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'csv_file_load',
 				action: 'insert',
@@ -935,17 +845,17 @@ describe('7. Jobs & Job Role Testing', () => {
 				table: `${testData.supp_tb}`,
 				file_path: `${getCsvPath()}Suppliers.csv`,
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Table 'northnwd.suppliers' does not exist", r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
+				assert.equal(r.body.invalid_schema_items[0], "Table 'northnwd.suppliers' does not exist", r.text);
+				assert.equal(r.body.unauthorized_access.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('Jobs Test Export To Local using SQL as su', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'export_local',
 				path: './',
@@ -961,9 +871,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Jobs Test Export To Local using NoSQL as su', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({
 				operation: 'export_local',
 				path: './',
@@ -982,9 +890,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Jobs Test Export To Local using SQL as test_user on table with FULLY restricted attrs', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'export_local',
 				path: './',
@@ -1000,9 +906,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Jobs Test Export To Local using SQL on RESTRICTED table as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'export_local',
 				path: './',
@@ -1014,17 +918,17 @@ describe('7. Jobs & Job Role Testing', () => {
                                     from ${testData.schema}.${testData.supp_tb}`,
 				},
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items.length == 1, r.text))
-			.expect((r) => assert.ok(r.body.invalid_schema_items[0] == "Table 'northnwd.suppliers' does not exist", r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access.length == 0, r.text))
+			.expect((r) => {
+				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
+				assert.equal(r.body.invalid_schema_items[0], "Table 'northnwd.suppliers' does not exist", r.text);
+				assert.equal(r.body.unauthorized_access.length, 0, r.text);
+			})
 			.expect(403);
 	});
 
 	it('Jobs Test Export To Local using SQL as test_user on table w/ two attr perms', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'export_local',
 				path: './',
@@ -1040,9 +944,7 @@ describe('7. Jobs & Job Role Testing', () => {
 	});
 
 	it('Jobs Test Export To Local using NoSQL as test_user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headersTestUser)
+		await reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'export_local',
 				path: './',
@@ -1057,31 +959,25 @@ describe('7. Jobs & Job Role Testing', () => {
 					get_attributes: [testData.supp_id],
 				},
 			})
-			.expect((r) => assert.ok(r.body.error == 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.ok(r.body.unauthorized_access[0] == "Operation 'export_local' is restricted to 'super_user' roles", r.text))
+			.expect((r) => assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
+			.expect((r) => assert.equal(r.body.unauthorized_access[0], "Operation 'export_local' is restricted to 'super_user' roles", r.text))
 			.expect(403);
 	});
 
 	it('Jobs - drop test user', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_user', username: 'test_user' })
 			.expect(200);
 	});
 
 	it('Jobs -  drop_role', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_role', id: 'developer_test_5' })
 			.expect(200);
 	});
 
 	it('Jobs - Delete Jobs_test schema', async () => {
-		const response = await request(envUrl)
-			.post('')
-			.set(headers)
+		await req()
 			.send({ operation: 'drop_schema', schema: 'test_job' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully delete'), r.text))
 			.expect(200);
