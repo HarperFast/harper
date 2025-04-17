@@ -925,6 +925,7 @@ export function makeTable(options) {
 					return TableResource.getRecordCount().then((record_count) => {
 						description.recordCount = record_count.recordCount;
 						description.estimatedRecordRange = record_count.estimatedRange;
+						return description;
 					});
 				}
 				return description;
