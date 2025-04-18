@@ -13,33 +13,40 @@ async function lookupHostname(nodeId: number): Promise<string> {
 	return result.hostname;
 }
 
-interface AnalyticsRequest {
+interface GetAnalyticsRequest {
 	metric: string;
-	startTimestamp?: number;
-	endTimestamp?: number;
-	getAttributes?: string[];
+	start_time?: number;
+	end_time?: number;
+	get_attributes?: string[];
 }
 
-export async function get(req: AnalyticsRequest): Promise<Metric[]> {
-	log.trace?.('get analytics request received');
-	const conditions: Conditions = [{ attribute: 'metric', comparator: 'equals', value: req.metric }];
-	const select = req.getAttributes ? req.getAttributes : ['*'];
-	if (req.startTimestamp) {
+type GetAnalyticsResponse = Metric[];
+
+export function getOp(req: GetAnalyticsRequest): Promise<GetAnalyticsResponse> {
+	log.trace?.("get_analytics request:", req);
+	return get(req.metric, req.get_attributes, req.start_time, req.end_time);
+}
+
+export async function get(metric: string, getAttributes?: string[], startTime?: number, endTime?: number): Promise<Metric[]> {
+	const conditions: Conditions = [{ attribute: 'metric', comparator: 'equals', value: metric }];
+	const select = getAttributes ? getAttributes : ['*'];
+
+	if (startTime) {
 		conditions.push({
 			attribute: 'id',
 			comparator: 'greater_than_equal',
-			value: req.startTimestamp,
+			value: startTime,
 		});
 	}
-	if (req.endTimestamp) {
+	if (endTime) {
 		conditions.push({
 			attribute: 'id',
 			comparator: 'less_than',
-			value: req.endTimestamp,
+			value: endTime,
 		});
 	}
 	const request = { conditions, select };
-	log.trace?.("get search request:", request);
+	log.trace?.("get_analytics hdb_analytics.search request:", request);
 	const searchResults = await databases.system.hdb_analytics.search(request);
 	const results: Metric[] = [];
 	for await (const result of searchResults) {
