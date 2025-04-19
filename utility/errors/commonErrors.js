@@ -1,7 +1,7 @@
 'use strict';
 
-const hdb_terms = require('../hdbTerms');
-const lmdb_terms = require('../lmdb/terms');
+const hdb_terms = require('../hdbTerms.ts');
+const lmdb_terms = require('../lmdb/terms.js');
 
 // A subset of HTTP error codes that we may use in code.
 const HTTP_STATUS_CODES = {

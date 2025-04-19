@@ -148,7 +148,7 @@ describe('Test restart module', () => {
 
 		it('Test clustering restart PM2 mode happy path ', async () => {
 			sandbox.resetHistory();
-			restart.__set__('pm2_mode', true);
+			restart.__set__('pm2Mode', true);
 			await restart_clustering();
 			expect(generate_nats_config_stub.called).to.be.true;
 			expect(process_man_restart_stub.getCall(0).args[0]).to.equal('Clustering Hub');
@@ -162,7 +162,7 @@ describe('Test restart module', () => {
 		it('Test clustering restart non-PM2 mode happy path ', async () => {
 			let process_kill_stub = sandbox.stub(process, 'kill');
 			sandbox.resetHistory();
-			restart.__set__('pm2_mode', false);
+			restart.__set__('pm2Mode', false);
 			await restart_clustering();
 			process_kill_stub.restore();
 			expect(generate_nats_config_stub.called).to.be.true;

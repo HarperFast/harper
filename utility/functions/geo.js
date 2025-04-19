@@ -7,30 +7,30 @@
  * turf.js has very robust internal validation as such we offload the validation to turf.js
  */
 
-const turf_area = require('@turf/area');
-const turf_length = require('@turf/length');
-const turf_circle = require('@turf/circle');
-const turf_difference = require('@turf/difference');
-const turf_distance = require('@turf/distance');
-const turf_booleanContains = require('@turf/boolean-contains');
-const turf_booleanEqual = require('@turf/boolean-equal');
-const turf_booleanDisjoint = require('@turf/boolean-disjoint');
-const turf_helpers = require('@turf/helpers');
-const hdb_terms = require('../hdbTerms');
-const common_utils = require('../common_utils');
-const hdb_log = require('../logging/harper_logger');
+const turfArea = require('@turf/area');
+const turfLength = require('@turf/length');
+const turfCircle = require('@turf/circle');
+const turfDifference = require('@turf/difference');
+const turfDistance = require('@turf/distance');
+const turfBooleanContains = require('@turf/boolean-contains');
+const turfBooleanEqual = require('@turf/boolean-equal');
+const turfBooleanDisjoint = require('@turf/boolean-disjoint');
+const turfHelpers = require('@turf/helpers');
+const hdbTerms = require('../hdbTerms.ts');
+const commonUtils = require('../common_utils.js');
+const hdbLog = require('../logging/harper_logger.js');
 
 module.exports = {
-	geoArea: geoArea,
-	geoLength: geoLength,
-	geoCircle: geoCircle,
-	geoDifference: geoDifference,
-	geoDistance: geoDistance,
-	geoNear: geoNear,
-	geoContains: geoContains,
-	geoEqual: geoEqual,
-	geoCrosses: geoCrosses,
-	geoConvert: geoConvert,
+	geoArea,
+	geoLength,
+	geoCircle,
+	geoDifference,
+	geoDistance,
+	geoNear,
+	geoContains,
+	geoEqual,
+	geoCrosses,
+	geoConvert,
 };
 
 /***
@@ -39,17 +39,17 @@ module.exports = {
  * @returns {number}
  */
 function geoArea(geoJSON) {
-	if (common_utils.isEmpty(geoJSON)) {
+	if (commonUtils.isEmpty(geoJSON)) {
 		return NaN;
 	}
 
 	if (typeof geoJSON === 'string') {
-		geoJSON = common_utils.autoCastJSON(geoJSON);
+		geoJSON = commonUtils.autoCastJSON(geoJSON);
 	}
 	try {
-		return turf_area.default(geoJSON);
+		return turfArea.default(geoJSON);
 	} catch (err) {
-		hdb_log.trace(err, geoJSON);
+		hdbLog.trace(err, geoJSON);
 		return NaN;
 	}
 }
@@ -61,18 +61,18 @@ function geoArea(geoJSON) {
  * @returns {number}
  */
 function geoLength(geoJSON, units) {
-	if (common_utils.isEmpty(geoJSON)) {
+	if (commonUtils.isEmpty(geoJSON)) {
 		return NaN;
 	}
 
 	if (typeof geoJSON === 'string') {
-		geoJSON = common_utils.autoCastJSON(geoJSON);
+		geoJSON = commonUtils.autoCastJSON(geoJSON);
 	}
 
 	try {
-		return turf_length.default(geoJSON, { units: units ? units : 'kilometers' });
+		return turfLength.default(geoJSON, { units: units ? units : 'kilometers' });
 	} catch (err) {
-		hdb_log.trace(err, geoJSON);
+		hdbLog.trace(err, geoJSON);
 		return NaN;
 	}
 }
@@ -85,22 +85,22 @@ function geoLength(geoJSON, units) {
  * @returns {Feature<Polygon>}
  */
 function geoCircle(point, radius, units) {
-	if (common_utils.isEmpty(point)) {
+	if (commonUtils.isEmpty(point)) {
 		return NaN;
 	}
 
-	if (common_utils.isEmpty(radius)) {
+	if (commonUtils.isEmpty(radius)) {
 		return NaN;
 	}
 
 	if (typeof point === 'string') {
-		point = common_utils.autoCastJSON(point);
+		point = commonUtils.autoCastJSON(point);
 	}
 
 	try {
-		return turf_circle.default(point, radius, { units: units ? units : 'kilometers' });
+		return turfCircle.default(point, radius, { units: units ? units : 'kilometers' });
 	} catch (err) {
-		hdb_log.trace(err, point, radius);
+		hdbLog.trace(err, point, radius);
 		return NaN;
 	}
 }
@@ -112,26 +112,26 @@ function geoCircle(point, radius, units) {
  * @returns {Feature<Polygon | MultiPolygon> | null}
  */
 function geoDifference(poly1, poly2) {
-	if (common_utils.isEmpty(poly1)) {
+	if (commonUtils.isEmpty(poly1)) {
 		return NaN;
 	}
 
-	if (common_utils.isEmpty(poly2)) {
+	if (commonUtils.isEmpty(poly2)) {
 		return NaN;
 	}
 
 	if (typeof poly1 === 'string') {
-		poly1 = common_utils.autoCastJSON(poly1);
+		poly1 = commonUtils.autoCastJSON(poly1);
 	}
 
 	if (typeof poly2 === 'string') {
-		poly2 = common_utils.autoCastJSON(poly2);
+		poly2 = commonUtils.autoCastJSON(poly2);
 	}
 
 	try {
-		return turf_difference(poly1, poly2);
+		return turfDifference(poly1, poly2);
 	} catch (err) {
-		hdb_log.trace(err, poly1, poly2);
+		hdbLog.trace(err, poly1, poly2);
 		return NaN;
 	}
 }
@@ -144,25 +144,25 @@ function geoDifference(poly1, poly2) {
  * @returns {number}
  */
 function geoDistance(point1, point2, units) {
-	if (common_utils.isEmpty(point1)) {
+	if (commonUtils.isEmpty(point1)) {
 		return NaN;
 	}
 
-	if (common_utils.isEmpty(point2)) {
+	if (commonUtils.isEmpty(point2)) {
 		return NaN;
 	}
 
 	if (typeof point1 === 'string') {
-		point1 = common_utils.autoCastJSON(point1);
+		point1 = commonUtils.autoCastJSON(point1);
 	}
 	if (typeof point2 === 'string') {
-		point2 = common_utils.autoCastJSON(point2);
+		point2 = commonUtils.autoCastJSON(point2);
 	}
 
 	try {
-		return turf_distance.default(point1, point2, { units: units ? units : 'kilometers' });
+		return turfDistance.default(point1, point2, { units: units ? units : 'kilometers' });
 	} catch (err) {
-		hdb_log.trace(err, point1, point2);
+		hdbLog.trace(err, point1, point2);
 		return NaN;
 	}
 }
@@ -176,23 +176,23 @@ function geoDistance(point1, point2, units) {
  * @returns {boolean}
  */
 function geoNear(point1, point2, distance, units) {
-	if (common_utils.isEmpty(point1)) {
+	if (commonUtils.isEmpty(point1)) {
 		return false;
 	}
 
-	if (common_utils.isEmpty(point2)) {
+	if (commonUtils.isEmpty(point2)) {
 		return false;
 	}
 
-	if (common_utils.isEmpty(distance)) {
+	if (commonUtils.isEmpty(distance)) {
 		throw new Error('distance is required');
 	}
 
 	if (typeof point1 === 'string') {
-		point1 = common_utils.autoCastJSON(point1);
+		point1 = commonUtils.autoCastJSON(point1);
 	}
 	if (typeof point2 === 'string') {
-		point2 = common_utils.autoCastJSON(point2);
+		point2 = commonUtils.autoCastJSON(point2);
 	}
 
 	if (isNaN(distance)) {
@@ -200,10 +200,10 @@ function geoNear(point1, point2, distance, units) {
 	}
 
 	try {
-		let points_distance = geoDistance(point1, point2, units);
-		return points_distance <= distance;
+		let pointsDistance = geoDistance(point1, point2, units);
+		return pointsDistance <= distance;
 	} catch (err) {
-		hdb_log.trace(err, point1, point2);
+		hdbLog.trace(err, point1, point2);
 		return false;
 	}
 }
@@ -215,11 +215,11 @@ function geoNear(point1, point2, distance, units) {
  * @returns {boolean}
  */
 function geoContains(geo1, geo2) {
-	if (common_utils.isEmpty(geo1)) {
+	if (commonUtils.isEmpty(geo1)) {
 		return false;
 	}
 
-	if (common_utils.isEmpty(geo2)) {
+	if (commonUtils.isEmpty(geo2)) {
 		return false;
 	}
 
@@ -232,32 +232,32 @@ function geoContains(geo1, geo2) {
 	}
 
 	if (typeof geo1 === 'string') {
-		geo1 = common_utils.autoCastJSON(geo1);
+		geo1 = commonUtils.autoCastJSON(geo1);
 	}
 	if (typeof geo2 === 'string') {
-		geo2 = common_utils.autoCastJSON(geo2);
+		geo2 = commonUtils.autoCastJSON(geo2);
 	}
 
 	try {
-		return turf_booleanContains.default(geo1, geo2);
+		return turfBooleanContains.default(geo1, geo2);
 	} catch (err) {
-		hdb_log.trace(err, geo1, geo2);
+		hdbLog.trace(err, geo1, geo2);
 		return false;
 	}
 }
 
 /***
- * Determines if geo1 & geo2 are the same type and have identical x,y coordinate values based on: http://edndoc.esri.com/arcsde/9.0/general_topics/understand_spatial_relations.htm
+ * Determines if geo1 & geo2 are the same type and have identical x,y coordinate values based on: http://edndoc.esri.com/arcsde/9.0/generalTopics/understandSpatialRelations.htm
  * @param geo1
  * @param geo2
  * @returns {boolean}
  */
 function geoEqual(geo1, geo2) {
-	if (common_utils.isEmpty(geo1)) {
+	if (commonUtils.isEmpty(geo1)) {
 		return false;
 	}
 
-	if (common_utils.isEmpty(geo2)) {
+	if (commonUtils.isEmpty(geo2)) {
 		return false;
 	}
 
@@ -270,16 +270,16 @@ function geoEqual(geo1, geo2) {
 	}
 
 	if (typeof geo1 === 'string') {
-		geo1 = common_utils.autoCastJSON(geo1);
+		geo1 = commonUtils.autoCastJSON(geo1);
 	}
 	if (typeof geo2 === 'string') {
-		geo2 = common_utils.autoCastJSON(geo2);
+		geo2 = commonUtils.autoCastJSON(geo2);
 	}
 
 	try {
-		return turf_booleanEqual.default(geo1, geo2);
+		return turfBooleanEqual.default(geo1, geo2);
 	} catch (err) {
-		hdb_log.trace(err, geo1, geo2);
+		hdbLog.trace(err, geo1, geo2);
 		return false;
 	}
 }
@@ -291,11 +291,11 @@ function geoEqual(geo1, geo2) {
  * @returns {boolean}
  */
 function geoCrosses(geo1, geo2) {
-	if (common_utils.isEmpty(geo1)) {
+	if (commonUtils.isEmpty(geo1)) {
 		return false;
 	}
 
-	if (common_utils.isEmpty(geo2)) {
+	if (commonUtils.isEmpty(geo2)) {
 		return false;
 	}
 
@@ -308,17 +308,17 @@ function geoCrosses(geo1, geo2) {
 	}
 
 	if (typeof geo1 === 'string') {
-		geo1 = common_utils.autoCastJSON(geo1);
+		geo1 = commonUtils.autoCastJSON(geo1);
 	}
 	if (typeof geo2 === 'string') {
-		geo2 = common_utils.autoCastJSON(geo2);
+		geo2 = commonUtils.autoCastJSON(geo2);
 	}
 
 	try {
 		//need to do ! as this checks for non-intersections of geometries
-		return !turf_booleanDisjoint.default(geo1, geo2);
+		return !turfBooleanDisjoint.default(geo1, geo2);
 	} catch (err) {
-		hdb_log.trace(err, geo1, geo2);
+		hdbLog.trace(err, geo1, geo2);
 		return false;
 	}
 }
@@ -326,30 +326,30 @@ function geoCrosses(geo1, geo2) {
 /***
  * Converts a series of coordinates into the desired type
  * @param coordinates
- * @param geo_type
+ * @param geoType
  * @param properties
  * @returns {*}
  */
-function geoConvert(coordinates, geo_type, properties) {
-	if (common_utils.isEmptyOrZeroLength(coordinates)) {
+function geoConvert(coordinates, geoType, properties) {
+	if (commonUtils.isEmptyOrZeroLength(coordinates)) {
 		throw new Error('coordinates is required');
 	}
 
-	if (common_utils.isEmpty(geo_type)) {
+	if (commonUtils.isEmpty(geoType)) {
 		throw new Error('geo_type is required');
 	}
 
-	if (common_utils.isEmpty(hdb_terms.GEO_CONVERSION_ENUM[geo_type])) {
+	if (commonUtils.isEmpty(hdbTerms.GEO_CONVERSION_ENUM[geoType])) {
 		throw new Error(
-			`geo_type of ${geo_type} is invalid please use one of the following types: ${Object.keys(
-				hdb_terms.GEO_CONVERSION_ENUM
+			`geoType of ${geoType} is invalid please use one of the following types: ${Object.keys(
+				hdbTerms.GEO_CONVERSION_ENUM
 			).join(',')}`
 		);
 	}
 
 	if (typeof coordinates === 'string') {
-		coordinates = common_utils.autoCastJSON(coordinates);
+		coordinates = commonUtils.autoCastJSON(coordinates);
 	}
 
-	return turf_helpers[geo_type](coordinates, properties);
+	return turfHelpers[geoType](coordinates, properties);
 }

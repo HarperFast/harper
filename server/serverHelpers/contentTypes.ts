@@ -1,20 +1,20 @@
-import { streamAsJSON, stringify, parse } from './JSONStream';
+import { streamAsJSON, stringify, parse } from './JSONStream.ts';
 import { pack, unpack, encodeIter } from 'msgpackr';
 import { decode, Encoder, EncoderStream } from 'cbor-x';
 import { createBrotliCompress, brotliCompress, constants } from 'zlib';
-import { ClientError } from '../../utility/errors/hdbError';
+import { ClientError } from '../../utility/errors/hdbError.js';
 import stream, { Readable } from 'stream';
-import { server } from '../Server';
-import { _assignPackageExport } from '../../globals';
-import env_mgr from '../../utility/environment/environmentManager';
-import { CONFIG_PARAMS } from '../../utility/hdbTerms';
+import { server } from '../Server.ts';
+import { _assignPackageExport } from '../../globals.js';
+import envMgr from '../../utility/environment/environmentManager.js';
+import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import * as YAML from 'yaml';
-import logger from '../../utility/logging/logger';
-import { Blob } from '../../resources/blob';
+import logger from '../../utility/logging/logger.js';
+import { Blob } from '../../resources/blob.ts';
 import { Transform } from 'json2csv';
 // TODO: Only load this if fastify is loaded
 import fp from 'fastify-plugin';
-const SERIALIZATION_BIGINT = env_mgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
+const SERIALIZATION_BIGINT = envMgr.get(CONFIG_PARAMS.SERIALIZATION_BIGINT) !== false;
 const JSONStringify = SERIALIZATION_BIGINT ? stringify : JSON.stringify;
 const JSONParse = SERIALIZATION_BIGINT ? parse : JSON.parse;
 
@@ -25,7 +25,7 @@ const PUBLIC_ENCODE_OPTIONS = {
 
 type Deserialize = (data: Buffer) => { contentType?: string; data: unknown } | unknown;
 
-const media_types = new Map<
+const mediaTypes = new Map<
 	string,
 	{
 		serialize?: unknown;
@@ -36,11 +36,11 @@ const media_types = new Map<
 	}
 >();
 
-export const contentTypes = media_types;
+export const contentTypes = mediaTypes;
 server.contentTypes = contentTypes;
 _assignPackageExport('contentTypes', contentTypes);
 // TODO: Make these monomorphic for faster access. And use a Map
-media_types.set('application/json', {
+mediaTypes.set('application/json', {
 	serializeStream: streamAsJSON,
 	serialize: JSONStringify,
 	deserialize(data) {
@@ -48,17 +48,17 @@ media_types.set('application/json', {
 	},
 	q: 0.8,
 });
-const cbor_encoder = new Encoder(PUBLIC_ENCODE_OPTIONS);
-media_types.set('application/cbor', {
+const cborEncoder = new Encoder(PUBLIC_ENCODE_OPTIONS);
+mediaTypes.set('application/cbor', {
 	serializeStream(data) {
 		if (data[Symbol.asyncIterator]) data[Symbol.iterator] = null; // choose async iteration if possible
 		return new EncoderStream(PUBLIC_ENCODE_OPTIONS).end(data);
 	},
-	serialize: cbor_encoder.encode,
-	deserialize: cbor_encoder.decode,
+	serialize: cborEncoder.encode,
+	deserialize: cborEncoder.decode,
 	q: 1,
 });
-media_types.set('application/x-msgpack', {
+mediaTypes.set('application/x-msgpack', {
 	serializeStream(data: any) {
 		if ((data?.[Symbol.iterator] || data?.[Symbol.asyncIterator]) && !Array.isArray(data)) {
 			return Readable.from(encodeIter(data, PUBLIC_ENCODE_OPTIONS));
@@ -69,7 +69,7 @@ media_types.set('application/x-msgpack', {
 	deserialize: unpack,
 	q: 0.9,
 });
-media_types.set('text/csv', {
+mediaTypes.set('text/csv', {
 	serializeStream(data: any, response: Response) {
 		response.headers.set('Content-Disposition', 'attachment; filename="data.csv"');
 		return toCsvStream(data, data?.getColumns?.());
@@ -81,7 +81,7 @@ media_types.set('text/csv', {
 	},
 	q: 0.1,
 });
-media_types.set('text/plain', {
+mediaTypes.set('text/plain', {
 	serialize(data: any) {
 		return data.toString();
 	},
@@ -94,7 +94,7 @@ media_types.set('text/plain', {
 	q: 0.2,
 });
 
-media_types.set('text/yaml', {
+mediaTypes.set('text/yaml', {
 	serialize(data) {
 		return YAML.stringify(data, { aliasDuplicateObjects: false });
 	},
@@ -102,7 +102,7 @@ media_types.set('text/yaml', {
 	q: 0.7,
 });
 
-media_types.set('text/event-stream', {
+mediaTypes.set('text/event-stream', {
 	// Server-Sent Events (SSE)
 	serializeStream: function (iterable) {
 		// create a readable stream that we use to stream out events from our subscription
@@ -139,7 +139,7 @@ media_types.set('text/event-stream', {
 });
 // TODO: Support this as well:
 //'multipart/form-data'
-media_types.set('application/x-www-form-urlencoded', {
+mediaTypes.set('application/x-www-form-urlencoded', {
 	deserialize(data) {
 		const stringData = Buffer.isBuffer(data) ? data.toString('utf8') : data;
 		const object: Record<string, string | string[]> = {};
@@ -161,15 +161,15 @@ media_types.set('application/x-www-form-urlencoded', {
 		return usp.toString();
 	},
 });
-const generic_handler = {
+const genericHandler = {
 	type: 'application/json',
 	serializeStream: streamAsJSON,
 	serialize: JSONStringify,
 	deserialize: tryJSONParse,
 	q: 0.5,
 };
-media_types.set('*/*', generic_handler);
-media_types.set('', generic_handler);
+mediaTypes.set('*/*', genericHandler);
+mediaTypes.set('', genericHandler);
 // try to JSON parse, but since we don't know for sure, this will return the body
 // otherwise
 function tryJSONParse(input) {
@@ -234,8 +234,8 @@ const registerFastifySerializers = fp(
 	function (fastify, opts, done) {
 		// eslint-disable-next-line require-await
 		fastify.addHook('preSerialization', async (request, reply) => {
-			const content_type = reply.raw.getHeader('content-type');
-			if (content_type) return;
+			const contentType = reply.raw.getHeader('content-type');
+			if (contentType) return;
 			const { serializer, type } = findBestSerializer(request.raw);
 			reply.type(type);
 			reply.serializer(function (data: any) {
@@ -276,106 +276,106 @@ const registerFastifySerializers = fp(
 
 /**
  * This is returns the best serializer for the request's Accept header (content negotiation)
- * @param incoming_message
+ * @param incomingMessage
  * @returns {{serializer, type: string, parameters: {q: number}}|{serializer(): void}}
  */
-export function findBestSerializer(incoming_message) {
-	const headers_object = incoming_message.headers.asObject || incoming_message.headers;
-	const accept_type = incoming_message.requestedContentType ?? headers_object.accept;
-	let best_serializer;
-	let best_quality = 0;
-	let best_type;
-	let best_parameters;
-	const accept_types = accept_type ? accept_type.toLowerCase().split(/\s*,\s*/) : [];
-	for (const accept_type of accept_types) {
-		const [type, ...parameter_parts] = accept_type.split(/\s*;\s*/);
-		let client_quality = 1;
+export function findBestSerializer(incomingMessage) {
+	const headersObject = incomingMessage.headers.asObject || incomingMessage.headers;
+	const acceptType = incomingMessage.requestedContentType ?? headersObject.accept;
+	let bestSerializer;
+	let bestQuality = 0;
+	let bestType;
+	let bestParameters;
+	const acceptTypes = acceptType ? acceptType.toLowerCase().split(/\s*,\s*/) : [];
+	for (const acceptType of acceptTypes) {
+		const [type, ...parameterParts] = acceptType.split(/\s*;\s*/);
+		let clientQuality = 1;
 		const parameters = { q: 1 };
-		for (const part of parameter_parts) {
-			const equal_index = part.indexOf('=');
-			parameters[part.substring(0, equal_index)] = part.substring(equal_index + 1);
+		for (const part of parameterParts) {
+			const equalIndex = part.indexOf('=');
+			parameters[part.substring(0, equalIndex)] = part.substring(equalIndex + 1);
 		}
-		client_quality = +parameters.q;
-		const serializer = media_types.get(type);
+		clientQuality = +parameters.q;
+		const serializer = mediaTypes.get(type);
 		if (serializer) {
-			const quality = (serializer.q || 1) * client_quality;
-			if (quality > best_quality) {
-				best_serializer = serializer;
-				best_type = serializer.type || type;
-				best_quality = quality;
-				best_parameters = parameters;
+			const quality = (serializer.q || 1) * clientQuality;
+			if (quality > bestQuality) {
+				bestSerializer = serializer;
+				bestType = serializer.type || type;
+				bestQuality = quality;
+				bestParameters = parameters;
 			}
 		}
 	}
-	if (!best_serializer) {
-		if (accept_type) {
+	if (!bestSerializer) {
+		if (acceptType) {
 			throw new ClientError(
 				'No supported content types found in Accept header, supported types include: ' +
-					Array.from(media_types.keys()).join(', '),
+					Array.from(mediaTypes.keys()).join(', '),
 				406
 			);
 		} else {
 			// default if Accept header is absent
-			best_serializer = media_types.get('application/json');
-			best_type = 'application/json';
+			bestSerializer = mediaTypes.get('application/json');
+			bestType = 'application/json';
 		}
 	}
 
-	return { serializer: best_serializer, type: best_type, parameters: best_parameters };
+	return { serializer: bestSerializer, type: bestType, parameters: bestParameters };
 }
 
 // about an average TCP packet size (if headers included)
-const COMPRESSION_THRESHOLD = env_mgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD);
+const COMPRESSION_THRESHOLD = envMgr.get(CONFIG_PARAMS.HTTP_COMPRESSIONTHRESHOLD);
 /**
  * Serialize a response
- * @param response_data
+ * @param responseData
  * @param request
- * @param response_object
+ * @param responseObject
  * @returns {Uint8Array|*}
  */
-export function serialize(response_data, request, response_object) {
+export function serialize(responseData, request, responseObject) {
 	// TODO: Maybe support other compression encodings; browsers basically universally support brotli, but Node's HTTP
 	//  client itself actually (just) supports gzip/deflate
-	let can_compress = COMPRESSION_THRESHOLD && request.headers.asObject?.['accept-encoding']?.includes('br');
-	let response_body;
-	if (response_data?.contentType != null && response_data.data != null) {
+	let canCompress = COMPRESSION_THRESHOLD && request.headers.asObject?.['accept-encoding']?.includes('br');
+	let responseBody;
+	if (responseData?.contentType != null && responseData.data != null) {
 		// we use this as a special marker for blobs of data that are explicitly one content type
-		response_object.headers.set('Content-Type', response_data.contentType);
-		response_object.headers.set('Vary', 'Accept-Encoding');
-		response_body = response_data.data;
-	} else if (response_data instanceof Uint8Array || response_data instanceof Blob) {
+		responseObject.headers.set('Content-Type', responseData.contentType);
+		responseObject.headers.set('Vary', 'Accept-Encoding');
+		responseBody = responseData.data;
+	} else if (responseData instanceof Uint8Array || responseData instanceof Blob) {
 		// If a user function or property returns a direct Buffer of binary data, this is the most appropriate content
 		// type for it.
-		response_object.headers.set('Content-Type', 'application/octet-stream');
-		response_object.headers.set('Vary', 'Accept-Encoding');
-		response_body = response_data;
+		responseObject.headers.set('Content-Type', 'application/octet-stream');
+		responseObject.headers.set('Vary', 'Accept-Encoding');
+		responseBody = responseData;
 	} else {
 		const serializer = findBestSerializer(request);
-		if (serializer.serializer.compressible === false) can_compress = false;
+		if (serializer.serializer.compressible === false) canCompress = false;
 		// TODO: If a different content type is preferred, look through resources to see if there is one
 		// specifically for that content type (most useful for html).
-		response_object.headers.set('Vary', 'Accept, Accept-Encoding');
-		response_object.headers.set('Content-Type', serializer.type);
+		responseObject.headers.set('Vary', 'Accept, Accept-Encoding');
+		responseObject.headers.set('Content-Type', serializer.type);
 		if (
-			typeof response_data === 'object' &&
-			response_data &&
-			(response_data[Symbol.iterator] || response_data[Symbol.asyncIterator]) &&
+			typeof responseData === 'object' &&
+			responseData &&
+			(responseData[Symbol.iterator] || responseData[Symbol.asyncIterator]) &&
 			serializer.serializer.serializeStream
 		) {
-			if (response_data.mapError) {
+			if (responseData.mapError) {
 				// indicate that we want iterator errors to be returned so we can serialize them in a meaningful way, if possible
-				const getColumns = response_data.getColumns;
-				response_data = response_data.mapError((error) => {
+				const getColumns = responseData.getColumns;
+				responseData = responseData.mapError((error) => {
 					// make errors serializable in a descriptive way
 					error.toJSON = () => ({ error: error.name, message: error.message, ...error.partialObject });
 					logger.warn?.(`Error serializing error ${request?.url || request}: ${error}`);
 					return error;
 				});
-				response_data.getColumns = getColumns;
+				responseData.getColumns = getColumns;
 			}
-			let stream = serializer.serializer.serializeStream(response_data, response_object);
-			if (can_compress) {
-				response_object.headers.set('Content-Encoding', 'br');
+			let stream = serializer.serializer.serializeStream(responseData, responseObject);
+			if (canCompress) {
+				responseObject.headers.set('Content-Encoding', 'br');
 				stream = stream.pipe(
 					createBrotliCompress({
 						params: {
@@ -390,20 +390,20 @@ export function serialize(response_data, request, response_object) {
 			}
 			return stream;
 		}
-		response_body = serializer.serializer.serialize(response_data, response_object);
+		responseBody = serializer.serializer.serialize(responseData, responseObject);
 	}
-	if (can_compress && response_body?.length > COMPRESSION_THRESHOLD) {
+	if (canCompress && responseBody?.length > COMPRESSION_THRESHOLD) {
 		// TODO: Only do this if the size is large and we can cache the result (otherwise use logic above)
-		response_object.headers.set('Content-Encoding', 'br');
+		responseObject.headers.set('Content-Encoding', 'br');
 		// if we have a single buffer (or string) we compress in a single async call
 		return new Promise((resolve, reject) =>
-			brotliCompress(response_body, (err, data) => {
+			brotliCompress(responseBody, (err, data) => {
 				if (err) reject(err);
 				else resolve(data);
 			})
 		);
 	}
-	return response_body;
+	return responseBody;
 }
 
 let asyncSerializations: Promise<void>[];
@@ -472,7 +472,7 @@ function streamToBuffer(stream: Readable): Promise<Buffer> {
  * they are common parameters for the `Content-Type` header, but HTTP specifies
  * that any parameter can be included (hence the `[k: string]: string`).
  *
- * Use `parseContentType(content_type: string)` to create this object.
+ * Use `parseContentType(contentType: string)` to create this object.
  */
 type ContentType = {
 	type: string;
@@ -499,68 +499,68 @@ function isBufferEncoding(value: string): value is BufferEncoding {
 
 /**
  * Parse the content-type header for the type and parameters.
- * @param content_type
+ * @param contentType
  */
-function parseContentType(content_type: string): ContentType {
+function parseContentType(contentType: string): ContentType {
 	// Get the first `;` character to separate the type from the parameters
-	const parameters_start = content_type.indexOf(';');
+	const parametersStart = contentType.indexOf(';');
 	let parameters: ContentType['parameters'];
 
 	// If the `;` exists, then parse the parameters
-	if (parameters_start > -1) {
+	if (parametersStart > -1) {
 		parameters = {};
 		// Parameters are separated by `;` and key-value pairs are separated by `=`
 		// i.e. `multipart/form-data; charset=UTF-8; boundary=---123`
-		const parts = content_type.slice(parameters_start + 1).split(';');
+		const parts = contentType.slice(parametersStart + 1).split(';');
 		for (const part of parts) {
 			const [key, value] = part.split('=');
 			parameters[key.trim()] = value.trim();
 		}
-		content_type = content_type.slice(0, parameters_start);
+		contentType = contentType.slice(0, parametersStart);
 	}
 
-	return { type: content_type, parameters };
+	return { type: contentType, parameters };
 }
 
 /**
  * Given a content-type header string, get a deserializer function that can be used to parse the body.
  */
-export function getDeserializer(content_type_string: string, streaming: false): Deserialize;
+export function getDeserializer(contentTypeString: string, streaming: false): Deserialize;
 export function getDeserializer(
-	content_type_string: string,
+	contentTypeString: string,
 	streaming: true
 ): (stream: Readable) => Promise<ReturnType<Deserialize>>;
 export function getDeserializer(
-	content_type_string: string = '',
+	contentTypeString: string = '',
 	streaming: boolean = false
 ): Deserialize | ((stream: Readable) => Promise<ReturnType<Deserialize>>) {
-	const content_type = parseContentType(content_type_string);
+	const contentType = parseContentType(contentTypeString);
 
 	const deserialize =
-		(content_type.type && media_types.get(content_type.type)?.deserialize) || deserializerUnknownType(content_type);
+		(contentType.type && mediaTypes.get(contentType.type)?.deserialize) || deserializerUnknownType(contentType);
 
 	return streaming ? (stream: Readable) => streamToBuffer(stream).then(deserialize) : deserialize;
 }
 
-function deserializerUnknownType(content_type: ContentType): Deserialize {
+function deserializerUnknownType(contentType: ContentType): Deserialize {
 	// TODO: store the content-disposition too
 
-	if (content_type.type.startsWith('text/')) {
+	if (contentType.type.startsWith('text/')) {
 		// convert the data to a string since it is text (using the provided charset if specified)
-		if (content_type.parameters?.charset && !isBufferEncoding(content_type.parameters.charset)) {
-			logger.info(`Unknown Buffer encoding ${content_type.parameters.charset} in content-type. Proceeding anyways.`);
+		if (contentType.parameters?.charset && !isBufferEncoding(contentType.parameters.charset)) {
+			logger.info(`Unknown Buffer encoding ${contentType.parameters.charset} in content-type. Proceeding anyways.`);
 		}
 		return (data) => ({
-			contentType: content_type.type,
+			contentType: contentType.type,
 			// @ts-expect-error We are okay with passing whatever the user has specified as the encoding to the `toString` method
-			data: data.toString(content_type.parameters?.charset || 'utf-8'),
+			data: data.toString(contentType.parameters?.charset || 'utf-8'),
 		});
-	} else if (content_type.type === 'application/octet-stream') {
+	} else if (contentType.type === 'application/octet-stream') {
 		// use this type as a way of directly transferring binary data (since that is what it means)
 		return (data) => data;
 	} else {
 		return (data) => {
-			if (content_type.type === '') {
+			if (contentType.type === '') {
 				// try to parse as JSON if no content type
 				try {
 					// if the first byte is `{` then it is likely JSON
@@ -571,7 +571,7 @@ function deserializerUnknownType(content_type: ContentType): Deserialize {
 				}
 			}
 			// else record the type and binary data as a pair
-			return { contentType: content_type.type || 'application/octet-stream', data };
+			return { contentType: contentType.type || 'application/octet-stream', data };
 		};
 	}
 }
@@ -612,16 +612,16 @@ function transformIterable(iterable, transform) {
  */
 export function toCsvStream(data, columns) {
 	// ensure that we pass it an iterable
-	const read_stream = stream.Readable.from(data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data]);
+	const readStream = stream.Readable.from(data?.[Symbol.iterator] || data?.[Symbol.asyncIterator] ? data : [data]);
 	const options = {};
 	if (columns)
 		options.fields = columns.map((column) => ({
 			label: column,
 			value: column,
 		}));
-	const transform_options = { objectMode: true };
+	const transformOptions = { objectMode: true };
 	// Create a json2csv stream transform.
-	const json2csv = new Transform(options, transform_options);
+	const json2csv = new Transform(options, transformOptions);
 	// Pipe the data read stream through json2csv which converts it to CSV
-	return read_stream.pipe(json2csv);
+	return readStream.pipe(json2csv);
 }

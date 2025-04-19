@@ -310,7 +310,7 @@ describe('test lmdbCreateTable module', () => {
 
 	it('Test that error from lmdbCreateRecords is caught', async () => {
 		let error_msg = new Error('I am broken');
-		let rw = lmdb_create_table.__set__('write_utility', {
+		let rw = lmdb_create_table.__set__('writeUtility', {
 			insertRecords: () => {
 				throw error_msg;
 			},

@@ -347,7 +347,7 @@ describe('Test schema module', function () {
 		});
 
 		beforeEach(() => {
-			schema_describe_rw = schema.__set__('schema_metadata_validator', {
+			schema_describe_rw = schema.__set__('schemaMetadataValidator', {
 				schema_describe: {
 					describeSchema: async (describe_schema_object) => ({ ...GLOBAL_SCHEMA_FAKE.dogsrule }),
 					describeTable: async (describe_table_object) => ({ ...GLOBAL_SCHEMA_FAKE.dogsrule.catsdrool }),
@@ -361,7 +361,7 @@ describe('Test schema module', function () {
 		});
 
 		it('Test that bridge stub is called as expected and success msg is returned', async () => {
-			let schema_describe_rw = schema.__set__('schema_metadata_validator', {
+			let schema_describe_rw = schema.__set__('schemaMetadataValidator', {
 				schema_describe: {
 					describeSchema: async (describe_schema_object) => ({ ...GLOBAL_SCHEMA_FAKE }),
 					describeTable: async (describe_table_object) => ({ ...GLOBAL_SCHEMA_FAKE.dogsrule }),
@@ -433,7 +433,7 @@ describe('Test schema module', function () {
 		});
 
 		beforeEach(() => {
-			schema_describe_rw = schema.__set__('schema_metadata_validator', {
+			schema_describe_rw = schema.__set__('schemaMetadataValidator', {
 				schema_describe: {
 					describeSchema: async (describe_schema_object) => ({ ...GLOBAL_SCHEMA_FAKE.dogsrule }),
 					describeTable: async (describe_table_object) => ({ ...GLOBAL_SCHEMA_FAKE.dogsrule.catsdrool }),
@@ -510,7 +510,7 @@ describe('Test schema module', function () {
 		});
 
 		beforeEach(() => {
-			schema_describe_rw = schema.__set__('schema_metadata_validator', {
+			schema_describe_rw = schema.__set__('schemaMetadataValidator', {
 				schema_describe: {
 					describeSchema: async (describe_schema_object) => {
 						({ ...GLOBAL_SCHEMA_FAKE.dogsrule });

@@ -1,15 +1,15 @@
 'use strict';
 
-const hdb_terms = require('../../../../utility/hdbTerms');
-const hdb_utils = require('../../../../utility/common_utils');
-const env = require('../../../../utility/environment/environmentManager');
+const hdbTerms = require('../../../../utility/hdbTerms.ts');
+const hdbUtils = require('../../../../utility/common_utils.js');
+const env = require('../../../../utility/environment/environmentManager.js');
 const path = require('path');
 const minimist = require('minimist');
 const fs = require('fs-extra');
 const _ = require('lodash');
 env.initSync();
 
-const { CONFIG_PARAMS, DATABASES_PARAM_CONFIG, SYSTEM_SCHEMA_NAME } = hdb_terms;
+const { CONFIG_PARAMS, DATABASES_PARAM_CONFIG, SYSTEM_SCHEMA_NAME } = hdbTerms;
 let BASE_SCHEMA_PATH = undefined;
 let SYSTEM_SCHEMA_PATH = undefined;
 let TRANSACTION_STORE_PATH = undefined;
@@ -25,7 +25,7 @@ function getBaseSchemaPath() {
 
 	if (env.getHdbBasePath() !== undefined) {
 		BASE_SCHEMA_PATH =
-			env.get(CONFIG_PARAMS.STORAGE_PATH) || path.join(env.getHdbBasePath(), hdb_terms.DATABASES_DIR_NAME);
+			env.get(CONFIG_PARAMS.STORAGE_PATH) || path.join(env.getHdbBasePath(), hdbTerms.DATABASES_DIR_NAME);
 		return BASE_SCHEMA_PATH;
 	}
 }
@@ -52,17 +52,17 @@ function getTransactionAuditStoreBasePath() {
 
 	if (env.getHdbBasePath() !== undefined) {
 		TRANSACTION_STORE_PATH =
-			env.get(hdb_terms.CONFIG_PARAMS.STORAGE_AUDIT_PATH) ||
-			path.join(env.getHdbBasePath(), hdb_terms.TRANSACTIONS_DIR_NAME);
+			env.get(hdbTerms.CONFIG_PARAMS.STORAGE_AUDIT_PATH) ||
+			path.join(env.getHdbBasePath(), hdbTerms.TRANSACTIONS_DIR_NAME);
 		return TRANSACTION_STORE_PATH;
 	}
 }
 
 function getTransactionAuditStorePath(schema, table) {
-	let schema_config = env.get(CONFIG_PARAMS.DATABASES)?.[schema];
+	let schemaConfig = env.get(CONFIG_PARAMS.DATABASES)?.[schema];
 	return (
-		(table && schema_config?.tables?.[table]?.auditPath) ||
-		schema_config?.auditPath ||
+		(table && schemaConfig?.tables?.[table]?.auditPath) ||
+		schemaConfig?.auditPath ||
 		path.join(getTransactionAuditStoreBasePath(), schema.toString())
 	);
 }
@@ -70,9 +70,9 @@ function getTransactionAuditStorePath(schema, table) {
 function getSchemaPath(schema, table) {
 	schema = schema.toString();
 	table = table ? table.toString() : table;
-	let schema_config = env.get(hdb_terms.CONFIG_PARAMS.DATABASES)?.[schema];
+	let schemaConfig = env.get(hdbTerms.CONFIG_PARAMS.DATABASES)?.[schema];
 	return (
-		(table && schema_config?.tables?.[table]?.path) || schema_config?.path || path.join(getBaseSchemaPath(), schema)
+		(table && schemaConfig?.tables?.[table]?.path) || schemaConfig?.path || path.join(getBaseSchemaPath(), schema)
 	);
 }
 
@@ -91,53 +91,53 @@ function initSystemSchemaPaths(schema, table) {
 	const args = process.env;
 	Object.assign(args, minimist(process.argv));
 
-	const schema_conf_json = args[CONFIG_PARAMS.DATABASES.toUpperCase()];
-	if (schema_conf_json) {
-		let schemas_conf;
+	const schemaConfJson = args[CONFIG_PARAMS.DATABASES.toUpperCase()];
+	if (schemaConfJson) {
+		let schemasConf;
 		try {
-			schemas_conf = JSON.parse(schema_conf_json);
+			schemasConf = JSON.parse(schemaConfJson);
 		} catch (err) {
-			if (!hdb_utils.isObject(schema_conf_json)) throw err;
-			schemas_conf = schema_conf_json;
+			if (!hdbUtils.isObject(schemaConfJson)) throw err;
+			schemasConf = schemaConfJson;
 		}
 
-		for (const schema_conf of schemas_conf) {
-			const system_schema_conf = schema_conf[SYSTEM_SCHEMA_NAME];
-			if (!system_schema_conf) continue;
-			let schemas_obj = env.get(CONFIG_PARAMS.DATABASES);
-			schemas_obj = schemas_obj ?? {};
+		for (const schemaConf of schemasConf) {
+			const systemSchemaConf = schemaConf[SYSTEM_SCHEMA_NAME];
+			if (!systemSchemaConf) continue;
+			let schemasObj = env.get(CONFIG_PARAMS.DATABASES);
+			schemasObj = schemasObj ?? {};
 
 			// If path var exists for system table add it to schemas prop and return path.
-			const system_table_path = system_schema_conf?.tables?.[table]?.[DATABASES_PARAM_CONFIG.PATH];
-			if (system_table_path) {
+			const systemTablePath = systemSchemaConf?.tables?.[table]?.[DATABASES_PARAM_CONFIG.PATH];
+			if (systemTablePath) {
 				_.set(
-					schemas_obj,
+					schemasObj,
 					[SYSTEM_SCHEMA_NAME, DATABASES_PARAM_CONFIG.TABLES, table, DATABASES_PARAM_CONFIG.PATH],
-					system_table_path
+					systemTablePath
 				);
-				env.setProperty(CONFIG_PARAMS.DATABASES, schemas_obj);
-				return system_table_path;
+				env.setProperty(CONFIG_PARAMS.DATABASES, schemasObj);
+				return systemTablePath;
 			}
 
 			// If path exists for system schema add it to schemas prop and return path.
-			const system_schema_path = system_schema_conf?.[DATABASES_PARAM_CONFIG.PATH];
-			if (system_schema_path) {
-				_.set(schemas_obj, [SYSTEM_SCHEMA_NAME, DATABASES_PARAM_CONFIG.PATH], system_schema_path);
-				env.setProperty(CONFIG_PARAMS.DATABASES, schemas_obj);
-				return system_schema_path;
+			const systemSchemaPath = systemSchemaConf?.[DATABASES_PARAM_CONFIG.PATH];
+			if (systemSchemaPath) {
+				_.set(schemasObj, [SYSTEM_SCHEMA_NAME, DATABASES_PARAM_CONFIG.PATH], systemSchemaPath);
+				env.setProperty(CONFIG_PARAMS.DATABASES, schemasObj);
+				return systemSchemaPath;
 			}
 		}
 	}
 
-	// If storage_path is passed use that to determine location
-	const storage_path = args[CONFIG_PARAMS.STORAGE_PATH.toUpperCase()];
-	if (storage_path) {
-		if (!fs.pathExistsSync(storage_path)) throw new Error(storage_path + ' does not exist');
-		const storage_schema_path = path.join(storage_path, schema);
-		fs.mkdirsSync(storage_schema_path);
-		env.setProperty(CONFIG_PARAMS.STORAGE_PATH, storage_path);
+	// If storagePath is passed use that to determine location
+	const storagePath = args[CONFIG_PARAMS.STORAGE_PATH.toUpperCase()];
+	if (storagePath) {
+		if (!fs.pathExistsSync(storagePath)) throw new Error(storagePath + ' does not exist');
+		const storageSchemaPath = path.join(storagePath, schema);
+		fs.mkdirsSync(storageSchemaPath);
+		env.setProperty(CONFIG_PARAMS.STORAGE_PATH, storagePath);
 
-		return storage_schema_path;
+		return storageSchemaPath;
 	}
 
 	// Default to default location

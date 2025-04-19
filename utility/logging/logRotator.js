@@ -1,18 +1,18 @@
 'use strict';
 
-const { promises: fs_prom, createReadStream, createWriteStream } = require('fs');
+const { promises: fsProm, createReadStream, createWriteStream } = require('fs');
 const { createGzip } = require('zlib');
 const { promisify } = require('util');
 const { pipeline } = require('stream');
 const pipe = promisify(pipeline);
 const path = require('path');
-const env_mgr = require('../environment/environmentManager');
-env_mgr.initSync();
-const hdb_logger = require('./harper_logger');
-const { CONFIG_PARAMS, ITC_EVENT_TYPES } = require('../hdbTerms');
-const { onMessageFromWorkers } = require('../../server/threads/manageThreads');
-const { convertToMS } = require('../common_utils');
-const { onStorageReclamation } = require('../../server/storageReclamation');
+const envMgr = require('../environment/environmentManager.js');
+envMgr.initSync();
+const hdbLogger = require('./harper_logger.js');
+const { CONFIG_PARAMS, ITC_EVENT_TYPES } = require('../hdbTerms.ts');
+const { onMessageFromWorkers } = require('../../server/threads/manageThreads.js');
+const { convertToMS } = require('../common_utils.js');
+const { onStorageReclamation } = require('../../server/storageReclamation.ts');
 
 // Interval in ms to check log file and decide if it should be rotated.
 const LOG_AUDIT_INTERVAL = 60000;
@@ -21,17 +21,17 @@ const INT_SIZE_UNDEFINED_MSG =
 const PATH_UNDEFINED_MSG =
 	"'logging.rotation.path' is undefined, to enable logging rotation set this value in harperdb-config.yaml";
 
-let last_rotation_time;
-let set_interval_id;
+let lastRotationTime;
+let setIntervalId;
 
 module.exports = logRotator;
 
 // On restart event check to see if rotator should be enabled
 onMessageFromWorkers((message) => {
 	if (message.type === ITC_EVENT_TYPES.RESTART) {
-		env_mgr.initSync(true);
-		clearInterval(set_interval_id);
-		if (env_mgr.get(CONFIG_PARAMS.LOGGING_ROTATION_ENABLED)) logRotator();
+		envMgr.initSync(true);
+		clearInterval(setIntervalId);
+		if (envMgr.get(CONFIG_PARAMS.LOGGING_ROTATION_ENABLED)) logRotator();
 	}
 });
 
@@ -43,11 +43,11 @@ onMessageFromWorkers((message) => {
  */
 function logRotator({ logger, maxSize, interval, retention, enabled, path: rotatedLogDir, auditInterval }) {
 	if (enabled === false) return;
-	let reclamation_priority = 0;
+	let reclamationPriority = 0;
 	onStorageReclamation(
 		logger.path,
 		(priority) => {
-			reclamation_priority = priority;
+			reclamationPriority = priority;
 		},
 		true
 	);
@@ -61,63 +61,63 @@ function logRotator({ logger, maxSize, interval, retention, enabled, path: rotat
 	}
 
 	// Convert maxSize param to bytes.
-	let max_bytes;
+	let maxBytes;
 	if (maxSize) {
 		const unit = maxSize.slice(-1);
 		const size = maxSize.slice(0, -1);
-		if (unit === 'G') max_bytes = size * 1000000000;
-		else if (unit === 'M') max_bytes = size * 1000000;
-		else max_bytes = size * 1000;
+		if (unit === 'G') maxBytes = size * 1000000000;
+		else if (unit === 'M') maxBytes = size * 1000000;
+		else maxBytes = size * 1000;
 	}
 
 	// Convert interval param to ms.
-	let max_interval;
+	let maxInterval;
 	if (interval) {
-		max_interval = convertToMS(interval);
+		maxInterval = convertToMS(interval);
 	}
 
 	let lastRotatedLogPath;
 	// convert date.now to minutes
-	last_rotation_time = Date.now();
-	hdb_logger.trace('Log rotate enabled, maxSize:', maxSize, 'interval:', interval);
-	set_interval_id = setInterval(async () => {
-		if (max_bytes) {
-			let file_stats;
-			file_stats = await fs_prom.stat(logger.path);
+	lastRotationTime = Date.now();
+	hdbLogger.trace('Log rotate enabled, maxSize:', maxSize, 'interval:', interval);
+	setIntervalId = setInterval(async () => {
+		if (maxBytes) {
+			let fileStats;
+			fileStats = await fsProm.stat(logger.path);
 
-			if (file_stats.size >= max_bytes) {
+			if (fileStats.size >= maxBytes) {
 				lastRotatedLogPath = await moveLogFile(logger.path, rotatedLogDir);
 			}
 		}
 
-		if (max_interval) {
-			const min_since_last_rotate = Date.now() - last_rotation_time;
-			if (min_since_last_rotate >= max_interval) {
+		if (maxInterval) {
+			const minSinceLastRotate = Date.now() - lastRotationTime;
+			if (minSinceLastRotate >= maxInterval) {
 				lastRotatedLogPath = await moveLogFile(logger.path, rotatedLogDir);
-				last_rotation_time = Date.now();
+				lastRotationTime = Date.now();
 			}
 		}
-		if (retention || reclamation_priority) {
+		if (retention || reclamationPriority) {
 			// remove old logs after retention time
 			// adjust retention time if there is a reclamation priority in place
-			const retention_ms = convertToMS(retention ?? '1M') / (1 + reclamation_priority);
-			reclamation_priority = 0; // reset it after use
-			const files = await fs_prom.readdir(rotated_log_path);
+			const retentionMs = convertToMS(retention ?? '1M') / (1 + reclamationPriority);
+			reclamationPriority = 0; // reset it after use
+			const files = await fsProm.readdir(rotatedLogPath);
 			for (const file of files) {
 				try {
-					const file_stats = await fs_prom.stat(path.join(rotated_log_path, file));
-					if (Date.now() - file_stats.mtimeMs > retention_ms) {
-						await fs_prom.unlink(path.join(rotated_log_path, file));
+					const fileStats = await fsProm.stat(path.join(rotatedLogPath, file));
+					if (Date.now() - fileStats.mtimeMs > retentionMs) {
+						await fsProm.unlink(path.join(rotatedLogPath, file));
 					}
 				} catch (err) {
-					hdb_logger.error('Error trying to remove log', file, err);
+					hdbLogger.error('Error trying to remove log', file, err);
 				}
 			}
 		}
 	}, auditInterval ?? LOG_AUDIT_INTERVAL).unref();
 	return {
 		end() {
-			clearInterval(set_interval_id);
+			clearInterval(setIntervalId);
 		},
 		getLastRotatedLogPath() {
 			return lastRotatedLogPath;
@@ -125,25 +125,25 @@ function logRotator({ logger, maxSize, interval, retention, enabled, path: rotat
 	};
 }
 
-async function moveLogFile(log_path, rotated_log_path) {
-	const compress = env_mgr.get(CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS);
-	let full_rotate_log_path = path.join(
-		rotated_log_path,
+async function moveLogFile(logPath, rotatedLogPath) {
+	const compress = envMgr.get(CONFIG_PARAMS.LOGGING_ROTATION_COMPRESS);
+	let fullRotateLogPath = path.join(
+		rotatedLogPath,
 		`HDB-${new Date(Date.now()).toISOString().replaceAll(':', '-')}.log`
 	);
 	// Move log file to rotated log path first (if we crash
 	// during compression, we don't want to restart the compression with a new file)
-	await fs_prom.rename(log_path, full_rotate_log_path);
+	await fsProm.rename(logPath, fullRotateLogPath);
 	if (compress) {
-		log_path = full_rotate_log_path;
-		full_rotate_log_path += '.gz';
-		await pipe(createReadStream(log_path), createGzip(), createWriteStream(full_rotate_log_path));
-		await fs_prom.unlink(log_path);
+		logPath = fullRotateLogPath;
+		fullRotateLogPath += '.gz';
+		await pipe(createReadStream(logPath), createGzip(), createWriteStream(fullRotateLogPath));
+		await fsProm.unlink(logPath);
 	}
 
 	// Close old log file.
-	hdb_logger.closeLogFile();
+	hdbLogger.closeLogFile();
 	// This notify log will create a new log file after the previous one has been rotated. It's important to keep this log as notify
-	hdb_logger.notify(`hdb.log rotated, old log moved to ${full_rotate_log_path}`);
-	return full_rotate_log_path;
+	hdbLogger.notify(`hdb.log rotated, old log moved to ${fullRotateLogPath}`);
+	return fullRotateLogPath;
 }

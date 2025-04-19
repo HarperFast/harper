@@ -1,7 +1,7 @@
 import * as graphql from 'graphql';
 import type { RequestParams } from 'graphql-http';
-import { getDeserializer } from './serverHelpers/contentTypes';
-import { resources } from '../resources/Resources';
+import { getDeserializer } from './serverHelpers/contentTypes.ts';
+import { resources } from '../resources/Resources.ts';
 
 // This code makes heavy use of the word "node" to refer to a node in the GraphQL AST.
 
@@ -263,11 +263,11 @@ function fillInFragments(
 			case graphql.Kind.FIELD:
 				return selectionNode;
 			case graphql.Kind.FRAGMENT_SPREAD: {
-				const fragment_name = selectionNode.name.value;
-				const fragment = fragments.get(fragment_name);
+				const fragmentName = selectionNode.name.value;
+				const fragment = fragments.get(fragmentName);
 
 				if (fragment == null) {
-					throw new GraphQLQueryingError(`Fragment \`${fragment_name}\` not found.`);
+					throw new GraphQLQueryingError(`Fragment \`${fragmentName}\` not found.`);
 				}
 
 				return fillInFragments(fragment.selectionSet, fragments);
@@ -373,32 +373,32 @@ function resolveVariables(
 	variableDefinitions: readonly graphql.VariableDefinitionNode[],
 	variables: Record<string, unknown>
 ) {
-	const resolved_variables = new Map<string, unknown>();
+	const resolvedVariables = new Map<string, unknown>();
 
 	for (const variableDefinition of variableDefinitions) {
-		const variable_name = variableDefinition.variable.name.value;
+		const variableName = variableDefinition.variable.name.value;
 
 		// First, check if the variable is provided in the request
-		let variable_value = variables?.[variable_name];
+		let variableValue = variables?.[variableName];
 
 		// If not, and there is a default, process the default value
-		if (variable_value === undefined && variableDefinition.defaultValue !== undefined) {
-			variable_value = processConstValueNode(variableDefinition.defaultValue);
+		if (variableValue === undefined && variableDefinition.defaultValue !== undefined) {
+			variableValue = processConstValueNode(variableDefinition.defaultValue);
 		}
 
 		// If the variable is non-nullable, not provided, and has no default, throw an error
 		if (
 			variableDefinition.type.kind === graphql.Kind.NON_NULL_TYPE &&
-			!(variable_name in variables) &&
-			variable_value === undefined
+			!(variableName in variables) &&
+			variableValue === undefined
 		) {
-			throw new GraphQLQueryingError(`Variable $${variable_name} is required, but not provided.`);
+			throw new GraphQLQueryingError(`Variable $${variableName} is required, but not provided.`);
 		}
 
-		resolved_variables.set(variableDefinition.variable.name.value, variable_value ?? null);
+		resolvedVariables.set(variableDefinition.variable.name.value, variableValue ?? null);
 	}
 
-	return resolved_variables;
+	return resolvedVariables;
 }
 
 /**
@@ -426,14 +426,14 @@ async function executeOperation(
 	// Thus, we can resolve all of the specified variables ahead of time, and then the execution process can use them as needed.
 	// We can catch missing variables early (non-nullable variables without a value) and throw an error.
 	// We can resolve default values for variables if they are not provided.
-	const resolved_variables = resolveVariables(operationNode.variableDefinitions, variables);
+	const resolvedVariables = resolveVariables(operationNode.variableDefinitions, variables);
 
 	// This is the top level of a query or mutation.
 	// Due to the constraints of our system, users must use HarperDB Resources in the selection set.
 	// Multiple resources can be queried in a single operation and any attribute of a resource can be selected.
 	const results = await Promise.all(
 		fillInFragments(operationNode.selectionSet, fragments).map((fieldNode) =>
-			processFieldNode(fieldNode, resolved_variables, fragments, request)
+			processFieldNode(fieldNode, resolvedVariables, fragments, request)
 		)
 	);
 
@@ -455,9 +455,9 @@ async function resolver({ query, variables = {}, operationName }: RequestParams,
 	const fragments = new Map<string, graphql.FragmentDefinitionNode>();
 
 	// Iterate through each operation definition in the document
-	for (const definition_node of ast.definitions) {
+	for (const definitionNode of ast.definitions) {
 		// If they aren't executable, error (spec: https://spec.graphql.org/October2021/#sel-DAFPDPAACRAo1T)
-		assertExecutableDefinitionNode(definition_node);
+		assertExecutableDefinitionNode(definitionNode);
 
 		// At the top level of the document there can be only operations and fragments
 		// Operations are limited to queries and mutations. Subscriptions are not supported. These are differentiated by the operation type (definitionNode.operation)
@@ -475,27 +475,27 @@ async function resolver({ query, variables = {}, operationName }: RequestParams,
 		// So if the query is `query Dog { name breed }`, we should error.
 		// (This is a pattern we _could_ support, but it may make the resolution process more complex.)
 
-		if (definition_node.kind === graphql.Kind.FRAGMENT_DEFINITION) {
+		if (definitionNode.kind === graphql.Kind.FRAGMENT_DEFINITION) {
 			// Fragments are stored in a separate map for later reference
 			// They only need to be processed if referenced in the operation being executed
 			// However, since fragments can be nested, we need to collect all of them and recursively resolve later.
-			fragments.set(definition_node.name.value, definition_node);
+			fragments.set(definitionNode.name.value, definitionNode);
 		} else {
 			// Error if unnamed operation is not the only operation in the document
-			if (definition_node.name === undefined && ast.definitions.length > 1) {
+			if (definitionNode.name === undefined && ast.definitions.length > 1) {
 				throw new GraphQLQueryingError(
 					`Unnamed operations are only allowed when there is a single operation in the document.`
 				);
 			}
 
 			// Safely default the definition name to 'Unnamed Query'
-			const operation_name = definition_node.name?.value ?? 'Unnamed Query';
+			const operationName = definitionNode.name?.value ?? 'Unnamed Query';
 
-			if (operations.has(operation_name)) {
-				throw new GraphQLQueryingError(`Duplicate operation definition: ${operation_name}`);
+			if (operations.has(operationName)) {
+				throw new GraphQLQueryingError(`Duplicate operation definition: ${operationName}`);
 			}
 
-			operations.set(operation_name, definition_node);
+			operations.set(operationName, definitionNode);
 		}
 	}
 
@@ -521,14 +521,14 @@ async function resolver({ query, variables = {}, operationName }: RequestParams,
 
 	// This is where our implementation diverges from the spec.
 	// We will not be executing the operation as specified (using provided GraphQL resolvers), but instead using a custom resolution algorithm based on HarperDB resources.
-	const response_body = await executeOperation(operation, variables, fragments, request);
+	const responseBody = await executeOperation(operation, variables, fragments, request);
 
 	return {
 		status: 200,
 		headers: {
 			'Content-Type': 'application/graphql-response+json; charset=utf-8',
 		},
-		body: JSON.stringify(response_body),
+		body: JSON.stringify(responseBody),
 	};
 }
 
@@ -548,20 +548,20 @@ class HTTPError extends Error {
 async function graphqlQueryingHandler(request: Request) {
 	switch (request.method) {
 		case 'GET': {
-			const search_params = new URLSearchParams(request.url.split('?')[1]);
-			const request_params = {};
-			for (const [key, value] of search_params) {
-				request_params[key] = key === 'variables' || key === 'extensions' ? JSON.parse(value) : value;
+			const searchParams = new URLSearchParams(request.url.split('?')[1]);
+			const requestParams = {};
+			for (const [key, value] of searchParams) {
+				requestParams[key] = key === 'variables' || key === 'extensions' ? JSON.parse(value) : value;
 			}
-			assertRequestParams(request_params);
-			return resolver(request_params, request);
+			assertRequestParams(requestParams);
+			return resolver(requestParams, request);
 		}
 		case 'POST': {
-			const request_body_deserialize = getDeserializer(request.headers.get('content-type'), true);
+			const requestBodyDeserialize = getDeserializer(request.headers.get('content-type'), true);
 			// @ts-expect-error: _nodeRequest is a custom property on request and is the IncomingMessage with is a Readable
-			const request_params = await request_body_deserialize(request._nodeRequest);
-			assertRequestParams(request_params);
-			return resolver(request_params, request);
+			const requestParams = await requestBodyDeserialize(request._nodeRequest);
+			assertRequestParams(requestParams);
+			return resolver(requestParams, request);
 		}
 		default: {
 			throw new HTTPError('Method Not Allowed', 405, { Allow: 'GET, POST' });
@@ -604,9 +604,9 @@ export function start(options) {
 				// For now, we likely will not support partial failure. If a query fails, it will likely fail entirely. And as confusing as that might be for a `application/json` user, it is
 				// the most spec compliant and expected behavior. Furthermore, we will default to `application/graphql-response+json` so that the better UX (of receiving 4xx on any errors) will be the default experience.
 
-				const response_type = request.headers.get('accept') ?? 'application/graphql-response+json';
+				const responseType = request.headers.get('accept') ?? 'application/graphql-response+json';
 
-				switch (response_type) {
+				switch (responseType) {
 					case 'application/json': {
 						if (error instanceof HTTPError) {
 							return {
@@ -648,7 +648,7 @@ export function start(options) {
 					}
 					// eslint-disable-next-line sonarjs/prefer-default-last, sonarjs/sonar-no-fallthrough
 					default:
-						logger.info(`Unsupported accept header, ${response_type}, defaulting to application/graphql-response+json`);
+						logger.info(`Unsupported accept header, ${responseType}, defaulting to application/graphql-response+json`);
 					// eslint-disable-next-line no-fallthrough
 					case 'application/graphql-response+json': {
 						if (error instanceof HTTPError) {

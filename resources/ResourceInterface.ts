@@ -1,17 +1,17 @@
-import { DatabaseTransaction } from './DatabaseTransaction';
-import { OperationFunctionName } from '../server/serverHelpers/serverUtilities';
+import { DatabaseTransaction } from './DatabaseTransaction.ts';
+import { OperationFunctionName } from '../server/serverHelpers/serverUtilities.ts';
 
 export interface ResourceInterface<Key = any, Record = any> {
 	get?(): Promise<UpdatableRecord<Record>>;
 	get?(query: Query): Promise<AsyncIterable<Record>>;
 	get?(property: string): any;
 	put?(record: any): void;
-	update?(updates: any, full_update?: boolean): Promise<UpdatableRecord<Record>>;
+	update?(updates: any, fullUpdate?: boolean): Promise<UpdatableRecord<Record>>;
 	delete?(): boolean;
 	search?(query: Query): AsyncIterable<any>;
 	subscribe?(request: SubscriptionRequest): Subscription;
 	allowRead(user: any, query?: Query, context: Context): boolean | Promise<boolean>;
-	allowUpdate(user: any, record: any, full_update?: boolean): boolean | Promise<boolean>;
+	allowUpdate(user: any, record: any, fullUpdate?: boolean): boolean | Promise<boolean>;
 	allowCreate(user: any, record: any, context: Context): boolean | Promise<boolean>;
 	allowDelete(user: any, query: Query, context: Context): boolean | Promise<boolean>;
 }
@@ -63,11 +63,11 @@ type SearchType =
 
 export interface DirectCondition {
 	attribute?: string;
-	search_attribute?: string;
+	searchAttribute?: string;
 	comparator?: SearchType;
-	search_type?: SearchType;
+	searchType?: SearchType;
 	value?: any;
-	search_value?: any;
+	searchValue?: any;
 }
 interface ConditionGroup {
 	conditions: Conditions;

@@ -1,244 +1,244 @@
 'use strict';
 
-const search_utility = require('../../../../utility/lmdb/searchUtility');
-const environment_utility = require('../../../../utility/lmdb/environmentUtility');
-const common_utils = require('../../../../utility/common_utils');
-const lmdb_terms = require('../../../../utility/lmdb/terms');
-const hdb_terms = require('../../../../utility/hdbTerms');
-const system_schema = require('../../../../json/systemSchema.json');
-const LMDB_ERRORS = require('../../../../utility/errors/commonErrors').LMDB_ERRORS_ENUM;
-const { getSchemaPath } = require('./initializePaths');
+const searchUtility = require('../../../../utility/lmdb/searchUtility.js');
+const environmentUtility = require('../../../../utility/lmdb/environmentUtility.js');
+const commonUtils = require('../../../../utility/common_utils.js');
+const lmdbTerms = require('../../../../utility/lmdb/terms.js');
+const hdbTerms = require('../../../../utility/hdbTerms.ts');
+const systemSchema = require('../../../../json/systemSchema.json');
+const LMDB_ERRORS = require('../../../../utility/errors/commonErrors.js').LMDB_ERRORS_ENUM;
+const { getSchemaPath } = require('./initializePaths.js');
 
-const WILDCARDS = hdb_terms.SEARCH_WILDCARDS;
+const WILDCARDS = hdbTerms.SEARCH_WILDCARDS;
 
 /**
- * gets the search_type & based on the size of the dbi being searched will either perform an in process search or launch a new process to perform a search
- * @param {SearchObject} search_object
- * @param {hdb_terms.VALUE_SEARCH_COMPARATORS} comparator
- * @param {Boolean} return_map
+ * gets the searchType & based on the size of the dbi being searched will either perform an in process search or launch a new process to perform a search
+ * @param {SearchObject} searchObject
+ * @param {hdbTerms.VALUE_SEARCH_COMPARATORS} comparator
+ * @param {Boolean} returnMap
  * @returns {{}|[{}]}
  */
-async function prepSearch(search_object, comparator, return_map) {
-	let table_info;
-	if (search_object.schema === hdb_terms.SYSTEM_SCHEMA_NAME) {
-		table_info = system_schema[search_object.table];
+async function prepSearch(searchObject, comparator, returnMap) {
+	let tableInfo;
+	if (searchObject.schema === hdbTerms.SYSTEM_SCHEMA_NAME) {
+		tableInfo = systemSchema[searchObject.table];
 	} else {
-		table_info = global.hdb_schema[search_object.schema][search_object.table];
+		tableInfo = global.hdb_schema[searchObject.schema][searchObject.table];
 	}
 
-	let search_type = createSearchTypeFromSearchObject(search_object, table_info.hash_attribute, return_map, comparator);
+	let searchType = createSearchTypeFromSearchObject(searchObject, tableInfo.hash_attribute, returnMap, comparator);
 
-	return executeSearch(search_object, search_type, table_info.hash_attribute, return_map);
+	return executeSearch(searchObject, searchType, tableInfo.hash_attribute, returnMap);
 }
 
 /**
- * executes a specific search based on the evaluation of the search_object & optional comparator & returns the results
- * @param {SearchObject} search_object
- * @param {lmdb_terms.SEARCH_TYPES} search_type
+ * executes a specific search based on the evaluation of the searchObject & optional comparator & returns the results
+ * @param {SearchObject} searchObject
+ * @param {lmdbTerms.SEARCH_TYPES} searchType
  * @param {String} hash_attribute
- * @param {Boolean} return_map
+ * @param {Boolean} returnMap
  */
-async function executeSearch(search_object, search_type, hash_attribute, return_map) {
-	let schema_path = getSchemaPath(search_object.schema, search_object.table);
-	let env = await environment_utility.openEnvironment(schema_path, search_object.table);
-	let search_results = searchByType(env, search_object, search_type, hash_attribute);
-	let transaction = search_results.transaction || env;
+async function executeSearch(searchObject, searchType, hash_attribute, returnMap) {
+	let schemaPath = getSchemaPath(searchObject.schema, searchObject.table);
+	let env = await environmentUtility.openEnvironment(schemaPath, searchObject.table);
+	let searchResults = searchByType(env, searchObject, searchType, hash_attribute);
+	let transaction = searchResults.transaction || env;
 
 	//if we execute a search all / search by hash type call there is no need to perform further evaluation as the records have been fetched
 	if (
 		[
-			lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH,
-			lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP,
-			lmdb_terms.SEARCH_TYPES.SEARCH_ALL,
-			lmdb_terms.SEARCH_TYPES.SEARCH_ALL_TO_MAP,
-		].indexOf(search_type) >= 0
+			lmdbTerms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH,
+			lmdbTerms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP,
+			lmdbTerms.SEARCH_TYPES.SEARCH_ALL,
+			lmdbTerms.SEARCH_TYPES.SEARCH_ALL_TO_MAP,
+		].indexOf(searchType) >= 0
 	) {
-		return search_results;
+		return searchResults;
 	}
 
-	let fetch_more = checkToFetchMore(search_object, hash_attribute);
+	let fetchMore = checkToFetchMore(searchObject, hash_attribute);
 
-	if (fetch_more === false) {
-		let attribute = search_object.search_attribute;
+	if (fetchMore === false) {
+		let attribute = searchObject.search_attribute;
 		if (attribute === hash_attribute) {
-			if (return_map) return createMapFromIterable(search_results, () => true);
-			return search_results.map((entry) => ({ [hash_attribute]: entry.key }));
+			if (returnMap) return createMapFromIterable(searchResults, () => true);
+			return searchResults.map((entry) => ({ [hash_attribute]: entry.key }));
 		}
 		let toObject = (entry) => ({
 			[hash_attribute]: entry.value,
 			[attribute]: entry.key,
 		});
-		if (return_map) return createMapFromIterable(search_results, toObject);
-		return search_results.map(toObject);
+		if (returnMap) return createMapFromIterable(searchResults, toObject);
+		return searchResults.map(toObject);
 	}
 
 	let ids =
-		search_object.search_attribute === hash_attribute
-			? search_results.map((entry) => entry.key)
-			: search_results.map((entry) => entry.value);
-	if (return_map === true) {
-		return search_utility.batchSearchByHashToMap(transaction, hash_attribute, search_object.get_attributes, ids);
+		searchObject.search_attribute === hash_attribute
+			? searchResults.map((entry) => entry.key)
+			: searchResults.map((entry) => entry.value);
+	if (returnMap === true) {
+		return searchUtility.batchSearchByHashToMap(transaction, hash_attribute, searchObject.get_attributes, ids);
 	}
 
-	return search_utility.batchSearchByHash(transaction, hash_attribute, search_object.get_attributes, ids);
+	return searchUtility.batchSearchByHash(transaction, hash_attribute, searchObject.get_attributes, ids);
 }
 
 /**
  *
  * @param {lmdb.Transaction} transactionOrEnv
- * @param {SearchObject} search_object
- * @param {lmdb_terms.SEARCH_TYPES} search_type
+ * @param {SearchObject} searchObject
+ * @param {lmdbTerms.SEARCH_TYPES} searchType
  * @param {String} hash_attribute
  * @returns {null|Array<Object>|Number|Object|*[]|{}}
  */
-function searchByType(transactionOrEnv, search_object, search_type, hash_attribute) {
-	let search_results;
+function searchByType(transactionOrEnv, searchObject, searchType, hash_attribute) {
+	let searchResults;
 
 	//this is to conditionally not create the hash_attribute as part of the returned objects if it is not selected
-	let hash_attribute_name = hash_attribute;
-	if (search_object.get_attributes.indexOf(hash_attribute) < 0) {
-		hash_attribute_name = undefined;
+	let hashAttributeName = hash_attribute;
+	if (searchObject.get_attributes.indexOf(hash_attribute) < 0) {
+		hashAttributeName = undefined;
 	}
 
-	let { reverse, limit, offset } = search_object;
+	let { reverse, limit, offset } = searchObject;
 	reverse = typeof reverse === 'boolean' ? reverse : false;
 	limit = Number.isInteger(limit) ? limit : undefined;
 	offset = Number.isInteger(offset) ? offset : undefined;
 
-	switch (search_type) {
-		case lmdb_terms.SEARCH_TYPES.EQUALS:
-			search_results = search_utility.equals(
+	switch (searchType) {
+		case lmdbTerms.SEARCH_TYPES.EQUALS:
+			searchResults = searchUtility.equals(
 				transactionOrEnv,
-				hash_attribute_name,
-				search_object.search_attribute,
-				search_object.search_value,
+				hashAttributeName,
+				searchObject.search_attribute,
+				searchObject.search_value,
 				reverse,
 				limit,
 				offset
 			);
 			break;
-		case lmdb_terms.SEARCH_TYPES.CONTAINS:
-			search_results = search_utility.contains(
+		case lmdbTerms.SEARCH_TYPES.CONTAINS:
+			searchResults = searchUtility.contains(
 				transactionOrEnv,
-				hash_attribute_name,
-				search_object.search_attribute,
-				search_object.search_value,
+				hashAttributeName,
+				searchObject.search_attribute,
+				searchObject.search_value,
 				reverse,
 				limit,
 				offset
 			);
 			break;
-		case lmdb_terms.SEARCH_TYPES.ENDS_WITH:
-		case lmdb_terms.SEARCH_TYPES._ENDS_WITH:
-			search_results = search_utility.endsWith(
+		case lmdbTerms.SEARCH_TYPES.ENDS_WITH:
+		case lmdbTerms.SEARCH_TYPES._ENDS_WITH:
+			searchResults = searchUtility.endsWith(
 				transactionOrEnv,
-				hash_attribute_name,
-				search_object.search_attribute,
-				search_object.search_value,
+				hashAttributeName,
+				searchObject.search_attribute,
+				searchObject.search_value,
 				reverse,
 				limit,
 				offset
 			);
 			break;
-		case lmdb_terms.SEARCH_TYPES.STARTS_WITH:
-		case lmdb_terms.SEARCH_TYPES._STARTS_WITH:
-			search_results = search_utility.startsWith(
+		case lmdbTerms.SEARCH_TYPES.STARTS_WITH:
+		case lmdbTerms.SEARCH_TYPES._STARTS_WITH:
+			searchResults = searchUtility.startsWith(
 				transactionOrEnv,
-				hash_attribute_name,
-				search_object.search_attribute,
-				search_object.search_value,
+				hashAttributeName,
+				searchObject.search_attribute,
+				searchObject.search_value,
 				reverse,
 				limit,
 				offset
 			);
 			break;
-		case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH:
-			return search_utility.batchSearchByHash(
+		case lmdbTerms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH:
+			return searchUtility.batchSearchByHash(
 				transactionOrEnv,
-				search_object.search_attribute,
-				search_object.get_attributes,
-				[search_object.search_value]
+				searchObject.search_attribute,
+				searchObject.get_attributes,
+				[searchObject.search_value]
 			);
-		case lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP:
-			return search_utility.batchSearchByHashToMap(
+		case lmdbTerms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP:
+			return searchUtility.batchSearchByHashToMap(
 				transactionOrEnv,
-				search_object.search_attribute,
-				search_object.get_attributes,
-				[search_object.search_value]
+				searchObject.search_attribute,
+				searchObject.get_attributes,
+				[searchObject.search_value]
 			);
-		case lmdb_terms.SEARCH_TYPES.SEARCH_ALL:
-			return search_utility.searchAll(
+		case lmdbTerms.SEARCH_TYPES.SEARCH_ALL:
+			return searchUtility.searchAll(
 				transactionOrEnv,
 				hash_attribute,
-				search_object.get_attributes,
+				searchObject.get_attributes,
 				reverse,
 				limit,
 				offset
 			);
-		case lmdb_terms.SEARCH_TYPES.SEARCH_ALL_TO_MAP:
-			return search_utility.searchAllToMap(
+		case lmdbTerms.SEARCH_TYPES.SEARCH_ALL_TO_MAP:
+			return searchUtility.searchAllToMap(
 				transactionOrEnv,
 				hash_attribute,
-				search_object.get_attributes,
+				searchObject.get_attributes,
 				reverse,
 				limit,
 				offset
 			);
-		case lmdb_terms.SEARCH_TYPES.BETWEEN:
-			search_results = search_utility.between(
+		case lmdbTerms.SEARCH_TYPES.BETWEEN:
+			searchResults = searchUtility.between(
 				transactionOrEnv,
-				hash_attribute_name,
-				search_object.search_attribute,
-				search_object.search_value,
-				search_object.end_value,
-				reverse,
-				limit,
-				offset
-			);
-			break;
-		case lmdb_terms.SEARCH_TYPES.GREATER_THAN:
-		case lmdb_terms.SEARCH_TYPES._GREATER_THAN:
-			search_results = search_utility.greaterThan(
-				transactionOrEnv,
-				hash_attribute_name,
-				search_object.search_attribute,
-				search_object.search_value,
+				hashAttributeName,
+				searchObject.search_attribute,
+				searchObject.search_value,
+				searchObject.end_value,
 				reverse,
 				limit,
 				offset
 			);
 			break;
-		case lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL:
-		case lmdb_terms.SEARCH_TYPES._GREATER_THAN_EQUAL:
-			search_results = search_utility.greaterThanEqual(
+		case lmdbTerms.SEARCH_TYPES.GREATER_THAN:
+		case lmdbTerms.SEARCH_TYPES._GREATER_THAN:
+			searchResults = searchUtility.greaterThan(
 				transactionOrEnv,
-				hash_attribute_name,
-				search_object.search_attribute,
-				search_object.search_value,
+				hashAttributeName,
+				searchObject.search_attribute,
+				searchObject.search_value,
 				reverse,
 				limit,
 				offset
 			);
 			break;
-		case lmdb_terms.SEARCH_TYPES.LESS_THAN:
-		case lmdb_terms.SEARCH_TYPES._LESS_THAN:
-			search_results = search_utility.lessThan(
+		case lmdbTerms.SEARCH_TYPES.GREATER_THAN_EQUAL:
+		case lmdbTerms.SEARCH_TYPES._GREATER_THAN_EQUAL:
+			searchResults = searchUtility.greaterThanEqual(
 				transactionOrEnv,
-				hash_attribute_name,
-				search_object.search_attribute,
-				search_object.search_value,
+				hashAttributeName,
+				searchObject.search_attribute,
+				searchObject.search_value,
 				reverse,
 				limit,
 				offset
 			);
 			break;
-		case lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL:
-		case lmdb_terms.SEARCH_TYPES._LESS_THAN_EQUAL:
-			search_results = search_utility.lessThanEqual(
+		case lmdbTerms.SEARCH_TYPES.LESS_THAN:
+		case lmdbTerms.SEARCH_TYPES._LESS_THAN:
+			searchResults = searchUtility.lessThan(
 				transactionOrEnv,
-				hash_attribute_name,
-				search_object.search_attribute,
-				search_object.search_value,
+				hashAttributeName,
+				searchObject.search_attribute,
+				searchObject.search_value,
+				reverse,
+				limit,
+				offset
+			);
+			break;
+		case lmdbTerms.SEARCH_TYPES.LESS_THAN_EQUAL:
+		case lmdbTerms.SEARCH_TYPES._LESS_THAN_EQUAL:
+			searchResults = searchUtility.lessThanEqual(
+				transactionOrEnv,
+				hashAttributeName,
+				searchObject.search_attribute,
+				searchObject.search_value,
 				reverse,
 				limit,
 				offset
@@ -248,7 +248,7 @@ function searchByType(transactionOrEnv, search_object, search_type, hash_attribu
 			return Object.create(null);
 	}
 
-	return search_results;
+	return searchResults;
 }
 
 /**
@@ -265,100 +265,100 @@ function createMapFromIterable(iterable, toValue) {
 
 /**
  *
- * @param {SearchObject} search_object
+ * @param {SearchObject} searchObject
  * @param {String} hash_attribute
  */
-function checkToFetchMore(search_object, hash_attribute) {
-	if (search_object.get_attributes.length === 1 && search_object.get_attributes[0] === '*') {
+function checkToFetchMore(searchObject, hash_attribute) {
+	if (searchObject.get_attributes.length === 1 && searchObject.get_attributes[0] === '*') {
 		return true;
 	}
-	let already_fetched_attributes = [search_object.search_attribute];
-	if (search_object.get_attributes.indexOf(hash_attribute) >= 0) {
-		already_fetched_attributes.push(hash_attribute);
+	let alreadyFetchedAttributes = [searchObject.search_attribute];
+	if (searchObject.get_attributes.indexOf(hash_attribute) >= 0) {
+		alreadyFetchedAttributes.push(hash_attribute);
 	}
 
-	let fetch_more = false;
-	for (let x = 0; x < search_object.get_attributes.length; x++) {
-		if (already_fetched_attributes.indexOf(search_object.get_attributes[x]) < 0) {
-			fetch_more = true;
+	let fetchMore = false;
+	for (let x = 0; x < searchObject.get_attributes.length; x++) {
+		if (alreadyFetchedAttributes.indexOf(searchObject.get_attributes[x]) < 0) {
+			fetchMore = true;
 			break;
 		}
 	}
 
-	return fetch_more;
+	return fetchMore;
 }
 
 /**
- * evaluates the search_object to determine what the search_type needs to be for later execution of queries
- * @param {SearchObject} search_object
+ * evaluates the searchObject to determine what the searchType needs to be for later execution of queries
+ * @param {SearchObject} searchObject
  * @param {String} hash_attribute
- * @param {hdb_terms.VALUE_SEARCH_COMPARATORS} comparator
- * @param {Boolean} return_map
- * @returns {lmdb_terms.SEARCH_TYPES}
+ * @param {hdbTerms.VALUE_SEARCH_COMPARATORS} comparator
+ * @param {Boolean} returnMap
+ * @returns {lmdbTerms.SEARCH_TYPES}
  */
-function createSearchTypeFromSearchObject(search_object, hash_attribute, return_map, comparator) {
-	if (common_utils.isEmpty(comparator)) {
-		let search_value = search_object.search_value;
-		if (typeof search_value === 'object') {
-			search_value = JSON.stringify(search_value);
+function createSearchTypeFromSearchObject(searchObject, hash_attribute, returnMap, comparator) {
+	if (commonUtils.isEmpty(comparator)) {
+		let searchValue = searchObject.search_value;
+		if (typeof searchValue === 'object') {
+			searchValue = JSON.stringify(searchValue);
 		} else {
-			search_value = search_value.toString();
+			searchValue = searchValue.toString();
 		}
 
-		let first_search_character = search_value.charAt(0);
-		let last_search_character = search_value.charAt(search_value.length - 1);
-		let hash_search = false;
-		if (search_object.search_attribute === hash_attribute) {
-			hash_search = true;
+		let firstSearchCharacter = searchValue.charAt(0);
+		let lastSearchCharacter = searchValue.charAt(searchValue.length - 1);
+		let hashSearch = false;
+		if (searchObject.search_attribute === hash_attribute) {
+			hashSearch = true;
 		}
 
-		if (WILDCARDS.indexOf(search_value) > -1) {
-			return return_map === true ? lmdb_terms.SEARCH_TYPES.SEARCH_ALL_TO_MAP : lmdb_terms.SEARCH_TYPES.SEARCH_ALL;
+		if (WILDCARDS.indexOf(searchValue) > -1) {
+			return returnMap === true ? lmdbTerms.SEARCH_TYPES.SEARCH_ALL_TO_MAP : lmdbTerms.SEARCH_TYPES.SEARCH_ALL;
 		}
 
-		if (search_value.indexOf(WILDCARDS[0]) < 0 && search_value.indexOf(WILDCARDS[1]) < 0) {
-			if (hash_search === true) {
-				return return_map === true
-					? lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP
-					: lmdb_terms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH;
+		if (searchValue.indexOf(WILDCARDS[0]) < 0 && searchValue.indexOf(WILDCARDS[1]) < 0) {
+			if (hashSearch === true) {
+				return returnMap === true
+					? lmdbTerms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP
+					: lmdbTerms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH;
 			}
 
-			return lmdb_terms.SEARCH_TYPES.EQUALS;
+			return lmdbTerms.SEARCH_TYPES.EQUALS;
 		}
 
-		if (WILDCARDS.indexOf(first_search_character) >= 0 && WILDCARDS.indexOf(last_search_character) >= 0) {
+		if (WILDCARDS.indexOf(firstSearchCharacter) >= 0 && WILDCARDS.indexOf(lastSearchCharacter) >= 0) {
 			//this removes the first  & last character from the search value
-			search_object.search_value = search_object.search_value.slice(1, -1);
-			return lmdb_terms.SEARCH_TYPES.CONTAINS;
+			searchObject.search_value = searchObject.search_value.slice(1, -1);
+			return lmdbTerms.SEARCH_TYPES.CONTAINS;
 		}
 
-		if (WILDCARDS.indexOf(first_search_character) >= 0) {
-			search_object.search_value = search_object.search_value.substr(1);
-			return lmdb_terms.SEARCH_TYPES.ENDS_WITH;
+		if (WILDCARDS.indexOf(firstSearchCharacter) >= 0) {
+			searchObject.search_value = searchObject.search_value.substr(1);
+			return lmdbTerms.SEARCH_TYPES.ENDS_WITH;
 		}
 
-		if (WILDCARDS.indexOf(last_search_character) >= 0) {
-			search_object.search_value = search_object.search_value.slice(0, -1);
-			return lmdb_terms.SEARCH_TYPES.STARTS_WITH;
+		if (WILDCARDS.indexOf(lastSearchCharacter) >= 0) {
+			searchObject.search_value = searchObject.search_value.slice(0, -1);
+			return lmdbTerms.SEARCH_TYPES.STARTS_WITH;
 		}
 
-		if (search_value.includes(WILDCARDS[0]) || search_value.includes(WILDCARDS[1])) {
-			return lmdb_terms.SEARCH_TYPES.EQUALS;
+		if (searchValue.includes(WILDCARDS[0]) || searchValue.includes(WILDCARDS[1])) {
+			return lmdbTerms.SEARCH_TYPES.EQUALS;
 		}
 
 		throw new Error(LMDB_ERRORS.UNKNOWN_SEARCH_TYPE);
 	} else {
 		switch (comparator) {
-			case hdb_terms.VALUE_SEARCH_COMPARATORS.BETWEEN:
-				return lmdb_terms.SEARCH_TYPES.BETWEEN;
-			case hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER:
-				return lmdb_terms.SEARCH_TYPES.GREATER_THAN;
-			case hdb_terms.VALUE_SEARCH_COMPARATORS.GREATER_OR_EQ:
-				return lmdb_terms.SEARCH_TYPES.GREATER_THAN_EQUAL;
-			case hdb_terms.VALUE_SEARCH_COMPARATORS.LESS:
-				return lmdb_terms.SEARCH_TYPES.LESS_THAN;
-			case hdb_terms.VALUE_SEARCH_COMPARATORS.LESS_OR_EQ:
-				return lmdb_terms.SEARCH_TYPES.LESS_THAN_EQUAL;
+			case hdbTerms.VALUE_SEARCH_COMPARATORS.BETWEEN:
+				return lmdbTerms.SEARCH_TYPES.BETWEEN;
+			case hdbTerms.VALUE_SEARCH_COMPARATORS.GREATER:
+				return lmdbTerms.SEARCH_TYPES.GREATER_THAN;
+			case hdbTerms.VALUE_SEARCH_COMPARATORS.GREATER_OR_EQ:
+				return lmdbTerms.SEARCH_TYPES.GREATER_THAN_EQUAL;
+			case hdbTerms.VALUE_SEARCH_COMPARATORS.LESS:
+				return lmdbTerms.SEARCH_TYPES.LESS_THAN;
+			case hdbTerms.VALUE_SEARCH_COMPARATORS.LESS_OR_EQ:
+				return lmdbTerms.SEARCH_TYPES.LESS_THAN_EQUAL;
 			default:
 				throw new Error(LMDB_ERRORS.UNKNOWN_SEARCH_TYPE);
 		}

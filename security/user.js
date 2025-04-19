@@ -24,28 +24,28 @@ module.exports.EMPTY_ROLE = EMPTY_ROLE;
 module.exports.ACTIVE_BOOLEAN = ACTIVE_BOOLEAN;
 
 //requires must be declared after module.exports to avoid cyclical dependency
-const insert = require('../dataLayer/insert');
-const delete_ = require('../dataLayer/delete');
-const password = require('../utility/password');
-const validation = require('../validation/user_validation');
-const search = require('../dataLayer/search');
-const signalling = require('../utility/signalling');
-const hdbUtility = require('../utility/common_utils');
+const insert = require('../dataLayer/insert.js');
+const delete_ = require('../dataLayer/delete.js');
+const password = require('../utility/password.ts');
+const validation = require('../validation/user_validation.js');
+const search = require('../dataLayer/search.js');
+const signalling = require('../utility/signalling.js');
+const hdbUtility = require('../utility/common_utils.js');
 const validate = require('validate.js');
-const logger = require('../utility/logging/harper_logger');
+const logger = require('../utility/logging/harper_logger.js');
 const { promisify } = require('util');
-const cryptoHash = require('./cryptoHash');
-const terms = require('../utility/hdbTerms');
-const natsTerms = require('../server/nats/utility/natsTerms');
-const configUtils = require('../config/configUtils');
-const env = require('../utility/environment/environmentManager');
-const systemSchema = require('../json/systemSchema');
-const { hdb_errors, ClientError } = require('../utility/errors/hdbError');
-const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdb_errors;
-const { UserEventMsg } = require('../server/threads/itc');
+const cryptoHash = require('./cryptoHash.js');
+const terms = require('../utility/hdbTerms.ts');
+const natsTerms = require('../server/nats/utility/natsTerms.js');
+const configUtils = require('../config/configUtils.js');
+const env = require('../utility/environment/environmentManager.js');
+const systemSchema = require('../json/systemSchema.json');
+const { hdbErrors, ClientError } = require('../utility/errors/hdbError.js');
+const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS, HDB_ERROR_MSGS } = hdbErrors;
+const { UserEventMsg } = require('../server/threads/itc.js');
 const _ = require('lodash');
-const { server } = require('../server/Server');
-const harperLogger = require('../utility/logging/harper_logger');
+const { server } = require('../server/Server.ts');
+const harperLogger = require('../utility/logging/harper_logger.js');
 server.getUser = (username, password) => {
 	return findAndValidateUser(username, password, password != null);
 };
@@ -113,8 +113,8 @@ async function addUser(user) {
 	return `${cleanUser.username} successfully added`;
 }
 
-async function alterUser(json_message) {
-	let cleanUser = validate.cleanAttributes(json_message, USER_ATTRIBUTE_ALLOWLIST);
+async function alterUser(jsonMessage) {
+	let cleanUser = validate.cleanAttributes(jsonMessage, USER_ATTRIBUTE_ALLOWLIST);
 
 	if (hdbUtility.isEmptyOrZeroLength(cleanUser.username)) {
 		throw new Error(USERNAME_REQUIRED);
@@ -290,29 +290,29 @@ async function listUsers() {
 
 /**
  * adds system table permissions to a role.  This is used to protect system tables by leveraging operationAuthoriation.
- * @param user_role - Role of the user found during auth.
+ * @param userRole - Role of the user found during auth.
  */
-function appendSystemTablesToRole(user_role) {
-	if (!user_role) {
+function appendSystemTablesToRole(userRole) {
+	if (!userRole) {
 		logger.error(`invalid user role found.`);
 		return;
 	}
-	if (!user_role.permission['system']) {
-		user_role.permission['system'] = {};
+	if (!userRole.permission['system']) {
+		userRole.permission['system'] = {};
 	}
-	if (!user_role.permission.system['tables']) {
-		user_role.permission.system['tables'] = {};
+	if (!userRole.permission.system['tables']) {
+		userRole.permission.system['tables'] = {};
 	}
 	for (let table of Object.keys(systemSchema)) {
-		let new_prop = {
-			read: !!user_role.permission.super_user,
+		let newProp = {
+			read: !!userRole.permission.super_user,
 			insert: false,
 			update: false,
 			delete: false,
 			attribute_permissions: [],
 		};
 
-		user_role.permission.system.tables[table] = new_prop;
+		userRole.permission.system.tables[table] = newProp;
 	}
 }
 
@@ -359,7 +359,7 @@ async function findAndValidateUser(username, pw, validatePassword = true) {
 		if (passwordHashCache.get(pw) === userTmp.password) return user;
 		// if validates, cache the password
 		else {
-			let validated = password.validate(userTmp.password, pw, userTmp.hash_function || password.HASH_FUNCTION.MD5); // if no hash_function default to legacy MD5
+			let validated = password.validate(userTmp.password, pw, userTmp.hash_function || password.HASH_FUNCTION.MD5); // if no hashFunction default to legacy MD5
 			// argon2id hash validation is async so await it if it is a promise
 			if (validated?.then) validated = await validated;
 			if (validated === true) passwordHashCache.set(pw, userTmp.password);

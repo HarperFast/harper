@@ -1,7 +1,7 @@
 'use strict';
 
-const env_manager = require('../../../utility/environment/environmentManager');
-env_manager.initSync();
+const envManager = require('../../../utility/environment/environmentManager.js');
+envManager.initSync();
 
 const fs = require('fs-extra');
 const semver = require('semver');
@@ -9,24 +9,24 @@ const path = require('path');
 const { monotonicFactory } = require('ulidx');
 const ulid = monotonicFactory();
 const util = require('util');
-const child_process = require('child_process');
-const exec = util.promisify(child_process.exec);
-const spawn = child_process.spawn;
-const nats_terms = require('./natsTerms');
-const hdb_terms = require('../../../utility/hdbTerms');
-const { packageJson, PACKAGE_ROOT } = require('../../../utility/packageUtils');
-const hdb_utils = require('../../../utility/common_utils');
-const hdb_logger = require('../../../utility/logging/harper_logger');
-const crypto_hash = require('../../../security/cryptoHash');
-const transaction = require('../../../dataLayer/transaction');
-const config_utils = require('../../../config/configUtils');
-const { broadcast, onMessageByType, getWorkerIndex } = require('../../threads/manageThreads');
+const childProcess = require('child_process');
+const exec = util.promisify(childProcess.exec);
+const spawn = childProcess.spawn;
+const natsTerms = require('./natsTerms.js');
+const hdbTerms = require('../../../utility/hdbTerms.ts');
+const { packageJson, PACKAGE_ROOT } = require('../../../utility/packageUtils.js');
+const hdbUtils = require('../../../utility/common_utils.js');
+const hdbLogger = require('../../../utility/logging/harper_logger.js');
+const cryptoHash = require('../../../security/cryptoHash.js');
+const transaction = require('../../../dataLayer/transaction.js');
+const configUtils = require('../../../config/configUtils.js');
+const { broadcast, onMessageByType, getWorkerIndex } = require('../../threads/manageThreads.js');
 const { isMainThread } = require('worker_threads');
 const { Encoder, decode } = require('msgpackr');
 const encoder = new Encoder(); // use default encoder options
 
-const { isEmpty } = hdb_utils;
-const user = require('../../../security/user');
+const { isEmpty } = hdbUtils;
+const user = require('../../../security/user.js');
 
 const INGEST_MAX_MSG_AGE = 48 * 3600000000000; // nanoseconds
 const INGEST_MAX_BYTES = 5000000000;
@@ -36,9 +36,9 @@ const MAX_INGEST_THREADS = 2; // This can also be set in harperdb-config
 const MAX_REMOTE_CON_RETRY_DELAY = 10000;
 
 if (isMainThread) {
-	onMessageByType(hdb_terms.ITC_EVENT_TYPES.RESTART, () => {
-		nats_connection = undefined;
-		nats_connection_promise = undefined;
+	onMessageByType(hdbTerms.ITC_EVENT_TYPES.RESTART, () => {
+		natsConnection = undefined;
+		natsConnectionPromise = undefined;
 	});
 }
 
@@ -59,23 +59,23 @@ const {
 	ErrorCode,
 } = require('nats');
 
-const { recordAction } = require('../../../resources/analytics/write');
-const { encodeBlobsAsBuffers } = require('../../../resources/blob');
+const { recordAction } = require('../../../resources/analytics/write.ts');
+const { encodeBlobsAsBuffers } = require('../../../resources/blob.ts');
 
 const jc = JSONCodec();
 const HDB_CLUSTERING_FOLDER = 'clustering';
-const REQUIRED_NATS_SERVER_VERSION = packageJson.engines[nats_terms.NATS_SERVER_NAME];
+const REQUIRED_NATS_SERVER_VERSION = packageJson.engines[natsTerms.NATS_SERVER_NAME];
 const DEPENDENCIES_PATH = path.join(PACKAGE_ROOT, 'dependencies');
 const NATS_SERVER_PATH = path.join(
 	DEPENDENCIES_PATH,
 	`${process.platform}-${process.arch}`,
-	nats_terms.NATS_BINARY_NAME
+	natsTerms.NATS_BINARY_NAME
 );
 
-let leaf_config;
-let hub_config;
-let jsm_server_name;
-let jetstream_manager;
+let leafConfig;
+let hubConfig;
+let jsmServerName;
+let jetstreamManager;
 let jetstream;
 
 module.exports = {
@@ -145,8 +145,8 @@ async function checkNATSServerInstalled() {
 	}
 
 	//if nats-server exists check the version
-	let version_str = await runCommand(`${NATS_SERVER_PATH} --version`, undefined);
-	let version = version_str.substring(version_str.lastIndexOf('v') + 1, version_str.length);
+	let versionStr = await runCommand(`${NATS_SERVER_PATH} --version`, undefined);
+	let version = versionStr.substring(versionStr.lastIndexOf('v') + 1, versionStr.length);
 	return semver.eq(version, REQUIRED_NATS_SERVER_VERSION);
 }
 
@@ -156,11 +156,11 @@ async function checkNATSServerInstalled() {
  * @param port - port to access the NATS server
  * @param username
  * @param password
- * @param wait_on_first_connect
+ * @param waitOnFirstConnect
  * @param host - the host name of the NATS server
  * @returns {Promise<*>}
  */
-async function createConnection(port, username, password, wait_on_first_connect = true, host = '127.0.0.1') {
+async function createConnection(port, username, password, waitOnFirstConnect = true, host = '127.0.0.1') {
 	if (!username && !password) {
 		const cluster_user = await user.getClusterUser();
 		if (isEmpty(cluster_user)) {
@@ -171,54 +171,54 @@ async function createConnection(port, username, password, wait_on_first_connect 
 		password = cluster_user.decrypt_hash;
 	}
 
-	hdb_logger.trace('create nats connection called');
+	hdbLogger.trace('create nats connection called');
 	const c = await connect({
 		name: host,
-		port: port,
+		port,
 		user: username,
 		pass: password,
 		maxReconnectAttempts: -1,
-		waitOnFirstConnect: wait_on_first_connect,
+		waitOnFirstConnect,
 		timeout: 200000,
 		tls: {
-			keyFile: env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY),
-			certFile: env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE),
-			caFile: env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH),
+			keyFile: envManager.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_TLS_PRIVATEKEY),
+			certFile: envManager.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_TLS_CERTIFICATE),
+			caFile: envManager.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_TLS_CERT_AUTH),
 			// this is a local connection, with localhost, so we can't verify CAs and don't need to
 			rejectUnauthorized: false,
 		},
 	});
 
 	c.protocol.transport.socket.unref();
-	hdb_logger.trace(`create connection established a nats client connection with id`, c?.info?.client_id);
+	hdbLogger.trace(`create connection established a nats client connection with id`, c?.info?.client_id);
 
 	c.closed().then((err) => {
 		if (err) {
-			hdb_logger.error('Error with Nats client connection, connection closed', err);
+			hdbLogger.error('Error with Nats client connection, connection closed', err);
 		}
-		if (c === nats_connection) clearClientCache();
+		if (c === natsConnection) clearClientCache();
 	});
 
 	return c;
 }
 
 function clearClientCache() {
-	nats_connection = undefined;
-	jetstream_manager = undefined;
+	natsConnection = undefined;
+	jetstreamManager = undefined;
 	jetstream = undefined;
-	nats_connection_promise = undefined;
+	natsConnectionPromise = undefined;
 }
 /**
  * Disconnect from nats-server
  * @returns {Promise<void>}
  */
 async function closeConnection() {
-	if (nats_connection) {
-		await nats_connection.drain();
-		nats_connection = undefined;
-		jetstream_manager = undefined;
+	if (natsConnection) {
+		await natsConnection.drain();
+		natsConnection = undefined;
+		jetstreamManager = undefined;
 		jetstream = undefined;
-		nats_connection_promise = undefined;
+		natsConnectionPromise = undefined;
 	}
 }
 
@@ -226,19 +226,19 @@ async function closeConnection() {
  * gets a reference to a NATS connection, if one is stored in global cache then that is returned, otherwise a new connection is created, added to global & returned
  * @returns {Promise<NatsConnection>}
  */
-let nats_connection;
-let nats_connection_promise;
+let natsConnection;
+let natsConnectionPromise;
 async function getConnection() {
-	if (!nats_connection_promise) {
+	if (!natsConnectionPromise) {
 		// first time it will go in here
-		nats_connection_promise = createConnection(
-			env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT),
+		natsConnectionPromise = createConnection(
+			envManager.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT),
 			undefined,
 			undefined
 		);
-		nats_connection = await nats_connection_promise;
+		natsConnection = await natsConnectionPromise;
 	}
-	return nats_connection || nats_connection_promise; // if we have resolved nats_connection, can short-circuit and return it
+	return natsConnection || natsConnectionPromise; // if we have resolved natsConnection, can short-circuit and return it
 }
 
 /**
@@ -246,18 +246,18 @@ async function getConnection() {
  * @returns {Promise<JetStreamManager>}
  */
 async function getJetStreamManager() {
-	if (jetstream_manager) return jetstream_manager;
-	if (isEmpty(nats_connection)) {
+	if (jetstreamManager) return jetstreamManager;
+	if (isEmpty(natsConnection)) {
 		await getConnection();
 	}
 
-	const { domain } = getServerConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
+	const { domain } = getServerConfig(hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
 	if (isEmpty(domain)) {
 		throw new Error('Error getting JetStream domain. Unable to get JetStream manager.');
 	}
 
-	jetstream_manager = await nats_connection.jetstreamManager({ domain, timeout: 60000 });
-	return jetstream_manager;
+	jetstreamManager = await natsConnection.jetstreamManager({ domain, timeout: 60000 });
+	return jetstreamManager;
 }
 
 /**
@@ -266,15 +266,15 @@ async function getJetStreamManager() {
  */
 async function getJetStream() {
 	if (jetstream) return jetstream;
-	if (isEmpty(nats_connection)) {
+	if (isEmpty(natsConnection)) {
 		await getConnection();
 	}
-	const { domain } = getServerConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
+	const { domain } = getServerConfig(hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
 	if (isEmpty(domain)) {
 		throw new Error('Error getting JetStream domain. Unable to get JetStream manager.');
 	}
 
-	jetstream = nats_connection.jetstream({ domain, timeout: 60000 });
+	jetstream = natsConnection.jetstream({ domain, timeout: 60000 });
 	return jetstream;
 }
 
@@ -283,8 +283,8 @@ async function getJetStream() {
  * @returns {Promise<{jsm: JetStreamManager, js: JetStreamClient, connection: NatsConnection}>}
  */
 async function getNATSReferences() {
-	const connection = nats_connection || (await getConnection());
-	const jsm = jetstream_manager || (await getJetStreamManager());
+	const connection = natsConnection || (await getConnection());
+	const jsm = jetstreamManager || (await getJetStreamManager());
 	const js = jetstream || (await getJetStream());
 
 	return {
@@ -300,35 +300,35 @@ async function getNATSReferences() {
  * @returns {Promise<*[]>}
  */
 async function getServerList(timeout) {
-	const hub_port = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT);
+	const hubPort = envManager.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT);
 	const { sys_name, decrypt_hash } = await user.getClusterUser();
-	const connection = await createConnection(hub_port, sys_name, decrypt_hash);
+	const connection = await createConnection(hubPort, sys_name, decrypt_hash);
 	const subj = createInbox();
 	const sub = connection.subscribe(subj);
 	let servers = [];
-	let start_time;
-	const get_servers = (async () => {
+	let startTime;
+	const getServers = (async () => {
 		// get the servers in parallel
 		for await (const m of sub) {
 			const response = jc.decode(m.data);
-			response.response_time = Date.now() - start_time;
+			response.response_time = Date.now() - startTime;
 			servers.push(response);
 		}
 	})();
 
-	start_time = Date.now();
+	startTime = Date.now();
 	// These are internal Nats subjects used across all servers for accessing server information.
-	// https://docs.nats.io/running-a-nats-service/configuration/sys_accounts#available-events-and-services
+	// https://docs.nats.io/running-a-nats-service/configuration/sysAccounts#available-events-and-services
 	// Return general server information. We use it to get which routes exist on each node.
 	await connection.publish('$SYS.REQ.SERVER.PING.VARZ', undefined, { reply: subj });
 	// Discover all connected servers. We use it to see which nodes are connected to this one
 	// and all connected nodes within the cluster from this nodes point of view.
 	await connection.publish('$SYS.REQ.SERVER.PING', undefined, { reply: subj });
 	await connection.flush();
-	await hdb_utils.async_set_timeout(timeout); // delay for NATS to process published messages
+	await hdbUtils.asyncSetTimeout(timeout); // delay for NATS to process published messages
 	await sub.drain();
 	await connection.close();
-	await get_servers; // make sure we have finished getting the servers
+	await getServers; // make sure we have finished getting the servers
 
 	return servers;
 }
@@ -341,22 +341,22 @@ async function getServerList(timeout) {
  */
 async function createLocalStream(stream_name, subjects) {
 	const { jsm } = await getNATSReferences();
-	let max_age = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE);
+	let maxAge = envManager.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE);
 	// If no max age in hdb config set to 0 which is unlimited. If config exists convert second to nanosecond
-	max_age = max_age === null ? 0 : max_age * 1000000000;
-	let max_msgs = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXMSGS);
-	max_msgs = max_msgs === null ? -1 : max_msgs; // -1 is unlimited
-	let max_bytes = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXBYTES);
-	max_bytes = max_bytes === null ? -1 : max_bytes; // -1 is unlimited
+	maxAge = maxAge === null ? 0 : maxAge * 1000000000;
+	let maxMsgs = envManager.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXMSGS);
+	maxMsgs = maxMsgs === null ? -1 : maxMsgs; // -1 is unlimited
+	let maxBytes = envManager.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXBYTES);
+	maxBytes = maxBytes === null ? -1 : maxBytes; // -1 is unlimited
 	await jsm.streams.add({
 		name: stream_name,
 		storage: StorageType.File,
 		retention: RetentionPolicy.Limits,
-		subjects: subjects,
+		subjects,
 		discard: DiscardPolicy.Old,
-		max_msgs,
-		max_bytes,
-		max_age,
+		maxMsgs,
+		maxBytes,
+		maxAge,
 	});
 }
 
@@ -367,12 +367,12 @@ async function createLocalStream(stream_name, subjects) {
 async function listStreams() {
 	const { jsm } = await getNATSReferences();
 	const streams = await jsm.streams.list().next();
-	let streams_info = [];
+	let streamsInfo = [];
 	streams.forEach((si) => {
-		streams_info.push(si);
+		streamsInfo.push(si);
 	});
 
-	return streams_info;
+	return streamsInfo;
 }
 
 /**
@@ -387,26 +387,26 @@ async function deleteLocalStream(stream_name) {
 
 /**
  * list the streams from a remote node, based on it's domain name
- * @param {String} domain_name
+ * @param {String} domainName
  * @returns {Promise<*[]>}
  */
-async function listRemoteStreams(domain_name) {
+async function listRemoteStreams(domainName) {
 	const { connection } = await getNATSReferences();
 	let streams = [];
 	const subj = createInbox();
 	const sub = connection.subscribe(subj);
 
-	const get_streams = (async () => {
+	const getStreams = (async () => {
 		for await (const m of sub) {
 			streams.push(jc.decode(m.data));
 		}
 	})();
 
-	await connection.publish(`$JS.${domain_name}.API.STREAM.LIST`, undefined, { reply: subj });
+	await connection.publish(`$JS.${domainName}.API.STREAM.LIST`, undefined, { reply: subj });
 	await connection.flush();
 	await sub.drain();
 	// Make sure we have got all the streams
-	await get_streams;
+	await getStreams;
 
 	return streams;
 }
@@ -414,26 +414,26 @@ async function listRemoteStreams(domain_name) {
 /**
  * returns the contents of a stream
  * @param stream_name
- * @param start_time - get messages from this time onward
+ * @param startTime - get messages from this time onward
  * @param max - maximum number of messages to receive
  * @returns {Promise<*[]>}
  */
-async function viewStream(stream_name, start_time = undefined, max = undefined) {
+async function viewStream(stream_name, startTime = undefined, max = undefined) {
 	const { jsm, js } = await getNATSReferences();
-	const consumer_name = ulid();
-	const consumer_config = {
-		durable_name: consumer_name,
+	const consumerName = ulid();
+	const consumerConfig = {
+		durable_name: consumerName,
 		ack_policy: AckPolicy.Explicit,
 	};
 
 	// If a start time is passed add a policy that will receive msgs from that time onward.
-	if (start_time) {
-		consumer_config.deliver_policy = DeliverPolicy.StartTime;
-		consumer_config.opt_start_time = new Date(start_time).toISOString();
+	if (startTime) {
+		consumerConfig.deliver_policy = DeliverPolicy.StartTime;
+		consumerConfig.opt_start_time = new Date(startTime).toISOString();
 	}
 
-	await jsm.consumers.add(stream_name, consumer_config);
-	const consumer = await js.consumers.get(stream_name, consumer_name);
+	await jsm.consumers.add(stream_name, consumerConfig);
+	const consumer = await js.consumers.get(stream_name, consumerName);
 	const messages = !max ? await consumer.consume() : await consumer.fetch({ max_messages: max, expires: 2000 });
 	if (consumer._info.num_pending === 0) return [];
 
@@ -447,7 +447,7 @@ async function viewStream(stream_name, start_time = undefined, max = undefined) 
 		};
 
 		if (m.headers) {
-			wrapper.origin = m.headers.get(nats_terms.MSG_HEADERS.ORIGIN);
+			wrapper.origin = m.headers.get(natsTerms.MSG_HEADERS.ORIGIN);
 		}
 
 		entries.push(wrapper);
@@ -468,26 +468,26 @@ async function viewStream(stream_name, start_time = undefined, max = undefined) 
 /**
  * Returns view of stream via an iterator.
  * @param stream_name
- * @param start_time
+ * @param startTime
  * @param max
  * @returns {AsyncGenerator<{entry: any, nats_timestamp: number, nats_sequence: number, originators: *[]}, *[], *>}
  */
-async function* viewStreamIterator(stream_name, start_time = undefined, max = undefined) {
+async function* viewStreamIterator(stream_name, startTime = undefined, max = undefined) {
 	const { jsm, js } = await getNATSReferences();
-	const consumer_name = ulid();
-	const consumer_config = {
-		durable_name: consumer_name,
+	const consumerName = ulid();
+	const consumerConfig = {
+		durable_name: consumerName,
 		ack_policy: AckPolicy.Explicit,
 	};
 
 	// If a start time is passed add a policy that will receive msgs from that time onward.
-	if (start_time) {
-		consumer_config.deliver_policy = DeliverPolicy.StartTime;
-		consumer_config.opt_start_time = new Date(start_time).toISOString();
+	if (startTime) {
+		consumerConfig.deliver_policy = DeliverPolicy.StartTime;
+		consumerConfig.opt_start_time = new Date(startTime).toISOString();
 	}
 
-	await jsm.consumers.add(stream_name, consumer_config);
-	const consumer = await js.consumers.get(stream_name, consumer_name);
+	await jsm.consumers.add(stream_name, consumerConfig);
+	const consumer = await js.consumers.get(stream_name, consumerName);
 	const messages = !max ? await consumer.consume() : await consumer.fetch({ max_messages: max, expires: 2000 });
 	if (consumer._info.num_pending === 0) return [];
 
@@ -502,7 +502,7 @@ async function* viewStreamIterator(stream_name, start_time = undefined, max = un
 			};
 
 			if (m.headers) {
-				wrapper.origin = m.headers.get(nats_terms.MSG_HEADERS.ORIGIN);
+				wrapper.origin = m.headers.get(natsTerms.MSG_HEADERS.ORIGIN);
 			}
 
 			yield wrapper;
@@ -519,47 +519,47 @@ async function* viewStreamIterator(stream_name, start_time = undefined, max = un
 
 /**
  * publishes message(s) to a stream
- * @param {String} subject_name - name of subject to publish to
+ * @param {String} subjectName - name of subject to publish to
  * @param {String} stream_name - the name of the NATS stream
  * @param {} message - message to publish to the stream
- * @param {} msg_header - header to attach to msg being published to stream
+ * @param {} msgHeader - header to attach to msg being published to stream
  * @returns {Promise<void>}
  */
-async function publishToStream(subject_name, stream_name, msg_header, message) {
-	hdb_logger.trace(
-		`publishToStream called with subject: ${subject_name}, stream: ${stream_name}, entries:`,
+async function publishToStream(subjectName, stream_name, msgHeader, message) {
+	hdbLogger.trace(
+		`publishToStream called with subject: ${subjectName}, stream: ${stream_name}, entries:`,
 		message.operation
 	);
 
-	msg_header = addNatsMsgHeader(message, msg_header);
+	msgHeader = addNatsMsgHeader(message, msgHeader);
 
 	const { js } = await getNATSReferences();
-	const nats_server = await getJsmServerName();
-	const subject = `${subject_name}.${nats_server}`;
-	let encoded_message = await encodeBlobsAsBuffers(() =>
+	const natsServer = await getJsmServerName();
+	const subject = `${subjectName}.${natsServer}`;
+	let encodedMessage = await encodeBlobsAsBuffers(() =>
 		message instanceof Uint8Array
 			? message // already encoded
 			: encoder.encode(message)
 	);
 
 	try {
-		hdb_logger.trace(`publishToStream publishing to subject: ${subject}`);
-		recordAction(encoded_message.length, 'bytes-sent', subject_name, message.operation, 'replication');
-		await js.publish(subject, encoded_message, { headers: msg_header });
+		hdbLogger.trace(`publishToStream publishing to subject: ${subject}`);
+		recordAction(encodedMessage.length, 'bytes-sent', subjectName, message.operation, 'replication');
+		await js.publish(subject, encodedMessage, { headers: msgHeader });
 	} catch (err) {
 		// If the stream doesn't exist it is created and published to
 		if (err.code && err.code.toString() === '503') {
 			return exclusiveLock(async () => {
 				// try again once we have the lock
 				try {
-					await js.publish(subject, encoded_message, { headers: msg_header });
+					await js.publish(subject, encodedMessage, { headers: msgHeader });
 				} catch (error) {
 					if (err.code && err.code.toString() === '503') {
-						hdb_logger.trace(`publishToStream creating stream: ${stream_name}`);
-						let subject_parts = subject.split('.');
-						subject_parts[2] = '*';
-						await createLocalStream(stream_name, [subject] /*[subject_parts.join('.')]*/);
-						await js.publish(subject, encoded_message, { headers: msg_header });
+						hdbLogger.trace(`publishToStream creating stream: ${stream_name}`);
+						let subjectParts = subject.split('.');
+						subjectParts[2] = '*';
+						await createLocalStream(stream_name, [subject] /*[subjectParts.join('.')]*/);
+						await js.publish(subject, encodedMessage, { headers: msgHeader });
 					} else {
 						throw err;
 					}
@@ -575,62 +575,62 @@ async function publishToStream(subject_name, stream_name, msg_header, message) {
  * Can create a nats header (which essential is a map) and add msg id
  * and origin properties if they don't already exist.
  * @param req
- * @param nats_msg_header
+ * @param natsMsgHeader
  * @returns {*}
  */
-function addNatsMsgHeader(req, nats_msg_header) {
-	if (nats_msg_header === undefined) nats_msg_header = headers();
-	const node_name = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
+function addNatsMsgHeader(req, natsMsgHeader) {
+	if (natsMsgHeader === undefined) natsMsgHeader = headers();
+	const node_name = envManager.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 
-	if (!nats_msg_header.has(nats_terms.MSG_HEADERS.ORIGIN) && node_name) {
-		nats_msg_header.append(nats_terms.MSG_HEADERS.ORIGIN, node_name);
+	if (!natsMsgHeader.has(natsTerms.MSG_HEADERS.ORIGIN) && node_name) {
+		natsMsgHeader.append(natsTerms.MSG_HEADERS.ORIGIN, node_name);
 	}
 
-	return nats_msg_header;
+	return natsMsgHeader;
 }
 
 /**
  * Gets some of the server config that is needed by other functions
- * @param process_name - The process name processManagement gives the server
+ * @param processName - The process name processManagement gives the server
  * @returns {undefined|{server_name: string, port: *}}
  */
-function getServerConfig(process_name) {
-	process_name = process_name.toLowerCase();
-	const hdb_nats_path = path.join(env_manager.get(hdb_terms.CONFIG_PARAMS.ROOTPATH), HDB_CLUSTERING_FOLDER);
+function getServerConfig(processName) {
+	processName = processName.toLowerCase();
+	const hdbNatsPath = path.join(envManager.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), HDB_CLUSTERING_FOLDER);
 
-	if (process_name === hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB.toLowerCase()) {
-		if (isEmpty(hub_config)) {
-			hub_config = {
-				port: config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT),
+	if (processName === hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_HUB.toLowerCase()) {
+		if (isEmpty(hubConfig)) {
+			hubConfig = {
+				port: configUtils.getConfigFromFile(hdbTerms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT),
 				server_name:
-					config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME) + nats_terms.SERVER_SUFFIX.HUB,
-				config_file: nats_terms.NATS_CONFIG_FILES.HUB_SERVER,
-				pid_file_path: path.join(hdb_nats_path, nats_terms.PID_FILES.HUB),
-				hdb_nats_path,
+					configUtils.getConfigFromFile(hdbTerms.CONFIG_PARAMS.CLUSTERING_NODENAME) + natsTerms.SERVER_SUFFIX.HUB,
+				config_file: natsTerms.NATS_CONFIG_FILES.HUB_SERVER,
+				pid_file_path: path.join(hdbNatsPath, natsTerms.PID_FILES.HUB),
+				hdbNatsPath,
 			};
 		}
 
-		return hub_config;
+		return hubConfig;
 	}
 
-	if (process_name === hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF.toLowerCase()) {
-		if (isEmpty(leaf_config)) {
-			leaf_config = {
-				port: config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT),
+	if (processName === hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF.toLowerCase()) {
+		if (isEmpty(leafConfig)) {
+			leafConfig = {
+				port: configUtils.getConfigFromFile(hdbTerms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT),
 				server_name:
-					config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME) + nats_terms.SERVER_SUFFIX.LEAF,
-				config_file: nats_terms.NATS_CONFIG_FILES.LEAF_SERVER,
+					configUtils.getConfigFromFile(hdbTerms.CONFIG_PARAMS.CLUSTERING_NODENAME) + natsTerms.SERVER_SUFFIX.LEAF,
+				config_file: natsTerms.NATS_CONFIG_FILES.LEAF_SERVER,
 				domain:
-					config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME) + nats_terms.SERVER_SUFFIX.LEAF,
-				pid_file_path: path.join(hdb_nats_path, nats_terms.PID_FILES.LEAF),
-				hdb_nats_path,
+					configUtils.getConfigFromFile(hdbTerms.CONFIG_PARAMS.CLUSTERING_NODENAME) + natsTerms.SERVER_SUFFIX.LEAF,
+				pid_file_path: path.join(hdbNatsPath, natsTerms.PID_FILES.LEAF),
+				hdbNatsPath,
 			};
 		}
 
-		return leaf_config;
+		return leafConfig;
 	}
 
-	hdb_logger.error(`Unable to get Nats server config. Unrecognized process: ${process_name}`);
+	hdbLogger.error(`Unable to get Nats server config. Unrecognized process: ${processName}`);
 	return undefined;
 }
 
@@ -638,17 +638,17 @@ function getServerConfig(process_name) {
  * Creates a consumer, the typical use case is to create a consumer to be used by a remote node for replicated data ingest.
  * @param jsm
  * @param stream_name
- * @param durable_name
- * @param start_time
+ * @param durableName
+ * @param startTime
  * @returns {Promise<void>}
  */
-async function createConsumer(jsm, stream_name, durable_name, start_time) {
+async function createConsumer(jsm, stream_name, durableName, startTime) {
 	try {
 		await jsm.consumers.add(stream_name, {
 			ack_policy: AckPolicy.Explicit,
-			durable_name: durable_name,
+			durable_name: durableName,
 			deliver_policy: DeliverPolicy.StartTime,
-			opt_start_time: start_time,
+			opt_start_time: startTime,
 		});
 	} catch (e) {
 		if (e.message !== 'consumer already exists') {
@@ -661,21 +661,21 @@ async function createConsumer(jsm, stream_name, durable_name, start_time) {
  * deletes a consumer
  * @param jsm
  * @param stream_name
- * @param durable_name
+ * @param durableName
  * @returns {Promise<void>}
  */
-async function removeConsumer(jsm, stream_name, durable_name) {
-	await jsm.consumers.delete(stream_name, durable_name);
+async function removeConsumer(jsm, stream_name, durableName) {
+	await jsm.consumers.delete(stream_name, durableName);
 }
 
 /**
  * Gets the server name from the API prefix assuming that the prefix follows
  * this convention $JS.testLeafServer-leaf.API
- * @param api_prefix
+ * @param apiPrefix
  * @returns {*}
  */
-function extractServerName(api_prefix) {
-	return api_prefix.split('.')[1];
+function extractServerName(apiPrefix) {
+	return apiPrefix.split('.')[1];
 }
 
 /**
@@ -687,11 +687,11 @@ function extractServerName(api_prefix) {
  * @returns {Promise<*>}
  */
 async function request(subject, data, timeout = 60000, reply = createInbox()) {
-	if (!hdb_utils.isObject(data)) {
+	if (!hdbUtils.isObject(data)) {
 		throw new Error('data param must be an object');
 	}
 
-	const request_data = encoder.encode(data);
+	const requestData = encoder.encode(data);
 
 	const { connection } = await getNATSReferences();
 	let options = {
@@ -703,7 +703,7 @@ async function request(subject, data, timeout = 60000, reply = createInbox()) {
 		options.noMux = true;
 	}
 
-	const response = await connection.request(subject, request_data, options);
+	const response = await connection.request(subject, requestData, options);
 	return decode(response.data);
 }
 
@@ -715,27 +715,27 @@ async function request(subject, data, timeout = 60000, reply = createInbox()) {
 function reloadNATS(pid_file_path) {
 	return new Promise(async (resolve, reject) => {
 		const reload = spawn(NATS_SERVER_PATH, ['--signal', `reload=${pid_file_path}`], { cwd: __dirname });
-		let proc_err;
-		let proc_data;
+		let procErr;
+		let procData;
 
 		reload.on('error', (err) => {
 			reject(err);
 		});
 
 		reload.stdout.on('data', (data) => {
-			proc_data += data.toString();
+			procData += data.toString();
 		});
 
 		reload.stderr.on('data', (data) => {
-			proc_err += data.toString();
+			procErr += data.toString();
 		});
 
 		reload.stderr.on('close', (data) => {
-			if (proc_err) {
-				reject(proc_err);
+			if (procErr) {
+				reject(procErr);
 			}
 
-			resolve(proc_data);
+			resolve(procData);
 		});
 	});
 }
@@ -745,7 +745,7 @@ function reloadNATS(pid_file_path) {
  * @returns {Promise<void>}
  */
 async function reloadNATSHub() {
-	const { pid_file_path } = getServerConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB);
+	const { pid_file_path } = getServerConfig(hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_HUB);
 	await reloadNATS(pid_file_path);
 }
 
@@ -754,7 +754,7 @@ async function reloadNATSHub() {
  * @returns {Promise<void>}
  */
 async function reloadNATSLeaf() {
-	const { pid_file_path } = getServerConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
+	const { pid_file_path } = getServerConfig(hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
 	await reloadNATS(pid_file_path);
 }
 
@@ -762,24 +762,24 @@ async function reloadNATSLeaf() {
  * Handles any errors from the request function.
  * @param err
  * @param operation
- * @param remote_node
+ * @param remoteNode
  * @returns {string|*}
  */
-function requestErrorHandler(err, operation, remote_node) {
-	let err_msg;
+function requestErrorHandler(err, operation, remoteNode) {
+	let errMsg;
 	switch (err.code) {
 		case ErrorCode.NoResponders:
-			err_msg = `Unable to ${operation}, node '${remoteNode}' is not listening.`;
+			errMsg = `Unable to ${operation}, node '${remoteNode}' is not listening.`;
 			break;
 		case ErrorCode.Timeout:
-			err_msg = `Unable to ${operation}, node '${remoteNode}' is listening but did not respond.`;
+			errMsg = `Unable to ${operation}, node '${remoteNode}' is listening but did not respond.`;
 			break;
 		default:
-			err_msg = err.message;
+			errMsg = err.message;
 			break;
 	}
 
-	return err_msg;
+	return errMsg;
 }
 
 /**
@@ -789,35 +789,35 @@ function requestErrorHandler(err, operation, remote_node) {
  * @returns {Promise<void>}
  */
 async function updateRemoteConsumer(subscription, node_name) {
-	const node_domain_name = node_name + nats_terms.SERVER_SUFFIX.LEAF;
+	const node_domain_name = node_name + natsTerms.SERVER_SUFFIX.LEAF;
 	const { connection } = await getNATSReferences();
 	const { jsm } = await connectToRemoteJS(node_domain_name);
 	const { schema, table } = subscription;
-	const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
-	const start_time = subscription.start_time ? subscription.start_time : new Date(Date.now()).toISOString();
+	const stream_name = cryptoHash.createNatsTableStreamName(schema, table);
+	const startTime = subscription.start_time ? subscription.start_time : new Date(Date.now()).toISOString();
 
 	// Nats has trouble concurrently updating a stream. This code uses transaction locking to ensure that
 	// all updateRemoteConsumer calls run synchronously.
 	await exclusiveLock(async () => {
 		// Create a consumer that the remote node will use to consumer msgs from this nodes table stream.
 		if (subscription.subscribe === true) {
-			await createConsumer(jsm, stream_name, connection.info.server_name, start_time);
+			await createConsumer(jsm, stream_name, connection.info.server_name, startTime);
 		} else {
 			// There might not be a consumer for stream on this node, so we squash error.
 			try {
 				await removeConsumer(jsm, stream_name, connection.info.server_name);
 			} catch (err) {
-				hdb_logger.trace(err);
+				hdbLogger.trace(err);
 			}
 		}
 	});
 }
 
 async function updateConsumerIterator(database, table, node_name, status) {
-	const stream_name = crypto_hash.createNatsTableStreamName(database, table);
-	const node_domain_name = node_name + nats_terms.SERVER_SUFFIX.LEAF;
+	const stream_name = cryptoHash.createNatsTableStreamName(database, table);
+	const node_domain_name = node_name + natsTerms.SERVER_SUFFIX.LEAF;
 	const message = {
-		type: hdb_terms.ITC_EVENT_TYPES.NATS_CONSUMER_UPDATE,
+		type: hdbTerms.ITC_EVENT_TYPES.NATS_CONSUMER_UPDATE,
 		status,
 		stream_name,
 		node_domain_name,
@@ -826,24 +826,24 @@ async function updateConsumerIterator(database, table, node_name, status) {
 	// If the thread calling this is also an ingest thread, it will need to update its own consumer setup
 	if (
 		!isMainThread &&
-		(getWorkerIndex() < env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXINGESTTHREADS) ??
+		(getWorkerIndex() < envManager.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXINGESTTHREADS) ??
 			MAX_INGEST_THREADS)
 	) {
-		const { updateConsumer } = require('../natsIngestService');
+		const { updateConsumer } = require('../natsIngestService.js');
 		await updateConsumer(message);
 	}
 
 	await broadcast(message);
 
 	if (status === 'stop') {
-		await hdb_utils.async_set_timeout(1000);
+		await hdbUtils.asyncSetTimeout(1000);
 	}
 }
 
 function exclusiveLock(callback) {
 	return transaction.writeTransaction(
-		hdb_terms.SYSTEM_SCHEMA_NAME,
-		hdb_terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME,
+		hdbTerms.SYSTEM_SCHEMA_NAME,
+		hdbTerms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME,
 		callback
 	);
 }
@@ -854,9 +854,9 @@ function exclusiveLock(callback) {
  * @returns {Promise<void>}
  */
 async function createLocalTableStream(schema, table) {
-	const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
-	const nats_server = await getJsmServerName();
-	const subject = createSubjectName(schema, table, nats_server);
+	const stream_name = cryptoHash.createNatsTableStreamName(schema, table);
+	const natsServer = await getJsmServerName();
+	const subject = createSubjectName(schema, table, natsServer);
 	await createLocalStream(stream_name, [subject]);
 }
 
@@ -866,7 +866,7 @@ async function createLocalTableStream(schema, table) {
  * @returns {Promise<void>}
  */
 async function createTableStreams(subscriptions) {
-	for (let j = 0, sub_length = subscriptions.length; j < sub_length; j++) {
+	for (let j = 0, subLength = subscriptions.length; j < subLength; j++) {
 		const schema = subscriptions[j].schema;
 		const table = subscriptions[j].table;
 		await createLocalTableStream(schema, table);
@@ -881,10 +881,10 @@ async function createTableStreams(subscriptions) {
  * @returns {Promise<void>}
  */
 async function purgeTableStream(schema, table, options = undefined) {
-	if (env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+	if (envManager.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
 		try {
-			const stream_name = crypto_hash.createNatsTableStreamName(schema, table);
-			const { domain } = getServerConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
+			const stream_name = cryptoHash.createNatsTableStreamName(schema, table);
+			const { domain } = getServerConfig(hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
 			const con = await getConnection();
 			// Purging large streams needs a longer timeout than usual
 			const jsm = await con.jetstreamManager({ domain, timeout: 240000 });
@@ -893,7 +893,7 @@ async function purgeTableStream(schema, table, options = undefined) {
 			if (err.message === 'stream not found') {
 				// There can be situations where we are trying to purge a stream that doesn't exist.
 				// For this reason we do not throw the error if that occurs.
-				hdb_logger.warn(err);
+				hdbLogger.warn(err);
 			} else {
 				throw err;
 			}
@@ -908,8 +908,8 @@ async function purgeTableStream(schema, table, options = undefined) {
  * @returns {Promise<void>}
  */
 async function purgeSchemaTableStreams(schema, tables) {
-	if (env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
-		for (let x = 0, table_length = tables.length; x < table_length; x++) {
+	if (envManager.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+		for (let x = 0, tableLength = tables.length; x < tableLength; x++) {
 			await purgeTableStream(schema, tables[x]);
 		}
 	}
@@ -933,7 +933,7 @@ async function getStreamInfo(stream_name) {
  * @returns {string}
  */
 function createSubjectName(schema, table, server) {
-	return `${nats_terms.SUBJECT_PREFIXES.TXN}.${schema}${table ? '.' + table : ''}.${server}`;
+	return `${natsTerms.SUBJECT_PREFIXES.TXN}.${schema}${table ? '.' + table : ''}.${server}`;
 }
 
 /**
@@ -941,11 +941,11 @@ function createSubjectName(schema, table, server) {
  * @returns {Promise<*>}
  */
 async function getJsmServerName() {
-	if (jsm_server_name) return jsm_server_name;
+	if (jsmServerName) return jsmServerName;
 	const jsm = await getJetStreamManager();
-	jsm_server_name = jsm?.nc?.info?.server_name;
-	if (jsm_server_name === undefined) throw new Error('Unable to get jetstream manager server name');
-	return jsm_server_name;
+	jsmServerName = jsm?.nc?.info?.server_name;
+	if (jsmServerName === undefined) throw new Error('Unable to get jetstream manager server name');
+	return jsmServerName;
 }
 
 /**
@@ -959,27 +959,27 @@ async function updateLocalStreams() {
 
 	const streams = await listStreams();
 	for (const stream of streams) {
-		const stream_config = stream.config;
-		const stream_subject = stream_config.subjects[0];
-		if (!stream_subject) continue;
+		const streamConfig = stream.config;
+		const streamSubject = streamConfig.subjects[0];
+		if (!streamSubject) continue;
 
-		const limit_updated = updateStreamLimits(stream);
+		const limitUpdated = updateStreamLimits(stream);
 
 		// Dots are not allowed in node name so spilt on dot, get last item in array which gives us server name (node name with -leaf on the end).
-		const stream_subject_array = stream_subject.split('.');
-		const subject_server_name = stream_subject_array[stream_subject_array.length - 1];
-		if (subject_server_name === server_name && !limit_updated) continue;
+		const streamSubjectArray = streamSubject.split('.');
+		const subjectServerName = streamSubjectArray[streamSubjectArray.length - 1];
+		if (subjectServerName === server_name && !limitUpdated) continue;
 
-		if (stream_config.name === '__HARPERDB_WORK_QUEUE__') continue;
+		if (streamConfig.name === '__HARPERDB_WORK_QUEUE__') continue;
 
 		// Build the new subject name and replace existing one with it.
-		const subject_array = stream_subject.split('.');
-		subject_array[subject_array.length - 1] = server_name;
-		const new_subject_name = subject_array.join('.');
-		hdb_logger.trace(`Updating stream subject name from: ${stream_subject} to: ${new_subject_name}`);
-		stream_config.subjects[0] = new_subject_name;
+		const subjectArray = streamSubject.split('.');
+		subjectArray[subjectArray.length - 1] = server_name;
+		const newSubjectName = subjectArray.join('.');
+		hdbLogger.trace(`Updating stream subject name from: ${streamSubject} to: ${newSubjectName}`);
+		streamConfig.subjects[0] = newSubjectName;
 
-		await jsm.streams.update(stream_config.name, stream_config);
+		await jsm.streams.update(streamConfig.name, streamConfig);
 	}
 }
 
@@ -992,27 +992,27 @@ async function updateLocalStreams() {
 function updateStreamLimits(stream) {
 	const { config } = stream;
 	let update = false;
-	let max_age = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE);
+	let maxAge = envManager.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXAGE);
 	// We don't store the default (unlimited) values in our config, so we must update for comparison to work.
 	// We use seconds for max age, nats uses nanoseconds. This is why we are doing the conversion.
-	max_age = max_age === null ? 0 : max_age * 1000000000; // 0 is unlimited
-	let max_bytes = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXBYTES);
-	max_bytes = max_bytes === null ? -1 : max_bytes; // -1 is unlimited
-	let max_msgs = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXMSGS);
-	max_msgs = max_msgs === null ? -1 : max_msgs; // -1 is unlimited
+	maxAge = maxAge === null ? 0 : maxAge * 1000000000; // 0 is unlimited
+	let maxBytes = envManager.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXBYTES);
+	maxBytes = maxBytes === null ? -1 : maxBytes; // -1 is unlimited
+	let maxMsgs = envManager.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXMSGS);
+	maxMsgs = maxMsgs === null ? -1 : maxMsgs; // -1 is unlimited
 
-	if (max_age !== config.max_age) {
-		config.max_age = max_age;
+	if (maxAge !== config.max_age) {
+		config.max_age = maxAge;
 		update = true;
 	}
 
-	if (max_bytes !== config.max_bytes) {
-		config.max_bytes = max_bytes;
+	if (maxBytes !== config.max_bytes) {
+		config.max_bytes = maxBytes;
 		update = true;
 	}
 
-	if (max_msgs !== config.max_msgs) {
-		config.max_msgs = max_msgs;
+	if (maxMsgs !== config.max_msgs) {
+		config.max_msgs = maxMsgs;
 		update = true;
 	}
 
@@ -1027,10 +1027,10 @@ function updateStreamLimits(stream) {
 async function connectToRemoteJS(domain) {
 	let js, jsm;
 	try {
-		js = await nats_connection.jetstream({ domain });
-		jsm = await nats_connection.jetstreamManager({ domain, checkAPI: false });
+		js = await natsConnection.jetstream({ domain });
+		jsm = await natsConnection.jetstreamManager({ domain, checkAPI: false });
 	} catch (err) {
-		hdb_logger.error('Unable to connect to:', domain);
+		hdbLogger.error('Unable to connect to:', domain);
 		throw err;
 	}
 

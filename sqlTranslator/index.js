@@ -7,24 +7,24 @@ module.exports = {
 	checkASTPermissions,
 };
 
-const insert = require('../dataLayer/insert');
+const insert = require('../dataLayer/insert.js');
 const util = require('util');
-const cb_insert_insert = util.callbackify(insert.insert);
-const search = require('../dataLayer/search').search;
-const update = require('../dataLayer/update').update;
-const cb_update_update = util.callbackify(update);
-const delete_translator = require('./deleteTranslator').convertDelete;
+const cbInsertInsert = util.callbackify(insert.insert);
+const search = require('../dataLayer/search.js').search;
+const update = require('../dataLayer/update.js').update;
+const cbUpdateUpdate = util.callbackify(update);
+const deleteTranslator = require('./deleteTranslator.js').convertDelete;
 const alasql = require('alasql');
-const op_auth = require('../utility/operation_authorization');
-const logger = require('../utility/logging/harper_logger');
-const alasql_function_importer = require('./alasqlFunctionImporter');
-const hdb_utils = require('../utility/common_utils');
-const terms = require('../utility/hdbTerms');
-const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
-const { HTTP_STATUS_CODES } = hdb_errors;
+const opAuth = require('../utility/operation_authorization.js');
+const logger = require('../utility/logging/harper_logger.js');
+const alasqlFunctionImporter = require('./alasqlFunctionImporter.js');
+const hdbUtils = require('../utility/common_utils.js');
+const terms = require('../utility/hdbTerms.ts');
+const { hdbErrors, handleHDBError } = require('../utility/errors/hdbError.js');
+const { HTTP_STATUS_CODES } = hdbErrors;
 
 //here we call to define and import custom functions to alasql
-alasql_function_importer(alasql);
+alasqlFunctionImporter(alasql);
 
 let UNAUTHORIZED_RESPONSE = 403;
 const SQL_INSERT_ERROR_MSG = 'There was a problem performing this insert. Please check the logs and try again.';
@@ -37,13 +37,13 @@ class ParsedSQLObject {
 	}
 }
 
-function evaluateSQL(json_message, callback) {
-	let parsed_sql = json_message.parsed_sql_object;
-	if (!parsed_sql) {
-		parsed_sql = convertSQLToAST(json_message.sql);
+function evaluateSQL(jsonMessage, callback) {
+	let parsedSql = jsonMessage.parsed_sql_object;
+	if (!parsedSql) {
+		parsedSql = convertSQLToAST(jsonMessage.sql);
 		//TODO; This is a temporary check and should be removed once validation is integrated.
 		let schema = undefined;
-		let statement = parsed_sql.ast.statements[0];
+		let statement = parsedSql.ast.statements[0];
 		if (statement instanceof alasql.yy.Insert) {
 			schema = statement.into.databaseid;
 		} else if (statement instanceof alasql.yy.Select) {
@@ -55,11 +55,11 @@ function evaluateSQL(json_message, callback) {
 		} else {
 			logger.error(`AST in evaluateSQL is not a valid SQL type.`);
 		}
-		if (!(statement instanceof alasql.yy.Select) && hdb_utils.isEmptyOrZeroLength(schema)) {
+		if (!(statement instanceof alasql.yy.Select) && hdbUtils.isEmptyOrZeroLength(schema)) {
 			return callback('No schema specified', null);
 		}
 	}
-	processAST(json_message, parsed_sql, (error, results) => {
+	processAST(jsonMessage, parsedSql, (error, results) => {
 		if (error) {
 			return callback(error);
 		}
@@ -70,30 +70,30 @@ function evaluateSQL(json_message, callback) {
 
 /**
  * Provides a direct path to checking permissions for a given AST.  Returns false if permissions check fails.
- * @param json_message - The JSON inbound message.
- * @param parsed_sql_object - The Parsed SQL statement specified in the inbound json message, of type ParsedSQLObject.
+ * @param jsonMessage - The JSON inbound message.
+ * @param parsedSqlObject - The Parsed SQL statement specified in the inbound json message, of type ParsedSQLObject.
  * @returns {Array} - False if permissions check denys the statement.
  */
-function checkASTPermissions(json_message, parsed_sql_object) {
-	let verify_result = undefined;
+function checkASTPermissions(jsonMessage, parsedSqlObject) {
+	let verifyResult = undefined;
 	try {
-		verify_result = op_auth.verifyPermsAst(
-			parsed_sql_object.ast.statements[0],
-			json_message.hdb_user,
-			parsed_sql_object.variant
+		verifyResult = opAuth.verifyPermsAst(
+			parsedSqlObject.ast.statements[0],
+			jsonMessage.hdb_user,
+			parsedSqlObject.variant
 		);
-		parsed_sql_object.permissions_checked = true;
+		parsedSqlObject.permissions_checked = true;
 	} catch (e) {
 		throw e;
 	}
-	if (verify_result) {
-		return verify_result;
+	if (verifyResult) {
+		return verifyResult;
 	}
 	return null;
 }
 
 function convertSQLToAST(sql) {
-	let ast_response = new ParsedSQLObject();
+	let astResponse = new ParsedSQLObject();
 	if (!sql) {
 		throw handleHDBError(
 			new Error(),
@@ -102,17 +102,17 @@ function convertSQLToAST(sql) {
 		);
 	}
 	try {
-		let trimmed_sql = sql.trim();
-		let ast = alasql.parse(trimmed_sql);
-		let variant = trimmed_sql.split(' ')[0].toLowerCase();
-		ast_response.ast = ast;
-		ast_response.variant = variant;
+		let trimmedSql = sql.trim();
+		let ast = alasql.parse(trimmedSql);
+		let variant = trimmedSql.split(' ')[0].toLowerCase();
+		astResponse.ast = ast;
+		astResponse.variant = variant;
 	} catch (e) {
-		let split_error = e.message.split('\n');
-		if (split_error[1]) {
+		let splitError = e.message.split('\n');
+		if (splitError[1]) {
 			throw handleHDBError(
 				e,
-				`Invalid SQL at: ${split_error[1]}. Please ensure your SQL is valid. Try adding backticks to reserved words and schema table references.`,
+				`Invalid SQL at: ${splitError[1]}. Please ensure your SQL is valid. Try adding backticks to reserved words and schema table references.`,
 				HTTP_STATUS_CODES.BAD_REQUEST
 			);
 		} else {
@@ -124,44 +124,44 @@ function convertSQLToAST(sql) {
 		}
 	}
 
-	return ast_response;
+	return astResponse;
 }
 
-function processAST(json_message, parsed_sql_object, callback) {
+function processAST(jsonMessage, parsedSqlObject, callback) {
 	try {
-		let sql_function = nullFunction;
+		let sqlFunction = nullFunction;
 
-		if (!json_message.bypass_auth && !parsed_sql_object.permissions_checked) {
-			let permissions_check = checkASTPermissions(json_message, parsed_sql_object);
-			if (permissions_check && permissions_check.length > 0) {
-				return callback(UNAUTHORIZED_RESPONSE, permissions_check);
+		if (!jsonMessage.bypass_auth && !parsedSqlObject.permissions_checked) {
+			let permissionsCheck = checkASTPermissions(jsonMessage, parsedSqlObject);
+			if (permissionsCheck && permissionsCheck.length > 0) {
+				return callback(UNAUTHORIZED_RESPONSE, permissionsCheck);
 			}
 		}
 
 		let statement = {
-			statement: parsed_sql_object.ast.statements[0],
-			hdb_user: json_message.hdb_user,
+			statement: parsedSqlObject.ast.statements[0],
+			hdb_user: jsonMessage.hdb_user,
 		};
 
-		switch (parsed_sql_object.variant) {
+		switch (parsedSqlObject.variant) {
 			case terms.VALID_SQL_OPS_ENUM.SELECT:
-				sql_function = search;
-				statement = parsed_sql_object.ast.statements[0];
+				sqlFunction = search;
+				statement = parsedSqlObject.ast.statements[0];
 				break;
 			case terms.VALID_SQL_OPS_ENUM.INSERT:
 				//TODO add validator for insert, need to make sure columns are specified
-				sql_function = convertInsert;
+				sqlFunction = convertInsert;
 				break;
 			case terms.VALID_SQL_OPS_ENUM.UPDATE:
-				sql_function = cb_update_update;
+				sqlFunction = cbUpdateUpdate;
 				break;
 			case terms.VALID_SQL_OPS_ENUM.DELETE:
-				sql_function = delete_translator;
+				sqlFunction = deleteTranslator;
 				break;
 			default:
-				throw new Error(`unsupported SQL type ${parsed_sql_object.variant} in SQL: ${json_message}`);
+				throw new Error(`unsupported SQL type ${parsedSqlObject.variant} in SQL: ${jsonMessage}`);
 		}
-		sql_function(statement, (err, data) => {
+		sqlFunction(statement, (err, data) => {
 			if (err) {
 				callback(err);
 				return;
@@ -179,23 +179,23 @@ function nullFunction(sql, callback) {
 }
 
 function convertInsert({ statement, hdb_user }, callback) {
-	let schema_table = statement.into;
-	let insert_object = {
-		schema: schema_table.databaseid,
-		table: schema_table.tableid,
+	let schemaTable = statement.into;
+	let insertObject = {
+		schema: schemaTable.databaseid,
+		table: schemaTable.tableid,
 		operation: 'insert',
-		hdb_user: hdb_user,
+		hdb_user,
 	};
 
 	let columns = statement.columns.map((column) => column.columnid);
 
 	try {
-		insert_object.records = createDataObjects(columns, statement.values);
+		insertObject.records = createDataObjects(columns, statement.values);
 	} catch (e) {
 		return callback(e);
 	}
 
-	cb_insert_insert(insert_object, (err, res) => {
+	cbInsertInsert(insertObject, (err, res) => {
 		if (err) {
 			return callback(err);
 		}
@@ -204,8 +204,8 @@ function convertInsert({ statement, hdb_user }, callback) {
 			// We do not want the API returning the new attributes property.
 			delete res.new_attributes;
 			delete res.txn_time;
-		} catch (delete_err) {
-			logger.error(`Error delete new_attributes from insert response: ${delete_err}`);
+		} catch (deleteErr) {
+			logger.error(`Error delete new_attributes from insert response: ${deleteErr}`);
 		}
 
 		callback(null, res);
@@ -214,14 +214,14 @@ function convertInsert({ statement, hdb_user }, callback) {
 
 function createDataObjects(columns, values) {
 	try {
-		return values.map((value_objects) => {
+		return values.map((valueObjects) => {
 			//compare number of values to number of columns, if no match throw error
-			if (columns.length !== value_objects.length) {
+			if (columns.length !== valueObjects.length) {
 				throw 'number of values do not match number of columns in insert';
 			}
 			let record = {};
 			//make sure none of the value entries have a columnid
-			value_objects.forEach((value, x) => {
+			valueObjects.forEach((value, x) => {
 				if (value.columnid) {
 					throw 'cannot use a column in insert value';
 				}

@@ -371,7 +371,7 @@ describe('Test operation_authorization', function () {
 	}
 
 	it('required_permissions should include settings for all API operations', function () {
-		const require_perms_rw = op_auth_rewire.__get__('required_permissions');
+		const require_perms_rw = op_auth_rewire.__get__('requiredPermissions');
 		const missing_ops = [];
 		OPERATION_MAP.forEach((required_op, key, map) => {
 			const test_op = getOperationFuncName(required_op);
@@ -643,9 +643,9 @@ describe('Test operation_authorization', function () {
 		});
 
 		it('Test operation with read & insert required, but user only has insert.  False expected', function () {
-			let required_permissions = op_auth_rewire.__get__('required_permissions');
+			let required_permissions = op_auth_rewire.__get__('requiredPermissions');
 			required_permissions.set('test method', new Permission_rw(false, ['insert', 'read']));
-			op_auth_rewire.__set__('required_permissions', required_permissions);
+			op_auth_rewire.__set__('requiredPermissions', required_permissions);
 			let req_json = getRequestJson(TEST_JSON);
 			let perms = clone(PERMISSION_BASE);
 			perms[TEST_SCHEMA].describe = true;

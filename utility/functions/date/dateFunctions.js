@@ -1,7 +1,7 @@
 'use strict';
 
 const moment = require('moment');
-const hdb_time_format = 'YYYY-MM-DDTHH:mm:ss.SSSZZ';
+const hdbTimeFormat = 'YYYY-MM-DDTHH:mm:ss.SSSZZ';
 
 moment.suppressDeprecationWarnings = true;
 
@@ -12,8 +12,8 @@ module.exports = {
 	current_time: () => {
 		return moment().utc().format('HH:mm:ss.SSS');
 	},
-	extract: (date, date_part) => {
-		switch (date_part.toLowerCase()) {
+	extract: (date, datePart) => {
+		switch (datePart.toLowerCase()) {
 			case 'year':
 				return moment(date).utc().format('YYYY');
 			case 'month':
@@ -33,7 +33,7 @@ module.exports = {
 		}
 	},
 	date: (date) => {
-		return moment(date).utc().format(hdb_time_format);
+		return moment(date).utc().format(hdbTimeFormat);
 	},
 	date_format: (date, format) => {
 		return moment(date).utc().format(format);
@@ -44,22 +44,22 @@ module.exports = {
 	date_sub: (date, value, interval) => {
 		return moment(date).utc().subtract(value, interval).valueOf();
 	},
-	date_diff: (date_1, date_2, interval) => {
-		let first_date = moment(date_1).utc();
-		let second_date = moment(date_2).utc();
+	date_diff: (date1, date2, interval) => {
+		let firstDate = moment(date1).utc();
+		let secondDate = moment(date2).utc();
 		if (interval) {
-			return first_date.diff(second_date, interval, true);
+			return firstDate.diff(secondDate, interval, true);
 		} else {
-			return first_date.diff(second_date);
+			return firstDate.diff(secondDate);
 		}
 	},
 	now: () => {
 		return moment().utc().valueOf();
 	},
 	get_server_time: () => {
-		return moment().format(hdb_time_format);
+		return moment().format(hdbTimeFormat);
 	},
 	offset_utc: (date, offset) => {
-		return moment(date).utc().utcOffset(offset).format(hdb_time_format);
+		return moment(date).utc().utcOffset(offset).format(hdbTimeFormat);
 	},
 };

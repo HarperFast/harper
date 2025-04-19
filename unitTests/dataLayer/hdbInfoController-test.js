@@ -51,7 +51,7 @@ describe('Test hdbInfoController module ', function () {
 	before(() => {
 		sandbox = sinon.createSandbox();
 		search_stub = sandbox.stub().resolves(INFO_SEARCH_RESULT);
-		hdb_info_controller_rw.__set__('p_search_search_by_value', search_stub);
+		hdb_info_controller_rw.__set__('pSearchSearchByValue', search_stub);
 		insert_stub = sandbox.stub(insert, 'insert').resolves();
 		consoleLog_stub = sandbox.stub(console, 'log').returns();
 		consoleError_stub = sandbox.stub(console, 'error').returns();

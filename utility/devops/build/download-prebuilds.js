@@ -3,7 +3,7 @@ const exec = util.promisify(require('child_process').exec);
 const {
 	downloadNATSServer,
 	ALL_SUPPORTED_PLATFORM_ARCHITECTURES,
-} = require('../../../server/nats/utility/installNATSServer');
+} = require('../../../server/nats/utility/installNATSServer.js');
 
 (async function () {
 	// need prebuildify-ci for the downloads to run

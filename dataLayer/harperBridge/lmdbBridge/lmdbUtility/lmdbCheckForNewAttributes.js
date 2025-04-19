@@ -1,12 +1,12 @@
 'use strict';
 
-const h_utils = require('../../../../utility/common_utils');
-const hdb_terms = require('../../../../utility/hdbTerms');
-const logger = require('../../../../utility/logging/harper_logger');
-const lmdbCreateAttribute = require('../lmdbMethods/lmdbCreateAttribute');
-const LMDBCreateAttributeObject = require('./LMDBCreateAttributeObject');
-const signalling = require('../../../../utility/signalling');
-const { SchemaEventMsg } = require('../../../../server/threads/itc');
+const hUtils = require('../../../../utility/common_utils.js');
+const hdbTerms = require('../../../../utility/hdbTerms.ts');
+const logger = require('../../../../utility/logging/harper_logger.js');
+const lmdbCreateAttribute = require('../lmdbMethods/lmdbCreateAttribute.js');
+const LMDBCreateAttributeObject = require('./LMDBCreateAttributeObject.js');
+const signalling = require('../../../../utility/signalling.js');
+const { SchemaEventMsg } = require('../../../../server/threads/itc.js');
 
 const ATTRIBUTE_ALREADY_EXISTS = 'already exists in';
 
@@ -15,23 +15,23 @@ module.exports = lmdbCheckForNewAttributes;
 /**
  * Uses a utility function to check if there are any new attributes that dont exist. Utility function
  * references the global schema.
- * @param hdb_auth_header
- * @param table_schema
- * @param data_attributes
+ * @param hdbAuthHeader
+ * @param tableSchema
+ * @param dataAttributes
  */
-async function lmdbCheckForNewAttributes(hdb_auth_header, table_schema, data_attributes) {
-	if (h_utils.isEmptyOrZeroLength(data_attributes)) {
-		return data_attributes;
+async function lmdbCheckForNewAttributes(hdbAuthHeader, tableSchema, dataAttributes) {
+	if (hUtils.isEmptyOrZeroLength(dataAttributes)) {
+		return dataAttributes;
 	}
 
-	let raw_attributes = [];
-	if (!h_utils.isEmptyOrZeroLength(table_schema.attributes)) {
-		table_schema.attributes.forEach((attribute) => {
-			raw_attributes.push(attribute.attribute);
+	let rawAttributes = [];
+	if (!hUtils.isEmptyOrZeroLength(tableSchema.attributes)) {
+		tableSchema.attributes.forEach((attribute) => {
+			rawAttributes.push(attribute.attribute);
 		});
 	}
 
-	let new_attributes = data_attributes.filter((attribute) => raw_attributes.indexOf(attribute) < 0);
+	let new_attributes = dataAttributes.filter((attribute) => rawAttributes.indexOf(attribute) < 0);
 
 	if (new_attributes.length === 0) {
 		return new_attributes;
@@ -39,7 +39,7 @@ async function lmdbCheckForNewAttributes(hdb_auth_header, table_schema, data_att
 
 	await Promise.all(
 		new_attributes.map(async (attribute) => {
-			await createNewAttribute(hdb_auth_header, table_schema.schema, table_schema.name, attribute);
+			await createNewAttribute(hdbAuthHeader, tableSchema.schema, tableSchema.name, attribute);
 		})
 	);
 
@@ -48,20 +48,20 @@ async function lmdbCheckForNewAttributes(hdb_auth_header, table_schema, data_att
 
 /**
  * check the existing schema and creates new attributes based on what the incoming records have
- * @param hdb_auth_header
+ * @param hdbAuthHeader
  * @param schema
  * @param table
  * @param attribute
  */
-async function createNewAttribute(hdb_auth_header, schema, table, attribute) {
-	let attribute_object = new LMDBCreateAttributeObject(schema, table, attribute, undefined, true);
+async function createNewAttribute(hdbAuthHeader, schema, table, attribute) {
+	let attributeObject = new LMDBCreateAttributeObject(schema, table, attribute, undefined, true);
 
-	if (hdb_auth_header) {
-		attribute_object.hdb_auth_header = hdb_auth_header;
+	if (hdbAuthHeader) {
+		attributeObject.hdb_auth_header = hdbAuthHeader;
 	}
 
 	try {
-		await createAttribute(attribute_object);
+		await createAttribute(attributeObject);
 	} catch (e) {
 		//if the attribute already exists we do not want to stop the insert
 		if (typeof e === 'object' && e.message !== undefined && e.message.includes(ATTRIBUTE_ALREADY_EXISTS)) {
@@ -74,21 +74,21 @@ async function createNewAttribute(hdb_auth_header, schema, table, attribute) {
 
 /**
  *
- * @param {LMDBCreateAttributeObject} create_attribute_object
+ * @param {LMDBCreateAttributeObject} createAttributeObject
  * @returns {Promise<*>}
  */
-async function createAttribute(create_attribute_object) {
-	let attribute_structure;
-	attribute_structure = await lmdbCreateAttribute(create_attribute_object);
+async function createAttribute(createAttributeObject) {
+	let attributeStructure;
+	attributeStructure = await lmdbCreateAttribute(createAttributeObject);
 	signalling.signalSchemaChange(
 		new SchemaEventMsg(
 			process.pid,
-			hdb_terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
-			create_attribute_object.schema,
-			create_attribute_object.table,
-			create_attribute_object.attribute
+			hdbTerms.OPERATIONS_ENUM.CREATE_ATTRIBUTE,
+			createAttributeObject.schema,
+			createAttributeObject.table,
+			createAttributeObject.attribute
 		)
 	);
 
-	return attribute_structure;
+	return attributeStructure;
 }

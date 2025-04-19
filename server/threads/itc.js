@@ -1,11 +1,11 @@
 'use strict';
 
-const hdb_logger = require('../../utility/logging/harper_logger');
-const hdb_utils = require('../../utility/common_utils');
-const hdb_terms = require('../../utility/hdbTerms');
-const { ITC_ERRORS } = require('../../utility/errors/commonErrors');
+const hdbLogger = require('../../utility/logging/harper_logger.js');
+const hdbUtils = require('../../utility/common_utils.js');
+const hdbTerms = require('../../utility/hdbTerms.ts');
+const { ITC_ERRORS } = require('../../utility/errors/commonErrors.js');
 const { parentPort, threadId, isMainThread, workerData } = require('worker_threads');
-const { onMessageFromWorkers, broadcast, broadcastWithAcknowledgement } = require('./manageThreads');
+const { onMessageFromWorkers, broadcast, broadcastWithAcknowledgement } = require('./manageThreads.js');
 
 module.exports = {
 	sendItcEvent,
@@ -13,12 +13,12 @@ module.exports = {
 	SchemaEventMsg,
 	UserEventMsg,
 };
-let server_itc_handlers;
+let serverItcHandlers;
 onMessageFromWorkers(async (event, sender) => {
-	server_itc_handlers = server_itc_handlers || require('../itc/serverHandlers');
+	serverItcHandlers = serverItcHandlers || require('../itc/serverHandlers.js');
 	validateEvent(event);
-	if (server_itc_handlers[event.type]) {
-		await server_itc_handlers[event.type](event);
+	if (serverItcHandlers[event.type]) {
+		await serverItcHandlers[event.type](event);
 	}
 	if (event.requestId && sender)
 		sender.postMessage({
@@ -46,19 +46,19 @@ function validateEvent(event) {
 		return ITC_ERRORS.INVALID_ITC_DATA_TYPE;
 	}
 
-	if (!event.hasOwnProperty('type') || hdb_utils.isEmpty(event.type)) {
+	if (!event.hasOwnProperty('type') || hdbUtils.isEmpty(event.type)) {
 		return ITC_ERRORS.MISSING_TYPE;
 	}
 
-	if (!event.hasOwnProperty('message') || hdb_utils.isEmpty(event.message)) {
+	if (!event.hasOwnProperty('message') || hdbUtils.isEmpty(event.message)) {
 		return ITC_ERRORS.MISSING_MSG;
 	}
 
-	if (!event.message.hasOwnProperty('originator') || hdb_utils.isEmpty(event.message.originator)) {
+	if (!event.message.hasOwnProperty('originator') || hdbUtils.isEmpty(event.message.originator)) {
 		return ITC_ERRORS.MISSING_ORIGIN;
 	}
 
-	if (hdb_terms.ITC_EVENT_TYPES[event.type.toUpperCase()] === undefined) {
+	if (hdbTerms.ITC_EVENT_TYPES[event.type.toUpperCase()] === undefined) {
 		return ITC_ERRORS.INVALID_EVENT(event.type);
 	}
 }

@@ -6,17 +6,17 @@
  * This module is used to validate and insert or update data.  Note insert.update should be used over the update module,
  * as the update module is meant to be used in more specific circumstances.
  */
-const insertValidator = require('../validation/insertValidator');
-const hdb_utils = require('../utility/common_utils');
+const insertValidator = require('../validation/insertValidator.js');
+const hdbUtils = require('../utility/common_utils.js');
 const util = require('util');
 // Leave this unused signalling import here. Due to circular dependencies we bring it in early to load it before the bridge
-const harperBridge = require('./harperBridge/harperBridge');
-const global_schema = require('../utility/globalSchema');
-const log = require('../utility/logging/harper_logger');
-const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
-const { HTTP_STATUS_CODES } = hdb_errors;
+const harperBridge = require('./harperBridge/harperBridge.js');
+const globalSchema = require('../utility/globalSchema.js');
+const log = require('../utility/logging/harper_logger.js');
+const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
+const { HTTP_STATUS_CODES } = hdbErrors;
 
-const p_global_schema = util.promisify(global_schema.getTableSchema);
+const pGlobalSchema = util.promisify(globalSchema.getTableSchema);
 
 const UPDATE_ACTION = 'updated';
 const INSERT_ACTION = 'inserted';
@@ -34,67 +34,67 @@ module.exports = {
 // make sure any changes below are also made there. This is to resolve a circular dependency.
 /**
  *  Takes an insert/update object and validates attributes, also looks for dups and get a list of all attributes from the record set
- * @param {Object} write_object
- * @returns {Promise<{table_schema, hashes: any[], attributes: string[]}>}
+ * @param {Object} writeObject
+ * @returns {Promise<{tableSchema, hashes: any[], attributes: string[]}>}
  */
-async function validation(write_object) {
+async function validation(writeObject) {
 	// Need to validate these outside of the validator as the getTableSchema call will fail with
 	// invalid values.
 
-	if (hdb_utils.isEmpty(write_object)) {
+	if (hdbUtils.isEmpty(writeObject)) {
 		throw new Error('invalid update parameters defined.');
 	}
-	if (hdb_utils.isEmptyOrZeroLength(write_object.schema)) {
+	if (hdbUtils.isEmptyOrZeroLength(writeObject.schema)) {
 		throw new Error('invalid database specified.');
 	}
-	if (hdb_utils.isEmptyOrZeroLength(write_object.table)) {
+	if (hdbUtils.isEmptyOrZeroLength(writeObject.table)) {
 		throw new Error('invalid table specified.');
 	}
 
-	let schema_table = await p_global_schema(write_object.schema, write_object.table);
+	let schemaTable = await pGlobalSchema(writeObject.schema, writeObject.table);
 
-	//validate insert_object for required attributes
-	let validator = insertValidator(write_object);
+	//validate insertObject for required attributes
+	let validator = insertValidator(writeObject);
 	if (validator) {
 		throw validator;
 	}
 
-	if (!Array.isArray(write_object.records)) {
+	if (!Array.isArray(writeObject.records)) {
 		throw new Error('records must be an array');
 	}
 
-	let hash_attribute = schema_table.hash_attribute;
+	let hash_attribute = schemaTable.hash_attribute;
 	let dups = new Set();
 	let attributes = {};
 
-	let is_update = false;
-	if (write_object.operation === 'update') {
-		is_update = true;
+	let isUpdate = false;
+	if (writeObject.operation === 'update') {
+		isUpdate = true;
 	}
 
-	write_object.records.forEach((record) => {
-		if (is_update && hdb_utils.isEmptyOrZeroLength(record[hash_attribute])) {
+	writeObject.records.forEach((record) => {
+		if (isUpdate && hdbUtils.isEmptyOrZeroLength(record[hash_attribute])) {
 			log.error('a valid hash attribute must be provided with update record:', record);
 			throw new Error('a valid hash attribute must be provided with update record');
 		}
 
 		if (
-			!hdb_utils.isEmptyOrZeroLength(record[hash_attribute]) &&
+			!hdbUtils.isEmptyOrZeroLength(record[hash_attribute]) &&
 			(record[hash_attribute] === 'null' || record[hash_attribute] === 'undefined')
 		) {
-			log.error(`a valid hash value must be provided with ${write_object.operation} record:`, record);
+			log.error(`a valid hash value must be provided with ${writeObject.operation} record:`, record);
 			throw new Error(`"${record[hash_attribute]}" is not a valid hash attribute value`);
 		}
 
 		if (
-			!hdb_utils.isEmpty(record[hash_attribute]) &&
+			!hdbUtils.isEmpty(record[hash_attribute]) &&
 			record[hash_attribute] !== '' &&
-			dups.has(hdb_utils.autoCast(record[hash_attribute]))
+			dups.has(hdbUtils.autoCast(record[hash_attribute]))
 		) {
 			record.skip = true;
 		}
 
-		dups.add(hdb_utils.autoCast(record[hash_attribute]));
+		dups.add(hdbUtils.autoCast(record[hash_attribute]));
 
 		for (let attr in record) {
 			attributes[attr] = 1;
@@ -105,7 +105,7 @@ async function validation(write_object) {
 	attributes[hash_attribute] = 1;
 
 	return {
-		schema_table: schema_table,
+		schema_table: schemaTable,
 		hashes: Array.from(dups),
 		attributes: Object.keys(attributes),
 	};
@@ -118,111 +118,111 @@ async function validation(write_object) {
  */
 
 /**
- * Inserts data specified in the insert_object parameter.
- * @param insert_object
+ * Inserts data specified in the insertObject parameter.
+ * @param insertObject
  */
-async function insertData(insert_object) {
-	if (insert_object.operation !== 'insert') {
+async function insertData(insertObject) {
+	if (insertObject.operation !== 'insert') {
 		throw new Error('invalid operation, must be insert');
 	}
 
-	let validator = insertValidator(insert_object);
+	let validator = insertValidator(insertObject);
 	if (validator) {
 		throw handleHDBError(new Error(), validator.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	hdb_utils.transformReq(insert_object);
+	hdbUtils.transformReq(insertObject);
 
-	let invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(insert_object.schema, insert_object.table);
-	if (invalid_schema_table_msg) {
-		throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.BAD_REQUEST);
+	let invalidSchemaTableMsg = hdbUtils.checkSchemaTableExist(insertObject.schema, insertObject.table);
+	if (invalidSchemaTableMsg) {
+		throw handleHDBError(new Error(), invalidSchemaTableMsg, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	let bridge_insert_result = await harperBridge.createRecords(insert_object);
+	let bridgeInsertResult = await harperBridge.createRecords(insertObject);
 
 	return returnObject(
 		INSERT_ACTION,
-		bridge_insert_result.written_hashes,
-		insert_object,
-		bridge_insert_result.skipped_hashes,
-		bridge_insert_result.new_attributes,
-		bridge_insert_result.txn_time
+		bridgeInsertResult.written_hashes,
+		insertObject,
+		bridgeInsertResult.skipped_hashes,
+		bridgeInsertResult.new_attributes,
+		bridgeInsertResult.txn_time
 	);
 }
 
 /**
- * Updates the data in the update_object parameter.
- * @param update_object - The data that will be updated in the database
+ * Updates the data in the updateObject parameter.
+ * @param updateObject - The data that will be updated in the database
  */
-async function updateData(update_object) {
-	if (update_object.operation !== 'update') {
+async function updateData(updateObject) {
+	if (updateObject.operation !== 'update') {
 		throw new Error('invalid operation, must be update');
 	}
 
-	let validator = insertValidator(update_object);
+	let validator = insertValidator(updateObject);
 	if (validator) {
 		throw handleHDBError(new Error(), validator.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	hdb_utils.transformReq(update_object);
+	hdbUtils.transformReq(updateObject);
 
-	let invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(update_object.schema, update_object.table);
-	if (invalid_schema_table_msg) {
-		throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.BAD_REQUEST);
+	let invalidSchemaTableMsg = hdbUtils.checkSchemaTableExist(updateObject.schema, updateObject.table);
+	if (invalidSchemaTableMsg) {
+		throw handleHDBError(new Error(), invalidSchemaTableMsg, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	let bridge_update_result = await harperBridge.updateRecords(update_object);
-	if (!hdb_utils.isEmpty(bridge_update_result.existing_rows)) {
+	let bridgeUpdateResult = await harperBridge.updateRecords(updateObject);
+	if (!hdbUtils.isEmpty(bridgeUpdateResult.existing_rows)) {
 		return returnObject(
-			bridge_update_result.update_action,
+			bridgeUpdateResult.update_action,
 			[],
-			update_object,
-			bridge_update_result.hashes,
+			updateObject,
+			bridgeUpdateResult.hashes,
 			undefined,
-			bridge_update_result.txn_time
+			bridgeUpdateResult.txn_time
 		);
 	}
 
 	return returnObject(
 		UPDATE_ACTION,
-		bridge_update_result.written_hashes,
-		update_object,
-		bridge_update_result.skipped_hashes,
-		bridge_update_result.new_attributes,
-		bridge_update_result.txn_time
+		bridgeUpdateResult.written_hashes,
+		updateObject,
+		bridgeUpdateResult.skipped_hashes,
+		bridgeUpdateResult.new_attributes,
+		bridgeUpdateResult.txn_time
 	);
 }
 
 /**
- * Upsert the data in the upsert_object parameter.
- * @param upsert_object - Represents the data that will be upserted in the database
+ * Upsert the data in the upsertObject parameter.
+ * @param upsertObject - Represents the data that will be upserted in the database
  */
-async function upsertData(upsert_object) {
-	if (upsert_object.operation !== 'upsert') {
+async function upsertData(upsertObject) {
+	if (upsertObject.operation !== 'upsert') {
 		throw handleHDBError(new Error(), 'invalid operation, must be upsert', HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
 	}
 
-	let validator = insertValidator(upsert_object);
+	let validator = insertValidator(upsertObject);
 	if (validator) {
 		throw handleHDBError(new Error(), validator.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	hdb_utils.transformReq(upsert_object);
+	hdbUtils.transformReq(upsertObject);
 
-	let invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(upsert_object.schema, upsert_object.table);
-	if (invalid_schema_table_msg) {
-		throw handleHDBError(new Error(), invalid_schema_table_msg, HTTP_STATUS_CODES.BAD_REQUEST);
+	let invalidSchemaTableMsg = hdbUtils.checkSchemaTableExist(upsertObject.schema, upsertObject.table);
+	if (invalidSchemaTableMsg) {
+		throw handleHDBError(new Error(), invalidSchemaTableMsg, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	let bridge_upsert_result = await harperBridge.upsertRecords(upsert_object);
+	let bridgeUpsertResult = await harperBridge.upsertRecords(upsertObject);
 
 	return returnObject(
 		UPSERT_ACTION,
-		bridge_upsert_result.written_hashes,
-		upsert_object,
+		bridgeUpsertResult.written_hashes,
+		upsertObject,
 		[],
-		bridge_upsert_result.new_attributes,
-		bridge_upsert_result.txn_time
+		bridgeUpsertResult.new_attributes,
+		bridgeUpsertResult.txn_time
 	);
 }
 
@@ -233,15 +233,15 @@ async function upsertData(upsert_object) {
  * @param object
  * @param skipped - not included for upsert ops
  * @param new_attributes
- * @param txn_time
+ * @param txnTime
  * @returns {{ message: string, new_attributes: *, txn_time: * }}
  */
 
-function returnObject(action, written_hashes, object, skipped, new_attributes, txn_time) {
+function returnObject(action, written_hashes, object, skipped, new_attributes, txnTime) {
 	let return_object = {
 		message: `${action} ${written_hashes.length} of ${written_hashes.length + skipped.length} records`,
 		new_attributes,
-		txn_time: txn_time,
+		txn_time: txnTime,
 	};
 
 	if (action === INSERT_ACTION) {
@@ -261,6 +261,6 @@ function returnObject(action, written_hashes, object, skipped, new_attributes, t
 }
 
 function flush(object) {
-	hdb_utils.transformReq(object);
+	hdbUtils.transformReq(object);
 	return harperBridge.flush(object.schema, object.table);
 }

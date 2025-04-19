@@ -1,4 +1,4 @@
-import { packageJson } from '../utility/packageUtils';
+import { packageJson } from '../utility/packageUtils.js';
 
 const OPENAPI_VERSION = '3.0.3';
 // Maps graphql primitive types to open api types
@@ -53,12 +53,12 @@ export function generateJsonApi(resources) {
 		if (!resource.path || resource.Resource.isError) continue;
 
 		const { path } = resource;
-		const stripped_path = path.split('/').slice(-1); // strip any namespace from path
+		const strippedPath = path.split('/').slice(-1); // strip any namespace from path
 		let { attributes, primaryKey, prototype } = resource.Resource;
 		primaryKey = primaryKey ?? 'id';
 		if (!primaryKey) continue;
 		const props = {};
-		const query_params_array = [];
+		const queryParamsArray = [];
 		if (attributes) {
 			for (const { type, name, elements, relationship, definition } of attributes) {
 				if (relationship) {
@@ -71,12 +71,12 @@ export function generateJsonApi(resources) {
 					const def = definition ?? elements?.definition;
 					if (def) {
 						if (!api.components.schemas[def.type]) {
-							const def_props = {};
+							const defProps = {};
 							def.properties.forEach((prop) => {
-								def_props[prop.name] = new Type(DATA_TYPES[prop.type], prop.type);
+								defProps[prop.name] = new Type(DATA_TYPES[prop.type], prop.type);
 							});
 
-							api.components.schemas[def.type] = new ResourceSchema(def_props);
+							api.components.schemas[def.type] = new ResourceSchema(defProps);
 						}
 
 						if (type === 'array') {
@@ -96,44 +96,44 @@ export function generateJsonApi(resources) {
 						props[name] = new Type(DATA_TYPES[type], type);
 					}
 				}
-				query_params_array.push(new Parameter(name, 'query', props[name]));
+				queryParamsArray.push(new Parameter(name, 'query', props[name]));
 			}
 		}
 
-		const props_array = Object.keys(props);
-		const primary_key_param = new Parameter(primaryKey, 'path', { format: 'ID' });
-		primary_key_param.required = true;
-		primary_key_param.description = 'primary key of record';
-		const property_param_path = new Parameter('property', 'path', { enum: props_array });
-		property_param_path.required = true;
-		api.components.schemas[stripped_path] = new ResourceSchema(props);
+		const propsArray = Object.keys(props);
+		const primaryKeyParam = new Parameter(primaryKey, 'path', { format: 'ID' });
+		primaryKeyParam.required = true;
+		primaryKeyParam.description = 'primary key of record';
+		const propertyParamPath = new Parameter('property', 'path', { enum: propsArray });
+		propertyParamPath.required = true;
+		api.components.schemas[strippedPath] = new ResourceSchema(props);
 
-		const has_post = prototype.post !== Resource.prototype.post || prototype.update;
-		const has_put = typeof prototype.put === 'function';
-		const has_get = typeof prototype.get === 'function';
-		const has_delete = typeof prototype.delete === 'function';
+		const hasPost = prototype.post !== Resource.prototype.post || prototype.update;
+		const hasPut = typeof prototype.put === 'function';
+		const hasGet = typeof prototype.get === 'function';
+		const hasDelete = typeof prototype.delete === 'function';
 
 		// API for path structure /my-resource/
 		let url = '/' + path + '/';
-		if (has_post) {
+		if (hasPost) {
 			api.paths[url] = {};
-			api.paths[url].post = new Post(stripped_path, security, 'create a new record auto-assigning a primary key');
+			api.paths[url].post = new Post(strippedPath, security, 'create a new record auto-assigning a primary key');
 		}
 
-		if (has_get) {
+		if (hasGet) {
 			if (!api.paths[url]) api.paths[url] = {};
 			api.paths[url].get = new Get(
-				query_params_array,
+				queryParamsArray,
 				security,
-				{ '200': new Response200({ $ref: SCHEMA_COMP_REF + stripped_path }) },
+				{ '200': new Response200({ $ref: SCHEMA_COMP_REF + strippedPath }) },
 				'search for records by the specified property name and value pairs'
 			);
 		}
 
-		if (has_delete) {
+		if (hasDelete) {
 			if (!api.paths[url]) api.paths[url] = {};
 			api.paths[url].delete = new Delete(
-				query_params_array,
+				queryParamsArray,
 				security,
 				'delete all the records that match the provided query',
 				{
@@ -144,42 +144,42 @@ export function generateJsonApi(resources) {
 
 		// API for path structure /my-resource/<record-id>
 		url = '/' + path + '/{' + primaryKey + '}';
-		if (has_get) {
+		if (hasGet) {
 			api.paths[url] = {};
 			api.paths[url].get = new Get(
-				[primary_key_param],
+				[primaryKeyParam],
 				security,
-				{ '200': new Response200({ $ref: SCHEMA_COMP_REF + stripped_path }) },
+				{ '200': new Response200({ $ref: SCHEMA_COMP_REF + strippedPath }) },
 				'retrieve a record by its primary key'
 			);
 		}
 
-		if (has_put) {
+		if (hasPut) {
 			if (!api.paths[url]) api.paths[url] = {};
 			api.paths[url].put = new Put(
-				[primary_key_param],
+				[primaryKeyParam],
 				security,
-				stripped_path,
+				strippedPath,
 				"create or update the record with the URL path that maps to the record's primary key"
 			);
 		}
 
-		if (has_delete) {
+		if (hasDelete) {
 			if (!api.paths[url]) api.paths[url] = {};
-			api.paths[url].delete = new Delete([primary_key_param], security, 'delete a record with the given primary key', {
+			api.paths[url].delete = new Delete([primaryKeyParam], security, 'delete a record with the given primary key', {
 				'204': new Response204(),
 			});
 		}
 
 		// API for path structure /my-resource/<record-id>.property
-		if (has_get && property_param_path.schema.enum.length > 0) {
+		if (hasGet && propertyParamPath.schema.enum.length > 0) {
 			url = '/' + path + '/{' + primaryKey + '}.{property}';
 			api.paths[url] = {};
 			api.paths[url].get = new Get(
-				[primary_key_param, property_param_path],
+				[primaryKeyParam, propertyParamPath],
 				security,
 				{
-					'200': new Response200({ enum: props_array }),
+					'200': new Response200({ enum: propsArray }),
 				},
 
 				'used to retrieve the specified property of the specified record'
@@ -238,7 +238,7 @@ function Response200(schema) {
 	this.description = DESCRIPTION_200;
 	this.content = {
 		'application/json': {
-			schema: schema,
+			schema,
 		},
 	};
 }

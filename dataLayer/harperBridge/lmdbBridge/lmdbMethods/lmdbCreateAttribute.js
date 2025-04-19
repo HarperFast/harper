@@ -1,17 +1,17 @@
 'use strict';
 
-const hdb_terms = require('../../../../utility/hdbTerms');
-const environment_utility = require('../../../../utility/lmdb/environmentUtility');
-const write_utility = require('../../../../utility/lmdb/writeUtility');
-const { getSystemSchemaPath, getSchemaPath } = require('../lmdbUtility/initializePaths');
-const system_schema = require('../../../../json/systemSchema');
-const { validateBySchema } = require('../../../../validation/validationWrapper');
+const hdbTerms = require('../../../../utility/hdbTerms.ts');
+const environmentUtility = require('../../../../utility/lmdb/environmentUtility.js');
+const writeUtility = require('../../../../utility/lmdb/writeUtility.js');
+const { getSystemSchemaPath, getSchemaPath } = require('../lmdbUtility/initializePaths.js');
+const systemSchema = require('../../../../json/systemSchema.json');
+const { validateBySchema } = require('../../../../validation/validationWrapper.js');
 const Joi = require('joi');
-const LMDBCreateAttributeObject = require('../lmdbUtility/LMDBCreateAttributeObject');
-const returnObject = require('../../bridgeUtility/insertUpdateReturnObj');
-const { handleHDBError, hdb_errors, ClientError } = require('../../../../utility/errors/hdbError');
-const hdb_utils = require('../../../../utility/common_utils');
-const { HTTP_STATUS_CODES } = hdb_errors;
+const LMDBCreateAttributeObject = require('../lmdbUtility/LMDBCreateAttributeObject.js');
+const returnObject = require('../../bridgeUtility/insertUpdateReturnObj.js');
+const { handleHDBError, hdbErrors, ClientError } = require('../../../../utility/errors/hdbError.js');
+const hdbUtils = require('../../../../utility/common_utils.js');
+const { HTTP_STATUS_CODES } = hdbErrors;
 
 const ACTION = 'inserted';
 
@@ -19,12 +19,12 @@ module.exports = lmdbCreateAttribute;
 
 /**
  * First adds the attribute to the system attribute table, then creates the dbi.
- * @param {LMDBCreateAttributeObject} create_attribute_obj
+ * @param {LMDBCreateAttributeObject} createAttributeObj
  * @returns {{skipped_hashes: *, update_hashes: *, message: string}}
  */
-async function lmdbCreateAttribute(create_attribute_obj) {
+async function lmdbCreateAttribute(createAttributeObj) {
 	const validation = validateBySchema(
-		create_attribute_obj,
+		createAttributeObj,
 		Joi.object({
 			database: Joi.string(),
 			schema: Joi.string(),
@@ -35,71 +35,71 @@ async function lmdbCreateAttribute(create_attribute_obj) {
 	if (validation) throw new ClientError(validation.message);
 
 	//check if schema.table does not exist throw error
-	let check_schema_table =
-		!create_attribute_obj.skip_table_check &&
-		hdb_utils.checkGlobalSchemaTable(create_attribute_obj.schema, create_attribute_obj.table);
-	if (check_schema_table) {
-		throw handleHDBError(new Error(), check_schema_table, HTTP_STATUS_CODES.NOT_FOUND);
+	let checkSchemaTable =
+		!createAttributeObj.skip_table_check &&
+		hdbUtils.checkGlobalSchemaTable(createAttributeObj.schema, createAttributeObj.table);
+	if (checkSchemaTable) {
+		throw handleHDBError(new Error(), checkSchemaTable, HTTP_STATUS_CODES.NOT_FOUND);
 	}
 
-	//the validator strings everything so we need to recast the booleans on create_attribute_obj
-	create_attribute_obj.is_hash_attribute = create_attribute_obj.is_hash_attribute == 'true';
-	create_attribute_obj.dup_sort =
-		hdb_utils.isEmpty(create_attribute_obj.dup_sort) || create_attribute_obj.dup_sort == 'true';
+	//the validator strings everything so we need to recast the booleans on createAttributeObj
+	createAttributeObj.is_hash_attribute = createAttributeObj.is_hash_attribute == 'true';
+	createAttributeObj.dup_sort =
+		hdbUtils.isEmpty(createAttributeObj.dup_sort) || createAttributeObj.dup_sort == 'true';
 
-	let attributes_obj_array = [];
-	//on initial creation of a table it will not exist in hdb_schema yet
+	let attributesObjArray = [];
+	//on initial creation of a table it will not exist in hdbSchema yet
 	if (
-		global.hdb_schema[create_attribute_obj.schema] &&
-		global.hdb_schema[create_attribute_obj.schema][create_attribute_obj.table]
+		global.hdb_schema[createAttributeObj.schema] &&
+		global.hdb_schema[createAttributeObj.schema][createAttributeObj.table]
 	) {
-		attributes_obj_array = global.hdb_schema[create_attribute_obj.schema][create_attribute_obj.table]['attributes'];
+		attributesObjArray = global.hdb_schema[createAttributeObj.schema][createAttributeObj.table]['attributes'];
 	}
-	if (Array.isArray(attributes_obj_array) && attributes_obj_array.length > 0) {
-		for (let attribute of attributes_obj_array) {
-			if (attribute.attribute === create_attribute_obj.attribute) {
+	if (Array.isArray(attributesObjArray) && attributesObjArray.length > 0) {
+		for (let attribute of attributesObjArray) {
+			if (attribute.attribute === createAttributeObj.attribute) {
 				throw new Error(
-					`attribute '${attribute.attribute}' already exists in ${create_attribute_obj.schema}.${create_attribute_obj.table}`
+					`attribute '${attribute.attribute}' already exists in ${createAttributeObj.schema}.${createAttributeObj.table}`
 				);
 			}
 		}
 	}
 
-	//insert the attribute meta_data into system.hdb_attribute
+	//insert the attribute metaData into system.hdb_attribute
 	let record = new LMDBCreateAttributeObject(
-		create_attribute_obj.schema,
-		create_attribute_obj.table,
-		create_attribute_obj.attribute,
-		create_attribute_obj.id
+		createAttributeObj.schema,
+		createAttributeObj.table,
+		createAttributeObj.attribute,
+		createAttributeObj.id
 	);
 
 	try {
 		//create dbi into the environment for this table
-		let env = await environment_utility.openEnvironment(
-			getSchemaPath(create_attribute_obj.schema, create_attribute_obj.table),
-			create_attribute_obj.table
+		let env = await environmentUtility.openEnvironment(
+			getSchemaPath(createAttributeObj.schema, createAttributeObj.table),
+			createAttributeObj.table
 		);
-		if (env.dbis[create_attribute_obj.attribute] !== undefined) {
+		if (env.dbis[createAttributeObj.attribute] !== undefined) {
 			throw new Error(
-				`attribute '${create_attribute_obj.attribute}' already exists in ${create_attribute_obj.schema}.${create_attribute_obj.table}`
+				`attribute '${create_attribute_obj.attribute}' already exists in ${createAttributeObj.schema}.${createAttributeObj.table}`
 			);
 		}
-		environment_utility.createDBI(
+		environmentUtility.createDBI(
 			env,
-			create_attribute_obj.attribute,
-			create_attribute_obj.dup_sort,
-			create_attribute_obj.is_hash_attribute
+			createAttributeObj.attribute,
+			createAttributeObj.dup_sort,
+			createAttributeObj.is_hash_attribute
 		);
 
-		let hdb_attribute_env = await environment_utility.openEnvironment(
+		let hdbAttributeEnv = await environmentUtility.openEnvironment(
 			getSystemSchemaPath(),
-			hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME
+			hdbTerms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME
 		);
 
-		let { written_hashes, skipped_hashes } = await write_utility.insertRecords(
-			hdb_attribute_env,
+		let { written_hashes, skipped_hashes } = await writeUtility.insertRecords(
+			hdbAttributeEnv,
 			HDB_TABLE_INFO.hash_attribute,
-			hdb_attribute_attributes,
+			hdbAttributeAttributes,
 			[record]
 		);
 

@@ -1,23 +1,23 @@
-import LMDBBridge from './lmdbBridge/LMDBBridge';
-import search_validator from '../../validation/searchValidator';
-import { handleHDBError, ClientError, hdb_errors } from '../../utility/errors/hdbError';
-import { table, getDatabases, database, dropDatabase } from '../../resources/databases';
-import insertUpdateValidate from './bridgeUtility/insertUpdateValidate';
-import SearchObject from '../SearchObject';
+import LMDBBridge from './lmdbBridge/LMDBBridge.js';
+import searchValidator from '../../validation/searchValidator.js';
+import { handleHDBError, ClientError, hdbErrors } from '../../utility/errors/hdbError.js';
+import { table, getDatabases, database, dropDatabase } from '../../resources/databases.ts';
+import insertUpdateValidate from './bridgeUtility/insertUpdateValidate.js';
+import SearchObject from '../SearchObject.js';
 import {
 	OPERATIONS_ENUM,
 	VALUE_SEARCH_COMPARATORS,
 	VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP,
 	READ_AUDIT_LOG_SEARCH_TYPES_ENUM,
-} from '../../utility/hdbTerms';
-import * as signalling from '../../utility/signalling';
-import { SchemaEventMsg } from '../../server/threads/itc';
-import { async_set_timeout } from '../../utility/common_utils';
-import { transaction } from '../../resources/transaction';
-import type { Condition, Query, Context, Select, Id, DirectCondition } from '../../resources/ResourceInterface';
-import { collapseData } from '../../resources/tracked';
+} from '../../utility/hdbTerms.ts';
+import * as signalling from '../../utility/signalling.js';
+import { SchemaEventMsg } from '../../server/threads/itc.js';
+import { asyncSetTimeout } from '../../utility/common_utils.js';
+import { transaction } from '../../resources/transaction.ts';
+import type { Condition, Query, Context, Select, Id, DirectCondition } from '../../resources/ResourceInterface.ts';
+import { collapseData } from '../../resources/tracked.ts';
 
-const { HDB_ERROR_MSGS } = hdb_errors;
+const { HDB_ERROR_MSGS } = hdbErrors;
 const DEFAULT_DATABASE = 'data';
 const DELETE_CHUNK = 10000;
 const DELETE_PAUSE_MS = 10;
@@ -36,23 +36,23 @@ export type SearchByConditionsRequest = Query &
  * implemented
  */
 export class ResourceBridge extends LMDBBridge {
-	async searchByConditions(search_object: SearchByConditionsRequest) {
-		if (search_object.select !== undefined) search_object.get_attributes = search_object.select;
-		for (const condition of search_object.conditions || []) {
+	async searchByConditions(searchObject: SearchByConditionsRequest) {
+		if (searchObject.select !== undefined) searchObject.get_attributes = searchObject.select;
+		for (const condition of searchObject.conditions || []) {
 			if (condition?.attribute !== undefined) condition.search_attribute = condition.attribute;
 			if (condition?.comparator !== undefined) condition.search_type = condition.comparator;
 			if (condition?.value !== undefined) condition.search_value = condition.value;
 		}
-		const validation_error = search_validator(search_object, 'conditions');
-		if (validation_error) {
-			throw handleHDBError(validation_error, validation_error.message, 400, undefined, undefined, true);
+		const validationError = searchValidator(searchObject, 'conditions');
+		if (validationError) {
+			throw handleHDBError(validationError, validationError.message, 400, undefined, undefined, true);
 		}
-		const table = getTable(search_object);
+		const table = getTable(searchObject);
 		if (!table) {
-			throw new ClientError(`Table ${search_object.table} not found`);
+			throw new ClientError(`Table ${searchObject.table} not found`);
 		}
 
-		const conditions = search_object.conditions.map(mapCondition);
+		const conditions = searchObject.conditions.map(mapCondition);
 		function mapCondition(condition: Condition) {
 			if ('conditions' in condition && condition.conditions) {
 				condition.conditions = condition.conditions.map(mapCondition);
@@ -71,19 +71,19 @@ export class ResourceBridge extends LMDBBridge {
 			{
 				conditions,
 				//set the operator to always be lowercase for later evaluations
-				operator: search_object.operator ? search_object.operator.toLowerCase() : undefined,
-				limit: search_object.limit,
-				offset: search_object.offset,
-				reverse: search_object.reverse,
-				select: getSelect(search_object, table),
-				sort: search_object.sort,
+				operator: searchObject.operator ? searchObject.operator.toLowerCase() : undefined,
+				limit: searchObject.limit,
+				offset: searchObject.offset,
+				reverse: searchObject.reverse,
+				select: getSelect(searchObject, table),
+				sort: searchObject.sort,
 				allowFullScan: true, // operations API can do full scans by default, but REST is more cautious about what it allows
 			},
 			{
-				onlyIfCached: search_object.onlyIfCached,
-				noCacheStore: search_object.noCacheStore,
-				noCache: search_object.noCache,
-				replicateFrom: search_object.replicateFrom,
+				onlyIfCached: searchObject.onlyIfCached,
+				noCacheStore: searchObject.noCacheStore,
+				noCache: searchObject.noCache,
+				replicateFrom: searchObject.replicateFrom,
 			}
 		);
 	}
@@ -91,57 +91,57 @@ export class ResourceBridge extends LMDBBridge {
 	/**
 	 * Writes new table data to the system tables creates the environment file and creates two datastores to track created and updated
 	 * timestamps for new table data.
-	 * @param table_system_data
-	 * @param table_create_obj
+	 * @param tableSystemData
+	 * @param tableCreateObj
 	 */
-	async createTable(table_system_data, table_create_obj) {
-		let attributes = table_create_obj.attributes;
-		const schema_defined = Boolean(attributes);
-		const primary_key_name = table_create_obj.primary_key || table_create_obj.hash_attribute;
+	async createTable(tableSystemData, tableCreateObj) {
+		let attributes = tableCreateObj.attributes;
+		const schemaDefined = Boolean(attributes);
+		const primaryKeyName = tableCreateObj.primary_key || tableCreateObj.hash_attribute;
 		if (attributes) {
 			// allow for attributes to be specified, but do some massaging to make sure they are in the right form
 			for (const attribute of attributes) {
 				if (attribute.is_primary_key) {
 					attribute.isPrimaryKey = true;
 					delete attribute.is_primary_key;
-				} else if (attribute.name === primary_key_name && primary_key_name) attribute.isPrimaryKey = true;
+				} else if (attribute.name === primaryKeyName && primaryKeyName) attribute.isPrimaryKey = true;
 			}
 		} else {
 			// legacy default schema for tables created through operations API without attributes
-			if (!primary_key_name)
+			if (!primaryKeyName)
 				throw new ClientError('A primary key must be specified with a `primary_key` property or with `attributes`');
 			attributes = [
-				{ name: primary_key_name, isPrimaryKey: true },
+				{ name: primaryKeyName, isPrimaryKey: true },
 				{ name: '__createdtime__', indexed: true },
 				{ name: '__updatedtime__', indexed: true },
 			];
 		}
 		table({
-			database: table_create_obj.database ?? table_create_obj.schema,
-			table: table_create_obj.table,
+			database: tableCreateObj.database ?? tableCreateObj.schema,
+			table: tableCreateObj.table,
 			attributes,
-			schemaDefined: schema_defined,
-			expiration: table_create_obj.expiration,
-			audit: table_create_obj.audit,
+			schemaDefined,
+			expiration: tableCreateObj.expiration,
+			audit: tableCreateObj.audit,
 		});
 	}
 
-	async createAttribute(create_attribute_obj) {
-		await getTable(create_attribute_obj).addAttributes([
+	async createAttribute(createAttributeObj) {
+		await getTable(createAttributeObj).addAttributes([
 			{
-				name: create_attribute_obj.attribute,
-				indexed: create_attribute_obj.indexed ?? true,
+				name: createAttributeObj.attribute,
+				indexed: createAttributeObj.indexed ?? true,
 			},
 		]);
-		return `attribute ${create_attribute_obj.schema}.${create_attribute_obj.table}.${create_attribute_obj.attribute} successfully created.`;
+		return `attribute ${createAttributeObj.schema}.${createAttributeObj.table}.${createAttributeObj.attribute} successfully created.`;
 	}
 
-	async dropAttribute(drop_attribute_obj) {
-		const Table = getTable(drop_attribute_obj);
-		await Table.removeAttributes([drop_attribute_obj.attribute]);
+	async dropAttribute(dropAttributeObj) {
+		const Table = getTable(dropAttributeObj);
+		await Table.removeAttributes([dropAttributeObj.attribute]);
 		if (!Table.schemaDefined) {
 			// legacy behavior of deleting all the property values
-			const property = drop_attribute_obj.attribute;
+			const property = dropAttributeObj.attribute;
 			let resolution;
 			const deleteRecord = (key, record, version): Promise<void> => {
 				record = { ...record };
@@ -162,58 +162,58 @@ export class ResourceBridge extends LMDBBridge {
 			}
 			await resolution;
 		}
-		return `successfully deleted ${drop_attribute_obj.schema}.${drop_attribute_obj.table}.${drop_attribute_obj.attribute}`;
+		return `successfully deleted ${dropAttributeObj.schema}.${dropAttributeObj.table}.${dropAttributeObj.attribute}`;
 	}
 
-	dropTable(drop_table_object) {
-		getTable(drop_table_object).dropTable();
+	dropTable(dropTableObject) {
+		getTable(dropTableObject).dropTable();
 	}
 
-	createSchema(create_schema_obj) {
+	createSchema(createSchemaObj) {
 		database({
-			database: create_schema_obj.schema,
+			database: createSchemaObj.schema,
 			table: null,
 		});
 		return signalling.signalSchemaChange(
-			new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_SCHEMA, create_schema_obj.schema)
+			new SchemaEventMsg(process.pid, OPERATIONS_ENUM.CREATE_SCHEMA, createSchemaObj.schema)
 		);
 	}
 
-	async dropSchema(drop_schema_obj) {
-		await dropDatabase(drop_schema_obj.schema);
-		signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, drop_schema_obj.schema));
+	async dropSchema(dropSchemaObj) {
+		await dropDatabase(dropSchemaObj.schema);
+		signalling.signalSchemaChange(new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_SCHEMA, dropSchemaObj.schema));
 	}
 
-	async updateRecords(update_obj) {
-		update_obj.requires_existing = true;
-		return this.upsertRecords(update_obj);
+	async updateRecords(updateObj) {
+		updateObj.requires_existing = true;
+		return this.upsertRecords(updateObj);
 	}
 
-	async createRecords(update_obj) {
-		update_obj.requires_no_existing = true;
-		return this.upsertRecords(update_obj);
+	async createRecords(updateObj) {
+		updateObj.requires_no_existing = true;
+		return this.upsertRecords(updateObj);
 	}
 
-	async upsertRecords(upsert_obj) {
-		const { schema_table, attributes } = insertUpdateValidate(upsert_obj);
+	async upsertRecords(upsertObj) {
+		const { schemaTable, attributes } = insertUpdateValidate(upsertObj);
 
 		let new_attributes;
-		const Table = getDatabases()[upsert_obj.schema][upsert_obj.table];
+		const Table = getDatabases()[upsertObj.schema][upsertObj.table];
 		const context: Context = {
-			user: upsert_obj.hdb_user,
-			expiresAt: upsert_obj.expiresAt,
-			originatingOperation: upsert_obj.operation,
+			user: upsertObj.hdb_user,
+			expiresAt: upsertObj.expiresAt,
+			originatingOperation: upsertObj.operation,
 		};
-		if (upsert_obj.replicateTo) context.replicateTo = upsert_obj.replicateTo;
-		if (upsert_obj.replicatedConfirmation) context.replicatedConfirmation = upsert_obj.replicatedConfirmation;
+		if (upsertObj.replicateTo) context.replicateTo = upsertObj.replicateTo;
+		if (upsertObj.replicatedConfirmation) context.replicatedConfirmation = upsertObj.replicatedConfirmation;
 		return transaction(context, async (transaction) => {
 			if (!Table.schemaDefined) {
 				new_attributes = [];
 				for (const attribute_name of attributes) {
-					const existing_attribute = Table.attributes.find(
-						(existing_attribute) => existing_attribute.name == attribute_name
+					const existingAttribute = Table.attributes.find(
+						(existingAttribute) => existingAttribute.name == attribute_name
 					);
-					if (!existing_attribute) {
+					if (!existingAttribute) {
 						new_attributes.push(attribute_name);
 					}
 				}
@@ -229,25 +229,25 @@ export class ResourceBridge extends LMDBBridge {
 
 			const keys = [];
 			const skipped = [];
-			for (const record of upsert_obj.records) {
+			for (const record of upsertObj.records) {
 				const id = record[Table.primaryKey];
-				let existing_record = id != undefined && (await Table.get(id, context));
+				let existingRecord = id != undefined && (await Table.get(id, context));
 				if (
-					(upsert_obj.requires_existing && !existing_record) ||
-					(upsert_obj.requires_no_existing && existing_record)
+					(upsertObj.requires_existing && !existingRecord) ||
+					(upsertObj.requires_no_existing && existingRecord)
 				) {
 					skipped.push(record[Table.primaryKey]);
 					continue;
 				}
-				if (existing_record) existing_record = collapseData(existing_record);
+				if (existingRecord) existingRecord = collapseData(existingRecord);
 				for (const key in record) {
 					if (Object.prototype.hasOwnProperty.call(record, key)) {
 						let value = record[key];
 						if (typeof value === 'function') {
 							try {
-								const value_results = value([[existing_record]]);
-								if (Array.isArray(value_results)) {
-									value = value_results[0].func_val;
+								const valueResults = value([[existingRecord]]);
+								if (Array.isArray(valueResults)) {
+									value = valueResults[0].func_val;
 									record[key] = value;
 								}
 							} catch (error) {
@@ -257,10 +257,10 @@ export class ResourceBridge extends LMDBBridge {
 						}
 					}
 				}
-				if (existing_record) {
-					for (const key in existing_record) {
+				if (existingRecord) {
+					for (const key in existingRecord) {
 						// if the record is missing any properties, fill them in from the existing record
-						if (!Object.prototype.hasOwnProperty.call(record, key)) record[key] = existing_record[key];
+						if (!Object.prototype.hasOwnProperty.call(record, key)) record[key] = existingRecord[key];
 					}
 				}
 				await (id == undefined ? Table.create(record, context) : Table.put(record, context));
@@ -275,13 +275,13 @@ export class ResourceBridge extends LMDBBridge {
 		});
 	}
 
-	async deleteRecords(delete_obj) {
-		const Table = getDatabases()[delete_obj.schema][delete_obj.table];
-		const context: Context = { user: delete_obj.hdb_user };
-		if (delete_obj.replicateTo) context.replicateTo = delete_obj.replicateTo;
-		if (delete_obj.replicatedConfirmation) context.replicatedConfirmation = delete_obj.replicatedConfirmation;
+	async deleteRecords(deleteObj) {
+		const Table = getDatabases()[deleteObj.schema][deleteObj.table];
+		const context: Context = { user: deleteObj.hdb_user };
+		if (deleteObj.replicateTo) context.replicateTo = deleteObj.replicateTo;
+		if (deleteObj.replicatedConfirmation) context.replicatedConfirmation = deleteObj.replicatedConfirmation;
 		return transaction(context, async (transaction) => {
-			const ids: Id[] = delete_obj.hash_values || delete_obj.records.map((record) => record[Table.primaryKey]);
+			const ids: Id[] = deleteObj.hash_values || deleteObj.records.map((record) => record[Table.primaryKey]);
 			const deleted = [];
 			const skipped = [];
 			for (const id of ids) {
@@ -294,7 +294,7 @@ export class ResourceBridge extends LMDBBridge {
 
 	/**
 	 * Deletes all records in a schema.table that fall behind a passed date.
-	 * @param delete_obj
+	 * @param deleteObj
 	 * {
 	 *     operation: 'delete_records_before' <string>,
 	 *     date: ISO-8601 format YYYY-MM-DD <string>,
@@ -303,43 +303,43 @@ export class ResourceBridge extends LMDBBridge {
 	 * }
 	 * @returns {undefined}
 	 */
-	async deleteRecordsBefore(delete_obj) {
-		const Table = getDatabases()[delete_obj.schema][delete_obj.table];
+	async deleteRecordsBefore(deleteObj) {
+		const Table = getDatabases()[deleteObj.schema][deleteObj.table];
 		if (!Table.createdTimeProperty) {
 			throw new ClientError(
 				`Table must have a '__createdtime__' attribute or @createdTime timestamp defined to perform this operation`
 			);
 		}
 
-		const records_to_delete = await Table.search({
+		const recordsToDelete = await Table.search({
 			conditions: [
 				{
 					attribute: Table.createdTimeProperty.name,
-					value: Date.parse(delete_obj.date),
+					value: Date.parse(deleteObj.date),
 					comparator: VALUE_SEARCH_COMPARATORS.LESS,
 				},
 			],
 		});
 
-		let delete_called = false;
-		const deleted_ids = [];
-		const skipped_ids = [];
+		let deleteCalled = false;
+		const deletedIds = [];
+		const skippedIds = [];
 		let i = 0;
 		let ids = [];
 		const chunkDelete = async () => {
-			const delete_res = await this.deleteRecords({
-				schema: delete_obj.schema,
-				table: delete_obj.table,
+			const deleteRes = await this.deleteRecords({
+				schema: deleteObj.schema,
+				table: deleteObj.table,
 				hash_values: ids,
 			});
-			deleted_ids.push(...delete_res.deleted_hashes);
-			skipped_ids.push(...delete_res.skipped_hashes);
-			await async_set_timeout(DELETE_PAUSE_MS);
+			deletedIds.push(...deleteRes.deleted_hashes);
+			skippedIds.push(...deleteRes.skipped_hashes);
+			await asyncSetTimeout(DELETE_PAUSE_MS);
 			ids = [];
-			delete_called = true;
+			deleteCalled = true;
 		};
 
-		for await (const records of records_to_delete) {
+		for await (const records of recordsToDelete) {
 			ids.push(records[Table.primaryKey]);
 			i++;
 			if (i % DELETE_CHUNK === 0) {
@@ -349,57 +349,57 @@ export class ResourceBridge extends LMDBBridge {
 
 		if (ids.length > 0) await chunkDelete();
 
-		if (!delete_called) {
+		if (!deleteCalled) {
 			return { message: 'No records found to delete' };
 		}
 
-		return createDeleteResponse(deleted_ids, skipped_ids, undefined);
+		return createDeleteResponse(deletedIds, skippedIds, undefined);
 	}
 
 	/**
 	 * fetches records by their hash values and returns an Array of the results
-	 * @param {SearchByHashObject} search_object
+	 * @param {SearchByHashObject} searchObject
 	 */
-	searchByHash(search_object) {
-		if (search_object.select !== undefined) search_object.get_attributes = search_object.select;
-		const validation_error = search_validator(search_object, 'hashes');
-		if (validation_error) {
-			throw validation_error;
+	searchByHash(searchObject) {
+		if (searchObject.select !== undefined) searchObject.get_attributes = searchObject.select;
+		const validationError = searchValidator(searchObject, 'hashes');
+		if (validationError) {
+			throw validationError;
 		}
-		return getRecords(search_object);
+		return getRecords(searchObject);
 	}
 
 	/**
 	 * Called by some SQL functions
-	 * @param search_object
+	 * @param searchObject
 	 */
-	async getDataByHash(search_object) {
+	async getDataByHash(searchObject) {
 		const map = new Map();
-		search_object._returnKeyValue = true;
-		for await (const { key, value } of getRecords(search_object, true)) {
+		searchObject._returnKeyValue = true;
+		for await (const { key, value } of getRecords(searchObject, true)) {
 			map.set(key, value);
 		}
 		return map;
 	}
 
-	searchByValue(search_object: SearchObject, comparator?: string) {
+	searchByValue(searchObject: SearchObject, comparator?: string) {
 		if (comparator && VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[comparator] === undefined) {
 			throw new Error(`Value search comparator - ${comparator} - is not valid`);
 		}
-		if (search_object.select !== undefined) search_object.get_attributes = search_object.select;
-		if (search_object.attribute !== undefined) search_object.search_attribute = search_object.attribute;
-		if (search_object.value !== undefined) search_object.search_value = search_object.value;
+		if (searchObject.select !== undefined) searchObject.get_attributes = searchObject.select;
+		if (searchObject.attribute !== undefined) searchObject.search_attribute = searchObject.attribute;
+		if (searchObject.value !== undefined) searchObject.search_value = searchObject.value;
 
-		const validation_error = search_validator(search_object, 'value');
-		if (validation_error) {
-			throw validation_error;
+		const validationError = searchValidator(searchObject, 'value');
+		if (validationError) {
+			throw validationError;
 		}
 
-		const table = getTable(search_object);
+		const table = getTable(searchObject);
 		if (!table) {
-			throw new ClientError(`Table ${search_object.table} not found`);
+			throw new ClientError(`Table ${searchObject.table} not found`);
 		}
-		let value = search_object.search_value;
+		let value = searchObject.search_value;
 		if (value.includes?.('*')) {
 			if (value.startsWith('*')) {
 				if (value.endsWith('*')) {
@@ -416,13 +416,13 @@ export class ResourceBridge extends LMDBBridge {
 				value = value.slice(0, -1);
 			}
 		}
-		if (comparator === VALUE_SEARCH_COMPARATORS.BETWEEN) value = [value, search_object.end_value];
+		if (comparator === VALUE_SEARCH_COMPARATORS.BETWEEN) value = [value, searchObject.end_value];
 		const conditions =
 			value === '*'
 				? []
 				: [
 						{
-							attribute: search_object.search_attribute,
+							attribute: searchObject.search_attribute,
 							value,
 							comparator,
 						},
@@ -432,32 +432,32 @@ export class ResourceBridge extends LMDBBridge {
 			{
 				conditions,
 				allowFullScan: true,
-				limit: search_object.limit,
-				offset: search_object.offset,
-				reverse: search_object.reverse,
-				sort: search_object.sort,
-				select: getSelect(search_object, table),
+				limit: searchObject.limit,
+				offset: searchObject.offset,
+				reverse: searchObject.reverse,
+				sort: searchObject.sort,
+				select: getSelect(searchObject, table),
 			},
 			{
-				onlyIfCached: search_object.onlyIfCached,
-				noCacheStore: search_object.noCacheStore,
-				noCache: search_object.noCache,
-				replicateFrom: search_object.replicateFrom,
+				onlyIfCached: searchObject.onlyIfCached,
+				noCacheStore: searchObject.noCacheStore,
+				noCache: searchObject.noCache,
+				replicateFrom: searchObject.replicateFrom,
 			}
 		);
 	}
 
-	async getDataByValue(search_object: SearchObject, comparator) {
+	async getDataByValue(searchObject: SearchObject, comparator) {
 		const map = new Map();
-		const table = getTable(search_object);
+		const table = getTable(searchObject);
 		if (
-			search_object.get_attributes &&
-			!search_object.get_attributes.includes(table.primaryKey) &&
-			search_object.get_attributes[0] !== '*'
+			searchObject.get_attributes &&
+			!searchObject.get_attributes.includes(table.primaryKey) &&
+			searchObject.get_attributes[0] !== '*'
 		)
 			// ensure that we get the primary key so we can make a mapping
-			search_object.get_attributes.push(table.primaryKey);
-		for await (const record of this.searchByValue(search_object, comparator)) {
+			searchObject.get_attributes.push(table.primaryKey);
+		for await (const record of this.searchByValue(searchObject, comparator)) {
 			map.set(record[table.primaryKey], record);
 		}
 		return map;
@@ -467,38 +467,38 @@ export class ResourceBridge extends LMDBBridge {
 		getTable({ schema, table })?.primaryStore.resetReadTxn();
 	}
 
-	async deleteAuditLogsBefore(delete_obj) {
-		const table = getTable(delete_obj);
-		return table.deleteHistory(delete_obj.timestamp, delete_obj.cleanup_deleted_records);
+	async deleteAuditLogsBefore(deleteObj) {
+		const table = getTable(deleteObj);
+		return table.deleteHistory(deleteObj.timestamp, deleteObj.cleanup_deleted_records);
 	}
 
-	async readAuditLog(read_audit_log_obj) {
-		const table = getTable(read_audit_log_obj);
+	async readAuditLog(readAuditLogObj) {
+		const table = getTable(readAuditLogObj);
 		const histories = {};
-		switch (read_audit_log_obj.search_type) {
+		switch (readAuditLogObj.search_type) {
 			case READ_AUDIT_LOG_SEARCH_TYPES_ENUM.HASH_VALUE:
 				// get the history of each record
-				for (const id of read_audit_log_obj.search_values) {
-					histories[id] = (await table.getHistoryOfRecord(id)).map((audit_record) => {
-						let operation = audit_record.operation ?? audit_record.type;
+				for (const id of readAuditLogObj.search_values) {
+					histories[id] = (await table.getHistoryOfRecord(id)).map((auditRecord) => {
+						let operation = auditRecord.operation ?? auditRecord.type;
 						if (operation === 'put') operation = 'upsert';
 						return {
 							operation,
-							timestamp: audit_record.version,
-							user_name: audit_record.user,
+							timestamp: auditRecord.version,
+							user_name: auditRecord.user,
 							hash_values: [id],
-							records: [audit_record.value],
+							records: [auditRecord.value],
 						};
 					});
 				}
 				return histories;
 			case READ_AUDIT_LOG_SEARCH_TYPES_ENUM.USERNAME: {
-				const users = read_audit_log_obj.search_values;
+				const users = readAuditLogObj.search_values;
 				// do a full table scan of the history and find users
 				for await (const entry of groupRecordsInHistory(table)) {
 					if (users.includes(entry.user_name)) {
-						const entries_for_user = histories[entry.user_name] || (histories[entry.user_name] = []);
-						entries_for_user.push(entry);
+						const entriesForUser = histories[entry.user_name] || (histories[entry.user_name] = []);
+						entriesForUser.push(entry);
 					}
 				}
 				return histories;
@@ -506,9 +506,9 @@ export class ResourceBridge extends LMDBBridge {
 			default:
 				return groupRecordsInHistory(
 					table,
-					read_audit_log_obj.search_values?.[0],
-					read_audit_log_obj.search_values?.[1],
-					read_audit_log_obj.limit
+					readAuditLogObj.search_values?.[0],
+					readAuditLogObj.search_values?.[1],
+					readAuditLogObj.limit
 				);
 		}
 	}
@@ -527,26 +527,26 @@ function getSelect({ get_attributes }, table) {
 /**
  * Iterator for asynchronous getting ids from an array
  */
-function getRecords(search_object, return_key_value?) {
-	const table = getTable(search_object);
-	const select = getSelect(search_object, table);
+function getRecords(searchObject, returnKeyValue?) {
+	const table = getTable(searchObject);
+	const select = getSelect(searchObject, table);
 	if (!table) {
-		throw new ClientError(`Table ${search_object.table} not found`);
+		throw new ClientError(`Table ${searchObject.table} not found`);
 	}
 	let lazy;
 	if (select && table.attributes.length - select.length > 2 && select.length < 5) lazy = true;
 	// we need to get the transaction and ensure that the transaction spans the entire duration
 	// of the iteration
 	const context = {
-		user: search_object.hdb_user,
-		onlyIfCached: search_object.onlyIfCached,
-		noCacheStore: search_object.noCacheStore,
-		noCache: search_object.noCache,
-		replicateFrom: search_object.replicateFrom,
+		user: searchObject.hdb_user,
+		onlyIfCached: searchObject.onlyIfCached,
+		noCacheStore: searchObject.noCacheStore,
+		noCache: searchObject.noCache,
+		replicateFrom: searchObject.replicateFrom,
 	};
-	let finished_iteration;
-	transaction(context, () => new Promise((resolve) => (finished_iteration = resolve)));
-	const ids = search_object.ids || search_object.hash_values;
+	let finishedIteration;
+	transaction(context, () => new Promise((resolve) => (finishedIteration = resolve)));
+	const ids = searchObject.ids || searchObject.hash_values;
 	let i = 0;
 	return {
 		[Symbol.asyncIterator]() {
@@ -563,25 +563,25 @@ function getRecords(search_object, return_key_value?) {
 								message: error.toString(),
 							};
 						}
-						if (return_key_value)
+						if (returnKeyValue)
 							return {
 								value: { key: id, value: record },
 							};
 						else return { value: record };
 					} else {
-						finished_iteration();
+						finishedIteration();
 						return { done: true };
 					}
 				},
 				return(value) {
-					finished_iteration();
+					finishedIteration();
 					return {
 						value,
 						done: true,
 					};
 				},
 				throw(error) {
-					finished_iteration();
+					finishedIteration();
 					return {
 						done: true,
 					};
@@ -590,20 +590,20 @@ function getRecords(search_object, return_key_value?) {
 		},
 	};
 }
-function getTable(operation_object) {
-	const database_name = operation_object.database || operation_object.schema || DEFAULT_DATABASE;
-	const tables = getDatabases()[database_name];
-	if (!tables) throw handleHDBError(new Error(), HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(database_name), 404);
-	return tables[operation_object.table];
+function getTable(operationObject) {
+	const databaseName = operationObject.database || operationObject.schema || DEFAULT_DATABASE;
+	const tables = getDatabases()[databaseName];
+	if (!tables) throw handleHDBError(new Error(), HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(databaseName), 404);
+	return tables[operationObject.table];
 }
 /**
  * creates the response object for deletes based on the deleted & skipped hashes
  * @param {[]} deleted - list of hash values successfully deleted
  * @param {[]} skipped - list  of hash values which did not get deleted
- * @param {number} txn_time - the transaction timestamp
+ * @param {number} txnTime - the transaction timestamp
  * @returns {{skipped_hashes: [], deleted_hashes: [], message: string}}
  */
-function createDeleteResponse(deleted, skipped, txn_time) {
+function createDeleteResponse(deleted, skipped, txnTime) {
 	const total = deleted.length + skipped.length;
 	const plural = total === 1 ? 'record' : 'records';
 
@@ -611,7 +611,7 @@ function createDeleteResponse(deleted, skipped, txn_time) {
 		message: `${deleted.length} of ${total} ${plural} successfully deleted`,
 		deleted_hashes: deleted,
 		skipped_hashes: skipped,
-		txn_time: txn_time,
+		txn_time: txnTime,
 	};
 }
 

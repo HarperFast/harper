@@ -1,42 +1,42 @@
 'use strict';
 
-const schema_describe = require('../dataLayer/schemaDescribe');
-const { hdb_errors } = require('../utility/errors/hdbError');
-const { getDatabases } = require('../resources/databases');
+const schemaDescribe = require('../dataLayer/schemaDescribe.js');
+const { hdbErrors } = require('../utility/errors/hdbError.js');
+const { getDatabases } = require('../resources/databases.ts');
 
 module.exports = {
 	checkSchemaExists,
 	checkSchemaTableExists,
-	schema_describe,
+	schemaDescribe,
 };
 
 /**
- * Checks the global hdb_schema for a schema and table
- * @param schema_name
- * @param table_name
+ * Checks the global hdbSchema for a schema and table
+ * @param schemaName
+ * @param tableName
  * @returns string returns a thrown message if schema and or table does not exist
  */
-async function checkSchemaExists(schema_name) {
+async function checkSchemaExists(schemaName) {
 	let databases = getDatabases();
-	if (!databases[schema_name]) {
-		return hdb_errors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema_name);
+	if (!databases[schemaName]) {
+		return hdbErrors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schemaName);
 	}
 }
 
 /**
- * Checks the global hdb_schema for a schema and table
- * @param schema_name
- * @param table_name
+ * Checks the global hdbSchema for a schema and table
+ * @param schemaName
+ * @param tableName
  * @returns string returns a thrown message if schema and or table does not exist
  */
-async function checkSchemaTableExists(schema_name, table_name) {
-	let invalid_schema = await checkSchemaExists(schema_name);
-	if (invalid_schema) {
-		return invalid_schema;
+async function checkSchemaTableExists(schemaName, tableName) {
+	let invalidSchema = await checkSchemaExists(schemaName);
+	if (invalidSchema) {
+		return invalidSchema;
 	}
 	let databases = getDatabases();
 
-	if (!databases[schema_name][table_name]) {
-		return hdb_errors.HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema_name, table_name);
+	if (!databases[schemaName][tableName]) {
+		return hdbErrors.HDB_ERROR_MSGS.TABLE_NOT_FOUND(schemaName, tableName);
 	}
 }

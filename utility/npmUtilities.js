@@ -5,21 +5,21 @@ const path = require('path');
 const fs = require('fs-extra');
 const { exec, spawn } = require('child_process');
 const util = require('util');
-const p_exec = util.promisify(exec);
-const terms = require('./hdbTerms');
-const { PACKAGE_ROOT } = require('./packageUtils');
-const { handleHDBError, hdb_errors } = require('./errors/hdbError');
-const { HTTP_STATUS_CODES } = hdb_errors;
-const env = require('./environment/environmentManager');
-const validator = require('../validation/validationWrapper');
-const harper_logger = require('./logging/harper_logger');
+const pExec = util.promisify(exec);
+const terms = require('./hdbTerms.ts');
+const { PACKAGE_ROOT } = require('./packageUtils.js');
+const { handleHDBError, hdbErrors } = require('./errors/hdbError.js');
+const { HTTP_STATUS_CODES } = hdbErrors;
+const env = require('./environment/environmentManager.js');
+const validator = require('../validation/validationWrapper.js');
+const harperLogger = require('./logging/harper_logger.js');
 const { once } = require('events');
 env.initSync();
 const CF_ROUTES_DIR = env.get(terms.CONFIG_PARAMS.COMPONENTSROOT);
 const NPM_INSTALL_COMMAND = 'npm install --force --omit=dev --json';
 const NPM_INSTALL_DRY_RUN_COMMAND = `${NPM_INSTALL_COMMAND} --dry-run`;
-const root_dir = env.get(terms.CONFIG_PARAMS.ROOTPATH);
-const ssh_dir = path.join(root_dir, 'ssh');
+const rootDir = env.get(terms.CONFIG_PARAMS.ROOTPATH);
+const sshDir = path.join(rootDir, 'ssh');
 
 module.exports = {
 	installModules,
@@ -32,58 +32,58 @@ module.exports = {
 
 /**
  * Runs npm install in the HDB root path.
- * @param ignore_scripts - tell npm to not run any scripts that might exist in a package.json
+ * @param ignoreScripts - tell npm to not run any scripts that might exist in a package.json
  * @returns {Promise<void>}
  */
-async function installAllRootModules(ignore_scripts = false, working_dir = env.get(terms.CONFIG_PARAMS.ROOTPATH)) {
+async function installAllRootModules(ignoreScripts = false, workingDir = env.get(terms.CONFIG_PARAMS.ROOTPATH)) {
 	await checkNPMInstalled();
-	let ssh_key_added = false;
-	let env_vars = process.env;
-	if (fs.pathExistsSync(ssh_dir)) {
-		fs.readdirSync(ssh_dir).forEach((file) => {
-			if (file.includes('.key') && !ssh_key_added) {
-				env_vars = {
+	let sshKeyAdded = false;
+	let envVars = process.env;
+	if (fs.pathExistsSync(sshDir)) {
+		fs.readdirSync(sshDir).forEach((file) => {
+			if (file.includes('.key') && !sshKeyAdded) {
+				envVars = {
 					GIT_SSH_COMMAND:
-						'ssh -F ' + path.join(ssh_dir, 'config') + ' -o UserKnownHostsFile=' + path.join(ssh_dir, 'known_hosts'),
+						'ssh -F ' + path.join(sshDir, 'config') + ' -o UserKnownHostsFile=' + path.join(sshDir, 'known_hosts'),
 					...process.env,
 				};
-				ssh_key_added = true;
+				sshKeyAdded = true;
 			}
 		});
 	}
 
-	// When the user running HarperDB does not have write permissions to the global node_modules directory npm install will fail due to the symlink
+	// When the user running HarperDB does not have write permissions to the global nodeModules directory npm install will fail due to the symlink
 	try {
-		const root_path = env.get(terms.CONFIG_PARAMS.ROOTPATH);
-		const harper_module = path.join(root_path, 'node_modules', 'harperdb');
+		const rootPath = env.get(terms.CONFIG_PARAMS.ROOTPATH);
+		const harperModule = path.join(rootPath, 'node_modules', 'harperdb');
 
-		if (fs.lstatSync(harper_module).isSymbolicLink()) {
-			fs.unlinkSync(harper_module);
+		if (fs.lstatSync(harperModule).isSymbolicLink()) {
+			fs.unlinkSync(harperModule);
 		}
 	} catch (err) {
 		if (err.code !== 'ENOENT') {
-			harper_logger.error('Error removing symlink:', err);
+			harperLogger.error('Error removing symlink:', err);
 		}
 	}
 
 	await runCommand(
-		ignore_scripts ? 'npm install --force --ignore-scripts --no-bin-links' : 'npm install --force --no-bin-links',
-		working_dir,
-		env_vars
+		ignoreScripts ? 'npm install --force --ignore-scripts --no-bin-links' : 'npm install --force --no-bin-links',
+		workingDir,
+		envVars
 	);
 }
 
 /**
  * Uninstall a HDB root module
- * @param pkg_name
+ * @param pkgName
  * @returns {Promise<void>}
  */
-async function uninstallRootModule(pkg_name) {
-	await runCommand(`npm uninstall ${pkg_name}`, env.get(terms.CONFIG_PARAMS.ROOTPATH));
+async function uninstallRootModule(pkgName) {
+	await runCommand(`npm uninstall ${pkgName}`, env.get(terms.CONFIG_PARAMS.ROOTPATH));
 }
 
 /**
- * Create a symlink of HarperDB app in the node_modules
+ * Create a symlink of HarperDB app in the nodeModules
  * @returns {Promise<void>}
  */
 async function linkHarperdb() {
@@ -98,7 +98,7 @@ async function linkHarperdb() {
  * @returns {Promise<*>}
  */
 async function runCommand(command, cwd = undefined, env = process.env) {
-	harper_logger.debug({ tagName: 'npm_run_command' }, `running command: \`${command}\``);
+	harperLogger.debug({ tagName: 'npm_run_command' }, `running command: \`${command}\``);
 
 	// eslint-disable-next-line sonarjs/os-command
 	const commandProcess = spawn(command, {
@@ -113,13 +113,13 @@ async function runCommand(command, cwd = undefined, env = process.env) {
 
 	commandProcess.stdout.on('data', (chunk) => {
 		const str = chunk.toString();
-		harper_logger.debug({ tagName: 'npm_run_command:stdout' }, str);
+		harperLogger.debug({ tagName: 'npm_run_command:stdout' }, str);
 		stdout += str;
 	});
 
 	commandProcess.stderr.on('data', (chunk) => {
 		const str = chunk.toString();
-		harper_logger.error({ tagName: 'npm_run_command:stderr' }, str);
+		harperLogger.error({ tagName: 'npm_run_command:stderr' }, str);
 		stderr += str;
 	});
 
@@ -139,68 +139,68 @@ async function runCommand(command, cwd = undefined, env = process.env) {
  * @returns {Promise<{}>}
  */
 async function installModules(req) {
-	const deprecation_warning =
+	const deprecationWarning =
 		'install_node_modules is deprecated. Dependencies are automatically installed on' +
 		' deploy, and install_node_modules can lead to inconsistent behavior';
-	harper_logger.warn(deprecation_warning, req.projects);
+	harperLogger.warn(deprecationWarning, req.projects);
 	const validation = modulesValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	let { projects, dry_run } = req;
-	//dry_run decides whether or not to use the npm --dry-run flag: https://docs.npmjs.com/cli/v8/commands/npm-install#dry-run
-	const command = dry_run === true ? NPM_INSTALL_DRY_RUN_COMMAND : NPM_INSTALL_COMMAND;
+	let { projects, dryRun } = req;
+	//dryRun decides whether or not to use the npm --dry-run flag: https://docs.npmjs.com/cli/v8/commands/npm-install#dry-run
+	const command = dryRun === true ? NPM_INSTALL_DRY_RUN_COMMAND : NPM_INSTALL_COMMAND;
 	await checkNPMInstalled();
 
 	await checkProjectPaths(projects);
 
 	//loop projects and run npm install
-	let response_object = {};
+	let responseObject = {};
 	for (let x = 0, length = projects.length; x < length; x++) {
-		const project_name = projects[x];
-		response_object[project_name] = { npm_output: null, npm_error: null };
-		const PROJECT_PATH = path.join(CF_ROUTES_DIR, project_name);
+		const projectName = projects[x];
+		responseObject[projectName] = { npm_output: null, npm_error: null };
+		const PROJECT_PATH = path.join(CF_ROUTES_DIR, projectName);
 
 		let output,
 			error = null;
 		try {
-			const { stdout, stderr } = await p_exec(command, { cwd: PROJECT_PATH });
+			const { stdout, stderr } = await pExec(command, { cwd: PROJECT_PATH });
 			output = stdout ? stdout.replace('\n', '') : null;
 			error = stderr ? stderr.replace('\n', '') : null;
 		} catch (e) {
 			if (e.stderr) {
-				response_object[project_name].npm_error = parseNPMStdErr(e.stderr);
+				responseObject[projectName].npm_error = parseNPMStdErr(e.stderr);
 			} else {
-				response_object[project_name].npm_error = e.message;
+				responseObject[projectName].npm_error = e.message;
 			}
 			continue;
 		}
 
 		try {
-			response_object[project_name].npm_output = JSON.parse(output);
+			responseObject[projectName].npm_output = JSON.parse(output);
 		} catch (e) {
-			response_object[project_name].npm_output = output;
+			responseObject[projectName].npm_output = output;
 		}
 
 		try {
-			response_object[project_name].npm_error = JSON.parse(error);
+			responseObject[projectName].npm_error = JSON.parse(error);
 		} catch (e) {
-			response_object[project_name].npm_error = error;
+			responseObject[projectName].npm_error = error;
 		}
 	}
-	harper_logger.info(`finished installModules with response ${response_object}`);
-	response_object.warning = deprecation_warning;
-	return response_object;
+	harperLogger.info(`finished installModules with response ${responseObject}`);
+	responseObject.warning = deprecationWarning;
+	return responseObject;
 }
 
 function parseNPMStdErr(stderr) {
 	//npm returns errors inconsistently, on 6 it returns json, on 8 it returns json stringified inside of a larger string
-	let start_search_string = '"error": {';
+	let startSearchString = '"error": {';
 	let start = stderr.indexOf('"error": {');
 	let end = stderr.indexOf('}\n');
 	if (start > -1 && end > -1) {
-		return JSON.parse(stderr.substring(start + start_search_string.length - 1, end + 1));
+		return JSON.parse(stderr.substring(start + startSearchString.length - 1, end + 1));
 	} else {
 		return stderr;
 	}
@@ -212,7 +212,7 @@ function parseNPMStdErr(stderr) {
  * @returns {Promise<{}>}
  */
 async function auditModules(req) {
-	harper_logger.info(`starting auditModules for request: ${req}`);
+	harperLogger.info(`starting auditModules for request: ${req}`);
 	const validation = modulesValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
@@ -224,20 +224,20 @@ async function auditModules(req) {
 	await checkProjectPaths(projects);
 
 	//loop projects and run npm audit
-	let response_object = {};
+	let responseObject = {};
 	for (let x = 0, length = projects.length; x < length; x++) {
-		const project_name = projects[x];
-		const PROJECT_PATH = path.join(CF_ROUTES_DIR, project_name);
-		response_object[project_name] = { npm_output: null, npm_error: null };
+		const projectName = projects[x];
+		const PROJECT_PATH = path.join(CF_ROUTES_DIR, projectName);
+		responseObject[projectName] = { npm_output: null, npm_error: null };
 		try {
 			let output = await runCommand('npm audit --json', PROJECT_PATH);
-			response_object[project_name].npm_output = JSON.parse(output);
+			responseObject[projectName].npm_output = JSON.parse(output);
 		} catch (e) {
-			response_object[project_name].npm_error = parseNPMStdErr(e.stderr);
+			responseObject[projectName].npm_error = parseNPMStdErr(e.stderr);
 		}
 	}
-	harper_logger.info(`finished auditModules with response ${response_object}`);
-	return response_object;
+	harperLogger.info(`finished auditModules with response ${responseObject}`);
+	return responseObject;
 }
 
 /**
@@ -268,22 +268,22 @@ async function checkProjectPaths(projects) {
 	}
 	//verify all projects exist and have package.json
 	let no_projects = [];
-	let no_package_jsons = [];
+	let noPackageJsons = [];
 	for (let x = 0, length = projects.length; x < length; x++) {
-		const project_name = projects[x];
-		const PROJECT_PATH = path.join(CF_ROUTES_DIR, project_name.toString());
+		const projectName = projects[x];
+		const PROJECT_PATH = path.join(CF_ROUTES_DIR, projectName.toString());
 		//check project exists
-		let project_exists = await fs.pathExists(PROJECT_PATH);
-		if (!project_exists) {
-			no_projects.push(project_name);
+		let projectExists = await fs.pathExists(PROJECT_PATH);
+		if (!projectExists) {
+			no_projects.push(projectName);
 			continue;
 		}
 
 		//check project has package.json
-		const package_json_path = path.join(PROJECT_PATH, 'package.json');
-		let package_json_exists = await fs.pathExists(package_json_path);
-		if (!package_json_exists) {
-			no_package_jsons.push(project_name);
+		const packageJsonPath = path.join(PROJECT_PATH, 'package.json');
+		let packageJsonExists = await fs.pathExists(packageJsonPath);
+		if (!packageJsonExists) {
+			noPackageJsons.push(projectName);
 		}
 	}
 
@@ -298,10 +298,10 @@ async function checkProjectPaths(projects) {
 		);
 	}
 
-	if (no_package_jsons.length > 0) {
+	if (noPackageJsons.length > 0) {
 		throw handleHDBError(
 			new Error(),
-			`Unable to install project dependencies: custom function projects '${no_package_jsons.join(
+			`Unable to install project dependencies: custom function projects '${noPackageJsons.join(
 				','
 			)}' do not have a package.json file.`,
 			HTTP_STATUS_CODES.BAD_REQUEST,
@@ -318,10 +318,10 @@ async function checkProjectPaths(projects) {
  * @returns {*}
  */
 function modulesValidator(req) {
-	const func_schema = Joi.object({
+	const funcSchema = Joi.object({
 		projects: Joi.array().min(1).items(Joi.string()).required(),
 		dry_run: Joi.boolean().default(false),
 	});
 
-	return validator.validateBySchema(req, func_schema);
+	return validator.validateBySchema(req, funcSchema);
 }

@@ -1,7 +1,7 @@
 'use strict';
 
-const { getSchemaPath } = require('../lmdbUtility/initializePaths');
-const environment_utility = require('../../../../utility/lmdb/environmentUtility');
+const { getSchemaPath } = require('../lmdbUtility/initializePaths.js');
+const environmentUtility = require('../../../../utility/lmdb/environmentUtility.js');
 
 module.exports = {
 	flush,
@@ -15,7 +15,7 @@ module.exports = {
  * @returns {Promise<any>}
  */
 async function flush(schema, table) {
-	let environment = await environment_utility.openEnvironment(getSchemaPath(schema, table), table.toString());
+	let environment = await environmentUtility.openEnvironment(getSchemaPath(schema, table), table.toString());
 	return environment.flushed;
 }
 
@@ -27,7 +27,7 @@ async function flush(schema, table) {
  */
 async function resetReadTxn(schema, table) {
 	try {
-		let environment = await environment_utility.openEnvironment(getSchemaPath(schema, table), table.toString());
+		let environment = await environmentUtility.openEnvironment(getSchemaPath(schema, table), table.toString());
 		environment.resetReadTxn();
 	} catch (error) {
 		// if no environment, then the read txn can't be out of date!

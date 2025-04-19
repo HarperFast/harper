@@ -4,18 +4,18 @@ const fs = require('fs-extra');
 const path = require('path');
 const YAML = require('yaml');
 
-const nats_utils = require('../server/nats/utility/natsUtils');
-const hdb_terms = require('../utility/hdbTerms');
-const nats_terms = require('../server/nats/utility/natsTerms');
-const hdb_log = require('../utility/logging/harper_logger');
-const user = require('../security/user');
-const cluster_network = require('../utility/clustering/clusterNetwork');
-const cluster_status = require('../utility/clustering/clusterStatus');
-const sys_info = require('../utility/environment/systemInformation');
-const env_mgr = require('../utility/environment/environmentManager');
-const run = require('./run');
-const hdb_utils = require('../utility/common_utils');
-env_mgr.initSync();
+const natsUtils = require('../server/nats/utility/natsUtils.js');
+const hdbTerms = require('../utility/hdbTerms.ts');
+const natsTerms = require('../server/nats/utility/natsTerms.js');
+const hdbLog = require('../utility/logging/harper_logger.js');
+const user = require('../security/user.js');
+const clusterNetwork = require('../utility/clustering/clusterNetwork.js');
+const clusterStatus = require('../utility/clustering/clusterStatus.js');
+const sysInfo = require('../utility/environment/systemInformation.js');
+const envMgr = require('../utility/environment/environmentManager.js');
+const run = require('./run.js');
+const hdbUtils = require('../utility/common_utils.js');
+envMgr.initSync();
 
 const STATUSES = {
 	RUNNING: 'running',
@@ -28,7 +28,7 @@ const NATS_SERVER_NAME = {
 	HUB: 'hub server',
 };
 
-let hdb_root;
+let hdbRoot;
 
 module.exports = status;
 
@@ -45,13 +45,13 @@ async function status() {
 		return;
 	}
 
-	hdb_root = env_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
-	let hdb_pid;
+	hdbRoot = envMgr.get(hdbTerms.CONFIG_PARAMS.ROOTPATH);
+	let hdbPid;
 	try {
-		hdb_pid = Number.parseInt(await fs.readFile(path.join(hdb_root, hdb_terms.HDB_PID_FILE), 'utf8'));
+		hdbPid = Number.parseInt(await fs.readFile(path.join(hdbRoot, hdbTerms.HDB_PID_FILE), 'utf8'));
 	} catch (err) {
-		if (err.code === hdb_terms.NODE_ERROR_CODES.ENOENT) {
-			hdb_log.info('`harperdb status` did not find a hdb.pid file');
+		if (err.code === hdbTerms.NODE_ERROR_CODES.ENOENT) {
+			hdbLog.info('`harperdb status` did not find a hdb.pid file');
 			status.harperdb.status = STATUSES.STOPPED;
 			console.log(YAML.stringify(status));
 			return;
@@ -61,48 +61,48 @@ async function status() {
 	}
 
 	// Check the saved pid against any running hdb processes
-	const hdb_sys_info = await sys_info.getHDBProcessInfo();
-	for (const proc of hdb_sys_info.core) {
-		if (proc.pid === hdb_pid) {
+	const hdbSysInfo = await sysInfo.getHDBProcessInfo();
+	for (const proc of hdbSysInfo.core) {
+		if (proc.pid === hdbPid) {
 			status.harperdb.status = STATUSES.RUNNING;
-			status.harperdb.pid = hdb_pid;
+			status.harperdb.pid = hdbPid;
 			break;
 		}
 	}
 
 	if (
-		env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_URL) ||
-		env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_HOSTNAME)
+		envMgr.get(hdbTerms.CONFIG_PARAMS.REPLICATION_URL) ||
+		envMgr.get(hdbTerms.CONFIG_PARAMS.REPLICATION_HOSTNAME)
 	) {
 		status.replication = await getReplicationStatus();
 	}
-	status.clustering = await getHubLeafStatus(hdb_sys_info);
+	status.clustering = await getHubLeafStatus(hdbSysInfo);
 
 	// Can only get cluster network & status if both servers are running and happy
 	if (
 		status.clustering[NATS_SERVER_NAME.HUB].status === STATUSES.RUNNING &&
 		status.clustering[NATS_SERVER_NAME.LEAF].status === STATUSES.RUNNING
 	) {
-		let c_network = [];
-		const cluster_net = await cluster_network({});
+		let cNetwork = [];
+		const clusterNet = await clusterNetwork({});
 		// Loop through cluster network response and remove underscores in key names
-		for (const node of cluster_net.nodes) {
-			let node_inf = {};
+		for (const node of clusterNet.nodes) {
+			let nodeInf = {};
 			for (let val in node) {
-				node_inf[val.replace('_', ' ')] = node[val];
+				nodeInf[val.replace('_', ' ')] = node[val];
 			}
-			c_network.push(node_inf);
+			cNetwork.push(nodeInf);
 		}
-		status.clustering.network = c_network;
+		status.clustering.network = cNetwork;
 
-		const cluster_subs = await cluster_status.clusterStatus();
+		const clusterSubs = await clusterStatus.clusterStatus();
 		status.clustering.replication = {
-			['node name']: cluster_subs.node_name,
-			['is enabled']: cluster_subs.is_enabled,
+			['node name']: clusterSubs.node_name,
+			['is enabled']: clusterSubs.is_enabled,
 			connections: [],
 		};
 
-		for (const cons of cluster_subs.connections) {
+		for (const cons of clusterSubs.connections) {
 			const con = {};
 			con['node name'] = cons?.node_name;
 			con.status = cons?.status;
@@ -121,7 +121,7 @@ async function status() {
 			status.clustering.replication.connections.push(con);
 		}
 
-		await nats_utils.closeConnection();
+		await natsUtils.closeConnection();
 	}
 
 	console.log(YAML.stringify(status));
@@ -133,34 +133,34 @@ async function status() {
  * Gets the pid for the hub and leaf and also connects to the hub and leaf servers to confirm they are running
  * @returns {Promise<{"[NATS_SERVER_NAME.LEAF]": {}, "[NATS_SERVER_NAME.HUB]": {}}>}
  */
-async function getHubLeafStatus(hdb_sys_info) {
+async function getHubLeafStatus(hdbSysInfo) {
 	let status = {
 		[NATS_SERVER_NAME.HUB]: {},
 		[NATS_SERVER_NAME.LEAF]: {},
 	};
 
-	if (hdb_sys_info.clustering.length === 0) {
+	if (hdbSysInfo.clustering.length === 0) {
 		status[NATS_SERVER_NAME.HUB].status = STATUSES.STOPPED;
 		status[NATS_SERVER_NAME.LEAF].status = STATUSES.STOPPED;
 		return status;
 	}
 
 	// Connect to hub server to confirm its running and happy
-	const { port: hub_port } = nats_utils.getServerConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB);
+	const { port: hubPort } = natsUtils.getServerConfig(hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_HUB);
 	const { username, decrypt_hash } = await user.getClusterUser();
 	try {
-		const hub_con = await nats_utils.createConnection(hub_port, username, decrypt_hash, false);
-		hub_con.close();
+		const hubCon = await natsUtils.createConnection(hubPort, username, decrypt_hash, false);
+		hubCon.close();
 		status[NATS_SERVER_NAME.HUB].status = STATUSES.RUNNING;
 	} catch (err) {
 		status[NATS_SERVER_NAME.HUB].status = STATUSES.ERRORED;
 	}
 
 	// Connect to leaf server to confirm it is running and happy
-	const { port: leaf_port } = nats_utils.getServerConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
+	const { port: leafPort } = natsUtils.getServerConfig(hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
 	try {
-		const leaf_con = await nats_utils.createConnection(leaf_port, username, decrypt_hash, false);
-		leaf_con.close();
+		const leafCon = await natsUtils.createConnection(leafPort, username, decrypt_hash, false);
+		leafCon.close();
 		status[NATS_SERVER_NAME.LEAF].status = STATUSES.RUNNING;
 	} catch (err) {
 		status[NATS_SERVER_NAME.LEAF].status = STATUSES.ERRORED;
@@ -168,19 +168,19 @@ async function getHubLeafStatus(hdb_sys_info) {
 
 	try {
 		status[NATS_SERVER_NAME.HUB].pid = Number.parseInt(
-			await fs.readFile(path.join(hdb_root, 'clustering', nats_terms.PID_FILES.HUB), 'utf8')
+			await fs.readFile(path.join(hdbRoot, 'clustering', natsTerms.PID_FILES.HUB), 'utf8')
 		);
 	} catch (err) {
-		hdb_log.error(err);
+		hdbLog.error(err);
 		status[NATS_SERVER_NAME.HUB].pid = undefined;
 	}
 
 	try {
 		status[NATS_SERVER_NAME.LEAF].pid = Number.parseInt(
-			await fs.readFile(path.join(hdb_root, 'clustering', nats_terms.PID_FILES.LEAF), 'utf8')
+			await fs.readFile(path.join(hdbRoot, 'clustering', natsTerms.PID_FILES.LEAF), 'utf8')
 		);
 	} catch (err) {
-		hdb_log.error(err);
+		hdbLog.error(err);
 		status[NATS_SERVER_NAME.LEAF].pid = undefined;
 	}
 
@@ -192,25 +192,25 @@ async function getHubLeafStatus(hdb_sys_info) {
  * @returns {Promise<{"node name", "is enabled": (boolean|*), connections: *[]}>}
  */
 async function getReplicationStatus() {
-	let response = await hdb_utils.httpRequest(
+	let response = await hdbUtils.httpRequest(
 		{
 			method: 'POST',
 			protocol: 'http:',
-			socketPath: env_mgr.get(hdb_terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET),
+			socketPath: envMgr.get(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET),
 			headers: { 'Content-Type': 'application/json' },
 		},
 		{ operation: 'cluster_status' }
 	);
 
 	response = JSON.parse(response.body);
-	const rep_status = {
+	const repStatus = {
 		'node name': response.node_name,
 		'is enabled': response.is_enabled,
 		'connections': [],
 	};
 
 	for (const cons of response.connections) {
-		rep_status.connections.push({
+		repStatus.connections.push({
 			'node name': cons.name,
 			'url': cons.url,
 			'subscriptions': cons.subscriptions,
@@ -228,5 +228,5 @@ async function getReplicationStatus() {
 		});
 	}
 
-	return rep_status;
+	return repStatus;
 }

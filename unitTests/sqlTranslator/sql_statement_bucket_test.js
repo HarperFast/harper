@@ -288,7 +288,7 @@ let logger_info_spy;
 
 describe('Test sql_statement_bucket Class', () => {
 	before(() => {
-		const logger_rw = sql_statement_rewire.__get__('harper_logger');
+		const logger_rw = sql_statement_rewire.__get__('harperLogger');
 		logger_info_spy = sandbox.spy(logger_rw, 'info');
 	});
 

@@ -10,7 +10,7 @@ const DELIVER_GROUP = 'HDB';
 const NATS_TERM_CONSTRAINTS_RX = /^[^\s.,*>]+$/;
 
 const REQUEST_SUFFIX = '__request__';
-const REQUEST_SUBJECT = (remote_node) => `${remote_node}.${REQUEST_SUFFIX}`;
+const REQUEST_SUBJECT = (remoteNode) => `${remoteNode}.${REQUEST_SUFFIX}`;
 
 const MSG_HEADERS = {
 	NATS_MSG_ID: 'Nats-Msg-Id',

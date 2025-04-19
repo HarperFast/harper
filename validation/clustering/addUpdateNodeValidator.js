@@ -2,23 +2,23 @@
 
 const Joi = require('joi');
 const { string, boolean, date } = Joi.types();
-const validator = require('../validationWrapper');
-const { validateSchemaExists, validateTableExists, validateSchemaName } = require('../common_validators');
-const hdb_terms = require('../../utility/hdbTerms');
-const nats_terms = require('../../server/nats/utility/natsTerms');
-const env_manager = require('../../utility/environment/environmentManager');
-env_manager.initSync();
+const validator = require('../validationWrapper.js');
+const { validateSchemaExists, validateTableExists, validateSchemaName } = require('../common_validators.js');
+const hdbTerms = require('../../utility/hdbTerms.ts');
+const natsTerms = require('../../server/nats/utility/natsTerms.js');
+const envManager = require('../../utility/environment/environmentManager.js');
+envManager.initSync();
 
-const node_name_constraint = string
-	.invalid(env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME) ?? 'node_name')
-	.pattern(nats_terms.NATS_TERM_CONSTRAINTS_RX)
+const nodeNameConstraint = string
+	.invalid(envManager.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_NODENAME) ?? 'node_name')
+	.pattern(natsTerms.NATS_TERM_CONSTRAINTS_RX)
 	.messages({
 		'string.pattern.base': '{:#label} invalid, must not contain ., * or >',
 		'any.invalid': "'node_name' cannot be this nodes name",
 	})
 	.empty(null);
 
-const validation_schema = {
+const validationSchema = {
 	operation: string.valid('add_node', 'update_node', 'set_node_replication'),
 	node_name: string.optional(),
 	subscriptions: Joi.array().items({
@@ -37,11 +37,11 @@ const validation_schema = {
  * @returns {*}
  */
 function addUpdateNodeValidator(req) {
-	return validator.validateBySchema(req, Joi.object(validation_schema));
+	return validator.validateBySchema(req, Joi.object(validationSchema));
 }
 
 /**
- * Checks that when request is add_node at least one of the subs in each sub is true
+ * Checks that when request is addNode at least one of the subs in each sub is true
  * @param value
  * @param helpers
  * @returns {*}
@@ -58,4 +58,4 @@ function checkForFalsy(value, helpers) {
 	}
 }
 
-module.exports = { addUpdateNodeValidator, validation_schema };
+module.exports = { addUpdateNodeValidator, validationSchema };

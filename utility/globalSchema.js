@@ -1,11 +1,11 @@
-const system_schema = require('../json/systemSchema.json');
+const systemSchema = require('../json/systemSchema.json');
 const { promisify } = require('util');
-const { getDatabases } = require('../resources/databases');
+const { getDatabases } = require('../resources/databases.ts');
 
 module.exports = {
-	setSchemaDataToGlobal: setSchemaDataToGlobal,
-	getTableSchema: getTableSchema,
-	getSystemSchema: getSystemSchema,
+	setSchemaDataToGlobal,
+	getTableSchema,
+	getSystemSchema,
 	setSchemaDataToGlobalAsync: promisify(setSchemaDataToGlobal),
 };
 
@@ -14,22 +14,22 @@ function setSchemaDataToGlobal(callback) {
 	if (callback) callback();
 }
 
-function getTableSchema(schema_name, table_name, callback) {
-	const database = getDatabases()[schema_name];
+function getTableSchema(schemaName, tableName, callback) {
+	const database = getDatabases()[schemaName];
 	if (!database) {
-		return callback(`schema ${schema_name} does not exist`);
+		return callback(`schema ${schemaName} does not exist`);
 	}
-	const table = database[table_name];
+	const table = database[tableName];
 	if (!table) {
-		return callback(`table ${schema_name}.${table_name} does not exist`);
+		return callback(`table ${schemaName}.${tableName} does not exist`);
 	}
 	return callback(null, {
-		schema: schema_name,
-		name: table_name,
+		schema: schemaName,
+		name: tableName,
 		hash_attribute: table.primaryKey,
 	});
 }
 
 function getSystemSchema() {
-	return system_schema;
+	return systemSchema;
 }

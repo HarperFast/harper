@@ -66,7 +66,7 @@ describe('Test updateRemoteSource module', () => {
 		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME, test_node_name);
 		create_local_table_streams_stub = sandbox.stub(nats_utils, 'createLocalTableStream').resolves();
 		create_table_stub = sandbox.stub();
-		updateRemoteSource.__set__('schema_mod.createTable', create_table_stub);
+		updateRemoteSource.__set__('schemaMod.createTable', create_table_stub);
 		upsert_node_record_stub = sandbox.stub(cluster_utils, 'upsertNodeRecord');
 		get_node_record_stub = sandbox.stub(cluster_utils, 'getNodeRecord').resolves([]);
 		get_table_hash_stub = sandbox.stub(hdb_utils, 'getTableHashAttribute');
@@ -90,7 +90,7 @@ describe('Test updateRemoteSource module', () => {
 
 	it('Test updateRemoteSource correctly calls all the things required for a happy path', async () => {
 		create_schema_stub = sandbox.stub();
-		const create_schema_rw = updateRemoteSource.__set__('schema_mod.createSchema', create_schema_stub);
+		const create_schema_rw = updateRemoteSource.__set__('schemaMod.createSchema', create_schema_stub);
 		test_utils.setGlobalSchema('number', 'dog', 'poodle', ['number']);
 		delete getDatabases().breed;
 		delete getDatabases().country;
@@ -192,7 +192,7 @@ describe('Test updateRemoteSource module', () => {
 
 	it('Test happy path when existing node record present', async () => {
 		create_schema_stub = sandbox.stub();
-		const create_schema_rw = updateRemoteSource.__set__('schema_mod.createSchema', create_schema_stub);
+		const create_schema_rw = updateRemoteSource.__set__('schemaMod.createSchema', create_schema_stub);
 		const expected_node_record = {
 			name: 'cowabunga',
 			subscriptions: [

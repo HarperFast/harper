@@ -1,4 +1,4 @@
-import { secureImport } from '../security/jsLoader';
+import { secureImport } from '../security/jsLoader.ts';
 import { dirname } from 'path';
 
 /**
@@ -8,17 +8,17 @@ import { dirname } from 'path';
  * Resources (in JavaScript). This goes through our secure JS loader, so modules are sandboxed if secure sandboxing
  * is enabled.
  * @param js
- * @param url_path
- * @param file_path
+ * @param urlPath
+ * @param filePath
  * @param resources
  */
-export async function handleFile(js, url_path, file_path, resources) {
+export async function handleFile(js, urlPath, filePath, resources) {
 	const handlers = new Map();
 	// use our configurable secure JS import loader
-	const exports = await secureImport(file_path);
+	const exports = await secureImport(filePath);
 	// allow default to be used as root path handler
-	if (isResource(exports.default)) resources.set(dirname(url_path), exports.default);
-	recurseForResources(exports, dirname(url_path));
+	if (isResource(exports.default)) resources.set(dirname(urlPath), exports.default);
+	recurseForResources(exports, dirname(urlPath));
 	function recurseForResources(exports, prefix) {
 		for (const name in exports) {
 			// check each of the module exports to see if it implements a Resource handler

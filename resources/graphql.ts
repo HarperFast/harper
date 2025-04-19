@@ -1,7 +1,7 @@
 import { dirname } from 'path';
 import { Script } from 'node:vm';
-import { table } from './databases';
-import { getWorkerIndex } from '../server/threads/manageThreads';
+import { table } from './databases.ts';
+import { getWorkerIndex } from '../server/threads/manageThreads.js';
 
 const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt', 'Blob'];
 
@@ -26,9 +26,9 @@ if (server.knownGraphQLDirectives) {
  * attributes exist. This is intended to be the default/primary way to define a table in HarperDB. This supports various
  * directives for configuring indexing, attribute types, table configuration, and more.
  *
- * @param gql_content
- * @param relative_path
- * @param file_path
+ * @param gqlContent
+ * @param relativePath
+ * @param filePath
  * @param resources
  */
 export function start({ ensureTable }) {
@@ -37,10 +37,10 @@ export function start({ ensureTable }) {
 		setupFile: handleFile,
 	};
 
-	async function handleFile(gql_content, url_path, file_path, resources) {
+	async function handleFile(gqlContent, urlPath, filePath, resources) {
 		// lazy load the graphql package so we don't load it for users that don't use graphql
 		const { parse, Source, Kind, NamedTypeNode, StringValueNode } = await import('graphql');
-		const ast = parse(new Source(gql_content.toString(), file_path));
+		const ast = parse(new Source(gqlContent.toString(), filePath));
 		const types = new Map();
 		const tables = [];
 		let query;
@@ -49,35 +49,35 @@ export function start({ ensureTable }) {
 		for (const definition of ast.definitions) {
 			switch (definition.kind) {
 				case Kind.OBJECT_TYPE_DEFINITION:
-					const type_name = definition.name.value;
+					const typeName = definition.name.value;
 					// use type name as the default table
 					const properties = [];
-					const type_def = { table: null, database: null, properties };
-					types.set(type_name, type_def);
+					const typeDef = { table: null, database: null, properties };
+					types.set(typeName, typeDef);
 					for (const directive of definition.directives) {
-						const directive_name = directive.name.value;
-						if (directive_name === 'table') {
+						const directiveName = directive.name.value;
+						if (directiveName === 'table') {
 							for (const arg of directive.arguments) {
-								type_def[arg.name.value] = (arg.value as StringValueNode).value;
+								typeDef[arg.name.value] = (arg.value as StringValueNode).value;
 							}
-							if (type_def.schema) type_def.database = type_def.schema;
-							if (!type_def.table) type_def.table = type_name;
-							if (type_def.audit) type_def.audit = type_def.audit !== 'false';
-							type_def.attributes = type_def.properties;
-							tables.push(type_def);
+							if (typeDef.schema) typeDef.database = typeDef.schema;
+							if (!typeDef.table) typeDef.table = typeName;
+							if (typeDef.audit) typeDef.audit = typeDef.audit !== 'false';
+							typeDef.attributes = typeDef.properties;
+							tables.push(typeDef);
 						}
-						if (directive.name.value === 'sealed') type_def.sealed = true;
-						if (directive.name.value === 'splitSegments') type_def.splitSegments = true;
-						if (directive.name.value === 'replicate') type_def.replicate = true;
+						if (directive.name.value === 'sealed') typeDef.sealed = true;
+						if (directive.name.value === 'splitSegments') typeDef.splitSegments = true;
+						if (directive.name.value === 'replicate') typeDef.replicate = true;
 						if (directive.name.value === 'export') {
-							type_def.export = true;
+							typeDef.export = true;
 							for (const arg of directive.arguments) {
-								if (typeof type_def.export !== 'object') type_def.export = {};
-								type_def.export[arg.name.value] = (arg.value as StringValueNode).value;
+								if (typeof typeDef.export !== 'object') typeDef.export = {};
+								typeDef.export[arg.name.value] = (arg.value as StringValueNode).value;
 							}
 						}
 					}
-					let has_primary_key = false;
+					let hasPrimaryKey = false;
 					function getProperty(type) {
 						if (type.kind === 'NonNullType') {
 							const property = getProperty(type.type);
@@ -90,114 +90,114 @@ export function start({ ensureTable }) {
 								elements: getProperty(type.type),
 							};
 						}
-						const type_name = (type as NamedTypeNode).name?.value;
-						const property = { type: type_name };
+						const typeName = (type as NamedTypeNode).name?.value;
+						const property = { type: typeName };
 						Object.defineProperty(property, 'location', { value: type.loc.startToken });
 						return property;
 					}
-					const attributes_object = {};
+					const attributesObject = {};
 					for (const field of definition.fields) {
 						const property = getProperty(field.type);
 						property.name = field.name.value;
 						properties.push(property);
-						attributes_object[property.name] = undefined; // this is used as a backup scope for computed properties
+						attributesObject[property.name] = undefined; // this is used as a backup scope for computed properties
 						for (const directive of field.directives) {
-							const directive_name = directive.name.value;
-							if (directive_name === 'primaryKey') {
-								if (has_primary_key) console.warn('Can not define two attributes as a primary key at', directive.loc);
+							const directiveName = directive.name.value;
+							if (directiveName === 'primaryKey') {
+								if (hasPrimaryKey) console.warn('Can not define two attributes as a primary key at', directive.loc);
 								else {
 									property.isPrimaryKey = true;
-									has_primary_key = true;
+									hasPrimaryKey = true;
 								}
-							} else if (directive_name === 'indexed') {
+							} else if (directiveName === 'indexed') {
 								property.indexed = true;
-							} else if (directive_name === 'computed') {
+							} else if (directiveName === 'computed') {
 								for (const arg of directive.arguments || []) {
 									if (arg.name.value === 'from') {
-										const computed_from_expression = (arg.value as StringValueNode).value;
+										const computedFromExpression = (arg.value as StringValueNode).value;
 										property.computed = {
-											from: createComputedFrom(computed_from_expression, arg, attributes_object),
+											from: createComputedFrom(computedFromExpression, arg, attributesObject),
 										};
 										// if the version is not defined, we use the computed from expression as the version, any changes to the computed from expression will trigger a version change and reindex
-										if (property.version == undefined) property.version = computed_from_expression;
+										if (property.version == undefined) property.version = computedFromExpression;
 									} else if (arg.name.value === 'version') {
 										property.version = (arg.value as StringValueNode).value;
 									}
 								}
 								property.computed = property.computed || true;
-							} else if (directive_name === 'relationship') {
-								const relationship_definition = {};
+							} else if (directiveName === 'relationship') {
+								const relationshipDefinition = {};
 								for (const arg of directive.arguments) {
-									relationship_definition[arg.name.value] = (arg.value as StringValueNode).value;
+									relationshipDefinition[arg.name.value] = (arg.value as StringValueNode).value;
 								}
-								property.relationship = relationship_definition;
-							} else if (directive_name === 'createdTime') {
+								property.relationship = relationshipDefinition;
+							} else if (directiveName === 'createdTime') {
 								property.assignCreatedTime = true;
-							} else if (directive_name === 'updatedTime') {
+							} else if (directiveName === 'updatedTime') {
 								property.assignUpdatedTime = true;
-							} else if (directive_name === 'expiresAt') {
+							} else if (directiveName === 'expiresAt') {
 								property.expiresAt = true;
-							} else if (directive_name === 'allow') {
-								const authorized_roles = (property.authorizedRoles = []);
+							} else if (directiveName === 'allow') {
+								const authorizedRoles = (property.authorizedRoles = []);
 								for (const arg of directive.arguments) {
 									if (arg.name.value === 'role') {
-										authorized_roles.push((arg.value as StringValueNode).value);
+										authorizedRoles.push((arg.value as StringValueNode).value);
 									}
 								}
-							} else if (server.knownGraphQLDirectives.includes(directive_name)) {
-								console.warn(`@${directive_name} is an unknown directive, at`, directive.loc);
+							} else if (server.knownGraphQLDirectives.includes(directiveName)) {
+								console.warn(`@${directiveName} is an unknown directive, at`, directive.loc);
 							}
 						}
 					}
-					type_def.type = type_name;
-					if (type_name === 'Query') {
-						query = type_def;
+					typeDef.type = typeName;
+					if (typeName === 'Query') {
+						query = typeDef;
 					}
 			}
 		}
 		// check the types and if any types reference other types, fill those in.
 		function connectPropertyType(property) {
-			const target_type_def = types.get(property.type);
-			if (target_type_def) {
-				Object.defineProperty(property, 'properties', { value: target_type_def.properties });
-				Object.defineProperty(property, 'definition', { value: target_type_def });
+			const targetTypeDef = types.get(property.type);
+			if (targetTypeDef) {
+				Object.defineProperty(property, 'properties', { value: targetTypeDef.properties });
+				Object.defineProperty(property, 'definition', { value: targetTypeDef });
 			} else if (property.type === 'array') connectPropertyType(property.elements);
 			else if (!PRIMITIVE_TYPES.includes(property.type)) {
 				if (getWorkerIndex() === 0)
 					console.error(
-						`The type ${property.type} is unknown at line ${property.location.line}, column ${property.location.column}, in ${file_path}`
+						`The type ${property.type} is unknown at line ${property.location.line}, column ${property.location.column}, in ${filePath}`
 					);
 			}
 		}
-		for (const type_def of types.values()) {
-			for (const property of type_def.properties) connectPropertyType(property);
+		for (const typeDef of types.values()) {
+			for (const property of typeDef.properties) connectPropertyType(property);
 		}
 		// any tables that are defined in the schema can now be registered
-		for (const type_def of tables) {
+		for (const typeDef of tables) {
 			// with graphql database definitions, this is a declaration that the table should exist and that it
 			// should be created if it does not exist
-			type_def.tableClass = ensureTable(type_def);
-			if (type_def.export) {
+			typeDef.tableClass = ensureTable(typeDef);
+			if (typeDef.export) {
 				// allow empty string to be used to declare a table on the root path
-				if (type_def.export.name === '') resources.set(dirname(url_path), type_def.tableClass);
+				if (typeDef.export.name === '') resources.set(dirname(urlPath), typeDef.tableClass);
 				else
 					resources.set(
-						dirname(url_path) + '/' + (type_def.export.name || type_def.type),
-						type_def.tableClass,
-						type_def.export
+						dirname(urlPath) + '/' + (typeDef.export.name || typeDef.type),
+						typeDef.tableClass,
+						typeDef.export
 					);
 			}
 		}
-		function createComputedFrom(computed_from: string, arg: any, attributes: any) {
+		function createComputedFrom(computedFrom: string, arg: any, attributes: any) {
 			// Create a function from a computed "from" directive. This can look like:
 			// @computed(from: "fieldOne + fieldTwo")
 			// We use Node's built-in Script class to compile the function and run it in the context of the record object, which allows us to specify the source
 			const script = new Script(
 				// we use the inner with statement to allow the computed function to access the record object's properties directly as top level names
 				// we use the outer with statement with attributes as a fallback so any access to an attribute that isn't defined on the record still returns undefined (instead of a ReferenceError)
-				`function computed(attributes) { return function(record) { with(attributes) { with (record) { return ${computed_from}; } } } } computed;`,
+				`function computed(attributes) { return function(record) { with(attributes) { with (record) { return ${computedFrom}; } } } } computed;`,
 				{
-					filename: file_path, // specify the file path and line position for better error messages/debugging
+					filename: filePath, // specify the file path and line position for better error messages/debugging
 					lineOffset: arg.loc.startToken.line - 1,
 					columnOffset: arg.loc.startToken.column,
 				}

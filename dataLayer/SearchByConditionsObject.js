@@ -1,5 +1,5 @@
 'use strict';
-const lmdb_terms = require('../utility/lmdb/terms');
+const lmdbTerms = require('../utility/lmdb/terms.js');
 
 /**
  * This class represents the data that is passed into NoSQL searches.
@@ -29,14 +29,14 @@ class SearchByConditionsObject {
 class SearchCondition {
 	/**
 	 *
-	 * @param {String|Number} search_attribute
-	 * @param {lmdb_terms.SEARCH_TYPES} search_type
-	 * @param {*} search_value
+	 * @param {String|Number} searchAttribute
+	 * @param {lmdbTerms.SEARCH_TYPES} searchType
+	 * @param {*} searchValue
 	 */
-	constructor(search_attribute, search_type, search_value) {
-		this.search_attribute = search_attribute;
-		this.search_type = search_type;
-		this.search_value = search_value;
+	constructor(searchAttribute, searchType, searchValue) {
+		this.search_attribute = searchAttribute;
+		this.search_type = searchType;
+		this.search_value = searchValue;
 	}
 }
 

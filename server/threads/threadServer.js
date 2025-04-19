@@ -1,31 +1,31 @@
 'use strict';
-require('../../bin/dev');
+require('../../bin/dev.js');
 const { isMainThread, parentPort, threadId, workerData } = require('node:worker_threads');
 const { Socket, createServer: createSocketServer } = require('node:net');
 const { createServer, IncomingMessage } = require('node:http');
 const { createServer: createSecureServerHttp1 } = require('node:https');
 const { createSecureServer } = require('node:http2');
-const { Blob } = require('../../resources/blob');
+const { Blob } = require('../../resources/blob.ts');
 const { unlinkSync, existsSync } = require('fs');
-const harper_logger = require('../../utility/logging/harper_logger');
-const env = require('../../utility/environment/environmentManager');
-const terms = require('../../utility/hdbTerms');
-const { server } = require('../Server');
+const harperLogger = require('../../utility/logging/harper_logger.js');
+const env = require('../../utility/environment/environmentManager.js');
+const terms = require('../../utility/hdbTerms.ts');
+const { server } = require('../Server.ts');
 const { WebSocketServer } = require('ws');
 let { createServer: createSecureSocketServer } = require('node:tls');
-const { getTicketKeys, restartNumber, getWorkerIndex } = require('./manageThreads');
-const { Headers, appendHeader } = require('../serverHelpers/Headers');
-const { recordAction, recordActionBinary } = require('../../resources/analytics/write');
-const { Request, createReuseportFd } = require('../serverHelpers/Request');
-const { checkMemoryLimit } = require('../../utility/registration/hdb_license');
-const { createTLSSelector } = require('../../security/keys');
-const { resolvePath } = require('../../config/configUtils');
-const { startupLog } = require('../../bin/run');
+const { getTicketKeys, restartNumber, getWorkerIndex } = require('./manageThreads.js');
+const { Headers, appendHeader } = require('../serverHelpers/Headers.ts');
+const { recordAction, recordActionBinary } = require('../../resources/analytics/write.ts');
+const { Request, createReuseportFd } = require('../serverHelpers/Request.ts');
+const { checkMemoryLimit } = require('../../utility/registration/hdb_license.js');
+const { createTLSSelector } = require('../../security/keys.js');
+const { resolvePath } = require('../../config/configUtils.js');
+const { startupLog } = require('../../bin/run.js');
 const { Readable } = require('node:stream');
-const globals = require('../../globals');
+const globals = require('../../globals.js');
 
-const debug_threads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
-if (debug_threads) {
+const debugThreads = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG);
+if (debugThreads) {
 	let port;
 	if (isMainThread) {
 		port = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_PORT) ?? 9229;
@@ -33,22 +33,22 @@ if (debug_threads) {
 			try {
 				require('inspector').close();
 			} catch (error) {
-				harper_logger.info('Could not close debugger', error);
+				harperLogger.info('Could not close debugger', error);
 			}
 		});
 	} else {
-		const starting_port = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_STARTINGPORT);
-		if (starting_port && getWorkerIndex() >= 0) {
-			port = starting_port + getWorkerIndex();
+		const startingPort = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_STARTINGPORT);
+		if (startingPort && getWorkerIndex() >= 0) {
+			port = startingPort + getWorkerIndex();
 		}
 	}
 	if (port) {
 		const host = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_HOST);
-		const wait_for_debugger = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_WAITFORDEBUGGER);
+		const waitForDebugger = env.get(terms.CONFIG_PARAMS.THREADS_DEBUG_WAITFORDEBUGGER);
 		try {
-			require('inspector').open(port, host, wait_for_debugger);
+			require('inspector').open(port, host, waitForDebugger);
 		} catch (error) {
-			harper_logger.trace(`Could not start debugging on port ${port}, you may already be debugging:`, error.message);
+			harperLogger.trace(`Could not start debugging on port ${port}, you may already be debugging:`, error.message);
 		}
 	}
 } else if (process.env.DEV_MODE && isMainThread) {
@@ -56,7 +56,7 @@ if (debug_threads) {
 		require('inspector').open(9229);
 	} catch (error) {
 		if (restartNumber <= 1)
-			harper_logger.trace('Could not start debugging on port 9229, you may already be debugging:', error.message);
+			harperLogger.trace('Could not start debugging on port 9229, you may already be debugging:', error.message);
 	}
 }
 
@@ -68,9 +68,9 @@ process.on('uncaughtException', (error) => {
 });
 const { HDB_SETTINGS_NAMES, CONFIG_PARAMS } = terms;
 env.initSync();
-const session_affinity = env.get(CONFIG_PARAMS.HTTP_SESSIONAFFINITY);
+const sessionAffinity = env.get(CONFIG_PARAMS.HTTP_SESSIONAFFINITY);
 const SERVERS = {};
-const port_server = new Map();
+const portServer = new Map();
 exports.registerServer = registerServer;
 exports.httpServer = httpServer;
 exports.deliverSocket = deliverSocket;
@@ -83,13 +83,13 @@ server.request = onRequest;
 server.socket = onSocket;
 server.ws = onWebSocket;
 server.upgrade = onUpgrade;
-const websocket_servers = {};
-let http_servers = {},
-	http_chain = {},
-	http_responders = [];
+const websocketServers = {};
+let httpServers = {},
+	httpChain = {},
+	httpResponders = [];
 
 function startServers() {
-	return (exports.when_components_loaded = require('../loadRootComponents')
+	return (exports.when_components_loaded = require('../loadRootComponents.js')
 		.loadRootComponents(true)
 		.then(() => {
 			parentPort
@@ -103,36 +103,36 @@ function startServers() {
 						// data for each request
 						proxyRequest(message);
 					} else if (message.type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
-						harper_logger.trace('received shutdown request', threadId);
+						harperLogger.trace('received shutdown request', threadId);
 						// shutdown (for these threads) means stop listening for incoming requests (finish what we are working) and
 						// close connections as possible, then let the event loop complete
 						for (let port in SERVERS) {
 							const server = SERVERS[port];
-							let close_all_timer;
+							let closeAllTimer;
 							if (server.closeIdleConnections) {
 								// Here we attempt to gracefully close all outstanding keep-alive connections,
 								// repeatedly closing any connections that are idle. This allows any active requests
 								// to finish sending their response, then we close their connections.
 								let symbols = Object.getOwnPropertySymbols(server);
-								let connections_symbol = symbols.find((symbol) => symbol.description.includes('connections'));
-								let close_attempts = 0;
+								let connectionsSymbol = symbols.find((symbol) => symbol.description.includes('connections'));
+								let closeAttempts = 0;
 								let timer = setInterval(() => {
-									close_attempts++;
-									const force_close = close_attempts >= 100;
-									let connections = server[connections_symbol][force_close ? 'all' : 'idle']();
+									closeAttempts++;
+									const forceClose = closeAttempts >= 100;
+									let connections = server[connectionsSymbol][forceClose ? 'all' : 'idle']();
 									if (connections.length === 0) {
-										if (force_close) clearInterval(timer);
+										if (forceClose) clearInterval(timer);
 										return;
 									}
-									if (close_attempts === 1) harper_logger.info(`Closing ${connections.length} idle connections`);
-									else if (force_close)
-										harper_logger.warn(`Forcefully closing ${connections.length} active connections`);
+									if (closeAttempts === 1) harperLogger.info(`Closing ${connections.length} idle connections`);
+									else if (forceClose)
+										harperLogger.warn(`Forcefully closing ${connections.length} active connections`);
 									for (let i = 0, l = connections.length; i < l; i++) {
 										const socket = connections[i].socket;
-										if (socket._httpMessage && !socket._httpMessage.finished && !force_close) {
+										if (socket._httpMessage && !socket._httpMessage.finished && !forceClose) {
 											continue;
 										}
-										if (force_close) socket.destroySoon();
+										if (forceClose) socket.destroySoon();
 										else socket.end('HTTP/1.1 408 Request Timeout\r\nConnection: close\r\n\r\n');
 									}
 								}, 25).unref();
@@ -145,28 +145,28 @@ function startServers() {
 									} catch (err) {}
 								}
 
-								clearInterval(close_all_timer);
+								clearInterval(closeAllTimer);
 								// We hope for a graceful exit once all connections have been closed, and no
 								// more incoming connections are accepted, but if we need to, we eventually will exit
 								setTimeout(() => {
 									console.log('forced close server', port, threadId);
-									if (!server.cantCleanupProperly) harper_logger.warn('Had to forcefully exit the thread', threadId);
+									if (!server.cantCleanupProperly) harperLogger.warn('Had to forcefully exit the thread', threadId);
 									process.exit(0);
 								}, 5000).unref();
 							});
 						}
-						if (debug_threads || process.env.DEV_MODE) {
+						if (debugThreads || process.env.DEV_MODE) {
 							try {
 								require('inspector').close();
 							} catch (error) {
-								harper_logger.info('Could not close debugger', error);
+								harperLogger.info('Could not close debugger', error);
 							}
 						}
 					}
 				})
 				.ref(); // use this to keep the thread running until we are ready to shutdown and clean up handles
 			let listening;
-			if (createReuseportFd && !session_affinity) {
+			if (createReuseportFd && !sessionAffinity) {
 				listening = listenOnPorts();
 			}
 
@@ -174,7 +174,7 @@ function startServers() {
 			Promise.resolve(listening).then(() => {
 				if (getWorkerIndex() === 0) {
 					try {
-						startupLog(port_server);
+						startupLog(portServer);
 					} catch (err) {
 						console.error('Error displaying start-up log', err);
 					}
@@ -196,7 +196,7 @@ function listenOnPorts() {
 					server
 						.listen({ path: port }, () => {
 							resolve({ port, name: server.name, protocol_name: server.protocol_name });
-							harper_logger.info('Domain socket listening on ' + port);
+							harperLogger.info('Domain socket listening on ' + port);
 						})
 						.on('error', reject);
 				})
@@ -204,26 +204,26 @@ function listenOnPorts() {
 			continue;
 		}
 		let listen_on;
-		const thread_range = env.get(terms.CONFIG_PARAMS.HTTP_THREADRANGE);
-		if (thread_range) {
-			let thread_range_array = typeof thread_range === 'string' ? thread_range.split('-') : thread_range;
-			let thread_index = getWorkerIndex();
-			if (thread_index < thread_range_array[0] || thread_index > thread_range_array[1]) {
+		const threadRange = env.get(terms.CONFIG_PARAMS.HTTP_THREADRANGE);
+		if (threadRange) {
+			let threadRangeArray = typeof threadRange === 'string' ? threadRange.split('-') : threadRange;
+			let threadIndex = getWorkerIndex();
+			if (threadIndex < threadRangeArray[0] || threadIndex > threadRangeArray[1]) {
 				continue;
 			}
 		}
 
 		let fd;
 		try {
-			const last_colon = port.lastIndexOf(':');
-			if (last_colon > 0)
+			const lastColon = port.lastIndexOf(':');
+			if (lastColon > 0)
 				if (createReuseportFd)
 					// if there is a colon, we assume it is a host:port pair, and then strip brackets as that is a common way to
 					// specify an IPv6 address
 					listen_on = {
-						fd: createReuseportFd(+port.slice(last_colon + 1).replace(/[\[\]]/g, ''), port.slice(0, last_colon)),
+						fd: createReuseportFd(+port.slice(lastColon + 1).replace(/[\[\]]/g, ''), port.slice(0, lastColon)),
 					};
-				else listen_on = { host: +port.slice(last_colon + 1).replace(/[\[\]]/g, ''), port: port.slice(0, last_colon) };
+				else listen_on = { host: +port.slice(lastColon + 1).replace(/[\[\]]/g, ''), port: port.slice(0, lastColon) };
 			else if (createReuseportFd) listen_on = { fd: createReuseportFd(+port, '::') };
 			else listen_on = { port };
 		} catch (error) {
@@ -235,7 +235,7 @@ function listenOnPorts() {
 				server
 					.listen(listen_on, () => {
 						resolve({ port, name: server.name, protocol_name: server.protocol_name });
-						harper_logger.trace('Listening on port ' + port, threadId);
+						harperLogger.trace('Listening on port ' + port, threadId);
 					})
 					.on('error', reject);
 			})
@@ -247,12 +247,12 @@ if (!isMainThread && !workerData?.noServerStart) {
 	startServers();
 }
 
-function deliverSocket(fd_or_socket, port, data) {
+function deliverSocket(fdOrSocket, port, data) {
 	// Create a socket and deliver it to the HTTP server
 	// HTTP server likes to allow half open sockets
-	let socket = fd_or_socket?.read
-		? fd_or_socket
-		: new Socket({ fd: fd_or_socket, readable: true, writable: true, allowHalfOpen: true });
+	let socket = fdOrSocket?.read
+		? fdOrSocket
+		: new Socket({ fd: fdOrSocket, readable: true, writable: true, allowHalfOpen: true });
 	// for each socket, deliver the connection to the HTTP server handler/parser
 	let server = SERVERS[port];
 	if (server.isSecure) {
@@ -273,7 +273,7 @@ function deliverSocket(fd_or_socket, port, data) {
 					if (data) socket.emit('data', data);
 				} else if (retries < 5) retry(retries + 1);
 				else {
-					harper_logger.error(`Server on port ${port} was not registered`);
+					harperLogger.error(`Server on port ${port} was not registered`);
 					socket.destroy();
 				}
 			}, 1000);
@@ -333,29 +333,29 @@ function proxyRequest(message) {
 			break;
 	}
 }
-const { getComponentName } = require('../../components/componentLoader');
+const { getComponentName } = require('../../components/componentLoader.ts');
 
-function registerServer(server, port, check_port = true) {
+function registerServer(server, port, checkPort = true) {
 	if (!port) {
 		// if no port is provided, default to custom functions port
 		port = env.get(terms.CONFIG_PARAMS.HTTP_PORT);
 	}
-	let existing_server = SERVERS[port];
-	if (existing_server) {
+	let existingServer = SERVERS[port];
+	if (existingServer) {
 		// if there is an existing server on this port, we create a cascading delegation to try the request with one
 		// server and if doesn't handle the request, cascade to next server (until finally we 404)
-		let last_server = existing_server.lastServer || existing_server;
-		if (last_server === server) throw new Error(`Can not register the same server twice for the same port ${port}`);
-		if (check_port && Boolean(last_server.sessionIdContext) !== Boolean(server.sessionIdContext) && +port)
+		let lastServer = existingServer.lastServer || existingServer;
+		if (lastServer === server) throw new Error(`Can not register the same server twice for the same port ${port}`);
+		if (checkPort && Boolean(lastServer.sessionIdContext) !== Boolean(server.sessionIdContext) && +port)
 			throw new Error(`Can not mix secure HTTPS and insecure HTTP on the same port ${port}`);
-		last_server.off('unhandled', defaultNotFound);
-		last_server.on('unhandled', (request, response) => {
+		lastServer.off('unhandled', defaultNotFound);
+		lastServer.on('unhandled', (request, response) => {
 			// fastify can't clean up properly, and as soon as we have received a fastify request, must mark our mode
 			// as such
-			if (server.cantCleanupProperly) existing_server.cantCleanupProperly = true;
+			if (server.cantCleanupProperly) existingServer.cantCleanupProperly = true;
 			server.emit('request', request, response);
 		});
-		existing_server.lastServer = server;
+		existingServer.lastServer = server;
 	} else {
 		SERVERS[port] = server;
 	}
@@ -394,29 +394,29 @@ function httpServer(listener, options) {
 	for (let { port, secure } of getPorts(options)) {
 		servers.push(getHTTPServer(port, secure, options?.isOperationsServer, options?.mtls));
 		if (typeof listener === 'function') {
-			http_responders[options?.runFirst ? 'unshift' : 'push']({ listener, port: options?.port || port });
+			httpResponders[options?.runFirst ? 'unshift' : 'push']({ listener, port: options?.port || port });
 		} else {
 			listener.isSecure = secure;
 			registerServer(listener, port, false);
 		}
-		http_chain[port] = makeCallbackChain(http_responders, port);
+		httpChain[port] = makeCallbackChain(httpResponders, port);
 	}
 
 	return servers;
 }
 
 function setPortServerMap(port, server) {
-	const port_entry = port_server.get(port) ?? [];
-	port_server.set(port, [...port_entry, server]);
+	const portEntry = portServer.get(port) ?? [];
+	portServer.set(port, [...portEntry, server]);
 }
 
-function getHTTPServer(port, secure, is_operations_server, is_mtls) {
+function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 	setPortServerMap(port, { protocol_name: secure ? 'HTTPS' : 'HTTP', name: getComponentName() });
-	if (!http_servers[port]) {
-		let server_prefix = is_operations_server ? 'operationsApi_network' : 'http';
-		let keepAliveTimeout = env.get(server_prefix + '_keepAliveTimeout');
-		let requestTimeout = env.get(server_prefix + '_timeout');
-		let headersTimeout = env.get(server_prefix + '_headersTimeout');
+	if (!httpServers[port]) {
+		let serverPrefix = isOperationsServer ? 'operationsApi_network' : 'http';
+		let keepAliveTimeout = env.get(serverPrefix + '_keepAliveTimeout');
+		let requestTimeout = env.get(serverPrefix + '_timeout');
+		let headersTimeout = env.get(serverPrefix + '_headersTimeout');
 		let options = {
 			keepAliveTimeout,
 			headersTimeout,
@@ -429,14 +429,14 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 			keepAliveInitialDelay: 600, // lower the initial delay to 10 minutes, we want to be proactive about closing unused connections
 			maxHeaderSize: env.get(terms.CONFIG_PARAMS.HTTP_MAXHEADERSIZE),
 		};
-		let mtls = env.get(server_prefix + '_mtls');
-		let mtls_required = env.get(server_prefix + '_mtls_required');
+		let mtls = env.get(serverPrefix + '_mtls');
+		let mtlsRequired = env.get(serverPrefix + '_mtls_required');
 		let http2;
 
 		if (secure) {
 			// check if we want to enable HTTP/2; operations server doesn't use HTTP/2 because it doesn't allow the
 			// ALPNCallback to work with our custom protocol for replication
-			http2 = env.get(server_prefix + '_http2');
+			http2 = env.get(serverPrefix + '_http2');
 			// If we are in secure mode, we use HTTP/2 (createSecureServer from http2), with back-compat support
 			// HTTP/1. We do not use HTTP/2 for insecure mode for a few reasons: browsers do not support insecure
 			// HTTP/2. We have seen slower performance with HTTP/2, when used for directly benchmarking. We have
@@ -444,32 +444,32 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 			// TODO: Add an option to not accept the root certificates, and only use the CA
 			Object.assign(options, {
 				allowHTTP1: true,
-				rejectUnauthorized: Boolean(mtls_required),
-				requestCert: Boolean(mtls || is_mtls),
+				rejectUnauthorized: Boolean(mtlsRequired),
+				requestCert: Boolean(mtls || isMtls),
 				ticketKeys: getTicketKeys(),
-				SNICallback: createTLSSelector(is_operations_server ? 'operations-api' : 'server', mtls),
+				SNICallback: createTLSSelector(isOperationsServer ? 'operations-api' : 'server', mtls),
 			});
 		}
-		let license_warning = checkMemoryLimit();
-		let server = (http_servers[port] = (secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer)(
+		let licenseWarning = checkMemoryLimit();
+		let server = (httpServers[port] = (secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer)(
 			options,
-			async (node_request, node_response) => {
+			async (nodeRequest, nodeResponse) => {
 				try {
-					let start_time = performance.now();
-					let request = new Request(node_request, node_response);
-					if (is_operations_server) request.isOperationsServer = true;
+					let startTime = performance.now();
+					let request = new Request(nodeRequest, nodeResponse);
+					if (isOperationsServer) request.isOperationsServer = true;
 					// assign a more WHATWG compliant headers object, this is our real standard interface
-					let response = await http_chain[port](request);
+					let response = await httpChain[port](request);
 					if (!response) {
 						// this means that the request was completely handled, presumably through the
-						// node_response and we are actually just done
+						// nodeResponse and we are actually just done
 						if (request._nodeResponse.statusCode) return;
 						response = unhandled(request);
 					}
 					if (!response.headers?.set) {
 						response.headers = new Headers(response.headers);
 					}
-					if (license_warning)
+					if (licenseWarning)
 						response.headers?.set?.(
 							'Server',
 							'Unlicensed HarperDB, this should only be used for educational and development purposes'
@@ -480,28 +480,28 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 						// This means the HDB stack didn't handle the request, and we can then cascade the request
 						// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
 						// to interact with a node HTTP server object.
-						for (let header_pair of response.headers || []) {
-							node_response.setHeader(header_pair[0], header_pair[1]);
+						for (let headerPair of response.headers || []) {
+							nodeResponse.setHeader(headerPair[0], headerPair[1]);
 						}
-						node_request.baseRequest = request;
-						node_response.baseResponse = response;
-						return http_servers[port].emit('unhandled', node_request, node_response);
+						nodeRequest.baseRequest = request;
+						nodeResponse.baseResponse = response;
+						return httpServers[port].emit('unhandled', nodeRequest, nodeResponse);
 					}
 					const status = response.status || 200;
-					const end_time = performance.now();
-					const execution_time = end_time - start_time;
+					const endTime = performance.now();
+					const executionTime = endTime - startTime;
 					let body = response.body;
-					let sent_body;
+					let sentBody;
 					let deferWriteHead = false;
 					if (!response.handlesHeaders) {
 						const headers = response.headers || new Headers();
 						if (!body) {
 							headers.set('Content-Length', '0');
-							sent_body = true;
+							sentBody = true;
 						} else if (body.length >= 0) {
 							if (typeof body === 'string') headers.set('Content-Length', Buffer.byteLength(body));
 							else headers.set('Content-Length', body.length);
-							sent_body = true;
+							sentBody = true;
 						} else if (body instanceof Blob) {
 							// if the size is available now, immediately set it
 							if (body.size) headers.set('Content-Length', body.size);
@@ -511,91 +511,91 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 									// we can also try to set the Content-Length once the header is read and
 									// the size available. but if writeHead is called, this will have no effect. So we
 									// need to defer writeHead if we are going to set this
-									if (!node_response.headersSent) node_response.setHeader('Content-Length', size);
+									if (!nodeResponse.headersSent) nodeResponse.setHeader('Content-Length', size);
 								});
 							}
 							body = body.stream();
 						}
-						let server_timing = `hdb;dur=${execution_time.toFixed(2)}`;
+						let serverTiming = `hdb;dur=${executionTime.toFixed(2)}`;
 						if (response.wasCacheMiss) {
-							server_timing += ', miss';
+							serverTiming += ', miss';
 						}
-						appendHeader(headers, 'Server-Timing', server_timing, true);
-						if (!node_response.headersSent) {
+						appendHeader(headers, 'Server-Timing', serverTiming, true);
+						if (!nodeResponse.headersSent) {
 							if (deferWriteHead) {
 								// if we are deferring, we need to set the statusCode and headers, let any other headers be set later
 								// until the first write
-								node_response.statusCode = status;
+								nodeResponse.statusCode = status;
 								if (headers) {
 									if (headers[Symbol.iterator]) {
 										for (let [name, value] of headers) {
-											node_response.setHeader(name, value);
+											nodeResponse.setHeader(name, value);
 										}
 									} else {
 										for (let name in headers) {
-											node_response.setHeader(name, headers[name]);
+											nodeResponse.setHeader(name, headers[name]);
 										}
 									}
 								}
 							} // else the fast path, if we don't have to defer
 							else
-								node_response.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
+								nodeResponse.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
 						}
-						if (sent_body) node_response.end(body);
+						if (sentBody) nodeResponse.end(body);
 					}
-					const handler_path = request.handlerPath;
+					const handlerPath = request.handlerPath;
 					const method = request.method;
 					recordAction(
-						execution_time,
+						executionTime,
 						'duration',
-						handler_path,
+						handlerPath,
 						method,
 						response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
 					);
-					recordActionBinary(status < 400, 'success', handler_path, method);
-					recordActionBinary(1, 'response_' + status, handler_path, method);
-					if (!sent_body) {
+					recordActionBinary(status < 400, 'success', handlerPath, method);
+					recordActionBinary(1, 'response_' + status, handlerPath, method);
+					if (!sentBody) {
 						if (body instanceof ReadableStream) body = Readable.fromWeb(body);
 						if (body[Symbol.iterator] || body[Symbol.asyncIterator]) body = Readable.from(body);
 
 						// if it is a stream, pipe it
 						if (body?.pipe) {
-							body.pipe(node_response);
+							body.pipe(nodeResponse);
 							if (body.destroy)
-								node_response.on('close', () => {
+								nodeResponse.on('close', () => {
 									body.destroy();
 								});
-							let bytes_sent = 0;
+							let bytesSent = 0;
 							body.on('data', (data) => {
-								bytes_sent += data.length;
+								bytesSent += data.length;
 							});
 							body.on('end', () => {
-								recordAction(performance.now() - end_time, 'transfer', handler_path, method);
-								recordAction(bytes_sent, 'bytes-sent', handler_path, method);
+								recordAction(performance.now() - endTime, 'transfer', handlerPath, method);
+								recordAction(bytesSent, 'bytes-sent', handlerPath, method);
 							});
 						}
 						// else just send the buffer/string
 						else if (body?.then)
 							body.then((body) => {
-								node_response.end(body);
+								nodeResponse.end(body);
 							}, onError);
-						else node_response.end(body);
+						else nodeResponse.end(body);
 					}
 				} catch (error) {
 					onError(error);
 				}
 				function onError(error) {
 					const headers = error.headers;
-					node_response.writeHead(
+					nodeResponse.writeHead(
 						error.statusCode || 500,
 						headers && (headers[Symbol.iterator] ? Array.from(headers) : headers)
 					);
-					node_response.end(error.toString());
+					nodeResponse.end(error.toString());
 					// a status code is interpreted as an expected error, so just info or warn, otherwise log as error
 					if (error.statusCode) {
-						if (error.statusCode === 500) harper_logger.warn(error);
-						else harper_logger.info(error);
-					} else harper_logger.error(error);
+						if (error.statusCode === 500) harperLogger.warn(error);
+						else harperLogger.info(error);
+					} else harperLogger.error(error);
 				}
 			}
 		));
@@ -606,7 +606,7 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 		if (headersTimeout >= 0) server.headersTimeout = headersTimeout;
 
 		/* Should we use HTTP2 on upgrade?:
-		http_servers[port].on('upgrade', function upgrade(request, socket, head) {
+		httpServers[port].on('upgrade', function upgrade(request, socket, head) {
 			wss.handleUpgrade(request, socket, head, function done(ws) {
 				wss.emit('connection', ws, request);
 			});
@@ -624,24 +624,24 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 		}
 		registerServer(server, port);
 	}
-	return http_servers[port];
+	return httpServers[port];
 }
 
-function makeCallbackChain(responders, port_num) {
-	let next_callback = unhandled;
+function makeCallbackChain(responders, portNum) {
+	let nextCallback = unhandled;
 	// go through the listeners in reverse order so each callback can be passed to the one before
 	// and then each middleware layer can call the next middleware layer
 	for (let i = responders.length; i > 0; ) {
 		let { listener, port } = responders[--i];
-		if (port === port_num || port === 'all') {
-			let callback = next_callback;
-			next_callback = (...args) => {
+		if (port === portNum || port === 'all') {
+			let callback = nextCallback;
+			nextCallback = (...args) => {
 				// for listener only layers, the response through
 				return listener(...args, callback);
 			};
 		}
 	}
-	return next_callback;
+	return nextCallback;
 }
 function unhandled(request) {
 	if (request.user) {
@@ -663,11 +663,11 @@ function onRequest(listener, options) {
  * @param options
  */
 function onSocket(listener, options) {
-	let socket_server;
+	let socketServer;
 	if (options.securePort) {
 		setPortServerMap(options.securePort, { protocol_name: 'TLS', name: getComponentName() });
 		let SNICallback = createTLSSelector('server', options.mtls);
-		socket_server = createSecureSocketServer(
+		socketServer = createSecureSocketServer(
 			{
 				rejectUnauthorized: Boolean(options.mtls?.required),
 				requestCert: Boolean(options.mtls),
@@ -678,19 +678,19 @@ function onSocket(listener, options) {
 			},
 			listener
 		);
-		SNICallback.initialize(socket_server);
-		SERVERS[options.securePort] = socket_server;
+		SNICallback.initialize(socketServer);
+		SERVERS[options.securePort] = socketServer;
 	}
 	if (options.port) {
 		setPortServerMap(options.port, { protocol_name: 'TCP', name: getComponentName() });
-		socket_server = createSocketServer(listener, {
+		socketServer = createSocketServer(listener, {
 			noDelay: true,
 			keepAlive: true,
 			keepAliveInitialDelay: 600,
 		});
-		SERVERS[options.port] = socket_server;
+		SERVERS[options.port] = socketServer;
 	}
-	return socket_server;
+	return socketServer;
 }
 // workaround for inability to defer upgrade from https://github.com/nodejs/node/issues/6339#issuecomment-570511836
 Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
@@ -715,8 +715,8 @@ Object.defineProperty(IncomingMessage.prototype, 'upgrade', {
  * @typedef {(request: unknown, next: Listener) => void | Promise<void>} Listener
  */
 
-let upgrade_listeners = [],
-	upgrade_chains = {};
+let upgradeListeners = [],
+	upgradeChains = {};
 
 /**
  *
@@ -726,8 +726,8 @@ let upgrade_listeners = [],
  */
 function onUpgrade(listener, options) {
 	for (const { port } of getPorts(options)) {
-		upgrade_listeners[options?.runFirst ? 'unshift' : 'push']({ listener, port });
-		upgrade_chains[port] = makeCallbackChain(upgrade_listeners, port);
+		upgradeListeners[options?.runFirst ? 'unshift' : 'push']({ listener, port });
+		upgradeChains[port] = makeCallbackChain(upgradeListeners, port);
 	}
 }
 
@@ -738,8 +738,8 @@ function onUpgrade(listener, options) {
  * @property {number=} maxPayload - The maximum size of a message that can be received. Defaults to 100MB
  */
 
-let websocket_listeners = [],
-	websocket_chains = {};
+let websocketListeners = [],
+	websocketChains = {};
 /**
  *
  * @param {Listener} listener
@@ -757,33 +757,33 @@ function onWebSocket(listener, options) {
 
 		const server = getHTTPServer(port, secure, options?.isOperationsServer, options?.mtls);
 
-		if (!websocket_servers[port]) {
-			websocket_servers[port] = new WebSocketServer({
+		if (!websocketServers[port]) {
+			websocketServers[port] = new WebSocketServer({
 				noServer: true,
 				// TODO: this should be a global config and not per ws listener
 				maxPayload: options.maxPayload ?? 100 * 1024 * 1024, // The ws library has a default of 100MB
 			});
 
-			websocket_servers[port].on('connection', (ws, incomingMessage) => {
+			websocketServers[port].on('connection', (ws, incomingMessage) => {
 				const request = new Request(incomingMessage);
 				request.isWebSocket = true;
-				const chain_completion = http_chain[port](request);
-				websocket_chains[port](ws, request, chain_completion);
+				const chainCompletion = httpChain[port](request);
+				websocketChains[port](ws, request, chainCompletion);
 			});
 
 			// Add the default upgrade handler if it doesn't exist.
 			onUpgrade(
 				(request, socket, head, next) => {
 					// If the request has already been upgraded, continue without upgrading
-					if (request.__harperdb_request_upgraded) {
+					if (request.__harperdbRequestUpgraded) {
 						return next(request, socket, head);
 					}
 
 					// Otherwise, upgrade the socket and then continue
-					return websocket_servers[port].handleUpgrade(request, socket, head, (ws) => {
-						request.__harperdb_request_upgraded = true;
+					return websocketServers[port].handleUpgrade(request, socket, head, (ws) => {
+						request.__harperdbRequestUpgraded = true;
 						next(request, socket, head);
-						websocket_servers[port].emit('connection', ws, request);
+						websocketServers[port].emit('connection', ws, request);
 					});
 				},
 				{ port }
@@ -791,19 +791,19 @@ function onWebSocket(listener, options) {
 
 			// Call the upgrade middleware chain
 			server.on('upgrade', (request, socket, head) => {
-				if (upgrade_chains[port]) {
-					upgrade_chains[port](request, socket, head);
+				if (upgradeChains[port]) {
+					upgradeChains[port](request, socket, head);
 				}
 			});
 		}
 
 		servers.push(server);
 
-		websocket_listeners[options?.runFirst ? 'unshift' : 'push']({ listener, port });
-		websocket_chains[port] = makeCallbackChain(websocket_listeners, port);
+		websocketListeners[options?.runFirst ? 'unshift' : 'push']({ listener, port });
+		websocketChains[port] = makeCallbackChain(websocketListeners, port);
 
 		// mqtt doesn't invoke the http handler so this needs to be here to load up the http chains.
-		http_chain[port] = makeCallbackChain(http_responders, port);
+		httpChain[port] = makeCallbackChain(httpResponders, port);
 	}
 
 	return servers;

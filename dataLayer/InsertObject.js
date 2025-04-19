@@ -1,5 +1,5 @@
 'use strict';
-const OPERATIONS_ENUM = require('../utility/hdbTerms').OPERATIONS_ENUM;
+const OPERATIONS_ENUM = require('../utility/hdbTerms.ts').OPERATIONS_ENUM;
 /**
  * This class represents the data that is passed into the Insert functions.
  */

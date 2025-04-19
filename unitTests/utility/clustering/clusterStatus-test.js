@@ -78,8 +78,8 @@ describe('Test clusterStatus module', () => {
 	before(() => {
 		upsert_node_record_stub = sandbox.stub(clustering_utils, 'upsertNodeRecord');
 		sandbox.stub(clustering_utils, 'getSystemInfo').resolves(test_sys_info);
-		cluster_status.__set__('clustering_enabled', true);
-		cluster_status.__set__('this_node_name', 'localTestNode');
+		cluster_status.__set__('clusteringEnabled', true);
+		cluster_status.__set__('thisNodeName', 'localTestNode');
 		get_all_node_records_stub = sandbox.stub(clustering_utils, 'getAllNodeRecords').resolves(test_existing_record);
 		request_stub = sandbox.stub(nats_utils, 'request');
 		log_error_stub = sandbox.stub(hdb_logger, 'error');
@@ -314,7 +314,7 @@ describe('Test clusterStatus module', () => {
 	});
 
 	it('Test empty connections returned if clustering not enabled', async () => {
-		cluster_status.__set__('clustering_enabled', false);
+		cluster_status.__set__('clusteringEnabled', false);
 		const result = await cluster_status.clusterStatus();
 		expect(result).to.eql({
 			connections: [],

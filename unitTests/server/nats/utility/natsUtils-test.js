@@ -296,7 +296,7 @@ describe('Test natsUtils module', () => {
 		it('Test getConnection creates a connection and sets it to var', async () => {
 			env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT, 9991);
 			await nats_utils.getConnection();
-			const nats_connection = nats_utils.__get__('nats_connection');
+			const nats_connection = nats_utils.__get__('natsConnection');
 
 			expect(nats_connection).to.haveOwnProperty('options');
 			expect(nats_connection).to.haveOwnProperty('protocol');
@@ -333,8 +333,8 @@ describe('Test natsUtils module', () => {
 		}).timeout(TEST_TIMEOUT);
 
 		it('Test getJetStream returns JetStream client if if a connection does not exist', async () => {
-			nats_utils.__set__('nats_connection', undefined);
-			nats_utils.__set__('nats_connection_promise', undefined);
+			nats_utils.__set__('natsConnection', undefined);
+			nats_utils.__set__('natsConnectionPromise', undefined);
 			const result = await nats_utils.getJetStream();
 			expect(result).to.haveOwnProperty('nc');
 			expect(result).to.haveOwnProperty('opts');
@@ -623,8 +623,7 @@ describe('Test natsUtils module', () => {
 		it('Test updateLocalStreams updates subject name', async () => {
 			// Create local stream
 			await nats_utils.createLocalStream(TEST_STREAM_NAME_2, [TEST_SUBJECT_NAME_2]);
-			const get_jsm_server_name_rw = nats_utils.__set__(
-				'getJsmServerName',
+			const get_jsm_server_name_rw = nats_utils.__set__('getJsmServerName',
 				sandbox.stub().resolves('chicken_leg-leaf')
 			);
 
@@ -678,7 +677,7 @@ describe('Test natsUtils module', () => {
 		it('Test closeConnection closes a connection', async () => {
 			await nats_utils.getConnection();
 			await nats_utils.closeConnection();
-			const nats_connection = nats_utils.__get__('nats_connection');
+			const nats_connection = nats_utils.__get__('natsConnection');
 			expect(nats_connection).to.be.undefined;
 		});
 	});
@@ -713,8 +712,7 @@ describe('Test natsUtils module', () => {
 
 		it('Test reloadNATSHub calls reload with Hub pid file path', async () => {
 			const pid_file_path = 'hub/pid/file.pid';
-			const get_server_config_rw = nats_utils.__set__(
-				'getServerConfig',
+			const get_server_config_rw = nats_utils.__set__('getServerConfig',
 				util_sandbox.stub().returns({ pid_file_path })
 			);
 			const reload_nats_stub = util_sandbox.stub().resolves();
@@ -727,8 +725,7 @@ describe('Test natsUtils module', () => {
 
 		it('Test reloadNATSLeaf calls reload with Leaf pid file path', async () => {
 			const pid_file_path = 'leaf/pid/file.pid';
-			const get_server_config_rw = nats_utils.__set__(
-				'getServerConfig',
+			const get_server_config_rw = nats_utils.__set__('getServerConfig',
 				util_sandbox.stub().returns({ pid_file_path })
 			);
 			const reload_nats_stub = util_sandbox.stub().resolves();

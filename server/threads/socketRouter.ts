@@ -5,23 +5,23 @@ import {
 	shutdownWorkers,
 	onMessageFromWorkers,
 	threadsHaveStarted,
-} from './manageThreads';
+} from './manageThreads.js';
 import { createServer, Socket } from 'net';
-import * as hdb_terms from '../../utility/hdbTerms';
-import * as harper_logger from '../../utility/logging/harper_logger';
+import * as hdbTerms from '../../utility/hdbTerms.ts';
+import * as harperLogger from '../../utility/logging/harper_logger.js';
 import { unlinkSync, existsSync } from 'fs';
-import { recordHostname, recordAction } from '../../resources/analytics/write';
+import { recordHostname, recordAction } from '../../resources/analytics/write.ts';
 import { isMainThread } from 'worker_threads';
-import { checkMemoryLimit } from '../../utility/registration/hdb_license';
-import { packageJson } from '../../utility/packageUtils';
+import { checkMemoryLimit } from '../../utility/registration/hdb_license.js';
+import { packageJson } from '../../utility/packageUtils.js';
 
 const workers = [];
-let queued_sockets = [];
-const handle_socket = [];
-let direct_thread_server;
-let current_thread_count = 0;
-const workers_ready = [];
-let license_warning_interval_id;
+let queuedSockets = [];
+const handleSocket = [];
+let directThreadServer;
+let currentThreadCount = 0;
+const workersReady = [];
+let licenseWarningIntervalId;
 
 if (isMainThread) {
 	process.on('uncaughtException', (error) => {
@@ -32,33 +32,33 @@ if (isMainThread) {
 	});
 
 	onMessageFromWorkers((message) => {
-		if (message.type === hdb_terms.ITC_EVENT_TYPES.RESTART && license_warning_interval_id) {
-			clearInterval(license_warning_interval_id);
+		if (message.type === hdbTerms.ITC_EVENT_TYPES.RESTART && licenseWarningIntervalId) {
+			clearInterval(licenseWarningIntervalId);
 			licenseWarning();
 		}
 	});
 }
 
 const LICENSE_NAG_PERIOD = 600000; // ten minutes
-export async function startHTTPThreads(thread_count = 2, dynamic_threads?: boolean) {
-	recordHostname().catch(err => harper_logger.error?.('Error recording hostname for analytics:', err));
+export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean) {
+	recordHostname().catch(err => harperLogger.error?.('Error recording hostname for analytics:', err));
 	try {
-		if (dynamic_threads) {
+		if (dynamicThreads) {
 			startHTTPWorker(0, 1, true);
 		} else {
-			const { loadRootComponents } = require('../loadRootComponents');
-			if (thread_count === 0) {
+			const { loadRootComponents } = require('../loadRootComponents.js');
+			if (threadCount === 0) {
 				setMainIsWorker(true);
-				await require('./threadServer').startServers();
+				await require('./threadServer.js').startServers();
 				return Promise.resolve([]);
 			}
 			await loadRootComponents();
 		}
 		licenseWarning();
-		for (let i = 0; i < thread_count; i++) {
-			startHTTPWorker(i, thread_count);
+		for (let i = 0; i < threadCount; i++) {
+			startHTTPWorker(i, threadCount);
 		}
-		return Promise.all(workers_ready);
+		return Promise.all(workersReady);
 	} finally {
 		threadsHaveStarted();
 	}
@@ -68,23 +68,23 @@ function licenseWarning() {
 	const license_warning = checkMemoryLimit();
 	if (license_warning && !process.env.DEV_MODE) {
 		console.error(license_warning);
-		license_warning_interval_id = setInterval(() => {
-			harper_logger.notify(license_warning);
+		licenseWarningIntervalId = setInterval(() => {
+			harperLogger.notify(license_warning);
 		}, LICENSE_NAG_PERIOD).unref();
 	}
 }
 
-function startHTTPWorker(index, thread_count = 1, shutdown_when_idle?) {
-	current_thread_count++;
+function startHTTPWorker(index, threadCount = 1, shutdownWhenIdle?) {
+	currentThreadCount++;
 	startWorker('server/threads/threadServer.js', {
-		name: hdb_terms.THREAD_TYPES.HTTP,
+		name: hdbTerms.THREAD_TYPES.HTTP,
 		workerIndex: index,
-		threadCount: thread_count,
+		threadCount,
 		async onStarted(worker) {
 			// note that this can be called multiple times, once when started, and again when threads are restarted
 			const ready = new Promise((resolve, reject) => {
 				function onMessage(message) {
-					if (message.type === hdb_terms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED) {
+					if (message.type === hdbTerms.CLUSTER_MESSAGE_TYPE_ENUM.CHILD_STARTED) {
 						worker.removeListener('message', onMessage);
 						resolve(worker);
 					}
@@ -93,7 +93,7 @@ function startHTTPWorker(index, thread_count = 1, shutdown_when_idle?) {
 				worker.on('message', onMessage);
 				worker.on('error', reject);
 			});
-			workers_ready.push(ready);
+			workersReady.push(ready);
 			await ready;
 			workers.push(worker);
 			worker.expectedIdle = 1;
@@ -111,22 +111,22 @@ function startHTTPWorker(index, thread_count = 1, shutdown_when_idle?) {
 				const index = workers.indexOf(worker);
 				if (index > -1) workers.splice(index, 1);
 			}
-			if (queued_sockets) {
+			if (queuedSockets) {
 				// if there are any queued sockets, we re-deliver them
-				const sockets = queued_sockets;
-				queued_sockets = [];
-				for (const socket of sockets) handle_socket[socket.localPort](null, socket);
+				const sockets = queuedSockets;
+				queuedSockets = [];
+				for (const socket of sockets) handleSocket[socket.localPort](null, socket);
 			}
 		},
 	});
-	if (shutdown_when_idle) {
+	if (shutdownWhenIdle) {
 		const interval = setInterval(() => {
-			if (recent_request) recent_request = false;
+			if (recentRequest) recentRequest = false;
 			else {
 				clearInterval(interval);
 				console.log('shut down dynamic thread due to inactivity');
 				shutdownWorkers();
-				current_thread_count = 0;
+				currentThreadCount = 0;
 				setTimeout(() => {
 					global.gc?.();
 				}, 5000);
@@ -134,8 +134,8 @@ function startHTTPWorker(index, thread_count = 1, shutdown_when_idle?) {
 		}, 10000);
 	}
 }
-let recent_request;
-export function startSocketServer(port = 0, session_affinity_identifier?) {
+let recentRequest;
+export function startSocketServer(port = 0, sessionAffinityIdentifier?) {
 	if (typeof port === 'string') {
 		// if we are using a unix domain socket, we try to delete it first, otherwise it will throw an EADDRESSINUSE
 		// error
@@ -144,44 +144,44 @@ export function startSocketServer(port = 0, session_affinity_identifier?) {
 		} catch (error) {}
 	}
 	// at some point we may want to actually read from the https connections
-	let worker_strategy;
-	if (session_affinity_identifier) {
+	let workerStrategy;
+	if (sessionAffinityIdentifier) {
 		// use remote ip address based session affinity
-		if (session_affinity_identifier === 'ip') worker_strategy = findByRemoteAddressAffinity;
+		if (sessionAffinityIdentifier === 'ip') workerStrategy = findByRemoteAddressAffinity;
 		// use a header for session affinity (like Authorization or Cookie)
-		else worker_strategy = makeFindByHeaderAffinity(session_affinity_identifier);
-	} else worker_strategy = findMostIdleWorker; // no session affinity, just delegate to most idle worker
+		else workerStrategy = makeFindByHeaderAffinity(sessionAffinityIdentifier);
+	} else workerStrategy = findMostIdleWorker; // no session affinity, just delegate to most idle worker
 	const server = createServer({
 		allowHalfOpen: true,
-		pauseOnConnect: !worker_strategy.readsData,
+		pauseOnConnect: !workerStrategy.readsData,
 	}).listen(port);
 	if (server._handle) {
-		server._handle.onconnection = handle_socket[port] = function (err, client_handle) {
-			if (!worker_strategy.readsData) {
-				client_handle.reading = false;
-				client_handle.readStop();
+		server._handle.onconnection = handleSocket[port] = function (err, clientHandle) {
+			if (!workerStrategy.readsData) {
+				clientHandle.reading = false;
+				clientHandle.readStop();
 			}
-			recent_request = true;
-			worker_strategy(client_handle, (worker, received_data) => {
+			recentRequest = true;
+			workerStrategy(clientHandle, (worker, receivedData) => {
 				if (!worker) {
-					if (direct_thread_server) {
+					if (directThreadServer) {
 						const socket =
-							client_handle._socket || new Socket({ handle: client_handle, writable: true, readable: true });
-						direct_thread_server.deliverSocket(socket, port, received_data);
+							clientHandle._socket || new Socket({ handle: clientHandle, writable: true, readable: true });
+						directThreadServer.deliverSocket(socket, port, receivedData);
 						socket.resume();
-					} else if (current_thread_count > 0) {
+					} else if (currentThreadCount > 0) {
 						// should be a thread coming on line
-						if (queued_sockets.length === 0) {
+						if (queuedSockets.length === 0) {
 							setTimeout(() => {
-								if (queued_sockets.length > 0) {
+								if (queuedSockets.length > 0) {
 									console.warn(
 										'Incoming sockets/requests have been queued for workers to start, and no workers have handled them. Check to make sure an error is not preventing workers from starting'
 									);
 								}
 							}, 10000).unref();
 						}
-						client_handle.localPort = port;
-						queued_sockets.push(client_handle);
+						clientHandle.localPort = port;
+						queuedSockets.push(clientHandle);
 					} else {
 						console.log('start up a dynamic thread to handle request');
 						startHTTPWorker(0);
@@ -190,18 +190,18 @@ export function startSocketServer(port = 0, session_affinity_identifier?) {
 					return;
 				}
 				worker.requests++;
-				const fd = client_handle.fd;
-				if (fd >= 0) worker.postMessage({ port, fd, data: received_data });
+				const fd = clientHandle.fd;
+				if (fd >= 0) worker.postMessage({ port, fd, data: receivedData });
 				// valid file descriptor, forward it
 				// Windows doesn't support passing sockets by file descriptors, so we have manually proxy the socket data
 				else {
-					const socket = client_handle._socket || new Socket({ handle: client_handle, writable: true, readable: true });
+					const socket = clientHandle._socket || new Socket({ handle: clientHandle, writable: true, readable: true });
 					proxySocket(socket, worker, port);
 				}
 				recordAction(true, 'socket-routed');
 			});
 		};
-		harper_logger.info(`HarperDB ${packageJson.version} Server running on port ${port}`);
+		harperLogger.info(`HarperDB ${packageJson.version} Server running on port ${port}`);
 	}
 	server.on('error', (error) => {
 		console.error('Error in socket server', error);
@@ -210,7 +210,7 @@ export function startSocketServer(port = 0, session_affinity_identifier?) {
 	return server;
 }
 
-let second_best_availability = 0;
+let secondBestAvailability = 0;
 
 /**
  * Delegate to workers based on what worker is likely to be most idle/available.
@@ -218,21 +218,21 @@ let second_best_availability = 0;
  */
 function findMostIdleWorker(handle, deliver) {
 	// fast algorithm for delegating work to workers based on last idleness check (without constantly checking idleness)
-	let selected_worker;
-	let last_availability = 0;
+	let selectedWorker;
+	let lastAvailability = 0;
 	for (const worker of workers) {
 		if (worker.threadId === -1) continue;
 		const availability = worker.expectedIdle / worker.requests;
-		if (availability > last_availability) {
-			selected_worker = worker;
-		} else if (last_availability >= second_best_availability) {
-			second_best_availability = availability;
-			return deliver(selected_worker);
+		if (availability > lastAvailability) {
+			selectedWorker = worker;
+		} else if (lastAvailability >= secondBestAvailability) {
+			secondBestAvailability = availability;
+			return deliver(selectedWorker);
 		}
-		last_availability = availability;
+		lastAvailability = availability;
 	}
-	second_best_availability = 0;
-	deliver(selected_worker);
+	secondBestAvailability = 0;
+	deliver(selectedWorker);
 }
 
 const AFFINITY_TIMEOUT = 3600000; // an hour timeout
@@ -244,9 +244,9 @@ const sessions = new Map();
  * @returns Worker
  */
 function findByRemoteAddressAffinity(handle, deliver) {
-	const remote_info = {};
-	handle.getpeername(remote_info);
-	const address = remote_info.address;
+	const remoteInfo = {};
+	handle.getpeername(remoteInfo);
+	const address = remoteInfo.address;
 	// we might need to fallback to new Socket({handle}).remoteAddress for... bun?
 	const entry = sessions.get(address);
 	const now = Date.now();
@@ -272,7 +272,7 @@ function findByRemoteAddressAffinity(handle, deliver) {
  */
 function makeFindByHeaderAffinity(header) {
 	// regular expression to find the specified header and group match on the value
-	const header_expression = new RegExp(`${header}:\\s*(.+)`, 'i');
+	const headerExpression = new RegExp(`${header}:\\s*(.+)`, 'i');
 	findByHeaderAffinity.readsData = true; // make sure we don't start with the socket being paused
 	return findByHeaderAffinity;
 	function findByHeaderAffinity(handle, deliver) {
@@ -282,9 +282,9 @@ function makeFindByHeaderAffinity(header) {
 			// must forcibly stop the TCP handle to ensure no more data is read and that all further data is read by
 			// the child worker thread (once it resumes the socket)
 			handle.readStop();
-			const header_block = data.toString('latin1'); // latin is standard HTTP header encoding and faster
-			const header_value = header_block.match(header_expression)?.[1];
-			const entry = sessions.get(header_value);
+			const headerBlock = data.toString('latin1'); // latin is standard HTTP header encoding and faster
+			const headerValue = headerBlock.match(headerExpression)?.[1];
+			const entry = sessions.get(headerValue);
 			const now = Date.now();
 			if (entry && entry.worker.threadId !== -1) {
 				entry.lastUsed = now;
@@ -292,7 +292,7 @@ function makeFindByHeaderAffinity(header) {
 			}
 
 			findMostIdleWorker(handle, (worker) => {
-				sessions.set(header_value, {
+				sessions.set(headerValue, {
 					worker,
 					lastUsed: now,
 				});
@@ -318,7 +318,7 @@ const EXPECTED_IDLE_DECAY = 1000;
  * Updates the idleness statistics for each worker
  */
 export function updateWorkerIdleness() {
-	second_best_availability = 0;
+	secondBestAvailability = 0;
 	for (const worker of workers) {
 		worker.expectedIdle = worker.recentELU.idle + EXPECTED_IDLE_DECAY;
 		worker.requests = 1;

@@ -1,58 +1,58 @@
 'use strict';
 
 const path = require('path');
-const environment_util = require('../../../../utility/lmdb/environmentUtility');
-const LMDBInsertTransactionObject = require('./LMDBInsertTransactionObject');
-const LMDBUpdateTransactionObject = require('./LMDBUpdateTransactionObject');
-const LMDBUpsertTransactionObject = require('./LMDBUpsertTransactionObject');
-const LMDBDeleteTransactionObject = require('./LMDBDeleteTransactionObject');
+const environmentUtil = require('../../../../utility/lmdb/environmentUtility.js');
+const LMDBInsertTransactionObject = require('./LMDBInsertTransactionObject.js');
+const LMDBUpdateTransactionObject = require('./LMDBUpdateTransactionObject.js');
+const LMDBUpsertTransactionObject = require('./LMDBUpsertTransactionObject.js');
+const LMDBDeleteTransactionObject = require('./LMDBDeleteTransactionObject.js');
 
-const lmdb_terms = require('../../../../utility/lmdb/terms');
-const hdb_util = require('../../../../utility/common_utils');
-const { CONFIG_PARAMS } = require('../../../../utility/hdbTerms');
-const env_mngr = require('../../../../utility/environment/environmentManager');
-env_mngr.initSync();
+const lmdbTerms = require('../../../../utility/lmdb/terms.js');
+const hdbUtil = require('../../../../utility/common_utils.js');
+const { CONFIG_PARAMS } = require('../../../../utility/hdbTerms.ts');
+const envMngr = require('../../../../utility/environment/environmentManager.js');
+envMngr.initSync();
 
-const OPERATIONS_ENUM = require('../../../../utility/hdbTerms').OPERATIONS_ENUM;
-const { getTransactionAuditStorePath } = require('./initializePaths');
+const OPERATIONS_ENUM = require('../../../../utility/hdbTerms.ts').OPERATIONS_ENUM;
+const { getTransactionAuditStorePath } = require('./initializePaths.js');
 
 module.exports = writeTransaction;
 
 /**
  *
- * @param {InsertObject|UpdateObject|DeleteObject|UpsertObject} hdb_operation
- * @param {InsertRecordsResponseObject | UpdateRecordsResponseObject | UpdateRecordsResponseObject | DeleteRecordsResponseObject} lmdb_response
+ * @param {InsertObject|UpdateObject|DeleteObject|UpsertObject} hdbOperation
+ * @param {InsertRecordsResponseObject | UpdateRecordsResponseObject | UpdateRecordsResponseObject | DeleteRecordsResponseObject} lmdbResponse
  * @returns {Promise<void>}
  */
-async function writeTransaction(hdb_operation, lmdb_response) {
-	if (env_mngr.get(CONFIG_PARAMS.LOGGING_AUDITLOG) === false) {
+async function writeTransaction(hdbOperation, lmdbResponse) {
+	if (envMngr.get(CONFIG_PARAMS.LOGGING_AUDITLOG) === false) {
 		return;
 	}
 
-	let txn_env_base_path = getTransactionAuditStorePath(hdb_operation.schema, hdb_operation.table);
-	let txn_env = await environment_util.openEnvironment(txn_env_base_path, hdb_operation.table, true);
+	let txnEnvBasePath = getTransactionAuditStorePath(hdbOperation.schema, hdbOperation.table);
+	let txnEnv = await environmentUtil.openEnvironment(txnEnvBasePath, hdbOperation.table, true);
 
-	let txn_object = createTransactionObject(hdb_operation, lmdb_response);
+	let txnObject = createTransactionObject(hdbOperation, lmdbResponse);
 
-	if (txn_object === undefined || txn_object.hash_values.length === 0) {
+	if (txnObject === undefined || txnObject.hash_values.length === 0) {
 		return;
 	}
 
-	if (txn_env !== undefined) {
-		environment_util.initializeDBIs(
-			txn_env,
-			lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP,
-			lmdb_terms.TRANSACTIONS_DBIS
+	if (txnEnv !== undefined) {
+		environmentUtil.initializeDBIs(
+			txnEnv,
+			lmdbTerms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP,
+			lmdbTerms.TRANSACTIONS_DBIS
 		);
 
-		let txn_timestamp = txn_object.timestamp;
-		return await txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP].ifNoExists(txn_timestamp, () => {
-			txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP].put(txn_timestamp, txn_object);
-			if (!hdb_util.isEmpty(txn_object.user_name)) {
-				txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME].put(txn_object.user_name, txn_timestamp);
+		let txnTimestamp = txnObject.timestamp;
+		return await txnEnv.dbis[lmdbTerms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP].ifNoExists(txnTimestamp, () => {
+			txnEnv.dbis[lmdbTerms.TRANSACTIONS_DBI_NAMES_ENUM.TIMESTAMP].put(txnTimestamp, txnObject);
+			if (!hdbUtil.isEmpty(txnObject.user_name)) {
+				txnEnv.dbis[lmdbTerms.TRANSACTIONS_DBI_NAMES_ENUM.USER_NAME].put(txnObject.user_name, txnTimestamp);
 			}
-			for (let x = 0; x < txn_object.hash_values.length; x++) {
-				txn_env.dbis[lmdb_terms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE].put(txn_object.hash_values[x], txn_timestamp);
+			for (let x = 0; x < txnObject.hash_values.length; x++) {
+				txnEnv.dbis[lmdbTerms.TRANSACTIONS_DBI_NAMES_ENUM.HASH_VALUE].put(txnObject.hash_values[x], txnTimestamp);
 			}
 		});
 	}
@@ -60,51 +60,51 @@ async function writeTransaction(hdb_operation, lmdb_response) {
 
 /**
  *
- * @param {InsertObject | UpdateObject | DeleteObject} hdb_operation
- * @param {InsertRecordsResponseObject | UpdateRecordsResponseObject | DeleteRecordsResponseObject} lmdb_response
+ * @param {InsertObject | UpdateObject | DeleteObject} hdbOperation
+ * @param {InsertRecordsResponseObject | UpdateRecordsResponseObject | DeleteRecordsResponseObject} lmdbResponse
  * @returns {LMDBInsertTransactionObject|LMDBUpdateTransactionObject|LMDBDeleteTransactionObject}
  */
-function createTransactionObject(hdb_operation, lmdb_response) {
-	let username = !hdb_util.isEmpty(hdb_operation.hdb_user) ? hdb_operation.hdb_user?.username : undefined;
-	if (hdb_operation.operation === OPERATIONS_ENUM.INSERT) {
+function createTransactionObject(hdbOperation, lmdbResponse) {
+	let username = !hdbUtil.isEmpty(hdbOperation.hdb_user) ? hdbOperation.hdb_user?.username : undefined;
+	if (hdbOperation.operation === OPERATIONS_ENUM.INSERT) {
 		return new LMDBInsertTransactionObject(
-			hdb_operation.records,
+			hdbOperation.records,
 			username,
-			lmdb_response.txn_time,
-			lmdb_response.written_hashes,
-			hdb_operation.__origin
+			lmdbResponse.txn_time,
+			lmdbResponse.written_hashes,
+			hdbOperation.__origin
 		);
 	}
 
-	if (hdb_operation.operation === OPERATIONS_ENUM.UPDATE) {
+	if (hdbOperation.operation === OPERATIONS_ENUM.UPDATE) {
 		return new LMDBUpdateTransactionObject(
-			hdb_operation.records,
-			lmdb_response.original_records,
+			hdbOperation.records,
+			lmdbResponse.original_records,
 			username,
-			lmdb_response.txn_time,
-			lmdb_response.written_hashes,
-			hdb_operation.__origin
+			lmdbResponse.txn_time,
+			lmdbResponse.written_hashes,
+			hdbOperation.__origin
 		);
 	}
 
-	if (hdb_operation.operation === OPERATIONS_ENUM.UPSERT) {
+	if (hdbOperation.operation === OPERATIONS_ENUM.UPSERT) {
 		return new LMDBUpsertTransactionObject(
-			hdb_operation.records,
-			lmdb_response.original_records,
+			hdbOperation.records,
+			lmdbResponse.original_records,
 			username,
-			lmdb_response.txn_time,
-			lmdb_response.written_hashes,
-			hdb_operation.__origin
+			lmdbResponse.txn_time,
+			lmdbResponse.written_hashes,
+			hdbOperation.__origin
 		);
 	}
 
-	if (hdb_operation.operation === OPERATIONS_ENUM.DELETE) {
+	if (hdbOperation.operation === OPERATIONS_ENUM.DELETE) {
 		return new LMDBDeleteTransactionObject(
-			lmdb_response.deleted,
-			lmdb_response.original_records,
+			lmdbResponse.deleted,
+			lmdbResponse.original_records,
 			username,
-			lmdb_response.txn_time,
-			hdb_operation.__origin
+			lmdbResponse.txn_time,
+			hdbOperation.__origin
 		);
 	}
 }

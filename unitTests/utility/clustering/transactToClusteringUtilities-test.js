@@ -81,8 +81,7 @@ describe.skip('Test transactToClusteringUtilities module', () => {
 			schema: 'dev',
 			table: 'dog',
 		};
-		const convertCRUDOperationToTransaction = transactToClusteringUtilities.__get__(
-			'convertCRUDOperationToTransaction'
+		const convertCRUDOperationToTransaction = transactToClusteringUtilities.__get__('convertCRUDOperationToTransaction'
 		);
 		const result = convertCRUDOperationToTransaction(DELETE_OP, [1, 5], 'node1');
 		expect(result).to.eql(expected_transaction);
@@ -102,8 +101,7 @@ describe.skip('Test transactToClusteringUtilities module', () => {
 			schema: 'dev',
 			table: 'dog',
 		};
-		const convertCRUDOperationToTransaction = transactToClusteringUtilities.__get__(
-			'convertCRUDOperationToTransaction'
+		const convertCRUDOperationToTransaction = transactToClusteringUtilities.__get__('convertCRUDOperationToTransaction'
 		);
 		const result = convertCRUDOperationToTransaction(UPDATE_OP, [1], 'node1');
 		expect(result).to.eql(expected_transaction);
@@ -115,8 +113,7 @@ describe.skip('Test transactToClusteringUtilities module', () => {
 		let send_operation_transaction_rw;
 
 		before(() => {
-			send_operation_transaction_rw = transactToClusteringUtilities.__set__(
-				'sendOperationTransaction',
+			send_operation_transaction_rw = transactToClusteringUtilities.__set__('sendOperationTransaction',
 				send_operation_transaction_stub
 			);
 		});

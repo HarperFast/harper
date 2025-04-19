@@ -1,22 +1,22 @@
 'use strict';
 
-const hdb_terms = require('../hdbTerms');
-const common = require('./commonUtility');
+const hdbTerms = require('../hdbTerms.ts');
+const common = require('./commonUtility.js');
 
-function parseRow(original_object, attributes) {
-	let return_object = Object.create(null);
+function parseRow(originalObject, attributes) {
+	let returnObject = Object.create(null);
 
-	if (attributes.length === 1 && hdb_terms.SEARCH_WILDCARDS.indexOf(attributes[0]) >= 0) {
-		Object.assign(return_object, original_object);
+	if (attributes.length === 1 && hdbTerms.SEARCH_WILDCARDS.indexOf(attributes[0]) >= 0) {
+		Object.assign(returnObject, originalObject);
 	} else {
 		for (let x = 0; x < attributes.length; x++) {
 			let attribute = attributes[x];
-			let attribute_value = original_object[attribute];
-			return_object[attribute] = attribute_value === undefined ? null : attribute_value;
+			let attributeValue = originalObject[attribute];
+			returnObject[attribute] = attributeValue === undefined ? null : attributeValue;
 		}
 	}
 
-	return return_object;
+	return returnObject;
 }
 
 /**
@@ -65,110 +65,110 @@ function iterateDBI(key, value, results) {
  * @param {String} attribute
  */
 function pushResults(key, value, results, hash_attribute, attribute) {
-	let new_object = Object.create(null);
-	new_object[attribute] = key;
-	let hash_value = undefined;
+	let newObject = Object.create(null);
+	newObject[attribute] = key;
+	let hashValue = undefined;
 
 	if (hash_attribute === attribute) {
-		hash_value = key;
+		hashValue = key;
 	} else {
-		hash_value = value;
+		hashValue = value;
 		if (hash_attribute !== undefined) {
-			new_object[hash_attribute] = hash_value;
+			newObject[hash_attribute] = hashValue;
 		}
 	}
-	results[0].push(hash_value);
-	results[1].push(new_object);
+	results[0].push(hashValue);
+	results[1].push(newObject);
 }
 
 /**
  * The internal iterator function for endsWith
- * @param {String} compare_value
+ * @param {String} compareValue
  * @param {*} found
  * @param {*} value
  * @param {Object} results
  * @param {String} hash_attribute
  * @param {String} attribute
  */
-function endsWith(compare_value, found, value, results, hash_attribute, attribute) {
-	let found_str = found.toString();
-	if (found_str.endsWith(compare_value)) {
+function endsWith(compareValue, found, value, results, hash_attribute, attribute) {
+	let foundStr = found.toString();
+	if (foundStr.endsWith(compareValue)) {
 		pushResults(found, value, results, hash_attribute, attribute);
 	}
 }
 
 /**
  * The internal iterator function for contains
- * @param {*} compare_value
+ * @param {*} compareValue
  * @param {*} key
  * @param {*} value
  * @param {Object} results
  * @param {String} hash_attribute
  * @param {String} attribute
  */
-function contains(compare_value, key, value, results, hash_attribute, attribute) {
-	let found_str = key.toString();
-	if (found_str.includes(compare_value)) {
+function contains(compareValue, key, value, results, hash_attribute, attribute) {
+	let foundStr = key.toString();
+	if (foundStr.includes(compareValue)) {
 		pushResults(key, value, results, hash_attribute, attribute);
 	}
 }
 
 /**
- * The internal iterator function for greater than, used for string keyed dbis and a string compare_value
- * @param {*} compare_value
+ * The internal iterator function for greater than, used for string keyed dbis and a string compareValue
+ * @param {*} compareValue
  * @param {*} key
  * @param {*} value
  * @param {Object} results
  * @param {String} hash_attribute
  * @param {String} attribute
  */
-function greaterThanCompare(compare_value, key, value, results, hash_attribute, attribute) {
-	if (key > compare_value) {
+function greaterThanCompare(compareValue, key, value, results, hash_attribute, attribute) {
+	if (key > compareValue) {
 		pushResults(key, value, results, hash_attribute, attribute);
 	}
 }
 
 /**
- * The internal iterator function for greater than equal, used for string keyed dbis and a sring compare_value
+ * The internal iterator function for greater than equal, used for string keyed dbis and a sring compareValue
  * @param {*} key
  * @param {*} value
  * @param {[[],[]]} results
- * @param {*} compare_value
+ * @param {*} compareValue
  * @param {String} hash_attribute
  * @param {String} attribute
  */
-function greaterThanEqualCompare(compare_value, key, value, results, hash_attribute, attribute) {
-	if (key >= compare_value) {
+function greaterThanEqualCompare(compareValue, key, value, results, hash_attribute, attribute) {
+	if (key >= compareValue) {
 		pushResults(key, value, results, hash_attribute, attribute);
 	}
 }
 
 /**
- * The internal iterator function for less than, used for string keyed dbis and a string compare_value
+ * The internal iterator function for less than, used for string keyed dbis and a string compareValue
  * @param {*} key
  * @param {*} value
  * @param {Object} results
- * @param {*} compare_value
+ * @param {*} compareValue
  * @param {String} hash_attribute
  * @param {String} attribute
  */
-function lessThanCompare(compare_value, key, value, results, hash_attribute, attribute) {
-	if (key < compare_value) {
+function lessThanCompare(compareValue, key, value, results, hash_attribute, attribute) {
+	if (key < compareValue) {
 		pushResults(key, value, results, hash_attribute, attribute);
 	}
 }
 
 /**
- * The internal iterator function for less than equal, used for string keyed dbis and a string compare_value
+ * The internal iterator function for less than equal, used for string keyed dbis and a string compareValue
  * @param {*} key
  * @param {*} value
  * @param {[[],[]]} results
- * @param {*} compare_value
+ * @param {*} compareValue
  * @param {String} hash_attribute
  * @param {String} attribute
  */
-function lessThanEqualCompare(compare_value, key, value, results, hash_attribute, attribute) {
-	if (key <= compare_value) {
+function lessThanEqualCompare(compareValue, key, value, results, hash_attribute, attribute) {
+	if (key <= compareValue) {
 		pushResults(key, value, results, hash_attribute, attribute);
 	}
 }

@@ -7,8 +7,8 @@ module.exports = {
 	getS3AuthObj,
 };
 
-async function getFileStreamFromS3(json_message) {
-	const { s3 } = json_message;
+async function getFileStreamFromS3(jsonMessage) {
+	const { s3 } = jsonMessage;
 	const params = {
 		Bucket: s3.bucket,
 		Key: s3.key,
@@ -18,11 +18,11 @@ async function getFileStreamFromS3(json_message) {
 	return item.Body;
 }
 
-function getS3AuthObj(access_key_id, secret_key, region) {
+function getS3AuthObj(accessKeyId, secretKey, region) {
 	return new S3({
 		credentials: {
-			accessKeyId: access_key_id,
-			secretAccessKey: secret_key,
+			accessKeyId,
+			secretAccessKey: secretKey,
 		},
 		region,
 	});

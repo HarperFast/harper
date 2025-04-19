@@ -1,6 +1,6 @@
 'use strict';
 
-const SelectValidator = require('../sqlTranslator/SelectValidator');
+const SelectValidator = require('../sqlTranslator/SelectValidator.js');
 
 module.exports = {
 	searchByConditions,
@@ -9,32 +9,32 @@ module.exports = {
 	search,
 };
 
-const harperBridge = require('./harperBridge/harperBridge');
-const { transformReq } = require('../utility/common_utils');
-const SQLSearch = require('./SQLSearch');
+const harperBridge = require('./harperBridge/harperBridge.js');
+const { transformReq } = require('../utility/common_utils.js');
+const SQLSearch = require('./SQLSearch.js');
 
-async function searchByConditions(search_object) {
-	transformReq(search_object);
-	return harperBridge.searchByConditions(search_object);
+async function searchByConditions(searchObject) {
+	transformReq(searchObject);
+	return harperBridge.searchByConditions(searchObject);
 }
 
-async function searchByHash(search_object) {
-	transformReq(search_object);
-	if (search_object.ids) search_object.hash_values = search_object.ids;
+async function searchByHash(searchObject) {
+	transformReq(searchObject);
+	if (searchObject.ids) searchObject.hash_values = searchObject.ids;
 	let array = [];
-	for await (let record of harperBridge.searchByHash(search_object)) {
+	for await (let record of harperBridge.searchByHash(searchObject)) {
 		if (record) array.push(record);
 	}
 	return array;
 }
 
-async function searchByValue(search_object) {
-	transformReq(search_object);
-	if (search_object.hasOwnProperty('desc') === true) {
-		search_object.reverse = search_object.desc;
+async function searchByValue(searchObject) {
+	transformReq(searchObject);
+	if (searchObject.hasOwnProperty('desc') === true) {
+		searchObject.reverse = searchObject.desc;
 	}
 	const array = [];
-	for await (let record of harperBridge.searchByValue(search_object)) {
+	for await (let record of harperBridge.searchByValue(searchObject)) {
 		array.push(record);
 	}
 	return array;
@@ -45,9 +45,9 @@ function search(statement, callback) {
 		let validator = new SelectValidator(statement);
 		validator.validate();
 
-		let sql_search = new SQLSearch(validator.statement, validator.attributes);
+		let sqlSearch = new SQLSearch(validator.statement, validator.attributes);
 
-		sql_search
+		sqlSearch
 			.search()
 			.then((data) => {
 				callback(null, data);

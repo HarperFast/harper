@@ -1,5 +1,5 @@
-import { Resource } from './Resource';
-import type { Context } from './ResourceInterface';
+import { Resource } from './Resource.ts';
+import type { Context } from './ResourceInterface.ts';
 /**
  * ErrorResource is a Resource that throws an error on any request, communicating to the client when attempts are made
  * to access endpoints/resources that had an internal error in their configuration or setup. This helps ensure that

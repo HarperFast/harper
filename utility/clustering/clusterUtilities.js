@@ -1,28 +1,28 @@
 'use strict';
 
-const insert = require('../../dataLayer/insert');
-const hdb_utils = require('../common_utils');
+const insert = require('../../dataLayer/insert.js');
+const hdbUtils = require('../common_utils.js');
 const util = require('util');
-const terms = require('../hdbTerms');
-const env_mgr = require('../environment/environmentManager');
-env_mgr.initSync();
-const auth = require('../../security/fastifyAuth');
-const search = require('../../dataLayer/search');
-const { Node, NodeSubscription } = require('./NodeObject');
-const SearchByHashObject = require('../../dataLayer/SearchByHashObject');
-const UpsertObject = require('../../dataLayer/UpsertObject');
-const { RemotePayloadObject, RemotePayloadSubscription } = require('./RemotePayloadObject');
-const { handleHDBError, hdb_errors } = require('../errors/hdbError');
-const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = hdb_errors;
-const SearchObject = require('../../dataLayer/SearchObject');
-const system_information = require('../environment/systemInformation');
-const { packageJson } = require('../packageUtils');
-const { getDatabases } = require('../../resources/databases');
+const terms = require('../hdbTerms.ts');
+const envMgr = require('../environment/environmentManager.js');
+envMgr.initSync();
+const auth = require('../../security/fastifyAuth.js');
+const search = require('../../dataLayer/search.js');
+const { Node, NodeSubscription } = require('./NodeObject.js');
+const SearchByHashObject = require('../../dataLayer/SearchByHashObject.js');
+const UpsertObject = require('../../dataLayer/UpsertObject.js');
+const { RemotePayloadObject, RemotePayloadSubscription } = require('./RemotePayloadObject.js');
+const { handleHDBError, hdbErrors } = require('../errors/hdbError.js');
+const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = hdbErrors;
+const SearchObject = require('../../dataLayer/SearchObject.js');
+const systemInformation = require('../environment/systemInformation.js');
+const { packageJson } = require('../packageUtils.js');
+const { getDatabases } = require('../../resources/databases.ts');
 
 //Promisified functions
-const p_auth_authorize = util.promisify(auth.authorize);
-const p_search_by_hash = search.searchByHash;
-const p_search_by_value = search.searchByValue;
+const pAuthAuthorize = util.promisify(auth.authorize);
+const pSearchByHash = search.searchByHash;
+const pSearchByValue = search.searchByValue;
 
 module.exports = {
 	isEmpty,
@@ -45,7 +45,7 @@ function isEmpty(value) {
 }
 
 /**
- * Get a record from the hdb_nodes table.
+ * Get a record from the hdbNodes table.
  * @param node_name
  * @returns {Promise<*>}
  */
@@ -56,11 +56,11 @@ async function getNodeRecord(node_name) {
 		[node_name],
 		['*']
 	);
-	return p_search_by_hash(qry);
+	return pSearchByHash(qry);
 }
 
 /**
- * Upserts a node record into the hdb_node table
+ * Upserts a node record into the hdbNode table
  * @param node
  * @returns {Promise<{message: string, new_attributes: *, txn_time: *}|undefined>}
  */
@@ -76,7 +76,7 @@ async function upsertNodeRecord(node) {
  * @returns {{subscribe: boolean, publish: boolean}|{subscribe, publish}}
  */
 function reverseSubscription(subscription) {
-	if (hdb_utils.isEmpty(subscription.subscribe) || hdb_utils.isEmpty(subscription.publish)) {
+	if (hdbUtils.isEmpty(subscription.subscribe) || hdbUtils.isEmpty(subscription.publish)) {
 		throw new Error('Received invalid subscription object');
 	}
 
@@ -105,40 +105,40 @@ function reverseSubscription(subscription) {
 /**
  * Build that payload that is required by remote node to add/update a node/subscriptions
  * @param subscriptions
- * @param local_node_name
+ * @param localNodeName
  * @param operation
  * @param system_info
  * @returns {RemotePayloadObject}
  */
-function buildNodePayloads(subscriptions, local_node_name, operation, system_info) {
-	let remote_node_subs = [];
-	for (let i = 0, sub_length = subscriptions.length; i < sub_length; i++) {
+function buildNodePayloads(subscriptions, localNodeName, operation, system_info) {
+	let remoteNodeSubs = [];
+	for (let i = 0, subLength = subscriptions.length; i < subLength; i++) {
 		const subscription = subscriptions[i];
 		const { schema, table } = subscription;
-		const hash_attribute = hdb_utils.getTableHashAttribute(schema, table);
+		const hash_attribute = hdbUtils.getTableHashAttribute(schema, table);
 
 		const { subscribe, publish } = reverseSubscription(subscription);
-		const table_class = getDatabases()[schema]?.[table];
-		const remote_payload_sub = new RemotePayloadSubscription(
+		const tableClass = getDatabases()[schema]?.[table];
+		const remotePayloadSub = new RemotePayloadSubscription(
 			schema,
 			table,
 			hash_attribute,
 			publish,
 			subscribe,
 			subscription.start_time,
-			table_class.schemaDefined ? table_class.attributes : undefined
+			tableClass.schemaDefined ? tableClass.attributes : undefined
 		);
-		remote_node_subs.push(remote_payload_sub);
+		remoteNodeSubs.push(remotePayloadSub);
 	}
 
-	return new RemotePayloadObject(operation, local_node_name, remote_node_subs, system_info);
+	return new RemotePayloadObject(operation, localNodeName, remoteNodeSubs, system_info);
 }
 
 /**
  * Check to see if clustering is enabled in hdb config. If it is not an error is thrown.
  */
 function checkClusteringEnabled() {
-	if (!env_mgr.get(terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+	if (!envMgr.get(terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
 		throw handleHDBError(
 			new Error(),
 			HDB_ERROR_MSGS.CLUSTERING_NOT_ENABLED,
@@ -151,11 +151,11 @@ function checkClusteringEnabled() {
 }
 
 /**
- * Gets all node records from the hdb_nodes table
+ * Gets all node records from the hdbNodes table
  * @returns {Promise<*>}
  */
 async function getAllNodeRecords() {
-	const search_obj = new SearchObject(
+	const searchObj = new SearchObject(
 		terms.SYSTEM_SCHEMA_NAME,
 		terms.SYSTEM_TABLE_NAMES.NODE_TABLE_NAME,
 		'name',
@@ -164,18 +164,18 @@ async function getAllNodeRecords() {
 		['*']
 	);
 
-	return Array.from(await p_search_by_value(search_obj));
+	return Array.from(await pSearchByValue(searchObj));
 }
 
 /**
- * Builds the system info param that is used in hdb_nodes table and cluster status.
+ * Builds the system info param that is used in hdbNodes table and cluster status.
  * @returns {Promise<{node_version: *, platform: string, hdb_version: *}>}
  */
 async function getSystemInfo() {
-	const sys_info = await system_information.getSystemInformation();
+	const sysInfo = await systemInformation.getSystemInformation();
 	return {
 		hdb_version: packageJson.version,
-		node_version: sys_info.node_version,
-		platform: sys_info.platform,
+		node_version: sysInfo.node_version,
+		platform: sysInfo.platform,
 	};
 }

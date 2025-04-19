@@ -8,11 +8,11 @@
 const _ = require('lodash');
 const mathjs = require('mathjs');
 const jsonata = require('jsonata');
-const hdb_utils = require('../../common_utils');
+const hdbUtils = require('../../common_utils.js');
 
 module.exports = {
 	/***
-	 * distinct_array takes in an array an dedupes its values using lodash. this works on complex as well as simple datatypes
+	 * distinctArray takes in an array an dedupes its values using lodash. this works on complex as well as simple datatypes
 	 * @param array
 	 * @returns array
 	 */
@@ -52,13 +52,13 @@ module.exports = {
  * stage 1 is the very first record and requires you to return what is the array variable from then on
  * stage 2 occurs for every following row
  * stage 3 is where the processing occurs and returns the final result
- * @param calculation_function - function to execute to perform the calculation
+ * @param calculationFunction - function to execute to perform the calculation
  * @param value - value per row
  * @param array - the aggregate list of values
  * @param stage - defines the stage in processing see description above
  * @returns {*}
  */
-function aggregateFunction(calculation_function, value, array, stage) {
+function aggregateFunction(calculationFunction, value, array, stage) {
 	if (stage === 1) {
 		if (value === null || value === undefined) {
 			return [];
@@ -72,7 +72,7 @@ function aggregateFunction(calculation_function, value, array, stage) {
 		return array;
 	} else {
 		if (array !== null && array !== undefined && array.length > 0) {
-			return calculation_function(array);
+			return calculationFunction(array);
 		}
 
 		return null;
@@ -81,23 +81,23 @@ function aggregateFunction(calculation_function, value, array, stage) {
 
 /**
  * wrapper function that implements the JSONata library, which performs searches, transforms, etc... on JSON
- * @param {String} jsonata_expression - the JSONata expression to execute
+ * @param {String} jsonataExpression - the JSONata expression to execute
  * @param {any} data - data which will be evaluated
  * @returns {any}
  */
-function searchJSON(jsonata_expression, data) {
-	if (typeof jsonata_expression !== 'string' || jsonata_expression.length === 0) {
+function searchJSON(jsonataExpression, data) {
+	if (typeof jsonataExpression !== 'string' || jsonataExpression.length === 0) {
 		throw new Error('search json expression must be a non-empty string');
 	}
 
-	let alias = '__' + jsonata_expression + '__';
+	let alias = '__' + jsonataExpression + '__';
 
-	if (hdb_utils.isEmpty(this.__ala__.res)) {
+	if (hdbUtils.isEmpty(this.__ala__.res)) {
 		this.__ala__.res = {};
 	}
 
-	if (hdb_utils.isEmpty(this.__ala__.res[alias])) {
-		let expression = jsonata(jsonata_expression);
+	if (hdbUtils.isEmpty(this.__ala__.res[alias])) {
+		let expression = jsonata(jsonataExpression);
 		this.__ala__.res[alias] = expression;
 	}
 	return this.__ala__.res[alias].evaluate(data);

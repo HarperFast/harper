@@ -286,7 +286,7 @@ describe('Test serverHandlers.js module ', () => {
 
 		before(() => {
 			auth_stub = sandbox.stub().resolves(TEST_USER);
-			serverHandlers_rw.__set__('p_authorize', auth_stub);
+			serverHandlers_rw.__set__('pAuthorize', auth_stub);
 		});
 
 		it('Should pass auth for valid nominal request', () => {

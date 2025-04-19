@@ -6,10 +6,10 @@
 class UpgradeDirective {
 	/**
 	 * Constructor for an Upgrade Directive.
-	 * @param version_number - The version of HDB this directive describes.
+	 * @param versionNumber - The version of HDB this directive describes.
 	 */
-	constructor(version_number) {
-		this.version = version_number;
+	constructor(versionNumber) {
+		this.version = versionNumber;
 		// Sync functions that must be set in class object within an array.
 		this.sync_functions = [];
 		// Async functions that must be set in class object within an array.

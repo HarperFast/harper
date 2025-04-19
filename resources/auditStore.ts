@@ -1,15 +1,15 @@
 import { readKey, writeKey } from 'ordered-binary';
-import { initSync, get as env_get } from '../utility/environment/environmentManager';
-import { AUDIT_STORE_NAME } from '../utility/lmdb/terms';
-import { CONFIG_PARAMS } from '../utility/hdbTerms';
-import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads';
-import { convertToMS } from '../utility/common_utils';
-import { PREVIOUS_TIMESTAMP_PLACEHOLDER, LAST_TIMESTAMP_PLACEHOLDER } from './RecordEncoder';
-import * as harper_logger from '../utility/logging/harper_logger';
-import { getRecordAtTime } from './crdt';
+import { initSync, get as envGet } from '../utility/environment/environmentManager.js';
+import { AUDIT_STORE_NAME } from '../utility/lmdb/terms.js';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
+import { convertToMS } from '../utility/common_utils.js';
+import { PREVIOUS_TIMESTAMP_PLACEHOLDER, LAST_TIMESTAMP_PLACEHOLDER } from './RecordEncoder.ts';
+import * as harperLogger from '../utility/logging/harper_logger.js';
+import { getRecordAtTime } from './crdt.ts';
 import { isMainThread } from 'worker_threads';
-import { decodeFromDatabase, deleteBlobsInObject } from './blob';
-import { onStorageReclamation } from '../server/storageReclamation';
+import { decodeFromDatabase, deleteBlobsInObject } from './blob.ts';
+import { onStorageReclamation } from '../server/storageReclamation.ts';
 
 /**
  * This module is responsible for the binary representation of audit records in an efficient form.
@@ -18,8 +18,8 @@ import { onStorageReclamation } from '../server/storageReclamation';
  *
  * This also defines a binary representation for the audit records themselves which is:
  * 1 or 2 bytes: action, describes the action of this record and any flags for which other parts are included
- * table_id
- * record_id
+ * tableId
+ * recordId
  * origin version
  * previous local version
  * 1 or 2 bytes: position of end of the username section. 0 if there is no username
@@ -39,9 +39,9 @@ export const transactionKeyEncoder = {
 			return position + 8;
 		}
 		if (typeof key === 'number') {
-			const data_view =
+			const dataView =
 				buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
-			data_view.setFloat64(position, key);
+			dataView.setFloat64(position, key);
 			return position + 8;
 		} else {
 			return writeKey(key, buffer, position);
@@ -49,9 +49,9 @@ export const transactionKeyEncoder = {
 	},
 	readKey(buffer, start, end) {
 		if (buffer[start] === 66) {
-			const data_view =
+			const dataView =
 				buffer.dataView || (buffer.dataView = new DataView(buffer.buffer, buffer.byteOffset, buffer.byteLength));
-			return data_view.getFloat64(start);
+			return dataView.getFloat64(start);
 		} else {
 			return readKey(buffer, start, end);
 		}
@@ -62,74 +62,74 @@ export const AUDIT_STORE_OPTIONS = {
 	keyEncoder: transactionKeyEncoder,
 };
 
-let audit_retention = convertToMS(env_get(CONFIG_PARAMS.LOGGING_AUDITRETENTION)) || 86400 * 3;
+let auditRetention = convertToMS(envGet(CONFIG_PARAMS.LOGGING_AUDITRETENTION)) || 86400 * 3;
 const MAX_DELETES_PER_CLEANUP = 1000;
 const FLOAT_TARGET = new Float64Array(1);
 const FLOAT_BUFFER = new Uint8Array(FLOAT_TARGET.buffer);
 let DEFAULT_AUDIT_CLEANUP_DELAY = 10000; // default delay of 10 seconds
-let timestamp_errored = false;
-export function openAuditStore(root_store) {
-	let audit_store = (root_store.auditStore = root_store.openDB(AUDIT_STORE_NAME, {
+let timestampErrored = false;
+export function openAuditStore(rootStore) {
+	let auditStore = (rootStore.auditStore = rootStore.openDB(AUDIT_STORE_NAME, {
 		create: false,
 		...AUDIT_STORE_OPTIONS,
 	}));
-	if (!audit_store) {
+	if (!auditStore) {
 		// this means we are creating a new audit store. Initialize with the last removed timestamp (we don't want to put this in legacy audit logs since we don't know if they have had deletions or not).
-		audit_store = root_store.auditStore = root_store.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
-		updateLastRemoved(audit_store, 1);
+		auditStore = rootStore.auditStore = rootStore.openDB(AUDIT_STORE_NAME, AUDIT_STORE_OPTIONS);
+		updateLastRemoved(auditStore, 1);
 	}
-	audit_store.rootStore = root_store;
-	audit_store.tableStores = [];
-	const delete_callbacks = [];
-	audit_store.addDeleteRemovalCallback = function (table_id, table, callback) {
-		delete_callbacks[table_id] = callback;
-		audit_store.tableStores[table_id] = table;
-		audit_store.deleteCallbacks = delete_callbacks;
+	auditStore.rootStore = rootStore;
+	auditStore.tableStores = [];
+	const deleteCallbacks = [];
+	auditStore.addDeleteRemovalCallback = function (tableId, table, callback) {
+		deleteCallbacks[tableId] = callback;
+		auditStore.tableStores[tableId] = table;
+		auditStore.deleteCallbacks = deleteCallbacks;
 		return {
 			remove() {
-				delete delete_callbacks[table_id];
+				delete deleteCallbacks[tableId];
 			},
 		};
 	};
-	let pending_cleanup = null;
-	let last_cleanup_resolution: Promise<void>;
-	let cleanup_priority = 0;
-	let audit_cleanup_delay = DEFAULT_AUDIT_CLEANUP_DELAY;
-	onStorageReclamation(audit_store.env.path, (priority) => {
-		cleanup_priority = priority; // update the priority
+	let pendingCleanup = null;
+	let lastCleanupResolution: Promise<void>;
+	let cleanupPriority = 0;
+	let auditCleanupDelay = DEFAULT_AUDIT_CLEANUP_DELAY;
+	onStorageReclamation(auditStore.env.path, (priority) => {
+		cleanupPriority = priority; // update the priority
 		if (priority) {
 			// and if we have a priority, schedule cleanup soon
 			return scheduleAuditCleanup(100);
 		}
 	});
-	function scheduleAuditCleanup(new_cleanup_delay?: number): Promise<void> {
-		if (new_cleanup_delay) audit_cleanup_delay = new_cleanup_delay;
-		clearTimeout(pending_cleanup);
+	function scheduleAuditCleanup(newCleanupDelay?: number): Promise<void> {
+		if (newCleanupDelay) auditCleanupDelay = newCleanupDelay;
+		clearTimeout(pendingCleanup);
 		const resolution = new Promise<void>((resolve) => {
-			pending_cleanup = setTimeout(async () => {
-				await last_cleanup_resolution;
-				last_cleanup_resolution = resolution;
+			pendingCleanup = setTimeout(async () => {
+				await lastCleanupResolution;
+				lastCleanupResolution = resolution;
 				// query for audit entries that are old
-				if (audit_store.rootStore.status === 'closed' || audit_store.rootStore.status === 'closing') return;
+				if (auditStore.rootStore.status === 'closed' || auditStore.rootStore.status === 'closing') return;
 				let deleted = 0;
 				let committed: Promise<void>;
-				let last_key: any;
+				let lastKey: any;
 				try {
-					for (const { key, value } of audit_store.getRange({
+					for (const { key, value } of auditStore.getRange({
 						start: 1, // must not be zero or it will be interpreted as null and overlap with symbols in search
 						snapshot: false,
-						end: Date.now() - audit_retention / (1 + cleanup_priority * cleanup_priority), // remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
+						end: Date.now() - auditRetention / (1 + cleanupPriority * cleanupPriority), // remove up until the audit retention time, reducing audit retention time if cleanup is higher priority
 					})) {
 						try {
-							committed = removeAuditEntry(audit_store, key, value);
+							committed = removeAuditEntry(auditStore, key, value);
 						} catch (error) {
-							harper_logger.warn('Error removing audit entry', error);
+							harperLogger.warn('Error removing audit entry', error);
 						}
-						last_key = key;
+						lastKey = key;
 						await new Promise(setImmediate);
 						if (++deleted >= MAX_DELETES_PER_CLEANUP) {
 							// limit the amount we cleanup per event turn so we don't use too much memory/CPU
-							audit_cleanup_delay = 10; // and keep trying very soon
+							auditCleanupDelay = 10; // and keep trying very soon
 							break;
 						}
 					}
@@ -137,80 +137,80 @@ export function openAuditStore(root_store) {
 				} finally {
 					if (deleted === 0) {
 						// if we didn't delete anything, we can increase the delay (double until we get to one tenth of the retention time)
-						audit_cleanup_delay = Math.min(audit_cleanup_delay << 1, audit_retention / 10);
+						auditCleanupDelay = Math.min(auditCleanupDelay << 1, auditRetention / 10);
 					} else {
 						// if we did delete something, update our updates since timestamp
-						updateLastRemoved(audit_store, last_key);
+						updateLastRemoved(auditStore, lastKey);
 						// and do updates faster
-						if (audit_cleanup_delay > 100) audit_cleanup_delay = audit_cleanup_delay >> 1;
+						if (auditCleanupDelay > 100) auditCleanupDelay = auditCleanupDelay >> 1;
 					}
 					resolve(undefined);
 					scheduleAuditCleanup();
 				}
 				// we can run this pretty frequently since there is very little overhead to these queries
-			}, audit_cleanup_delay).unref();
+			}, auditCleanupDelay).unref();
 		});
 		return resolution;
 	}
-	audit_store.scheduleAuditCleanup = scheduleAuditCleanup;
+	auditStore.scheduleAuditCleanup = scheduleAuditCleanup;
 	if (getWorkerIndex() === getWorkerCount() - 1) {
 		scheduleAuditCleanup();
 	}
-	if (getWorkerIndex() === 0 && !timestamp_errored) {
+	if (getWorkerIndex() === 0 && !timestampErrored) {
 		// make sure the timestamp is valid
-		for (const time of audit_store.getKeys({ reverse: true, limit: 1 })) {
+		for (const time of auditStore.getKeys({ reverse: true, limit: 1 })) {
 			if (time > Date.now()) {
-				timestamp_errored = true;
-				harper_logger.error(
+				timestampErrored = true;
+				harperLogger.error(
 					'The current time is before the last recorded entry in the audit log. Time reversal can undermine the integrity of data tracking and certificate validation and the time must be corrected.'
 				);
 			}
 		}
 	}
-	return audit_store;
+	return auditStore;
 }
 
-export function removeAuditEntry(audit_store: any, key: number, value: any): Promise<void> {
+export function removeAuditEntry(auditStore: any, key: number, value: any): Promise<void> {
 	const type = readAction(value);
-	let audit_record;
+	let auditRecord;
 	if (type & HAS_BLOBS) {
 		// if it has blobs, and isn't in use from the main record, we need to delete them as well
-		audit_record = readAuditEntry(value);
-		const primary_store = audit_store.tableStores[audit_record.tableId];
-		const entry = primary_store?.getEntry(audit_record.recordId);
-		if (!entry || entry.version !== audit_record.version || !entry.value) {
+		auditRecord = readAuditEntry(value);
+		const primaryStore = auditStore.tableStores[auditRecord.tableId];
+		const entry = primaryStore?.getEntry(auditRecord.recordId);
+		if (!entry || entry.version !== auditRecord.version || !entry.value) {
 			// if the versions don't match or the record has been removed/null-ed, then this should be the only/last reference to any blob
-			decodeFromDatabase(() => deleteBlobsInObject(audit_record.getValue(primary_store)), primary_store.rootStore);
+			decodeFromDatabase(() => deleteBlobsInObject(auditRecord.getValue(primaryStore)), primaryStore.rootStore);
 		}
 	}
 
 	if ((type & 15) === DELETE) {
 		// if this is a delete, we remove the delete entry from the primary table
 		// at the same time so the audit table the primary table are in sync, assuming the entry matches this audit record version
-		audit_record = audit_record || readAuditEntry(value);
-		const table_id = audit_record.tableId;
-		const primary_store = audit_store.tableStores[audit_record.tableId];
-		if (primary_store?.getEntry(audit_record.recordId).version === audit_record.version)
-			audit_store.deleteCallbacks?.[table_id]?.(audit_record.recordId, audit_record.version);
+		auditRecord = auditRecord || readAuditEntry(value);
+		const tableId = auditRecord.tableId;
+		const primaryStore = auditStore.tableStores[auditRecord.tableId];
+		if (primaryStore?.getEntry(auditRecord.recordId).version === auditRecord.version)
+			auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, auditRecord.version);
 	}
-	return audit_store.remove(key);
+	return auditStore.remove(key);
 }
 
-function updateLastRemoved(audit_store, last_key) {
-	FLOAT_TARGET[0] = last_key;
-	audit_store.put(Symbol.for('last-removed'), FLOAT_BUFFER);
+function updateLastRemoved(auditStore, lastKey) {
+	FLOAT_TARGET[0] = lastKey;
+	auditStore.put(Symbol.for('last-removed'), FLOAT_BUFFER);
 }
 
-export function getLastRemoved(audit_store) {
-	const last_removed = audit_store.get(Symbol.for('last-removed'));
-	if (last_removed) {
-		FLOAT_BUFFER.set(last_removed);
+export function getLastRemoved(auditStore) {
+	const lastRemoved = auditStore.get(Symbol.for('last-removed'));
+	if (lastRemoved) {
+		FLOAT_BUFFER.set(lastRemoved);
 		return FLOAT_TARGET[0];
 	}
 }
-export function setAuditRetention(retention_time, default_delay = DEFAULT_AUDIT_CLEANUP_DELAY) {
-	audit_retention = retention_time;
-	DEFAULT_AUDIT_CLEANUP_DELAY = default_delay;
+export function setAuditRetention(retentionTime, defaultDelay = DEFAULT_AUDIT_CLEANUP_DELAY) {
+	auditRetention = retentionTime;
+	DEFAULT_AUDIT_CLEANUP_DELAY = defaultDelay;
 }
 
 const HAS_RECORD = 16;
@@ -257,92 +257,92 @@ const ORIGINATING_OPERATIONS = {
 
 /**
  * Creates a binary audit entry
- * @param txn_time
- * @param table_id
- * @param record_id
- * @param previous_local_time
- * @param node_id
+ * @param txnTime
+ * @param tableId
+ * @param recordId
+ * @param previousLocalTime
+ * @param nodeId
  * @param username
  * @param type
- * @param encoded_record
- * @param extended_type
- * @param residency_id
- * @param previous_residency_id
+ * @param encodedRecord
+ * @param extendedType
+ * @param residencyId
+ * @param previousResidencyId
  */
 export function createAuditEntry(
-	txn_time,
-	table_id,
-	record_id,
-	previous_local_time,
-	node_id,
+	txnTime,
+	tableId,
+	recordId,
+	previousLocalTime,
+	nodeId,
 	username,
 	type,
-	encoded_record,
-	extended_type,
-	residency_id,
-	previous_residency_id,
-	expires_at,
-	originating_operation?: string
+	encodedRecord,
+	extendedType,
+	residencyId,
+	previousResidencyId,
+	expiresAt,
+	originatingOperation?: string
 ) {
 	const action = EVENT_TYPES[type];
 	if (!action) {
 		throw new Error(`Invalid audit entry type ${type}`);
 	}
 	let position = 1;
-	if (previous_local_time) {
-		if (previous_local_time > 1) ENTRY_DATAVIEW.setFloat64(0, previous_local_time);
+	if (previousLocalTime) {
+		if (previousLocalTime > 1) ENTRY_DATAVIEW.setFloat64(0, previousLocalTime);
 		else ENTRY_HEADER.set(PREVIOUS_TIMESTAMP_PLACEHOLDER);
 		position = 9;
 	}
-	if (extended_type) {
-		if (extended_type & 0xff) throw new Error('Illegal extended type');
+	if (extendedType) {
+		if (extendedType & 0xff) throw new Error('Illegal extended type');
 		position += 3;
 	}
 
-	writeInt(node_id);
-	writeInt(table_id);
-	writeValue(record_id);
-	ENTRY_DATAVIEW.setFloat64(position, txn_time);
+	writeInt(nodeId);
+	writeInt(tableId);
+	writeValue(recordId);
+	ENTRY_DATAVIEW.setFloat64(position, txnTime);
 	position += 8;
-	if (extended_type & HAS_CURRENT_RESIDENCY_ID) writeInt(residency_id);
-	if (extended_type & HAS_PREVIOUS_RESIDENCY_ID) writeInt(previous_residency_id);
-	if (extended_type & HAS_EXPIRATION_EXTENDED_TYPE) {
-		ENTRY_DATAVIEW.setFloat64(position, expires_at);
+	if (extendedType & HAS_CURRENT_RESIDENCY_ID) writeInt(residencyId);
+	if (extendedType & HAS_PREVIOUS_RESIDENCY_ID) writeInt(previousResidencyId);
+	if (extendedType & HAS_EXPIRATION_EXTENDED_TYPE) {
+		ENTRY_DATAVIEW.setFloat64(position, expiresAt);
 		position += 8;
 	}
-	if (extended_type & HAS_ORIGINATING_OPERATION) {
-		writeInt(ORIGINATING_OPERATIONS[originating_operation]);
+	if (extendedType & HAS_ORIGINATING_OPERATION) {
+		writeInt(ORIGINATING_OPERATIONS[originatingOperation]);
 	}
 
 	if (username) writeValue(username);
 	else ENTRY_HEADER[position++] = 0;
-	if (extended_type) ENTRY_DATAVIEW.setUint32(previous_local_time ? 8 : 0, action | extended_type | 0xc0000000);
-	else ENTRY_HEADER[previous_local_time ? 8 : 0] = action;
+	if (extendedType) ENTRY_DATAVIEW.setUint32(previousLocalTime ? 8 : 0, action | extendedType | 0xc0000000);
+	else ENTRY_HEADER[previousLocalTime ? 8 : 0] = action;
 	const header = ENTRY_HEADER.subarray(0, position);
-	if (encoded_record) {
-		return Buffer.concat([header, encoded_record]);
+	if (encodedRecord) {
+		return Buffer.concat([header, encodedRecord]);
 	} else return header;
 	function writeValue(value) {
-		const value_length_position = position;
+		const valueLengthPosition = position;
 		position += 1;
 		position = writeKey(value, ENTRY_HEADER, position);
-		const key_length = position - value_length_position - 1;
-		if (key_length > 0x7f) {
-			if (key_length > 0x3fff) {
-				harper_logger.error('Key or username was too large for audit entry', value);
-				position = value_length_position + 1;
-				ENTRY_HEADER[value_length_position] = 0;
+		const keyLength = position - valueLengthPosition - 1;
+		if (keyLength > 0x7f) {
+			if (keyLength > 0x3fff) {
+				harperLogger.error('Key or username was too large for audit entry', value);
+				position = valueLengthPosition + 1;
+				ENTRY_HEADER[valueLengthPosition] = 0;
 			} else {
 				// requires two byte length header, need to move the value/key to make room for it
-				ENTRY_HEADER.copyWithin(value_length_position + 2, value_length_position + 1, position);
+				ENTRY_HEADER.copyWithin(valueLengthPosition + 2, valueLengthPosition + 1, position);
 				// now write a two-byte length header
-				ENTRY_DATAVIEW.setUint16(value_length_position, key_length | 0x8000);
+				ENTRY_DATAVIEW.setUint16(valueLengthPosition, keyLength | 0x8000);
 				// must adjust the position by one since we moved everything one position
 				position++;
 			}
 		} else {
 			// one byte length header, as expected
-			ENTRY_HEADER[value_length_position] = key_length;
+			ENTRY_HEADER[valueLengthPosition] = keyLength;
 		}
 	}
 	function writeInt(number) {
@@ -395,56 +395,56 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined) {
 		const decoder =
 			buffer.dataView || (buffer.dataView = new Decoder(buffer.buffer, buffer.byteOffset, buffer.byteLength));
 		decoder.position = start;
-		let previous_local_time;
+		let previousLocalTime;
 		if (buffer[decoder.position] == 66) {
 			// 66 is the first byte in a date double.
-			previous_local_time = decoder.readFloat64();
+			previousLocalTime = decoder.readFloat64();
 		}
 		const action = decoder.readInt();
-		const node_id = decoder.readInt();
-		const table_id = decoder.readInt();
+		const nodeId = decoder.readInt();
+		const tableId = decoder.readInt();
 		let length = decoder.readInt();
-		const record_id_start = decoder.position;
-		const record_id_end = (decoder.position += length);
+		const recordIdStart = decoder.position;
+		const recordIdEnd = (decoder.position += length);
 		const version = decoder.readFloat64();
-		let residency_id, previous_residency_id, expires_at, originating_operation;
+		let residencyId, previousResidencyId, expiresAt, originatingOperation;
 		if (action & HAS_CURRENT_RESIDENCY_ID) {
-			residency_id = decoder.readInt();
+			residencyId = decoder.readInt();
 		}
 		if (action & HAS_PREVIOUS_RESIDENCY_ID) {
-			previous_residency_id = decoder.readInt();
+			previousResidencyId = decoder.readInt();
 		}
 		if (action & HAS_EXPIRATION_EXTENDED_TYPE) {
-			expires_at = decoder.readFloat64();
+			expiresAt = decoder.readFloat64();
 		}
 		if (action & HAS_ORIGINATING_OPERATION) {
-			const operation_id = decoder.readInt();
-			originating_operation = ORIGINATING_OPERATIONS[operation_id];
+			const operationId = decoder.readInt();
+			originatingOperation = ORIGINATING_OPERATIONS[operationId];
 		}
 		length = decoder.readInt();
-		const username_start = decoder.position;
-		const username_end = (decoder.position += length);
+		const usernameStart = decoder.position;
+		const usernameEnd = (decoder.position += length);
 		let value: any;
 		return {
 			type: EVENT_TYPES[action & 7],
-			tableId: table_id,
-			nodeId: node_id,
+			tableId,
+			nodeId,
 			get recordId() {
-				return readKey(buffer, record_id_start, record_id_end);
+				return readKey(buffer, recordIdStart, recordIdEnd);
 			},
 			getBinaryRecordId() {
-				return buffer.subarray(record_id_start, record_id_end);
+				return buffer.subarray(recordIdStart, recordIdEnd);
 			},
 			version,
-			previousLocalTime: previous_local_time,
+			previousLocalTime,
 			get user() {
-				return username_end > username_start ? readKey(buffer, username_start, username_end) : undefined;
+				return usernameEnd > usernameStart ? readKey(buffer, usernameStart, usernameEnd) : undefined;
 			},
 			get encoded() {
 				return start ? buffer.subarray(start, end) : buffer;
 			},
-			getValue(store, full_record?, audit_time?) {
-				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !full_record)) {
+			getValue(store, fullRecord?, auditTime?) {
+				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !fullRecord)) {
 					if (!value) {
 						value = decodeFromDatabase(
 							() => store.decoder.decode(buffer.subarray(decoder.position, end)),
@@ -453,21 +453,21 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined) {
 					}
 					return value;
 				}
-				if (action & HAS_PARTIAL_RECORD && audit_time) {
-					return getRecordAtTime(store.getEntry(this.recordId), audit_time, store);
+				if (action & HAS_PARTIAL_RECORD && auditTime) {
+					return getRecordAtTime(store.getEntry(this.recordId), auditTime, store);
 				} // TODO: If we store a partial and full record, may need to read both sequentially
 			},
 			getBinaryValue() {
 				return action & (HAS_RECORD | HAS_PARTIAL_RECORD) ? buffer.subarray(decoder.position, end) : undefined;
 			},
 			extendedType: action,
-			residencyId: residency_id,
-			previousResidencyId: previous_residency_id,
-			expiresAt: expires_at,
-			originatingOperation: originating_operation,
+			residencyId,
+			previousResidencyId,
+			expiresAt,
+			originatingOperation,
 		};
 	} catch (error) {
-		harper_logger.error('Reading audit entry error', error, buffer);
+		harperLogger.error('Reading audit entry error', error, buffer);
 		return {};
 	}
 }

@@ -1,81 +1,81 @@
 'use strict';
 
-const log = require('../../../utility/logging/harper_logger');
-const { handleHDBError } = require('../../../utility/errors/hdbError');
-const BridgeMethods = require('../BridgeMethods');
-const lmdbCreateAttribute = require('./lmdbMethods/lmdbCreateAttribute');
-const lmdbCreateRecords = require('./lmdbMethods/lmdbCreateRecords');
-const lmdbCreateSchema = require('./lmdbMethods/lmdbCreateSchema');
-const lmdbDeleteRecords = require('./lmdbMethods/lmdbDeleteRecords');
-const lmdbGetDataByHash = require('./lmdbMethods/lmdbGetDataByHash');
-const lmdbSearchByHash = require('./lmdbMethods/lmdbSearchByHash');
-const lmdbGetDataByValue = require('./lmdbMethods/lmdbGetDataByValue');
-const lmdbSearchByValue = require('./lmdbMethods/lmdbSearchByValue');
-const lmdbSearchByConditions = require('./lmdbMethods/lmdbSearchByConditions');
-const lmdbDropSchema = require('./lmdbMethods/lmdbDropSchema');
-const lmdbCreateTable = require('./lmdbMethods/lmdbCreateTable');
-const lmdbUpdateRecords = require('./lmdbMethods/lmdbUpdateRecords');
-const lmdbUpsertRecords = require('./lmdbMethods/lmdbUpsertRecords');
-const lmdbDeleteAuditLogsBefore = require('./lmdbMethods/lmdbDeleteAuditLogsBefore');
-const lmdbDropTable = require('./lmdbMethods/lmdbDropTable');
-const lmdbDropAttribute = require('./lmdbMethods/lmdbDropAttribute');
-const lmdbReadAuditLog = require('./lmdbMethods/lmdbReadAuditLog');
-const lmdbTransaction = require('./lmdbMethods/lmdbTransaction');
-const lmdbFlush = require('./lmdbMethods/lmdbFlush');
-const lmdbGetBackup = require('./lmdbMethods/lmdbGetBackup');
+const log = require('../../../utility/logging/harper_logger.js');
+const { handleHDBError } = require('../../../utility/errors/hdbError.js');
+const BridgeMethods = require('../BridgeMethods.js');
+const lmdbCreateAttribute = require('./lmdbMethods/lmdbCreateAttribute.js');
+const lmdbCreateRecords = require('./lmdbMethods/lmdbCreateRecords.js');
+const lmdbCreateSchema = require('./lmdbMethods/lmdbCreateSchema.js');
+const lmdbDeleteRecords = require('./lmdbMethods/lmdbDeleteRecords.js');
+const lmdbGetDataByHash = require('./lmdbMethods/lmdbGetDataByHash.js');
+const lmdbSearchByHash = require('./lmdbMethods/lmdbSearchByHash.js');
+const lmdbGetDataByValue = require('./lmdbMethods/lmdbGetDataByValue.js');
+const lmdbSearchByValue = require('./lmdbMethods/lmdbSearchByValue.js');
+const lmdbSearchByConditions = require('./lmdbMethods/lmdbSearchByConditions.js');
+const lmdbDropSchema = require('./lmdbMethods/lmdbDropSchema.js');
+const lmdbCreateTable = require('./lmdbMethods/lmdbCreateTable.js');
+const lmdbUpdateRecords = require('./lmdbMethods/lmdbUpdateRecords.js');
+const lmdbUpsertRecords = require('./lmdbMethods/lmdbUpsertRecords.js');
+const lmdbDeleteAuditLogsBefore = require('./lmdbMethods/lmdbDeleteAuditLogsBefore.js');
+const lmdbDropTable = require('./lmdbMethods/lmdbDropTable.js');
+const lmdbDropAttribute = require('./lmdbMethods/lmdbDropAttribute.js');
+const lmdbReadAuditLog = require('./lmdbMethods/lmdbReadAuditLog.js');
+const lmdbTransaction = require('./lmdbMethods/lmdbTransaction.js');
+const lmdbFlush = require('./lmdbMethods/lmdbFlush.js');
+const lmdbGetBackup = require('./lmdbMethods/lmdbGetBackup.js');
 
 class LMDBBridge extends BridgeMethods {
-	async searchByConditions(search_object) {
-		return lmdbSearchByConditions(search_object);
+	async searchByConditions(searchObject) {
+		return lmdbSearchByConditions(searchObject);
 	}
 
-	async getDataByHash(search_object) {
-		return await lmdbGetDataByHash(search_object);
+	async getDataByHash(searchObject) {
+		return await lmdbGetDataByHash(searchObject);
 	}
 
-	async searchByHash(search_object) {
-		return await lmdbSearchByHash(search_object);
+	async searchByHash(searchObject) {
+		return await lmdbSearchByHash(searchObject);
 	}
 
-	async getDataByValue(search_object, comparator) {
-		return await lmdbGetDataByValue(search_object, comparator);
+	async getDataByValue(searchObject, comparator) {
+		return await lmdbGetDataByValue(searchObject, comparator);
 	}
 
-	async searchByValue(search_object) {
-		return await lmdbSearchByValue(search_object);
+	async searchByValue(searchObject) {
+		return await lmdbSearchByValue(searchObject);
 	}
 
-	async createSchema(schema_create_obj) {
-		return await lmdbCreateSchema(schema_create_obj);
+	async createSchema(schemaCreateObj) {
+		return await lmdbCreateSchema(schemaCreateObj);
 	}
 
-	async dropSchema(drop_schema_obj) {
-		return await lmdbDropSchema(drop_schema_obj);
+	async dropSchema(dropSchemaObj) {
+		return await lmdbDropSchema(dropSchemaObj);
 	}
 
-	async createTable(table, table_create_obj) {
-		return await lmdbCreateTable(table, table_create_obj);
+	async createTable(table, tableCreateObj) {
+		return await lmdbCreateTable(table, tableCreateObj);
 	}
 
-	async dropTable(drop_table_obj) {
-		return await lmdbDropTable(drop_table_obj);
+	async dropTable(dropTableObj) {
+		return await lmdbDropTable(dropTableObj);
 	}
 
-	async createAttribute(create_attribute_obj) {
-		return await lmdbCreateAttribute(create_attribute_obj);
+	async createAttribute(createAttributeObj) {
+		return await lmdbCreateAttribute(createAttributeObj);
 	}
 
-	async createRecords(insert_obj) {
-		return await lmdbCreateRecords(insert_obj);
+	async createRecords(insertObj) {
+		return await lmdbCreateRecords(insertObj);
 	}
 
-	async updateRecords(update_obj) {
-		return await lmdbUpdateRecords(update_obj);
+	async updateRecords(updateObj) {
+		return await lmdbUpdateRecords(updateObj);
 	}
 
-	async upsertRecords(upsert_obj) {
+	async upsertRecords(upsertObj) {
 		try {
-			return await lmdbUpsertRecords(upsert_obj);
+			return await lmdbUpsertRecords(upsertObj);
 		} catch (err) {
 			//NOTE: this method call will either return the HdbError generated below this OR create a new HdbError w/ the
 			// default system error msg and 500 code AND log the error caught here (the error log will only happen if the
@@ -84,20 +84,20 @@ class LMDBBridge extends BridgeMethods {
 		}
 	}
 
-	async deleteRecords(delete_obj) {
-		return await lmdbDeleteRecords(delete_obj);
+	async deleteRecords(deleteObj) {
+		return await lmdbDeleteRecords(deleteObj);
 	}
 
-	async dropAttribute(drop_attr_obj) {
-		return await lmdbDropAttribute(drop_attr_obj);
+	async dropAttribute(dropAttrObj) {
+		return await lmdbDropAttribute(dropAttrObj);
 	}
 
-	async deleteAuditLogsBefore(delete_obj) {
-		return await lmdbDeleteAuditLogsBefore(delete_obj);
+	async deleteAuditLogsBefore(deleteObj) {
+		return await lmdbDeleteAuditLogsBefore(deleteObj);
 	}
 
-	async readAuditLog(read_audit_log_obj) {
-		return await lmdbReadAuditLog(read_audit_log_obj);
+	async readAuditLog(readAuditLogObj) {
+		return await lmdbReadAuditLog(readAuditLogObj);
 	}
 
 	writeTransaction(schema, table, callback) {
@@ -111,8 +111,8 @@ class LMDBBridge extends BridgeMethods {
 	resetReadTxn(schema, table) {
 		return lmdbFlush.resetReadTxn(schema, table);
 	}
-	getBackup(get_backup_obj) {
-		return lmdbGetBackup(get_backup_obj);
+	getBackup(getBackupObj) {
+		return lmdbGetBackup(getBackupObj);
 	}
 }
 

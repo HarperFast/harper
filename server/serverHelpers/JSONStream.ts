@@ -1,5 +1,5 @@
 import { Readable } from 'stream';
-import * as harper_logger from '../../utility/logging/harper_logger';
+import * as harperLogger from '../../utility/logging/harper_logger.js';
 import JSONbig from 'json-bigint-fixes';
 const JSONbigint = JSONbig({ useNativeBigInt: true });
 const BUFFER_SIZE = 10000;

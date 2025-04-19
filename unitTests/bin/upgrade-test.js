@@ -71,7 +71,7 @@ describe('Test upgrade.js', () => {
 
 		before(() => {
 			find_ps_stub = sandbox.stub(ps_list, 'findPs');
-			pm2_list_rw = upgrade_rw.__set__('pm2_utils', fake_pm2_utils);
+			pm2_list_rw = upgrade_rw.__set__('pm2Utils', fake_pm2_utils);
 			checkIfRunning_rw = upgrade_rw.__get__('checkIfRunning');
 		});
 

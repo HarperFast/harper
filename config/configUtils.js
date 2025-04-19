@@ -1,26 +1,26 @@
 'use strict';
 
-const hdb_terms = require('../utility/hdbTerms');
-const hdb_utils = require('../utility/common_utils');
-const logger = require('../utility/logging/harper_logger');
-const { configValidator, routesValidator } = require('../validation/configValidator');
+const hdbTerms = require('../utility/hdbTerms.ts');
+const hdbUtils = require('../utility/common_utils.js');
+const logger = require('../utility/logging/harper_logger.js');
+const { configValidator, routesValidator } = require('../validation/configValidator.js');
 const fs = require('fs-extra');
 const YAML = require('yaml');
 const path = require('path');
-const is_number = require('is-number');
+const isNumber = require('is-number');
 const PropertiesReader = require('properties-reader');
 const _ = require('lodash');
-const { handleHDBError } = require('../utility/errors/hdbError');
-const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = require('../utility/errors/commonErrors');
-const { server } = require('../server/Server');
-const { PACKAGE_ROOT } = require('../utility/packageUtils');
+const { handleHDBError } = require('../utility/errors/hdbError.js');
+const { HTTP_STATUS_CODES, HDB_ERROR_MSGS } = require('../utility/errors/commonErrors.js');
+const { server } = require('../server/Server.ts');
+const { PACKAGE_ROOT } = require('../utility/packageUtils.js');
 
-const { DATABASES_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdb_terms;
+const { DATABASES_PARAM_CONFIG, CONFIG_PARAMS, CONFIG_PARAM_MAP } = hdbTerms;
 const UNINIT_GET_CONFIG_ERR = 'Unable to get config value because config is uninitialized';
 const CONFIG_INIT_MSG = 'Config successfully initialized';
 const BACKUP_ERR = 'Error backing up config file';
 const EMPTY_GET_VALUE = 'Empty parameter sent to getConfigValue';
-const DEFAULT_CONFIG_FILE_PATH = path.join(PACKAGE_ROOT, 'config', 'yaml', hdb_terms.HDB_DEFAULT_CONFIG_FILE);
+const DEFAULT_CONFIG_FILE_PATH = path.join(PACKAGE_ROOT, 'config', 'yaml', hdbTerms.HDB_DEFAULT_CONFIG_FILE);
 const DEFAULT_NATS_CONFIG_FILE_PATH = path.join(PACKAGE_ROOT, 'config', 'yaml', 'defaultNatsConfig.yaml');
 const CONFIGURE_SUCCESS_RESPONSE =
 	'Configuration successfully set. You must restart HarperDB for new config settings to take effect.';
@@ -34,42 +34,41 @@ const DEPRECATED_CONFIG = {
 	logging_rotation_workerinterval: 'logging.rotation.workerInterval',
 };
 
-let flat_default_config_obj;
-let flat_config_obj;
-let config_obj;
+let flatDefaultConfigObj;
+let flatConfigObj;
+let configObj;
 
-Object.assign(exports, {
-	createConfigFile,
-	getDefaultConfig,
-	getConfigValue,
-	initConfig,
-	flattenConfig,
-	updateConfigValue,
-	updateConfigObject,
-	getConfiguration,
-	setConfiguration,
-	readConfigFile,
-	getClusteringRoutes,
-	initOldConfig,
-	getConfigFromFile,
-	getConfigFilePath,
-	addConfig,
-	deleteConfigFromFile,
-	getConfigObj,
-	resolvePath,
-	getFlatConfigObj,
-});
+exports.createConfigFile = createConfigFile;
+exports.getDefaultConfig = getDefaultConfig;
+exports.getConfigValue = getConfigValue;
+exports.initConfig = initConfig;
+exports.flattenConfig = flattenConfig;
+exports.updateConfigValue = updateConfigValue;
+exports.updateConfigObject = updateConfigObject;
+exports.getConfiguration = getConfiguration;
+exports.setConfiguration = setConfiguration;
+exports.readConfigFile = readConfigFile;
+exports.getClusteringRoutes = getClusteringRoutes;
+exports.initOldConfig = initOldConfig;
+exports.getConfigFromFile = getConfigFromFile;
+exports.getConfigFilePath = getConfigFilePath;
+exports.addConfig = addConfig;
+exports.deleteConfigFromFile = deleteConfigFromFile;
+exports.getConfigObj = getConfigObj;
+exports.resolvePath = resolvePath;
+exports.getFlatConfigObj = getFlatConfigObj;
 
-function resolvePath(relative_path) {
-	if (relative_path?.startsWith('~/')) {
-		return path.join(hdb_utils.getHomeDir(), relative_path.slice(1));
+
+function resolvePath(relativePath) {
+	if (relativePath?.startsWith('~/')) {
+		return path.join(hdbUtils.getHomeDir(), relativePath.slice(1));
 	}
-	const env = require('../utility/environment/environmentManager');
+	const env = require('../utility/environment/environmentManager.js');
 	try {
-		return path.resolve(env.getHdbBasePath(), relative_path);
+		return path.resolve(env.getHdbBasePath(), relativePath);
 	} catch(error) {
-		console.error('Unable to resolve path', relative_path, error);
-		return relative_path;
+		console.error('Unable to resolve path', relativePath, error);
+		return relativePath;
 	}
 }
 
@@ -77,30 +76,30 @@ function resolvePath(relative_path) {
  * Builds the HarperDB config file using user inputs and default values from defaultConfig.yaml
  * @param args - any args that the user provided.
  */
-function createConfigFile(args, skip_fs_validation = false) {
-	const config_doc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
+function createConfigFile(args, skipFsValidation = false) {
+	const configDoc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
 
 	// If nats clustering is enabled add the default nats config to harperdb-config
 	if (args.clustering_enabled || args.CLUSTERING_ENABLED || args.clustering) {
-		const nats_config_doc = YAML.parseDocument(fs.readFileSync(DEFAULT_NATS_CONFIG_FILE_PATH, 'utf8'), {
+		const natsConfigDoc = YAML.parseDocument(fs.readFileSync(DEFAULT_NATS_CONFIG_FILE_PATH, 'utf8'), {
 			simpleKeys: true,
 		});
-		config_doc.addIn(['clustering'], nats_config_doc.toJSON().clustering);
+		configDoc.addIn(['clustering'], natsConfigDoc.toJSON().clustering);
 	}
 
-	flat_default_config_obj = flattenConfig(config_doc.toJSON());
+	flatDefaultConfigObj = flattenConfig(configDoc.toJSON());
 
 	// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
-	let schemas_args;
+	let schemasArgs;
 	for (const arg in args) {
-		let config_param = CONFIG_PARAM_MAP[arg.toLowerCase()];
+		let configParam = CONFIG_PARAM_MAP[arg.toLowerCase()];
 
 		// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemasConfig
-		if (config_param === CONFIG_PARAMS.DATABASES) {
+		if (configParam === CONFIG_PARAMS.DATABASES) {
 			if (Array.isArray(args[arg])) {
-				schemas_args = args[arg];
+				schemasArgs = args[arg];
 			} else {
-				schemas_args = Object.keys(args[arg]).map((key) => {
+				schemasArgs = Object.keys(args[arg]).map((key) => {
 					return { [key]: args[arg][key] };
 				});
 			}
@@ -108,70 +107,70 @@ function createConfigFile(args, skip_fs_validation = false) {
 			continue;
 		}
 
-		if (!config_param && (arg.endsWith('_package') || arg.endsWith('_port'))) {
-			config_param = arg;
+		if (!configParam && (arg.endsWith('_package') || arg.endsWith('_port'))) {
+			configParam = arg;
 		}
 
-		if (config_param !== undefined) {
-			const split_param = config_param.split('_');
-			let value = castConfigValue(config_param, args[arg]);
-			if (config_param === 'rootPath' && value?.endsWith('/')) value = value.slice(0, -1);
+		if (configParam !== undefined) {
+			const splitParam = configParam.split('_');
+			let value = castConfigValue(configParam, args[arg]);
+			if (configParam === 'rootPath' && value?.endsWith('/')) value = value.slice(0, -1);
 			try {
-				config_doc.setIn([...split_param], value);
+				configDoc.setIn([...splitParam], value);
 			} catch (err) {
 				logger.error(err);
 			}
 		}
 	}
 
-	if (schemas_args) setSchemasConfig(config_doc, schemas_args);
+	if (schemasArgs) setSchemasConfig(configDoc, schemasArgs);
 
 	// Validates config doc and if required sets default values for some parameters.
-	validateConfig(config_doc, skip_fs_validation);
-	const config_obj = config_doc.toJSON();
-	flat_config_obj = flattenConfig(config_obj);
+	validateConfig(configDoc, skipFsValidation);
+	const configObj = configDoc.toJSON();
+	flatConfigObj = flattenConfig(configObj);
 
 	// Create new config file and write config doc to it.
-	const hdb_root = config_doc.getIn(['rootPath']);
-	const config_file_path = path.join(hdb_root, hdb_terms.HDB_CONFIG_FILE);
-	fs.createFileSync(config_file_path);
-	if (config_doc.errors?.length > 0) throw new Error(`Error parsing harperdb-config.yaml ${config_doc.errors}`);
-	fs.writeFileSync(config_file_path, String(config_doc));
-	logger.trace(`Config file written to ${config_file_path}`);
+	const hdbRoot = configDoc.getIn(['rootPath']);
+	const configFilePath = path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE);
+	fs.createFileSync(configFilePath);
+	if (configDoc.errors?.length > 0) throw new Error(`Error parsing harperdb-config.yaml ${configDoc.errors}`);
+	fs.writeFileSync(configFilePath, String(configDoc));
+	logger.trace(`Config file written to ${configFilePath}`);
 }
 
 /**
  * Sets any schema/table location config that belongs under the 'schemas' config element.
- * @param config_doc
- * @param schema_conf_json
+ * @param configDoc
+ * @param schemaConfJson
  */
-function setSchemasConfig(config_doc, schema_conf_json) {
-	let schemas_conf;
+function setSchemasConfig(configDoc, schemaConfJson) {
+	let schemasConf;
 	try {
 		try {
-			schemas_conf = JSON.parse(schema_conf_json);
+			schemasConf = JSON.parse(schemaConfJson);
 		} catch (err) {
-			if (!hdb_utils.isObject(schema_conf_json)) throw err;
-			schemas_conf = schema_conf_json;
+			if (!hdbUtils.isObject(schemaConfJson)) throw err;
+			schemasConf = schemaConfJson;
 		}
 
-		for (const schema_conf of schemas_conf) {
-			const schema = Object.keys(schema_conf)[0];
-			if (schema_conf[schema].hasOwnProperty(DATABASES_PARAM_CONFIG.TABLES)) {
-				for (const table in schema_conf[schema][DATABASES_PARAM_CONFIG.TABLES]) {
+		for (const schemaConf of schemasConf) {
+			const schema = Object.keys(schemaConf)[0];
+			if (schemaConf[schema].hasOwnProperty(DATABASES_PARAM_CONFIG.TABLES)) {
+				for (const table in schemaConf[schema][DATABASES_PARAM_CONFIG.TABLES]) {
 					// Table path var can be 'path' or 'auditPath'
-					for (const table_path_var in schema_conf[schema][DATABASES_PARAM_CONFIG.TABLES][table]) {
-						const table_path = schema_conf[schema][DATABASES_PARAM_CONFIG.TABLES][table][table_path_var];
-						const keys = [CONFIG_PARAMS.DATABASES, schema, DATABASES_PARAM_CONFIG.TABLES, table, table_path_var];
-						config_doc.hasIn(keys) ? config_doc.setIn(keys, table_path) : config_doc.addIn(keys, table_path);
+					for (const tablePathVar in schemaConf[schema][DATABASES_PARAM_CONFIG.TABLES][table]) {
+						const tablePath = schemaConf[schema][DATABASES_PARAM_CONFIG.TABLES][table][tablePathVar];
+						const keys = [CONFIG_PARAMS.DATABASES, schema, DATABASES_PARAM_CONFIG.TABLES, table, tablePathVar];
+						configDoc.hasIn(keys) ? configDoc.setIn(keys, tablePath) : configDoc.addIn(keys, tablePath);
 					}
 				}
 			} else {
 				// Schema path var can be 'path' or 'auditPath'
-				for (const schema_path_var in schema_conf[schema]) {
-					const schema_path = schema_conf[schema][schema_path_var];
-					const keys = [CONFIG_PARAMS.DATABASES, schema, schema_path_var];
-					config_doc.hasIn(keys) ? config_doc.setIn(keys, schema_path) : config_doc.addIn(keys, schema_path);
+				for (const schemaPathVar in schemaConf[schema]) {
+					const schemaPath = schemaConf[schema][schemaPathVar];
+					const keys = [CONFIG_PARAMS.DATABASES, schema, schemaPathVar];
+					configDoc.hasIn(keys) ? configDoc.setIn(keys, schemaPath) : configDoc.addIn(keys, schemaPath);
 				}
 			}
 		}
@@ -187,15 +186,15 @@ function setSchemasConfig(config_doc, schema_conf_json) {
  * @returns {*}
  */
 function getDefaultConfig(param) {
-	if (flat_default_config_obj === undefined) {
-		const config_doc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
-		flat_default_config_obj = flattenConfig(config_doc.toJSON());
+	if (flatDefaultConfigObj === undefined) {
+		const configDoc = parseYamlDoc(DEFAULT_CONFIG_FILE_PATH);
+		flatDefaultConfigObj = flattenConfig(configDoc.toJSON());
 	}
 
-	const param_map = CONFIG_PARAM_MAP[param.toLowerCase()];
-	if (param_map === undefined) return undefined;
+	const paramMap = CONFIG_PARAM_MAP[param.toLowerCase()];
+	if (paramMap === undefined) return undefined;
 
-	return flat_default_config_obj[param_map.toLowerCase()];
+	return flatDefaultConfigObj[paramMap.toLowerCase()];
 }
 
 /**
@@ -211,22 +210,22 @@ function getConfigValue(param) {
 		return undefined;
 	}
 
-	if (flat_config_obj === undefined) {
+	if (flatConfigObj === undefined) {
 		logger.trace(UNINIT_GET_CONFIG_ERR);
 		return undefined;
 	}
 
-	const param_map = CONFIG_PARAM_MAP[param.toLowerCase()];
-	if (param_map === undefined) return undefined;
+	const paramMap = CONFIG_PARAM_MAP[param.toLowerCase()];
+	if (paramMap === undefined) return undefined;
 
-	return flat_config_obj[param_map.toLowerCase()];
+	return flatConfigObj[paramMap.toLowerCase()];
 }
 
-function getConfigFilePath(boot_props_file_path = hdb_utils.getPropsFilePath()) {
-	const cmd_args = hdb_utils.getEnvCliRootPath();
-	if (cmd_args) return resolvePath(path.join(cmd_args, hdb_terms.HDB_CONFIG_FILE));
-	const hdb_properties = PropertiesReader(boot_props_file_path);
-	return resolvePath(hdb_properties.get(hdb_terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
+function getConfigFilePath(bootPropsFilePath = hdbUtils.getPropsFilePath()) {
+	const cmdArgs = hdbUtils.getEnvCliRootPath();
+	if (cmdArgs) return resolvePath(path.join(cmdArgs, hdbTerms.HDB_CONFIG_FILE));
+	const hdbProperties = PropertiesReader(bootPropsFilePath);
+	return resolvePath(hdbProperties.get(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
 }
 
 /**
@@ -235,58 +234,58 @@ function getConfigFilePath(boot_props_file_path = hdb_utils.getPropsFilePath()) 
  * @param force
  */
 function initConfig(force = false) {
-	if (flat_config_obj === undefined || force) {
-		let boot_props_file_path;
-		if (!hdb_utils.noBootFile()) {
-			boot_props_file_path = hdb_utils.getPropsFilePath();
+	if (flatConfigObj === undefined || force) {
+		let bootPropsFilePath;
+		if (!hdbUtils.noBootFile()) {
+			bootPropsFilePath = hdbUtils.getPropsFilePath();
 			try {
-				fs.accessSync(boot_props_file_path, fs.constants.F_OK | fs.constants.R_OK);
+				fs.accessSync(bootPropsFilePath, fs.constants.F_OK | fs.constants.R_OK);
 			} catch (err) {
 				logger.error(err);
-				throw new Error(`HarperDB properties file at path ${boot_props_file_path} does not exist`);
+				throw new Error(`HarperDB properties file at path ${bootPropsFilePath} does not exist`);
 			}
 		}
 
-		const config_file_path = getConfigFilePath(boot_props_file_path);
-		let config_doc;
+		const configFilePath = getConfigFilePath(bootPropsFilePath);
+		let configDoc;
 
 		// if this is true, user is upgrading from version prior to 4.0.0. We need to initialize existing
 		// params.
-		if (config_file_path.includes('config/settings.js')) {
+		if (configFilePath.includes('config/settings.js')) {
 			try {
-				initOldConfig(config_file_path);
+				initOldConfig(configFilePath);
 				return;
-			} catch (init_err) {
+			} catch (initErr) {
 				// If user has an old boot prop file but hdb is not installed init old config will throw ENOENT error.
 				// We want to squash that error so that new version of HDB can be installed.
-				if (init_err.code !== hdb_terms.NODE_ERROR_CODES.ENOENT) throw init_err;
+				if (initErr.code !== hdbTerms.NODE_ERROR_CODES.ENOENT) throw initErr;
 			}
 		}
 		try {
-			config_doc = parseYamlDoc(config_file_path);
+			configDoc = parseYamlDoc(configFilePath);
 		} catch (err) {
-			if (err.code === hdb_terms.NODE_ERROR_CODES.ENOENT) {
-				logger.trace(`HarperDB config file not found at ${config_file_path}. 
+			if (err.code === hdbTerms.NODE_ERROR_CODES.ENOENT) {
+				logger.trace(`HarperDB config file not found at ${configFilePath}. 
 				This can occur during early stages of install where the config file has not yet been created`);
 				return;
 			} else {
 				logger.error(err);
-				throw new Error(`Error reading HarperDB config file at ${config_file_path}`);
+				throw new Error(`Error reading HarperDB config file at ${configFilePath}`);
 			}
 		}
 
-		checkForUpdatedConfig(config_doc, config_file_path);
+		checkForUpdatedConfig(configDoc, configFilePath);
 
 		// Validates config doc and if required sets default values for some parameters.
-		validateConfig(config_doc);
-		const config_obj = config_doc.toJSON();
-		server.config = config_obj;
-		flat_config_obj = flattenConfig(config_obj);
+		validateConfig(configDoc);
+		const configObj = configDoc.toJSON();
+		server.config = configObj;
+		flatConfigObj = flattenConfig(configObj);
 
 		// If config has old version of logrotate enabled let user know it has been deprecated.
-		if (flat_config_obj['logging_rotation_rotate']) {
+		if (flatConfigObj['logging_rotation_rotate']) {
 			for (const key in DEPRECATED_CONFIG) {
-				if (flat_config_obj[key])
+				if (flatConfigObj[key])
 					logger.error(
 						`Config ${DEPRECATED_CONFIG[key]} has been deprecated. Please check https://docs.harperdb.io/docs/ for further details.`
 					);
@@ -300,76 +299,76 @@ function initConfig(force = false) {
 /**
  * When running an upgraded version there is a chance these config params won't exist.
  * To address this we check for them and write them to config file if needed.
- * @param config_doc
- * @param config_file_path
+ * @param configDoc
+ * @param configFilePath
  */
-function checkForUpdatedConfig(config_doc, config_file_path) {
-	const root_path = config_doc.getIn(['rootPath']);
-	let update_file = false;
-	if (!config_doc.hasIn(['storage', 'path'])) {
-		config_doc.setIn(['storage', 'path'], path.join(root_path, 'database'));
-		update_file = true;
+function checkForUpdatedConfig(configDoc, configFilePath) {
+	const rootPath = configDoc.getIn(['rootPath']);
+	let updateFile = false;
+	if (!configDoc.hasIn(['storage', 'path'])) {
+		configDoc.setIn(['storage', 'path'], path.join(rootPath, 'database'));
+		updateFile = true;
 	}
 
-	if (!config_doc.hasIn(['logging', 'rotation', 'path'])) {
-		config_doc.setIn(['logging', 'rotation', 'path'], path.join(root_path, 'log'));
-		update_file = true;
+	if (!configDoc.hasIn(['logging', 'rotation', 'path'])) {
+		configDoc.setIn(['logging', 'rotation', 'path'], path.join(rootPath, 'log'));
+		updateFile = true;
 	}
 
-	if (!config_doc.hasIn(['authentication'])) {
-		config_doc.addIn(['authentication'], {
+	if (!configDoc.hasIn(['authentication'])) {
+		configDoc.addIn(['authentication'], {
 			cacheTTL: 30000,
 			enableSessions: true,
-			operationTokenTimeout: config_doc.getIn(['operationsApi', 'authentication', 'operationTokenTimeout']) ?? '1d',
-			refreshTokenTimeout: config_doc.getIn(['operationsApi', 'authentication', 'refreshTokenTimeout']) ?? '30d',
+			operationTokenTimeout: configDoc.getIn(['operationsApi', 'authentication', 'operationTokenTimeout']) ?? '1d',
+			refreshTokenTimeout: configDoc.getIn(['operationsApi', 'authentication', 'refreshTokenTimeout']) ?? '30d',
 		});
 
-		update_file = true;
+		updateFile = true;
 	}
 
-	if (!config_doc.hasIn(['analytics'])) {
-		config_doc.addIn(['analytics'], {
+	if (!configDoc.hasIn(['analytics'])) {
+		configDoc.addIn(['analytics'], {
 			aggregatePeriod: 60,
 			replicate: false,
 		});
 
-		update_file = true;
+		updateFile = true;
 	}
 
-	if (update_file) {
+	if (updateFile) {
 		logger.trace('Updating config file with missing config params');
-		if (config_doc.errors?.length > 0) throw new Error(`Error parsing harperdb-config.yaml ${config_doc.errors}`);
-		fs.writeFileSync(config_file_path, String(config_doc));
+		if (configDoc.errors?.length > 0) throw new Error(`Error parsing harperdb-config.yaml ${configDoc.errors}`);
+		fs.writeFileSync(configFilePath, String(configDoc));
 	}
 }
 
 /**
  * Validates the config doc and adds any default values to doc.
  * NOTE - If any default values are set in configValidator they also need to be 'setIn' in this function.
- * @param config_doc
+ * @param configDoc
  */
-function validateConfig(config_doc, skip_fs_validation = false) {
-	const config_json = config_doc.toJSON();
+function validateConfig(configDoc, skipFsValidation = false) {
+	const configJson = configDoc.toJSON();
 
 	// Config might have some legacy values that will be modified by validator. We need to set old to new here before
 	// validator sets any defaults
-	config_json.componentsRoot = config_json.componentsRoot ?? config_json?.customFunctions?.root;
-	if (config_json?.http?.threads) config_json.threads = config_json?.http?.threads;
+	configJson.componentsRoot = configJson.componentsRoot ?? configJson?.customFunctions?.root;
+	if (configJson?.http?.threads) configJson.threads = configJson?.http?.threads;
 
-	if (config_json.http?.port && config_json.http?.port === config_json.http?.securePort) {
+	if (configJson.http?.port && configJson.http?.port === configJson.http?.securePort) {
 		throw HDB_ERROR_MSGS.CONFIG_VALIDATION('http.port and http.securePort cannot be the same value');
 	}
 
 	if (
-		config_json.operationsApi?.network?.port &&
-		config_json.operationsApi?.network?.port === config_json.operationsApi?.network?.securePort
+		configJson.operationsApi?.network?.port &&
+		configJson.operationsApi?.network?.port === configJson.operationsApi?.network?.securePort
 	) {
 		throw HDB_ERROR_MSGS.CONFIG_VALIDATION(
 			'operationsApi.network.port and operationsApi.network.securePort cannot be the same value'
 		);
 	}
 
-	const validation = configValidator(config_json, skip_fs_validation);
+	const validation = configValidator(configJson, skipFsValidation);
 	if (validation.error) {
 		throw HDB_ERROR_MSGS.CONFIG_VALIDATION(validation.error.message);
 	}
@@ -377,19 +376,19 @@ function validateConfig(config_doc, skip_fs_validation = false) {
 	// These parameters can be set by the validator if they arent provided by user,
 	// for this reason we need to update the config yaml doc after the validator has run.
 	if (typeof validation.value.threads === 'object')
-		config_doc.setIn(['threads', 'count'], validation.value.threads.count);
-	else config_doc.setIn(['threads'], validation.value.threads);
-	config_doc.setIn(['componentsRoot'], validation.value.componentsRoot); // TODO: check this works with old config
-	config_doc.setIn(['logging', 'root'], validation.value.logging.root);
-	config_doc.setIn(['storage', 'path'], validation.value.storage.path);
-	config_doc.setIn(['logging', 'rotation', 'path'], validation.value.logging.rotation.path);
-	config_doc.setIn(
+		configDoc.setIn(['threads', 'count'], validation.value.threads.count);
+	else configDoc.setIn(['threads'], validation.value.threads);
+	configDoc.setIn(['componentsRoot'], validation.value.componentsRoot); // TODO: check this works with old config
+	configDoc.setIn(['logging', 'root'], validation.value.logging.root);
+	configDoc.setIn(['storage', 'path'], validation.value.storage.path);
+	configDoc.setIn(['logging', 'rotation', 'path'], validation.value.logging.rotation.path);
+	configDoc.setIn(
 		['operationsApi', 'network', 'domainSocket'],
 		validation.value?.operationsApi?.network?.domainSocket
 	);
 
-	if (config_json?.clustering?.enabled) {
-		config_doc.setIn(
+	if (configJson?.clustering?.enabled) {
+		configDoc.setIn(
 			['clustering', 'leafServer', 'streams', 'path'],
 			validation.value.clustering.leafServer.streams?.path
 		);
@@ -403,52 +402,52 @@ function validateConfig(config_doc, skip_fs_validation = false) {
  * @param value
  */
 function updateConfigObject(param, value) {
-	if (flat_config_obj === undefined) {
+	if (flatConfigObj === undefined) {
 		// This is here to allow unit tests to work when HDB is not installed.
-		flat_config_obj = {};
+		flatConfigObj = {};
 	}
 
-	const config_obj_key = CONFIG_PARAM_MAP[param.toLowerCase()];
-	if (config_obj_key === undefined) {
+	const configObjKey = CONFIG_PARAM_MAP[param.toLowerCase()];
+	if (configObjKey === undefined) {
 		logger.trace(`Unable to update config object because config param '${param}' does not exist`);
 		return;
 	}
 
-	flat_config_obj[config_obj_key.toLowerCase()] = value;
+	flatConfigObj[configObjKey.toLowerCase()] = value;
 }
 
 /**
  * Updates and validates a config value in config file. Can also create a backup of config before updating.
  * @param param - the config value to update
  * @param value - the value to set the config to
- * @param parsed_args - an object of param/values to update
- * @param create_backup - if true backup file is created
+ * @param parsedArgs - an object of param/values to update
+ * @param createBackup - if true backup file is created
  * @param update_config_obj - if true updates the in memory flattened config object
  */
 function updateConfigValue(
 	param,
 	value,
-	parsed_args = undefined,
-	create_backup = false,
+	parsedArgs = undefined,
+	createBackup = false,
 	update_config_obj = false,
-	skip_param_map = false
+	skipParamMap = false
 ) {
-	if (flat_config_obj === undefined) {
+	if (flatConfigObj === undefined) {
 		initConfig();
 	}
 
 	// Old root/path is used just in case they are updating the operations api root.
-	const old_hdb_root = getConfigValue(CONFIG_PARAM_MAP.hdb_root);
-	const old_config_path = path.join(old_hdb_root, hdb_terms.HDB_CONFIG_FILE);
-	const config_doc = parseYamlDoc(old_config_path);
-	let schemas_args;
+	const oldHdbRoot = getConfigValue(CONFIG_PARAM_MAP.hdb_root);
+	const oldConfigPath = path.join(oldHdbRoot, hdbTerms.HDB_CONFIG_FILE);
+	const configDoc = parseYamlDoc(oldConfigPath);
+	let schemasArgs;
 
 	// Don't do the update if the values are the same.
-	if (parsed_args && flat_config_obj) {
+	if (parsedArgs && flatConfigObj) {
 		let doUpdate = false;
-		for (const arg in parsed_args) {
+		for (const arg in parsedArgs) {
 			// Using no-strict here because we might need to compare string to number
-			if (parsed_args[arg] != flat_config_obj[arg.toLowerCase()]) {
+			if (parsedArgs[arg] != flatConfigObj[arg.toLowerCase()]) {
 				doUpdate = true;
 				break;
 			}
@@ -460,78 +459,78 @@ function updateConfigValue(
 		}
 	}
 
-	if (parsed_args === undefined && param.toLowerCase() === CONFIG_PARAMS.DATABASES) {
-		schemas_args = value;
-	} else if (parsed_args === undefined) {
-		let config_param;
-		if (skip_param_map) {
-			config_param = param;
+	if (parsedArgs === undefined && param.toLowerCase() === CONFIG_PARAMS.DATABASES) {
+		schemasArgs = value;
+	} else if (parsedArgs === undefined) {
+		let configParam;
+		if (skipParamMap) {
+			configParam = param;
 		} else {
-			config_param = CONFIG_PARAM_MAP[param.toLowerCase()];
-			if (config_param === undefined) {
+			configParam = CONFIG_PARAM_MAP[param.toLowerCase()];
+			if (configParam === undefined) {
 				throw new Error(`Unable to update config, unrecognized config parameter: ${param}`);
 			}
 		}
 
-		const split_param = config_param.split('_');
-		const new_value = castConfigValue(config_param, value);
-		config_doc.setIn([...split_param], new_value);
+		const splitParam = configParam.split('_');
+		const newValue = castConfigValue(configParam, value);
+		configDoc.setIn([...splitParam], newValue);
 	} else {
 		// Loop through the user inputted args. Match them to a parameter in the default config file and update value.
-		for (const arg in parsed_args) {
-			let config_param = CONFIG_PARAM_MAP[arg.toLowerCase()];
+		for (const arg in parsedArgs) {
+			let configParam = CONFIG_PARAM_MAP[arg.toLowerCase()];
 
 			// If setting http.securePort to the same value as http.port, set http.port to null to avoid clashing ports
 			if (
-				config_param === CONFIG_PARAMS.HTTP_SECUREPORT &&
-				parsed_args[arg] === flat_config_obj[CONFIG_PARAMS.HTTP_PORT]?.toString()
+				configParam === CONFIG_PARAMS.HTTP_SECUREPORT &&
+				parsedArgs[arg] === flatConfigObj[CONFIG_PARAMS.HTTP_PORT]?.toString()
 			) {
-				config_doc.setIn(['http', 'port'], null);
+				configDoc.setIn(['http', 'port'], null);
 			}
 
 			// If setting operationsApi.network.securePort to the same value as operationsApi.network.port, set operationsApi.network.port to null to avoid clashing ports
 			if (
-				config_param === CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT &&
-				parsed_args[arg] === flat_config_obj[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT.toLowerCase()]?.toString()
+				configParam === CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT &&
+				parsedArgs[arg] === flatConfigObj[CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT.toLowerCase()]?.toString()
 			) {
-				config_doc.setIn(['operationsApi', 'network', 'port'], null);
+				configDoc.setIn(['operationsApi', 'network', 'port'], null);
 			}
 
 			// Schemas config args are handled differently, so if they exist set them to var that will be used by setSchemasConfig
-			if (config_param === CONFIG_PARAMS.DATABASES) {
-				schemas_args = parsed_args[arg];
+			if (configParam === CONFIG_PARAMS.DATABASES) {
+				schemasArgs = parsedArgs[arg];
 				continue;
 			}
-			if (config_param?.startsWith('threads_')) {
+			if (configParam?.startsWith('threads_')) {
 				// if threads was a number, recreate the threads object
-				const thread_count = config_doc.getIn(['threads']);
-				if (thread_count >= 0) {
-					config_doc.deleteIn(['threads']);
-					config_doc.setIn(['threads', 'count'], thread_count);
+				const threadCount = configDoc.getIn(['threads']);
+				if (threadCount >= 0) {
+					configDoc.deleteIn(['threads']);
+					configDoc.setIn(['threads', 'count'], threadCount);
 				}
 			}
 
-			if (!config_param && (arg.endsWith('_package') || arg.endsWith('_port'))) {
-				config_param = arg;
+			if (!configParam && (arg.endsWith('_package') || arg.endsWith('_port'))) {
+				configParam = arg;
 			}
 
-			if (config_param !== undefined) {
-				let split_param = config_param.split('_');
-				const legacy_param = hdb_terms.LEGACY_CONFIG_PARAMS[arg.toUpperCase()];
-				if (legacy_param && legacy_param.startsWith('customFunctions') && config_doc.hasIn(legacy_param.split('_'))) {
-					config_param = legacy_param;
-					split_param = legacy_param.split('_');
+			if (configParam !== undefined) {
+				let splitParam = configParam.split('_');
+				const legacyParam = hdbTerms.LEGACY_CONFIG_PARAMS[arg.toUpperCase()];
+				if (legacyParam && legacyParam.startsWith('customFunctions') && configDoc.hasIn(legacyParam.split('_'))) {
+					configParam = legacyParam;
+					splitParam = legacyParam.split('_');
 				}
 
-				let new_value = castConfigValue(config_param, parsed_args[arg]);
-				if (config_param === 'rootPath' && new_value?.endsWith('/')) new_value = new_value.slice(0, -1);
+				let newValue = castConfigValue(configParam, parsedArgs[arg]);
+				if (configParam === 'rootPath' && newValue?.endsWith('/')) newValue = newValue.slice(0, -1);
 				try {
-					if (split_param.length > 1) {
-						if (typeof config_doc.getIn(split_param.slice(0, -1)) === 'boolean') {
-							config_doc.deleteIn(split_param.slice(0, -1));
+					if (splitParam.length > 1) {
+						if (typeof configDoc.getIn(splitParam.slice(0, -1)) === 'boolean') {
+							configDoc.deleteIn(splitParam.slice(0, -1));
 						}
 					}
-					config_doc.setIn([...split_param], new_value);
+					configDoc.setIn([...splitParam], newValue);
 				} catch (err) {
 					logger.error(err);
 				}
@@ -539,35 +538,35 @@ function updateConfigValue(
 		}
 	}
 
-	if (schemas_args) setSchemasConfig(config_doc, schemas_args);
+	if (schemasArgs) setSchemasConfig(configDoc, schemasArgs);
 
 	// Validates config doc and if required sets default values for some parameters.
-	validateConfig(config_doc);
-	const hdb_root = config_doc.getIn(['rootPath']);
-	const config_file_location = path.join(hdb_root, hdb_terms.HDB_CONFIG_FILE);
+	validateConfig(configDoc);
+	const hdbRoot = configDoc.getIn(['rootPath']);
+	const configFileLocation = path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE);
 
 	// Creates a backup of config before new config is written to disk.
-	if (create_backup === true) {
-		backupConfigFile(old_config_path, hdb_root);
+	if (createBackup === true) {
+		backupConfigFile(oldConfigPath, hdbRoot);
 	}
 
-	if (config_doc.errors?.length > 0) throw new Error(`Error parsing harperdb-config.yaml ${config_doc.errors}`);
-	fs.writeFileSync(config_file_location, String(config_doc));
+	if (configDoc.errors?.length > 0) throw new Error(`Error parsing harperdb-config.yaml ${configDoc.errors}`);
+	fs.writeFileSync(configFileLocation, String(configDoc));
 	if (update_config_obj) {
-		flat_config_obj = flattenConfig(config_doc.toJSON());
+		flatConfigObj = flattenConfig(configDoc.toJSON());
 	}
 	logger.trace(`Config parameter: ${param} updated with value: ${value}`);
 }
 
-function backupConfigFile(config_path, hdb_root) {
+function backupConfigFile(configPath, hdbRoot) {
 	try {
-		const backup_folder_path = path.join(
-			hdb_root,
+		const backupFolderPath = path.join(
+			hdbRoot,
 			'backup',
-			`${new Date(Date.now()).toISOString().replaceAll(':', '-')}-${hdb_terms.HDB_CONFIG_FILE}.bak`
+			`${new Date(Date.now()).toISOString().replaceAll(':', '-')}-${hdbTerms.HDB_CONFIG_FILE}.bak`
 		);
-		fs.copySync(config_path, backup_folder_path);
-		logger.trace(`Config file: ${config_path} backed up to: ${backup_folder_path}`);
+		fs.copySync(configPath, backupFolderPath);
+		logger.trace(`Config file: ${configPath} backed up to: ${backupFolderPath}`);
 	} catch (err) {
 		logger.error(BACKUP_ERR);
 		logger.error(err);
@@ -585,10 +584,10 @@ function flattenConfig(obj) {
 	if (obj?.operationsApi?.network) obj.operationsApi.network = { ...obj.http, ...obj.operationsApi.network };
 	if (obj?.operationsApi) obj.operationsApi.tls = { ...obj.tls, ...obj.operationsApi.tls };
 
-	config_obj = obj;
-	const flat_obj = squashObj(obj);
+	configObj = obj;
+	const flatObj = squashObj(obj);
 
-	return flat_obj;
+	return flatObj;
 
 	function squashObj(obj) {
 		let result = {};
@@ -596,18 +595,18 @@ function flattenConfig(obj) {
 			if (!obj.hasOwnProperty(i)) continue;
 
 			if (typeof obj[i] == 'object' && obj[i] !== null && !Array.isArray(obj[i]) && !PRESERVED_PROPERTIES.includes(i)) {
-				const flat_obj = squashObj(obj[i]);
-				for (const x in flat_obj) {
-					if (!flat_obj.hasOwnProperty(x)) continue;
+				const flatObj = squashObj(obj[i]);
+				for (const x in flatObj) {
+					if (!flatObj.hasOwnProperty(x)) continue;
 
 					if (x !== 'package') i = i.toLowerCase();
 					const key = i + '_' + x;
 					// This is here to catch config param which has been renamed/moved
 					if (!CONFIG_PARAMS[key.toUpperCase()] && CONFIG_PARAM_MAP[key]) {
-						result[CONFIG_PARAM_MAP[key].toLowerCase()] = flat_obj[x];
+						result[CONFIG_PARAM_MAP[key].toLowerCase()] = flatObj[x];
 					}
 
-					result[key] = flat_obj[x];
+					result[key] = flatObj[x];
 				}
 			}
 			if (obj[i] !== undefined) result[i.toLowerCase()] = obj[i];
@@ -637,7 +636,7 @@ function castConfigValue(param, value) {
 			return value;
 		}
 	} else {
-		if (is_number(value)) {
+		if (isNumber(value)) {
 			return parseFloat(value);
 		}
 
@@ -649,7 +648,7 @@ function castConfigValue(param, value) {
 			return value;
 		}
 
-		if (hdb_utils.isObject(value)) {
+		if (hdbUtils.isObject(value)) {
 			return value;
 		}
 
@@ -684,7 +683,7 @@ function castConfigValue(param, value) {
 		}
 	}
 
-	return hdb_utils.autoCast(value);
+	return hdbUtils.autoCast(value);
 }
 
 /**
@@ -692,22 +691,22 @@ function castConfigValue(param, value) {
  * @returns {{}}
  */
 function getConfiguration() {
-	const boot_props_file_path = hdb_utils.getPropsFilePath();
-	const config_file_path = getConfigFilePath(boot_props_file_path);
-	const config_doc = parseYamlDoc(config_file_path);
+	const bootPropsFilePath = hdbUtils.getPropsFilePath();
+	const configFilePath = getConfigFilePath(bootPropsFilePath);
+	const configDoc = parseYamlDoc(configFilePath);
 
-	return config_doc.toJSON();
+	return configDoc.toJSON();
 }
 
 /**
  * Set Configuration - this function sets new configuration
- * @param set_config_json
+ * @param setConfigJson
 
  */
-async function setConfiguration(set_config_json) {
-	const { operation, hdb_user, hdb_auth_header, ...config_fields } = set_config_json;
+async function setConfiguration(setConfigJson) {
+	const { operation, hdb_user, hdbAuthHeader, ...configFields } = setConfigJson;
 	try {
-		updateConfigValue(undefined, undefined, config_fields, true);
+		updateConfigValue(undefined, undefined, configFields, true);
 		return CONFIGURE_SUCCESS_RESPONSE;
 	} catch (err) {
 		if (typeof err === 'string' || err instanceof String) {
@@ -718,24 +717,24 @@ async function setConfiguration(set_config_json) {
 }
 
 function readConfigFile() {
-	const boot_props_file_path = hdb_utils.getPropsFilePath();
+	const bootPropsFilePath = hdbUtils.getPropsFilePath();
 	try {
-		fs.accessSync(boot_props_file_path, fs.constants.F_OK | fs.constants.R_OK);
+		fs.accessSync(bootPropsFilePath, fs.constants.F_OK | fs.constants.R_OK);
 	} catch (err) {
-		if (!hdb_utils.noBootFile()) {
+		if (!hdbUtils.noBootFile()) {
 			logger.error(err);
-			throw new Error(`HarperDB properties file at path ${boot_props_file_path} does not exist`);
+			throw new Error(`HarperDB properties file at path ${bootPropsFilePath} does not exist`);
 		}
 	}
 
-	const config_file_path = getConfigFilePath(boot_props_file_path);
-	const config_doc = parseYamlDoc(config_file_path);
+	const configFilePath = getConfigFilePath(bootPropsFilePath);
+	const configDoc = parseYamlDoc(configFilePath);
 
-	return config_doc.toJSON();
+	return configDoc.toJSON();
 }
 
-function parseYamlDoc(file_path) {
-	return YAML.parseDocument(fs.readFileSync(file_path, 'utf8'), { simpleKeys: true });
+function parseYamlDoc(filePath) {
+	return YAML.parseDocument(fs.readFileSync(filePath, 'utf8'), { simpleKeys: true });
 }
 
 /**
@@ -743,29 +742,29 @@ function parseYamlDoc(file_path) {
  * @returns {{leaf_routes: (*[]|any), hub_routes: (*[]|any)}}
  */
 function getClusteringRoutes() {
-	const json_doc = readConfigFile();
-	let hub_routes = json_doc?.clustering?.hubServer?.cluster?.network?.routes;
-	hub_routes = hdb_utils.isEmptyOrZeroLength(hub_routes) ? [] : hub_routes;
-	const hub_validation = routesValidator(hub_routes);
-	if (hub_validation) {
-		throw HDB_ERROR_MSGS.CONFIG_VALIDATION(hub_validation.message);
+	const jsonDoc = readConfigFile();
+	let hub_routes = jsonDoc?.clustering?.hubServer?.cluster?.network?.routes;
+	hub_routes = hdbUtils.isEmptyOrZeroLength(hub_routes) ? [] : hub_routes;
+	const hubValidation = routesValidator(hub_routes);
+	if (hubValidation) {
+		throw HDB_ERROR_MSGS.CONFIG_VALIDATION(hubValidation.message);
 	}
 
-	let leaf_routes = json_doc?.clustering?.leafServer?.network?.routes;
-	leaf_routes = hdb_utils.isEmptyOrZeroLength(leaf_routes) ? [] : leaf_routes;
-	const leaf_validation = routesValidator(leaf_routes);
-	if (leaf_validation) {
-		throw HDB_ERROR_MSGS.CONFIG_VALIDATION(leaf_validation.message);
+	let leaf_routes = jsonDoc?.clustering?.leafServer?.network?.routes;
+	leaf_routes = hdbUtils.isEmptyOrZeroLength(leaf_routes) ? [] : leaf_routes;
+	const leafValidation = routesValidator(leaf_routes);
+	if (leafValidation) {
+		throw HDB_ERROR_MSGS.CONFIG_VALIDATION(leafValidation.message);
 	}
 
-	if (!hdb_utils.isEmptyOrZeroLength(leaf_routes) && !hdb_utils.isEmptyOrZeroLength(hub_routes)) {
-		const duplicates = hub_routes.filter((hub_route) =>
-			leaf_routes.some((leaf_route) => leaf_route.host === hub_route.host && leaf_route.port === hub_route.port)
+	if (!hdbUtils.isEmptyOrZeroLength(leaf_routes) && !hdbUtils.isEmptyOrZeroLength(hub_routes)) {
+		const duplicates = hub_routes.filter((hubRoute) =>
+			leaf_routes.some((leafRoute) => leafRoute.host === hubRoute.host && leafRoute.port === hubRoute.port)
 		);
 
-		if (!hdb_utils.isEmptyOrZeroLength(duplicates)) {
-			const dups_msg = `Duplicate hub and leaf routes found ${JSON.stringify(duplicates)}`;
-			throw HDB_ERROR_MSGS.CONFIG_VALIDATION(dups_msg);
+		if (!hdbUtils.isEmptyOrZeroLength(duplicates)) {
+			const dupsMsg = `Duplicate hub and leaf routes found ${JSON.stringify(duplicates)}`;
+			throw HDB_ERROR_MSGS.CONFIG_VALIDATION(dupsMsg);
 		}
 	}
 
@@ -779,25 +778,25 @@ function getClusteringRoutes() {
  * This function reads config settings from old settings file(before 4.0.0), aligns old keys to new keys, gets old
  * values, and updates the in-memory object.
  * --Located here instead of upgradeUtilities.js to prevent circular dependency--
- * @param old_config_path - a string with the old settings path ending in config/settings.js
+ * @param oldConfigPath - a string with the old settings path ending in config/settings.js
  */
-function initOldConfig(old_config_path) {
-	const old_hdb_properties = PropertiesReader(old_config_path);
-	flat_config_obj = {};
+function initOldConfig(oldConfigPath) {
+	const oldHdbProperties = PropertiesReader(oldConfigPath);
+	flatConfigObj = {};
 
-	for (const config_param in CONFIG_PARAM_MAP) {
-		const value = old_hdb_properties.get(config_param.toUpperCase());
-		if (hdb_utils.isEmpty(value) || (typeof value === 'string' && value.trim().length === 0)) {
+	for (const configParam in CONFIG_PARAM_MAP) {
+		const value = oldHdbProperties.get(configParam.toUpperCase());
+		if (hdbUtils.isEmpty(value) || (typeof value === 'string' && value.trim().length === 0)) {
 			continue;
 		}
-		let param_key = CONFIG_PARAM_MAP[config_param].toLowerCase();
-		if (param_key === CONFIG_PARAMS.LOGGING_ROOT) {
-			flat_config_obj[param_key] = path.dirname(value);
+		let paramKey = CONFIG_PARAM_MAP[configParam].toLowerCase();
+		if (paramKey === CONFIG_PARAMS.LOGGING_ROOT) {
+			flatConfigObj[paramKey] = path.dirname(value);
 		} else {
-			flat_config_obj[param_key] = value;
+			flatConfigObj[paramKey] = value;
 		}
 	}
-	return flat_config_obj;
+	return flatConfigObj;
 }
 
 /**
@@ -812,38 +811,38 @@ function getConfigFromFile(param) {
 
 /**
  * Adds a top level element and any nested values to harperdb-config
- * @param top_level_element - element name
+ * @param topLevelElement - element name
  * @param values - JSON value which should have top level element
  * @returns {Promise<void>}
  */
-async function addConfig(top_level_element, values) {
-	const config_doc = parseYamlDoc(getConfigFilePath());
-	config_doc.hasIn([top_level_element])
-		? config_doc.setIn([top_level_element], values)
-		: config_doc.addIn([top_level_element], values);
-	if (config_doc.errors?.length > 0) throw new Error(`Error parsing harperdb-config.yaml ${config_doc.errors}`);
-	await fs.writeFile(getConfigFilePath(), String(config_doc));
+async function addConfig(topLevelElement, values) {
+	const configDoc = parseYamlDoc(getConfigFilePath());
+	configDoc.hasIn([topLevelElement])
+		? configDoc.setIn([topLevelElement], values)
+		: configDoc.addIn([topLevelElement], values);
+	if (configDoc.errors?.length > 0) throw new Error(`Error parsing harperdb-config.yaml ${configDoc.errors}`);
+	await fs.writeFile(getConfigFilePath(), String(configDoc));
 }
 
 function deleteConfigFromFile(param) {
-	const config_file_path = getConfigFilePath(hdb_utils.getPropsFilePath());
-	const config_doc = parseYamlDoc(config_file_path);
-	config_doc.deleteIn(param);
-	const hdb_root = config_doc.getIn(['rootPath']);
-	const config_file_location = path.join(hdb_root, hdb_terms.HDB_CONFIG_FILE);
-	fs.writeFileSync(config_file_location, String(config_doc));
+	const configFilePath = getConfigFilePath(hdbUtils.getPropsFilePath());
+	const configDoc = parseYamlDoc(configFilePath);
+	configDoc.deleteIn(param);
+	const hdbRoot = configDoc.getIn(['rootPath']);
+	const configFileLocation = path.join(hdbRoot, hdbTerms.HDB_CONFIG_FILE);
+	fs.writeFileSync(configFileLocation, String(configDoc));
 }
 
 function getConfigObj() {
-	if (!config_obj) {
+	if (!configObj) {
 		initConfig();
-		return config_obj;
+		return configObj;
 	}
 
-	return config_obj;
+	return configObj;
 }
 
 function getFlatConfigObj() {
-	if (!flat_config_obj) initConfig();
-	return flat_config_obj;
+	if (!flatConfigObj) initConfig();
+	return flatConfigObj;
 }

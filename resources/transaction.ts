@@ -1,6 +1,6 @@
-import type { Request } from './ResourceInterface';
-import { _assignPackageExport } from '../globals';
-import { DatabaseTransaction, TRANSACTION_STATE } from './DatabaseTransaction';
+import type { Request } from './ResourceInterface.ts';
+import { _assignPackageExport } from '../globals.js';
+import { DatabaseTransaction, TRANSACTION_STATE } from './DatabaseTransaction.ts';
 
 export function transaction<T>(context: Request, callback: (transaction: TransactionSet) => T, options?: any): T;
 export function transaction<T>(callback: (transaction: TransactionSet) => T): T;
@@ -60,13 +60,13 @@ export function transaction<T>(
 
 _assignPackageExport('transaction', transaction);
 
-transaction.commit = function (context_source) {
-	const transaction = (context_source.getContext?.() || context_source)?.transaction;
+transaction.commit = function (contextSource) {
+	const transaction = (contextSource.getContext?.() || contextSource)?.transaction;
 	if (!transaction) throw new Error('No active transaction is available to commit');
 	return transaction.commit();
 };
-transaction.abort = function (context_source) {
-	const transaction = (context_source.getContext?.() || context_source)?.transaction;
+transaction.abort = function (contextSource) {
+	const transaction = (contextSource.getContext?.() || contextSource)?.transaction;
 	if (!transaction) throw new Error('No active transaction is available to abort');
 	return transaction.abort();
 };

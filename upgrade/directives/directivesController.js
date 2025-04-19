@@ -6,32 +6,32 @@
  *
  * Any time a directive file is added to the project, it must be required in this manager.
  */
-const hdb_utils = require('../../utility/common_utils');
-const hdb_terms = require('../../utility/hdbTerms');
-const hdb_log = require('../../utility/logging/harper_logger');
-const { DATA_VERSION, UPGRADE_VERSION } = hdb_terms.UPGRADE_JSON_FIELD_NAMES_ENUM;
+const hdbUtils = require('../../utility/common_utils.js');
+const hdbTerms = require('../../utility/hdbTerms.ts');
+const hdbLog = require('../../utility/logging/harper_logger.js');
+const { DATA_VERSION, UPGRADE_VERSION } = hdbTerms.UPGRADE_JSON_FIELD_NAMES_ENUM;
 
 // IMPORT VERSION UPGRADE DIRECTIVES HERE
-const version_3_1_0 = require('./3-1-0');
-const version_4_0_0 = require('./4-0-0');
+const version310 = require('./3-1-0.js');
+const version400 = require('./4-0-0.js');
 
 let versions = new Map();
 
 //ALL VERSION UPGRADE DIRECTIVES MUST BE IMPORTED TO THIS MODULE AND ADDED TO VERSIONS MAP
-if (version_3_1_0) {
-	version_3_1_0.forEach((version) => {
+if (version310) {
+	version310.forEach((version) => {
 		versions.set(version.version, version);
 	});
 }
 
-if (version_4_0_0) {
-	version_4_0_0.forEach((version) => {
+if (version400) {
+	version400.forEach((version) => {
 		versions.set(version.version, version);
 	});
 }
 
-if (version_4_0_0) {
-	version_4_0_0.forEach((version) => {
+if (version400) {
+	version400.forEach((version) => {
 		versions.set(version.version, version);
 	});
 }
@@ -43,37 +43,37 @@ if (version_4_0_0) {
  * @returns {this}
  */
 function getSortedVersions() {
-	return [...versions.keys()].sort(hdb_utils.compareVersions);
+	return [...versions.keys()].sort(hdbUtils.compareVersions);
 }
 
 /**
  * Returns an array of version numbers that include/require an upgrade directive be run - this is basically the ordered list
  * of upgrades that will need to be run for the HDB instance to be able to run on the currently installed software version
  *
- * @param upgrade_obj
+ * @param upgradeObj
  * @returns {any[]|*[]}
  */
-function getVersionsForUpgrade(upgrade_obj) {
-	let curr_version = upgrade_obj[DATA_VERSION];
-	let new_version = upgrade_obj[UPGRADE_VERSION];
+function getVersionsForUpgrade(upgradeObj) {
+	let currVersion = upgradeObj[DATA_VERSION];
+	let newVersion = upgradeObj[UPGRADE_VERSION];
 
-	if (hdb_utils.isEmptyOrZeroLength(curr_version) || hdb_utils.isEmptyOrZeroLength(new_version)) {
+	if (hdbUtils.isEmptyOrZeroLength(currVersion) || hdbUtils.isEmptyOrZeroLength(newVersion)) {
 		//we should never get to this scenario but if so, we will return empty array so that server can try to start
 		// with current install and data
-		hdb_log.info(
-			`There is an issue with the version data in your instance of HDB.  Current version data: ${upgrade_obj}`
+		hdbLog.info(
+			`There is an issue with the version data in your instance of HDB.  Current version data: ${upgradeObj}`
 		);
-		hdb_log.error(
+		hdbLog.error(
 			'There was an error when trying to evaluate the version information for your instance.  Trying to ' +
 				'start the server anyways but it may fail. If you continue to have this problem, please contact support@harperdb.io.'
 		);
 		return [];
 	}
 
-	return [...versions.keys()].sort(hdb_utils.compareVersions).filter(function (this_version) {
+	return [...versions.keys()].sort(hdbUtils.compareVersions).filter(function (thisVersion) {
 		return (
-			hdb_utils.compareVersions(this_version, curr_version) > 0 &&
-			hdb_utils.compareVersions(this_version, new_version) <= 0
+			hdbUtils.compareVersions(thisVersion, currVersion) > 0 &&
+			hdbUtils.compareVersions(thisVersion, newVersion) <= 0
 		);
 	});
 }
@@ -82,12 +82,12 @@ function getVersionsForUpgrade(upgrade_obj) {
  * Helper function for determining if there are version upgrades required based on the current status of the data and hdb software
  * versions.  If there are not, it will return false.
  *
- * @param upgrade_obj
+ * @param upgradeObj
  * @returns {boolean} - returns true if an upgrade/s is/are required
  */
-function hasUpgradesRequired(upgrade_obj) {
-	const valid_versions = getVersionsForUpgrade(upgrade_obj);
-	return valid_versions.length > 0;
+function hasUpgradesRequired(upgradeObj) {
+	const validVersions = getVersionsForUpgrade(upgradeObj);
+	return validVersions.length > 0;
 }
 
 /**
@@ -97,7 +97,7 @@ function hasUpgradesRequired(upgrade_obj) {
  * @returns {null|any}
  */
 function getDirectiveByVersion(version) {
-	if (hdb_utils.isEmptyOrZeroLength(version)) {
+	if (hdbUtils.isEmptyOrZeroLength(version)) {
 		return null;
 	}
 	if (versions.has(version)) {

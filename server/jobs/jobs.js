@@ -6,32 +6,32 @@
  */
 
 const uuidV4 = require('uuid').v4;
-const insert = require('../../dataLayer/insert');
-const search = require('../../dataLayer/search');
-const Search_Object = require('../../dataLayer/SearchObject');
-const search_by_hash_obj = require('../../dataLayer/SearchByHashObject');
-const SQL_Search_Object = require('../../dataLayer/SqlSearchObject');
-const hdb_terms = require('../../utility/hdbTerms');
-const JobObject = require('./JobObject');
-const UpdateObject = require('../../dataLayer/UpdateObject');
-const log = require('../../utility/logging/harper_logger');
-const Insert_Object = require('../../dataLayer/InsertObject');
-const hdb_util = require('../../utility/common_utils');
+const insert = require('../../dataLayer/insert.js');
+const search = require('../../dataLayer/search.js');
+const Search_Object = require('../../dataLayer/SearchObject.js');
+const searchByHashObj = require('../../dataLayer/SearchByHashObject.js');
+const SQL_Search_Object = require('../../dataLayer/SqlSearchObject.js');
+const hdbTerms = require('../../utility/hdbTerms.ts');
+const JobObject = require('./JobObject.js');
+const UpdateObject = require('../../dataLayer/UpdateObject.js');
+const log = require('../../utility/logging/harper_logger.js');
+const Insert_Object = require('../../dataLayer/InsertObject.js');
+const hdbUtil = require('../../utility/common_utils.js');
 const { promisify } = require('util');
 const moment = require('moment');
-const hdb_sql = require('../../sqlTranslator');
-const file_load_validator = require('../../validation/fileLoadValidator');
-const bulkDeleteValidator = require('../../validation/bulkDeleteValidator');
-const { deleteTransactionLogsBeforeValidator } = require('../../validation/transactionLogValidator');
-const { handleHDBError, hdb_errors, ClientError } = require('../../utility/errors/hdbError');
-const { HTTP_STATUS_CODES } = hdb_errors;
+const hdbSql = require('../../sqlTranslator');
+const fileLoadValidator = require('../../validation/fileLoadValidator.js');
+const bulkDeleteValidator = require('../../validation/bulkDeleteValidator.js');
+const { deleteTransactionLogsBeforeValidator } = require('../../validation/transactionLogValidator.js');
+const { handleHDBError, hdbErrors, ClientError } = require('../../utility/errors/hdbError.js');
+const { HTTP_STATUS_CODES } = hdbErrors;
 
 //Promisified functions
-const p_search_by_value = search.searchByValue;
-const p_search_search_by_hash = search.searchByHash;
-const p_insert = insert.insert;
-const p_sql_evaluate = promisify(hdb_sql.evaluateSQL);
-const p_insert_update = insert.update;
+const pSearchByValue = search.searchByValue;
+const pSearchSearchByHash = search.searchByHash;
+const pInsert = insert.insert;
+const pSqlEvaluate = promisify(hdbSql.evaluateSQL);
+const pInsertUpdate = insert.update;
 
 module.exports = {
 	addJob,
@@ -41,10 +41,10 @@ module.exports = {
 	getJobById,
 };
 
-async function handleGetJob(json_body) {
-	if (json_body.id === undefined) throw new ClientError("'id' is required");
-	let result = await getJobById(json_body.id);
-	if (!hdb_util.isEmptyOrZeroLength(result)) {
+async function handleGetJob(jsonBody) {
+	if (jsonBody.id === undefined) throw new ClientError("'id' is required");
+	let result = await getJobById(jsonBody.id);
+	if (!hdbUtil.isEmptyOrZeroLength(result)) {
 		result[0] = { ...result[0] };
 		if (result[0].request !== undefined) delete result[0].request;
 		delete result[0]['__createdtime__'];
@@ -54,22 +54,22 @@ async function handleGetJob(json_body) {
 	return result;
 }
 
-async function handleGetJobsByStartDate(json_body) {
+async function handleGetJobsByStartDate(jsonBody) {
 	try {
-		let result = await getJobsInDateRange(json_body);
-		log.trace(`Searching for jobs from ${json_body.from_date} to ${json_body.to_date}`);
+		let result = await getJobsInDateRange(jsonBody);
+		log.trace(`Searching for jobs from ${jsonBody.from_date} to ${jsonBody.to_date}`);
 		if (result && result.length > 0) {
-			for (let curr_res of result) {
-				if (curr_res.start_datetime) {
-					curr_res.start_datetime_converted = moment(curr_res.start_datetime);
+			for (let currRes of result) {
+				if (currRes.start_datetime) {
+					currRes.start_datetime_converted = moment(currRes.start_datetime);
 				}
-				if (curr_res.end_datetime) {
-					curr_res.end_datetime_converted = moment(curr_res.end_datetime);
+				if (currRes.end_datetime) {
+					currRes.end_datetime_converted = moment(currRes.end_datetime);
 				}
 
-				if (curr_res.request !== undefined) delete curr_res.request;
-				delete curr_res['__createdtime__'];
-				delete curr_res['__updatedtime__'];
+				if (currRes.request !== undefined) delete currRes.request;
+				delete currRes['__createdtime__'];
+				delete currRes['__updatedtime__'];
 			}
 		}
 		return result;
@@ -82,62 +82,62 @@ async function handleGetJobsByStartDate(json_body) {
 
 /**
  * Add a job to the job schema.
- * @param json_body - job descriptor defined in the endpoint.
+ * @param jsonBody - job descriptor defined in the endpoint.
  * @returns {Promise<*>}
  */
-async function addJob(json_body) {
+async function addJob(jsonBody) {
 	let result = { message: '', error: '', success: false, createdJob: undefined };
-	if (!json_body || Object.keys(json_body).length === 0 || hdb_util.isEmptyOrZeroLength(json_body.operation)) {
-		let err_msg = `job parameter is invalid`;
-		log.info(err_msg);
-		result.error = err_msg;
+	if (!jsonBody || Object.keys(jsonBody).length === 0 || hdbUtil.isEmptyOrZeroLength(jsonBody.operation)) {
+		let errMsg = `job parameter is invalid`;
+		log.info(errMsg);
+		result.error = errMsg;
 		return result;
 	}
 
 	// Check for valid job type.
-	if (!hdb_terms.JOB_TYPE_ENUM[json_body.operation]) {
-		log.info(`invalid job type specified: ${json_body.operation}.`);
+	if (!hdbTerms.JOB_TYPE_ENUM[jsonBody.operation]) {
+		log.info(`invalid job type specified: ${jsonBody.operation}.`);
 		return result;
 	}
 
 	// Validate csv operation to ensure that action is valid, schema and table exist, and if file load - check file.
-	let operation = json_body.operation;
-	let validation_msg;
+	let operation = jsonBody.operation;
+	let validationMsg;
 	switch (operation) {
-		case hdb_terms.OPERATIONS_ENUM.CSV_FILE_LOAD:
-			validation_msg = file_load_validator.fileObject(json_body);
+		case hdbTerms.OPERATIONS_ENUM.CSV_FILE_LOAD:
+			validationMsg = fileLoadValidator.fileObject(jsonBody);
 			break;
-		case hdb_terms.OPERATIONS_ENUM.CSV_URL_LOAD:
-			validation_msg = file_load_validator.urlObject(json_body);
+		case hdbTerms.OPERATIONS_ENUM.CSV_URL_LOAD:
+			validationMsg = fileLoadValidator.urlObject(jsonBody);
 			break;
-		case hdb_terms.OPERATIONS_ENUM.CSV_DATA_LOAD:
-			validation_msg = file_load_validator.dataObject(json_body);
+		case hdbTerms.OPERATIONS_ENUM.CSV_DATA_LOAD:
+			validationMsg = fileLoadValidator.dataObject(jsonBody);
 			break;
-		case hdb_terms.OPERATIONS_ENUM.IMPORT_FROM_S3:
-			validation_msg = file_load_validator.s3FileObject(json_body);
+		case hdbTerms.OPERATIONS_ENUM.IMPORT_FROM_S3:
+			validationMsg = fileLoadValidator.s3FileObject(jsonBody);
 			break;
-		case hdb_terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE:
-		case hdb_terms.OPERATIONS_ENUM.DELETE_RECORDS_BEFORE:
-			validation_msg = bulkDeleteValidator(json_body, 'date');
+		case hdbTerms.OPERATIONS_ENUM.DELETE_FILES_BEFORE:
+		case hdbTerms.OPERATIONS_ENUM.DELETE_RECORDS_BEFORE:
+			validationMsg = bulkDeleteValidator(jsonBody, 'date');
 			break;
-		case hdb_terms.OPERATIONS_ENUM.DELETE_AUDIT_LOGS_BEFORE:
-			validation_msg = bulkDeleteValidator(json_body, 'timestamp');
+		case hdbTerms.OPERATIONS_ENUM.DELETE_AUDIT_LOGS_BEFORE:
+			validationMsg = bulkDeleteValidator(jsonBody, 'timestamp');
 			break;
-		case hdb_terms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE:
-			validation_msg = deleteTransactionLogsBeforeValidator(json_body);
+		case hdbTerms.OPERATIONS_ENUM.DELETE_TRANSACTION_LOGS_BEFORE:
+			validationMsg = deleteTransactionLogsBeforeValidator(jsonBody);
 			break;
-		case hdb_terms.OPERATIONS_ENUM.RESTART_SERVICE:
-			if (hdb_terms.HDB_PROCESS_SERVICES[json_body.service] === undefined) {
+		case hdbTerms.OPERATIONS_ENUM.RESTART_SERVICE:
+			if (hdbTerms.HDB_PROCESS_SERVICES[jsonBody.service] === undefined) {
 				throw handleHDBError(new Error(), 'Invalid service', HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 			}
 			break;
 		default:
 			break;
 	}
-	if (validation_msg) {
+	if (validationMsg) {
 		throw handleHDBError(
-			validation_msg,
-			validation_msg.message,
+			validationMsg,
+			validationMsg.message,
 			HTTP_STATUS_CODES.BAD_REQUEST,
 			undefined,
 			undefined,
@@ -145,48 +145,48 @@ async function addJob(json_body) {
 		);
 	}
 
-	let new_job = new JobObject();
-	new_job.type =
-		json_body.operation === hdb_terms.OPERATIONS_ENUM.DELETE_RECORDS_BEFORE
-			? hdb_terms.OPERATIONS_ENUM.DELETE_FILES_BEFORE
-			: json_body.operation;
-	new_job.type = json_body.operation;
-	new_job.user = json_body.hdb_user?.username;
-	let search_obj = new Search_Object(
-		hdb_terms.SYSTEM_SCHEMA_NAME,
-		hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME,
+	let newJob = new JobObject();
+	newJob.type =
+		jsonBody.operation === hdbTerms.OPERATIONS_ENUM.DELETE_RECORDS_BEFORE
+			? hdbTerms.OPERATIONS_ENUM.DELETE_FILES_BEFORE
+			: jsonBody.operation;
+	newJob.type = jsonBody.operation;
+	newJob.user = jsonBody.hdb_user?.username;
+	let searchObj = new Search_Object(
+		hdbTerms.SYSTEM_SCHEMA_NAME,
+		hdbTerms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME,
 		'id',
-		new_job.id,
+		newJob.id,
 		'id',
 		['id']
 	);
 
-	let found_job;
+	let foundJob;
 	try {
-		found_job = Array.from(await p_search_by_value(search_obj));
+		foundJob = Array.from(await pSearchByValue(searchObj));
 	} catch (e) {
 		let message = `There was an error inserting a new job: ${e}`;
 		log.error(message);
 		return result;
 	}
 	//TODO: Once https://harperdb.atlassian.net/browse/HDB-501 is resolved, this check is no longer needed.
-	let found_values = Array.isArray(found_job) ? found_job : Object.keys(found_job);
+	let foundValues = Array.isArray(foundJob) ? foundJob : Object.keys(foundJob);
 
 	// It is highly unlikely that we will ever get into this, as a UUID duplicate is very rare.  Just in case we
 	// do have a collision, we regenerate an ID and search again.  The odds of 2 collisions are so astronomically high
 	// that we will just throw an error assuming there is bad input causing the issue.
-	if (found_values && found_values.length > 0) {
-		new_job.id = uuidV4();
+	if (foundValues && foundValues.length > 0) {
+		newJob.id = uuidV4();
 		try {
-			found_job = await p_search_by_value(search_obj);
+			foundJob = await pSearchByValue(searchObj);
 		} catch (e) {
 			let message = `There was an error inserting a new job: ${e}`;
 			log.error(message);
 			return result;
 		}
 		//TODO: Once https://harperdb.atlassian.net/browse/HDB-501 is resolved, this check is no longer needed.
-		found_values = Array.isArray(found_job) ? found_job : Object.keys(found_job);
-		if (found_values && found_values.length > 0) {
+		foundValues = Array.isArray(foundJob) ? foundJob : Object.keys(foundJob);
+		if (foundValues && foundValues.length > 0) {
 			log.error('Error creating a job, could not find a unique job id.');
 			return result;
 		}
@@ -194,59 +194,59 @@ async function addJob(json_body) {
 
 	// We save the request so that the job process can get it and run the operation.
 	// Sending the request via IPC to the job process was causing some messages to be lost under load.
-	new_job.request = json_body;
+	newJob.request = jsonBody;
 
-	let insert_object = new Insert_Object(
-		hdb_terms.SYSTEM_SCHEMA_NAME,
-		hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME,
+	let insertObject = new Insert_Object(
+		hdbTerms.SYSTEM_SCHEMA_NAME,
+		hdbTerms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME,
 		'id',
-		[new_job]
+		[newJob]
 	);
-	let insert_result;
+	let insertResult;
 	try {
-		insert_result = await p_insert(insert_object);
+		insertResult = await pInsert(insertObject);
 	} catch (e) {
-		log.error(`There was an error inserting a job for job type: ${json_body.operation} -- ${e}`);
+		log.error(`There was an error inserting a job for job type: ${jsonBody.operation} -- ${e}`);
 		result.success = false;
 		return result;
 	}
 
-	if (insert_result.inserted_hashes.length === 0) {
-		result.message = `Had a problem creating a job with type ${new_job.operation} and id ${new_job.id}`;
+	if (insertResult.inserted_hashes.length === 0) {
+		result.message = `Had a problem creating a job with type ${newJob.operation} and id ${newJob.id}`;
 	} else {
-		let result_msg = `Created a job with type ${new_job.type} and id ${new_job.id}`;
-		result.message = result_msg;
-		result.createdJob = new_job;
+		let resultMsg = `Created a job with type ${newJob.type} and id ${newJob.id}`;
+		result.message = resultMsg;
+		result.createdJob = newJob;
 		result.success = true;
-		log.trace(result_msg);
+		log.trace(resultMsg);
 	}
 	return result;
 }
 
 /**
  * Get jobs in a range of dates by comparing start date of the job.
- * @param json_body - The inbound message
+ * @param jsonBody - The inbound message
  * @returns {Promise<*>}
  */
-async function getJobsInDateRange(json_body) {
-	let parsed_from_date = moment(json_body.from_date, moment.ISO_8601);
-	let parsed_to_date = moment(json_body.to_date, moment.ISO_8601);
+async function getJobsInDateRange(jsonBody) {
+	let parsedFromDate = moment(jsonBody.from_date, moment.ISO_8601);
+	let parsedToDate = moment(jsonBody.to_date, moment.ISO_8601);
 
-	if (!parsed_from_date.isValid()) {
+	if (!parsedFromDate.isValid()) {
 		throw new Error(`Invalid 'from' date, must be in ISO-8601 format (YYYY-MM-DD).`);
 	}
-	if (!parsed_to_date.isValid()) {
+	if (!parsedToDate.isValid()) {
 		throw new Error(`Invalid 'to' date, must be in ISO-8601 format (YYYY-MM-DD)`);
 	}
 
-	let job_search_sql = `select * from system.hdb_job where start_datetime > '${parsedFromDate.valueOf()}' and start_datetime < '${parsedToDate.valueOf()}'`;
-	let sql_search_obj = new SQL_Search_Object(job_search_sql, json_body.hdb_user);
+	let jobSearchSql = `select * from system.hdb_job where start_datetime > '${parsedFromDate.valueOf()}' and start_datetime < '${parsedToDate.valueOf()}'`;
+	let sqlSearchObj = new SQL_Search_Object(jobSearchSql, jsonBody.hdb_user);
 
 	try {
-		return await p_sql_evaluate(sql_search_obj);
+		return await pSqlEvaluate(sqlSearchObj);
 	} catch (e) {
 		log.error(
-			`there was a problem searching for jobs from date ${json_body.from_date} to date ${json_body.to_date} ${e}`
+			`there was a problem searching for jobs from date ${jsonBody.from_date} to date ${jsonBody.to_date} ${e}`
 		);
 		throw new Error(`there was an error searching for jobs.  Please check the log for details.`);
 	}
@@ -254,54 +254,54 @@ async function getJobsInDateRange(json_body) {
 
 /**
  * Get a job by a specific id
- * @param json_body - The inbound message
+ * @param jsonBody - The inbound message
  * @returns {Promise<*>}
  */
 async function getJobById(job_id) {
-	if (hdb_util.isEmptyOrZeroLength(job_id)) {
-		return hdb_util.errorizeMessage('Invalid job ID specified.');
+	if (hdbUtil.isEmptyOrZeroLength(job_id)) {
+		return hdbUtil.errorizeMessage('Invalid job ID specified.');
 	}
 
-	const search_obj = new search_by_hash_obj(
-		hdb_terms.SYSTEM_SCHEMA_NAME,
-		hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME,
+	const searchObj = new searchByHashObj(
+		hdbTerms.SYSTEM_SCHEMA_NAME,
+		hdbTerms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME,
 		[job_id],
 		['*']
 	);
 
 	try {
-		return await p_search_search_by_hash(search_obj);
+		return await pSearchSearchByHash(searchObj);
 	} catch (e) {
 		let message = `There was an error searching for a job by id: ${job_id} ${e}`;
 		log.error(message);
-		return hdb_util.errorizeMessage(`there was an error searching for jobs.  Please check the log for details.`);
+		return hdbUtil.errorizeMessage(`there was an error searching for jobs.  Please check the log for details.`);
 	}
 }
 
 /**
- * Update the job record specified in the parameter.  If the status is COMPLETE or ERROR, the end_datetime field will be set to now().
- * @param job_object - The object representing the desired record.
+ * Update the job record specified in the parameter.  If the status is COMPLETE or ERROR, the endDatetime field will be set to now().
+ * @param jobObject - The object representing the desired record.
  * @returns {Promise<*>}
  */
-async function updateJob(job_object) {
-	if (Object.keys(job_object).length === 0) {
+async function updateJob(jobObject) {
+	if (Object.keys(jobObject).length === 0) {
 		throw new Error('invalid job object passed to updateJob');
 	}
-	if (hdb_util.isEmptyOrZeroLength(job_object.id)) {
+	if (hdbUtil.isEmptyOrZeroLength(jobObject.id)) {
 		throw new Error('invalid ID passed to updateJob');
 	}
 
 	if (
-		job_object.status === hdb_terms.JOB_STATUS_ENUM.COMPLETE ||
-		job_object.status === hdb_terms.JOB_STATUS_ENUM.ERROR
+		jobObject.status === hdbTerms.JOB_STATUS_ENUM.COMPLETE ||
+		jobObject.status === hdbTerms.JOB_STATUS_ENUM.ERROR
 	) {
-		job_object.end_datetime = moment().valueOf();
+		jobObject.end_datetime = moment().valueOf();
 	}
 
-	let update_object = new UpdateObject(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, [
-		job_object,
+	let updateObject = new UpdateObject(hdbTerms.SYSTEM_SCHEMA_NAME, hdbTerms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, [
+		jobObject,
 	]);
-	let update_result = undefined;
-	update_result = await p_insert_update(update_object);
-	return update_result;
+	let updateResult = undefined;
+	updateResult = await pInsertUpdate(updateObject);
+	return updateResult;
 }

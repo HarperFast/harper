@@ -1,7 +1,7 @@
-import { table, type Table } from '../databases';
+import { table, type Table } from '../databases.ts';
 import crypto from 'crypto';
 import { isIPv6 } from 'node:net';
-import * as log from '../../utility/logging/harper_logger';
+import * as log from '../../utility/logging/harper_logger.js';
 
 export const nodeIds = new Map<string, number>();
 

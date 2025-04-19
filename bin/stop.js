@@ -1,12 +1,12 @@
 'use strict';
 
-const hdb_logger = require('../utility/logging/harper_logger');
-const hdb_terms = require('../utility/hdbTerms');
+const hdbLogger = require('../utility/logging/harper_logger.js');
+const hdbTerms = require('../utility/hdbTerms.ts');
 const util = require('util');
-const child_process = require('child_process');
-const exec = util.promisify(child_process.exec);
-const sys_info = require('../utility/environment/systemInformation');
-const process_man = require('../utility/processManagement/processManagement');
+const childProcess = require('child_process');
+const exec = util.promisify(childProcess.exec);
+const sysInfo = require('../utility/environment/systemInformation.js');
+const processMan = require('../utility/processManagement/processManagement.js');
 
 const STOP_MSG = 'Stopping HarperDB.';
 
@@ -14,20 +14,20 @@ module.exports = stop;
 
 async function stop() {
 	console.log(STOP_MSG);
-	hdb_logger.notify(STOP_MSG);
-	const is_pm2_mode = await process_man.isServiceRegistered(hdb_terms.PROCESS_DESCRIPTORS.HDB);
-	if (is_pm2_mode) {
-		process_man.enterPM2Mode();
-		const services = await process_man.getUniqueServicesList();
+	hdbLogger.notify(STOP_MSG);
+	const isPm2Mode = await processMan.isServiceRegistered(hdbTerms.PROCESS_DESCRIPTORS.HDB);
+	if (isPm2Mode) {
+		processMan.enterPM2Mode();
+		const services = await processMan.getUniqueServicesList();
 		for (const service in services) {
-			await process_man.stop(service);
+			await processMan.stop(service);
 		}
 	}
 
 	// Kill process management daemon
-	await process_man.kill();
+	await processMan.kill();
 
-	const processes = await sys_info.getHDBProcessInfo();
+	const processes = await sysInfo.getHDBProcessInfo();
 	processes.clustering.forEach((p) => {
 		exec(`kill ${p.pid}`);
 	});

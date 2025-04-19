@@ -1,12 +1,12 @@
 'use strict';
 
-const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
+const LMDB_ERRORS = require('../errors/commonErrors.js').LMDB_ERRORS_ENUM;
 // eslint-disable-next-line no-unused-vars
 const lmdb = require('lmdb');
-const lmdb_terms = require('./terms');
+const lmdbTerms = require('./terms.js');
 const Buffer = require('buffer').Buffer;
 
-const { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH } = lmdb_terms;
+const { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH } = lmdbTerms;
 const PRIMITIVES = ['number', 'string', 'symbol', 'boolean', 'bigint'];
 /**
  * validates the env argument
@@ -22,20 +22,20 @@ function validateEnv(env) {
 
 /**
  * converts raw data to it's string version
- * @param raw_value
+ * @param rawValue
  * @returns {Number|String|null}
  */
-function stringifyData(raw_value) {
-	if (raw_value === null || raw_value === undefined) {
+function stringifyData(rawValue) {
+	if (rawValue === null || rawValue === undefined) {
 		return null;
 	}
 
 	let value;
 
 	try {
-		value = typeof raw_value === 'object' ? JSON.stringify(raw_value) : raw_value.toString();
+		value = typeof rawValue === 'object' ? JSON.stringify(rawValue) : rawValue.toString();
 	} catch (e) {
-		value = raw_value.toString();
+		value = rawValue.toString();
 	}
 
 	return value;
@@ -67,8 +67,8 @@ function primitiveCheck(value) {
 /**
  * Return all the indexable values from an attribute, ready to be indexed
  */
-function getIndexedValues(value, index_nulls) {
-	if (value === null) return index_nulls ? [null] : undefined;
+function getIndexedValues(value, indexNulls) {
+	if (value === null) return indexNulls ? [null] : undefined;
 	if (value === undefined) return;
 	if (PRIMITIVES.includes(typeof value)) {
 		if (value.length > MAX_SEARCH_KEY_LENGTH) {
@@ -85,20 +85,20 @@ function getIndexedValues(value, index_nulls) {
 				if (element.length > MAX_SEARCH_KEY_LENGTH)
 					values.push(element.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER);
 				else values.push(element);
-			} else if (element === null && index_nulls) return values.push(null);
+			} else if (element === null && indexNulls) return values.push(null);
 			else if (element instanceof Date) return values.push(element.getTime());
 		}
 	} else if (value instanceof Date) return [value.getTime()];
 	return values;
 }
 
-let last_time = 0; // reported time used to ensure monotonic time.
-let start_time = 0; // the start time of the (current time relative to performance time counter)
+let lastTime = 0; // reported time used to ensure monotonic time.
+let startTime = 0; // the start time of the (current time relative to performance time counter)
 function adjustStartTime() {
 	// calculate the start time
 	// TODO: We may actually want to implement a gradual time shift if the clock time really changes substantially
 	// and for sub-millisecond updates, may want to average them so we can progressively narrow in on true time
-	start_time = Date.now() - performance.now();
+	startTime = Date.now() - performance.now();
 }
 adjustStartTime();
 // we periodically update our start time because clock time can drift (but we still ensure monotonic time)
@@ -109,16 +109,16 @@ setInterval(adjustStartTime, TIME_ADJUSTMENT_INTERVAL).unref();
  * Will use decimal microseconds as necessary to differentiate from previous calls without too much drift.
  */
 function getNextMonotonicTime() {
-	let now = performance.now() + start_time;
-	if (now > last_time) {
+	let now = performance.now() + startTime;
+	if (now > lastTime) {
 		// current time is higher than last time, can safely return it
-		last_time = now;
+		lastTime = now;
 		return now;
 	}
 	// otherwise, we MUST return a higher time than last time, so we increase the time and return it.
 	// increment by as small of count as possible, to minimize how far we are from clock time
-	last_time += 0.000488;
-	return last_time;
+	lastTime += 0.000488;
+	return lastTime;
 }
 module.exports = {
 	validateEnv,

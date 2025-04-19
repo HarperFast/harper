@@ -1,5 +1,5 @@
 import { parse } from 'dotenv';
-import logger from '../utility/logging/harper_logger';
+import logger from '../utility/logging/harper_logger.js';
 
 export function start({ override }: { override: boolean }) {
 	return {

@@ -310,7 +310,7 @@ describe('Test fileLoadValidator module', () => {
 		});
 
 		it('should call validateObject and postValidateChecks with dataObject', () => {
-			let data_constraints = file_load_validator.__get__('data_constraints');
+			let data_constraints = file_load_validator.__get__('dataConstraints');
 			file_load_validator.dataObject(data_object);
 
 			expect(validator_stub).to.have.been.calledWith(data_object, data_constraints);
@@ -324,7 +324,7 @@ describe('Test fileLoadValidator module', () => {
 		});
 
 		it('should call validateObject and postValidateChecks with fileObject', () => {
-			let file_constraints = file_load_validator.__get__('file_constraints');
+			let file_constraints = file_load_validator.__get__('fileConstraints');
 			file_load_validator.fileObject(file_object);
 
 			expect(validator_stub).to.have.been.calledWith(file_object, file_constraints);
