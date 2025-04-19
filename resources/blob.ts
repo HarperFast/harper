@@ -441,8 +441,8 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 		return slicedBlob;
 	}
 	save(targetTable: any): Promise<void> {
-		const store = targetTable?.primaryStore?.rootStore;
-		if (!store) throw new Error('No target table specified');
+		currentStore = targetTable?.primaryStore?.rootStore;
+		if (!currentStore) throw new Error('No target table specified');
 		return saveBlob(this).saving ?? Promise.resolve();
 	}
 }
@@ -852,7 +852,12 @@ export function decodeBlobsWithWrites(callback: () => void, blobCallback?: (blob
  * Decode with a callback for when blobs are encountered, allowing for detecting of blobs
  * @param callback
  */
-export function decodeWithBlobCallback(callback: () => void, blobCallback: (blob: Blob) => void) {
+export function decodeWithBlobCallback(
+	callback: () => void,
+	blobCallback: (blob: Blob) => void,
+	rootStore?: LMDBStore
+) {
+	currentStore = rootStore;
 	try {
 		currentBlobCallback = blobCallback;
 		return callback();
@@ -911,15 +916,15 @@ addExtension({
 		Object.assign(blob, blobInfo[0]); // copy any properties
 		if (typeof blobInfo[1] !== 'object') {
 			// this is a reference, not followed by any buffer
-			if (!currentStore) {
-				throw new Error('No store specified, can not load blob from storage');
-			}
 			storageInfoForBlob.set(blob, {
 				storageIndex: blobInfo[1],
 				fileId: blobInfo[2],
 				store: currentStore,
 			});
 			if (currentBlobCallback) return currentBlobCallback(blob) ?? blob;
+			if (!currentStore) {
+				throw new Error('No store specified, cannot load blob from storage');
+			}
 		} else {
 			storageInfoForBlob.set(blob, {
 				storageIndex: 0,

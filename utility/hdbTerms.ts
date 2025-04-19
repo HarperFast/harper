@@ -510,6 +510,8 @@ export const CONFIG_PARAMS = {
 	ANALYTICS_REPLICATE: 'analytics_replicate',
 	AUTHENTICATION_AUTHORIZELOCAL: 'authentication_authorizeLocal',
 	AUTHENTICATION_CACHETTL: 'authentication_cacheTTL',
+	AUTHENTICATION_COOKIE_DOMAINS: 'authentication_cookie_domains',
+	AUTHENTICATION_COOKIE_EXPIRES: 'authentication_cookie_expires',
 	AUTHENTICATION_ENABLESESSIONS: 'authentication_enableSessions',
 	AUTHENTICATION_OPERATIONTOKENTIMEOUT: 'authentication_operationTokenTimeout',
 	AUTHENTICATION_REFRESHTOKENTIMEOUT: 'authentication_refreshTokenTimeout',

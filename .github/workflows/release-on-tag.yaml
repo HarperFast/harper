@@ -490,6 +490,7 @@ jobs:
       matrix:
         container:
           - 'harpersystems/harper'
+          - 'harpersystems/harper-openshift'
         nodeVersion: [ 16, 22 ]
         include:
           - container: 'harpersystems/harper'

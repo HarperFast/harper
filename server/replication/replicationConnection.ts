@@ -21,7 +21,7 @@ import {
 } from './replicator';
 import env from '../../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms';
-import { HAS_STRUCTURE_UPDATE } from '../../resources/RecordEncoder';
+import { HAS_STRUCTURE_UPDATE, METADATA } from '../../resources/RecordEncoder';
 import { decode, encode, Packr } from 'msgpackr';
 import { WebSocket } from 'ws';
 import { threadId } from 'worker_threads';
@@ -77,13 +77,17 @@ let secure_contexts: Map<string, tls.SecureContext>;
  */
 
 export async function createWebSocket(
-	url,
+	url: string,
 	options: { authorization?: string; rejectUnauthorized?: boolean; serverName?: string }
 ) {
 	const { authorization, rejectUnauthorized } = options || {};
 
 	const node_name = getThisNodeName();
 	let secure_context;
+	if (url == null) {
+		throw new TypeError(`Invalid URL: Expected a string URL for node "${node_name}" but received ${url}`);
+	}
+
 	if (url.includes('wss://')) {
 		if (!secure_contexts) {
 			const SNICallback = createTLSSelector('operations-api');
@@ -303,7 +307,7 @@ export function replicateOverWS(ws, options, authorization) {
 	let last_sequence_id_received, last_sequence_id_committed;
 	let send_ping_interval, receive_ping_timer, last_ping_time, skipped_message_sequence_update_timer;
 	let blobs_timer;
-	const DELAY_CLOSE_TIME = 1000;
+	const DELAY_CLOSE_TIME = 5000;
 	let delayed_close: NodeJS.Timeout;
 	let last_message_time = 0;
 	// track bytes read and written so we can verify if a connection is really dead on pings
@@ -436,7 +440,7 @@ export function replicateOverWS(ws, options, authorization) {
 						for (const table_definition of data) {
 							const database_name = message[2];
 							table_definition.database = database_name;
-							let table;
+							let table: any;
 							if (checkDatabaseAccess(database_name)) {
 								if (database_name === 'system') {
 									// for system connection, we only update new tables
@@ -499,8 +503,10 @@ export function replicateOverWS(ws, options, authorization) {
 					case TABLE_FIXED_STRUCTURE:
 						const table_name = message[3];
 						if (!tables) {
-							if (database_name) logger.error?.(connection_id, 'No tables found for', database_name);
+							if (database_name) logger.error?.(connection_id, 'No database found for', database_name);
 							else logger.error?.(connection_id, 'Database name never received');
+							close();
+							return;
 						}
 						let table = tables[table_name];
 						table = ensureTableIfChanged(
@@ -626,11 +632,22 @@ export function replicateOverWS(ws, options, authorization) {
 							const binary_entry = table.primaryStore.getBinaryFast(record_id);
 							if (binary_entry) {
 								const entry = table.primaryStore.decoder.decode(binary_entry, { valueAsBuffer: true });
+								let valueBuffer = entry.value;
+								if (entry[METADATA] & HAS_BLOBS) {
+									// if there are blobs, we need to find them and send their contents
+									// but first, the decoding process can destroy our buffer above, so we need to copy it
+									valueBuffer = Buffer.from(valueBuffer);
+									decodeWithBlobCallback(
+										() => table.primaryStore.decoder.decode(binary_entry),
+										sendBlobs,
+										table.primaryStore.rootStore
+									);
+								}
 								response_data = encode([
 									GET_RECORD_RESPONSE,
 									request_id,
 									{
-										value: entry.value,
+										value: valueBuffer,
 										expiresAt: entry.expiresAt,
 										version: entry.version,
 										residencyId: entry.residencyId,
@@ -659,10 +676,12 @@ export function replicateOverWS(ws, options, authorization) {
 						const entry = message[2];
 						if (entry?.error) reject(new Error(entry.error));
 						else if (entry) {
-							const record = table_decoders[table_id].decoder.decode(entry.value);
-							entry.value = record;
-							entry.key = key;
-							resolve(entry);
+							decodeBlobsWithWrites(() => {
+								const record = table_decoders[table_id].decoder.decode(entry.value);
+								entry.value = record;
+								entry.key = key;
+								resolve(entry);
+							}, receiveBlobs);
 						} else resolve();
 						awaiting_response.delete(message[1]);
 						break;
@@ -957,65 +976,8 @@ export function replicateOverWS(ws, options, authorization) {
 									// if there are blobs, we need to find them and send their contents
 									decodeWithBlobCallback(
 										() => audit_record.getValue(primary_store),
-										async (blob) => {
-											// found a blob, start sending it
-											const id = getFileId(blob);
-											try {
-												let last_buffer: Buffer;
-												outstanding_blobs_being_sent++;
-												for await (const buffer of blob.stream()) {
-													if (last_buffer) {
-														logger.debug?.('Sending blob chunk', id, 'length', last_buffer.length);
-														// do the previous buffer so we know if it is the last one or not
-														ws.send(
-															encode([
-																BLOB_CHUNK,
-																{
-																	fileId: id,
-																	size: blob.size,
-																},
-																last_buffer,
-															])
-														);
-													}
-													last_buffer = buffer;
-													if (closed) return;
-													if (ws._socket.writableNeedDrain) {
-														logger.debug?.('draining', id);
-														await new Promise((resolve) => ws._socket.once('drain', resolve));
-														logger.debug?.('drained', id);
-													}
-												}
-												logger.debug?.('Sending final blob chunk', id, 'length', last_buffer.length);
-												ws.send(
-													encode([
-														BLOB_CHUNK,
-														{
-															fileId: id,
-															size: blob.size,
-															finished: true,
-														},
-														last_buffer,
-													])
-												);
-											} catch (error) {
-												logger.debug?.('Error sending blob', error);
-												ws.send(
-													encode([
-														BLOB_CHUNK,
-														{
-															fileId: id,
-															finished: true,
-															error: error.toString(),
-														},
-														Buffer.alloc(0),
-													])
-												);
-											} finally {
-												outstanding_blobs_being_sent--;
-												if (outstanding_blobs_being_sent < MAX_OUTSTANDING_BLOBS_BEING_SENT) blob_sent_callback?.();
-											}
-										}
+										sendBlobs,
+										primary_store.rootStore
 									);
 								}
 								// If it starts with the previous local time, we omit that
@@ -1239,59 +1201,20 @@ export function replicateOverWS(ws, options, authorization) {
 					);
 				}
 				try {
-					decodeBlobsWithWrites(
-						() => {
-							event = {
-								table: table_decoder.name,
-								id: audit_record.recordId,
-								type: audit_record.type,
-								nodeId: remote_short_id_to_local_id.get(audit_record.nodeId),
-								residencyList: residency_list,
-								timestamp: audit_record.version,
-								value: audit_record.getValue(table_decoder),
-								user: audit_record.user,
-								beginTxn: begin_txn,
-								expiresAt: audit_record.expiresAt,
-							};
-						},
-						(remote_blob) => {
-							// write the blob to the blob store
-							const blob_id = getFileId(remote_blob);
-							let stream = blobs_in_flight.get(blob_id);
-							logger.debug?.(
-								'Received transaction with blob',
-								blob_id,
-								'has stream',
-								!!stream,
-								'ended',
-								!!stream?.writableEnded
-							);
-							if (stream) {
-								if (stream.writableEnded) {
-									blobs_in_flight.delete(blob_id);
-								}
-							} else {
-								stream = new PassThrough();
-								blobs_in_flight.set(blob_id, stream);
-							}
-							stream.connectedToBlob = true;
-							stream.lastChunk = Date.now();
-							if (remote_blob.size === undefined && stream.expectedSize) remote_blob.size = stream.expectedSize;
-							const local_blob = createBlob(stream, remote_blob);
-
-							// start the save immediately
-							const finished = local_blob.save({ primaryStore: table_subscription_to_replicator.auditStore }); // need to pass in the table, but this is table-like enough for it to get the root store
-							if (finished) {
-								finished.blobId = blob_id;
-								outstanding_blobs_to_finish.push(finished);
-								finished.finally(() => {
-									logger.debug?.(`Finished receiving blob stream ${blob_id}`);
-									outstanding_blobs_to_finish.splice(outstanding_blobs_to_finish.indexOf(finished), 1);
-								});
-							}
-							return local_blob;
-						}
-					);
+					decodeBlobsWithWrites(() => {
+						event = {
+							table: table_decoder.name,
+							id: audit_record.recordId,
+							type: audit_record.type,
+							nodeId: remote_short_id_to_local_id.get(audit_record.nodeId),
+							residencyList: residency_list,
+							timestamp: audit_record.version,
+							value: audit_record.getValue(table_decoder),
+							user: audit_record.user,
+							beginTxn: begin_txn,
+							expiresAt: audit_record.expiresAt,
+						};
+					}, receiveBlobs);
 				} catch (error) {
 					error.message += 'typed structures for current decoder' + JSON.stringify(table_decoder.decoder.typedStructs);
 					throw error;
@@ -1399,11 +1322,102 @@ export function replicateOverWS(ws, options, authorization) {
 		logger.debug?.(connection_id, 'closed', code, reason_buffer?.toString());
 	});
 
-	function recordRemoteNodeSequence() {}
-
 	function close(code?, reason?) {
 		ws.isFinished = true;
 		ws.close(code, reason);
+		options.connection?.emit('finished'); // we want to synchronously indicate that the connection is finished, so it is not accidently reused
+	}
+
+	async function sendBlobs(blob) {
+		// found a blob, start sending it
+		const id = getFileId(blob);
+		try {
+			let last_buffer: Buffer;
+			outstanding_blobs_being_sent++;
+			for await (const buffer of blob.stream()) {
+				if (last_buffer) {
+					logger.debug?.('Sending blob chunk', id, 'length', last_buffer.length);
+					// do the previous buffer so we know if it is the last one or not
+					ws.send(
+						encode([
+							BLOB_CHUNK,
+							{
+								fileId: id,
+								size: blob.size,
+							},
+							last_buffer,
+						])
+					);
+				}
+				last_buffer = buffer;
+				if (ws._socket.writableNeedDrain) {
+					logger.debug?.('draining', id);
+					await new Promise((resolve) => ws._socket.once('drain', resolve));
+					logger.debug?.('drained', id);
+				}
+			}
+			logger.debug?.('Sending final blob chunk', id, 'length', last_buffer.length);
+			ws.send(
+				encode([
+					BLOB_CHUNK,
+					{
+						fileId: id,
+						size: blob.size,
+						finished: true,
+					},
+					last_buffer,
+				])
+			);
+		} catch (error) {
+			logger.debug?.('Error sending blob', error);
+			ws.send(
+				encode([
+					BLOB_CHUNK,
+					{
+						fileId: id,
+						finished: true,
+						error: error.toString(),
+					},
+					Buffer.alloc(0),
+				])
+			);
+		} finally {
+			outstanding_blobs_being_sent--;
+			if (outstanding_blobs_being_sent < MAX_OUTSTANDING_BLOBS_BEING_SENT) blob_sent_callback?.();
+		}
+	}
+	function receiveBlobs(remote_blob: Blob) {
+		// write the blob to the blob store
+		const blob_id = getFileId(remote_blob);
+		let stream = blobs_in_flight.get(blob_id);
+		logger.debug?.('Received transaction with blob', blob_id, 'has stream', !!stream, 'ended', !!stream?.writableEnded);
+		if (stream) {
+			if (stream.writableEnded) {
+				blobs_in_flight.delete(blob_id);
+			}
+		} else {
+			stream = new PassThrough();
+			blobs_in_flight.set(blob_id, stream);
+		}
+		stream.connectedToBlob = true;
+		stream.lastChunk = Date.now();
+		if (remote_blob.size === undefined && stream.expectedSize) remote_blob.size = stream.expectedSize;
+		const local_blob = createBlob(stream, remote_blob);
+
+		// start the save immediately
+		const finished = local_blob.save({
+			// need to pass in the table, but this is table-like enough for it to get the root store
+			primaryStore: table_subscription_to_replicator.auditStore,
+		});
+		if (finished) {
+			finished.blobId = blob_id;
+			outstanding_blobs_to_finish.push(finished);
+			finished.finally(() => {
+				logger.debug?.(`Finished receiving blob stream ${blob_id}`);
+				outstanding_blobs_to_finish.splice(outstanding_blobs_to_finish.indexOf(finished), 1);
+			});
+		}
+		return local_blob;
 	}
 	function sendSubscriptionRequestUpdate() {
 		// once we have received the node name, and we know the database name that this connection is for,
@@ -1517,9 +1531,9 @@ export function replicateOverWS(ws, options, authorization) {
 					const scheduled = performance.now();
 					delayed_close = setTimeout(() => {
 						// if we have not received any messages in a while, we can close the connection
-						if (last_message_time <= scheduled) close(1008, 'No nodes to subscribe to');
+						if (last_message_time <= scheduled) close(1008, 'Connection has no subscriptions and is no longer used');
 						else schedule_close();
-					}, DELAY_CLOSE_TIME);
+					}, DELAY_CLOSE_TIME).unref();
 				};
 				schedule_close();
 			}
@@ -1640,6 +1654,7 @@ export function replicateOverWS(ws, options, authorization) {
 					sent_table_names[request.table.tableId] = true;
 				}
 				ws.send(encode(message));
+				last_message_time = performance.now();
 				awaiting_response.set(request_id, {
 					tableId: request.table.tableId,
 					key: request.id,
@@ -1710,44 +1725,52 @@ export function replicateOverWS(ws, options, authorization) {
 			data_view = new DataView(encoding_buffer.buffer, 0, encoding_buffer.length);
 		}
 	}
+	// Check the attributes in the msg vs the table and if they dont match call ensureTable to create them
+	function ensureTableIfChanged(table_definition: any, existing_table: any) {
+		const db_name = table_definition.database ?? 'data';
+		if (db_name !== 'data' && !databases[db_name]) {
+			logger.warn?.('Database not found', table_definition.database);
+			return;
+		}
+		if (!existing_table) existing_table = {};
+		const was_schema_defined = existing_table.schemaDefined;
+		let has_changes = false;
+		const schema_defined = table_definition.schemaDefined;
+		const attributes = existing_table.attributes || [];
+		for (let i = 0; i < table_definition.attributes?.length; i++) {
+			const ensure_attribute = table_definition.attributes[i];
+			const existing_attribute = attributes.find((attr) => attr.name === ensure_attribute.name);
+			if (!existing_attribute || existing_attribute.type !== ensure_attribute.type) {
+				// a difference in the attribute definitions was found
+				if (was_schema_defined) {
+					// if the schema is defined, we will not change, we will honor our local definition, as it is just going to cause a battle between nodes if there are differences that we try to propagate
+					logger.error?.(
+						`Schema for '${database_name}.${table_definition.table}' is defined locally, but attribute '${ensure_attribute.name}: ${ensure_attribute.type}' from '${
+							remote_node_name
+						}' does not match local attribute ${existing_attribute ? "'" + existing_attribute.name + ': ' + existing_attribute.type + "'" : 'which does not exist'}`
+					);
+				} else {
+					has_changes = true;
+					if (!schema_defined) ensure_attribute.indexed = true; // if it is a dynamic schema, we need to index (all) the attributes
+					if (existing_attribute) attributes[attributes.indexOf(existing_attribute)] = ensure_attribute;
+					else attributes.push(ensure_attribute);
+				}
+			}
+		}
+		if (has_changes) {
+			logger.debug?.('(Re)creating', table_definition);
+			return ensureTable({
+				table: table_definition.table,
+				database: table_definition.database,
+				schemaDefined: table_definition.schemaDefined,
+				attributes,
+				...existing_table,
+			});
+		}
+		return existing_table;
+	}
 }
 
 class Encoder {
 	constructor() {}
-}
-// Check the attributes in the msg vs the table and if they dont match call ensureTable to create them
-function ensureTableIfChanged(table_definition, existing_table) {
-	const db_name = table_definition.database ?? 'data';
-	if (db_name !== 'data' && !databases[db_name]) {
-		logger.warn?.('Database not found', table_definition.database);
-		return;
-	}
-	if (!existing_table) existing_table = {};
-	let has_changes = false;
-	const schema_defined = table_definition.schemaDefined;
-	const attributes = existing_table.attributes || [];
-	for (let i = 0; i < table_definition.attributes?.length; i++) {
-		const ensure_attribute = table_definition.attributes[i];
-		const existing_attribute = attributes[i];
-		if (
-			!existing_attribute ||
-			existing_attribute.name !== ensure_attribute.name ||
-			existing_attribute.type !== ensure_attribute.type
-		) {
-			has_changes = true;
-			if (!schema_defined) ensure_attribute.indexed = true; // if it is a dynamic schema, we need to index (all) the attributes
-			attributes[i] = ensure_attribute;
-		}
-	}
-	if (has_changes) {
-		logger.debug?.('(Re)creating', table_definition);
-		return ensureTable({
-			table: table_definition.table,
-			database: table_definition.database,
-			schemaDefined: table_definition.schemaDefined,
-			attributes,
-			...existing_table,
-		});
-	}
-	return existing_table;
 }

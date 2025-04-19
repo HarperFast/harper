@@ -356,6 +356,7 @@ export function makeTable(options) {
 						case 'delete':
 							return resource._writeDelete(options);
 						case 'publish':
+						case 'message':
 							return resource._writePublish(value, options);
 						case 'invalidate':
 							return resource._writeInvalidate(value, options);
@@ -914,7 +915,7 @@ export function makeTable(options) {
 			}
 			if (this.getId() === null) {
 				if (query?.conditions) return this.search(query); // if there is a query, assume it was meant to be a root level query
-				return {
+				const description = {
 					// basically a describe call
 					records: './', // an href to the records themselves
 					name: table_name,
@@ -922,6 +923,14 @@ export function makeTable(options) {
 					auditSize: audit_store?.getStats().entryCount,
 					attributes,
 				};
+				if (this.getContext()?.includeExpensiveRecordCountEstimates) {
+					return TableResource.getRecordCount().then((record_count) => {
+						description.recordCount = record_count.recordCount;
+						description.estimatedRecordRange = record_count.estimatedRange;
+						return description;
+					});
+				}
+				return description;
 			}
 			if (query?.property) return this.getProperty(query.property);
 			if (this.doesExist() || query?.ensureLoaded === false || this.getContext()?.returnNonexistent) {
@@ -2726,6 +2735,7 @@ export function makeTable(options) {
 				$record: (object, context, entry) => (entry ? { value: object } : object),
 			};
 			for (const attribute of this.attributes) {
+				if (attribute.isPrimaryKey) primary_key_attribute = attribute;
 				attribute.resolve = null; // reset this
 				const relationship = attribute.relationship;
 				const computed = attribute.computed;

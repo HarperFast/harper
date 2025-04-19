@@ -11,7 +11,7 @@ import { Headers, mergeHeaders } from '../server/serverHelpers/Headers';
 import { generateJsonApi } from '../resources/openApi';
 import { SimpleURLQuery } from '../resources/search';
 import type { Context } from '../resources/ResourceInterface';
-
+import { Request } from '../server/serverHelpers/Request';
 interface Response {
 	status?: number;
 	headers?: any;
@@ -240,6 +240,10 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 	http_options = options;
 	if (started) return;
 	started = true;
+	if (options.includeExpensiveRecordCountEstimates) {
+		// If they really want to enable expensive record count estimates
+		Request.prototype.includeExpensiveRecordCountEstimates = true;
+	}
 	resources = options.resources;
 	options.server.http(async (request: Request, next_handler) => {
 		if (request.isWebSocket) return;

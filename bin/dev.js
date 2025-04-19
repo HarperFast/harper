@@ -72,7 +72,10 @@ if (__filename.endsWith('dev.js') && !process.env.HARPER_SKIP_COMPILE) {
 				if (!isRunning) {
 					console.log('Starting background TypeScript compilation...');
 					const tscProcess = spawn('npx', ['tsc', '--watch'], { detached: true, cwd: PACKAGE_ROOT, stdio: 'ignore' });
-					writeFileSync(pidPath, tscProcess.pid.toString());
+					tscProcess.on('error', (error) => {
+						console.error('Error trying to compile TypeScript', error);
+					});
+					if (tscProcess.pid) writeFileSync(pidPath, String(tscProcess.pid), 'utf-8');
 					tscProcess.unref();
 				}
 			}
