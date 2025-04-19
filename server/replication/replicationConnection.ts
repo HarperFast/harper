@@ -304,7 +304,7 @@ export function replicateOverWS(ws, options, authorization) {
 	let last_sequence_id_received, last_sequence_id_committed;
 	let send_ping_interval, receive_ping_timer, last_ping_time, skipped_message_sequence_update_timer;
 	let blobs_timer;
-	const DELAY_CLOSE_TIME = 1000;
+	const DELAY_CLOSE_TIME = 5000;
 	let delayed_close: NodeJS.Timeout;
 	let last_message_time = 0;
 	// track bytes read and written so we can verify if a connection is really dead on pings
@@ -629,8 +629,11 @@ export function replicateOverWS(ws, options, authorization) {
 							const binary_entry = table.primaryStore.getBinaryFast(record_id);
 							if (binary_entry) {
 								const entry = table.primaryStore.decoder.decode(binary_entry, { valueAsBuffer: true });
+								let valueBuffer = entry.value;
 								if (entry[METADATA] & HAS_BLOBS) {
 									// if there are blobs, we need to find them and send their contents
+									// but first, the decoding process can destroy our buffer above, so we need to copy it
+									valueBuffer = Buffer.from(valueBuffer);
 									decodeWithBlobCallback(
 										() => table.primaryStore.decoder.decode(binary_entry),
 										sendBlobs,
@@ -641,7 +644,7 @@ export function replicateOverWS(ws, options, authorization) {
 									GET_RECORD_RESPONSE,
 									request_id,
 									{
-										value: entry.value,
+										value: valueBuffer,
 										expiresAt: entry.expiresAt,
 										version: entry.version,
 										residencyId: entry.residencyId,
@@ -1316,11 +1319,10 @@ export function replicateOverWS(ws, options, authorization) {
 		logger.debug?.(connection_id, 'closed', code, reason_buffer?.toString());
 	});
 
-	function recordRemoteNodeSequence() {}
-
 	function close(code?, reason?) {
 		ws.isFinished = true;
 		ws.close(code, reason);
+		options.connection?.emit('finished'); // we want to synchronously indicate that the connection is finished, so it is not accidently reused
 	}
 
 	async function sendBlobs(blob) {
@@ -1526,9 +1528,9 @@ export function replicateOverWS(ws, options, authorization) {
 					const scheduled = performance.now();
 					delayed_close = setTimeout(() => {
 						// if we have not received any messages in a while, we can close the connection
-						if (last_message_time <= scheduled) close(1008, 'No nodes to subscribe to');
+						if (last_message_time <= scheduled) close(1008, 'Connection has no subscriptions and is no longer used');
 						else schedule_close();
-					}, DELAY_CLOSE_TIME);
+					}, DELAY_CLOSE_TIME).unref();
 				};
 				schedule_close();
 			}
@@ -1649,6 +1651,7 @@ export function replicateOverWS(ws, options, authorization) {
 					sent_table_names[request.table.tableId] = true;
 				}
 				ws.send(encode(message));
+				last_message_time = performance.now();
 				awaiting_response.set(request_id, {
 					tableId: request.table.tableId,
 					key: request.id,
