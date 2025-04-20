@@ -22,7 +22,7 @@ describe('Test logRotator module', () => {
 		for (let i = 1; i < 21; i++) {
 			logger.error('This log is coming from the logRotator unit test. Log number:', i);
 		}
-		await hdb_utils.async_set_timeout(50);
+		await hdb_utils.asyncSetTimeout(50);
 		setTimeout(() => {}, 500);
 		test_file_size = fs.statSync(LOG_FILE_PATH_TEST).size;
 	}
@@ -56,7 +56,7 @@ describe('Test logRotator module', () => {
 			auditInterval: 100,
 			...options,
 		});
-		await hdb_utils.async_set_timeout(300);
+		await hdb_utils.asyncSetTimeout(300);
 		rotator.end();
 		return rotator.getLastRotatedLogPath();
 	}

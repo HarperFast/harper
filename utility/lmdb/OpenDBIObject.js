@@ -1,25 +1,25 @@
 'use strict';
-const env_mngr = require('../environment/environmentManager');
-const terms = require('../../utility/hdbTerms');
-const { RecordEncoder } = require('../../resources/RecordEncoder');
-env_mngr.initSync();
+const envMngr = require('../environment/environmentManager.js');
+const terms = require('../../utility/hdbTerms.ts');
+const { RecordEncoder } = require('../../resources/RecordEncoder.ts');
+envMngr.initSync();
 
-const LMDB_CACHING = env_mngr.get(terms.CONFIG_PARAMS.STORAGE_CACHING) !== false;
+const LMDB_CACHING = envMngr.get(terms.CONFIG_PARAMS.STORAGE_CACHING) !== false;
 
 /**
  * Defines how a DBI will be created/opened
  */
 class OpenDBIObject {
 	/**
-	 * @param {Boolean} dup_sort - if the dbi allows duplicate keys
-	 * @param {Boolean} use_versions - if the dbi uses versions
+	 * @param {Boolean} dupSort - if the dbi allows duplicate keys
+	 * @param {Boolean} useVersions - if the dbi uses versions
 	 */
-	constructor(dup_sort, is_primary = false) {
-		this.dupSort = dup_sort === true;
-		this.encoding = dup_sort ? 'ordered-binary' : 'msgpack';
-		this.useVersions = is_primary;
+	constructor(dupSort, isPrimary = false) {
+		this.dupSort = dupSort === true;
+		this.encoding = dupSort ? 'ordered-binary' : 'msgpack';
+		this.useVersions = isPrimary;
 		this.sharedStructuresKey = Symbol.for('structures');
-		if (is_primary) {
+		if (isPrimary) {
 			this.cache = LMDB_CACHING && { validated: true };
 			this.randomAccessStructure = true;
 			this.freezeData = true;

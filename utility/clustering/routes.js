@@ -1,12 +1,12 @@
 'use strict';
 
-const config_utils = require('../../config/configUtils');
-const hdb_utils = require('../common_utils');
-const hdb_terms = require('../hdbTerms');
-const env_mgr = require('../environment/environmentManager');
-const routes_validator = require('../../validation/clustering/routesValidator');
-const { handleHDBError, hdb_errors } = require('../errors/hdbError');
-const { HTTP_STATUS_CODES } = hdb_errors;
+const configUtils = require('../../config/configUtils.js');
+const hdbUtils = require('../common_utils.js');
+const hdbTerms = require('../hdbTerms.ts');
+const envMgr = require('../environment/environmentManager.js');
+const routesValidator = require('../../validation/clustering/routesValidator.js');
+const { handleHDBError, hdbErrors } = require('../errors/hdbError.js');
+const { HTTP_STATUS_CODES } = hdbErrors;
 
 const SET_ROUTE_SUCCESS_MSG = 'cluster routes successfully set';
 const DELETE_ROUTE_SUCCESS_MSG = 'cluster routes successfully deleted';
@@ -24,41 +24,41 @@ module.exports = {
  * @returns {{set: *[], message: string, skipped: *[]}}
  */
 function setRoutesNats(req) {
-	const all_existing_routes = config_utils.getClusteringRoutes();
-	const existing_routes = req.server === 'hub' ? all_existing_routes.hub_routes : all_existing_routes.leaf_routes;
-	const other_server_routes = req.server === 'hub' ? all_existing_routes.leaf_routes : all_existing_routes.hub_routes;
+	const allExistingRoutes = configUtils.getClusteringRoutes();
+	const existingRoutes = req.server === 'hub' ? allExistingRoutes.hub_routes : allExistingRoutes.leaf_routes;
+	const otherServerRoutes = req.server === 'hub' ? allExistingRoutes.leaf_routes : allExistingRoutes.hub_routes;
 
 	let skipped = [];
 	let set = [];
-	for (let i = 0, r_length = req.routes.length; i < r_length; i++) {
-		const new_route = req.routes[i];
-		new_route.port = hdb_utils.autoCast(new_route.port);
+	for (let i = 0, rLength = req.routes.length; i < rLength; i++) {
+		const newRoute = req.routes[i];
+		newRoute.port = hdbUtils.autoCast(newRoute.port);
 
 		// Check for duplicate routes between servers existing routes and what's in the request.
-		const dup = existing_routes.some(
-			(ext_route) => ext_route.host === new_route.host && ext_route.port === new_route.port
+		const dup = existingRoutes.some(
+			(extRoute) => extRoute.host === newRoute.host && extRoute.port === newRoute.port
 		);
 
 		// Check for duplicates between the other servers routes and the request.
-		const other_dup = other_server_routes.some(
-			(other_route) => other_route.host === new_route.host && other_route.port === new_route.port
+		const otherDup = otherServerRoutes.some(
+			(otherRoute) => otherRoute.host === newRoute.host && otherRoute.port === newRoute.port
 		);
 
-		if (dup || other_dup) {
-			skipped.push(new_route);
+		if (dup || otherDup) {
+			skipped.push(newRoute);
 		} else {
-			existing_routes.push(new_route);
-			set.push(new_route);
+			existingRoutes.push(newRoute);
+			set.push(newRoute);
 		}
 	}
 
 	if (req.server === 'hub') {
-		config_utils.updateConfigValue(
-			hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES,
-			existing_routes
+		configUtils.updateConfigValue(
+			hdbTerms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES,
+			existingRoutes
 		);
 	} else {
-		config_utils.updateConfigValue(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_ROUTES, existing_routes);
+		configUtils.updateConfigValue(hdbTerms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_ROUTES, existingRoutes);
 	}
 
 	return {
@@ -69,28 +69,28 @@ function setRoutesNats(req) {
 }
 
 function setRoutes(req) {
-	const validation = routes_validator.setRoutesValidator(req);
+	const validation = routesValidator.setRoutesValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
-	if (env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+	if (envMgr.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
 		return setRoutesNats(req);
 	}
 
 	let set = [];
 	let skipped = [];
-	const existing_routes = env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_ROUTES) ?? [];
+	const existingRoutes = envMgr.get(hdbTerms.CONFIG_PARAMS.REPLICATION_ROUTES) ?? [];
 	req.routes.forEach((r) => {
-		if (!existsInArray(existing_routes, r)) {
-			existing_routes.push(r);
+		if (!existsInArray(existingRoutes, r)) {
+			existingRoutes.push(r);
 			set.push(r);
 		} else {
 			skipped.push(r);
 		}
 	});
 
-	config_utils.updateConfigValue(hdb_terms.CONFIG_PARAMS.REPLICATION_ROUTES, existing_routes);
+	configUtils.updateConfigValue(hdbTerms.CONFIG_PARAMS.REPLICATION_ROUTES, existingRoutes);
 
 	return {
 		message: SET_ROUTE_SUCCESS_MSG,
@@ -113,42 +113,42 @@ function existsInArray(array, value) {
  * @returns {{hub: (*[]|*), leaf: (*[]|*)}}
  */
 function getRoutes() {
-	if (env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
-		const all_existing_routes = config_utils.getClusteringRoutes();
+	if (envMgr.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+		const allExistingRoutes = configUtils.getClusteringRoutes();
 		return {
-			hub: all_existing_routes.hub_routes,
-			leaf: all_existing_routes.leaf_routes,
+			hub: allExistingRoutes.hub_routes,
+			leaf: allExistingRoutes.leaf_routes,
 		};
 	} else {
-		return env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_ROUTES) ?? [];
+		return envMgr.get(hdbTerms.CONFIG_PARAMS.REPLICATION_ROUTES) ?? [];
 	}
 }
 
 function deleteRoutes(req) {
-	const validation = routes_validator.deleteRoutesValidator(req);
+	const validation = routesValidator.deleteRoutesValidator(req);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
-	if (env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+	if (envMgr.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
 		return deleteRoutesNats(req);
 	}
 
 	let deleted = [];
 	let skipped = [];
-	const existing_routes = env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_ROUTES) ?? [];
-	let updated_routes = [];
+	const existingRoutes = envMgr.get(hdbTerms.CONFIG_PARAMS.REPLICATION_ROUTES) ?? [];
+	let updatedRoutes = [];
 
-	existing_routes.forEach((r) => {
+	existingRoutes.forEach((r) => {
 		if (existsInArray(req.routes, r)) {
 			deleted.push(r);
 		} else {
-			updated_routes.push(r);
+			updatedRoutes.push(r);
 			skipped.push(r);
 		}
 	});
 
-	config_utils.updateConfigValue(hdb_terms.CONFIG_PARAMS.REPLICATION_ROUTES, updated_routes);
+	configUtils.updateConfigValue(hdbTerms.CONFIG_PARAMS.REPLICATION_ROUTES, updatedRoutes);
 
 	return {
 		message: DELETE_ROUTE_SUCCESS_MSG,
@@ -163,60 +163,60 @@ function deleteRoutes(req) {
  * @returns {{deleted: *[], message: string, skipped: *[]}}
  */
 function deleteRoutesNats(req) {
-	const all_existing_routes = config_utils.getClusteringRoutes();
-	let hub_routes = all_existing_routes.hub_routes;
-	let leaf_routes = all_existing_routes.leaf_routes;
+	const allExistingRoutes = configUtils.getClusteringRoutes();
+	let hub_routes = allExistingRoutes.hub_routes;
+	let leaf_routes = allExistingRoutes.leaf_routes;
 	let deleted = [];
 	let skipped = [];
 
 	// Loop through all the routes in the request.
-	let hub_modified = false;
-	let leaf_modified = false;
-	for (let x = 0, r_length = req.routes.length; x < r_length; x++) {
-		const req_route = req.routes[x];
-		let skip_leaf = false;
+	let hubModified = false;
+	let leafModified = false;
+	for (let x = 0, rLength = req.routes.length; x < rLength; x++) {
+		const reqRoute = req.routes[x];
+		let skipLeaf = false;
 
 		// Loop through all existing hub routes, if a match is found remove it from hub routes array.
-		for (let y = 0, h_length = hub_routes.length; y < h_length; y++) {
-			const hub_route = hub_routes[y];
-			if (req_route.host === hub_route.host && req_route.port === hub_route.port) {
+		for (let y = 0, hLength = hub_routes.length; y < hLength; y++) {
+			const hubRoute = hub_routes[y];
+			if (reqRoute.host === hubRoute.host && reqRoute.port === hubRoute.port) {
 				hub_routes.splice(y, 1);
-				skip_leaf = true;
-				hub_modified = true;
-				deleted.push(req_route);
+				skipLeaf = true;
+				hubModified = true;
+				deleted.push(reqRoute);
 				break;
 			}
 		}
 
 		// Loop through all existing leaf routes, if a match is found remove it from leaf routes array.
-		if (!skip_leaf) {
-			let not_found = true;
-			for (let j = 0, l_length = leaf_routes.length; j < l_length; j++) {
-				const leaf_route = leaf_routes[j];
-				if (req_route.host === leaf_route.host && req_route.port === leaf_route.port) {
+		if (!skipLeaf) {
+			let notFound = true;
+			for (let j = 0, lLength = leaf_routes.length; j < lLength; j++) {
+				const leafRoute = leaf_routes[j];
+				if (reqRoute.host === leafRoute.host && reqRoute.port === leafRoute.port) {
 					leaf_routes.splice(j, 1);
-					leaf_modified = true;
-					not_found = false;
-					deleted.push(req_route);
+					leafModified = true;
+					notFound = false;
+					deleted.push(reqRoute);
 					break;
 				}
 			}
 
 			// If the route in the request can't be found in hub or leaf config add it to skipped result array.
-			if (not_found) skipped.push(req_route);
+			if (notFound) skipped.push(reqRoute);
 		}
 	}
 
-	if (hub_modified) {
+	if (hubModified) {
 		// To avoid setting routes config yaml to empty array we set to null if modified array is empty.
-		hub_routes = hdb_utils.isEmptyOrZeroLength(hub_routes) ? null : hub_routes;
-		config_utils.updateConfigValue(hdb_terms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES, hub_routes);
+		hub_routes = hdbUtils.isEmptyOrZeroLength(hub_routes) ? null : hub_routes;
+		configUtils.updateConfigValue(hdbTerms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NETWORK_ROUTES, hub_routes);
 	}
 
-	if (leaf_modified) {
+	if (leafModified) {
 		// To avoid setting routes config yaml to empty array we set to null if modified array is empty.
-		leaf_routes = hdb_utils.isEmptyOrZeroLength(leaf_routes) ? null : leaf_routes;
-		config_utils.updateConfigValue(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_ROUTES, leaf_routes);
+		leaf_routes = hdbUtils.isEmptyOrZeroLength(leaf_routes) ? null : leaf_routes;
+		configUtils.updateConfigValue(hdbTerms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_ROUTES, leaf_routes);
 	}
 
 	return {

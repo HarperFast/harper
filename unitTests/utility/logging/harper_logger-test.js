@@ -122,11 +122,11 @@ describe('Test harper_logger module', () => {
 			sandbox.stub(fs, 'readFileSync').returns('foo');
 			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 			const log_to_file = harper_logger.__get__('log_to_file');
-			const log_to_stdstreams = harper_logger.__get__('log_to_stdstreams');
-			const log_level = harper_logger.__get__('log_level');
-			const log_root = harper_logger.__get__('log_root');
-			const log_name = harper_logger.__get__('log_name');
-			const log_file_path = harper_logger.__get__('log_file_path');
+			const log_to_stdstreams = harper_logger.__get__('logToStdstreams');
+			const log_level = harper_logger.__get__('logLevel');
+			const log_root = harper_logger.__get__('logRoot');
+			const log_name = harper_logger.__get__('logName');
+			const log_file_path = harper_logger.__get__('logFilePath');
 
 			expect(log_to_file).to.be.false;
 			expect(log_to_stdstreams).to.be.true;
@@ -143,7 +143,7 @@ describe('Test harper_logger module', () => {
 			harper_logger.__set__('PropertiesReader', properties_reader_stub);
 			const error_stub = sandbox.stub();
 			const error_rw = harper_logger.__set__('error', error_stub);
-			harper_logger.__set__('hdb_properties', undefined);
+			harper_logger.__set__('hdbProperties', undefined);
 
 			const initLogSettings = harper_logger.__get__('initLogSettings');
 
@@ -275,7 +275,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test info log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
-			harper_logger.__set__('process_name', 'unit_tests');
+			harper_logger.__set__('processName', 'unit_tests');
 			expected_log = `${date_test_string} [${LOG_LEVEL.INFO}]: ${LOG_MSGS_TEST.INFO}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -304,7 +304,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test trace log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
-			harper_logger.__set__('process_name', 'unit_tests');
+			harper_logger.__set__('processName', 'unit_tests');
 			expected_log = `${LOG_LEVEL.TRACE}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.TRACE}"}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -333,7 +333,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test error log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
-			harper_logger.__set__('process_name', 'unit_tests');
+			harper_logger.__set__('processName', 'unit_tests');
 			expected_log = `${LOG_LEVEL.ERROR}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.ERROR}"}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -361,7 +361,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test debug log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
-			harper_logger.__set__('process_name', 'unit_tests');
+			harper_logger.__set__('processName', 'unit_tests');
 			expected_log = `${LOG_LEVEL.DEBUG}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.DEBUG}"}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -389,7 +389,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test notify log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
-			harper_logger.__set__('process_name', 'unit_tests');
+			harper_logger.__set__('processName', 'unit_tests');
 			expected_log = `${LOG_LEVEL.NOTIFY}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.NOTIFY}"}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -417,7 +417,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test fatal log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
-			harper_logger.__set__('process_name', 'unit_tests');
+			harper_logger.__set__('processName', 'unit_tests');
 			expected_log = `${LOG_LEVEL.FATAL}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.FATAL}"}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -445,7 +445,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test warn log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
-			harper_logger.__set__('process_name', 'unit_tests');
+			harper_logger.__set__('processName', 'unit_tests');
 			expected_log = `${LOG_LEVEL.WARN}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.WARN}"}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -753,7 +753,7 @@ describe('Test harper_logger module', () => {
 	it('Test suppressLogging function', () => {
 		const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 		const fake_func = sandbox.stub().callsFake(() => {});
-		const enabled_var = harper_logger.__get__('logging_enabled');
+		const enabled_var = harper_logger.__get__('loggingEnabled');
 		harper_logger.suppressLogging(fake_func);
 		expect(enabled_var).to.be.true;
 		expect(fake_func.called).to.be.true;

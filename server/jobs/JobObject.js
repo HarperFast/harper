@@ -1,6 +1,6 @@
 'use strict';
 
-const hdb_term = require('../../utility/hdbTerms');
+const hdbTerm = require('../../utility/hdbTerms.ts');
 const moment = require('moment');
 const uuidV4 = require('uuid').v4;
 
@@ -14,7 +14,7 @@ class JobObject {
 		this.start_datetime = moment().valueOf();
 		this.created_datetime = moment().valueOf();
 		this.end_datetime = undefined;
-		this.status = hdb_term.JOB_STATUS_ENUM.CREATED;
+		this.status = hdbTerm.JOB_STATUS_ENUM.CREATED;
 		this.message = undefined;
 		this.user = undefined;
 		this.request = undefined;

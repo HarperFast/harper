@@ -1,6 +1,6 @@
 import { dirname } from 'path';
-import { getDatabases, table } from './databases';
-import { alterRole, addRole } from '../security/role';
+import { getDatabases, table } from './databases.ts';
+import { alterRole, addRole } from '../security/role.js';
 import { parseDocument } from 'yaml';
 import { isEqual } from 'lodash';
 const USERS_NOT_DBS = ['super_user', 'cluster_user', 'structure_user'];
@@ -17,12 +17,12 @@ export function start({ ensureTable }) {
 	/**
 	 * This function will handle the roles.yaml file content that has been read, and ensure that the roles are translated to
 	 * the right shape and created in the system database.
-	 * @param roles_content
+	 * @param rolesContent
 	 */
-	async function handleFile(roles_content) {
-		let roles_to_define = parseDocument(roles_content.toString(), { simpleKeys: true }).toJSON();
-		for (let role_name in roles_to_define) {
-			let role = roles_to_define[role_name];
+	async function handleFile(rolesContent) {
+		let rolesToDefine = parseDocument(rolesContent.toString(), { simpleKeys: true }).toJSON();
+		for (let roleName in rolesToDefine) {
+			let role = rolesToDefine[roleName];
 			if (!role.permission) {
 				// we allow the permission object to be collapsed into the root object for convenience
 				role = {
@@ -34,15 +34,15 @@ export function start({ ensureTable }) {
 					delete role.permission.access;
 				}
 			}
-			for (let db_name in role.permission) {
-				if (USERS_NOT_DBS.includes(db_name)) continue;
-				let db = role.permission[db_name];
+			for (let dbName in role.permission) {
+				if (USERS_NOT_DBS.includes(dbName)) continue;
+				let db = role.permission[dbName];
 				if (!db.tables) {
 					// we allow the tables object to be collapsed into the root object for convenience
-					role.permission[db_name] = db = { tables: db };
+					role.permission[dbName] = db = { tables: db };
 				}
-				for (let table_name in db.tables) {
-					let table = db.tables[table_name];
+				for (let tableName in db.tables) {
+					let table = db.tables[tableName];
 					// ensure that all the flags are boolean
 					table.read = Boolean(table.read);
 					table.insert = Boolean(table.insert);
@@ -71,21 +71,21 @@ export function start({ ensureTable }) {
 					} else table.attribute_permissions = null;
 				}
 			}
-			role.role = role.id = role_name;
+			role.role = role.id = roleName;
 			await ensureRole(role);
 		}
 	}
 }
 async function ensureRole(role) {
-	const role_table = getDatabases().system.hdb_role;
+	const roleTable = getDatabases().system.hdb_role;
 	// if the role already exists, we need to update it
-	for await (let existing_role of role_table.search([{ attribute: 'role', value: role.role }])) {
+	for await (let existingRole of roleTable.search([{ attribute: 'role', value: role.role }])) {
 		// use the existing role id so we can update in place. Legacy roles may have a UUID for the id instead of the role name
-		const { __createdtime__, __updatedtime__, ...existing_role_data } = existing_role;
-		if (isEqual(existing_role_data, role)) {
+		const { __createdtime__, __updatedtime__, ...existingRoleData } = existingRole;
+		if (isEqual(existingRoleData, role)) {
 			return;
 		}
-		role.id = existing_role.id;
+		role.id = existingRole.id;
 		return alterRole(role);
 	}
 	return addRole(role);

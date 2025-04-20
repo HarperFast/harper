@@ -462,9 +462,9 @@ describe('Test serverUtilities.js module ', () => {
 
 		it('Test `clean body` log scenario not run for `read_log` operation', async function () {
 			// TODO: Figure out how to make sinon do what rewire was doing (maybe? the test was already skipped)
-			// const logger_stub = serverUtilities.__get__('harper_logger');
+			// const logger_stub = serverUtilities.__get__('harperLogger');
 			// logger_stub.log_level = logger.TRACE;
-			// serverUtilities.__set__('harper_logger', logger_stub);
+			// serverUtilities.__set__('harperLogger', logger_stub);
 			//
 			// const read_log_req = test_utils.deepClone(MOCK_REQUEST);
 			// read_log_req.body.operation = 'read_log';
@@ -476,9 +476,9 @@ describe('Test serverUtilities.js module ', () => {
 
 		it.skip('Should log error thrown within `clean body` log step', async function () {
 			// TODO: Figure out how to make sinon do what rewire was doing (maybe? the test was already skipped)
-			// const logger_stub = serverUtilities.__get__('harper_logger');
+			// const logger_stub = serverUtilities.__get__('harperLogger');
 			// logger_stub.log_level = terms.LOG_LEVELS.TRACE;
-			// serverUtilities.__set__('harper_logger', logger_stub);
+			// serverUtilities.__set__('harperLogger', logger_stub);
 			//
 			// info_log_stub.throws(TEST_ERR);
 			// const test_result = await serverUtilities.processLocalTransaction(MOCK_REQUEST, test_func);

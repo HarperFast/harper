@@ -1,21 +1,21 @@
 'use strict';
 
-const { ResourceBridge } = require('./ResourceBridge');
-const env_mngr = require('../../utility/environment/environmentManager');
-env_mngr.initSync();
+const { ResourceBridge } = require('./ResourceBridge.ts');
+const envMngr = require('../../utility/environment/environmentManager.js');
+envMngr.initSync();
 
-let harper_bridge;
+let harperBridge;
 
 /**
  *
  * @returns {LMDBBridge|undefined}
  */
 function getBridge() {
-	if (harper_bridge) {
-		return harper_bridge;
+	if (harperBridge) {
+		return harperBridge;
 	}
-	harper_bridge = new ResourceBridge();
-	return harper_bridge;
+	harperBridge = new ResourceBridge();
+	return harperBridge;
 }
 
 module.exports = getBridge();

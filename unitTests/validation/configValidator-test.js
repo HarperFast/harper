@@ -563,7 +563,7 @@ describe('Test configValidator module', () => {
 		const set_default_root = config_val.__get__('setDefaultRoot');
 
 		it('Test throws error if hdb_root is undefined', () => {
-			hdb_root_rw = config_val.__set__('hdb_root', undefined);
+			hdb_root_rw = config_val.__set__('hdbRoot', undefined);
 			const helpers = { state: { path: ['customFunctions', 'root'] } };
 
 			let error;
@@ -577,7 +577,7 @@ describe('Test configValidator module', () => {
 		});
 
 		it('Test error throws if config param isnt real', () => {
-			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
+			hdb_root_rw = config_val.__set__('hdbRoot', HDB_ROOT);
 			const helpers = { state: { path: ['customFunctiones', 'root'] } };
 
 			let error;
@@ -593,7 +593,7 @@ describe('Test configValidator module', () => {
 		});
 
 		it('Test that if customFunctions.root is undefined, one is created', () => {
-			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
+			hdb_root_rw = config_val.__set__('hdbRoot', HDB_ROOT);
 			const helpers = { state: { path: ['componentsRoot'] } };
 			const result = set_default_root(parent, helpers);
 
@@ -601,7 +601,7 @@ describe('Test configValidator module', () => {
 		});
 
 		it('Test that if logging.root is undefined, one is created', () => {
-			hdb_root_rw = config_val.__set__('hdb_root', HDB_ROOT);
+			hdb_root_rw = config_val.__set__('hdbRoot', HDB_ROOT);
 			const helpers = { state: { path: ['logging', 'root'] } };
 			const result = set_default_root(parent, helpers);
 

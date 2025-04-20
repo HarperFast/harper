@@ -1,17 +1,17 @@
 import { statfs } from 'node:fs/promises';
-import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads';
-import logger from '../utility/logging/logger';
-import { CONFIG_PARAMS } from '../utility/hdbTerms';
-import env_mgr from '../utility/environment/environmentManager';
-import { convertToMS } from '../utility/common_utils';
-env_mgr.initSync();
+import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
+import logger from '../utility/logging/logger.js';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import envMgr from '../utility/environment/environmentManager.js';
+import { convertToMS } from '../utility/common_utils.js';
+envMgr.initSync();
 const reclamationHandlers = new Map<
 	string,
 	{ priority: number; handler: (priority: number) => Promise<void> | void }[]
 >();
 
-const RECLAMATION_THRESHOLD = env_mgr.get(CONFIG_PARAMS.STORAGE_RECLAMATION_THRESHOLD) ?? 0.4; // 40% remaining free space is the default
-const RECLAMATION_INTERVAL = convertToMS(env_mgr.get(CONFIG_PARAMS.STORAGE_RECLAMATION_INTERVAL)) || 3600000; // 1 hour is the default
+const RECLAMATION_THRESHOLD = envMgr.get(CONFIG_PARAMS.STORAGE_RECLAMATION_THRESHOLD) ?? 0.4; // 40% remaining free space is the default
+const RECLAMATION_INTERVAL = convertToMS(envMgr.get(CONFIG_PARAMS.STORAGE_RECLAMATION_INTERVAL)) || 3600000; // 1 hour is the default
 /**
  * Register a handler to be called when storage free space is low and reclamation is needed. The callback is called
  * with the priority of the reclamation, which is the ratio of the threshold to the available space ratio. If space is

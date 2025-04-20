@@ -2,22 +2,22 @@
  * This module is responsible for managing the list of known nodes in the network. This also tracks replication confirmation
  * when we want to ensure that a transaction has been replicated to multiple nodes before we confirm it.
  */
-import { table } from '../../resources/databases';
-import { forEachReplicatedDatabase, getThisNodeName } from './replicator';
-import { replicationConfirmation } from '../../resources/DatabaseTransaction';
+import { table } from '../../resources/databases.ts';
+import { forEachReplicatedDatabase, getThisNodeName } from './replicator.ts';
+import { replicationConfirmation } from '../../resources/DatabaseTransaction.ts';
 import { isMainThread } from 'worker_threads';
-import { ClientError } from '../../utility/errors/hdbError';
-import env from '../../utility/environment/environmentManager';
-import { CONFIG_PARAMS } from '../../utility/hdbTerms';
-import * as logger from '../../utility/logging/logger';
+import { ClientError } from '../../utility/errors/hdbError.js';
+import env from '../../utility/environment/environmentManager.js';
+import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
+import * as logger from '../../utility/logging/logger.js';
 
-let hdb_node_table;
+let hdbNodeTable;
 server.nodes = [];
 
 export function getHDBNodeTable() {
 	return (
-		hdb_node_table ||
-		(hdb_node_table = table({
+		hdbNodeTable ||
+		(hdbNodeTable = table({
 			table: 'hdb_nodes',
 			database: 'system',
 			attributes: [
@@ -60,14 +60,14 @@ export function getHDBNodeTable() {
 	);
 }
 export function getReplicationSharedStatus(
-	audit_store: any,
-	database_name: string,
+	auditStore: any,
+	databaseName: string,
 	node_name: string,
 	callback?: () => void
 ) {
 	return new Float64Array(
-		audit_store.getUserSharedBuffer(
-			['replicated', database_name, node_name],
+		auditStore.getUserSharedBuffer(
+			['replicated', databaseName, node_name],
 			new ArrayBuffer(32),
 			callback && { callback }
 		)
@@ -107,16 +107,16 @@ export function subscribeToNodeUpdates(listener) {
 		});
 }
 
-export function shouldReplicateToNode(node, database_name) {
+export function shouldReplicateToNode(node, databaseName) {
 	return (
 		((node.replicates === true || node.replicates?.sends) &&
-			databases[database_name] &&
+			databases[databaseName] &&
 			getHDBNodeTable().primaryStore.get(getThisNodeName())?.replicates) ||
-		node.subscriptions?.some((sub) => (sub.database || sub.schema) === database_name && sub.subscribe)
+		node.subscriptions?.some((sub) => (sub.database || sub.schema) === databaseName && sub.subscribe)
 	);
 }
 
-const replication_confirmation_float64s = new Map<string, Map<string, Float64Array>>();
+const replicationConfirmationFloat64s = new Map<string, Map<string, Float64Array>>();
 /** Ensure that the shared user buffers are instantiated so we can communicate through them
  */
 
@@ -124,61 +124,61 @@ type AwaitingReplication = {
 	txnTime: number;
 	onConfirm: () => void;
 };
-export let commits_awaiting_replication: Map<string, AwaitingReplication[]>;
+export let commitsAwaitingReplication: Map<string, AwaitingReplication[]>;
 
-replicationConfirmation((database_name, txnTime, confirmation_count): Promise<void> => {
-	if (confirmation_count > server.nodes.length) {
+replicationConfirmation((databaseName, txnTime, confirmationCount): Promise<void> => {
+	if (confirmationCount > server.nodes.length) {
 		throw new ClientError(
-			`Cannot confirm replication to more nodes (${confirmation_count}) than are in the network (${server.nodes.length})`
+			`Cannot confirm replication to more nodes (${confirmationCount}) than are in the network (${server.nodes.length})`
 		);
 	}
-	if (!commits_awaiting_replication) {
-		commits_awaiting_replication = new Map();
+	if (!commitsAwaitingReplication) {
+		commitsAwaitingReplication = new Map();
 		startSubscriptionToReplications();
 	}
-	let awaiting: AwaitingReplication[] = commits_awaiting_replication.get(database_name);
+	let awaiting: AwaitingReplication[] = commitsAwaitingReplication.get(databaseName);
 	if (!awaiting) {
 		awaiting = [];
-		commits_awaiting_replication.set(database_name, awaiting);
+		commitsAwaitingReplication.set(databaseName, awaiting);
 	}
 	return new Promise((resolve) => {
 		let count = 0;
 		awaiting.push({
 			txnTime,
 			onConfirm: () => {
-				if (++count === confirmation_count) resolve();
+				if (++count === confirmationCount) resolve();
 			},
 		});
 	});
 });
 function startSubscriptionToReplications() {
-	subscribeToNodeUpdates((node_record) => {
-		forEachReplicatedDatabase({}, (database, database_name) => {
-			const node_name = node_record.name;
-			let confirmations_for_node = replication_confirmation_float64s.get(node_name);
-			if (!confirmations_for_node) {
-				replication_confirmation_float64s.set(node_name, (confirmations_for_node = new Map()));
+	subscribeToNodeUpdates((nodeRecord) => {
+		forEachReplicatedDatabase({}, (database, databaseName) => {
+			const node_name = nodeRecord.name;
+			let confirmationsForNode = replicationConfirmationFloat64s.get(node_name);
+			if (!confirmationsForNode) {
+				replicationConfirmationFloat64s.set(node_name, (confirmationsForNode = new Map()));
 			}
-			if (confirmations_for_node.has(database_name)) return;
-			let audit_store;
-			for (const table_name in database) {
-				const table = database[table_name];
-				audit_store = table.auditStore;
-				if (audit_store) break;
+			if (confirmationsForNode.has(databaseName)) return;
+			let auditStore;
+			for (const tableName in database) {
+				const table = database[tableName];
+				auditStore = table.auditStore;
+				if (auditStore) break;
 			}
-			if (audit_store) {
-				const replicated_time = getReplicationSharedStatus(audit_store, database_name, node_name, () => {
-					const updated_time = replicated_time[0];
-					const last_time = replicated_time.lastTime;
-					for (const { txnTime, onConfirm } of commits_awaiting_replication.get(database_name) || []) {
-						if (txnTime > last_time && txnTime <= updated_time) {
+			if (auditStore) {
+				const replicatedTime = getReplicationSharedStatus(auditStore, databaseName, node_name, () => {
+					const updatedTime = replicatedTime[0];
+					const lastTime = replicatedTime.lastTime;
+					for (const { txnTime, onConfirm } of commitsAwaitingReplication.get(databaseName) || []) {
+						if (txnTime > lastTime && txnTime <= updatedTime) {
 							onConfirm();
 						}
 					}
-					replicated_time.lastTime = updated_time;
+					replicatedTime.lastTime = updatedTime;
 				});
-				replicated_time.lastTime = 0;
-				confirmations_for_node.set(database_name, replicated_time);
+				replicatedTime.lastTime = 0;
+				confirmationsForNode.set(databaseName, replicatedTime);
 			}
 		});
 	});
@@ -203,7 +203,7 @@ export function* iterateRoutes(options: { routes: (Route | any)[] }) {
 		} else host = route.hostname ?? route.host;
 		if (host && !url) {
 			// construct a url from the host and port
-			const secure_port =
+			const securePort =
 				env.get(CONFIG_PARAMS.REPLICATION_SECUREPORT) ??
 				(!env.get(CONFIG_PARAMS.REPLICATION_PORT) && env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT));
 			let port: any;
@@ -214,11 +214,11 @@ export function* iterateRoutes(options: { routes: (Route | any)[] }) {
 			// otherwise use the default port for the service
 			else
 				port =
-					secure_port || env.get(CONFIG_PARAMS.REPLICATION_PORT) || env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
-			const last_colon = port?.lastIndexOf?.(':');
-			if (last_colon > 0) port = +port.slice(last_colon + 1).replace(/[\[\]]/g, '');
+					securePort || env.get(CONFIG_PARAMS.REPLICATION_PORT) || env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
+			const lastColon = port?.lastIndexOf?.(':');
+			if (lastColon > 0) port = +port.slice(lastColon + 1).replace(/[\[\]]/g, '');
 
-			url = (secure_port ? 'wss://' : 'ws://') + host + ':' + port; // now construct the full url
+			url = (securePort ? 'wss://' : 'ws://') + host + ':' + port; // now construct the full url
 		}
 		if (!url) {
 			if (isMainThread) console.error('Invalid route, must specify a url or host (with port)');
@@ -230,7 +230,7 @@ export function* iterateRoutes(options: { routes: (Route | any)[] }) {
 			url,
 			subscription: route.subscriptions,
 			routes: route.routes,
-			start_time: route.startTime,
+			startTime: route.startTime,
 			revoked_certificates: route.revokedCertificates,
 			shard: route.shard,
 		};

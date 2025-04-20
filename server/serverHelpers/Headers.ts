@@ -28,42 +28,42 @@ export class Headers extends Map<string, string | string[]> {
 	setIfNone(name, value) {
 		if (typeof name !== 'string') name = '' + name;
 		if (typeof value !== 'string') value = '' + value;
-		const lower_name = name.toLowerCase();
-		if (!super.has(lower_name)) return super.set(lower_name, [name, value]);
+		const lowerName = name.toLowerCase();
+		if (!super.has(lowerName)) return super.set(lowerName, [name, value]);
 	}
-	append(name, value, comma_delimited) {
+	append(name, value, commaDelimited) {
 		if (typeof name !== 'string') name = '' + name;
 		if (typeof value !== 'string') value = '' + value;
-		const lower_name = name.toLowerCase();
-		const existing = super.get(lower_name);
+		const lowerName = name.toLowerCase();
+		const existing = super.get(lowerName);
 		if (existing) {
-			const existing_value = existing[1];
-			if (comma_delimited)
-				value = (typeof existing_value === 'string' ? existing_value : existing_value.join(', ')) + ', ' + value;
-			else if (typeof existing_value === 'string') value = [existing_value, value];
+			const existingValue = existing[1];
+			if (commaDelimited)
+				value = (typeof existingValue === 'string' ? existingValue : existingValue.join(', ')) + ', ' + value;
+			else if (typeof existingValue === 'string') value = [existingValue, value];
 			else {
-				existing_value.push(value);
+				existingValue.push(value);
 				return;
 			}
 		}
-		return super.set(lower_name, [name, value]);
+		return super.set(lowerName, [name, value]);
 	}
 	[Symbol.iterator]() {
 		return super.values()[Symbol.iterator]();
 	}
 }
 
-export function appendHeader(headers, name, value, comma_delimited) {
+export function appendHeader(headers, name, value, commaDelimited) {
 	if (headers.append) {
-		headers.append(name, value, comma_delimited);
+		headers.append(name, value, commaDelimited);
 	} else if (headers.set) {
-		const existing_value = headers.get(name);
-		if (existing_value) {
-			if (comma_delimited)
-				value = (typeof existing_value === 'string' ? existing_value : existing_value.join(', ')) + ', ' + value;
-			else if (typeof existing_value === 'string') value = [existing_value, value];
+		const existingValue = headers.get(name);
+		if (existingValue) {
+			if (commaDelimited)
+				value = (typeof existingValue === 'string' ? existingValue : existingValue.join(', ')) + ', ' + value;
+			else if (typeof existingValue === 'string') value = [existingValue, value];
 			else {
-				existing_value.push(value);
+				existingValue.push(value);
 				return;
 			}
 		}

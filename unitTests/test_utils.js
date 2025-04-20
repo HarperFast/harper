@@ -736,8 +736,8 @@ async function generateTestKeys(test_root) {
 	const keys = rewire('../security/keys');
 	const get_hdb_path_stub = sinon.stub().returns(test_root);
 	const update_config_stub = sinon.stub();
-	const get_hdb_path_rw = keys.__set__('env_manager.getHdbBasePath', get_hdb_path_stub);
-	const update_config_rw = keys.__set__('config_utils.updateConfigValue', update_config_stub);
+	const get_hdb_path_rw = keys.__set__('envManager.getHdbBasePath', get_hdb_path_stub);
+	const update_config_rw = keys.__set__('configUtils.updateConfigValue', update_config_stub);
 
 	let rep_ca;
 	let rep_cert;

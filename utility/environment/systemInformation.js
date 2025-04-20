@@ -3,24 +3,24 @@
 const fs = require('fs-extra');
 const path = require('path');
 const si = require('systeminformation');
-const log = require('../logging/harper_logger');
-const nats_utils = require('../../server/nats/utility/natsUtils');
-const nats_terms = require('../../server/nats/utility/natsTerms');
-const terms = require('../hdbTerms');
-const lmdb_get_table_size = require('../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize');
-const schema_describe = require('../../dataLayer/schemaDescribe');
-const { getThreadInfo } = require('../../server/threads/manageThreads');
-const env = require('./environmentManager');
+const log = require('../logging/harper_logger.js');
+const natsUtils = require('../../server/nats/utility/natsUtils.js');
+const natsTerms = require('../../server/nats/utility/natsTerms.js');
+const terms = require('../hdbTerms.ts');
+const lmdbGetTableSize = require('../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbGetTableSize.js');
+const schemaDescribe = require('../../dataLayer/schemaDescribe.js');
+const { getThreadInfo } = require('../../server/threads/manageThreads.js');
+const env = require('./environmentManager.js');
 env.initSync();
 
 // eslint-disable-next-line no-unused-vars
-const SystemInformationObject = require('./SystemInformationObject');
-const { openEnvironment } = require('../lmdb/environmentUtility');
-const { getSchemaPath } = require('../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths');
-const { database, databases } = require('../../resources/databases');
+const SystemInformationObject = require('./SystemInformationObject.js');
+const { openEnvironment } = require('../lmdb/environmentUtility.js');
+const { getSchemaPath } = require('../../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js');
+const { database, databases } = require('../../resources/databases.ts');
 
 //this will hold the system_information which is static to improve performance
-let system_information_cache = undefined;
+let systemInformationCache = undefined;
 
 module.exports = {
 	getHDBProcessInfo,
@@ -50,30 +50,30 @@ function getTimeInfo() {
 async function getCPUInfo() {
 	try {
 		// eslint-disable-next-line no-unused-vars
-		let { family, model, stepping, revision, voltage, speedmin, speedmax, governor, socket, cache, ...cpu_info } =
+		let { family, model, stepping, revision, voltage, speedmin, speedmax, governor, socket, cache, ...cpuInfo } =
 			await si.cpu();
-		cpu_info.cpu_speed = await si.cpuCurrentSpeed();
+		cpuInfo.cpu_speed = await si.cpuCurrentSpeed();
 
 		let {
 			// eslint-disable-next-line no-unused-vars
-			raw_currentload,
-			raw_currentload_idle,
-			raw_currentload_irq,
-			raw_currentload_nice,
-			raw_currentload_system,
-			raw_currentload_user,
+			rawCurrentload,
+			rawCurrentloadIdle,
+			rawCurrentloadIrq,
+			rawCurrentloadNice,
+			rawCurrentloadSystem,
+			rawCurrentloadUser,
 			cpus,
-			...cpu_current_load
+			...cpuCurrentLoad
 		} = await si.currentLoad();
-		cpu_current_load.cpus = [];
-		cpus.forEach((cpu_data) => {
+		cpuCurrentLoad.cpus = [];
+		cpus.forEach((cpuData) => {
 			// eslint-disable-next-line no-unused-vars
-			let { raw_load, raw_load_idle, raw_load_irq, raw_load_nice, raw_load_system, raw_load_user, ...cpu_load } =
-				cpu_data;
-			cpu_current_load.cpus.push(cpu_load);
+			let { rawLoad, rawLoadIdle, rawLoadIrq, rawLoadNice, rawLoadSystem, rawLoadUser, ...cpuLoad } =
+				cpuData;
+			cpuCurrentLoad.cpus.push(cpuLoad);
 		});
-		cpu_info.current_load = cpu_current_load;
-		return cpu_info;
+		cpuInfo.current_load = cpuCurrentLoad;
+		return cpuInfo;
 	} catch (e) {
 		log.error(`error in getCPUInfo: ${e}`);
 		return {};
@@ -87,8 +87,8 @@ async function getCPUInfo() {
 async function getMemoryInfo() {
 	try {
 		// eslint-disable-next-line no-unused-vars
-		let { buffers, cached, slab, buffcache, ...mem_info } = await si.mem();
-		return Object.assign(mem_info, process.memoryUsage());
+		let { buffers, cached, slab, buffcache, ...memInfo } = await si.mem();
+		return Object.assign(memInfo, process.memoryUsage());
 	} catch (e) {
 		log.error(`error in getMemoryInfo: ${e}`);
 		return {};
@@ -100,16 +100,16 @@ async function getMemoryInfo() {
  * @returns {Promise<{core: [], clustering: []}>}
  */
 async function getHDBProcessInfo() {
-	let harperdb_processes = {
+	let harperdbProcesses = {
 		core: [],
 		clustering: [],
 	};
 	try {
 		let processes = await si.processes();
 
-		let hdb_pid;
+		let hdbPid;
 		try {
-			hdb_pid = Number.parseInt(
+			hdbPid = Number.parseInt(
 				await fs.readFile(path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE), 'utf8')
 			);
 		} catch (err) {
@@ -123,25 +123,25 @@ async function getHDBProcessInfo() {
 		}
 
 		processes.list.forEach((p) => {
-			if (p.pid === hdb_pid) {
-				harperdb_processes.core.push(p);
+			if (p.pid === hdbPid) {
+				harperdbProcesses.core.push(p);
 			} else if (p.name === 'nats-server') {
-				harperdb_processes.clustering.push(p);
+				harperdbProcesses.clustering.push(p);
 			}
 		});
 
-		for (const hdb_p of harperdb_processes.core) {
+		for (const hdbP of harperdbProcesses.core) {
 			for (const p of processes.list) {
-				if (p.pid === hdb_p.parentPid && (p.name === 'PM2' || p.command === 'PM2')) {
-					hdb_p.parent = 'PM2';
+				if (p.pid === hdbP.parentPid && (p.name === 'PM2' || p.command === 'PM2')) {
+					hdbP.parent = 'PM2';
 				}
 			}
 		}
 
-		return harperdb_processes;
+		return harperdbProcesses;
 	} catch (e) {
 		log.error(`error in getHDBProcessInfo: ${e}`);
-		return harperdb_processes;
+		return harperdbProcesses;
 	}
 }
 
@@ -154,12 +154,12 @@ async function getDiskInfo() {
 	try {
 		if (!env.get(terms.CONFIG_PARAMS.OPERATIONSAPI_SYSINFO_DISK)) return disk;
 		// eslint-disable-next-line no-unused-vars
-		let { rIO_sec, wIO_sec, tIO_sec, ms, ...disk_io } = await si.disksIO();
-		disk.io = disk_io;
+		let { rIO_sec, wIO_sec, tIO_sec, ms, ...diskIo } = await si.disksIO();
+		disk.io = diskIo;
 
 		// eslint-disable-next-line no-unused-vars
-		let { rx_sec, tx_sec, wx_sec, ...fs_stats } = await si.fsStats();
-		disk.read_write = fs_stats;
+		let { rxSec, txSec, wxSec, ...fsStats } = await si.fsStats();
+		disk.read_write = fsStats;
 
 		disk.size = await si.fsSize();
 
@@ -188,18 +188,18 @@ async function getNetworkInfo() {
 
 		network.latency = await si.inetChecksite('google.com');
 
-		let n_interfaces = await si.networkInterfaces();
-		n_interfaces.forEach((_interface) => {
+		let nInterfaces = await si.networkInterfaces();
+		nInterfaces.forEach((_interface) => {
 			// eslint-disable-next-line no-unused-vars
-			let { internal, virtual, mtu, dhcp, dnsSuffix, ieee8021xAuth, ieee8021xState, carrier_changes, ...network_int } =
+			let { internal, virtual, mtu, dhcp, dnsSuffix, ieee8021xAuth, ieee8021xState, carrierChanges, ...networkInt } =
 				_interface;
-			network.interfaces.push(network_int);
+			network.interfaces.push(networkInt);
 		});
 
 		let stats = await si.networkStats();
-		stats.forEach((n_stat) => {
+		stats.forEach((nStat) => {
 			// eslint-disable-next-line no-unused-vars
-			let { rx_sec, tx_sec, ms, ...stat } = n_stat;
+			let { rxSec, txSec, ms, ...stat } = nStat;
 			network.stats.push(stat);
 		});
 
@@ -215,21 +215,21 @@ async function getNetworkInfo() {
  * @returns {Promise<Pick<Systeminformation.OsData, "platform" | "distro" | "release" | "codename" | "kernel" | "arch" | "hostname">|{}>}
  */
 async function getSystemInformation() {
-	if (system_information_cache !== undefined) {
-		return system_information_cache;
+	if (systemInformationCache !== undefined) {
+		return systemInformationCache;
 	}
 
 	let system_info = {};
 	try {
 		// eslint-disable-next-line no-unused-vars
-		let { codepage, logofile, serial, build, servicepack, uefi, ...sys_info } = await si.osInfo();
-		system_info = sys_info;
+		let { codepage, logofile, serial, build, servicepack, uefi, ...sysInfo } = await si.osInfo();
+		system_info = sysInfo;
 		let versions = await si.versions('node, npm');
 		system_info.node_version = versions.node;
 		system_info.npm_version = versions.npm;
 
-		system_information_cache = system_info;
-		return system_information_cache;
+		systemInformationCache = system_info;
+		return systemInformationCache;
 	} catch (e) {
 		log.error(`error in getSystemInformation: ${e}`);
 		return system_info;
@@ -238,28 +238,28 @@ async function getSystemInformation() {
 
 async function getTableSize() {
 	//get details for all tables
-	let table_sizes = [];
-	let all_schemas = await schema_describe.describeAll();
-	for (const tables of Object.values(all_schemas)) {
-		for (const table_data of Object.values(tables)) {
-			table_sizes.push(await lmdb_get_table_size(table_data));
+	let tableSizes = [];
+	let allSchemas = await schemaDescribe.describeAll();
+	for (const tables of Object.values(allSchemas)) {
+		for (const tableData of Object.values(tables)) {
+			tableSizes.push(await lmdbGetTableSize(tableData));
 		}
 	}
 
-	return table_sizes;
+	return tableSizes;
 }
 async function getMetrics() {
-	let schema_stats = {};
-	for (let schema_name in databases) {
-		let db_stats = (schema_stats[schema_name] = {});
-		let table_stats = (db_stats.tables = {});
-		for (let table_name in databases[schema_name]) {
+	let schemaStats = {};
+	for (let schemaName in databases) {
+		let dbStats = (schemaStats[schemaName] = {});
+		let tableStats = (dbStats.tables = {});
+		for (let tableName in databases[schemaName]) {
 			try {
-				let table = databases[schema_name][table_name];
-				if (!db_stats.readers) {
-					Object.assign(db_stats, table.primaryStore.rootStore.getStats());
-					delete db_stats.root;
-					db_stats.readers = table.primaryStore.rootStore
+				let table = databases[schemaName][tableName];
+				if (!dbStats.readers) {
+					Object.assign(dbStats, table.primaryStore.rootStore.getStats());
+					delete dbStats.root;
+					dbStats.readers = table.primaryStore.rootStore
 						.readerList()
 						.split(/\n\s+/)
 						.slice(1)
@@ -270,34 +270,34 @@ async function getMetrics() {
 					if (table.auditStore) {
 						const { treeDepth, treeBranchPageCount, treeLeafPageCount, entryCount, overflowPages } =
 							table.auditStore.getStats();
-						db_stats.audit = { treeDepth, treeBranchPageCount, treeLeafPageCount, entryCount, overflowPages };
+						dbStats.audit = { treeDepth, treeBranchPageCount, treeLeafPageCount, entryCount, overflowPages };
 					}
 				}
-				let table_full_stats = table.primaryStore.getStats();
-				let table_pruned_stats = {};
-				for (let store_key of [
+				let tableFullStats = table.primaryStore.getStats();
+				let tablePrunedStats = {};
+				for (let storeKey of [
 					'treeDepth',
 					'treeBranchPageCount',
 					'treeLeafPageCount',
 					'entryCount',
 					'overflowPages',
 				]) {
-					table_pruned_stats[store_key] = table_full_stats[store_key];
+					tablePrunedStats[storeKey] = tableFullStats[storeKey];
 				}
-				table_stats[table_name] = table_pruned_stats;
+				tableStats[tableName] = tablePrunedStats;
 			} catch (error) {
 				// if a schema no longer exists, don't want to throw an error
-				log.notify(`Error getting stats for table ${table_name}: ${error}`);
+				log.notify(`Error getting stats for table ${tableName}: ${error}`);
 			}
 		}
 	}
-	return schema_stats;
+	return schemaStats;
 }
 
 async function getNatsStreamInfo() {
 	if (env.get(terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
-		const { jsm } = await nats_utils.getNATSReferences();
-		const streams = await nats_utils.listStreams();
+		const { jsm } = await natsUtils.getNATSReferences();
+		const streams = await natsUtils.listStreams();
 		const res = [];
 		for (const stream of streams) {
 			const consumers = [];
@@ -313,7 +313,7 @@ async function getNatsStreamInfo() {
 				});
 			}
 
-			const stream_info = {
+			const streamInfo = {
 				stream_name: stream.config.name,
 				database: stream.config.subjects[0].split('.')[1],
 				table: stream.config.subjects[0].split('.')[2],
@@ -321,7 +321,7 @@ async function getNatsStreamInfo() {
 				consumers,
 			};
 
-			res.push(stream_info);
+			res.push(streamInfo);
 		}
 
 		return res;
@@ -330,12 +330,12 @@ async function getNatsStreamInfo() {
 
 /**
  *
- * @param {SystemInformationOperation} system_info_op
+ * @param {SystemInformationOperation} systemInfoOp
  * @returns {Promise<SystemInformationObject>}
  */
-async function systemInformation(system_info_op) {
+async function systemInformation(systemInfoOp) {
 	let response = new SystemInformationObject();
-	if (!Array.isArray(system_info_op.attributes) || system_info_op.attributes.length === 0) {
+	if (!Array.isArray(systemInfoOp.attributes) || systemInfoOp.attributes.length === 0) {
 		response.system = await getSystemInformation();
 		response.time = getTimeInfo();
 		response.cpu = await getCPUInfo();
@@ -350,8 +350,8 @@ async function systemInformation(system_info_op) {
 		return response;
 	}
 
-	for (let x = 0; x < system_info_op.attributes.length; x++) {
-		switch (system_info_op.attributes[x]) {
+	for (let x = 0; x < systemInfoOp.attributes.length; x++) {
+		switch (systemInfoOp.attributes[x]) {
 			case 'system':
 				response.system = await getSystemInformation();
 				break;

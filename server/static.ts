@@ -1,6 +1,6 @@
 import send from 'send';
 import { realpathSync } from 'fs';
-import serve_static from 'serve-static';
+import serveStatic from 'serve-static';
 const paths = new Map<string, string>();
 let started;
 export function start(options: {
@@ -12,14 +12,14 @@ export function start(options: {
 	resources: any;
 }) {
 	return {
-		handleDirectory(url_path, dir_path) {
-			if (url_path === '/') {
-				const serve_dir = serve_static(dir_path, options);
-				options.server.http(async (request: Request, next_handler) => {
+		handleDirectory(urlPath, dirPath) {
+			if (urlPath === '/') {
+				const serveDir = serveStatic(dirPath, options);
+				options.server.http(async (request: Request, nextHandler) => {
 					if (!request.isWebSocket) {
 						return new Promise((resolve) =>
-							serve_dir(request._nodeRequest, request._nodeResponse, () => {
-								resolve(next_handler(request));
+							serveDir(request._nodeRequest, request._nodeResponse, () => {
+								resolve(nextHandler(request));
 							})
 						);
 					}
@@ -27,27 +27,27 @@ export function start(options: {
 				return true;
 			}
 		},
-		handleFile(contents, url_path, file_path) {
+		handleFile(contents, urlPath, filePath) {
 			if (!started) {
 				// don't start until we actually have a file to handle
 				started = true;
 				options.server.http(
-					async (request: Request, next_handler) => {
+					async (request: Request, nextHandler) => {
 						if (!request.isWebSocket) {
-							const file_path = paths.get(request.pathname);
-							if (file_path) {
+							const filePath = paths.get(request.pathname);
+							if (filePath) {
 								return {
 									handlesHeaders: true,
-									body: send(request, realpathSync(file_path)),
+									body: send(request, realpathSync(filePath)),
 								};
 							}
 						}
-						return next_handler(request);
+						return nextHandler(request);
 					},
 					{ runFirst: true }
 				);
 			}
-			paths.set(url_path, file_path);
+			paths.set(urlPath, filePath);
 		},
 	};
 }

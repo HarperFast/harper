@@ -1,6 +1,6 @@
 import { Socket } from 'net';
-import { _assignPackageExport } from '../globals';
-import type { Value } from '../resources/analytics/write';
+import { _assignPackageExport } from '../globals.js';
+import type { Value } from '../resources/analytics/write.ts';
 
 /**
  * This is the central interface by which we define entry points for different server protocol plugins to listen for

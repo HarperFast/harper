@@ -1,15 +1,15 @@
-const validator = require('./validationWrapper');
+const validator = require('./validationWrapper.js');
 const Joi = require('joi');
-const { hdb_table, hdb_database } = require('./common_validators');
+const { hdbTable, hdbDatabase } = require('./common_validators.js');
 
-const delete_schema = Joi.object({
-	schema: hdb_database,
-	database: hdb_database,
-	table: hdb_table,
+const deleteSchema = Joi.object({
+	schema: hdbDatabase,
+	database: hdbDatabase,
+	table: hdbTable,
 	hash_values: Joi.array().required(),
 	ids: Joi.array(),
 });
 
-module.exports = function (delete_object) {
-	return validator.validateBySchema(delete_object, delete_schema);
+module.exports = function (deleteObject) {
+	return validator.validateBySchema(deleteObject, deleteSchema);
 };

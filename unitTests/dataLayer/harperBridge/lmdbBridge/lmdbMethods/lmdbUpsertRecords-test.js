@@ -122,7 +122,7 @@ describe('Test lmdbUpsertRecords module', () => {
 	before(() => {
 		date_stub = sandbox.stub(Date, 'now').returns(TIMESTAMP);
 		rw_process_rows = lmdb_process_rows.__set__('uuid', uuid_v4_stub);
-		rw_upsert_records = lmdb_upsert_records.__set__('lmdb_process_rows', lmdb_process_rows);
+		rw_upsert_records = lmdb_upsert_records.__set__('lmdbProcessRows', lmdb_process_rows);
 	});
 
 	after(() => {

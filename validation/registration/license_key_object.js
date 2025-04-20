@@ -1,4 +1,4 @@
-const validator = require('../validationWrapper');
+const validator = require('../validationWrapper.js');
 const validate = require('validate.js');
 const moment = require('moment');
 
@@ -38,6 +38,6 @@ const constraints = {
 	},
 };
 
-module.exports = function (license_object) {
-	return validator.validateObject(license_object, constraints);
+module.exports = function (licenseObject) {
+	return validator.validateObject(licenseObject, constraints);
 };

@@ -6,11 +6,11 @@ const os = require('os');
 const { boolean, string, number, array } = Joi.types();
 const { totalmem } = require('os');
 const path = require('path');
-const hdb_logger = require('../utility/logging/harper_logger');
-const hdb_utils = require('../utility/common_utils');
-const certificates_terms = require('../utility/terms/certificates');
-const hdb_terms = require('../utility/hdbTerms');
-const validator = require('./validationWrapper');
+const hdbLogger = require('../utility/logging/harper_logger.js');
+const hdbUtils = require('../utility/common_utils.js');
+const certificatesTerms = require('../utility/terms/certificates.js');
+const hdbTerms = require('../utility/hdbTerms.ts');
+const validator = require('./validationWrapper.js');
 
 const DEFAULT_LOG_FOLDER = 'log';
 const DEFAULT_COMPONENTS_FOLDER = 'components';
@@ -24,126 +24,126 @@ const INVALID_INTERVAL_VALUE_MSG =
 const UNDEFINED_OPS_API = 'rootPath config parameter is undefined';
 const UNDEFINED_NATS_ENABLED = 'clustering.enabled config parameter is undefined';
 
-const port_constraints = Joi.alternatives([number.min(0), string])
+const portConstraints = Joi.alternatives([number.min(0), string])
 	.optional()
 	.empty(null);
-const route_constraints = Joi.alternatives([
+const routeConstraints = Joi.alternatives([
 	array
 		.items(
 			string,
 			{
 				host: string.required(),
-				port: port_constraints,
+				port: portConstraints,
 			},
 			{
 				hostname: string.required(),
-				port: port_constraints,
+				port: portConstraints,
 			}
 		)
 		.empty(null),
 	array.items(string),
 ]);
 
-let hdb_root;
-let skip_fs_val = false;
+let hdbRoot;
+let skipFsVal = false;
 
 module.exports = {
 	configValidator,
 	routesValidator,
-	route_constraints,
+	routeConstraints,
 };
 
-function configValidator(config_json, skip_fs_validation = false) {
-	skip_fs_val = skip_fs_validation;
-	hdb_root = config_json.rootPath;
-	if (hdb_utils.isEmpty(hdb_root)) {
+function configValidator(configJson, skipFsValidation = false) {
+	skipFsVal = skipFsValidation;
+	hdbRoot = configJson.rootPath;
+	if (hdbUtils.isEmpty(hdbRoot)) {
 		throw UNDEFINED_OPS_API;
 	}
 
-	const enabled_constraints = boolean.optional();
-	const threads_constraints = number.min(0).max(1000).empty(null).default(setDefaultThreads);
-	const root_constraints = string
+	const enabledConstraints = boolean.optional();
+	const threadsConstraints = number.min(0).max(1000).empty(null).default(setDefaultThreads);
+	const rootConstraints = string
 		.pattern(/^[\\\/]$|([\\\/a-zA-Z_0-9\:-]+)+$/, 'directory path')
 		.empty(null)
 		.default(setDefaultRoot);
-	const pem_file_constraints = string.optional().empty(null);
-	const nats_term_constraints = string
+	const pemFileConstraints = string.optional().empty(null);
+	const natsTermConstraints = string
 		.pattern(/^[^\s.,*>]+$/)
 		.messages({ 'string.pattern.base': '{:#label} invalid, must not contain ., * or >' })
 		.empty(null)
 		.required();
-	const clustering_stream_path_constraints = Joi.string().empty(null).default(setDefaultRoot);
-	const storage_path_constraints = Joi.custom(validatePath).empty(null).default(setDefaultRoot);
+	const clusteringStreamPathConstraints = Joi.string().empty(null).default(setDefaultRoot);
+	const storagePathConstraints = Joi.custom(validatePath).empty(null).default(setDefaultRoot);
 
-	const clustering_enabled = config_json.clustering?.enabled;
-	const tls_constraints = Joi.object({
-		certificate: pem_file_constraints,
-		certificateAuthority: pem_file_constraints,
-		privateKey: pem_file_constraints,
+	const clusteringEnabled = configJson.clustering?.enabled;
+	const tlsConstraints = Joi.object({
+		certificate: pemFileConstraints,
+		certificateAuthority: pemFileConstraints,
+		privateKey: pemFileConstraints,
 	});
 
 	// If clustering is enabled validate clustering config
-	let clustering_validation_schema;
-	if (clustering_enabled === true) {
-		clustering_validation_schema = Joi.object({
-			enabled: enabled_constraints,
+	let clusteringValidationSchema;
+	if (clusteringEnabled === true) {
+		clusteringValidationSchema = Joi.object({
+			enabled: enabledConstraints,
 			hubServer: Joi.object({
 				cluster: Joi.object({
 					name: Joi.required().empty(null),
 					network: Joi.object({
-						port: port_constraints,
-						routes: route_constraints,
+						port: portConstraints,
+						routes: routeConstraints,
 					}).required(),
 				}).required(),
 				leafNodes: Joi.object({
 					network: Joi.object({
-						port: port_constraints,
+						port: portConstraints,
 					}).required(),
 				}).required(),
 				network: Joi.object({
-					port: port_constraints,
+					port: portConstraints,
 				}).required(),
 			}).required(),
 			leafServer: Joi.object({
 				network: Joi.object({
-					port: port_constraints,
-					routes: route_constraints,
+					port: portConstraints,
+					routes: routeConstraints,
 				}).required(),
 				streams: Joi.object({
-					// Max age must be above duplicate_window stream setting
+					// Max age must be above duplicateWindow stream setting
 					maxAge: number.min(120).allow(null).optional(),
 					maxBytes: number.min(1).allow(null).optional(),
 					maxMsgs: number.min(1).allow(null).optional(),
-					path: clustering_stream_path_constraints,
+					path: clusteringStreamPathConstraints,
 				}).required(),
 			}).required(),
 			logLevel: Joi.valid('error', 'warn', 'info', 'debug', 'trace'),
-			nodeName: nats_term_constraints,
+			nodeName: natsTermConstraints,
 			republishMessages: boolean.optional(),
 			databaseLevel: boolean.optional(),
 			tls: Joi.object({
-				certificate: pem_file_constraints,
-				certificateAuthority: pem_file_constraints,
-				privateKey: pem_file_constraints,
+				certificate: pemFileConstraints,
+				certificateAuthority: pemFileConstraints,
+				privateKey: pemFileConstraints,
 				insecure: boolean.required(),
 				verify: boolean.optional(),
 			}),
 			user: string.optional().empty(null),
 		}).optional();
 	} else {
-		clustering_validation_schema = Joi.object({
-			enabled: enabled_constraints,
+		clusteringValidationSchema = Joi.object({
+			enabled: enabledConstraints,
 			// tls needs to be here to set defaults if clustering disabled
 			tls: Joi.object({
-				certificate: pem_file_constraints,
-				certificateAuthority: pem_file_constraints,
-				privateKey: pem_file_constraints,
+				certificate: pemFileConstraints,
+				certificateAuthority: pemFileConstraints,
+				privateKey: pemFileConstraints,
 				insecure: boolean.optional(),
 			}),
 		}).optional();
 	}
 
-	const config_schema = Joi.object({
+	const configSchema = Joi.object({
 		authentication: Joi.alternatives(
 			Joi.object({
 				authorizeLocal: boolean,
@@ -164,17 +164,17 @@ function configValidator(config_json, skip_fs_validation = false) {
 		replication: Joi.object({
 			hostname: Joi.alternatives(string, number).optional().empty(null),
 			url: string.optional().empty(null),
-			port: port_constraints,
-			securePort: port_constraints,
+			port: portConstraints,
+			securePort: portConstraints,
 			routes: array.optional().empty(null),
 			databases: Joi.alternatives(string, array),
 			enableRootCAs: boolean.optional(),
 			copyTablesToCatchUp: boolean.optional(),
 		}).optional(),
-		componentsRoot: root_constraints.optional(),
-		clustering: clustering_validation_schema,
+		componentsRoot: rootConstraints.optional(),
+		clustering: clusteringValidationSchema,
 		localStudio: Joi.object({
-			enabled: enabled_constraints,
+			enabled: enabledConstraints,
 		}).required(),
 		logging: Joi.object({
 			auditAuthEvents: Joi.object({
@@ -190,7 +190,7 @@ function configValidator(config_json, skip_fs_validation = false) {
 				maxSize: string.custom(validateRotationMaxSize).optional().empty(null),
 				path: string.optional().empty(null).default(setDefaultRoot),
 			}).required(),
-			root: root_constraints,
+			root: rootConstraints,
 			stdStreams: boolean.required(),
 			auditLog: boolean.required(),
 		}).required(),
@@ -200,23 +200,23 @@ function configValidator(config_json, skip_fs_validation = false) {
 				corsAccessList: array.optional(),
 				headersTimeout: number.min(1).optional(),
 				keepAliveTimeout: number.min(1).optional(),
-				port: port_constraints,
+				port: portConstraints,
 				domainSocket: Joi.optional().empty('hdb/operations-server').default(setDefaultRoot),
-				securePort: port_constraints,
+				securePort: portConstraints,
 				timeout: number.min(1).optional(),
 			}).optional(),
-			tls: Joi.alternatives([Joi.array().items(tls_constraints), tls_constraints]),
+			tls: Joi.alternatives([Joi.array().items(tlsConstraints), tlsConstraints]),
 		}).required(),
 		rootPath: string.pattern(/^[\\\/]$|([\\\/a-zA-Z_0-9\:-]+)+$/, 'directory path').required(),
 		mqtt: Joi.object({
 			network: Joi.object({
-				port: port_constraints,
-				securePort: port_constraints,
+				port: portConstraints,
+				securePort: portConstraints,
 				mtls: Joi.alternatives([
 					boolean.optional(),
 					Joi.object({
 						user: string.optional(),
-						certificateAuthority: pem_file_constraints,
+						certificateAuthority: pemFileConstraints,
 						required: boolean.optional(),
 					}),
 				]),
@@ -229,23 +229,23 @@ function configValidator(config_json, skip_fs_validation = false) {
 			cors: boolean.optional(),
 			corsAccessList: array.optional(),
 			headersTimeout: number.min(1).optional(),
-			port: port_constraints,
-			securePort: port_constraints,
+			port: portConstraints,
+			securePort: portConstraints,
 			maxHeaderSize: number.optional(),
 			mtls: Joi.alternatives([
 				boolean.optional(),
 				Joi.object({
 					user: string.optional(),
-					certificateAuthority: pem_file_constraints,
+					certificateAuthority: pemFileConstraints,
 					required: boolean.optional(),
 				}),
 			]),
 			threadRange: Joi.alternatives([array.optional(), string.optional()]),
 		}).required(),
 		threads: Joi.alternatives(
-			threads_constraints.optional(),
+			threadsConstraints.optional(),
 			Joi.object({
-				count: threads_constraints.optional(),
+				count: threadsConstraints.optional(),
 				debug: Joi.alternatives(
 					boolean.optional(),
 					Joi.object({
@@ -268,18 +268,18 @@ function configValidator(config_json, skip_fs_validation = false) {
 			compactOnStart: boolean.optional(),
 			compactOnStartKeepBackup: boolean.optional(),
 			noReadAhead: boolean.optional(),
-			path: storage_path_constraints,
+			path: storagePathConstraints,
 			prefetchWrites: boolean.optional(),
 			maxFreeSpaceToLoad: number.optional(),
 			maxFreeSpaceToRetain: number.optional(),
 		}).required(),
 		ignoreScripts: boolean.optional(),
-		tls: Joi.alternatives([Joi.array().items(tls_constraints), tls_constraints]),
+		tls: Joi.alternatives([Joi.array().items(tlsConstraints), tlsConstraints]),
 	});
 
 	// Not using the validation wrapper here because we need the result if validation is successful because
 	// there is default values set as part of validation.
-	return config_schema.validate(config_json, {
+	return configSchema.validate(configJson, {
 		allowUnknown: true,
 		abortEarly: false,
 		errors: { wrap: { label: "'" } },
@@ -287,22 +287,22 @@ function configValidator(config_json, skip_fs_validation = false) {
 }
 
 // This function is used to validate existence of paths passed as an argument
-function doesPathExist(path_to_check) {
-	if (skip_fs_val) return null;
-	let exists = fs.existsSync(path_to_check);
+function doesPathExist(pathToCheck) {
+	if (skipFsVal) return null;
+	let exists = fs.existsSync(pathToCheck);
 	if (exists) {
 		return null;
 	}
 
-	return `Specified path ${path_to_check} does not exist.`;
+	return `Specified path ${pathToCheck} does not exist.`;
 }
 
 function validatePemFile(value, helpers) {
 	if (value === null) return;
 
-	const does_exist_msg = doesPathExist(value);
-	if (does_exist_msg) {
-		return helpers.message(does_exist_msg);
+	const doesExistMsg = doesPathExist(value);
+	if (doesExistMsg) {
+		return helpers.message(doesExistMsg);
 	}
 
 	return value;
@@ -311,9 +311,9 @@ function validatePemFile(value, helpers) {
 function validatePath(value, helpers) {
 	Joi.assert(value, string.pattern(/^[\\\/]$|([\\\/a-zA-Z_0-9\:-]+)+$/, 'directory path'));
 
-	const does_exist_msg = doesPathExist(value);
-	if (does_exist_msg) {
-		return helpers.message(does_exist_msg);
+	const doesExistMsg = doesPathExist(value);
+	if (doesExistMsg) {
+		return helpers.message(doesExistMsg);
 	}
 }
 
@@ -346,23 +346,23 @@ function validateRotationInterval(value, helpers) {
 }
 
 function setDefaultThreads(parent, helpers) {
-	const config_param = helpers.state.path.join('.');
+	const configParam = helpers.state.path.join('.');
 	let processors = os.cpus().length;
 
 	// default to one less than the number of logical CPU/processors so we can have good concurrency with the
 	// ingest process and any extra processes (jobs, reply, etc.).
-	let num_processes = processors - 1;
+	let numProcesses = processors - 1;
 	// But if only two or less processors, keep two processes so we have some level of concurrency fairness
-	if (num_processes <= 2) num_processes = 2;
-	let available_memory = process.constrainedMemory?.() || totalmem(); // used constrained memory if it is available
+	if (numProcesses <= 2) numProcesses = 2;
+	let availableMemory = process.constrainedMemory?.() || totalmem(); // used constrained memory if it is available
 	// and lower than total memory
-	available_memory = Math.round(Math.min(available_memory, totalmem()) / 1000000);
+	availableMemory = Math.round(Math.min(availableMemory, totalmem()) / 1000000);
 	// (available memory -750MB) / 300MB
-	num_processes = Math.max(Math.min(num_processes, Math.round((available_memory - 750) / 300)), 1);
-	hdb_logger.info(
-		`Detected ${processors} cores and ${available_memory}MB on this machine, defaulting ${config_param} to ${num_processes}`
+	numProcesses = Math.max(Math.min(numProcesses, Math.round((availableMemory - 750) / 300)), 1);
+	hdbLogger.info(
+		`Detected ${processors} cores and ${availableMemory}MB on this machine, defaulting ${configParam} to ${numProcesses}`
 	);
-	return num_processes;
+	return numProcesses;
 }
 
 /**
@@ -374,45 +374,45 @@ function setDefaultThreads(parent, helpers) {
 function setDefaultRoot(parent, helpers) {
 	// For some reason Joi is still calling set default when value is not null.
 	// For that reason we do this check.
-	const config_param = helpers.state.path.join('.');
-	if (!hdb_utils.isEmpty(helpers.original) && config_param !== 'operationsApi.network.domainSocket') {
+	const configParam = helpers.state.path.join('.');
+	if (!hdbUtils.isEmpty(helpers.original) && configParam !== 'operationsApi.network.domainSocket') {
 		return helpers.original;
 	}
 
-	if (hdb_utils.isEmpty(hdb_root)) {
-		throw new Error(`Error setting default root for: ${config_param}. HDB root is not defined`);
+	if (hdbUtils.isEmpty(hdbRoot)) {
+		throw new Error(`Error setting default root for: ${configParam}. HDB root is not defined`);
 	}
 
-	switch (config_param) {
+	switch (configParam) {
 		case 'componentsRoot':
-			return path.join(hdb_root, DEFAULT_COMPONENTS_FOLDER);
+			return path.join(hdbRoot, DEFAULT_COMPONENTS_FOLDER);
 		case 'logging.root':
-			return path.join(hdb_root, DEFAULT_LOG_FOLDER);
+			return path.join(hdbRoot, DEFAULT_LOG_FOLDER);
 		case 'clustering.leafServer.streams.path':
-			return path.join(hdb_root, 'clustering', 'leaf');
+			return path.join(hdbRoot, 'clustering', 'leaf');
 		case 'storage.path':
-			const legacy_storage_path = path.join(hdb_root, hdb_terms.LEGACY_DATABASES_DIR_NAME);
-			if (fs.existsSync(legacy_storage_path)) return legacy_storage_path;
-			return path.join(hdb_root, hdb_terms.DATABASES_DIR_NAME);
+			const legacyStoragePath = path.join(hdbRoot, hdbTerms.LEGACY_DATABASES_DIR_NAME);
+			if (fs.existsSync(legacyStoragePath)) return legacyStoragePath;
+			return path.join(hdbRoot, hdbTerms.DATABASES_DIR_NAME);
 		case 'logging.rotation.path':
-			return path.join(hdb_root, DEFAULT_LOG_FOLDER);
+			return path.join(hdbRoot, DEFAULT_LOG_FOLDER);
 		case 'operationsApi.network.domainSocket':
-			return config_param == null ? null : path.join(hdb_root, 'operations-server');
+			return configParam == null ? null : path.join(hdbRoot, 'operations-server');
 		default:
 			throw new Error(
-				`Error setting default root for config parameter: ${config_param}. Unrecognized config parameter`
+				`Error setting default root for config parameter: ${configParam}. Unrecognized config parameter`
 			);
 	}
 }
 
 /**
  * Validates just the routes array.
- * @param routes_array
+ * @param routesArray
  * @returns {*}
  */
-function routesValidator(routes_array) {
+function routesValidator(routesArray) {
 	const schema = Joi.object({
-		routes: route_constraints,
+		routes: routeConstraints,
 	});
-	return validator.validateBySchema({ routes: routes_array }, schema);
+	return validator.validateBySchema({ routes: routesArray }, schema);
 }

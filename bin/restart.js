@@ -2,33 +2,33 @@
 
 const minimist = require('minimist');
 const { isMainThread, parentPort, threadId } = require('worker_threads');
-const hdb_terms = require('../utility/hdbTerms');
-const hdb_logger = require('../utility/logging/harper_logger');
-const hdb_utils = require('../utility/common_utils');
-const nats_config = require('../server/nats/utility/natsConfig');
-const nats_utils = require('../server/nats/utility/natsUtils');
-const nats_terms = require('../server/nats/utility/natsTerms');
-const config_utils = require('../config/configUtils');
-const process_man = require('../utility/processManagement/processManagement');
-const sys_info = require('../utility/environment/systemInformation');
-const { compactOnStart } = require('./copyDb');
-const assignCMDENVVariables = require('../utility/assignCmdEnvVariables');
-const { restartWorkers, onMessageByType } = require('../server/threads/manageThreads');
-const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
-const { HTTP_STATUS_CODES } = hdb_errors;
-const env_mgr = require('../utility/environment/environmentManager');
-const { sendOperationToNode, getThisNodeName, monitorNodeCAs } = require('../server/replication/replicator');
-const { getHDBNodeTable } = require('../server/replication/knownNodes');
-env_mgr.initSync();
+const hdbTerms = require('../utility/hdbTerms.ts');
+const hdbLogger = require('../utility/logging/harper_logger.js');
+const hdbUtils = require('../utility/common_utils.js');
+const natsConfig = require('../server/nats/utility/natsConfig.js');
+const natsUtils = require('../server/nats/utility/natsUtils.js');
+const natsTerms = require('../server/nats/utility/natsTerms.js');
+const configUtils = require('../config/configUtils.js');
+const processMan = require('../utility/processManagement/processManagement.js');
+const sysInfo = require('../utility/environment/systemInformation.js');
+const { compactOnStart } = require('./copyDb.ts');
+const assignCMDENVVariables = require('../utility/assignCmdEnvVariables.js');
+const { restartWorkers, onMessageByType } = require('../server/threads/manageThreads.js');
+const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
+const { HTTP_STATUS_CODES } = hdbErrors;
+const envMgr = require('../utility/environment/environmentManager.js');
+const { sendOperationToNode, getThisNodeName, monitorNodeCAs } = require('../server/replication/replicator.ts');
+const { getHDBNodeTable } = require('../server/replication/knownNodes.ts');
+envMgr.initSync();
 
-const RESTART_RESPONSE = `Restarting HarperDB. This may take up to ${hdb_terms.RESTART_TIMEOUT_MS / 1000} seconds.`;
+const RESTART_RESPONSE = `Restarting HarperDB. This may take up to ${hdbTerms.RESTART_TIMEOUT_MS / 1000} seconds.`;
 const RESTART_NON_PM2_ERR =
 	'Restart is not available from the CLI when running in non-pm2 mode. Either call restart from the API or stop and start HarperDB.';
 const CLUSTERING_NOT_ENABLED_ERR = 'Clustering is not enabled so cannot be restarted';
 const INVALID_SERVICE_ERR = 'Invalid service';
 
-let pm2_mode;
-let called_from_cli;
+let pm2Mode;
+let calledFromCli;
 
 module.exports = {
 	restart,
@@ -37,7 +37,7 @@ module.exports = {
 
 // Add ITC event listener to main thread which will be called from child that receives restart request.
 if (isMainThread) {
-	onMessageByType(hdb_terms.ITC_EVENT_TYPES.RESTART, async (message, port) => {
+	onMessageByType(hdbTerms.ITC_EVENT_TYPES.RESTART, async (message, port) => {
 		if (message.workerType) await restartService({ service: message.workerType });
 		else restart({ operation: 'restart' });
 		port.postMessage({ type: 'restart-complete' });
@@ -52,29 +52,29 @@ if (isMainThread) {
  * @returns {Promise<string>}
  */
 async function restart(req) {
-	called_from_cli = Object.keys(req).length === 0;
-	pm2_mode = await process_man.isServiceRegistered(hdb_terms.PROCESS_DESCRIPTORS.HDB);
-	const cli_args = minimist(process.argv);
-	if (cli_args.service) {
-		await restartService(cli_args);
+	calledFromCli = Object.keys(req).length === 0;
+	pm2Mode = await processMan.isServiceRegistered(hdbTerms.PROCESS_DESCRIPTORS.HDB);
+	const cliArgs = minimist(process.argv);
+	if (cliArgs.service) {
+		await restartService(cliArgs);
 		return;
 	}
 
-	if (called_from_cli && !pm2_mode) {
+	if (calledFromCli && !pm2Mode) {
 		console.error(RESTART_NON_PM2_ERR);
 		return;
 	}
 
-	if (called_from_cli) console.log(RESTART_RESPONSE);
+	if (calledFromCli) console.log(RESTART_RESPONSE);
 
 	// PM2 Mode is when PM2 was used to start the main HDB process and the two clustering servers.
-	if (pm2_mode) {
-		process_man.enterPM2Mode();
-		hdb_logger.notify(RESTART_RESPONSE);
+	if (pm2Mode) {
+		processMan.enterPM2Mode();
+		hdbLogger.notify(RESTART_RESPONSE);
 		// If restart is called with cmd/env vars we create a backup of config and update config file.
-		const parsed_args = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
-		if (!hdb_utils.isEmptyOrZeroLength(Object.keys(parsed_args))) {
-			config_utils.updateConfigValue(undefined, undefined, parsed_args, true, true);
+		const parsedArgs = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
+		if (!hdbUtils.isEmptyOrZeroLength(Object.keys(parsedArgs))) {
+			configUtils.updateConfigValue(undefined, undefined, parsedArgs, true, true);
 		}
 
 		// Await is purposely omitted here so that response is sent before restart process restarts itself (when called through API).
@@ -83,9 +83,9 @@ async function restart(req) {
 	}
 
 	if (isMainThread) {
-		hdb_logger.notify(RESTART_RESPONSE);
+		hdbLogger.notify(RESTART_RESPONSE);
 
-		if (env_mgr.get(hdb_terms.CONFIG_PARAMS.STORAGE_COMPACTONSTART)) await compactOnStart();
+		if (envMgr.get(hdbTerms.CONFIG_PARAMS.STORAGE_COMPACTONSTART)) await compactOnStart();
 
 		if (process.env.HARPER_EXIT_ON_RESTART) {
 			// use this to exit the process so that it will be restarted by the
@@ -99,7 +99,7 @@ async function restart(req) {
 	} else {
 		// Post msg to main parent thread requesting it restart all child threads.
 		parentPort.postMessage({
-			type: hdb_terms.ITC_EVENT_TYPES.RESTART,
+			type: hdbTerms.ITC_EVENT_TYPES.RESTART,
 		});
 	}
 
@@ -107,23 +107,23 @@ async function restart(req) {
 }
 
 /**
- * Used to restart a particular service, services includes - clustering, clustering_config (calls native Nats reload) and http_workers
+ * Used to restart a particular service, services includes - clustering, clusteringConfig (calls native Nats reload) and httpWorkers
  * @param req
  * @returns {Promise<string>}
  */
 async function restartService(req) {
 	let { service } = req;
-	if (hdb_terms.HDB_PROCESS_SERVICES[service] === undefined) {
+	if (hdbTerms.HDB_PROCESS_SERVICES[service] === undefined) {
 		throw handleHDBError(new Error(), INVALID_SERVICE_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
-	process_man.expectedRestartOfChildren();
-	pm2_mode = await process_man.isServiceRegistered(hdb_terms.PROCESS_DESCRIPTORS.HDB);
+	processMan.expectedRestartOfChildren();
+	pm2Mode = await processMan.isServiceRegistered(hdbTerms.PROCESS_DESCRIPTORS.HDB);
 	if (!isMainThread) {
 		if (req.replicated) {
 			monitorNodeCAs(); // get all the CAs from the nodes we know about
 		}
 		parentPort.postMessage({
-			type: hdb_terms.ITC_EVENT_TYPES.RESTART,
+			type: hdbTerms.ITC_EVENT_TYPES.RESTART,
 			workerType: service,
 		});
 		parentPort.ref(); // don't let the parent thread exit until we're done
@@ -135,10 +135,10 @@ async function restartService(req) {
 				}
 			});
 		});
-		let replicated_responses;
+		let replicatedResponses;
 		if (req.replicated) {
 			req.replicated = false; // don't send a replicated flag to the nodes we are sending to
-			replicated_responses = [];
+			replicatedResponses = [];
 			for (let node of server.nodes) {
 				if (node.name === getThisNodeName()) continue;
 				// for now, only one at a time
@@ -147,97 +147,97 @@ async function restartService(req) {
 					({ job_id } = await sendOperationToNode(node, req));
 				} catch (err) {
 					// If request to node fails, add the error to the response and continue to the next node
-					replicated_responses.push({ node: node.name, message: err.message });
+					replicatedResponses.push({ node: node.name, message: err.message });
 					continue;
 				}
 				// wait for the job to finish by polling for the completion of the job
-				replicated_responses.push(
+				replicatedResponses.push(
 					await new Promise((resolve, reject) => {
 						const RETRY_INTERVAL = 250;
-						let retries_left = 2400; // 10 minutes
+						let retriesLeft = 2400; // 10 minutes
 						let interval = setInterval(async () => {
-							if (retries_left-- <= 0) {
+							if (retriesLeft-- <= 0) {
 								clearInterval(interval);
 								let error = new Error('Timed out waiting for restart job to complete');
-								error.replicated = replicated_responses; // report the finished restarts
+								error.replicated = replicatedResponses; // report the finished restarts
 								reject(error);
 							}
 							let response = await sendOperationToNode(node, {
 								operation: 'get_job',
 								id: job_id,
 							});
-							const job_result = response.results[0];
-							if (job_result.status === 'COMPLETE') {
+							const jobResult = response.results[0];
+							if (jobResult.status === 'COMPLETE') {
 								clearInterval(interval);
-								resolve({ node: node.name, message: job_result.message });
+								resolve({ node: node.name, message: jobResult.message });
 							}
-							if (job_result.status === 'ERROR') {
+							if (jobResult.status === 'ERROR') {
 								clearInterval(interval);
-								let error = new Error(job_result.message);
-								error.replicated = replicated_responses; // report the finished restarts
+								let error = new Error(jobResult.message);
+								error.replicated = replicatedResponses; // report the finished restarts
 								reject(error);
 							}
 						}, RETRY_INTERVAL);
 					})
 				);
 			}
-			return { replicated: replicated_responses };
+			return { replicated: replicatedResponses };
 		}
 		return;
 	}
 
-	let err_msg;
+	let errMsg;
 	switch (service) {
-		case hdb_terms.HDB_PROCESS_SERVICES.clustering:
-			if (!env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
-				err_msg = CLUSTERING_NOT_ENABLED_ERR;
+		case hdbTerms.HDB_PROCESS_SERVICES.clustering:
+			if (!envMgr.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+				errMsg = CLUSTERING_NOT_ENABLED_ERR;
 				break;
 			}
-			if (called_from_cli) console.log(`Restarting clustering`);
-			hdb_logger.notify('Restarting clustering');
+			if (calledFromCli) console.log(`Restarting clustering`);
+			hdbLogger.notify('Restarting clustering');
 			await restartClustering();
 			break;
 
-		case hdb_terms.HDB_PROCESS_SERVICES.clustering_config:
-		case hdb_terms.HDB_PROCESS_SERVICES['clustering config']:
-			if (!env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
-				err_msg = CLUSTERING_NOT_ENABLED_ERR;
+		case hdbTerms.HDB_PROCESS_SERVICES.clustering_config:
+		case hdbTerms.HDB_PROCESS_SERVICES['clustering config']:
+			if (!envMgr.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+				errMsg = CLUSTERING_NOT_ENABLED_ERR;
 				break;
 			}
 
-			if (called_from_cli) console.log(`Restarting clustering_config`);
-			hdb_logger.notify('Restarting clustering_config');
-			await process_man.reloadClustering();
+			if (calledFromCli) console.log(`Restarting clusteringConfig`);
+			hdbLogger.notify('Restarting clustering_config');
+			await processMan.reloadClustering();
 			break;
 
 		case 'custom_functions':
 		case 'custom functions':
-		case hdb_terms.HDB_PROCESS_SERVICES.harperdb:
-		case hdb_terms.HDB_PROCESS_SERVICES.http_workers:
-		case hdb_terms.HDB_PROCESS_SERVICES.http:
-			if (called_from_cli && !pm2_mode) {
-				err_msg = `Restart ${service} is not available from the CLI when running in non-pm2 mode. Either call restart ${service} from the API or stop and start HarperDB.`;
+		case hdbTerms.HDB_PROCESS_SERVICES.harperdb:
+		case hdbTerms.HDB_PROCESS_SERVICES.http_workers:
+		case hdbTerms.HDB_PROCESS_SERVICES.http:
+			if (calledFromCli && !pm2Mode) {
+				errMsg = `Restart ${service} is not available from the CLI when running in non-pm2 mode. Either call restart ${service} from the API or stop and start HarperDB.`;
 				break;
 			}
 
-			if (called_from_cli) console.log(`Restarting http_workers`);
-			hdb_logger.notify('Restarting http_workers');
+			if (calledFromCli) console.log(`Restarting httpWorkers`);
+			hdbLogger.notify('Restarting http_workers');
 
-			if (called_from_cli) {
-				await process_man.restart(hdb_terms.PROCESS_DESCRIPTORS.HDB);
+			if (calledFromCli) {
+				await processMan.restart(hdbTerms.PROCESS_DESCRIPTORS.HDB);
 			} else {
 				await restartWorkers('http');
 			}
 			break;
 		default:
-			err_msg = `Unrecognized service: ${service}`;
+			errMsg = `Unrecognized service: ${service}`;
 			break;
 	}
 
-	if (err_msg) {
-		hdb_logger.error(err_msg);
-		if (called_from_cli) console.error(err_msg);
-		return err_msg;
+	if (errMsg) {
+		hdbLogger.error(errMsg);
+		if (calledFromCli) console.error(errMsg);
+		return errMsg;
 	}
 	if (service === 'custom_functions') service = 'Custom Functions';
 	return `Restarting ${service}`;
@@ -249,17 +249,17 @@ async function restartService(req) {
  */
 async function restartPM2Mode() {
 	await restartClustering();
-	await process_man.restart(hdb_terms.PROCESS_DESCRIPTORS.HDB);
+	await processMan.restart(hdbTerms.PROCESS_DESCRIPTORS.HDB);
 	// Restarting HarperDB will regenerate the nats config, for that reason we remove it below.
 	// The timeout is there to wait for HDB to restart.
-	await hdb_utils.async_set_timeout(2000);
-	if (env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+	await hdbUtils.asyncSetTimeout(2000);
+	if (envMgr.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
 		await removeNatsConfig();
 	}
 
 	// Close the connection to the nats-server so that if stop/restart called from CLI process will exit.
-	if (called_from_cli) {
-		await nats_utils.closeConnection();
+	if (calledFromCli) {
+		await natsUtils.closeConnection();
 		process.exit(0);
 	}
 }
@@ -270,53 +270,53 @@ async function restartPM2Mode() {
  * @returns {Promise<void>}
  */
 async function restartClustering() {
-	if (!config_utils.getConfigFromFile(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) return;
+	if (!configUtils.getConfigFromFile(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED)) return;
 
 	// Check to see if clustering is running, if it's not we start it
-	const running_ps = await sys_info.getHDBProcessInfo();
-	if (running_ps.clustering.length === 0) {
-		hdb_logger.trace('Clustering not running, restart will start clustering services');
-		await nats_config.generateNatsConfig(true);
-		await process_man.startClusteringProcesses();
-		await process_man.startClusteringThreads();
+	const runningPs = await sysInfo.getHDBProcessInfo();
+	if (runningPs.clustering.length === 0) {
+		hdbLogger.trace('Clustering not running, restart will start clustering services');
+		await natsConfig.generateNatsConfig(true);
+		await processMan.startClusteringProcesses();
+		await processMan.startClusteringThreads();
 		await removeNatsConfig();
 
 		// Close the connection to the nats-server so that if stop/restart called from CLI process will exit.
-		if (called_from_cli) await nats_utils.closeConnection();
+		if (calledFromCli) await natsUtils.closeConnection();
 	} else {
-		await nats_config.generateNatsConfig(true);
+		await natsConfig.generateNatsConfig(true);
 
-		if (pm2_mode) {
-			hdb_logger.trace('Restart clustering restarting PM2 managed Hub and Leaf servers');
-			await process_man.restart(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB);
-			await process_man.restart(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
+		if (pm2Mode) {
+			hdbLogger.trace('Restart clustering restarting PM2 managed Hub and Leaf servers');
+			await processMan.restart(hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_HUB);
+			await processMan.restart(hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
 		} else {
-			const proc = await sys_info.getHDBProcessInfo();
+			const proc = await sysInfo.getHDBProcessInfo();
 			proc.clustering.forEach((p) => {
-				hdb_logger.trace('Restart clustering killing process pid', p.pid);
+				hdbLogger.trace('Restart clustering killing process pid', p.pid);
 				process.kill(p.pid);
 			});
 		}
 		// Give the clustering servers time to restart before moving on.
-		await hdb_utils.async_set_timeout(3000);
+		await hdbUtils.asyncSetTimeout(3000);
 		await removeNatsConfig();
 
 		// Check to see if the node name or purge config has been updated,
 		// if it has we need to change config on any local streams.
-		await nats_utils.updateLocalStreams();
+		await natsUtils.updateLocalStreams();
 
 		// Close the connection to the nats-server so that if stop/restart called from CLI process will exit.
-		if (called_from_cli) await nats_utils.closeConnection();
+		if (calledFromCli) await natsUtils.closeConnection();
 
-		hdb_logger.trace('Restart clustering restarting ingest and reply service threads');
-		let ingestRestart = restartWorkers(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_INGEST_SERVICE);
-		let replyRestart = restartWorkers(hdb_terms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE);
+		hdbLogger.trace('Restart clustering restarting ingest and reply service threads');
+		let ingestRestart = restartWorkers(hdbTerms.LAUNCH_SERVICE_SCRIPTS.NATS_INGEST_SERVICE);
+		let replyRestart = restartWorkers(hdbTerms.LAUNCH_SERVICE_SCRIPTS.NATS_REPLY_SERVICE);
 		await ingestRestart;
 		await replyRestart;
 	}
 }
 
 async function removeNatsConfig() {
-	await nats_config.removeNatsConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_HUB);
-	await nats_config.removeNatsConfig(hdb_terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
+	await natsConfig.removeNatsConfig(hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_HUB);
+	await natsConfig.removeNatsConfig(hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
 }

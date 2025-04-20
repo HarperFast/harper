@@ -270,7 +270,7 @@ describe('test authorize function for JWT', () => {
 		op_token_timeout();
 		r_token_timeout();
 
-		rw_token_auth = auth.__set__('token_authentication', token_auth);
+		rw_token_auth = auth.__set__('tokenAuthentication', token_auth);
 
 		hdb_admin_tokens = await token_auth.createTokens({ username: 'HDB_ADMIN', password: 'cool' });
 		old_user_tokens = await token_auth.createTokens({ username: 'old_user', password: 'notcool' });

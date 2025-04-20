@@ -13,26 +13,26 @@ const minimist = require('minimist');
 const path = require('path');
 const crypto = require('node:crypto');
 const PropertiesReader = require('properties-reader');
-const env_mgr = require('../environment/environmentManager');
-const sys_info = require('../environment/systemInformation');
-const hdb_log = require('../logging/harper_logger');
-const config_utils = require('../../config/configUtils');
-const { restart } = require('../../bin/restart');
-const hdb_utils = require('../common_utils');
-const assignCMDENVVariables = require('../assignCmdEnvVariables');
-const global_schema = require('../globalSchema');
-const { main, launch } = require('../../bin/run');
-const { install, updateConfigEnv, setIgnoreExisting } = require('../install/installer');
-const mount = require('../mount_hdb');
-const hdb_terms = require('../hdbTerms');
-const { packageJson } = require('../packageUtils');
-const hdb_info_controller = require('../../dataLayer/hdbInfoController');
-const { sendOperationToNode } = require('../../server/replication/replicator');
-const { updateConfigCert } = require('../../security/keys');
-const { restartWorkers } = require('../../server/threads/manageThreads');
-const { databases } = require('../../resources/databases');
+const envMgr = require('../environment/environmentManager.js');
+const sysInfo = require('../environment/systemInformation.js');
+const hdbLog = require('../logging/harper_logger.js');
+const configUtils = require('../../config/configUtils.js');
+const { restart } = require('../../bin/restart.js');
+const hdbUtils = require('../common_utils.js');
+const assignCMDENVVariables = require('../assignCmdEnvVariables.js');
+const globalSchema = require('../globalSchema.js');
+const { main, launch } = require('../../bin/run.js');
+const { install, updateConfigEnv, setIgnoreExisting } = require('../install/installer.js');
+const mount = require('../mount_hdb.js');
+const hdbTerms = require('../hdbTerms.ts');
+const { packageJson } = require('../packageUtils.js');
+const hdbInfoController = require('../../dataLayer/hdbInfoController.js');
+const { sendOperationToNode } = require('../../server/replication/replicator.ts');
+const { updateConfigCert } = require('../../security/keys.js');
+const { restartWorkers } = require('../../server/threads/manageThreads.js');
+const { databases } = require('../../resources/databases.ts');
 
-const { SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME, CONFIG_PARAMS, OPERATIONS_ENUM } = hdb_terms;
+const { SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME, CONFIG_PARAMS, OPERATIONS_ENUM } = hdbTerms;
 const WAIT_FOR_RESTART_TIME = 10000;
 const CLONE_CONFIG_FILE = 'clone-node-config.yaml';
 const SYSTEM_TABLES_TO_CLONE = [
@@ -78,33 +78,33 @@ const CLONE_VARS = {
 	NO_START: 'NO_START',
 };
 
-const cli_args = minimist(process.argv);
-const username = cli_args[CLONE_VARS.HDB_LEADER_USERNAME] ?? process.env[CLONE_VARS.HDB_LEADER_USERNAME];
-const password = cli_args[CLONE_VARS.HDB_LEADER_PASSWORD] ?? process.env[CLONE_VARS.HDB_LEADER_PASSWORD];
-const leader_url = cli_args[CLONE_VARS.HDB_LEADER_URL] ?? process.env[CLONE_VARS.HDB_LEADER_URL];
-const replication_host = cli_args[CLONE_VARS.REPLICATION_HOSTNAME] ?? process.env[CLONE_VARS.REPLICATION_HOSTNAME];
-let replication_hostname, replication_port;
-if (replication_host) [replication_hostname, replication_port] = replication_host.split(':');
+const cliArgs = minimist(process.argv);
+const username = cliArgs[CLONE_VARS.HDB_LEADER_USERNAME] ?? process.env[CLONE_VARS.HDB_LEADER_USERNAME];
+const password = cliArgs[CLONE_VARS.HDB_LEADER_PASSWORD] ?? process.env[CLONE_VARS.HDB_LEADER_PASSWORD];
+const leaderUrl = cliArgs[CLONE_VARS.HDB_LEADER_URL] ?? process.env[CLONE_VARS.HDB_LEADER_URL];
+const replicationHost = cliArgs[CLONE_VARS.REPLICATION_HOSTNAME] ?? process.env[CLONE_VARS.REPLICATION_HOSTNAME];
+let replicationHostname, replicationPort;
+if (replicationHost) [replicationHostname, replicationPort] = replicationHost.split(':');
 
-const clone_overtop = (cli_args[CLONE_VARS.HDB_CLONE_OVERTOP] ?? process.env[CLONE_VARS.HDB_CLONE_OVERTOP]) === 'true'; // optional var - will allow clone to work overtop of an existing HDB install
-const cloned_var = cli_args[CONFIG_PARAMS.CLONED.toUpperCase()] ?? process.env[CONFIG_PARAMS.CLONED.toUpperCase()];
-const clone_keys = cli_args[CLONE_VARS.CLONE_KEYS] !== 'false' && process.env[CLONE_VARS.CLONE_KEYS] !== 'false';
-const clone_using_ws = (cli_args[CLONE_VARS.CLONE_USING_WS] ?? process.env[CLONE_VARS.CLONE_USING_WS]) === 'true';
-const no_start = (cli_args[CLONE_VARS.NO_START] ?? process.env[CLONE_VARS.NO_START]) === 'true';
+const cloneOvertop = (cliArgs[CLONE_VARS.HDB_CLONE_OVERTOP] ?? process.env[CLONE_VARS.HDB_CLONE_OVERTOP]) === 'true'; // optional var - will allow clone to work overtop of an existing HDB install
+const clonedVar = cliArgs[CONFIG_PARAMS.CLONED.toUpperCase()] ?? process.env[CONFIG_PARAMS.CLONED.toUpperCase()];
+const clone_keys = cliArgs[CLONE_VARS.CLONE_KEYS] !== 'false' && process.env[CLONE_VARS.CLONE_KEYS] !== 'false';
+const cloneUsingWs = (cliArgs[CLONE_VARS.CLONE_USING_WS] ?? process.env[CLONE_VARS.CLONE_USING_WS]) === 'true';
+const noStart = (cliArgs[CLONE_VARS.NO_START] ?? process.env[CLONE_VARS.NO_START]) === 'true';
 
-let clone_node_config;
-let hdb_config = {};
-let hdb_config_json;
-let leader_config;
-let leader_config_flat = {};
-let leader_dbs;
-let root_path;
-let exclude_db;
-let excluded_table;
-let fresh_clone = false;
-let sys_db_exist = false;
-let start_time;
-let leader_replication_url;
+let cloneNodeConfig;
+let hdbConfig = {};
+let hdbConfigJson;
+let leaderConfig;
+let leaderConfigFlat = {};
+let leaderDbs;
+let rootPath;
+let excludeDb;
+let excludedTable;
+let freshClone = false;
+let sysDbExist = false;
+let startTime;
+let leaderReplicationUrl;
 
 /**
  * This module will run when HarperDB is started with the required env/cli vars.
@@ -113,16 +113,16 @@ let leader_replication_url;
  * @returns {Promise<void>}
  */
 module.exports = async function cloneNode(background = false, run = false) {
-	console.info(`Starting clone node from leader node: ${leader_url}`);
+	console.info(`Starting clone node from leader node: ${leaderUrl}`);
 	delete process.env.HDB_LEADER_URL;
 
-	root_path = hdb_utils.getEnvCliRootPath();
-	if (!root_path) {
+	rootPath = hdbUtils.getEnvCliRootPath();
+	if (!rootPath) {
 		try {
-			const boot_props_file_path = join(os.homedir(), hdb_terms.HDB_HOME_DIR_NAME, hdb_terms.BOOT_PROPS_FILE_NAME);
-			if (await fs.pathExists(boot_props_file_path)) {
-				const hdb_properties = PropertiesReader(boot_props_file_path);
-				root_path = path.parse(hdb_properties.get(hdb_terms.BOOT_PROP_PARAMS.SETTINGS_PATH_KEY)).dir;
+			const bootPropsFilePath = join(os.homedir(), hdbTerms.HDB_HOME_DIR_NAME, hdbTerms.BOOT_PROPS_FILE_NAME);
+			if (await fs.pathExists(bootPropsFilePath)) {
+				const hdbProperties = PropertiesReader(bootPropsFilePath);
+				rootPath = path.parse(hdbProperties.get(hdbTerms.BOOT_PROP_PARAMS.SETTINGS_PATH_KEY)).dir;
 			}
 		} catch (err) {
 			throw new Error(
@@ -131,82 +131,82 @@ module.exports = async function cloneNode(background = false, run = false) {
 		}
 	}
 
-	if (!root_path) {
+	if (!rootPath) {
 		console.log(`No HarperDB install found, starting fresh clone`);
-		fresh_clone = true;
-	} else if (await fs.pathExists(root_path)) {
+		freshClone = true;
+	} else if (await fs.pathExists(rootPath)) {
 		console.log(
-			`Existing HarperDB install found at ${root_path}. Clone node will only clone items that do not already exist on clone.`
+			`Existing HarperDB install found at ${rootPath}. Clone node will only clone items that do not already exist on clone.`
 		);
 	} else {
-		console.log(`No HarperDB install found at ${root_path} starting fresh clone`);
-		fresh_clone = true;
+		console.log(`No HarperDB install found at ${rootPath} starting fresh clone`);
+		freshClone = true;
 	}
 
-	if (!root_path) {
-		root_path = join(os.homedir(), hdb_terms.HDB_ROOT_DIR_NAME);
-		console.log('Using default root path', root_path);
+	if (!rootPath) {
+		rootPath = join(os.homedir(), hdbTerms.HDB_ROOT_DIR_NAME);
+		console.log('Using default root path', rootPath);
 	}
 
-	let clone_config_path;
+	let cloneConfigPath;
 	try {
-		clone_config_path = join(root_path, CLONE_CONFIG_FILE);
-		clone_node_config = YAML.parseDocument(await fs.readFile(clone_config_path, 'utf8'), { simpleKeys: true }).toJSON();
+		cloneConfigPath = join(rootPath, CLONE_CONFIG_FILE);
+		cloneNodeConfig = YAML.parseDocument(await fs.readFile(cloneConfigPath, 'utf8'), { simpleKeys: true }).toJSON();
 		console.log('Clone config file found');
 	} catch (err) {}
 
-	const hdb_config_path = join(root_path, hdb_terms.HDB_CONFIG_FILE);
+	const hdbConfigPath = join(rootPath, hdbTerms.HDB_CONFIG_FILE);
 
-	if (await fs.pathExists(hdb_config_path)) {
+	if (await fs.pathExists(hdbConfigPath)) {
 		try {
-			hdb_config_json = YAML.parseDocument(await fs.readFile(hdb_config_path, 'utf8'), { simpleKeys: true }).toJSON();
-			hdb_config = config_utils.flattenConfig(hdb_config_json);
+			hdbConfigJson = YAML.parseDocument(await fs.readFile(hdbConfigPath, 'utf8'), { simpleKeys: true }).toJSON();
+			hdbConfig = configUtils.flattenConfig(hdbConfigJson);
 		} catch (err) {
 			console.error('Error reading existing harperdb-config.yaml on clone', err);
 		}
 	}
 
-	if (replication_host) {
-		const leader_url_inst = new URL(leader_url);
-		leader_replication_url = `${leader_url_inst.protocol === 'https:' ? 'wss://' : 'ws://'}${leader_url_inst.hostname}:${replication_port || 9933}`;
+	if (replicationHost) {
+		const leaderUrlInst = new URL(leaderUrl);
+		leaderReplicationUrl = `${leaderUrlInst.protocol === 'https:' ? 'wss://' : 'ws://'}${leaderUrlInst.hostname}:${replicationPort || 9933}`;
 	}
 
-	if (clone_using_ws) {
+	if (cloneUsingWs) {
 		await cloneUsingWS();
 		return;
 	}
 
-	if (hdb_config?.cloned && cloned_var !== 'false') {
+	if (hdbConfig?.cloned && clonedVar !== 'false') {
 		console.log('Instance marked as cloned, clone will not run');
-		env_mgr.setCloneVar(false);
-		env_mgr.initSync();
+		envMgr.setCloneVar(false);
+		envMgr.initSync();
 		return main();
 	}
 
 	// Get all the non-system db/table from leader node
-	leader_dbs = await leaderReq({ operation: OPERATIONS_ENUM.DESCRIBE_ALL });
+	leaderDbs = await leaderReq({ operation: OPERATIONS_ENUM.DESCRIBE_ALL });
 
 	await cloneConfig();
-	env_mgr.setCloneVar(false);
-	env_mgr.setHdbBasePath(root_path);
+	envMgr.setCloneVar(false);
+	envMgr.setHdbBasePath(rootPath);
 
-	fs.ensureDir(env_mgr.get(hdb_terms.CONFIG_PARAMS.LOGGING_ROOT));
-	hdb_log.initLogSettings();
+	fs.ensureDir(envMgr.get(hdbTerms.CONFIG_PARAMS.LOGGING_ROOT));
+	hdbLog.initLogSettings();
 
 	await cloneDatabases();
 
 	// Only call install if a fresh sys DB was added
-	if (!sys_db_exist) await installHDB();
+	if (!sysDbExist) await installHDB();
 
 	await startHDB(background, run);
 
-	if (replication_host) {
+	if (replicationHost) {
 		await setupReplication();
 		await cloneKeys();
 	}
 
-	console.info('\nSuccessfully cloned node: ' + leader_url);
-	if (background || no_start) process.exit();
+	console.info('\nSuccessfully cloned node: ' + leaderUrl);
+	if (background || noStart) process.exit();
 };
 
 /**
@@ -214,30 +214,30 @@ module.exports = async function cloneNode(background = false, run = false) {
  * @returns {Promise<void>}
  */
 async function cloneUsingWS() {
-	if (hdb_config?.cloned && cloned_var !== 'false') {
+	if (hdbConfig?.cloned && clonedVar !== 'false') {
 		console.log('Instance marked as cloned, clone will not run');
-		env_mgr.setCloneVar(false);
-		env_mgr.initSync();
+		envMgr.setCloneVar(false);
+		envMgr.initSync();
 		// Start HDB
 		return main();
 	}
 
 	console.log('Cloning using WebSockets');
 
-	const system_db_dir = getDBPath('system');
-	const sys_db_file_dir = join(system_db_dir, 'system.mdb');
-	const sys_db_exists = fs.existsSync(sys_db_file_dir);
-	if (fresh_clone || !sys_db_exists || clone_overtop) {
+	const systemDbDir = getDBPath('system');
+	const sysDbFileDir = join(systemDbDir, 'system.mdb');
+	const sysDbExists = fs.existsSync(sysDbFileDir);
+	if (freshClone || !sysDbExists || cloneOvertop) {
 		console.info('Clone node installing HarperDB');
 		process.env.TC_AGREEMENT = 'yes';
-		process.env.ROOTPATH = root_path;
+		process.env.ROOTPATH = rootPath;
 		process.env.HDB_ADMIN_USERNAME = 'clone-temp-admin';
 		process.env.HDB_ADMIN_PASSWORD = crypto.randomBytes(10).toString('base64').slice(0, 10);
 		setIgnoreExisting(true);
 		await install();
 	} else {
-		env_mgr.setCloneVar(false);
-		env_mgr.initSync();
+		envMgr.setCloneVar(false);
+		envMgr.initSync();
 	}
 
 	// Starts HDB
@@ -250,7 +250,7 @@ async function cloneUsingWS() {
 	await updateConfigCert();
 
 	// We delete the clone-temp-admin user because now that HDB is installed we want user to come from the leader via replication and the add node call
-	if (!sys_db_exists) {
+	if (!sysDbExists) {
 		await databases.system.hdb_user.delete({ username: 'clone-temp-admin' });
 	}
 
@@ -261,25 +261,25 @@ async function cloneUsingWS() {
 	// These values can be used for checking when the clone replication has caught up with leader
 	await getLastUpdatedRecord();
 
-	// When cloning with WS we utilize add_node to clone all the DB and setup replication
+	// When cloning with WS we utilize addNode to clone all the DB and setup replication
 	console.log('Adding node to the cluster');
-	const add_node = require('../clustering/addNode');
-	const add_node_response = await add_node({
+	const addNode = require('../clustering/addNode.js');
+	const addNodeResponse = await addNode({
 		operation: OPERATIONS_ENUM.ADD_NODE,
-		url: leader_replication_url,
+		url: leaderReplicationUrl,
 	});
-	console.log('Add node response: ', add_node_response);
+	console.log('Add node response: ', addNodeResponse);
 
 	await cloneKeys();
 
-	console.log(`Successfully cloned node: ${leader_url} using WebSockets`);
-	config_utils.updateConfigValue(CONFIG_PARAMS.CLONED, true);
+	console.log(`Successfully cloned node: ${leaderUrl} using WebSockets`);
+	configUtils.updateConfigValue(CONFIG_PARAMS.CLONED, true);
 
-	if (no_start) process.exit();
+	if (noStart) process.exit();
 }
 
 /**
- * Will loop through a system describe and a describe_all to compare the last updated record for each table
+ * Will loop through a system describe and a describeAll to compare the last updated record for each table
  * and record the most recent timestamp for each database in a JSON file.
  * @returns {Promise<void>}
  */
@@ -310,7 +310,7 @@ async function getLastUpdatedRecord() {
 		lastUpdated[db] = findMostRecentTimestamp(allDb[db]);
 	}
 
-	const lastUpdatedFilePath = join(root_path, 'tmp', 'lastUpdated.json');
+	const lastUpdatedFilePath = join(rootPath, 'tmp', 'lastUpdated.json');
 	console.log('Writing last updated database timestamps to:', lastUpdatedFilePath);
 	await fs.outputJson(lastUpdatedFilePath, lastUpdated);
 }
@@ -322,8 +322,8 @@ async function getLastUpdatedRecord() {
  * @returns {Promise<unknown>}
  */
 async function leaderReq(req) {
-	if (clone_using_ws) {
-		return sendOperationToNode({ url: leader_replication_url }, req, { rejectUnauthorized: false });
+	if (cloneUsingWs) {
+		return sendOperationToNode({ url: leaderReplicationUrl }, req, { rejectUnauthorized: false });
 	}
 
 	return JSON.parse((await leaderHttpReq(req)).body);
@@ -333,27 +333,27 @@ async function cloneKeys() {
 	try {
 		if (clone_keys !== false) {
 			console.log('Cloning JWT keys');
-			const keys_dir = path.join(root_path, hdb_terms.LICENSE_KEY_DIR_NAME);
+			const keysDir = path.join(rootPath, hdbTerms.LICENSE_KEY_DIR_NAME);
 			// sendOperationToNode is used for extra security, it uses mtls when connecting to leader node.
-			const jwt_public = await sendOperationToNode(
-				{ url: leader_replication_url },
+			const jwtPublic = await sendOperationToNode(
+				{ url: leaderReplicationUrl },
 				{
 					operation: OPERATIONS_ENUM.GET_KEY,
 					name: '.jwtPublic',
 				},
 				{ rejectUnauthorized: false }
 			);
-			writeFileSync(path.join(keys_dir, hdb_terms.JWT_ENUM.JWT_PUBLIC_KEY_NAME), jwt_public.message);
+			writeFileSync(path.join(keysDir, hdbTerms.JWT_ENUM.JWT_PUBLIC_KEY_NAME), jwtPublic.message);
 
-			const jwt_private = await sendOperationToNode(
-				{ url: leader_replication_url },
+			const jwtPrivate = await sendOperationToNode(
+				{ url: leaderReplicationUrl },
 				{
 					operation: OPERATIONS_ENUM.GET_KEY,
 					name: '.jwtPrivate',
 				},
 				{ rejectUnauthorized: false }
 			);
-			writeFileSync(path.join(keys_dir, hdb_terms.JWT_ENUM.JWT_PRIVATE_KEY_NAME), jwt_private.message);
+			writeFileSync(path.join(keysDir, hdbTerms.JWT_ENUM.JWT_PRIVATE_KEY_NAME), jwtPrivate.message);
 		}
 	} catch (err) {
 		console.error('Error cloning JWT keys', err);
@@ -362,85 +362,85 @@ async function cloneKeys() {
 
 /**
  * Clone config from leader except for any existing config or any excluded config (mainly path related values)
- * @param with_ws - If true the config will be cloned using websockets
+ * @param withWs - If true the config will be cloned using websockets
  * @returns {Promise<void>}
  */
-async function cloneConfig(with_ws = false) {
+async function cloneConfig(withWs = false) {
 	console.info('Cloning configuration');
-	leader_config = await leaderReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
-	leader_config_flat = config_utils.flattenConfig(leader_config);
-	const exclude_comps = clone_node_config?.componentConfig?.exclude;
-	const config_update = {
-		rootpath: root_path,
+	leaderConfig = await leaderReq({ operation: OPERATIONS_ENUM.GET_CONFIGURATION });
+	leaderConfigFlat = configUtils.flattenConfig(leaderConfig);
+	const excludeComps = cloneNodeConfig?.componentConfig?.exclude;
+	const configUpdate = {
+		rootpath: rootPath,
 	};
 
-	if (replication_host) config_update.replication_hostname = replication_hostname;
+	if (replicationHost) configUpdate.replication_hostname = replicationHostname;
 
-	for (const name in leader_config_flat) {
+	for (const name in leaderConfigFlat) {
 		if (
-			(leader_config_flat[name] !== null &&
-				typeof leader_config_flat[name] === 'object' &&
-				!(leader_config_flat[name] instanceof Array)) ||
+			(leaderConfigFlat[name] !== null &&
+				typeof leaderConfigFlat[name] === 'object' &&
+				!(leaderConfigFlat[name] instanceof Array)) ||
 			CONFIG_TO_NOT_CLONE[name]
 		)
 			continue;
 
 		if (name.includes('_package') || name.includes('_port')) {
 			// This is here to stop local leader component config from being cloned
-			if (leader_config_flat[name]?.includes?.('hdb/components')) continue;
+			if (leaderConfigFlat[name]?.includes?.('hdb/components')) continue;
 
-			if (exclude_comps) {
-				let excluded_comp = false;
-				for (const comp of exclude_comps) {
+			if (excludeComps) {
+				let excludedComp = false;
+				for (const comp of excludeComps) {
 					if (name.includes(comp.name)) {
-						excluded_comp = true;
+						excludedComp = true;
 						break;
 					}
 				}
-				if (excluded_comp) continue;
+				if (excludedComp) continue;
 			}
 		}
 
-		if (!hdb_config[name]) {
-			config_update[name] = leader_config_flat[name];
+		if (!hdbConfig[name]) {
+			configUpdate[name] = leaderConfigFlat[name];
 		}
 	}
 
-	for (const name in hdb_config) {
-		if (name !== 'databases' && typeof hdb_config[name] === 'object' && !(hdb_config[name] instanceof Array)) continue;
-		config_update[name] = hdb_config[name];
+	for (const name in hdbConfig) {
+		if (name !== 'databases' && typeof hdbConfig[name] === 'object' && !(hdbConfig[name] instanceof Array)) continue;
+		configUpdate[name] = hdbConfig[name];
 	}
 
 	// If DB are excluded in clone config update replication.databases to not include the excluded DB
-	const excluded_db = {};
-	if (clone_node_config?.databaseConfig?.excludeDatabases) {
-		clone_node_config.databaseConfig.excludeDatabases.forEach((db) => {
-			excluded_db[db.database] = true;
+	const excludedDb = {};
+	if (cloneNodeConfig?.databaseConfig?.excludeDatabases) {
+		cloneNodeConfig.databaseConfig.excludeDatabases.forEach((db) => {
+			excludedDb[db.database] = true;
 		});
 	}
 
-	if (clone_node_config?.clusteringConfig?.excludeDatabases) {
-		clone_node_config.clusteringConfig.excludeDatabases.forEach((db) => {
-			excluded_db[db.database] = true;
+	if (cloneNodeConfig?.clusteringConfig?.excludeDatabases) {
+		cloneNodeConfig.clusteringConfig.excludeDatabases.forEach((db) => {
+			excludedDb[db.database] = true;
 		});
 	}
 
-	if (Object.keys(excluded_db).length > 0) {
-		config_update.replication_databases = [];
-		if (!excluded_db['system']) config_update.replication_databases.push('system');
-		for (const db in leader_dbs) {
-			if (!excluded_db[db]) {
-				config_update.replication_databases.push(db);
+	if (Object.keys(excludedDb).length > 0) {
+		configUpdate.replication_databases = [];
+		if (!excludedDb['system']) configUpdate.replication_databases.push('system');
+		for (const db in leaderDbs) {
+			if (!excludedDb[db]) {
+				configUpdate.replication_databases.push(db);
 			}
 		}
 	}
 
-	const args = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
-	Object.assign(config_update, args);
+	const args = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
+	Object.assign(configUpdate, args);
 
 	// If cloning using websockets we set the cloned flag at the completion of the clone
-	if (!with_ws) config_update.cloned = true;
-	config_utils.createConfigFile(config_update, true);
+	if (!withWs) configUpdate.cloned = true;
+	configUtils.createConfigFile(configUpdate, true);
 }
 
 /**
@@ -464,13 +464,13 @@ async function cloneDatabases() {
 async function installHDB() {
 	console.info('Clone node installing HarperDB.');
 	process.env.TC_AGREEMENT = 'yes';
-	process.env.ROOTPATH = root_path;
+	process.env.ROOTPATH = rootPath;
 	if (!username) throw new Error('HDB_LEADER_USERNAME is undefined.');
 	process.env.HDB_ADMIN_USERNAME = username;
 	if (!password) throw new Error('HDB_LEADER_PASSWORD is undefined.');
 	process.env.HDB_ADMIN_PASSWORD = password;
-	process.env.OPERATIONSAPI_NETWORK_PORT = env_mgr.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
-	updateConfigEnv(path.join(root_path, hdb_terms.HDB_CONFIG_FILE));
+	process.env.OPERATIONSAPI_NETWORK_PORT = envMgr.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
+	updateConfigEnv(path.join(rootPath, hdbTerms.HDB_CONFIG_FILE));
 
 	setIgnoreExisting(true);
 
@@ -478,91 +478,91 @@ async function installHDB() {
 }
 
 function getDBPath(db) {
-	const db_config = env_mgr.get(hdb_terms.CONFIG_PARAMS.DATABASES)?.[db];
+	const dbConfig = envMgr.get(hdbTerms.CONFIG_PARAMS.DATABASES)?.[db];
 	return (
-		db_config?.path || env_mgr.get(CONFIG_PARAMS.STORAGE_PATH) || path.join(root_path, hdb_terms.DATABASES_DIR_NAME)
+		dbConfig?.path || envMgr.get(CONFIG_PARAMS.STORAGE_PATH) || path.join(rootPath, hdbTerms.DATABASES_DIR_NAME)
 	);
 }
 
 async function cloneTablesHttp() {
 	// If this is a fresh clone or there is no system.mdb file clone users/roles system tables
-	const system_db_dir = getDBPath('system');
-	const sys_db_file_dir = join(system_db_dir, 'system.mdb');
-	await ensureDir(system_db_dir);
-	if (fresh_clone || !(await fs.exists(sys_db_file_dir)) || clone_overtop) {
-		if (!replication_host) {
+	const systemDbDir = getDBPath('system');
+	const sysDbFileDir = join(systemDbDir, 'system.mdb');
+	await ensureDir(systemDbDir);
+	if (freshClone || !(await fs.exists(sysDbFileDir)) || cloneOvertop) {
+		if (!replicationHost) {
 			console.info('Cloning system database');
-			await ensureDir(system_db_dir);
-			const file_stream = createWriteStream(sys_db_file_dir, { overwrite: true });
+			await ensureDir(systemDbDir);
+			const fileStream = createWriteStream(sysDbFileDir, { overwrite: true });
 			const req = {
 				operation: OPERATIONS_ENUM.GET_BACKUP,
 				database: 'system',
 				tables: SYSTEM_TABLES_TO_CLONE,
 			};
 
-			const headers = await leaderHttpStream(req, file_stream);
+			const headers = await leaderHttpStream(req, fileStream);
 			// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
-			let backup_date = new Date(headers.date);
-			if (!start_time || backup_date < start_time) start_time = backup_date;
-			await fs.utimes(sys_db_file_dir, Date.now(), backup_date);
+			let backupDate = new Date(headers.date);
+			if (!startTime || backupDate < startTime) startTime = backupDate;
+			await fs.utimes(sysDbFileDir, Date.now(), backupDate);
 		}
 
-		if (!fresh_clone) {
-			await mount(root_path);
+		if (!freshClone) {
+			await mount(rootPath);
 			await insertHdbVersionInfo();
 			setIgnoreExisting(true);
 		}
 	} else {
-		sys_db_exist = true;
+		sysDbExist = true;
 		console.log(`Not cloning system database due to it already existing on clone`);
 	}
 
 	// Create object where excluded db name is key
-	exclude_db = clone_node_config?.databaseConfig?.excludeDatabases;
-	exclude_db = exclude_db
-		? exclude_db.reduce((obj, item) => {
+	excludeDb = cloneNodeConfig?.databaseConfig?.excludeDatabases;
+	excludeDb = excludeDb
+		? excludeDb.reduce((obj, item) => {
 				return { ...obj, [item['database']]: true };
 			}, {})
 		: {};
 
 	// Check to see if DB already on clone, if it is we dont clone it
-	for (const db in leader_dbs) {
+	for (const db in leaderDbs) {
 		if (await fs.exists(path.join(getDBPath(db), db + '.mdb'))) {
 			console.log(`Not cloning database ${db} due to it already existing on clone`);
-			exclude_db[db] = true;
+			excludeDb[db] = true;
 		}
 	}
 
 	// Build excluded table object where key is db + table
-	excluded_table = clone_node_config?.databaseConfig?.excludeTables;
-	excluded_table = excluded_table
-		? excluded_table.reduce((obj, item) => {
+	excludedTable = cloneNodeConfig?.databaseConfig?.excludeTables;
+	excludedTable = excludedTable
+		? excludedTable.reduce((obj, item) => {
 				return { ...obj, [item['database'] == null ? null : item['database'] + item['table']]: true };
 			}, {})
 		: {};
 
-	for (const db in leader_dbs) {
-		if (exclude_db[db]) {
-			leader_dbs[db] = 'excluded';
+	for (const db in leaderDbs) {
+		if (excludeDb[db]) {
+			leaderDbs[db] = 'excluded';
 			continue;
 		}
-		if (_.isEmpty(leader_dbs[db])) continue;
-		let tables_to_clone = [];
-		let excluded_tables = false;
-		for (const table_name in leader_dbs[db]) {
-			if (excluded_table[db + table_name]) {
-				excluded_tables = true;
-				leader_dbs[db][table_name] = 'excluded';
+		if (_.isEmpty(leaderDbs[db])) continue;
+		let tablesToClone = [];
+		let excludedTables = false;
+		for (const tableName in leaderDbs[db]) {
+			if (excludedTable[db + tableName]) {
+				excludedTables = true;
+				leaderDbs[db][tableName] = 'excluded';
 			} else {
-				tables_to_clone.push(leader_dbs[db][table_name]);
+				tablesToClone.push(leaderDbs[db][tableName]);
 			}
 		}
 
-		if (tables_to_clone.length === 0) continue;
-		if (replication_host) {
-			hdb_log.debug('Setting up tables for #{db}');
-			const ensureTable = require('../../resources/databases').table;
-			for (let table of tables_to_clone) {
+		if (tablesToClone.length === 0) continue;
+		if (replicationHost) {
+			hdbLog.debug('Setting up tables for #{db}');
+			const ensureTable = require('../../resources/databases.ts').table;
+			for (let table of tablesToClone) {
 				for (let attribute of table.attributes) {
 					if (attribute.is_hash_attribute || attribute.is_primary_key) attribute.isPrimaryKey = true;
 				}
@@ -574,36 +574,36 @@ async function cloneTablesHttp() {
 			}
 			continue;
 		}
-		tables_to_clone = tables_to_clone.map((table) => table.name);
+		tablesToClone = tablesToClone.map((table) => table.name);
 
-		let backup_req;
-		if (excluded_tables) {
-			console.info(`Cloning database: ${db} tables: ${tables_to_clone}`);
-			backup_req = { operation: OPERATIONS_ENUM.GET_BACKUP, database: db, tables: tables_to_clone };
+		let backupReq;
+		if (excludedTables) {
+			console.info(`Cloning database: ${db} tables: ${tablesToClone}`);
+			backupReq = { operation: OPERATIONS_ENUM.GET_BACKUP, database: db, tables: tablesToClone };
 		} else {
 			console.info(`Cloning database: ${db}`);
-			backup_req = { operation: OPERATIONS_ENUM.GET_BACKUP, database: db };
+			backupReq = { operation: OPERATIONS_ENUM.GET_BACKUP, database: db };
 		}
 
-		const db_dir = getDBPath(db);
-		await ensureDir(db_dir);
-		const db_path = join(db_dir, db + '.mdb');
-		const table_file_stream = createWriteStream(db_path, { overwrite: true });
-		const req_headers = await leaderHttpStream(backup_req, table_file_stream);
+		const dbDir = getDBPath(db);
+		await ensureDir(dbDir);
+		const dbPath = join(dbDir, db + '.mdb');
+		const tableFileStream = createWriteStream(dbPath, { overwrite: true });
+		const reqHeaders = await leaderHttpStream(backupReq, tableFileStream);
 
 		// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
-		let backup_date = new Date(req_headers.date);
-		if (!start_time || backup_date < start_time) start_time = backup_date;
-		await fs.utimes(db_path, Date.now(), backup_date);
+		let backupDate = new Date(reqHeaders.date);
+		if (!startTime || backupDate < startTime) startTime = backupDate;
+		await fs.utimes(dbPath, Date.now(), backupDate);
 	}
 }
 
 async function cloneTablesFetch() {
 	// If this is a fresh clone or there is no system.mdb file clone users/roles system tables
-	const system_db_dir = getDBPath('system');
-	const sys_db_file_dir = join(system_db_dir, 'system.mdb');
-	if (fresh_clone || !(await fs.exists(sys_db_file_dir)) || clone_overtop) {
-		if (!replication_host) {
+	const systemDbDir = getDBPath('system');
+	const sysDbFileDir = join(systemDbDir, 'system.mdb');
+	if (freshClone || !(await fs.exists(sysDbFileDir)) || cloneOvertop) {
+		if (!replicationHost) {
 			console.info('Cloning system database using fetch');
 			const req = {
 				operation: OPERATIONS_ENUM.GET_BACKUP,
@@ -611,80 +611,80 @@ async function cloneTablesFetch() {
 				tables: SYSTEM_TABLES_TO_CLONE,
 			};
 
-			const sys_backup = await leaderHttpReqFetch(req, true);
-			const sys_db_dir = getDBPath('system');
-			await ensureDir(sys_db_dir);
-			const sys_db_file_dir = join(sys_db_dir, 'system.mdb');
-			await pipeline(sys_backup.body, createWriteStream(sys_db_file_dir, { overwrite: true }));
+			const sysBackup = await leaderHttpReqFetch(req, true);
+			const sysDbDir = getDBPath('system');
+			await ensureDir(sysDbDir);
+			const sysDbFileDir = join(sysDbDir, 'system.mdb');
+			await pipeline(sysBackup.body, createWriteStream(sysDbFileDir, { overwrite: true }));
 
 			// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
-			let backup_date = new Date(sys_backup.headers.get('date'));
-			if (!start_time || backup_date < start_time) start_time = backup_date;
-			await fs.utimes(sys_db_file_dir, Date.now(), new Date(sys_backup.headers.get('date')));
+			let backupDate = new Date(sysBackup.headers.get('date'));
+			if (!startTime || backupDate < startTime) startTime = backupDate;
+			await fs.utimes(sysDbFileDir, Date.now(), new Date(sysBackup.headers.get('date')));
 		}
 
-		if (!fresh_clone) {
-			await mount(root_path);
+		if (!freshClone) {
+			await mount(rootPath);
 			await insertHdbVersionInfo();
 			setIgnoreExisting(true);
 		}
 	} else {
-		sys_db_exist = true;
+		sysDbExist = true;
 		console.log(`Not cloning system database due to it already existing on clone`);
 	}
-	if (replication_host) {
-		hdb_log.info('Replication hostname set, not using backup to clone databases, replication will clone');
+	if (replicationHost) {
+		hdbLog.info('Replication hostname set, not using backup to clone databases, replication will clone');
 		return;
 	}
 
 	// Create object where excluded db name is key
-	exclude_db = clone_node_config?.databaseConfig?.excludeDatabases;
-	exclude_db = exclude_db
-		? exclude_db.reduce((obj, item) => {
+	excludeDb = cloneNodeConfig?.databaseConfig?.excludeDatabases;
+	excludeDb = excludeDb
+		? excludeDb.reduce((obj, item) => {
 				return { ...obj, [item['database']]: true };
 			}, {})
 		: {};
 
 	// Check to see if DB already on clone, if it is we dont clone it
-	for (const db in leader_dbs) {
+	for (const db in leaderDbs) {
 		if (await fs.exists(path.join(getDBPath(db), db + '.mdb'))) {
 			console.log(`Not cloning database ${db} due to it already existing on clone`);
-			exclude_db[db] = true;
+			excludeDb[db] = true;
 		}
 	}
 
 	// Build excluded table object where key is db + table
-	excluded_table = clone_node_config?.databaseConfig?.excludeTables;
-	excluded_table = excluded_table
-		? excluded_table.reduce((obj, item) => {
+	excludedTable = cloneNodeConfig?.databaseConfig?.excludeTables;
+	excludedTable = excludedTable
+		? excludedTable.reduce((obj, item) => {
 				return { ...obj, [item['database'] == null ? null : item['database'] + item['table']]: true };
 			}, {})
 		: {};
 
-	for (const db in leader_dbs) {
-		if (exclude_db[db]) {
-			leader_dbs[db] = 'excluded';
+	for (const db in leaderDbs) {
+		if (excludeDb[db]) {
+			leaderDbs[db] = 'excluded';
 			continue;
 		}
-		if (_.isEmpty(leader_dbs[db])) continue;
-		let tables_to_clone = [];
-		let excluded_tables = false;
-		for (const table in leader_dbs[db]) {
-			if (excluded_table[db + table]) {
-				excluded_tables = true;
-				leader_dbs[db][table] = 'excluded';
+		if (_.isEmpty(leaderDbs[db])) continue;
+		let tablesToClone = [];
+		let excludedTables = false;
+		for (const table in leaderDbs[db]) {
+			if (excludedTable[db + table]) {
+				excludedTables = true;
+				leaderDbs[db][table] = 'excluded';
 			} else {
-				tables_to_clone.push(table);
+				tablesToClone.push(table);
 			}
 		}
 
-		if (tables_to_clone.length === 0) return;
+		if (tablesToClone.length === 0) return;
 
 		let backup;
-		if (excluded_tables) {
-			console.info(`Cloning database: ${db} tables: ${tables_to_clone}`);
+		if (excludedTables) {
+			console.info(`Cloning database: ${db} tables: ${tablesToClone}`);
 			backup = await leaderHttpReqFetch(
-				{ operation: OPERATIONS_ENUM.GET_BACKUP, database: db, tables: tables_to_clone },
+				{ operation: OPERATIONS_ENUM.GET_BACKUP, database: db, tables: tablesToClone },
 				true
 			);
 		} else {
@@ -692,44 +692,44 @@ async function cloneTablesFetch() {
 			backup = await leaderHttpReqFetch({ operation: OPERATIONS_ENUM.GET_BACKUP, database: db }, true);
 		}
 
-		const db_dir = getDBPath(db);
-		await ensureDir(db_dir);
-		const backup_date = new Date(backup.headers.get('date'));
+		const dbDir = getDBPath(db);
+		await ensureDir(dbDir);
+		const backupDate = new Date(backup.headers.get('date'));
 
 		// Stream the backup to a file with temp name consisting of <timestamp>-<table name>, this is done so that if clone
 		// fails during this step half cloned db files can easily be identified.
-		const temp_db_path = join(db_dir, `${backup_date.getTime()}-${db}.mdb`);
-		await pipeline(backup.body, createWriteStream(temp_db_path, { overwrite: true }));
+		const tempDbPath = join(dbDir, `${backupDate.getTime()}-${db}.mdb`);
+		await pipeline(backup.body, createWriteStream(tempDbPath, { overwrite: true }));
 
 		// Once the clone of a db file is completed it is renamed to its permanent name
-		const db_path = join(db_dir, db + '.mdb');
-		await fs.rename(temp_db_path, db_path);
+		const dbPath = join(dbDir, db + '.mdb');
+		await fs.rename(tempDbPath, dbPath);
 
 		// We add the backup date to the files mtime property, this is done so that clusterTables can reference it.
-		if (!start_time || backup_date < start_time) start_time = backup_date;
-		await fs.utimes(db_path, Date.now(), backup_date);
+		if (!startTime || backupDate < startTime) startTime = backupDate;
+		await fs.utimes(dbPath, Date.now(), backupDate);
 	}
 }
 
-async function leaderHttpReqFetch(req, get_backup = false) {
-	const reject_unauth = clone_node_config?.httpsRejectUnauthorized ?? false;
-	const https_agent = new https.Agent({
-		rejectUnauthorized: reject_unauth,
+async function leaderHttpReqFetch(req, getBackup = false) {
+	const rejectUnauth = cloneNodeConfig?.httpsRejectUnauthorized ?? false;
+	const httpsAgent = new https.Agent({
+		rejectUnauthorized: rejectUnauth,
 	});
 
-	if (!reject_unauth) process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
+	if (!rejectUnauth) process.env.NODE_TLS_REJECT_UNAUTHORIZED = '0';
 
 	const auth = Buffer.from(username + ':' + password).toString('base64');
 	const headers = { 'Authorization': 'Basic ' + auth, 'Content-Type': 'application/json' };
-	if (get_backup) {
+	if (getBackup) {
 		headers['Accept-Encoding'] = 'gzip';
 	}
 
-	const response = await fetch(leader_url, {
+	const response = await fetch(leaderUrl, {
 		method: 'POST',
 		headers,
 		body: JSON.stringify(req),
-		agent: https_agent,
+		agent: httpsAgent,
 		compress: true,
 	});
 
@@ -739,8 +739,8 @@ async function leaderHttpReqFetch(req, get_backup = false) {
 }
 
 async function startHDB(background, run = false) {
-	const hdb_proc = await sys_info.getHDBProcessInfo();
-	if (hdb_proc.clustering.length === 0 || hdb_proc.core.length === 0) {
+	const hdbProc = await sysInfo.getHDBProcessInfo();
+	if (hdbProc.clustering.length === 0 || hdbProc.core.length === 0) {
 		if (background) {
 			await launch(false);
 		} else {
@@ -749,27 +749,27 @@ async function startHDB(background, run = false) {
 		}
 	} else {
 		console.info(await restart({ operation: OPERATIONS_ENUM.RESTART }));
-		await hdb_utils.async_set_timeout(WAIT_FOR_RESTART_TIME);
+		await hdbUtils.asyncSetTimeout(WAIT_FOR_RESTART_TIME);
 	}
-	if (background) await hdb_utils.async_set_timeout(2000);
+	if (background) await hdbUtils.asyncSetTimeout(2000);
 }
 
 async function setAppPath() {
 	// Run a specific application folder
-	let app_folder = process.argv[3];
-	if (app_folder && app_folder[0] !== '-') {
-		if (!(await fs.exists(app_folder))) {
-			console.error(`The folder ${app_folder} does not exist`);
+	let appFolder = process.argv[3];
+	if (appFolder && appFolder[0] !== '-') {
+		if (!(await fs.exists(appFolder))) {
+			console.error(`The folder ${appFolder} does not exist`);
 		}
-		if (!fs.statSync(app_folder).isDirectory()) {
-			console.error(`The path ${app_folder} is not a folder`);
+		if (!fs.statSync(appFolder).isDirectory()) {
+			console.error(`The path ${appFolder} is not a folder`);
 		}
-		app_folder = await fs.realpath(app_folder);
-		if (await fs.exists(path.join(app_folder, hdb_terms.HDB_CONFIG_FILE))) {
+		appFolder = await fs.realpath(appFolder);
+		if (await fs.exists(path.join(appFolder, hdbTerms.HDB_CONFIG_FILE))) {
 			// This can be used to run HDB without a boot file
-			process.env.ROOTPATH = app_folder;
+			process.env.ROOTPATH = appFolder;
 		} else {
-			process.env.RUN_HDB_APP = app_folder;
+			process.env.RUN_HDB_APP = appFolder;
 		}
 	}
 }
@@ -782,14 +782,14 @@ async function setAppPath() {
 async function setupReplication() {
 	console.info('Setting up replication');
 
-	await global_schema.setSchemaDataToGlobalAsync();
-	const add_node = require('../clustering/addNode');
-	const add_node_response = await add_node(
+	await globalSchema.setSchemaDataToGlobalAsync();
+	const addNode = require('../clustering/addNode.js');
+	const addNodeResponse = await addNode(
 		{
 			operation: OPERATIONS_ENUM.ADD_NODE,
 			verify_tls: false, // TODO : if they have certs we shouldnt need to pass creds
-			url: leader_replication_url,
-			start_time,
+			url: leaderReplicationUrl,
+			startTime,
 			authorization: {
 				username,
 				password,
@@ -798,17 +798,17 @@ async function setupReplication() {
 		true
 	);
 
-	console.log('Add node response: ', add_node_response);
+	console.log('Add node response: ', addNodeResponse);
 }
 
 async function leaderHttpReq(req) {
-	const https_agent = new https.Agent({
-		rejectUnauthorized: clone_node_config?.httpsRejectUnauthorized ?? false,
+	const httpsAgent = new https.Agent({
+		rejectUnauthorized: cloneNodeConfig?.httpsRejectUnauthorized ?? false,
 	});
 
 	const auth = Buffer.from(username + ':' + password).toString('base64');
 	const headers = { 'Authorization': 'Basic ' + auth, 'Content-Type': 'application/json' };
-	const url = new URL(leader_url);
+	const url = new URL(leaderUrl);
 	const options = {
 		protocol: url.protocol,
 		host: url.hostname,
@@ -816,19 +816,19 @@ async function leaderHttpReq(req) {
 		headers,
 	};
 
-	if (url.protocol === 'https:') options.agent = https_agent;
+	if (url.protocol === 'https:') options.agent = httpsAgent;
 	if (url.port) options.port = url.port;
-	return await hdb_utils.httpRequest(options, req);
+	return await hdbUtils.httpRequest(options, req);
 }
 
 async function leaderHttpStream(data, stream) {
-	const https_agent = new https.Agent({
-		rejectUnauthorized: clone_node_config?.httpsRejectUnauthorized ?? false,
+	const httpsAgent = new https.Agent({
+		rejectUnauthorized: cloneNodeConfig?.httpsRejectUnauthorized ?? false,
 	});
 
 	const auth = Buffer.from(username + ':' + password).toString('base64');
 	const headers = { 'Authorization': 'Basic ' + auth, 'Content-Type': 'application/json' };
-	const url = new URL(leader_url);
+	const url = new URL(leaderUrl);
 	const options = {
 		protocol: url.protocol,
 		host: url.hostname,
@@ -837,7 +837,7 @@ async function leaderHttpStream(data, stream) {
 	};
 
 	if (url.protocol === 'https:') {
-		options.agent = https_agent;
+		options.agent = httpsAgent;
 		http = https;
 	}
 	if (url.port) options.port = url.port;
@@ -867,7 +867,7 @@ async function leaderHttpStream(data, stream) {
 async function insertHdbVersionInfo() {
 	const vers = packageJson.version;
 	if (vers) {
-		await hdb_info_controller.insertHdbInstallInfo(vers);
+		await hdbInfoController.insertHdbInstallInfo(vers);
 	} else {
 		throw new Error('The version is missing/removed from HarperDB package.json');
 	}

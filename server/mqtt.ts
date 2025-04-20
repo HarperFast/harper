@@ -1,17 +1,17 @@
 // for now we are using mqtt-packet, but we may implement some of this ourselves, particularly packet generation so that
 // we can implement more efficient progressive buffer allocation.
 import { parser as makeParser, generate } from 'mqtt-packet';
-import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsSession';
-import { getSuperUser } from '../security/user';
-import { serializeMessage, getDeserializer } from './serverHelpers/contentTypes';
-import { recordAction, addAnalyticsListener, recordActionBinary } from '../resources/analytics/write';
-import { server } from '../server/Server';
-import { get } from '../utility/environment/environmentManager';
-import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms';
+import { getSession, DurableSubscriptionsSession } from './DurableSubscriptionsSession.ts';
+import { getSuperUser } from '../security/user.js';
+import { serializeMessage, getDeserializer } from './serverHelpers/contentTypes.ts';
+import { recordAction, addAnalyticsListener, recordActionBinary } from '../resources/analytics/write.ts';
+import { server } from '../server/Server.ts';
+import { get } from '../utility/environment/environmentManager.js';
+import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.ts';
 import { loggerWithTag } from '../utility/logging/logger.js';
 import { EventEmitter } from 'events';
-const auth_event_log = loggerWithTag('auth-event');
-const mqtt_log = loggerWithTag('mqtt');
+const authEventLog = loggerWithTag('auth-event');
+const mqttLog = loggerWithTag('mqtt');
 
 let AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
 export function bypassAuth() {
@@ -29,43 +29,43 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 		// a no-op error handler to prevent unhandled error events from being rethrown
 		server.mqtt.events.on('error', () => {});
 	}
-	const mqtt_settings = server.mqtt;
-	let server_instances = [];
+	const mqttSettings = server.mqtt;
+	let serverInstances = [];
 	const mtls = network?.mtls;
 	if (webSocket)
-		server_instances = server.ws(
-			(ws, request, chain_completion, next) => {
+		serverInstances = server.ws(
+			(ws, request, chainCompletion, next) => {
 				if (request.headers.get('sec-websocket-protocol') !== 'mqtt') {
-					return next(ws, request, chain_completion);
+					return next(ws, request, chainCompletion);
 				}
 
-				mqtt_settings.events.emit('connection', ws);
-				mqtt_log.debug?.('Received WebSocket connection for MQTT from', ws._socket.remoteAddress);
+				mqttSettings.events.emit('connection', ws);
+				mqttLog.debug?.('Received WebSocket connection for MQTT from', ws._socket.remoteAddress);
 				const { onMessage, onClose } = onSocket(
 					ws,
 					(message) => {
 						ws.send(message);
 					},
 					request,
-					Promise.resolve(chain_completion).then(() => request?.user),
-					mqtt_settings
+					Promise.resolve(chainCompletion).then(() => request?.user),
+					mqttSettings
 				);
 				ws.on('message', onMessage);
 				ws.on('close', onClose);
 				ws.on('error', (error) => {
-					mqtt_log.info?.('WebSocket error', error);
+					mqttLog.info?.('WebSocket error', error);
 				});
 			},
 			{ ...webSocket }
 		); // if there is no port, we are piggy-backing off of default app http server
 	// standard TCP socket
 	if (port || securePort) {
-		server_instances.push(
+		serverInstances.push(
 			server.socket(
 				async (socket) => {
 					let user;
-					mqtt_settings.events.emit('connection', socket);
-					mqtt_log.debug?.(
+					mqttSettings.events.emit('connection', socket);
+					mqttLog.debug?.(
 						`Received ${socket.getCertificate ? 'SSL' : 'TCP'} connection for MQTT from ${socket.remoteAddress}`
 					);
 					if (mtls) {
@@ -79,39 +79,39 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 									try {
 										user = await server.getUser(username, null, null);
 										if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
-											auth_event_log.notify?.({
+											authEventLog.notify?.({
 												username: user?.username,
 												status: AUTH_AUDIT_STATUS.SUCCESS,
 												type: AUTH_AUDIT_TYPES.AUTHENTICATION,
-												auth_strategy: 'MQTT mTLS',
-												remote_address: socket.remoteAddress,
+												authStrategy: 'MQTT mTLS',
+												remoteAddress: socket.remoteAddress,
 											});
 										}
 									} catch (error) {
 										if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED)) {
-											auth_event_log.error?.({
+											authEventLog.error?.({
 												username,
 												status: AUTH_AUDIT_STATUS.FAILURE,
 												type: AUTH_AUDIT_TYPES.AUTHENTICATION,
-												auth_strategy: 'mqtt',
-												remote_address: socket.remoteAddress,
+												authStrategy: 'mqtt',
+												remoteAddress: socket.remoteAddress,
 											});
 										}
 										throw error;
 									}
 								} else {
-									mqtt_log.debug?.(
+									mqttLog.debug?.(
 										'MQTT mTLS authorized connection (mTLS did not authorize a user)',
 										'from',
 										socket.remoteAddress
 									);
 								}
 							} catch (error) {
-								mqtt_settings.events.emit('error', error, socket);
-								mqtt_log.error?.(error);
+								mqttSettings.events.emit('error', error, socket);
+								mqttLog.error?.(error);
 							}
 						} else if (mtls.required) {
-							mqtt_log.info?.(
+							mqttLog.info?.(
 								`Unauthorized connection attempt, no authorized client certificate provided, error: ${socket.authorizationError}`
 							);
 							return socket.end();
@@ -119,7 +119,7 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 					}
 					if (!user && AUTHORIZE_LOCAL && socket.remoteAddress.includes('127.0.0.1')) {
 						user = await getSuperUser();
-						mqtt_log.debug?.('Auto-authorizing local connection', user?.username);
+						mqttLog.debug?.('Auto-authorizing local connection', user?.username);
 					}
 
 					const { onMessage, onClose } = onSocket(
@@ -127,51 +127,51 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 						(message) => socket.write(message),
 						null,
 						user,
-						mqtt_settings
+						mqttSettings
 					);
 					socket.on('data', onMessage);
 					socket.on('close', onClose);
 					socket.on('error', (error) => {
-						mqtt_log.info?.('Socket error', error);
+						mqttLog.info?.('Socket error', error);
 					});
 				},
 				{ port, securePort, mtls }
 			)
 		);
 	}
-	return server_instances;
+	return serverInstances;
 }
-let adding_metrics,
-	number_of_connections = 0;
-function onSocket(socket, send, request, user, mqtt_settings) {
-	if (!adding_metrics) {
-		adding_metrics = true;
+let addingMetrics,
+	numberOfConnections = 0;
+function onSocket(socket, send, request, user, mqttSettings) {
+	if (!addingMetrics) {
+		addingMetrics = true;
 		addAnalyticsListener((metrics) => {
-			if (number_of_connections > 0)
+			if (numberOfConnections > 0)
 				metrics.push({
 					metric: 'mqtt-connections',
-					connections: number_of_connections,
+					connections: numberOfConnections,
 					byThread: true,
 				});
 		});
 	}
 	let disconnected;
-	number_of_connections++;
+	numberOfConnections++;
 	let session: DurableSubscriptionsSession;
-	const mqtt_options = { protocolVersion: 4 };
+	const mqttOptions = { protocolVersion: 4 };
 	const parser = makeParser({ protocolVersion: 5 });
 	function onMessage(data) {
 		parser.parse(data);
 	}
 	function onClose() {
-		number_of_connections--;
+		numberOfConnections--;
 		if (!disconnected) {
 			disconnected = true;
 			session?.disconnect?.();
-			mqtt_settings.events.emit('disconnected', session, socket);
-			mqtt_settings.sessions.delete(session);
+			mqttSettings.events.emit('disconnected', session, socket);
+			mqttSettings.sessions.delete(session);
 			recordActionBinary(false, 'connection', 'mqtt', 'disconnect');
-			mqtt_log.debug?.('MQTT connection was closed', socket.remoteAddress);
+			mqttLog.debug?.('MQTT connection was closed', socket.remoteAddress);
 		}
 	}
 
@@ -180,51 +180,51 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 			if (user?.then) user = await user;
 		} catch (error) {
 			socket.close?.(1008, 'Unauthorized');
-			mqtt_log.info?.(error); // should already be handled elsewhere
+			mqttLog.info?.(error); // should already be handled elsewhere
 			return;
 		}
 		const command = packet.cmd;
 		if (session) {
 			if (session.then) await session;
 		} else if (command !== 'connect') {
-			mqtt_log.info?.('Received packet before connection was established, closing connection');
+			mqttLog.info?.('Received packet before connection was established, closing connection');
 			if (socket?.destroy) socket.destroy();
 			else socket?.terminate();
 			return;
 		}
 		const topic = packet.topic;
-		const slash_index = topic?.indexOf('/', 1);
-		const general_topic = slash_index > 0 ? topic.slice(0, slash_index) : topic;
-		recordAction(packet.length, 'bytes-received', general_topic, packetMethodName(packet), 'mqtt');
+		const slashIndex = topic?.indexOf('/', 1);
+		const generalTopic = slashIndex > 0 ? topic.slice(0, slashIndex) : topic;
+		recordAction(packet.length, 'bytes-received', generalTopic, packetMethodName(packet), 'mqtt');
 
 		try {
 			session?.receivedPacket?.();
 			switch (command) {
 				case 'connect':
-					mqtt_options.protocolVersion = packet.protocolVersion;
+					mqttOptions.protocolVersion = packet.protocolVersion;
 					if (packet.username) {
 						try {
 							user = await server.getUser(packet.username, packet.password.toString(), request);
 							if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGSUCCESSFUL)) {
-								auth_event_log.notify?.({
+								authEventLog.notify?.({
 									username: user?.username,
 									status: AUTH_AUDIT_STATUS.SUCCESS,
 									type: AUTH_AUDIT_TYPES.AUTHENTICATION,
-									auth_strategy: 'MQTT',
-									remote_address: socket.remoteAddress,
+									authStrategy: 'MQTT',
+									remoteAddress: socket.remoteAddress,
 								});
 							}
 						} catch (error) {
 							if (get(CONFIG_PARAMS.LOGGING_AUDITAUTHEVENTS_LOGFAILED)) {
-								auth_event_log.error?.({
+								authEventLog.error?.({
 									username: packet.username,
 									status: AUTH_AUDIT_STATUS.FAILURE,
 									type: AUTH_AUDIT_TYPES.AUTHENTICATION,
-									auth_strategy: 'mqtt',
-									remote_address: socket.remoteAddress,
+									authStrategy: 'mqtt',
+									remoteAddress: socket.remoteAddress,
 								});
 							}
-							mqtt_settings.events.emit('auth-failed', packet, socket, error);
+							mqttSettings.events.emit('auth-failed', packet, socket, error);
 							recordActionBinary(false, 'connection', 'mqtt', 'connect');
 							return sendPacket({
 								// Send a connection acknowledgment with indication of auth failure
@@ -234,8 +234,8 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 							});
 						}
 					}
-					if (!user && mqtt_settings.requireAuthentication) {
-						mqtt_settings.events.emit('auth-failed', packet, socket);
+					if (!user && mqttSettings.requireAuthentication) {
+						mqttSettings.events.emit('auth-failed', packet, socket);
 						recordActionBinary(false, 'connection', 'mqtt', 'connect');
 						return sendPacket({
 							// Send a connection acknowledgment with indication of auth failure
@@ -246,7 +246,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					}
 					try {
 						// TODO: Do we want to prefix the user name to the client id (to prevent collisions when poor ids are used) or is this sufficient?
-						mqtt_settings.authorizeClient?.(packet, user);
+						mqttSettings.authorizeClient?.(packet, user);
 
 						// TODO: Handle the will & testament, and possibly use the will's content type as a hint for expected content
 						if (packet.will) {
@@ -266,10 +266,10 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 							// if there a request, store it in the session so we can use it as part of the context
 							session.request = request;
 						}
-						mqtt_settings.sessions.add(session);
+						mqttSettings.sessions.add(session);
 					} catch (error) {
-						mqtt_log.error?.(error);
-						mqtt_settings.events.emit('auth-failed', packet, socket, error);
+						mqttLog.error?.(error);
+						mqttSettings.events.emit('auth-failed', packet, socket, error);
 						recordActionBinary(false, 'connection', 'mqtt', 'connect');
 						return sendPacket({
 							// Send a connection acknowledgment with indication of auth failure
@@ -278,7 +278,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 							returnCode: error.code || 0x80, // generic error
 						});
 					}
-					mqtt_settings.events.emit('connected', session, socket);
+					mqttSettings.events.emit('connected', session, socket);
 					recordActionBinary(true, 'connection', 'mqtt', 'connect');
 					sendPacket({
 						// Send a connection acknowledgment
@@ -287,31 +287,31 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						reasonCode: 0,
 						returnCode: 0, // success
 					});
-					const listener = async (topic, message, message_id, subscription) => {
+					const listener = async (topic, message, messageId, subscription) => {
 						try {
 							if (disconnected) throw new Error('Session disconnected while trying to send message to', topic);
-							const slash_index = topic.indexOf('/', 1);
-							const general_topic = slash_index > 0 ? topic.slice(0, slash_index) : topic;
+							const slashIndex = topic.indexOf('/', 1);
+							const generalTopic = slashIndex > 0 ? topic.slice(0, slashIndex) : topic;
 							sendPacket(
 								{
 									cmd: 'publish',
 									topic,
 									payload: await serialize(message),
-									messageId: message_id || Math.floor(Math.random() * 100000000),
+									messageId: messageId || Math.floor(Math.random() * 100000000),
 									qos: subscription.qos,
 								},
-								general_topic
+								generalTopic
 							);
 							// wait if there is back-pressure
-							const raw_socket = socket._socket ?? socket;
-							if (raw_socket.writableNeedDrain) {
-								return new Promise((resolve) => raw_socket.once('drain', resolve));
+							const rawSocket = socket._socket ?? socket;
+							if (rawSocket.writableNeedDrain) {
+								return new Promise((resolve) => rawSocket.once('drain', resolve));
 							}
-							return !raw_socket.closed;
+							return !rawSocket.closed;
 						} catch (error) {
-							mqtt_log.error?.(error);
+							mqttLog.error?.(error);
 							session?.disconnect();
-							mqtt_settings.sessions.delete(session);
+							mqttSettings.sessions.delete(session);
 							return false;
 						}
 					};
@@ -321,22 +321,22 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 				case 'subscribe':
 					const granted = [];
 					for (const subscription of packet.subscriptions) {
-						let granted_qos;
+						let grantedQos;
 						try {
-							const granted_subscription = await session.addSubscription(subscription, subscription.qos >= 1);
-							granted_qos = granted_subscription
-								? granted_subscription.qos || 0
-								: mqtt_options.protocolVersion < 5
+							const grantedSubscription = await session.addSubscription(subscription, subscription.qos >= 1);
+							grantedQos = grantedSubscription
+								? grantedSubscription.qos || 0
+								: mqttOptions.protocolVersion < 5
 									? 0x80 // only error code in v3.1.1
 									: 0x8f; // invalid topic indicated
 						} catch (error) {
-							mqtt_settings.events.emit('error', error, socket, subscription, session);
+							mqttSettings.events.emit('error', error, socket, subscription, session);
 							if (error.statusCode) {
-								if (error.statusCode === 500) mqtt_log.warn?.(error);
-								else mqtt_log.info?.(error);
-							} else mqtt_log.error?.(error);
-							granted_qos =
-								mqtt_options.protocolVersion < 5
+								if (error.statusCode === 500) mqttLog.warn?.(error);
+								else mqttLog.info?.(error);
+							} else mqttLog.error?.(error);
+							grantedQos =
+								mqttOptions.protocolVersion < 5
 									? 0x80 // the only error code in v3.1.1
 									: error.statusCode === 403
 										? 0x87 // unauthorized
@@ -344,7 +344,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 											? 0x8f // invalid topic
 											: 0x80; // generic failure
 						}
-						granted.push(granted_qos);
+						granted.push(grantedQos);
 					}
 					await session.committed;
 					sendPacket({
@@ -376,23 +376,23 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 					});
 					return;
 				case 'publish':
-					const response_cmd = packet.qos === 2 ? 'pubrec' : 'puback';
+					const responseCmd = packet.qos === 2 ? 'pubrec' : 'puback';
 					// deserialize
 					const deserialize =
 						socket.deserialize || (socket.deserialize = getDeserializer(request?.headers.get?.('content-type')));
-					const message_length = packet.payload?.length || 0;
-					const data = message_length > 0 ? deserialize(packet.payload) : undefined; // zero payload length maps to a delete
+					const messageLength = packet.payload?.length || 0;
+					const data = messageLength > 0 ? deserialize(packet.payload) : undefined; // zero payload length maps to a delete
 					let published;
 					try {
 						published = await session.publish(packet, data);
 					} catch (error) {
-						mqtt_settings.events.emit('error', error, socket, packet, session);
-						mqtt_log.warn?.(error);
+						mqttSettings.events.emit('error', error, socket, packet, session);
+						mqttLog.warn?.(error);
 						if (packet.qos > 0) {
 							sendPacket(
 								{
 									// Send a publish acknowledgment
-									cmd: response_cmd,
+									cmd: responseCmd,
 									messageId: packet.messageId,
 									reasonCode: 0x80, // unspecified error (only MQTT v5 supports error codes)
 								},
@@ -405,7 +405,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 						sendPacket(
 							{
 								// Send a publish acknowledgment
-								cmd: response_cmd,
+								cmd: responseCmd,
 								messageId: packet.messageId,
 								reasonCode:
 									published === false
@@ -434,26 +434,26 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 				case 'disconnect':
 					disconnected = true;
 					session?.disconnect(true);
-					mqtt_settings.events.emit('disconnected', session, socket);
-					mqtt_settings.sessions.delete(session);
+					mqttSettings.events.emit('disconnected', session, socket);
+					mqttSettings.sessions.delete(session);
 					recordActionBinary(true, 'connection', 'mqtt', 'disconnect');
-					mqtt_log.debug?.('Received disconnect command, closing MQTT session', socket.remoteAddress);
+					mqttLog.debug?.('Received disconnect command, closing MQTT session', socket.remoteAddress);
 					if (socket.close) socket.close();
 					else socket.end();
 					break;
 			}
 		} catch (error) {
-			mqtt_settings.events.emit('error', error, socket, packet, session);
-			mqtt_log.error?.(error);
+			mqttSettings.events.emit('error', error, socket, packet, session);
+			mqttLog.error?.(error);
 			sendPacket({
 				// Send a subscription acknowledgment
 				cmd: 'disconnect',
 			});
 		}
-		function sendPacket(packet_data, path?) {
-			const send_packet = generate(packet_data, mqtt_options);
+		function sendPacket(packetData, path?) {
+			const send_packet = generate(packetData, mqttOptions);
 			send(send_packet);
-			recordAction(send_packet.length, 'bytes-sent', path, packetMethodName(packet_data), 'mqtt');
+			recordAction(send_packet.length, 'bytes-sent', path, packetMethodName(packetData), 'mqtt');
 		}
 		function packetMethodName(packet) {
 			return packet.qos > 0 ? packet.cmd + ',qos=' + packet.qos : packet.cmd;
@@ -463,7 +463,7 @@ function onSocket(socket, send, request, user, mqtt_settings) {
 		}
 	});
 	parser.on('error', (error) => {
-		mqtt_log.warn('MQTT parsing error, closing connection:', error.message);
+		mqttLog.warn('MQTT parsing error, closing connection:', error.message);
 		if (socket?.destroy) socket.destroy();
 		else socket?.terminate();
 	});

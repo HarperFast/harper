@@ -1,22 +1,22 @@
-import { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
-import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
-import { ServerError } from '../utility/errors/hdbError';
-import * as harper_logger from '../utility/logging/harper_logger';
-import type { Context } from './ResourceInterface';
+import type { RootDatabase, Transaction as LMDBTransaction } from 'lmdb';
+import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.js';
+import { ServerError } from '../utility/errors/hdbError.js';
+import * as harperLogger from '../utility/logging/harper_logger.js';
+import type { Context } from './ResourceInterface.ts';
 
-import * as env_mngr from '../utility/environment/environmentManager';
-import { CONFIG_PARAMS } from '../utility/hdbTerms';
-import { convertToMS } from '../utility/common_utils';
+import * as envMngr from '../utility/environment/environmentManager.js';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import { convertToMS } from '../utility/common_utils.js';
 
 const MAX_OPTIMISTIC_SIZE = 100;
-const tracked_txns = new Set<DatabaseTransaction>();
-const MAX_OUTSTANDING_TXN_DURATION = convertToMS(env_mngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 25 seconds before we start rejecting them
-export enum TRANSACTION_STATE {
-	CLOSED, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
-	OPEN, // the transaction is open and can be used for reads and writes
-	LINGERING, // the transaction has completed a read, but can be used for immediate writes
-}
-let outstanding_commit, outstanding_commit_start;
+const trackedTxns = new Set<DatabaseTransaction>();
+const MAX_OUTSTANDING_TXN_DURATION = convertToMS(envMngr.get(CONFIG_PARAMS.STORAGE_MAXTRANSACTIONQUEUETIME)) || 45000; // Allow write transactions to be queued for up to 25 seconds before we start rejecting them
+export const TRANSACTION_STATE = {
+	CLOSED: 0, // the transaction has been committed or aborted and can no longer be used for writes (if read txn is active, it can be used for reads)
+	OPEN: 1, // the transaction is open and can be used for reads and writes
+	LINGERING: 2, // the transaction has completed a read, but can be used for immediate writes
+};
+let outstandingCommit, outstandingCommitStart;
 let confirmReplication;
 export function replicationConfirmation(callback) {
 	confirmReplication = callback;
@@ -48,7 +48,7 @@ export class DatabaseTransaction implements Transaction {
 		this.readTxn = this.lmdbDb.useReadTransaction();
 		this.readTxnsUsed = 1;
 		if (this.readTxn.openTimer) this.readTxn.openTimer = 0;
-		tracked_txns.add(this);
+		trackedTxns.add(this);
 		return this.readTxn;
 	}
 	useReadTxn() {
@@ -61,7 +61,7 @@ export class DatabaseTransaction implements Transaction {
 		if (!this.readTxn) return;
 		this.readTxn.done();
 		if (--this.readTxnsUsed === 0) {
-			tracked_txns.delete(this);
+			trackedTxns.delete(this);
 			this.readTxn = null;
 		}
 	}
@@ -72,9 +72,9 @@ export class DatabaseTransaction implements Transaction {
 	}
 	checkOverloaded() {
 		if (
-			outstanding_commit &&
+			outstandingCommit &&
 			!this.overloadChecked &&
-			performance.now() - outstanding_commit_start > MAX_OUTSTANDING_TXN_DURATION
+			performance.now() - outstandingCommitStart > MAX_OUTSTANDING_TXN_DURATION
 		) {
 			throw new ServerError('Outstanding write transactions have too long of queue, please try again later', 503);
 		}
@@ -87,9 +87,9 @@ export class DatabaseTransaction implements Transaction {
 		// else
 		if (this.open === TRANSACTION_STATE.LINGERING) {
 			// if the transaction is lingering, it is already committed, so we need to commit the write immediately
-			const immediate_txn = new DatabaseTransaction();
-			immediate_txn.addWrite(operation);
-			return immediate_txn.commit({});
+			const immediateTxn = new DatabaseTransaction();
+			immediateTxn.addWrite(operation);
+			return immediateTxn.commit({});
 		} else this.writes.push(operation); // standard path, add to current transaction
 	}
 	removeWrite(operation) {
@@ -101,9 +101,9 @@ export class DatabaseTransaction implements Transaction {
 	 * Resolves with information on the timestamp and success of the commit
 	 */
 	commit(options: { doneWriting?: boolean; timestamp?: number } = {}): Promise<CommitResolution> {
-		let txn_time = this.timestamp;
-		if (!txn_time) txn_time = this.timestamp = options.timestamp || getNextMonotonicTime();
-		if (!options.timestamp) options.timestamp = txn_time;
+		let txnTime = this.timestamp;
+		if (!txnTime) txnTime = this.timestamp = options.timestamp || getNextMonotonicTime();
+		if (!options.timestamp) options.timestamp = txnTime;
 		const retries = options.retries || 0;
 		// now validate
 		if (this.validated < this.writes.length) {
@@ -116,19 +116,19 @@ export class DatabaseTransaction implements Transaction {
 					const write = this.writes[i];
 					write?.validate?.(this.timestamp);
 				}
-				let has_before;
+				let hasBefore;
 				for (let i = start; i < this.validated; i++) {
 					const write = this.writes[i];
 					if (!write) continue;
 					if (write.before || write.beforeIntermediate) {
-						has_before = true;
+						hasBefore = true;
 					}
 				}
 				// Now we need to let any "before" actions execute. These are calls to the sources,
 				// and we want to follow the order of the source sequence so that later, more canonical
 				// source writes will finish (with right to refuse/abort) before proceeeding to less
 				// canonical sources.
-				if (has_before) {
+				if (hasBefore) {
 					return (async () => {
 						try {
 							for (let phase = 0; phase < 2; phase++) {
@@ -138,11 +138,11 @@ export class DatabaseTransaction implements Transaction {
 									if (!write) continue;
 									const before = write[phase === 0 ? 'before' : 'beforeIntermediate'];
 									if (before) {
-										const next_completion = before();
+										const nextCompletion = before();
 										if (completion) {
-											if (completion.push) completion.push(next_completion);
-											else completion = [completion, next_completion];
-										} else completion = next_completion;
+											if (completion.push) completion.push(nextCompletion);
+											else completion = [completion, nextCompletion];
+										} else completion = nextCompletion;
 									}
 								}
 								if (completion) await (completion.push ? Promise.all(completion) : completion);
@@ -164,22 +164,22 @@ export class DatabaseTransaction implements Transaction {
 		this.open = options?.doneWriting ? TRANSACTION_STATE.LINGERING : TRANSACTION_STATE.OPEN;
 		let resolution;
 		const completions = [];
-		let write_index = 0;
+		let writeIndex = 0;
 		this.writes = this.writes.filter((write) => write); // filter out removed entries
 		const doWrite = (write) => {
-			write.commit(txn_time, write.entry, retries);
+			write.commit(txnTime, write.entry, retries);
 		};
 		// this uses optimistic locking to submit a transaction, conditioning each write on the expected version
 		const nextCondition = () => {
-			const write = this.writes[write_index++];
+			const write = this.writes[writeIndex++];
 			if (write) {
 				if (write.key) {
 					if (retries > 0) {
 						// if the first optimistic attempt failed, we need to try again with the very latest version
 						write.entry = write.store.getEntry(write.key);
 					}
-					const condition_resolution = write.store.ifVersion(write.key, write.entry?.version ?? null, nextCondition);
-					resolution = resolution || condition_resolution;
+					const conditionResolution = write.store.ifVersion(write.key, write.entry?.version ?? null, nextCondition);
+					resolution = resolution || conditionResolution;
 				} else nextCondition();
 			} else {
 				for (const write of this.writes) {
@@ -187,14 +187,14 @@ export class DatabaseTransaction implements Transaction {
 				}
 			}
 		};
-		const lmdb_db = this.lmdbDb;
+		const lmdbDb = this.lmdbDb;
 		// only commit if there are writes
 		if (this.writes.length > 0) {
 			// we also maintain a retry risk for the transaction, which is a measure of how likely it is that the transaction
 			// will fail and retry due to contention. This is used to determine when to give up on optimistic writes and
 			// use a real (async) transaction to get exclusive access to the data
-			if (lmdb_db?.retryRisk) lmdb_db.retryRisk *= 0.99; // gradually decay the retry risk
-			if (this.writes.length + (lmdb_db?.retryRisk || 0) < MAX_OPTIMISTIC_SIZE >> retries) nextCondition();
+			if (lmdbDb?.retryRisk) lmdbDb.retryRisk *= 0.99; // gradually decay the retry risk
+			if (this.writes.length + (lmdbDb?.retryRisk || 0) < MAX_OPTIMISTIC_SIZE >> retries) nextCondition();
 			else {
 				// if it is too big to expect optimistic writes to work, or we have done too many retries we use
 				// a real LMDB transaction to get exclusive access to reading and writing
@@ -210,11 +210,11 @@ export class DatabaseTransaction implements Transaction {
 		}
 
 		if (resolution) {
-			if (!outstanding_commit) {
-				outstanding_commit = resolution;
-				outstanding_commit_start = performance.now();
-				outstanding_commit.then(() => {
-					outstanding_commit = null;
+			if (!outstandingCommit) {
+				outstandingCommit = resolution;
+				outstandingCommitStart = performance.now();
+				outstandingCommit.then(() => {
+					outstandingCommit = null;
 				});
 			}
 
@@ -229,13 +229,13 @@ export class DatabaseTransaction implements Transaction {
 					if (this.replicatedConfirmation) {
 						// if we want to wait for replication confirmation, we need to track the transaction times
 						// and when replication notifications come in, we count the number of confirms until we reach the desired number
-						const database_name = this.writes[0].store.rootStore.databaseName;
-						const last_write = this.writes[this.writes.length - 1];
-						if (confirmReplication && last_write)
+						const databaseName = this.writes[0].store.rootStore.databaseName;
+						const lastWrite = this.writes[this.writes.length - 1];
+						if (confirmReplication && lastWrite)
 							completions.push(
 								confirmReplication(
-									database_name,
-									last_write.store.getEntry(last_write.key).localTime,
+									databaseName,
+									lastWrite.store.getEntry(lastWrite.key).localTime,
 									this.replicatedConfirmation
 								)
 							);
@@ -245,33 +245,33 @@ export class DatabaseTransaction implements Transaction {
 					this.next = null;
 					return Promise.all(completions).then(() => {
 						return {
-							txnTime: txn_time,
+							txnTime,
 						};
 					});
 				} else {
 					// if the transaction failed, we need to retry. First record this as an increased risk of contention/retry
 					// for future transactions
-					if (lmdb_db) lmdb_db.retryRisk = (lmdb_db.retryRisk || 0) + MAX_OPTIMISTIC_SIZE / 2;
+					if (lmdbDb) lmdbDb.retryRisk = (lmdbDb.retryRisk || 0) + MAX_OPTIMISTIC_SIZE / 2;
 					if (options) options.retries = retries + 1;
 					else options = { retries: 1 };
 					return this.commit(options); // try again
 				}
 			});
 		}
-		const txn_resolution: CommitResolution = {
-			txnTime: txn_time,
+		const txnResolution: CommitResolution = {
+			txnTime,
 		};
 		if (this.next) {
 			// now run any other transactions
-			const next_resolution = this.next?.commit(options);
-			if (next_resolution?.then)
-				return next_resolution?.then((next_resolution) => ({
-					txnTime: txn_time,
-					next: next_resolution,
+			const nextResolution = this.next?.commit(options);
+			if (nextResolution?.then)
+				return nextResolution?.then((nextResolution) => ({
+					txnTime,
+					next: nextResolution,
 				}));
-			txn_resolution.next = next_resolution;
+			txnResolution.next = nextResolution;
 		}
-		return txn_resolution;
+		return txnResolution;
 	}
 	abort(): void {
 		while (this.readTxnsUsed > 0) this.doneReadTxn(); // release the read snapshot when we abort, we assume we don't need it
@@ -308,14 +308,14 @@ export class ImmediateTransaction extends DatabaseTransaction {
 		return; // no transaction means read latest
 	}
 }
-let txn_expiration = 30000;
+let txnExpiration = 30000;
 let timer;
 function startMonitoringTxns() {
 	timer = setInterval(function () {
-		for (const txn of tracked_txns) {
+		for (const txn of trackedTxns) {
 			if (txn.stale) {
 				const url = txn.getContext()?.url;
-				harper_logger.error(
+				harperLogger.error(
 					`Transaction was open too long and has been aborted, from table: ${
 						txn.lmdbDb?.name + (url ? ' path: ' + url : '')
 					}`
@@ -323,12 +323,12 @@ function startMonitoringTxns() {
 				txn.abort();
 			} else txn.stale = true;
 		}
-	}, txn_expiration).unref();
+	}, txnExpiration).unref();
 }
 startMonitoringTxns();
 export function setTxnExpiration(ms) {
 	clearInterval(timer);
-	txn_expiration = ms;
+	txnExpiration = ms;
 	startMonitoringTxns();
-	return tracked_txns;
+	return trackedTxns;
 }

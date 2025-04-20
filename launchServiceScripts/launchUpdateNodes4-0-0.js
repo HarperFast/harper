@@ -1,10 +1,10 @@
 'use strict';
 
-const update_nodes_4_0_0 = require('../upgrade/nats/updateNodes4-0-0');
+const updateNodes400 = require('../upgrade/nats/updateNodes4-0-0.js');
 
 (async () => {
 	try {
-		await update_nodes_4_0_0();
+		await updateNodes400();
 	} catch (err) {
 		console.error('Error launching 4.0.0 node update');
 		console.error(err);

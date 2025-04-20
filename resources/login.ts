@@ -1,4 +1,4 @@
-import { Resource } from './Resource';
+import { Resource } from './Resource.ts';
 export function start({ resources }) {
 	resources.set('login', Login);
 	resources.loginPath = (request) => {

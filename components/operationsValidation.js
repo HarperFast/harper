@@ -3,12 +3,12 @@
 const Joi = require('joi');
 const fs = require('fs-extra');
 const path = require('path');
-const validator = require('../validation/validationWrapper');
-const env_mangr = require('../utility/environment/environmentManager');
-const hdb_terms = require('../utility/hdbTerms');
-const hdb_logger = require('../utility/logging/harper_logger');
-const { hdb_errors } = require('../utility/errors/hdbError');
-const { HDB_ERROR_MSGS } = hdb_errors;
+const validator = require('../validation/validationWrapper.js');
+const envMangr = require('../utility/environment/environmentManager.js');
+const hdbTerms = require('../utility/hdbTerms.ts');
+const hdbLogger = require('../utility/logging/harper_logger.js');
+const { hdbErrors } = require('../utility/errors/hdbError.js');
+const { HDB_ERROR_MSGS } = hdbErrors;
 
 // File name can only be alphanumeric, dash and underscores
 const PROJECT_FILE_NAME_REGEX = /^[a-zA-Z0-9-_]+$/;
@@ -34,31 +34,31 @@ module.exports = {
 
 /**
  * Check to see if a project dir exists in the custom functions dir.
- * @param check_exists - determine if validator returns error if exists or vice versa
+ * @param checkExists - determine if validator returns error if exists or vice versa
  * @param project
  * @param helpers
  * @returns {*}
  */
-function checkProjectExists(check_exists, project, helpers) {
+function checkProjectExists(checkExists, project, helpers) {
 	try {
-		const cf_dir = env_mangr.get(hdb_terms.CONFIG_PARAMS.COMPONENTSROOT);
-		const project_dir = path.join(cf_dir, project);
+		const cfDir = envMangr.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+		const projectDir = path.join(cfDir, project);
 
-		if (!fs.existsSync(project_dir)) {
-			if (check_exists) {
+		if (!fs.existsSync(projectDir)) {
+			if (checkExists) {
 				return helpers.message(HDB_ERROR_MSGS.NO_PROJECT);
 			}
 
 			return project;
 		}
 
-		if (check_exists) {
+		if (checkExists) {
 			return project;
 		}
 
 		return helpers.message(HDB_ERROR_MSGS.PROJECT_EXISTS);
 	} catch (err) {
-		hdb_logger.error(err);
+		hdbLogger.error(err);
 		return helpers.message(HDB_ERROR_MSGS.VALIDATION_ERR);
 	}
 }
@@ -78,15 +78,15 @@ function checkFilePath(path, helpers) {
  */
 function checkFileExists(project, type, file, helpers) {
 	try {
-		const cf_dir = env_mangr.get(hdb_terms.CONFIG_PARAMS.COMPONENTSROOT);
-		const file_path = path.join(cf_dir, project, type, file + '.js');
-		if (!fs.existsSync(file_path)) {
+		const cfDir = envMangr.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+		const filePath = path.join(cfDir, project, type, file + '.js');
+		if (!fs.existsSync(filePath)) {
 			return helpers.message(HDB_ERROR_MSGS.NO_FILE);
 		}
 
 		return file;
 	} catch (err) {
-		hdb_logger.error(err);
+		hdbLogger.error(err);
 		return helpers.message(HDB_ERROR_MSGS.VALIDATION_ERR);
 	}
 }
@@ -97,7 +97,7 @@ function checkFileExists(project, type, file, helpers) {
  * @returns {*}
  */
 function getDropCustomFunctionValidator(req) {
-	const get_func_schema = Joi.object({
+	const getFuncSchema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
 			.custom(checkProjectExists.bind(null, true))
@@ -112,7 +112,7 @@ function getDropCustomFunctionValidator(req) {
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_FILE_NAME }),
 	});
 
-	return validator.validateBySchema(req, get_func_schema);
+	return validator.validateBySchema(req, getFuncSchema);
 }
 
 /**
@@ -121,7 +121,7 @@ function getDropCustomFunctionValidator(req) {
  * @returns {*}
  */
 function setCustomFunctionValidator(req) {
-	const set_func_schema = Joi.object({
+	const setFuncSchema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
 			.custom(checkProjectExists.bind(null, true))
@@ -132,7 +132,7 @@ function setCustomFunctionValidator(req) {
 		function_content: Joi.string().required(),
 	});
 
-	return validator.validateBySchema(req, set_func_schema);
+	return validator.validateBySchema(req, setFuncSchema);
 }
 
 /**
@@ -141,7 +141,7 @@ function setCustomFunctionValidator(req) {
  * @returns {*}
  */
 function setComponentFileValidator(req) {
-	const set_comp_schema = Joi.object({
+	const setCompSchema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
 			.required()
@@ -151,11 +151,11 @@ function setComponentFileValidator(req) {
 		encoding: Joi.string().valid('utf8', 'ASCII', 'binary', 'hex', 'base64', 'utf16le', 'latin1', 'ucs2').optional(),
 	});
 
-	return validator.validateBySchema(req, set_comp_schema);
+	return validator.validateBySchema(req, setCompSchema);
 }
 
 function dropComponentFileValidator(req) {
-	const drop_comp_schema = Joi.object({
+	const dropCompSchema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
 			.required()
@@ -163,17 +163,17 @@ function dropComponentFileValidator(req) {
 		file: Joi.string().custom(checkFilePath).optional(),
 	});
 
-	return validator.validateBySchema(req, drop_comp_schema);
+	return validator.validateBySchema(req, dropCompSchema);
 }
 
 function getComponentFileValidator(req) {
-	const get_comp_schema = Joi.object({
+	const getCompSchema = Joi.object({
 		project: Joi.string().required(),
 		file: Joi.string().custom(checkFilePath).required(),
 		encoding: Joi.string().valid('utf8', 'ASCII', 'binary', 'hex', 'base64', 'utf16le', 'latin1', 'ucs2').optional(),
 	});
 
-	return validator.validateBySchema(req, get_comp_schema);
+	return validator.validateBySchema(req, getCompSchema);
 }
 
 /**
@@ -182,7 +182,7 @@ function getComponentFileValidator(req) {
  * @returns {*}
  */
 function addComponentValidator(req) {
-	const add_func_schema = Joi.object({
+	const addFuncSchema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
 			.custom(checkProjectExists.bind(null, false))
@@ -190,7 +190,7 @@ function addComponentValidator(req) {
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 	});
 
-	return validator.validateBySchema(req, add_func_schema);
+	return validator.validateBySchema(req, addFuncSchema);
 }
 
 /**
@@ -199,7 +199,7 @@ function addComponentValidator(req) {
  * @returns {*}
  */
 function dropCustomFunctionProjectValidator(req) {
-	const drop_func_schema = Joi.object({
+	const dropFuncSchema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
 			.custom(checkProjectExists.bind(null, true))
@@ -207,7 +207,7 @@ function dropCustomFunctionProjectValidator(req) {
 			.messages({ 'string.pattern.base': HDB_ERROR_MSGS.BAD_PROJECT_NAME }),
 	});
 
-	return validator.validateBySchema(req, drop_func_schema);
+	return validator.validateBySchema(req, dropFuncSchema);
 }
 
 /**
@@ -216,7 +216,7 @@ function dropCustomFunctionProjectValidator(req) {
  * @returns {*}
  */
 function packageComponentValidator(req) {
-	const package_proj_schema = Joi.object({
+	const packageProjSchema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
 			.required()
@@ -225,7 +225,7 @@ function packageComponentValidator(req) {
 		skip_symlinks: Joi.boolean(),
 	});
 
-	return validator.validateBySchema(req, package_proj_schema);
+	return validator.validateBySchema(req, packageProjSchema);
 }
 
 /**
@@ -234,7 +234,7 @@ function packageComponentValidator(req) {
  * @returns {*}
  */
 function deployComponentValidator(req) {
-	const deploy_proj_schema = Joi.object({
+	const deployProjSchema = Joi.object({
 		project: Joi.string()
 			.pattern(PROJECT_FILE_NAME_REGEX)
 			.required()
@@ -243,7 +243,7 @@ function deployComponentValidator(req) {
 		restart: Joi.alternatives().try(Joi.boolean(), Joi.string().valid('rolling')).optional(),
 	});
 
-	return validator.validateBySchema(req, deploy_proj_schema);
+	return validator.validateBySchema(req, deployProjSchema);
 }
 
 /**
@@ -252,7 +252,7 @@ function deployComponentValidator(req) {
  * @returns {*}
  */
 function addSSHKeyValidator(req) {
-	const set_ssh_schema = Joi.object({
+	const setSshSchema = Joi.object({
 		name: Joi.string()
 			.pattern(SSH_KEY_NAME_REGEX)
 			.required()
@@ -263,7 +263,7 @@ function addSSHKeyValidator(req) {
 		known_hosts: Joi.string().optional(),
 	});
 
-	return validator.validateBySchema(req, set_ssh_schema);
+	return validator.validateBySchema(req, setSshSchema);
 }
 
 /**
@@ -272,12 +272,12 @@ function addSSHKeyValidator(req) {
  * @returns {*}
  */
 function updateSSHKeyValidator(req) {
-	const set_ssh_schema = Joi.object({
+	const setSshSchema = Joi.object({
 		name: Joi.string().required(),
 		key: Joi.string().required(),
 	});
 
-	return validator.validateBySchema(req, set_ssh_schema);
+	return validator.validateBySchema(req, setSshSchema);
 }
 
 /**
@@ -286,11 +286,11 @@ function updateSSHKeyValidator(req) {
  * @returns {*}
  */
 function deleteSSHKeyValidator(req) {
-	const set_ssh_schema = Joi.object({
+	const setSshSchema = Joi.object({
 		name: Joi.string().required(),
 	});
 
-	return validator.validateBySchema(req, set_ssh_schema);
+	return validator.validateBySchema(req, setSshSchema);
 }
 
 /**
@@ -299,9 +299,9 @@ function deleteSSHKeyValidator(req) {
  * @returns {*}
  */
 function setSSHKnownHostsValidator(req) {
-	const set_ssh_schema = Joi.object({
+	const setSshSchema = Joi.object({
 		known_hosts: Joi.string().required(),
 	});
 
-	return validator.validateBySchema(req, set_ssh_schema);
+	return validator.validateBySchema(req, setSshSchema);
 }

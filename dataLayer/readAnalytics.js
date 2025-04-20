@@ -1,34 +1,34 @@
 'use strict';
 
-const harperBridge = require('./harperBridge/harperBridge');
+const harperBridge = require('./harperBridge/harperBridge.js');
 // eslint-disable-next-line no-unused-vars
-const hdb_utils = require('../utility/common_utils');
-const hdb_terms = require('../utility/hdbTerms');
-const env_mgr = require('../utility/environment/environmentManager');
-const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
-const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
+const hdbUtils = require('../utility/common_utils.js');
+const hdbTerms = require('../utility/hdbTerms.ts');
+const envMgr = require('../utility/environment/environmentManager.js');
+const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 
-const SEARCH_TYPES = Object.values(hdb_terms.READ_AUDIT_LOG_SEARCH_TYPES_ENUM);
+const SEARCH_TYPES = Object.values(hdbTerms.READ_AUDIT_LOG_SEARCH_TYPES_ENUM);
 const LOG_NOT_ENABLED_ERR = 'To use this operation audit log must be enabled in harperdb-config.yaml';
 
 module.exports = readAnalytics;
 
 /**
  *
- * @param read_analytics_object
+ * @param readAnalyticsObject
  * @returns {Promise<void>}
  */
-async function readAnalytics(read_audit_log_object) {
-	if (!env_mgr.get(hdb_terms.CONFIG_PARAMS.ANALYTICS)) {
+async function readAnalytics(readAuditLogObject) {
+	if (!envMgr.get(hdbTerms.CONFIG_PARAMS.ANALYTICS)) {
 		throw handleHDBError(
 			new Error(),
 			LOG_NOT_ENABLED_ERR,
 			HTTP_STATUS_CODES.BAD_REQUEST,
-			hdb_terms.LOG_LEVELS.ERROR,
+			hdbTerms.LOG_LEVELS.ERROR,
 			LOG_NOT_ENABLED_ERR,
 			true
 		);
 	}
 
-	return await harperBridge.readAnalytics(read_audit_log_object);
+	return await harperBridge.readAnalytics(readAuditLogObject);
 }

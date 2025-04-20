@@ -1,5 +1,5 @@
-import { join as hdb_terms } from 'node:path';
-import { PACKAGE_ROOT } from './packageUtils';
+import { join as hdbTerms } from 'node:path';
+import { PACKAGE_ROOT } from './packageUtils.js';
 
 /**
  * This module contains common variables/values that will be used across the project.
@@ -113,9 +113,9 @@ export const LOG_LEVELS = {
 /** Launch Service script paths */
 export const LAUNCH_SERVICE_SCRIPTS = {
 	MAIN: 'bin/harperdb.js',
-	NATS_INGEST_SERVICE: hdb_terms(PACKAGE_ROOT, 'launchServiceScripts/launchNatsIngestService.js'),
-	NATS_REPLY_SERVICE: hdb_terms(PACKAGE_ROOT, 'launchServiceScripts/launchNatsReplyService.js'),
-	NODES_UPGRADE_4_0_0: hdb_terms(PACKAGE_ROOT, 'launchServiceScripts/launchUpdateNodes4-0-0.js'),
+	NATS_INGEST_SERVICE: hdbTerms(PACKAGE_ROOT, 'launchServiceScripts/launchNatsIngestService.js'),
+	NATS_REPLY_SERVICE: hdbTerms(PACKAGE_ROOT, 'launchServiceScripts/launchNatsReplyService.js'),
+	NODES_UPGRADE_4_0_0: hdbTerms(PACKAGE_ROOT, 'launchServiceScripts/launchUpdateNodes4-0-0.js'),
 } as const;
 
 /** Specifies user role types */

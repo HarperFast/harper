@@ -33,7 +33,7 @@ describe('Test clusterUtilities', () => {
 
 	it('Test getNodeRecord function calls search by hash with correct query', async () => {
 		const search_by_hash_stub = sandbox.stub().resolves([{ node_name: 'dev_horse' }]);
-		const p_search_by_hash_rw = cluster_utils.__set__('p_search_by_hash', search_by_hash_stub);
+		const p_search_by_hash_rw = cluster_utils.__set__('pSearchByHash', search_by_hash_stub);
 		await cluster_utils.getNodeRecord('dogs_rule');
 		expect(search_by_hash_stub.args[0][0]).to.eql({
 			schema: 'system',

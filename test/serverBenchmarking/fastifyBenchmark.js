@@ -4,24 +4,24 @@ const { promisify } = require('util');
 const chalk = require('chalk');
 const axios = require('axios');
 const instance = axios.create();
-const lmdb_util = require('../../utility/lmdb/commonUtility');
-const env_mngr = require('../../utility/environment/environmentManager');
-const global_schema = require('../../utility/globalSchema');
+const lmdbUtil = require('../../utility/lmdb/commonUtility.js');
+const envMngr = require('../../utility/environment/environmentManager.js');
+const globalSchema = require('../../utility/globalSchema.js');
 
-const reg_info = require('../../utility/registration/registrationHandler');
-const schema_describe = require('../../dataLayer/schemaDescribe');
-const search = require('../../dataLayer/search');
-const sql = require('../../sqlTranslator/index');
-const p_search_search_by_hash = search.searchByHash;
-const p_search_search_by_value = search.searchByValue;
-const p_sql_evaluate_sql = promisify(sql.evaluateSQL);
+const regInfo = require('../../utility/registration/registrationHandler.js');
+const schemaDescribe = require('../../dataLayer/schemaDescribe.js');
+const search = require('../../dataLayer/search.js');
+const sql = require('../../sqlTranslator/index.js');
+const pSearchSearchByHash = search.searchByHash;
+const pSearchSearchByValue = search.searchByValue;
+const pSqlEvaluateSql = promisify(sql.evaluateSQL);
 
-env_mngr.initSync();
-const p_global_schema = promisify(global_schema.setSchemaDataToGlobal);
+envMngr.initSync();
+const pGlobalSchema = promisify(globalSchema.setSchemaDataToGlobal);
 
-const SERVER_PORT = env_mngr.get('SERVER_PORT');
+const SERVER_PORT = envMngr.get('SERVER_PORT');
 const BASE_ROUTE = `http://localhost:${SERVER_PORT}`;
-const { BASIC_AUTH, FUNC_INPUT, REQUEST_JSON, TEST_DOG_RECORDS } = require('./testData');
+const { BASIC_AUTH, FUNC_INPUT, REQUEST_JSON, TEST_DOG_RECORDS } = require('./testData.js');
 
 const TEST_NUMBER = 300;
 
@@ -33,16 +33,16 @@ const REQS_KEYS = Object.keys(REQUEST_JSON);
 const REQS_LENGTH = REQS_KEYS.length;
 
 const OP_FUNC_MAP = {
-	REG_INFO: reg_info.getRegistrationInfo,
-	DESCRIBE_ALL: schema_describe.describeAll,
-	DESCRIBE_SCHEMA: schema_describe.describeSchema,
-	DESCRIBE_TABLE: schema_describe.describeTable,
-	SEARCH_BY_VAL: p_search_search_by_value,
-	SEARCH_BY_HASH: p_search_search_by_hash,
-	SQL_SIMPLE_SEARCH: p_sql_evaluate_sql,
-	SQL_SEARCH_WHERE_SORT: p_sql_evaluate_sql,
-	MED_SQL: p_sql_evaluate_sql,
-	BIG_SQL: p_sql_evaluate_sql,
+	REG_INFO: regInfo.getRegistrationInfo,
+	DESCRIBE_ALL: schemaDescribe.describeAll,
+	DESCRIBE_SCHEMA: schemaDescribe.describeSchema,
+	DESCRIBE_TABLE: schemaDescribe.describeTable,
+	SEARCH_BY_VAL: pSearchSearchByValue,
+	SEARCH_BY_HASH: pSearchSearchByHash,
+	SQL_SIMPLE_SEARCH: pSqlEvaluateSql,
+	SQL_SEARCH_WHERE_SORT: pSqlEvaluateSql,
+	MED_SQL: pSqlEvaluateSql,
+	BIG_SQL: pSqlEvaluateSql,
 };
 
 instance.interceptors.request.use((config) => {
@@ -77,7 +77,7 @@ async function setupBenchmarkData() {
 	console.log(chalk.blue(`Setting up benchmark data for ${USE_JWT ? 'TOKEN' : 'BASIC'} AUTH`));
 	if (USE_JWT) {
 		try {
-			const token_resp = await instance.post(
+			const tokenResp = await instance.post(
 				BASE_ROUTE,
 				{
 					operation: 'create_authentication_tokens',
@@ -92,7 +92,7 @@ async function setupBenchmarkData() {
 					},
 				}
 			);
-			TEST_AUTH_METHOD = `Bearer ${token_resp.data.operation_token}`;
+			TEST_AUTH_METHOD = `Bearer ${tokenResp.data.operation_token}`;
 		} catch (e) {
 			console.log(chalk.red('There was an error setting the operation token - ', e));
 			process.exit();
@@ -170,7 +170,7 @@ async function setupBenchmarkData() {
 				action: 'insert',
 				schema: 'benchmarks',
 				table: 'sensor',
-				file_path: `${process.cwd()}/sensor_short.csv`,
+				file_path: `${process.cwd()}/sensorShort.csv`,
 			},
 			{
 				headers: {
@@ -236,12 +236,12 @@ async function dropBenchmarkData() {
 async function rawDataFunctionBenchmark() {
 	console.log('Raw data function benchmarks starting');
 	for (let y = 0; y < REQS_LENGTH; y++) {
-		const func_key = REQS_KEYS[y];
-		const func = OP_FUNC_MAP[func_key];
-		const input = FUNC_INPUT(REQUEST_JSON[func_key]);
+		const funcKey = REQS_KEYS[y];
+		const func = OP_FUNC_MAP[funcKey];
+		const input = FUNC_INPUT(REQUEST_JSON[funcKey]);
 		let x = TEST_NUMBER;
 		let sum = 0;
-		let times_run = 0;
+		let timesRun = 0;
 		while (x-- > 0) {
 			try {
 				const start = performance.now();
@@ -249,13 +249,13 @@ async function rawDataFunctionBenchmark() {
 				const end = performance.now();
 
 				sum += end - start;
-				times_run += 1;
+				timesRun += 1;
 			} catch (e) {
 				console.error(e);
 			}
 		}
-		// console.log(`${func_key} average response time: ${sum / times_run}`);
-		benchmarkResults[func_key].data = sum / times_run;
+		// console.log(`${funcKey} average response time: ${sum / timesRun}`);
+		benchmarkResults[funcKey].data = sum / timesRun;
 	}
 	console.log('Raw data function benchmarks completed');
 }
@@ -264,29 +264,29 @@ async function httpBenchmark() {
 	console.log('API benchmarks starting');
 	for (let y = 0; y < REQS_LENGTH; y++) {
 		const key = REQS_KEYS[y];
-		const body_json = REQUEST_JSON[key];
+		const bodyJson = REQUEST_JSON[key];
 		let x = TEST_NUMBER;
 		let sum = 0;
-		let times_run = 0;
+		let timesRun = 0;
 		while (x-- > 0) {
 			try {
-				const response = await instance.post(BASE_ROUTE, body_json, {
+				const response = await instance.post(BASE_ROUTE, bodyJson, {
 					headers: {
 						'X-Custom-Header': 'foobar',
 						'Authorization': TEST_AUTH_METHOD,
 						'Content-Type': 'application/json',
 					},
 				});
-				const response_time = response.headers['request-duration'];
+				const responseTime = response.headers['request-duration'];
 
-				sum += response_time;
-				times_run += 1;
+				sum += responseTime;
+				timesRun += 1;
 			} catch (e) {
 				console.error(e);
 			}
 		}
-		benchmarkResults[key].api = sum / times_run;
-		// console.log(`${key} average response time: ${sum / times_run}`);
+		benchmarkResults[key].api = sum / timesRun;
+		// console.log(`${key} average response time: ${sum / timesRun}`);
 	}
 	console.log('API benchmarks completed');
 }
@@ -305,7 +305,7 @@ function evalBenchmarks() {
 
 async function run() {
 	await setupBenchmarkData();
-	await p_global_schema();
+	await pGlobalSchema();
 	await rawDataFunctionBenchmark();
 	await httpBenchmark();
 	evalBenchmarks();

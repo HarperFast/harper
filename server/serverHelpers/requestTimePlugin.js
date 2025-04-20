@@ -1,4 +1,4 @@
-const { recordAction, recordActionBinary } = require('../../resources/analytics/write');
+const { recordAction, recordActionBinary } = require('../../resources/analytics/write.ts');
 const fp = require('fastify-plugin');
 
 const ESTIMATED_HEADER_SIZE = 200; // it is very expensive to actually measure HTTP response header size (we change it
@@ -13,8 +13,8 @@ module.exports = fp(
 		});
 		// eslint-disable-next-line require-await
 		fastify.addHook('onSend', async (request, reply, payload) => {
-			let response_time = reply.elapsedTime;
-			let start_transfer = performance.now();
+			let responseTime = reply.elapsedTime;
+			let startTransfer = performance.now();
 			let config = reply.request.routeOptions;
 			let action;
 			let type;
@@ -27,29 +27,29 @@ module.exports = fp(
 				type = 'fastify-route';
 				method = config.method;
 			}
-			recordAction(response_time, 'duration', action, method, type);
+			recordAction(responseTime, 'duration', action, method, type);
 			// TODO: Remove the "success" metric, since we have switch to using recording responses by status code
 			recordActionBinary(reply.raw.statusCode < 400, 'success', action, method, type);
 			recordActionBinary(1, 'response_' + reply.raw.statusCode, action, method, type);
-			let bytes_sent = ESTIMATED_HEADER_SIZE;
+			let bytesSent = ESTIMATED_HEADER_SIZE;
 			if (payload?.pipe) {
 				// if we are sending a stream, track the bytes sent and wait for when it completes
 				payload.on('data', (data) => {
-					bytes_sent += data.length;
+					bytesSent += data.length;
 				});
 				payload.on('end', () => {
-					recordAction(performance.now() - start_transfer, 'transfer', action, method, type);
-					recordAction(bytes_sent, 'bytes-sent', action, method, type);
+					recordAction(performance.now() - startTransfer, 'transfer', action, method, type);
+					recordAction(bytesSent, 'bytes-sent', action, method, type);
 				});
 			} else {
 				// otherwise just record bytes sent
-				bytes_sent += payload?.length || 0;
-				recordAction(bytes_sent, 'bytes-sent', action, method, type);
+				bytesSent += payload?.length || 0;
+				recordAction(bytesSent, 'bytes-sent', action, method, type);
 			}
-			let rounded_time = response_time.toFixed(3);
-			let app_server_timing = reply.getHeader('Server-Timing');
-			let server_timing = `db;dur=${rounded_time}`;
-			reply.header('Server-Timing', app_server_timing ? `${app_server_timing}, ${server_timing}` : server_timing);
+			let roundedTime = responseTime.toFixed(3);
+			let appServerTiming = reply.getHeader('Server-Timing');
+			let serverTiming = `db;dur=${roundedTime}`;
+			reply.header('Server-Timing', appServerTiming ? `${appServerTiming}, ${serverTiming}` : serverTiming);
 		});
 		done();
 	},

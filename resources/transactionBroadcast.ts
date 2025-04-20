@@ -1,14 +1,14 @@
-import { info, trace, warn } from '../utility/logging/harper_logger';
+import { info, trace, warn } from '../utility/logging/harper_logger.js';
 import { threadId } from 'worker_threads';
-import { onMessageByType, broadcast, broadcastWithAcknowledgement } from '../server/threads/manageThreads';
+import { onMessageByType, broadcast, broadcastWithAcknowledgement } from '../server/threads/manageThreads.js';
 import { writeKey } from 'ordered-binary';
-import { IterableEventQueue } from './IterableEventQueue';
-import { keyArrayToString } from './Resources';
-import { readAuditEntry } from './auditStore';
+import { IterableEventQueue } from './IterableEventQueue.ts';
+import { keyArrayToString } from './Resources.ts';
+import { readAuditEntry } from './auditStore.ts';
 const TRANSACTION_EVENT_TYPE = 'transaction';
 const FAILED_CONDITION = 0x4000000;
-const all_subscriptions = Object.create(null); // using it as a map that doesn't change much
-const all_same_thread_subscriptions = Object.create(null); // using it as a map that doesn't change much
+const allSubscriptions = Object.create(null); // using it as a map that doesn't change much
+const allSameThreadSubscriptions = Object.create(null); // using it as a map that doesn't change much
 /**
  * This module/function is responsible for the main work of tracking subscriptions and listening for new transactions
  * that have occurred on any thread, and then reading through the transaction log to notify listeners. This is
@@ -18,50 +18,50 @@ const all_same_thread_subscriptions = Object.create(null); // using it as a map 
  * @param key
  * @param listener
  */
-export function addSubscription(table, key, listener?: (key) => any, start_time: number, options) {
+export function addSubscription(table, key, listener?: (key) => any, startTime: number, options) {
 	const path = table.primaryStore.env.path;
-	const table_id = table.primaryStore.tableId;
+	const tableId = table.primaryStore.tableId;
 	// set up the subscriptions map. We want to just use a single map (per table) for efficient delegation
 	// (rather than having every subscriber filter every transaction)
-	let base_subscriptions;
+	let baseSubscriptions;
 	if (options?.crossThreads === false) {
 		// we are only listening for commits on our own thread, so we use a separate subscriber and sequencer tracker
-		base_subscriptions = all_same_thread_subscriptions;
+		baseSubscriptions = allSameThreadSubscriptions;
 		listenToCommits(table.primaryStore, table.auditStore);
 	} else {
-		base_subscriptions = all_subscriptions;
+		baseSubscriptions = allSubscriptions;
 		if (!table.primaryStore.env.hasSubscriptionCommitListener) {
 			table.primaryStore.env.hasSubscriptionCommitListener = true;
 			table.primaryStore.on('committed', () => {
-				notifyFromTransactionData(all_subscriptions[path]);
+				notifyFromTransactionData(allSubscriptions[path]);
 			});
 		}
 	}
-	const database_subscriptions = base_subscriptions[path] || (base_subscriptions[path] = []);
-	database_subscriptions.auditStore = table.auditStore;
-	if (database_subscriptions.lastTxnTime == null) {
-		database_subscriptions.lastTxnTime = Date.now();
+	const databaseSubscriptions = baseSubscriptions[path] || (baseSubscriptions[path] = []);
+	databaseSubscriptions.auditStore = table.auditStore;
+	if (databaseSubscriptions.lastTxnTime == null) {
+		databaseSubscriptions.lastTxnTime = Date.now();
 	}
 	if (options?.scope === 'full-database') {
 		return;
 	}
-	let table_subscriptions = database_subscriptions[table_id];
-	if (!table_subscriptions) {
-		table_subscriptions = database_subscriptions[table_id] = new Map();
-		table_subscriptions.envs = database_subscriptions;
-		table_subscriptions.tableId = table_id;
-		table_subscriptions.store = table.primaryStore;
+	let tableSubscriptions = databaseSubscriptions[tableId];
+	if (!tableSubscriptions) {
+		tableSubscriptions = databaseSubscriptions[tableId] = new Map();
+		tableSubscriptions.envs = databaseSubscriptions;
+		tableSubscriptions.tableId = tableId;
+		tableSubscriptions.store = table.primaryStore;
 	}
 
 	key = keyArrayToString(key);
 	const subscription = new Subscription(listener);
-	subscription.startTime = start_time;
-	let subscriptions: any[] = table_subscriptions.get(key);
+	subscription.startTime = startTime;
+	let subscriptions: any[] = tableSubscriptions.get(key);
 
 	if (subscriptions) subscriptions.push(subscription);
 	else {
-		table_subscriptions.set(key, (subscriptions = [subscription]));
-		subscriptions.tables = table_subscriptions;
+		tableSubscriptions.set(key, (subscriptions = [subscription]));
+		subscriptions.tables = tableSubscriptions;
 		subscriptions.key = key;
 	}
 	subscription.subscriptions = subscriptions;
@@ -86,15 +86,15 @@ class Subscription extends IterableEventQueue {
 		if (!this.subscriptions) return;
 		this.subscriptions.splice(this.subscriptions.indexOf(this), 1);
 		if (this.subscriptions.length === 0) {
-			const table_subscriptions = this.subscriptions.tables;
-			if (table_subscriptions) {
+			const tableSubscriptions = this.subscriptions.tables;
+			if (tableSubscriptions) {
 				// TODO: Handle cleanup of wildcard
 				const key = this.subscriptions.key;
-				table_subscriptions.delete(key);
-				if (table_subscriptions.size === 0) {
-					const env_subscriptions = table_subscriptions.envs;
-					const dbi = table_subscriptions.dbi;
-					delete env_subscriptions[dbi];
+				tableSubscriptions.delete(key);
+				if (tableSubscriptions.size === 0) {
+					const envSubscriptions = tableSubscriptions.envs;
+					const dbi = tableSubscriptions.dbi;
+					delete envSubscriptions[dbi];
 				}
 			}
 		}
@@ -106,75 +106,75 @@ class Subscription extends IterableEventQueue {
 }
 function notifyFromTransactionData(subscriptions) {
 	if (!subscriptions) return; // if no subscriptions to this env path, don't need to read anything
-	const audit_store = subscriptions.auditStore;
-	audit_store.resetReadTxn();
+	const auditStore = subscriptions.auditStore;
+	auditStore.resetReadTxn();
 	nextTransaction(subscriptions.auditStore);
-	let subscribers_with_txns;
-	for (const { key: local_time, value: audit_entry_encoded } of audit_store.getRange({
+	let subscribersWithTxns;
+	for (const { key: localTime, value: auditEntryEncoded } of auditStore.getRange({
 		start: subscriptions.lastTxnTime,
 		exclusiveStart: true,
 	})) {
-		subscriptions.lastTxnTime = local_time;
-		const audit_entry = readAuditEntry(audit_entry_encoded);
-		const table_subscriptions = subscriptions[audit_entry.tableId];
-		if (!table_subscriptions) continue;
-		const record_id = audit_entry.recordId;
+		subscriptions.lastTxnTime = localTime;
+		const auditEntry = readAuditEntry(auditEntryEncoded);
+		const tableSubscriptions = subscriptions[auditEntry.tableId];
+		if (!tableSubscriptions) continue;
+		const recordId = auditEntry.recordId;
 		// TODO: How to handle invalidation
-		let matching_key = keyArrayToString(record_id);
-		let ancestor_level = 0;
+		let matchingKey = keyArrayToString(recordId);
+		let ancestorLevel = 0;
 		do {
 			// we iterate through the key hierarchy, notifying all subscribers for each key,
 			// so for an id like resource/foo/bar, we notify subscribers for resource/foo/bar, resource/foo/, resource/foo, resource/, and resource
 			// this allows for efficient subscriptions to children ids/topics
-			const key_subscriptions = table_subscriptions.get(matching_key);
-			if (key_subscriptions) {
-				for (const subscription of key_subscriptions) {
+			const keySubscriptions = tableSubscriptions.get(matchingKey);
+			if (keySubscriptions) {
+				for (const subscription of keySubscriptions) {
 					if (
-						ancestor_level > 0 && // only ancestors if the subscription is for ancestors (and apply onlyChildren filtering as necessary)
-						!(subscription.includeDescendants && !(subscription.onlyChildren && ancestor_level > 1))
+						ancestorLevel > 0 && // only ancestors if the subscription is for ancestors (and apply onlyChildren filtering as necessary)
+						!(subscription.includeDescendants && !(subscription.onlyChildren && ancestorLevel > 1))
 					)
 						continue;
-					if (subscription.startTime >= local_time) {
-						info('omitting', record_id, subscription.startTime, local_time);
+					if (subscription.startTime >= localTime) {
+						info('omitting', recordId, subscription.startTime, localTime);
 						continue;
 					}
 					try {
-						let begin_txn;
-						if (subscription.supportsTransactions && subscription.txnInProgress !== audit_entry.version) {
+						let beginTxn;
+						if (subscription.supportsTransactions && subscription.txnInProgress !== auditEntry.version) {
 							// if the subscriber supports transactions, we mark this as the beginning of a new transaction
 							// tracking the subscription so that we can delimit the transaction on next transaction
-							// (with a beginTxn flag, which may be on an end_txn event)
-							begin_txn = true;
+							// (with a beginTxn flag, which may be on an endTxn event)
+							beginTxn = true;
 							if (!subscription.txnInProgress) {
 								// if first txn for subscriber of this cycle, add to the transactional subscribers that we are tracking
-								if (!subscribers_with_txns) subscribers_with_txns = [subscription];
-								else subscribers_with_txns.push(subscription);
+								if (!subscribersWithTxns) subscribersWithTxns = [subscription];
+								else subscribersWithTxns.push(subscription);
 							}
 							// the version defines the extent of a transaction, all audit records with the same version
 							// are part of the same transaction, and when the version changes, we know it is a new
 							// transaction
-							subscription.txnInProgress = audit_entry.version;
+							subscription.txnInProgress = auditEntry.version;
 						}
-						subscription.listener(record_id, audit_entry, local_time, begin_txn);
+						subscription.listener(recordId, auditEntry, localTime, beginTxn);
 					} catch (error) {
 						console.error(error);
 						info(error);
 					}
 				}
 			}
-			if (matching_key == null) break;
-			const last_slash = matching_key.lastIndexOf?.('/', matching_key.length - 2);
-			if (last_slash !== matching_key.length - 1) {
-				ancestor_level++; // don't increase the ancestor level for this going from resource/ to resource
+			if (matchingKey == null) break;
+			const lastSlash = matchingKey.lastIndexOf?.('/', matchingKey.length - 2);
+			if (lastSlash !== matchingKey.length - 1) {
+				ancestorLevel++; // don't increase the ancestor level for this going from resource/ to resource
 			}
-			if (last_slash > -1) {
-				matching_key = matching_key.slice(0, last_slash + 1);
-			} else matching_key = null;
+			if (lastSlash > -1) {
+				matchingKey = matchingKey.slice(0, lastSlash + 1);
+			} else matchingKey = null;
 		} while (true);
 	}
-	if (subscribers_with_txns) {
+	if (subscribersWithTxns) {
 		// any subscribers with open transactions need to have an event to indicate that their transaction has been ended
-		for (const subscription of subscribers_with_txns) {
+		for (const subscription of subscribersWithTxns) {
 			subscription.txnInProgress = null; // clean up
 			subscription.listener(null, { type: 'end_txn' }, subscriptions.lastTxnTime, true);
 		}
@@ -182,16 +182,16 @@ function notifyFromTransactionData(subscriptions) {
 }
 /**
  * Interface with lmdb-js to listen for commits and traverse the audit log.
- * @param primary_store
+ * @param primaryStore
  */
-export function listenToCommits(primary_store, audit_store) {
-	const store = audit_store || primary_store;
-	const lmdb_env = store.env;
-	if (!lmdb_env.hasAfterCommitListener) {
-		lmdb_env.hasAfterCommitListener = true;
-		const path = lmdb_env.path;
+export function listenToCommits(primaryStore, auditStore) {
+	const store = auditStore || primaryStore;
+	const lmdbEnv = store.env;
+	if (!lmdbEnv.hasAfterCommitListener) {
+		lmdbEnv.hasAfterCommitListener = true;
+		const path = lmdbEnv.path;
 		store.on('aftercommit', ({ next, last, txnId }) => {
-			const subscriptions = all_same_thread_subscriptions[path]; // there is a different set of subscribers for same-thread subscriptions
+			const subscriptions = allSameThreadSubscriptions[path]; // there is a different set of subscribers for same-thread subscriptions
 			if (!subscriptions) return;
 			// we want each thread to do this mutually exclusively so that we don't have multiple threads trying to process the same data (the intended purpose of crossThreads=false)
 			const acquiredLock = () => {
@@ -215,28 +215,28 @@ export function listenToCommits(primary_store, audit_store) {
 		});
 	}
 }
-function nextTransaction(audit_store) {
-	audit_store.nextTransaction?.resolve();
-	let next_resolve;
-	audit_store.nextTransaction = new Promise((resolve) => {
-		next_resolve = resolve;
+function nextTransaction(auditStore) {
+	auditStore.nextTransaction?.resolve();
+	let nextResolve;
+	auditStore.nextTransaction = new Promise((resolve) => {
+		nextResolve = resolve;
 	});
-	audit_store.nextTransaction.resolve = next_resolve;
+	auditStore.nextTransaction.resolve = nextResolve;
 }
 
-export function whenNextTransaction(audit_store) {
-	if (!audit_store.nextTransaction) {
+export function whenNextTransaction(auditStore) {
+	if (!auditStore.nextTransaction) {
 		addSubscription(
 			{
-				primaryStore: audit_store,
-				auditStore: audit_store,
+				primaryStore: auditStore,
+				auditStore,
 			},
 			null,
 			null,
 			0,
 			{ scope: 'full-database' }
 		);
-		nextTransaction(audit_store);
+		nextTransaction(auditStore);
 	}
-	return audit_store.nextTransaction;
+	return auditStore.nextTransaction;
 }

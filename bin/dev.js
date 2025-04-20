@@ -1,4 +1,5 @@
-if (__filename.endsWith('dev.js')) {
+// once we have typestrip working, we can auto disable compilation with process.versions.node < '23'
+if (__filename.endsWith('dev.js') && !process.env.HARPER_SKIP_COMPILE) {
 	const fg = require('fast-glob');
 	const { tmpdir } = require('node:os');
 	const { relative, join } = require('node:path');
@@ -12,29 +13,41 @@ if (__filename.endsWith('dev.js')) {
 	// `module.setSourceMapsSupport()` when our minimum Node version is 22.
 	process.setSourceMapsEnabled(true);
 
-	const { PACKAGE_ROOT } = require('../utility/packageUtils');
+	const { PACKAGE_ROOT } = require('../utility/packageUtils.js');
 
-	const SRC_DIRECTORIES = ['bin', 'components', 'dataLayer', 'resources', 'server', 'sqlTranslator', 'upgrade', 'utility', 'validation'];
+	const SRC_DIRECTORIES = [
+		'bin',
+		'components',
+		'dataLayer',
+		'resources',
+		'server',
+		'sqlTranslator',
+		'upgrade',
+		'utility',
+		'validation',
+	];
 	const TS_DIRECTORY = 'ts-build';
 
 	if (isMainThread) {
 		let needsCompile = false;
 		let buildDirectoryExists = false;
 		if ((buildDirectoryExists = existsSync(join(PACKAGE_ROOT, TS_DIRECTORY)))) {
-			needsCompile = fg.sync(
-				SRC_DIRECTORIES.map((dir) => `${dir}/**/*.ts`),
-				{ cwd: PACKAGE_ROOT }
-			).some((file) => {
-				let sourceTime = 0;
-				let compiledTime = 0;
+			needsCompile = fg
+				.sync(
+					SRC_DIRECTORIES.map((dir) => `${dir}/**/*.ts`),
+					{ cwd: PACKAGE_ROOT }
+				)
+				.some((file) => {
+					let sourceTime = 0;
+					let compiledTime = 0;
 
-				try {
-					sourceTime = statSync(join(PACKAGE_ROOT, file)).mtimeMs - 5000;
-					compiledTime = statSync(join(PACKAGE_ROOT, TS_DIRECTORY, file.replace(/.ts$/, '.js'))).mtimeMs;
-				} catch (_) { }
+					try {
+						sourceTime = statSync(join(PACKAGE_ROOT, file)).mtimeMs - 5000;
+						compiledTime = statSync(join(PACKAGE_ROOT, TS_DIRECTORY, file.replace(/.ts$/, '.js'))).mtimeMs;
+					} catch (_) {}
 
-				return sourceTime > compiledTime;
-			});
+					return sourceTime > compiledTime;
+				});
 		} else {
 			needsCompile = true;
 		}
@@ -53,7 +66,7 @@ if (__filename.endsWith('dev.js')) {
 					try {
 						process.kill(+readFileSync(pidPath, 'utf8'), 0);
 						isRunning = true;
-					} catch (_) { }
+					} catch (_) {}
 				}
 
 				if (!isRunning) {
@@ -93,10 +106,13 @@ if (__filename.endsWith('dev.js')) {
 			} else {
 				alternate = join(PACKAGE_ROOT, TS_DIRECTORY, path);
 			}
-			let base_filename = join(alternate, request);
-			let filename = base_filename + '.js';
+			if (request.endsWith('.js') || request.endsWith('.ts')) {
+				request = request.slice(0, -3);
+			}
+			let baseFilename = join(alternate, request);
+			let filename = baseFilename + '.js';
 			if (existsSync(filename)) return filename;
-			if (base_filename.includes('.') && existsSync(base_filename)) return base_filename;
+			if (baseFilename.includes('.') && existsSync(baseFilename)) return baseFilename;
 		}
 		return findPath(request, paths, isMain);
 	};

@@ -1,21 +1,21 @@
 'use strict';
 
-const environment_utility = require('../../../../utility/lmdb/environmentUtility');
-const search_validator = require('../../../../validation/searchValidator');
-const { getSchemaPath } = require('./initializePaths');
+const environmentUtility = require('../../../../utility/lmdb/environmentUtility.js');
+const searchValidator = require('../../../../validation/searchValidator.js');
+const { getSchemaPath } = require('./initializePaths.js');
 
 module.exports = initialize;
 
 /**
  *
- * @param search_object
+ * @param searchObject
  * @returns {*}
  */
-function initialize(search_object) {
-	const validation_error = search_validator(search_object, 'hashes');
-	if (validation_error) {
-		throw validation_error;
+function initialize(searchObject) {
+	const validationError = searchValidator(searchObject, 'hashes');
+	if (validationError) {
+		throw validationError;
 	}
-	let env_base_path = getSchemaPath(search_object.schema, search_object.table);
-	return environment_utility.openEnvironment(env_base_path, search_object.table);
+	let envBasePath = getSchemaPath(searchObject.schema, searchObject.table);
+	return environmentUtility.openEnvironment(envBasePath, searchObject.table);
 }

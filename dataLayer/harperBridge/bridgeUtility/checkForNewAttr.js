@@ -1,30 +1,30 @@
 'use strict';
 
-const hdb_utils = require('../../../utility/common_utils');
+const hdbUtils = require('../../../utility/common_utils.js');
 
 module.exports = checkForNewAttributes;
 
 /**
  * Compares the existing schema attributes to attributes from a record set and returns only the ones that exist.
- * @param hdb_auth_header
- * @param table_schema
- * @param data_attributes
+ * @param hdbAuthHeader
+ * @param tableSchema
+ * @param dataAttributes
  * @returns {Promise<void>}
  */
-function checkForNewAttributes(table_schema, data_attributes) {
-	if (hdb_utils.isEmptyOrZeroLength(data_attributes)) {
+function checkForNewAttributes(tableSchema, dataAttributes) {
+	if (hdbUtils.isEmptyOrZeroLength(dataAttributes)) {
 		return;
 	}
 
-	let raw_attributes = [];
-	if (!hdb_utils.isEmptyOrZeroLength(table_schema.attributes)) {
-		table_schema.attributes.forEach((attribute) => {
-			raw_attributes.push(attribute.attribute);
+	let rawAttributes = [];
+	if (!hdbUtils.isEmptyOrZeroLength(tableSchema.attributes)) {
+		tableSchema.attributes.forEach((attribute) => {
+			rawAttributes.push(attribute.attribute);
 		});
 	}
 
-	let new_attributes = data_attributes.filter((attribute) => {
-		return raw_attributes.indexOf(attribute) < 0;
+	let new_attributes = dataAttributes.filter((attribute) => {
+		return rawAttributes.indexOf(attribute) < 0;
 	});
 
 	if (new_attributes.length === 0) {

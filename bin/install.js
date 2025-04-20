@@ -1,5 +1,5 @@
-const installer = require('../utility/install/installer');
-const hdb_logger = require('../utility/logging/harper_logger');
+const installer = require('../utility/install/installer.js');
+const hdbLogger = require('../utility/logging/harper_logger.js');
 
 module.exports = install;
 
@@ -9,7 +9,7 @@ async function install() {
 	} catch (err) {
 		console.error('There was an error during the install.');
 		console.error(err);
-		hdb_logger.error(err);
+		hdbLogger.error(err);
 		process.exit(1);
 	}
 }

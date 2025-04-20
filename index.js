@@ -1,10 +1,10 @@
-const worker_threads = require('node:worker_threads');
-if (!worker_threads.isMainThread) {
+const workerThreads = require('node:worker_threads');
+if (!workerThreads.isMainThread) {
 	// Prevents server from starting in worker threads if this was directly imported from a non-server user thread
-	if (!worker_threads.workerData) worker_threads.workerData = {};
-	worker_threads.workerData.noServerStart = true;
+	if (!workerThreads.workerData) workerThreads.workerData = {};
+	workerThreads.workerData.noServerStart = true;
 }
-const { globals } = require('./server/threads/threadServer');
+const { globals } = require('./server/threads/threadServer.js');
 // these are all overwritten by the globals, but need to be here so that Node's static
 // exports parser can analyze them
 exports.Resource = undefined;

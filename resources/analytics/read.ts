@@ -1,8 +1,8 @@
-import type { Metric } from './write';
-import { loggerWithTag } from '../../utility/logging/harper_logger';
-import { getAnalyticsHostnameTable } from './hostnames';
+import type { Metric } from './write.ts';
+import { loggerWithTag } from '../../utility/logging/harper_logger.js';
+import { getAnalyticsHostnameTable } from './hostnames.ts';
 import type { Resource } from 'harperdb';
-import type { Conditions } from '../ResourceInterface';
+import type { Conditions } from '../ResourceInterface.ts';
 
 const log = loggerWithTag('analytics');
 

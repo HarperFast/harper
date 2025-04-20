@@ -608,10 +608,10 @@ describe('Test configUtils module', () => {
 		});
 
 		it('Test if in-memory object is undefined, the default config obj is instantiated and default value is returned', () => {
-			flat_default_config_obj_rw = config_utils_rw.__set__('flat_default_config_obj', undefined);
+			flat_default_config_obj_rw = config_utils_rw.__set__('flatDefaultConfigObj', undefined);
 
 			config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED);
-			const flat_default_config_obj = config_utils_rw.__get__('flat_default_config_obj');
+			const flat_default_config_obj = config_utils_rw.__get__('flatDefaultConfigObj');
 			const non_object_flat_default_config_obj = { ...flat_default_config_obj };
 			for (let key in non_object_flat_default_config_obj) {
 				if (
@@ -625,7 +625,7 @@ describe('Test configUtils module', () => {
 		});
 
 		it('Test that if the in-memory object exists, the correct default value is returned', () => {
-			flat_default_config_obj_rw = config_utils_rw.__set__('flat_default_config_obj', expected_flat_default_config_obj);
+			flat_default_config_obj_rw = config_utils_rw.__set__('flatDefaultConfigObj', expected_flat_default_config_obj);
 			const parse_document_spy = sandbox.spy(YAML, 'parseDocument');
 			const value = config_utils_rw.getDefaultConfig(hdbTerms.CONFIG_PARAMS.LOGGING_ROTATION_ENABLED);
 			expect(value).to.be.true;
@@ -650,7 +650,7 @@ describe('Test configUtils module', () => {
 		});
 
 		it('Test if param is defined in instantiated default config, returns in-memory value', () => {
-			flat_config_obj_rw = config_utils_rw.__set__('flat_config_obj', FLAT_CONFIG_OBJ);
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', FLAT_CONFIG_OBJ);
 
 			const value = config_utils_rw.getConfigValue(hdbTerms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NAME);
 
@@ -658,7 +658,7 @@ describe('Test configUtils module', () => {
 		});
 
 		it('Test if param isnt defined in instantiated default config, returns undefined', () => {
-			flat_config_obj_rw = config_utils_rw.__set__('flat_config_obj', FLAT_CONFIG_OBJ);
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', FLAT_CONFIG_OBJ);
 			const logger_info_stub = sandbox.stub(logger, 'info');
 
 			const value = config_utils_rw.getConfigValue(hdbTerms.CONFIG_PARAMS.CUSTOMFUNCTIONS_ON);
@@ -668,7 +668,7 @@ describe('Test configUtils module', () => {
 		});
 
 		it('Test if in-memory obj doesnt exist, returns undefined', () => {
-			flat_config_obj_rw = config_utils_rw.__set__('flat_config_obj', undefined);
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', undefined);
 
 			const value = config_utils_rw.getConfigValue(hdbTerms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_CLUSTER_NAME);
 
@@ -713,7 +713,7 @@ describe('Test configUtils module', () => {
 		it('Test in-memory obj undefined, function reads config doc and adds values to object', () => {
 			config_utils_rw.createConfigFile(TEST_ARGS_2);
 
-			flat_config_obj_rw = config_utils_rw.__set__('flat_config_obj', undefined);
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', undefined);
 			get_props_file_path_stub.returns(CONFIG_FILE_PATH);
 			access_sync_stub.returns(true);
 			properties_reader_stub.returns({
@@ -744,7 +744,7 @@ describe('Test configUtils module', () => {
 		it('Test in-memory obj undefined, config file path undefined and error is caught', () => {
 			config_utils_rw.createConfigFile(TEST_ARGS_2);
 
-			flat_config_obj_rw = config_utils_rw.__set__('flat_config_obj', undefined);
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', undefined);
 			get_props_file_path_stub.returns(CONFIG_FILE_PATH);
 			access_sync_stub.returns(true);
 			properties_reader_stub.returns({
@@ -870,7 +870,7 @@ describe('Test configUtils module', () => {
 		it('Test happy path in-memory obj is updated', () => {
 			const expected_flat_config = { logging_level: 'fatal' };
 			const flat_config = { logging_level: 'notify' };
-			flat_config_obj_rw = config_utils_rw.__set__('flat_config_obj', flat_config);
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', flat_config);
 			config_utils_rw.updateConfigObject(hdbTerms.CONFIG_PARAMS.LOGGING_LEVEL, 'fatal');
 
 			expect(flat_config).to.eql(expected_flat_config);
@@ -879,7 +879,7 @@ describe('Test configUtils module', () => {
 		it('Test logger trace message if param doesnt exist', () => {
 			const logger_trace_stub = sandbox.stub(logger, 'trace');
 			const flat_config = { logging_level: 'notify' };
-			flat_config_obj_rw = config_utils_rw.__set__('flat_config_obj', flat_config);
+			flat_config_obj_rw = config_utils_rw.__set__('flatConfigObj', flat_config);
 
 			config_utils_rw.updateConfigObject('fake_logging_level', 'fatal');
 
@@ -989,7 +989,7 @@ describe('Test configUtils module', () => {
 				storage_noreadahead: false,
 				storage_prefetchwrites: false,
 			};
-			config_utils_rw.__set__('flat_config_obj', flat_config_obj);
+			config_utils_rw.__set__('flatConfigObj', flat_config_obj);
 
 			config_utils_rw.updateConfigValue(
 				undefined,
@@ -1020,7 +1020,7 @@ describe('Test configUtils module', () => {
 		});
 
 		it('Test that if there is no in-memory obj, initConfig is hit PLUS it handles error with bad param', () => {
-			config_utils_rw.__set__('flat_config_obj', undefined);
+			config_utils_rw.__set__('flatConfigObj', undefined);
 			const init_config_spy = sandbox.spy();
 			config_utils_rw.__set__('initConfig', init_config_spy);
 			const get_config_value_stub = sandbox.stub().returns(HDB_ROOT);
@@ -1045,7 +1045,7 @@ describe('Test configUtils module', () => {
 		});
 
 		it('Test config not updated if values are the same', () => {
-			config_utils_rw.__set__('flat_config_obj', {
+			config_utils_rw.__set__('flatConfigObj', {
 				http_cors: false,
 				logging_stdstreams: false,
 				operationsapi_network_port: 9925,

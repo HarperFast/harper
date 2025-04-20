@@ -1,18 +1,18 @@
 'use strict';
 
-const environment_utility = require('./environmentUtility');
+const environmentUtility = require('./environmentUtility.js');
 
-const log = require('../logging/harper_logger');
-const common = require('./commonUtility');
-const lmdb_terms = require('./terms');
-const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
-const hdb_utils = require('../common_utils');
-const hdb_terms = require('../hdbTerms');
-const cursor_functions = require('./searchCursorFunctions');
-const { parseRow } = cursor_functions;
+const log = require('../logging/harper_logger.js');
+const common = require('./commonUtility.js');
+const lmdbTerms = require('./terms.js');
+const LMDB_ERRORS = require('../errors/commonErrors.js').LMDB_ERRORS_ENUM;
+const hdbUtils = require('../common_utils.js');
+const hdbTerms = require('../hdbTerms.ts');
+const cursorFunctions = require('./searchCursorFunctions.js');
+const { parseRow } = cursorFunctions;
 // eslint-disable-next-line no-unused-vars
 const lmdb = require('lmdb');
-const { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH } = lmdb_terms;
+const { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH } = lmdbTerms;
 const LAZY_PROPERTY_ACCESS = { lazy: true };
 
 /** UTILITY CURSOR FUNCTIONS **/
@@ -22,7 +22,7 @@ const LAZY_PROPERTY_ACCESS = { lazy: true };
  * @param {lmdb.Transaction} transactionOrEnv
  * @param {String} hash_attribute
  * @param {String} attribute
- * @param {Function} eval_function
+ * @param {Function} evalFunction
  * @param {boolean} reverse - defines if the iterator goes from last to first
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
@@ -41,9 +41,9 @@ function iterateFullIndex(
 			transaction,
 			start: reverse ? undefined : false,
 			end: !reverse ? undefined : false,
-			limit: limit,
-			offset: offset,
-			reverse: reverse,
+			limit,
+			offset,
+			reverse,
 		});
 	});
 }
@@ -53,8 +53,8 @@ function iterateFullIndex(
  * @param {lmdb.Transaction} transaction
  * @param {String} hash_attribute
  * @param {String} attribute
- * @param {String|Number} search_value
- * @param {Function} eval_function
+ * @param {String|Number} searchValue
+ * @param {Function} evalFunction
  * @param {boolean} reverse - defines if the iterator goes from last to first
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
@@ -64,28 +64,28 @@ function iterateRangeNext(
 	transactionOrEnv,
 	hash_attribute,
 	attribute,
-	search_value,
-	eval_function,
+	searchValue,
+	evalFunction,
 	reverse = false,
 	limit = undefined,
 	offset = undefined
 ) {
 	return setupTransaction(transactionOrEnv, hash_attribute, attribute, (transaction, dbi, env, hash_attribute) => {
-		const overflow_check = getOverflowCheck(env, transaction, hash_attribute, attribute);
+		const overflowCheck = getOverflowCheck(env, transaction, hash_attribute, attribute);
 		let results = [[], []];
 		//because reversing only returns 1 entry from a dup sorted key we get all entries for the search value
-		let start_value = reverse === true ? undefined : search_value === undefined ? false : search_value;
-		let end_value = reverse === true ? search_value : undefined;
+		let startValue = reverse === true ? undefined : searchValue === undefined ? false : searchValue;
+		let endValue = reverse === true ? searchValue : undefined;
 
 		for (let { key, value } of dbi.getRange({
 			transaction,
-			start: start_value,
-			end: end_value,
+			start: startValue,
+			end: endValue,
 			reverse,
 			limit,
 			offset,
 		})) {
-			eval_function(search_value, overflow_check(key, value), value, results, hash_attribute, attribute);
+			evalFunction(searchValue, overflowCheck(key, value), value, results, hash_attribute, attribute);
 		}
 
 		return results;
@@ -103,8 +103,8 @@ function iterateRangeNext(
  * @param {TableTransaction} transactionOrEnv
  * @param {String} hash_attribute
  * @param {String} attribute
- * @param {Number|String} lower_value
- * @param {Number|String} upper_value
+ * @param {Number|String} lowerValue
+ * @param {Number|String} upperValue
  * @param {boolean} reverse
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
@@ -114,19 +114,19 @@ function iterateRangeBetween(
 	transactionOrEnv,
 	hash_attribute,
 	attribute,
-	lower_value,
-	upper_value,
+	lowerValue,
+	upperValue,
 	reverse = false,
 	limit = undefined,
 	offset = undefined,
-	exclusive_lower = false,
-	exclusive_upper = false
+	exclusiveLower = false,
+	exclusiveUpper = false
 ) {
-	return setupTransaction(transactionOrEnv, hash_attribute, attribute, (transaction, attr_dbi, env, hash_attribute) => {
-		let end = reverse === true ? lower_value : upper_value;
-		let start = reverse === true ? upper_value : lower_value;
-		let inclusive_end = reverse === true ? !exclusive_lower : !exclusive_upper;
-		let exclusive_start = reverse === true ? exclusive_upper : exclusive_lower;
+	return setupTransaction(transactionOrEnv, hash_attribute, attribute, (transaction, attrDbi, env, hash_attribute) => {
+		let end = reverse === true ? lowerValue : upperValue;
+		let start = reverse === true ? upperValue : lowerValue;
+		let inclusiveEnd = reverse === true ? !exclusiveLower : !exclusiveUpper;
+		let exclusiveStart = reverse === true ? exclusiveUpper : exclusiveLower;
 		let options = {
 			transaction,
 			start,
@@ -134,13 +134,13 @@ function iterateRangeBetween(
 			reverse,
 			limit,
 			offset,
-			inclusiveEnd: inclusive_end,
-			exclusiveStart: exclusive_start,
+			inclusiveEnd,
+			exclusiveStart,
 		};
 		if (hash_attribute === attribute) {
 			options.values = false;
-			return attr_dbi.getRange(options).map((value) => ({ value }));
-		} else return attr_dbi.getRange(options);
+			return attrDbi.getRange(options).map((value) => ({ value }));
+		} else return attrDbi.getRange(options);
 	});
 }
 
@@ -153,11 +153,11 @@ function iterateRangeBetween(
 function setupTransaction(transactionOrEnv, hash_attribute, attribute, callback) {
 	let env = transactionOrEnv.database || transactionOrEnv;
 	// make sure all DBIs have been opened prior to starting any new persistent read transaction
-	let attr_dbi = environment_utility.openDBI(env, attribute);
-	if (attr_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) {
+	let attrDbi = environmentUtility.openDBI(env, attribute);
+	if (attrDbi[lmdbTerms.DBI_DEFINITION_NAME].is_hash_attribute) {
 		hash_attribute = attribute;
 	} else if (hash_attribute) {
-		environment_utility.openDBI(env, hash_attribute);
+		environmentUtility.openDBI(env, hash_attribute);
 	}
 	let transaction;
 	if (transactionOrEnv.database) transaction = transactionOrEnv;
@@ -166,7 +166,7 @@ function setupTransaction(transactionOrEnv, hash_attribute, attribute, callback)
 		transaction.database = transactionOrEnv;
 	}
 	// do the main query after the dbi opening has been committed
-	let results = callback(transaction, attr_dbi, env, hash_attribute);
+	let results = callback(transaction, attrDbi, env, hash_attribute);
 	results.transaction = transaction;
 	if (!transactionOrEnv.database) {
 		results.onDone = () => {
@@ -177,27 +177,27 @@ function setupTransaction(transactionOrEnv, hash_attribute, attribute, callback)
 }
 
 function getOverflowCheck(env, transaction, hash_attribute, attribute) {
-	let primary_dbi;
+	let primaryDbi;
 
 	return function (key, value) {
 		if (typeof key === 'string' && key.endsWith(OVERFLOW_MARKER)) {
 			// the entire value couldn't be encoded because it was too long, so need to search the attribute from
 			// the original record.
 			// first get the hash/primary dbi
-			if (!primary_dbi) {
+			if (!primaryDbi) {
 				// only have to open once per search
-				if (hash_attribute) primary_dbi = environment_utility.openDBI(env, hash_attribute);
+				if (hash_attribute) primaryDbi = environmentUtility.openDBI(env, hash_attribute);
 				else {
 					// not sure how often this gets called without a hash_attribute, as this would be kind of expensive
 					// if done frequently
-					let dbis = environment_utility.listDBIs(env);
+					let dbis = environmentUtility.listDBIs(env);
 					for (let i = 0, l = dbis.length; i < l; i++) {
-						primary_dbi = environment_utility.openDBI(env, dbis[i]);
-						if (primary_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) break;
+						primaryDbi = environmentUtility.openDBI(env, dbis[i]);
+						if (primaryDbi[lmdbTerms.DBI_DEFINITION_NAME].is_hash_attribute) break;
 					}
 				}
 			}
-			let record = primary_dbi.get(value, { transaction, lazy: true });
+			let record = primaryDbi.get(value, { transaction, lazy: true });
 			key = record[attribute];
 		}
 		return key;
@@ -208,7 +208,7 @@ function getOverflowCheck(env, transaction, hash_attribute, attribute) {
  * iterates the entire  hash_attribute dbi and returns all objects back
  * @param {lmdb.Transaction} transaction - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
- * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
+ * @param {Array.<String>} fetchAttributes - string array of attributes to pull from the object
  * @returns {Array.<Object>} - object array of fetched records
  * @param {boolean} reverse - defines if the iterator goes from last to first
  * @param {number} limit - defines the max number of entries to iterate
@@ -217,7 +217,7 @@ function getOverflowCheck(env, transaction, hash_attribute, attribute) {
 function searchAll(
 	transactionOrEnv,
 	hash_attribute,
-	fetch_attributes,
+	fetchAttributes,
 	reverse = false,
 	limit = undefined,
 	offset = undefined
@@ -227,19 +227,19 @@ function searchAll(
 		throw new Error(LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED);
 	}
 	return setupTransaction(transactionOrEnv, hash_attribute, hash_attribute, (transaction, dbi, env) => {
-		validateFetchAttributes(fetch_attributes);
-		fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
+		validateFetchAttributes(fetchAttributes);
+		fetchAttributes = setGetWholeRowAttributes(env, fetchAttributes);
 		return dbi
 			.getRange({
 				transaction,
 				start: reverse ? undefined : false,
 				end: !reverse ? undefined : false,
-				limit: limit,
-				offset: offset,
-				reverse: reverse,
+				limit,
+				offset,
+				reverse,
 			})
 			.map((entry) => {
-				return parseRow(entry.value, fetch_attributes);
+				return parseRow(entry.value, fetchAttributes);
 			});
 	});
 }
@@ -248,7 +248,7 @@ function searchAll(
 * iterates the entire  hash_attribute dbi and returns all objects back in a map
 * @param {lmdb.Transaction} transactionOrEnv - Transaction used to interact with all data in an environment
 * @param {String} hash_attribute - name of the hash_attribute for this environment
-* @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
+* @param {Array.<String>} fetchAttributes - string array of attributes to pull from the object
  * @param {boolean} reverse - defines if the iterator goes from last to first
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
@@ -258,7 +258,7 @@ function searchAll(
 function searchAllToMap(
 	transactionOrEnv,
 	hash_attribute,
-	fetch_attributes,
+	fetchAttributes,
 	reverse = false,
 	limit = undefined,
 	offset = undefined
@@ -269,8 +269,8 @@ function searchAllToMap(
 		throw new Error(LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED);
 	}
 
-	validateFetchAttributes(fetch_attributes);
-	fetch_attributes = setGetWholeRowAttributes(transactionOrEnv.database || transactionOrEnv, fetch_attributes);
+	validateFetchAttributes(fetchAttributes);
+	fetchAttributes = setGetWholeRowAttributes(transactionOrEnv.database || transactionOrEnv, fetchAttributes);
 	let map = new Map();
 	for (let { key, value } of iterateFullIndex(
 		transactionOrEnv,
@@ -280,7 +280,7 @@ function searchAllToMap(
 		limit,
 		offset
 	)) {
-		map.set(key, cursor_functions.parseRow(value, fetch_attributes));
+		map.set(key, cursorFunctions.parseRow(value, fetchAttributes));
 	}
 	return map;
 }
@@ -303,13 +303,13 @@ function iterateDBI(transactionOrEnv, attribute, reverse = false, limit = undefi
 	let results = Object.create(null);
 	let iterator = iterateFullIndex(transactionOrEnv, undefined, attribute, reverse, limit, offset);
 	let transaction = iterator.transaction;
-	const overflow_check = getOverflowCheck(transaction.database, transaction, undefined, attribute);
+	const overflowCheck = getOverflowCheck(transaction.database, transaction, undefined, attribute);
 	for (let { key, value } of iterator) {
-		let full_key = overflow_check(key, value);
-		if (results[full_key] === undefined) {
-			results[full_key] = [];
+		let fullKey = overflowCheck(key, value);
+		if (results[fullKey] === undefined) {
+			results[fullKey] = [];
 		}
-		results[full_key].push(value);
+		results[fullKey].push(value);
 	}
 	return results;
 }
@@ -327,16 +327,16 @@ function countAll(env, hash_attribute) {
 		throw new Error(LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED);
 	}
 
-	let stat = environment_utility.statDBI(env, hash_attribute);
+	let stat = environmentUtility.statDBI(env, hash_attribute);
 	return stat.entryCount;
 }
 
 /**
- * performs an equal search on the key of a named dbi, returns a list of ids where their keys literally match the search_value
+ * performs an equal search on the key of a named dbi, returns a list of ids where their keys literally match the searchValue
  * @param {lmdb.Transaction} transactionOrEnv - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute
  * @param {String} attribute - name of the attribute (dbi) to search
- * @param search_value - value to search
+ * @param searchValue - value to search
  * @param {boolean} reverse - defines if the iterator goes from last to first
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
@@ -346,26 +346,26 @@ function equals(
 	transactionOrEnv,
 	hash_attribute,
 	attribute,
-	search_value,
+	searchValue,
 	reverse = false,
 	limit = undefined,
 	offset = undefined
 ) {
-	validateComparisonFunctions(transactionOrEnv, attribute, search_value);
+	validateComparisonFunctions(transactionOrEnv, attribute, searchValue);
 	return setupTransaction(transactionOrEnv, hash_attribute, attribute, (transaction, dbi, env, hash_attribute) => {
-		search_value = common.convertKeyValueToWrite(search_value);
+		searchValue = common.convertKeyValueToWrite(searchValue);
 		if (hash_attribute === attribute) {
-			let value = dbi.get(search_value, { transaction, lazy: true });
-			return value === undefined ? [] : [{ key: search_value, value: search_value }];
+			let value = dbi.get(searchValue, { transaction, lazy: true });
+			return value === undefined ? [] : [{ key: searchValue, value: searchValue }];
 		} else {
 			return dbi
-				.getValues(search_value, {
+				.getValues(searchValue, {
 					transaction,
 					reverse,
 					limit,
 					offset,
 				})
-				.map((value) => ({ key: search_value, value }));
+				.map((value) => ({ key: searchValue, value }));
 		}
 	});
 }
@@ -375,20 +375,20 @@ function equals(
  * @param {lmdb.RootDatabase} env - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute
  * @param {String} attribute - name of the attribute (dbi) to search
- * @param search_value - value to search
+ * @param searchValue - value to search
  */
-function count(env, attribute, search_value) {
-	validateComparisonFunctions(env, attribute, search_value);
-	let dbi = environment_utility.openDBI(env, attribute);
-	return dbi.getValuesCount(search_value);
+function count(env, attribute, searchValue) {
+	validateComparisonFunctions(env, attribute, searchValue);
+	let dbi = environmentUtility.openDBI(env, attribute);
+	return dbi.getValuesCount(searchValue);
 }
 
 /**
- * performs an startsWith search on the key of a named dbi, returns a list of ids where their keys begin with the search_value
+ * performs an startsWith search on the key of a named dbi, returns a list of ids where their keys begin with the searchValue
  * @param {lmdb.Transaction} transactionOrEnv - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute
  * @param {String} attribute - name of the attribute (dbi) to search
- * @param search_value - value to search
+ * @param searchValue - value to search
  * @param {boolean} reverse - defines if the iterator goes from last to first
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
@@ -398,33 +398,33 @@ function startsWith(
 	transactionOrEnv,
 	hash_attribute,
 	attribute,
-	search_value,
+	searchValue,
 	reverse = false,
 	limit = undefined,
 	offset = undefined
 ) {
-	validateComparisonFunctions(transactionOrEnv, attribute, search_value);
+	validateComparisonFunctions(transactionOrEnv, attribute, searchValue);
 	return setupTransaction(transactionOrEnv, null, attribute, (transaction, dbi) => {
 		//if the search is numeric we need to scan the entire index, if string we can just do a range
-		search_value = common.convertKeyValueToWrite(search_value);
-		let string_search = true;
-		if (typeof search_value === 'number') {
-			string_search = false;
+		searchValue = common.convertKeyValueToWrite(searchValue);
+		let stringSearch = true;
+		if (typeof searchValue === 'number') {
+			stringSearch = false;
 		}
 		let iterator;
 		//if we are reversing we need to get the key after the one we want to search on so we can start there and iterate to the front
 		if (reverse === true) {
-			let next_key;
-			//iterate based on the search_value until the key no longer starts with the search_value, this is the key we need to start with in the search
-			for (let key of dbi.getKeys({ transaction, start: search_value })) {
-				if (!key.startsWith(search_value)) {
-					next_key = key;
+			let nextKey;
+			//iterate based on the searchValue until the key no longer starts with the searchValue, this is the key we need to start with in the search
+			for (let key of dbi.getKeys({ transaction, start: searchValue })) {
+				if (!key.startsWith(searchValue)) {
+					nextKey = key;
 					break;
 				}
 			}
 
 			//with the new search value we iterate
-			if (next_key !== undefined) {
+			if (nextKey !== undefined) {
 				if (Number.isInteger(offset)) {
 					offset++;
 				} else {
@@ -432,39 +432,39 @@ function startsWith(
 				}
 			}
 
-			iterator = dbi.getRange({ transaction, start: next_key, end: undefined, reverse, limit, offset }).map((entry) => {
+			iterator = dbi.getRange({ transaction, start: nextKey, end: undefined, reverse, limit, offset }).map((entry) => {
 				let { key } = entry;
-				if (key === next_key) {
+				if (key === nextKey) {
 					return;
 				}
 
-				if (key.toString().startsWith(search_value)) {
+				if (key.toString().startsWith(searchValue)) {
 					return entry;
-				} else if (string_search === true) {
+				} else if (stringSearch === true) {
 					return iterator.DONE;
 				}
 			});
 			return iterator.filter((entry) => entry);
 		} else {
-			iterator = dbi.getRange({ transaction, start: search_value, reverse, limit, offset }).map((entry) => {
-				if (entry.key.toString().startsWith(search_value)) {
+			iterator = dbi.getRange({ transaction, start: searchValue, reverse, limit, offset }).map((entry) => {
+				if (entry.key.toString().startsWith(searchValue)) {
 					return entry;
-				} else if (string_search === true) {
+				} else if (stringSearch === true) {
 					return iterator.DONE;
 				}
 			});
-			return string_search ? iterator : iterator.filter((entry) => entry); // filter out non-matching if we are not
+			return stringSearch ? iterator : iterator.filter((entry) => entry); // filter out non-matching if we are not
 			// a string and have to do a full scan
 		}
 	});
 }
 
 /**
- * performs an endsWith search on the key of a named dbi, returns a list of ids where their keys end with search_value
+ * performs an endsWith search on the key of a named dbi, returns a list of ids where their keys end with searchValue
  * @param {lmdb.Transaction} transaction - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute
  * @param {String} attribute - name of the attribute (dbi) to search
- * @param search_value - value to search
+ * @param searchValue - value to search
  * @param {boolean} reverse - defines if the iterator goes from last to first
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
@@ -474,21 +474,21 @@ function endsWith(
 	transaction,
 	hash_attribute,
 	attribute,
-	search_value,
+	searchValue,
 	reverse = false,
 	limit = undefined,
 	offset = undefined
 ) {
-	return contains(transaction, hash_attribute, attribute, search_value, reverse, limit, offset, true);
+	return contains(transaction, hash_attribute, attribute, searchValue, reverse, limit, offset, true);
 }
 
 /**
- * performs a contains search on the key of a named dbi, returns a list of ids where their keys contain the search_value
+ * performs a contains search on the key of a named dbi, returns a list of ids where their keys contain the searchValue
  * @param {lmdb.Transaction|lmdb.RootDatabase} transactionOrEnv - Transaction used to interact with all data in an
  * environment
  * @param {String} hash_attribute
  * @param {String} attribute - name of the attribute (dbi) to search
- * @param {String|Number} search_value - value to search
+ * @param {String|Number} searchValue - value to search
  * @param {boolean} reverse - defines if the iterator goes from last to first
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
@@ -499,38 +499,38 @@ function contains(
 	transactionOrEnv,
 	hash_attribute,
 	attribute,
-	search_value,
+	searchValue,
 	reverse = false,
 	limit = undefined,
 	offset = undefined,
 	ends_with = false
 ) {
-	validateComparisonFunctions(transactionOrEnv, attribute, search_value);
-	return setupTransaction(transactionOrEnv, null, attribute, (transaction, attr_dbi, env, hash_attribute) => {
-		const overflow_check = getOverflowCheck(env, transaction, hash_attribute, attribute);
+	validateComparisonFunctions(transactionOrEnv, attribute, searchValue);
+	return setupTransaction(transactionOrEnv, null, attribute, (transaction, attrDbi, env, hash_attribute) => {
+		const overflowCheck = getOverflowCheck(env, transaction, hash_attribute, attribute);
 		offset = Number.isInteger(offset) ? offset : 0;
-		return attr_dbi
+		return attrDbi
 			.getKeys({ transaction, end: reverse ? false : undefined, reverse })
 			.flatMap((key) => {
-				let found_str = key.toString();
-				if (found_str.endsWith(OVERFLOW_MARKER)) {
+				let foundStr = key.toString();
+				if (foundStr.endsWith(OVERFLOW_MARKER)) {
 					// the entire value couldn't be encoded because it was too long, so need to search the attributes from
 					// the original record
-					return attr_dbi
+					return attrDbi
 						.getValues(key, { transaction })
-						.map((primary_key) => {
+						.map((primaryKey) => {
 							// this will get the full value from each entire record so we can check it
-							let full_key = overflow_check(key, primary_key);
-							if (ends_with ? full_key.endsWith(search_value) : full_key.includes(search_value)) {
-								return { key: full_key, value: primary_key };
+							let fullKey = overflowCheck(key, primaryKey);
+							if (ends_with ? fullKey.endsWith(searchValue) : fullKey.includes(searchValue)) {
+								return { key: fullKey, value: primaryKey };
 							}
 						})
 						.filter((v) => v);
-				} else if (ends_with ? found_str.endsWith(search_value) : found_str.includes(search_value)) {
-					if (attr_dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute) return { key, value: key };
+				} else if (ends_with ? foundStr.endsWith(searchValue) : foundStr.includes(searchValue)) {
+					if (attrDbi[lmdbTerms.DBI_DEFINITION_NAME].is_hash_attribute) return { key, value: key };
 					else {
-						return attr_dbi.getValues(key, { transaction }).map((primary_key) => {
-							return { key, value: primary_key };
+						return attrDbi.getValues(key, { transaction }).map((primaryKey) => {
+							return { key, value: primaryKey };
 						});
 					}
 				}
@@ -547,7 +547,7 @@ function contains(
  * @param {lmdb.Transaction} transactionOrEnv
  * @param {String} hash_attribute
  * @param {String} attribute
- * @param {String|Number} search_value
+ * @param {String|Number} searchValue
  * @param {boolean} reverse - determines direction to iterate
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
@@ -557,24 +557,24 @@ function greaterThan(
 	transactionOrEnv,
 	hash_attribute,
 	attribute,
-	search_value,
+	searchValue,
 	reverse = false,
 	limit = undefined,
 	offset = undefined
 ) {
-	validateComparisonFunctions(transactionOrEnv, attribute, search_value);
+	validateComparisonFunctions(transactionOrEnv, attribute, searchValue);
 
-	let type = typeof search_value;
-	let upper_value;
-	if (type === 'string') upper_value = '\uffff';
-	else if (type === 'number') upper_value = Infinity;
-	else if (type === 'boolean') upper_value = true;
+	let type = typeof searchValue;
+	let upperValue;
+	if (type === 'string') upperValue = '\uffff';
+	else if (type === 'number') upperValue = Infinity;
+	else if (type === 'boolean') upperValue = true;
 	return iterateRangeBetween(
 		transactionOrEnv,
 		hash_attribute,
 		attribute,
-		search_value,
-		upper_value,
+		searchValue,
+		upperValue,
 		reverse,
 		limit,
 		offset,
@@ -588,7 +588,7 @@ function greaterThan(
  * @param {lmdb.Transaction} transactionOrEnv
  * @param {String} hash_attribute
  * @param {String} attribute
- * @param {String|Number} search_value
+ * @param {String|Number} searchValue
  * @param {boolean} reverse - determines direction of iterator
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
@@ -598,24 +598,24 @@ function greaterThanEqual(
 	transactionOrEnv,
 	hash_attribute,
 	attribute,
-	search_value,
+	searchValue,
 	reverse = false,
 	limit = undefined,
 	offset = undefined
 ) {
-	validateComparisonFunctions(transactionOrEnv, attribute, search_value);
+	validateComparisonFunctions(transactionOrEnv, attribute, searchValue);
 
-	let type = typeof search_value;
-	let upper_value;
-	if (type === 'string') upper_value = '\uffff';
-	else if (type === 'number') upper_value = Infinity;
-	else if (type === 'boolean') upper_value = true;
+	let type = typeof searchValue;
+	let upperValue;
+	if (type === 'string') upperValue = '\uffff';
+	else if (type === 'number') upperValue = Infinity;
+	else if (type === 'boolean') upperValue = true;
 	return iterateRangeBetween(
 		transactionOrEnv,
 		hash_attribute,
 		attribute,
-		search_value,
-		upper_value,
+		searchValue,
+		upperValue,
 		reverse,
 		limit,
 		offset,
@@ -629,7 +629,7 @@ function greaterThanEqual(
  * @param {lmdb.Transaction} transactionOrEnv
  * @param {String} hash_attribute
  * @param {String} attribute
- * @param {String|Number} search_value
+ * @param {String|Number} searchValue
  * @param {boolean} reverse - determines direction of iterator
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
@@ -639,23 +639,23 @@ function lessThan(
 	transactionOrEnv,
 	hash_attribute,
 	attribute,
-	search_value,
+	searchValue,
 	reverse = false,
 	limit = undefined,
 	offset = undefined
 ) {
-	validateComparisonFunctions(transactionOrEnv, attribute, search_value);
-	let type = typeof search_value;
-	let lower_value;
-	if (type === 'string') lower_value = '\x00';
-	else if (type === 'number') lower_value = -Infinity;
-	else if (type === 'boolean') lower_value = false;
+	validateComparisonFunctions(transactionOrEnv, attribute, searchValue);
+	let type = typeof searchValue;
+	let lowerValue;
+	if (type === 'string') lowerValue = '\x00';
+	else if (type === 'number') lowerValue = -Infinity;
+	else if (type === 'boolean') lowerValue = false;
 	return iterateRangeBetween(
 		transactionOrEnv,
 		hash_attribute,
 		attribute,
-		lower_value,
-		search_value,
+		lowerValue,
+		searchValue,
 		reverse,
 		limit,
 		offset,
@@ -669,7 +669,7 @@ function lessThan(
  * @param {lmdb.Transaction} transactionOrEnv
  * @param {String} hash_attribute
  * @param {String} attribute
- * @param {String|Number} search_value
+ * @param {String|Number} searchValue
  * @param {boolean} reverse - defines the direction to iterate
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
@@ -679,23 +679,23 @@ function lessThanEqual(
 	transactionOrEnv,
 	hash_attribute,
 	attribute,
-	search_value,
+	searchValue,
 	reverse = false,
 	limit = undefined,
 	offset = undefined
 ) {
-	validateComparisonFunctions(transactionOrEnv, attribute, search_value);
-	let type = typeof search_value;
-	let lower_value;
-	if (type === 'string') lower_value = '\x00';
-	else if (type === 'number') lower_value = -Infinity;
-	else if (type === 'boolean') lower_value = false;
+	validateComparisonFunctions(transactionOrEnv, attribute, searchValue);
+	let type = typeof searchValue;
+	let lowerValue;
+	if (type === 'string') lowerValue = '\x00';
+	else if (type === 'number') lowerValue = -Infinity;
+	else if (type === 'boolean') lowerValue = false;
 	return iterateRangeBetween(
 		transactionOrEnv,
 		hash_attribute,
 		attribute,
-		lower_value,
-		search_value,
+		lowerValue,
+		searchValue,
 		reverse,
 		limit,
 		offset,
@@ -709,8 +709,8 @@ function lessThanEqual(
  * @param {lmdb.Transaction} transactionOrEnv
  * @param {String} hash_attribute
  * @param {String} attribute
- * @param {String|Number} start_value
- * @param {String|Number}end_value
+ * @param {String|Number} startValue
+ * @param {String|Number}endValue
  * @param {boolean} reverse - defines if the iterator goes from last to first
  * @param {number} limit - defines the max number of entries to iterate
  * @param {number} offset - defines the entries to skip
@@ -720,8 +720,8 @@ function between(
 	transactionOrEnv,
 	hash_attribute,
 	attribute,
-	start_value,
-	end_value,
+	startValue,
+	endValue,
 	reverse = false,
 	limit = undefined,
 	offset = undefined
@@ -732,17 +732,17 @@ function between(
 		throw new Error(LMDB_ERRORS.ATTRIBUTE_REQUIRED);
 	}
 
-	if (start_value === undefined) {
+	if (startValue === undefined) {
 		throw new Error(LMDB_ERRORS.START_VALUE_REQUIRED);
 	}
 
-	if (end_value === undefined) {
+	if (endValue === undefined) {
 		throw new Error(LMDB_ERRORS.END_VALUE_REQUIRED);
 	}
 
-	start_value = common.convertKeyValueToWrite(start_value);
-	end_value = common.convertKeyValueToWrite(end_value);
-	if (start_value > end_value) {
+	startValue = common.convertKeyValueToWrite(startValue);
+	endValue = common.convertKeyValueToWrite(endValue);
+	if (startValue > endValue) {
 		throw new Error(LMDB_ERRORS.END_VALUE_MUST_BE_GREATER_THAN_START_VALUE);
 	}
 
@@ -750,8 +750,8 @@ function between(
 		transactionOrEnv,
 		hash_attribute,
 		attribute,
-		start_value,
-		end_value,
+		startValue,
+		endValue,
 		reverse,
 		limit,
 		offset
@@ -762,11 +762,11 @@ function between(
  * finds a single record based on the id passed
  * @param {lmdb.Transaction} transactionOrEnv - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
- * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
+ * @param {Array.<String>} fetchAttributes - string array of attributes to pull from the object
  * @param {String} id - id value to search
  * @returns {{}} - object found
  */
-function searchByHash(transactionOrEnv, hash_attribute, fetch_attributes, id) {
+function searchByHash(transactionOrEnv, hash_attribute, fetchAttributes, id) {
 	common.validateEnv(transactionOrEnv);
 	let env = transactionOrEnv.database || transactionOrEnv;
 	let transaction = transactionOrEnv.database ? transactionOrEnv : null;
@@ -774,17 +774,17 @@ function searchByHash(transactionOrEnv, hash_attribute, fetch_attributes, id) {
 		throw new Error(LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED);
 	}
 
-	validateFetchAttributes(fetch_attributes);
-	fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
+	validateFetchAttributes(fetchAttributes);
+	fetchAttributes = setGetWholeRowAttributes(env, fetchAttributes);
 	if (id === undefined) {
 		throw new Error(LMDB_ERRORS.ID_REQUIRED);
 	}
 
 	let obj = null;
-	let object = env.dbis[hash_attribute].get(id, { transaction, lazy: fetch_attributes.length < 3 });
+	let object = env.dbis[hash_attribute].get(id, { transaction, lazy: fetchAttributes.length < 3 });
 
 	if (object) {
-		obj = cursor_functions.parseRow(object, fetch_attributes);
+		obj = cursorFunctions.parseRow(object, fetchAttributes);
 	}
 	return obj;
 }
@@ -809,44 +809,44 @@ function checkHashExists(transactionOrEnv, hash_attribute, id) {
 		throw new Error(LMDB_ERRORS.ID_REQUIRED);
 	}
 
-	let found_key = true;
+	let foundKey = true;
 
 	let value = env.dbis[hash_attribute].get(id, { transaction, lazy: true });
 
 	if (value === undefined) {
-		found_key = false;
+		foundKey = false;
 	}
-	return found_key;
+	return foundKey;
 }
 
 /**
  * finds an array of records based on the ids passed
  * @param {lmdb.Transaction} transactionOrEnv - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
- * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
+ * @param {Array.<String>} fetchAttributes - string array of attributes to pull from the object
  * @param {Array.<String>} ids - list of ids to search
- * @param {[]} [not_found] - optional, meant to be an array passed by reference so that skipped ids can be aggregated.
+ * @param {[]} [notFound] - optional, meant to be an array passed by reference so that skipped ids can be aggregated.
  * @returns {Map} - Map of records found
  */
-function batchSearchByHash(transactionOrEnv, hash_attribute, fetch_attributes, ids, not_found = []) {
-	initializeBatchSearchByHash(transactionOrEnv, hash_attribute, fetch_attributes, ids, not_found);
+function batchSearchByHash(transactionOrEnv, hash_attribute, fetchAttributes, ids, notFound = []) {
+	initializeBatchSearchByHash(transactionOrEnv, hash_attribute, fetchAttributes, ids, notFound);
 
-	return batchHashSearch(transactionOrEnv, hash_attribute, fetch_attributes, ids, not_found).map((entry) => entry[1]);
+	return batchHashSearch(transactionOrEnv, hash_attribute, fetchAttributes, ids, notFound).map((entry) => entry[1]);
 }
 
 /**
  * finds an array of records based on the ids passed and returns a map of the results
  * @param {lmdb.Transaction} transactionOrEnv - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
- * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
+ * @param {Array.<String>} fetchAttributes - string array of attributes to pull from the object
  * @param {Array.<String>} ids - list of ids to search
- * @param {[]} [not_found] - optional, meant to be an array passed by reference so that skipped ids can be aggregated.
+ * @param {[]} [notFound] - optional, meant to be an array passed by reference so that skipped ids can be aggregated.
  * @returns {Map} - Map of records found
  */
-function batchSearchByHashToMap(transactionOrEnv, hash_attribute, fetch_attributes, ids, not_found = []) {
-	initializeBatchSearchByHash(transactionOrEnv, hash_attribute, fetch_attributes, ids, not_found);
+function batchSearchByHashToMap(transactionOrEnv, hash_attribute, fetchAttributes, ids, notFound = []) {
+	initializeBatchSearchByHash(transactionOrEnv, hash_attribute, fetchAttributes, ids, notFound);
 	let results = new Map();
-	for (let [id, record] of batchHashSearch(transactionOrEnv, hash_attribute, fetch_attributes, ids, not_found)) {
+	for (let [id, record] of batchHashSearch(transactionOrEnv, hash_attribute, fetchAttributes, ids, notFound)) {
 		results.set(id, record);
 	}
 	return results;
@@ -856,23 +856,23 @@ function batchSearchByHashToMap(transactionOrEnv, hash_attribute, fetch_attribut
  * finds an array of records based on the ids passed and returns a map of the results
  * @param {lmdb.Transaction} transactionOrEnv - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
- * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
+ * @param {Array.<String>} fetchAttributes - string array of attributes to pull from the object
  * @param {Array.<String>} ids - list of ids to search
- * @param {[]} [not_found] - optional, meant to be an array passed by reference so that skipped ids can be aggregated.
+ * @param {[]} [notFound] - optional, meant to be an array passed by reference so that skipped ids can be aggregated.
  * @returns {Object}
  */
-function batchHashSearch(transactionOrEnv, hash_attribute, fetch_attributes, ids, not_found = []) {
+function batchHashSearch(transactionOrEnv, hash_attribute, fetchAttributes, ids, notFound = []) {
 	return setupTransaction(transactionOrEnv, hash_attribute, hash_attribute, (transaction, dbi, env) => {
-		fetch_attributes = setGetWholeRowAttributes(env, fetch_attributes);
-		let lazy = fetch_attributes.length < 3;
+		fetchAttributes = setGetWholeRowAttributes(env, fetchAttributes);
+		let lazy = fetchAttributes.length < 3;
 
 		return ids
 			.map((id) => {
 				let object = env.dbis[hash_attribute].get(id, { transaction, lazy });
 				if (object) {
-					return [id, cursor_functions.parseRow(object, fetch_attributes)];
+					return [id, cursorFunctions.parseRow(object, fetchAttributes)];
 				} else {
-					not_found.push(id);
+					notFound.push(id);
 				}
 			})
 			.filter((object) => object); // omit not found
@@ -883,19 +883,19 @@ function batchHashSearch(transactionOrEnv, hash_attribute, fetch_attributes, ids
  * function used to intialize the batchSearchByHash functions
  * @param {lmdb.Transaction} transactionOrEnv - Transaction used to interact with all data in an environment
  * @param {String} hash_attribute - name of the hash_attribute for this environment
- * @param {Array.<String>} fetch_attributes - string array of attributes to pull from the object
+ * @param {Array.<String>} fetchAttributes - string array of attributes to pull from the object
  * @param {Array.<String>} ids - list of ids to search
- * @param {[]} [not_found] -optional,  meant to be an array passed by reference so that skipped ids can be aggregated.
+ * @param {[]} [notFound] -optional,  meant to be an array passed by reference so that skipped ids can be aggregated.
  * @returns {TransactionCursor}
  */
-function initializeBatchSearchByHash(transactionOrEnv, hash_attribute, fetch_attributes, ids, not_found) {
+function initializeBatchSearchByHash(transactionOrEnv, hash_attribute, fetchAttributes, ids, notFound) {
 	common.validateEnv(transactionOrEnv);
 
 	if (hash_attribute === undefined) {
 		throw new Error(LMDB_ERRORS.HASH_ATTRIBUTE_REQUIRED);
 	}
 
-	validateFetchAttributes(fetch_attributes);
+	validateFetchAttributes(fetchAttributes);
 
 	if (ids === undefined || ids === null) {
 		throw new Error(LMDB_ERRORS.IDS_REQUIRED);
@@ -906,12 +906,12 @@ function initializeBatchSearchByHash(transactionOrEnv, hash_attribute, fetch_att
 }
 
 /**
- * validates the fetch_attributes argument
- * @param fetch_attributes - string array of attributes to pull from the object
+ * validates the fetchAttributes argument
+ * @param fetchAttributes - string array of attributes to pull from the object
  */
-function validateFetchAttributes(fetch_attributes) {
-	if (!Array.isArray(fetch_attributes)) {
-		if (fetch_attributes === undefined) {
+function validateFetchAttributes(fetchAttributes) {
+	if (!Array.isArray(fetchAttributes)) {
+		if (fetchAttributes === undefined) {
 			throw new Error(LMDB_ERRORS.FETCH_ATTRIBUTES_REQUIRED);
 		}
 		throw new Error(LMDB_ERRORS.FETCH_ATTRIBUTES_MUST_BE_ARRAY);
@@ -922,35 +922,35 @@ function validateFetchAttributes(fetch_attributes) {
  * common validation function for all of the comparison searches (equals, startsWith, endsWith, contains)
  * @param {lmdb.RootDatabase} env - The env used to interact with all data in an environment
  * @param attribute - name of the attribute (dbi) to search
- * @param search_value - value to search
+ * @param searchValue - value to search
  */
-function validateComparisonFunctions(env, attribute, search_value) {
+function validateComparisonFunctions(env, attribute, searchValue) {
 	common.validateEnv(env);
 	if (attribute === undefined) {
 		throw new Error(LMDB_ERRORS.ATTRIBUTE_REQUIRED);
 	}
 
-	if (search_value === undefined) {
+	if (searchValue === undefined) {
 		throw new Error(LMDB_ERRORS.SEARCH_VALUE_REQUIRED);
 	}
 
-	if (search_value?.length > MAX_SEARCH_KEY_LENGTH) {
+	if (searchValue?.length > MAX_SEARCH_KEY_LENGTH) {
 		throw new Error(LMDB_ERRORS.SEARCH_VALUE_TOO_LARGE);
 	}
 }
 
 /**
- * determines if the intent is to return the whole row based on fetch_attributes having 1 entry that is wildcard * or %
+ * determines if the intent is to return the whole row based on fetchAttributes having 1 entry that is wildcard * or %
  * @param env
- * @param fetch_attributes
+ * @param fetchAttributes
  * @returns {Array}
  */
-function setGetWholeRowAttributes(env, fetch_attributes) {
-	if (fetch_attributes.length === 1 && hdb_terms.SEARCH_WILDCARDS.indexOf(fetch_attributes[0]) >= 0) {
-		fetch_attributes = environment_utility.listDBIs(env);
+function setGetWholeRowAttributes(env, fetchAttributes) {
+	if (fetchAttributes.length === 1 && hdbTerms.SEARCH_WILDCARDS.indexOf(fetchAttributes[0]) >= 0) {
+		fetchAttributes = environmentUtility.listDBIs(env);
 	}
 
-	return fetch_attributes;
+	return fetchAttributes;
 }
 
 module.exports = {

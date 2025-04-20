@@ -155,7 +155,7 @@ describe('test checkNPMInstalled function', () => {
 			return { stdout: '6.14.17' };
 		});
 
-		let exec_restore = npm_utils.__set__('p_exec', exec_stub);
+		let exec_restore = npm_utils.__set__('pExec', exec_stub);
 
 		let error;
 		let result;
@@ -175,7 +175,7 @@ describe('test checkNPMInstalled function', () => {
 			return { stderr: 'no npm' };
 		});
 
-		let exec_restore = npm_utils.__set__('p_exec', exec_stub);
+		let exec_restore = npm_utils.__set__('pExec', exec_stub);
 
 		let error;
 		let result;
@@ -389,7 +389,7 @@ if (process.env.FULL_TEST) {
 				return;
 			});
 
-			let run_command_restore = npm_utils.__set__('p_exec', run_command_stub);
+			let run_command_restore = npm_utils.__set__('pExec', run_command_stub);
 			let check_npm_installed_restore = npm_utils.__set__('checkNPMInstalled', check_npm_installed_stub);
 			let check_project_paths_restore = npm_utils.__set__('checkProjectPaths', check_project_paths_stub);
 
@@ -438,7 +438,7 @@ if (process.env.FULL_TEST) {
 		it('test real happy path, no dry run', async () => {
 			let cf_routes_dir_restore = npm_utils.__set__('CF_ROUTES_DIR', MOCK_CF_DIR_PATH);
 			let path_join_spy = sandbox.spy(npm_utils.__get__('path'), 'join');
-			let run_command_spy = sandbox.spy(npm_utils.__get__('p_exec'));
+			let run_command_spy = sandbox.spy(npm_utils.__get__('pExec'));
 
 			let check_npm_installed_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
 				return true;
@@ -510,7 +510,7 @@ if (process.env.FULL_TEST) {
 				return;
 			});
 
-			let run_command_restore = npm_utils.__set__('p_exec', run_command_stub);
+			let run_command_restore = npm_utils.__set__('pExec', run_command_stub);
 			let check_npm_installed_restore = npm_utils.__set__('checkNPMInstalled', check_npm_installed_stub);
 			let check_project_paths_restore = npm_utils.__set__('checkProjectPaths', check_project_paths_stub);
 
@@ -560,7 +560,7 @@ if (process.env.FULL_TEST) {
 		it('test real happy path, with dry run', async () => {
 			let cf_routes_dir_restore = npm_utils.__set__('CF_ROUTES_DIR', MOCK_CF_DIR_PATH);
 			let path_join_spy = sandbox.spy(npm_utils.__get__('path'), 'join');
-			let run_command_spy = sandbox.spy(npm_utils.__get__('p_exec'));
+			let run_command_spy = sandbox.spy(npm_utils.__get__('pExec'));
 
 			let check_npm_installed_stub = sandbox.stub().callsFake(async (cmd, cwd) => {
 				return true;

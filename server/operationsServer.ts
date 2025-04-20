@@ -1,30 +1,30 @@
 import cluster from 'cluster';
-import env from '../utility/environment/environmentManager';
+import env from '../utility/environment/environmentManager.js';
 env.initSync();
-import * as terms from '../utility/hdbTerms';
-import harper_logger from '../utility/logging/harper_logger';
+import * as terms from '../utility/hdbTerms.ts';
+import harperLogger from '../utility/logging/harper_logger.js';
 import fastify, { FastifyInstance, type FastifyServerOptions } from 'fastify';
-import fastify_cors, { type FastifyCorsOptions } from '@fastify/cors';
-import fastify_compress from '@fastify/compress';
-import fastify_static from '@fastify/static';
-import request_time_plugin from './serverHelpers/requestTimePlugin';
+import fastifyCors, { type FastifyCorsOptions } from '@fastify/cors';
+import fastifyCompress from '@fastify/compress';
+import fastifyStatic from '@fastify/static';
+import requestTimePlugin from './serverHelpers/requestTimePlugin.js';
 import guidePath from 'path';
-import { PACKAGE_ROOT } from '../utility/packageUtils';
-import global_schema from '../utility/globalSchema';
-import common_utils from '../utility/common_utils';
-import user_schema from '../security/user';
-import hdb_license from '../utility/registration/hdb_license';
-import { server as server_registration, type ServerOptions } from '../server/Server';
+import { PACKAGE_ROOT } from '../utility/packageUtils.js';
+import globalSchema from '../utility/globalSchema.js';
+import commonUtils from '../utility/common_utils.js';
+import userSchema from '../security/user.js';
+import hdbLicense from '../utility/registration/hdb_license.js';
+import { server as serverRegistration, type ServerOptions } from '../server/Server.ts';
 import {
 	authHandler,
 	handlePostRequest,
 	serverErrorHandler,
 	reqBodyValidationHandler,
-} from './serverHelpers/serverHandlers';
-import { registerContentHandlers } from './serverHelpers/contentTypes';
-import type { OperationFunctionName } from './serverHelpers/serverUtilities';
-import type { ParsedSqlObject } from '../sqlTranslator/index';
-import type { User } from '../resources/ResourceInterface';
+} from './serverHelpers/serverHandlers.js';
+import { registerContentHandlers } from './serverHelpers/contentTypes.ts';
+import type { OperationFunctionName } from './serverHelpers/serverUtilities.ts';
+import type { ParsedSqlObject } from '../sqlTranslator/index.js';
+import type { User } from '../resources/ResourceInterface.ts';
 
 const DEFAULT_HEADERS_TIMEOUT = 60000;
 const REQ_MAX_BODY_SIZE = 1024 * 1024 * 1024; //this is 1GB in bytes
@@ -41,19 +41,19 @@ export {operationsServer as start};
  */
 async function operationsServer(options: ServerOptions) {
 	try {
-		harper_logger.debug('In Fastify server' + process.cwd());
-		harper_logger.debug(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
-		harper_logger.debug(`HarperDB server process ${process.pid} starting up.`);
+		harperLogger.debug('In Fastify server' + process.cwd());
+		harperLogger.debug(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
+		harperLogger.debug(`HarperDB server process ${process.pid} starting up.`);
 
 		global.clustering_on = false;
 		global.isMaster = cluster.isMaster;
 
 		await setUp();
 		// if we have a secure port, need to use the secure HTTP server for fastify (it can be used for HTTP as well)
-		const is_https = options.securePort > 0;
+		const isHttps = options.securePort > 0;
 
 		//generate a Fastify server instance
-		server = buildServer(is_https);
+		server = buildServer(isHttps);
 
 		//make sure the process waits for the server to be fully instantiated before moving forward
 		await server.ready();
@@ -63,7 +63,7 @@ async function operationsServer(options: ServerOptions) {
 		try {
 			// now that server is fully loaded/ready, start listening on port provided in config settings or just use
 			// zero to wait for sockets from the main thread
-			server_registration.http(server.server, options);
+			serverRegistration.http(server.server, options);
 			if (!server.server.closeIdleConnections) {
 				// before Node v18, closeIdleConnections is not available, and we have to setup a listener for fastify
 				// to handle closing by setting up the dynamic port
@@ -71,13 +71,13 @@ async function operationsServer(options: ServerOptions) {
 			}
 		} catch (err) {
 			server.close();
-			harper_logger.error(err);
-			harper_logger.error(`Error configuring operations server`);
+			harperLogger.error(err);
+			harperLogger.error(`Error configuring operations server`);
 			throw err;
 		}
 	} catch (err) {
 		console.error(`Failed to build server on ${process.pid}`, err);
-		harper_logger.fatal(err);
+		harperLogger.fatal(err);
 		process.exit(1);
 	}
 }
@@ -86,26 +86,26 @@ async function operationsServer(options: ServerOptions) {
  * Makes sure global values are set and that clustering connections are set/ready before server starts.
  */
 async function setUp() {
-	harper_logger.trace('Configuring HarperDB process.');
-	global_schema.setSchemaDataToGlobal();
-	await user_schema.setUsersWithRolesCache();
-	await hdb_license.getLicense();
+	harperLogger.trace('Configuring HarperDB process.');
+	globalSchema.setSchemaDataToGlobal();
+	await userSchema.setUsersWithRolesCache();
+	await hdbLicense.getLicense();
 }
 
 interface BaseOperationRequestBody {
 	operation: OperationFunctionName;
-	bypass_auth: boolean;
+	bypassAuth: boolean;
 	hdb_user?: User;
 	password?: string;
 	payload?: string;
 	sql?: string;
-	parsed_sql_object?: ParsedSqlObject;
+	parsedSqlObject?: ParsedSqlObject;
 }
 
 type SearchOperation = BaseOperationRequestBody;
 
 interface SearchOperationRequestBody {
-	search_operation: SearchOperation;
+	searchOperation: SearchOperation;
 }
 
 export type OperationRequestBody = BaseOperationRequestBody & SearchOperationRequestBody;
@@ -121,20 +121,20 @@ export interface OperationResult {
 /**
  * This method configures and returns a Fastify server - for either HTTP or HTTPS  - based on the provided config settings
  */
-function buildServer(is_https: boolean): FastifyInstance {
-	harper_logger.debug(`HarperDB process starting to build ${is_https ? 'HTTPS' : 'HTTP'} server.`);
-	const server_opts = getServerOptions(is_https);
+function buildServer(isHttps: boolean): FastifyInstance {
+	harperLogger.debug(`HarperDB process starting to build ${isHttps ? 'HTTPS' : 'HTTP'} server.`);
+	const serverOpts = getServerOptions(isHttps);
 	/*
 	TODO: Eventually we may want to directly forward requests to fastify rather than having it create a
 	(pseudo) server.
-	let request_handler;
-	server_opts.serverFactory = (handler) => {
-		request_handler = (request) => {
-			return handler(request[node_request_key], request[node_response_key]);
+	let requestHandler;
+	serverOpts.serverFactory = (handler) => {
+		requestHandler = (request) => {
+			return handler(request[nodeRequestKey], request[nodeResponseKey]);
 		};
 		return { on() {} };
 	};*/
-	const app = fastify(server_opts);
+	const app = fastify(serverOpts);
 
 	//Fastify does not set this property in the initial app construction
 	app.server.headersTimeout = getHeaderTimeoutConfig();
@@ -143,9 +143,9 @@ function buildServer(is_https: boolean): FastifyInstance {
 	// handler so they can be handled in a coordinated way
 	app.setErrorHandler(serverErrorHandler);
 
-	const cors_options = getCORSOpts();
-	if (cors_options) {
-		app.register(fastify_cors, cors_options);
+	const corsOptions = getCORSOpts();
+	if (corsOptions) {
+		app.register(fastifyCors, corsOptions);
 	}
 
 	app.register(function (instance, options, done) {
@@ -155,17 +155,17 @@ function buildServer(is_https: boolean): FastifyInstance {
 		done();
 	});
 
-	app.register(request_time_plugin);
+	app.register(requestTimePlugin);
 
 	// This handles all get requests for the studio
-	app.register(fastify_compress);
-	app.register(fastify_static, { root: guidePath.join(PACKAGE_ROOT, 'studio/build-local') });
+	app.register(fastifyCompress);
+	app.register(fastifyStatic, { root: guidePath.join(PACKAGE_ROOT, 'studio/build-local') });
 	registerContentHandlers(app);
 
-	const studio_on = env.get(terms.HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON);
+	const studioOn = env.get(terms.HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON);
 	app.get('/', function (req, res) {
 		//if the local studio is enabled we will serve it, otherwise return 404
-		if (!common_utils.isEmpty(studio_on) && studio_on.toString().toLowerCase() === 'true') {
+		if (!commonUtils.isEmpty(studioOn) && studioOn.toString().toLowerCase() === 'true') {
 			return res.sendFile('index.html');
 		}
 		return res.sendFile('running.html');
@@ -190,7 +190,7 @@ function buildServer(is_https: boolean): FastifyInstance {
 		return 'HarperDB is running.';
 	});
 
-	harper_logger.debug(`HarperDB process starting up ${is_https ? 'HTTPS' : 'HTTP'} server listener.`);
+	harperLogger.debug(`HarperDB process starting up ${isHttps ? 'HTTPS' : 'HTTP'} server listener.`);
 
 	return app;
 }
@@ -202,7 +202,7 @@ interface HttpServerOptions extends FastifyServerOptions {
 /**
  * Builds server options object to pass to Fastify when using server factory.
  */
-function getServerOptions(is_https: boolean): HttpServerOptions {
+function getServerOptions(isHttps: boolean): HttpServerOptions {
 	const server_timeout = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT);
 	const keep_alive_timeout = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_KEEPALIVETIMEOUT);
 	return {
@@ -211,8 +211,8 @@ function getServerOptions(is_https: boolean): HttpServerOptions {
 		keepAliveTimeout: keep_alive_timeout,
 		forceCloseConnections: true,
 		return503OnClosing: false,
-		// http2: is_https, // for now we are not enabling HTTP/2 since it seems to show slower performance
-		https: is_https /* && {
+		// http2: isHttps, // for now we are not enabling HTTP/2 since it seems to show slower performance
+		https: isHttps /* && {
 			allowHTTP1: true,
 		},*/,
 	};
@@ -222,28 +222,28 @@ function getServerOptions(is_https: boolean): HttpServerOptions {
  * Builds CORS options object to pass to cors plugin when/if it needs to be registered with Fastify
  */
 function getCORSOpts(): FastifyCorsOptions {
-	const props_cors = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
-	const props_cors_accesslist = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
-	let cors_options: FastifyCorsOptions;
+	const propsCors = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORS);
+	const propsCorsAccesslist = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_CORSACCESSLIST);
+	let corsOptions: FastifyCorsOptions;
 
-	if (props_cors && (props_cors === true || props_cors.toUpperCase() === TRUE_COMPARE_VAL)) {
-		cors_options = {
+	if (propsCors && (propsCors === true || propsCors.toUpperCase() === TRUE_COMPARE_VAL)) {
+		corsOptions = {
 			origin: true,
 			allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
 			credentials: false,
 		};
 		if (
-			props_cors_accesslist &&
-			props_cors_accesslist.length > 0 &&
-			props_cors_accesslist[0] !== null &&
-			props_cors_accesslist[0] !== '*'
+			propsCorsAccesslist &&
+			propsCorsAccesslist.length > 0 &&
+			propsCorsAccesslist[0] !== null &&
+			propsCorsAccesslist[0] !== '*'
 		) {
-			cors_options.origin = (origin, callback) => {
-				return callback(null, props_cors_accesslist.indexOf(origin) !== -1);
+			corsOptions.origin = (origin, callback) => {
+				return callback(null, propsCorsAccesslist.indexOf(origin) !== -1);
 			};
 		}
 	}
-	return cors_options;
+	return corsOptions;
 }
 
 /**

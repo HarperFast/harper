@@ -1,22 +1,22 @@
 #!/usr/bin/env node
 'use strict';
 
-require('./dev');
+require('./dev.js');
 
-const run_clone = process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL');
-if (run_clone) {
-	const env_mgr = require('../utility/environment/environmentManager');
-	env_mgr.setCloneVar(true);
+const runClone = process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL');
+if (runClone) {
+	const envMgr = require('../utility/environment/environmentManager.js');
+	envMgr.setCloneVar(true);
 }
 
 const fs = require('node:fs');
 const path = require('node:path');
-const logger = require('../utility/logging/harper_logger');
-const cli_operations = require('./cliOperations');
-const { packageJson, PACKAGE_ROOT } = require('../utility/packageUtils');
-const check_node = require('../launchServiceScripts/utility/checkNodeVersion');
-const hdb_terms = require('../utility/hdbTerms');
-const { SERVICE_ACTIONS_ENUM } = hdb_terms;
+const logger = require('../utility/logging/harper_logger.js');
+const cliOperations = require('./cliOperations.js');
+const { packageJson, PACKAGE_ROOT } = require('../utility/packageUtils.js');
+const checkNode = require('../launchServiceScripts/utility/checkNodeVersion.js');
+const hdbTerms = require('../utility/hdbTerms.ts');
+const { SERVICE_ACTIONS_ENUM } = hdbTerms;
 
 const HELP = `
 Usage: harperdb [command]
@@ -43,16 +43,16 @@ version                         - Print the version
 `;
 
 async function harperdb() {
-	let node_results = check_node();
+	let nodeResults = checkNode();
 
-	if (node_results) {
-		if (node_results.error) {
-			console.error(node_results.error);
-			logger.error(node_results.error);
+	if (nodeResults) {
+		if (nodeResults.error) {
+			console.error(nodeResults.error);
+			logger.error(nodeResults.error);
 			return;
-		} else if (node_results.warn) {
-			console.warn(node_results.warn);
-			logger.warn(node_results.warn);
+		} else if (nodeResults.warn) {
+			console.warn(nodeResults.warn);
+			logger.warn(nodeResults.warn);
 		}
 	}
 
@@ -67,69 +67,69 @@ async function harperdb() {
 		service = process.argv[2].toLowerCase();
 	}
 
-	const cli_api_op = cli_operations.buildRequest();
-	if (cli_api_op.operation) service = SERVICE_ACTIONS_ENUM.OPERATION;
+	const cliApiOp = cliOperations.buildRequest();
+	if (cliApiOp.operation) service = SERVICE_ACTIONS_ENUM.OPERATION;
 
 	switch (service) {
 		case SERVICE_ACTIONS_ENUM.OPERATION:
-			logger.trace('calling cli operations with:', cli_api_op);
-			return cli_operations.cliOperations(cli_api_op);
+			logger.trace('calling cli operations with:', cliApiOp);
+			return cliOperations.cliOperations(cliApiOp);
 		case SERVICE_ACTIONS_ENUM.START:
-			return run_clone ? require('../utility/cloneNode/cloneNode')(true) : require('./run').launch();
+			return runClone ? require('../utility/cloneNode/cloneNode.js')(true) : require('./run.js').launch();
 		case SERVICE_ACTIONS_ENUM.INSTALL:
-			return require('./install')();
+			return require('./install.js')();
 		case SERVICE_ACTIONS_ENUM.REGISTER:
-			return require('./register').register();
+			return require('./register.js').register();
 		case SERVICE_ACTIONS_ENUM.STOP:
-			return require('./stop')().then(() => {
+			return require('./stop.js')().then(() => {
 				process.exit(0);
 			});
 		case SERVICE_ACTIONS_ENUM.RESTART:
-			return require('./restart').restart({});
+			return require('./restart.js').restart({});
 		case SERVICE_ACTIONS_ENUM.VERSION:
 			return packageJson.version;
 		case SERVICE_ACTIONS_ENUM.UPGRADE:
-			logger.setLogLevel(hdb_terms.LOG_LEVELS.INFO);
+			logger.setLogLevel(hdbTerms.LOG_LEVELS.INFO);
 			// The require is here to better control the flow of imports when this module is called.
-			return require('./upgrade')
+			return require('./upgrade.js')
 				.upgrade(null)
 				.then(() => 'Your instance of HarperDB is up to date!');
 		case SERVICE_ACTIONS_ENUM.STATUS:
-			return require('./status')();
+			return require('./status.js')();
 		case SERVICE_ACTIONS_ENUM.RENEWCERTS:
-			return require('../security/keys')
+			return require('../security/keys.js')
 				.renewSelfSigned()
 				.then(() => 'Successfully renewed self-signed certificates');
 		case SERVICE_ACTIONS_ENUM.COPYDB: {
-			let source_db = process.argv[3];
-			let target_db_path = process.argv[4];
-			return require('./copyDb').copyDb(source_db, target_db_path);
+			let sourceDb = process.argv[3];
+			let targetDbPath = process.argv[4];
+			return require('./copyDb.ts').copyDb(sourceDb, targetDbPath);
 		}
 		case SERVICE_ACTIONS_ENUM.DEV:
 			process.env.DEV_MODE = true;
 		// fall through
 		case SERVICE_ACTIONS_ENUM.RUN: {
 			// Run a specific application folder
-			let app_folder = process.argv[3];
-			if (app_folder && app_folder[0] !== '-') {
-				if (!fs.existsSync(app_folder)) {
-					throw new Error(`The folder ${app_folder} does not exist`);
+			let appFolder = process.argv[3];
+			if (appFolder && appFolder[0] !== '-') {
+				if (!fs.existsSync(appFolder)) {
+					throw new Error(`The folder ${appFolder} does not exist`);
 				}
-				if (!fs.statSync(app_folder).isDirectory()) {
-					throw new Error(`The path ${app_folder} is not a folder`);
+				if (!fs.statSync(appFolder).isDirectory()) {
+					throw new Error(`The path ${appFolder} is not a folder`);
 				}
-				app_folder = fs.realpathSync(app_folder);
-				if (fs.existsSync(path.join(app_folder, hdb_terms.HDB_CONFIG_FILE))) {
+				appFolder = fs.realpathSync(appFolder);
+				if (fs.existsSync(path.join(appFolder, hdbTerms.HDB_CONFIG_FILE))) {
 					// This can be used to run HDB without a boot file
-					process.env.ROOTPATH = app_folder;
+					process.env.ROOTPATH = appFolder;
 				} else {
-					process.env.RUN_HDB_APP = app_folder;
+					process.env.RUN_HDB_APP = appFolder;
 				}
 			}
 		}
 		// fall through
 		case undefined: // run harperdb in the foreground in standard mode
-			return run_clone ? require('../utility/cloneNode/cloneNode')() : require('./run').main();
+			return runClone ? require('../utility/cloneNode/cloneNode.js')() : require('./run.js').main();
 		// eslint-disable-next-line sonarjs/prefer-default-last
 		default:
 			console.warn(`The "${service}" command is not understood.`);

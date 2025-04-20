@@ -1,11 +1,11 @@
-import { table } from '../resources/databases';
-import { keyArrayToString, resources } from '../resources/Resources';
-import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
-import { warn, trace } from '../utility/logging/harper_logger';
-import { transaction } from '../resources/transaction';
-import { getWorkerIndex } from '../server/threads/manageThreads';
-import { when_components_loaded } from '../server/threads/threadServer';
-import { server } from '../server/Server';
+import { table } from '../resources/databases.ts';
+import { keyArrayToString, resources } from '../resources/Resources.ts';
+import { getNextMonotonicTime } from '../utility/lmdb/commonUtility.js';
+import { warn, trace } from '../utility/logging/harper_logger.js';
+import { transaction } from '../resources/transaction.ts';
+import { getWorkerIndex } from '../server/threads/manageThreads.js';
+import { whenComponentsLoaded } from '../server/threads/threadServer.js';
+import { server } from '../server/Server.ts';
 
 const AWAITING_ACKS_HIGH_WATER_MARK = 100;
 const DurableSession = table({
@@ -36,7 +36,7 @@ const LastWill = table({
 });
 if (getWorkerIndex() === 0) {
 	(async () => {
-		await when_components_loaded;
+		await whenComponentsLoaded;
 		await new Promise((resolve) => setTimeout(resolve, 2000));
 		for await (const will of LastWill.search({})) {
 			const data = will.data;
@@ -74,14 +74,14 @@ if (getWorkerIndex() === 0) {
  * place for being able to query for the log of changes/messages on each of the subscribed records of interest. We do
  * this by querying the audit log, but we will need to ensure the audit log is enabled on any tables/records that receive
  * subscriptions.
- * @param session_id
+ * @param sessionId
  * @param user
- * @param non_durable
+ * @param nonDurable
  */
 export async function getSession({
-	clientId: session_id,
+	clientId: sessionId,
 	user,
-	clean: non_durable,
+	clean: nonDurable,
 	will,
 	keepalive,
 }: {
@@ -93,20 +93,20 @@ export async function getSession({
 	keepalive?: number;
 }) {
 	let session;
-	if (session_id && !non_durable) {
-		const session_resource = await DurableSession.get(session_id, { returnNonexistent: true });
-		session = new DurableSubscriptionsSession(session_id, user, session_resource);
-		if (session_resource) session.sessionWasPresent = true;
+	if (sessionId && !nonDurable) {
+		const sessionResource = await DurableSession.get(sessionId, { returnNonexistent: true });
+		session = new DurableSubscriptionsSession(sessionId, user, sessionResource);
+		if (sessionResource) session.sessionWasPresent = true;
 	} else {
-		if (session_id) {
+		if (sessionId) {
 			// connecting with a clean session and session id is how durable sessions are deleted
-			const session_resource = await DurableSession.get(session_id);
-			if (session_resource) session_resource.delete();
+			const sessionResource = await DurableSession.get(sessionId);
+			if (sessionResource) sessionResource.delete();
 		}
-		session = new SubscriptionsSession(session_id, user);
+		session = new SubscriptionsSession(sessionId, user);
 	}
 	if (will) {
-		will.id = session_id;
+		will.id = sessionId;
 		will.user = { username: user?.username };
 		LastWill.put(will);
 	}
@@ -119,12 +119,12 @@ export async function getSession({
 	}
 	return session;
 }
-let next_message_id = 1;
+let nextMessageId = 1;
 function getNextMessageId() {
-	next_message_id++;
+	nextMessageId++;
 	// MQTT only supports 16-bit message ids, so must roll over before getting beyond 16-bit ids.
-	if (next_message_id > 65500) next_message_id = 1;
-	return next_message_id;
+	if (nextMessageId > 65500) nextMessageId = 1;
+	return nextMessageId;
 }
 type Acknowledgement = {
 	topic?: string;
@@ -143,46 +143,46 @@ class SubscriptionsSession {
 	sessionWasPresent: boolean;
 	keepalive: number;
 	keepaliveTimer: any;
-	constructor(session_id, user) {
-		this.sessionId = session_id;
+	constructor(sessionId, user) {
+		this.sessionId = sessionId;
 		this.user = user;
 	}
-	async addSubscription(subscription_request, needs_ack, filter?) {
-		const { topic, rh: retain_handling, startTime: start_time } = subscription_request;
-		const search_index = topic.indexOf('?');
+	async addSubscription(subscriptionRequest, needsAck, filter?) {
+		const { topic, rh: retainHandling, startTime: startTime } = subscriptionRequest;
+		const searchIndex = topic.indexOf('?');
 		let search, path;
-		if (search_index > -1) {
-			search = topic.slice(search_index);
-			path = topic.slice(0, search_index);
+		if (searchIndex > -1) {
+			search = topic.slice(searchIndex);
+			path = topic.slice(0, searchIndex);
 		} else path = topic;
 		if (!path) throw new Error('No topic provided');
 		if (path.indexOf('.') > -1) throw new Error('Dots are not allowed in topic names');
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
-		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
-		let omit_current;
-		if (existing_subscription) {
-			omit_current = retain_handling > 0;
-			existing_subscription.end();
-			this.subscriptions.splice(this.subscriptions.indexOf(existing_subscription), 1);
+		const existingSubscription = this.subscriptions.find((subscription) => subscription.topic === topic);
+		let omitCurrent;
+		if (existingSubscription) {
+			omitCurrent = retainHandling > 0;
+			existingSubscription.end();
+			this.subscriptions.splice(this.subscriptions.indexOf(existingSubscription), 1);
 		} else {
-			omit_current = retain_handling === 2;
+			omitCurrent = retainHandling === 2;
 		}
 		const request = {
 			search,
 			async: true,
 			user: this.user,
-			startTime: start_time,
-			omitCurrent: omit_current,
+			startTime,
+			omitCurrent,
 			url: '',
 		};
-		if (start_time) trace('Resuming subscription from', topic, 'from', start_time);
+		if (startTime) trace('Resuming subscription from', topic, 'from', startTime);
 		const entry = resources.getMatch(path, 'mqtt');
 		if (!entry) {
-			const not_found_error = new Error(
+			const notFoundError = new Error(
 				`The topic ${topic} does not exist, no resource has been defined to handle this topic`
 			);
-			not_found_error.statusCode = 404;
-			throw not_found_error;
+			notFoundError.statusCode = 404;
+			throw notFoundError;
 		}
 		request.url = entry.relativeURL;
 		if (request.url.indexOf('+') > -1 || request.url.indexOf('#') > -1) {
@@ -198,52 +198,52 @@ class SubscriptionsSession {
 				request.url = '/' + path.slice(0, path.length - 1);
 			} else {
 				// otherwise we have a potentially complex wildcard, so we will need to filter out any that are not direct children or matching the pattern
-				const matching_path = path.split('/');
-				let needs_filter;
-				for (let i = 0; i < matching_path.length; i++) {
-					if (matching_path[i].indexOf('+') > -1) {
-						if (matching_path[i] === '+') needs_filter = true;
+				const matchingPath = path.split('/');
+				let needsFilter;
+				for (let i = 0; i < matchingPath.length; i++) {
+					if (matchingPath[i].indexOf('+') > -1) {
+						if (matchingPath[i] === '+') needsFilter = true;
 						else throw new Error('Single-level wildcards can only be used as a topic level (between or after slashes)');
 					}
 				}
-				if (filter && needs_filter) throw new Error('Filters can not be combined');
+				if (filter && needsFilter) throw new Error('Filters can not be combined');
 
-				let must_match_length = true;
-				if (matching_path[matching_path.length - 1] === '#') {
+				let mustMatchLength = true;
+				if (matchingPath[matchingPath.length - 1] === '#') {
 					// only for any extra topic levels beyond the matching path
-					matching_path.length--;
-					must_match_length = false;
+					matchingPath.length--;
+					mustMatchLength = false;
 				}
-				if (needs_filter) {
+				if (needsFilter) {
 					filter = (update) => {
-						let update_path = update.id;
-						if (!Array.isArray(update_path)) {
-							if (update_path?.indexOf?.('/') > -1) {
+						let updatePath = update.id;
+						if (!Array.isArray(updatePath)) {
+							if (updatePath?.indexOf?.('/') > -1) {
 								// if it is a string with slashes, we can split it into an array
-								update_path = update_path.split('/');
+								updatePath = updatePath.split('/');
 							} else {
 								return false;
 							}
 						}
-						if (must_match_length && update_path.length !== matching_path.length) return false;
-						for (let i = 0; i < matching_path.length; i++) {
-							if (matching_path[i] !== '+' && matching_path[i] !== update_path[i]) return false;
+						if (mustMatchLength && updatePath.length !== matchingPath.length) return false;
+						for (let i = 0; i < matchingPath.length; i++) {
+							if (matchingPath[i] !== '+' && matchingPath[i] !== updatePath[i]) return false;
 						}
 						return true;
 					};
 				}
-				const first_wildcard = matching_path.indexOf('+');
+				const firstWildcard = matchingPath.indexOf('+');
 				request.url =
-					'/' + (first_wildcard > -1 ? matching_path.slice(0, first_wildcard) : matching_path).concat('').join('/');
+					'/' + (firstWildcard > -1 ? matchingPath.slice(0, firstWildcard) : matchingPath).concat('').join('/');
 			}
 		}
 
-		const resource_path = entry.path;
+		const resourcePath = entry.path;
 		const resource = entry.Resource;
 		const subscription = await transaction(request, async () => {
 			const context = this.createContext();
 			context.topic = topic;
-			context.retainHandling = retain_handling;
+			context.retainHandling = retainHandling;
 			const subscription = await resource.subscribe(request, context);
 			if (!subscription) {
 				return; // if no subscription, nothing to return
@@ -253,7 +253,7 @@ class SubscriptionsSession {
 			const result = (async () => {
 				for await (const update of subscription) {
 					try {
-						let message_id;
+						let messageId;
 						if (
 							update.type &&
 							update.type !== 'put' &&
@@ -263,23 +263,23 @@ class SubscriptionsSession {
 						)
 							continue;
 						if (filter && !filter(update)) continue;
-						if (needs_ack) {
+						if (needsAck) {
 							update.topic = topic;
-							message_id = this.needsAcknowledge(update);
+							messageId = this.needsAcknowledge(update);
 						} else {
 							// There is no ack to wait for. We can immediately notify any interested source
 							// that we have sent the message
 							update.acknowledge?.();
-							message_id = getNextMessageId();
+							messageId = getNextMessageId();
 						}
 						let path = update.id;
 						if (Array.isArray(path)) path = keyArrayToString(path);
 						if (path == null) path = '';
 						const result = await this.listener(
-							resource_path + '/' + path,
+							resourcePath + '/' + path,
 							update.value,
-							message_id,
-							subscription_request
+							messageId,
+							subscriptionRequest
 						);
 						if (result === false) break;
 						if (this.awaitingAcks?.size > AWAITING_ACKS_HIGH_WATER_MARK) {
@@ -297,7 +297,7 @@ class SubscriptionsSession {
 		});
 		if (!subscription) return;
 		subscription.topic = topic;
-		subscription.qos = subscription_request.qos;
+		subscription.qos = subscriptionRequest.qos;
 		this.subscriptions.push(subscription);
 		return subscription;
 	}
@@ -305,29 +305,29 @@ class SubscriptionsSession {
 		// nothing to do in a clean session
 	}
 	needsAcknowledge(update) {
-		const message_id = getNextMessageId();
+		const messageId = getNextMessageId();
 		if (update.acknowledge) {
 			// only need to track if the source wants acknowledgements
 			if (!this.awaitingAcks) this.awaitingAcks = new Map();
-			this.awaitingAcks.set(message_id, { acknowledge: update.acknowledge });
+			this.awaitingAcks.set(messageId, { acknowledge: update.acknowledge });
 		}
-		return message_id;
+		return messageId;
 	}
-	acknowledge(message_id) {
-		const acknowledgement = this.awaitingAcks?.get(message_id);
+	acknowledge(messageId) {
+		const acknowledgement = this.awaitingAcks?.get(messageId);
 		if (acknowledgement) {
-			this.awaitingAcks.delete(message_id);
+			this.awaitingAcks.delete(messageId);
 			acknowledgement.acknowledge();
 		}
 	}
 	async removeSubscription(topic) {
 		// might be faster to somehow modify existing subscription and re-get the retained record, but this should work for now
-		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
-		if (existing_subscription) {
+		const existingSubscription = this.subscriptions.find((subscription) => subscription.topic === topic);
+		if (existingSubscription) {
 			// end the subscription, cleanup
-			existing_subscription.end();
+			existingSubscription.end();
 			// remove from our list of subscriptions
-			this.subscriptions.splice(this.subscriptions.indexOf(existing_subscription), 1);
+			this.subscriptions.splice(this.subscriptions.indexOf(existingSubscription), 1);
 			return true;
 		}
 	}
@@ -335,7 +335,7 @@ class SubscriptionsSession {
 		// each publish gets it own context so that each publish gets it own transaction
 		return publish(message, data, this.createContext());
 	}
-	createContext() {
+	createContext(): any {
 		const context = {
 			session: this,
 			socket: this.socket,
@@ -352,12 +352,12 @@ class SubscriptionsSession {
 	setListener(listener: (message) => any) {
 		this.listener = listener;
 	}
-	disconnect(client_terminated) {
+	disconnect(clientTerminated) {
 		if (this.keepaliveTimer) clearTimeout(this.keepaliveTimer);
 		const context = this.createContext();
 		transaction(context, async () => {
 			try {
-				if (!client_terminated) {
+				if (!clientTerminated) {
 					const will = await LastWill.get(this.sessionId);
 					if (will?.doesExist()) {
 						await publish(will, will.data, context);
@@ -408,9 +408,9 @@ function publish(message, data, context) {
 }
 export class DurableSubscriptionsSession extends SubscriptionsSession {
 	sessionRecord: any;
-	constructor(session_id, user, record?) {
-		super(session_id, user);
-		this.sessionRecord = record || { id: session_id, subscriptions: [] };
+	constructor(sessionId, user, record?) {
+		super(sessionId, user);
+		this.sessionRecord = record || { id: sessionId, subscriptions: [] };
 	}
 	async resume() {
 		// resuming a session, we need to resume each subscription
@@ -426,29 +426,29 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 			);
 		}
 	}
-	resumeSubscription(subscription, needs_ack, filter?) {
-		return super.addSubscription(subscription, needs_ack, filter);
+	resumeSubscription(subscription, needsAck, filter?) {
+		return super.addSubscription(subscription, needsAck, filter);
 	}
 	needsAcknowledge(update) {
 		if (!this.awaitingAcks) this.awaitingAcks = new Map();
-		const message_id = getNextMessageId();
-		const ack_info: Acknowledgement = {
+		const messageId = getNextMessageId();
+		const ackInfo: Acknowledgement = {
 			topic: update.topic,
 			timestamp: update.localTime,
 		};
-		if (update.acknowledge) ack_info.acknowledge = update.acknowledge;
-		this.awaitingAcks.set(message_id, ack_info);
-		return message_id;
+		if (update.acknowledge) ackInfo.acknowledge = update.acknowledge;
+		this.awaitingAcks.set(messageId, ackInfo);
+		return messageId;
 	}
-	acknowledge(message_id) {
-		const update = this.awaitingAcks?.get(message_id);
+	acknowledge(messageId) {
+		const update = this.awaitingAcks?.get(messageId);
 		if (!update) return;
-		this.awaitingAcks?.delete(message_id);
+		this.awaitingAcks?.delete(messageId);
 		update.acknowledge?.();
 		const topic = update.topic;
-		for (const [, remaining_update] of this.awaitingAcks) {
-			if (remaining_update.topic === topic) {
-				if (remaining_update.timestamp < update.timestamp) {
+		for (const [, remainingUpdate] of this.awaitingAcks) {
+			if (remainingUpdate.topic === topic) {
+				if (remainingUpdate.timestamp < update.timestamp) {
 					// this is an out of order ack, so instead of updating the timestamp, we record as an out-of-order ack
 					for (const subscription of this.sessionRecord.subscriptions) {
 						if (subscription.topic === topic) {
@@ -474,27 +474,27 @@ export class DurableSubscriptionsSession extends SubscriptionsSession {
 		// TODO: Increment the timestamp for the corresponding subscription, possibly recording any interim unacked messages
 	}
 
-	async addSubscription(subscription, needs_ack) {
-		await this.resumeSubscription(subscription, needs_ack);
-		const { qos, startTime: start_time } = subscription;
-		if (qos > 0 && !start_time) this.saveSubscriptions();
+	async addSubscription(subscription, needsAck) {
+		await this.resumeSubscription(subscription, needsAck);
+		const { qos, startTime: startTime } = subscription;
+		if (qos > 0 && !startTime) this.saveSubscriptions();
 		return subscription.qos;
 	}
 	removeSubscription(topic) {
-		const existing_subscription = this.subscriptions.find((subscription) => subscription.topic === topic);
+		const existingSubscription = this.subscriptions.find((subscription) => subscription.topic === topic);
 		const result = super.removeSubscription(topic);
-		if (existing_subscription.qos > 0) this.saveSubscriptions();
+		if (existingSubscription.qos > 0) this.saveSubscriptions();
 		return result;
 	}
 	saveSubscriptions() {
 		this.sessionRecord.subscriptions = this.subscriptions.map((subscription) => {
-			let start_time = subscription.startTime;
-			if (!start_time) start_time = subscription.startTime = getNextMonotonicTime();
-			trace('Added durable subscription', subscription.topic, start_time);
+			let startTime = subscription.startTime;
+			if (!startTime) startTime = subscription.startTime = getNextMonotonicTime();
+			trace('Added durable subscription', subscription.topic, startTime);
 			return {
 				qos: subscription.qos,
 				topic: subscription.topic,
-				startTime: start_time,
+				startTime,
 			};
 		});
 		DurableSession.put(this.sessionRecord);

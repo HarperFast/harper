@@ -1,26 +1,26 @@
 'use strict';
 
-const search = require('./search');
-const global_schema = require('../utility/globalSchema');
-const logger = require('../utility/logging/harper_logger');
-const write = require('./insert');
-const transaction = require('./transaction');
+const search = require('./search.js');
+const globalSchema = require('../utility/globalSchema.js');
+const logger = require('../utility/logging/harper_logger.js');
+const write = require('./insert.js');
+const transaction = require('./transaction.js');
 const clone = require('clone');
 const alasql = require('alasql');
-const alasql_function_importer = require('../sqlTranslator/alasqlFunctionImporter');
+const alasqlFunctionImporter = require('../sqlTranslator/alasqlFunctionImporter.js');
 const util = require('util');
 
-const p_get_table_schema = util.promisify(global_schema.getTableSchema);
-const p_search = util.promisify(search.search);
+const pGetTableSchema = util.promisify(globalSchema.getTableSchema);
+const pSearch = util.promisify(search.search);
 
-const terms = require('../utility/hdbTerms');
-const hdb_utils = require('../utility/common_utils');
+const terms = require('../utility/hdbTerms.ts');
+const hdbUtils = require('../utility/common_utils.js');
 
 //here we call to define and import custom functions to alasql
-alasql_function_importer(alasql);
+alasqlFunctionImporter(alasql);
 
 module.exports = {
-	update: update,
+	update,
 };
 
 const SQL_UPDATE_ERROR_MSG = 'There was a problem performing this update. Please check the logs and try again.';
@@ -33,24 +33,24 @@ const SQL_UPDATE_ERROR_MSG = 'There was a problem performing this update. Please
  * @return
  */
 async function update({ statement, hdb_user }) {
-	let table_info = await p_get_table_schema(statement.table.databaseid, statement.table.tableid);
+	let tableInfo = await pGetTableSchema(statement.table.databaseid, statement.table.tableid);
 	let update_record = createUpdateRecord(statement.columns);
 
 	//convert this update statement to a SQL search capable statement
-	hdb_utils.backtickASTSchemaItems(statement);
+	hdbUtils.backtickASTSchemaItems(statement);
 	let { table: from, where } = statement;
-	let table_clone = clone(from);
+	let tableClone = clone(from);
 
-	let where_string = hdb_utils.isEmpty(where) ? '' : ` WHERE ${where.toString()}`;
+	let whereString = hdbUtils.isEmpty(where) ? '' : ` WHERE ${where.toString()}`;
 
-	let select_string = `SELECT ${table_info.hash_attribute} FROM ${from.toString()} ${where_string}`;
-	let search_statement = alasql.parse(select_string).statements[0];
-	//let result = await transaction.writeTransaction(table_info.schema, table_info.name, async () => {
-	let records = await p_search(search_statement);
-	let new_records = buildUpdateRecords(update_record, records);
-	return updateRecords(table_clone, new_records, hdb_user);
+	let selectString = `SELECT ${tableInfo.hash_attribute} FROM ${from.toString()} ${whereString}`;
+	let searchStatement = alasql.parse(selectString).statements[0];
+	//let result = await transaction.writeTransaction(tableInfo.schema, tableInfo.name, async () => {
+	let records = await pSearch(searchStatement);
+	let newRecords = buildUpdateRecords(update_record, records);
+	return updateRecords(tableClone, newRecords, hdb_user);
 	//});
-	//await write.flush({ schema: table_info.schema, table: table_info.name });
+	//await write.flush({ schema: tableInfo.schema, table: tableInfo.name });
 	//return result;
 }
 
@@ -87,7 +87,7 @@ function createUpdateRecord(columns) {
  * @return
  */
 function buildUpdateRecords(update_record, records) {
-	if (hdb_utils.isEmptyOrZeroLength(records)) {
+	if (hdbUtils.isEmptyOrZeroLength(records)) {
 		return [];
 	}
 
@@ -103,22 +103,22 @@ function buildUpdateRecords(update_record, records) {
  * @return
  */
 async function updateRecords(table, records, hdb_user) {
-	let update_object = {
+	let updateObject = {
 		operation: 'update',
 		schema: table.databaseid_orig,
 		table: table.tableid_orig,
-		records: records,
+		records,
 		hdb_user,
 	};
 
-	let res = await write.update(update_object);
+	let res = await write.update(updateObject);
 
 	try {
 		// We do not want the API returning the new attributes property.
 		delete res.new_attributes;
 		delete res.txn_time;
-	} catch (delete_err) {
-		logger.error(`Error delete new_attributes from update response: ${delete_err}`);
+	} catch (deleteErr) {
+		logger.error(`Error delete new_attributes from update response: ${deleteErr}`);
 	}
 
 	return res;

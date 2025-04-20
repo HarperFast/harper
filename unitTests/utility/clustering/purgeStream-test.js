@@ -21,7 +21,7 @@ describe('Test purgeStream module', () => {
 	before(() => {
 		check_clustering_enabled_stub = sandbox.stub(clustering_utils, 'checkClusteringEnabled').resolves();
 		purge_table_stream_stub = sandbox.stub(nats_utils, 'purgeTableStream').resolves();
-		purge_stream.__set__('purge_stream_validator', purge_stream_val_stub);
+		purge_stream.__set__('purgeStreamValidator', purge_stream_val_stub);
 	});
 
 	after(() => {

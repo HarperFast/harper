@@ -1,18 +1,18 @@
 'use strict';
 
-const terms = require('../../utility/hdbTerms');
-const hdb_util = require('../../utility/common_utils');
-const harper_logger = require('../../utility/logging/harper_logger');
-const { handleHDBError, hdb_errors } = require('../../utility/errors/hdbError');
+const terms = require('../../utility/hdbTerms.ts');
+const hdbUtil = require('../../utility/common_utils.js');
+const harperLogger = require('../../utility/logging/harper_logger.js');
+const { handleHDBError, hdbErrors } = require('../../utility/errors/hdbError.js');
 const { isMainThread } = require('worker_threads');
 const { Readable } = require('stream');
 
 const os = require('os');
 const util = require('util');
 
-const auth = require('../../security/fastifyAuth');
-const p_authorize = util.promisify(auth.authorize);
-const server_utilities = require('./serverUtilities');
+const auth = require('../../security/fastifyAuth.js');
+const pAuthorize = util.promisify(auth.authorize);
+const serverUtilities = require('./serverUtilities.ts');
 const { createGzip, constants } = require('zlib');
 
 const NO_AUTH_OPERATIONS = [
@@ -26,19 +26,19 @@ function handleServerUncaughtException(err) {
 		os.EOL
 	}Terminating ${isMainThread ? 'HDB' : 'thread'}.`;
 	console.error(message);
-	harper_logger.fatal(message);
+	harperLogger.fatal(message);
 	process.exit(1);
 }
 
 function serverErrorHandler(error, req, resp) {
-	harper_logger[error.logLevel || 'error'](error);
+	harperLogger[error.logLevel || 'error'](error);
 	if (error.statusCode) {
 		if (typeof error.http_resp_msg !== 'object') {
 			return resp.code(error.statusCode).send({ error: error.http_resp_msg || error.message });
 		}
 		return resp.code(error.statusCode).send(error.http_resp_msg);
 	}
-	const statusCode = error.statusCode ? error.statusCode : hdb_errors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
+	const statusCode = error.statusCode ? error.statusCode : hdbErrors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR;
 	if (typeof error === 'string') {
 		return resp.code(statusCode).send({ error: error });
 	}
@@ -47,16 +47,16 @@ function serverErrorHandler(error, req, resp) {
 
 function reqBodyValidationHandler(req, resp, done) {
 	if (!req.body || Object.keys(req.body).length === 0 || typeof req.body !== 'object') {
-		const validation_err = handleHDBError(new Error(), 'Invalid JSON.', hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST);
-		done(validation_err, null);
+		const validationErr = handleHDBError(new Error(), 'Invalid JSON.', hdbErrors.HTTP_STATUS_CODES.BAD_REQUEST);
+		done(validationErr, null);
 	}
-	if (hdb_util.isEmpty(req.body.operation)) {
-		const validation_err = handleHDBError(
+	if (hdbUtil.isEmpty(req.body.operation)) {
+		const validationErr = handleHDBError(
 			new Error(),
 			"Request body must include an 'operation' property.",
-			hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST
+			hdbErrors.HTTP_STATUS_CODES.BAD_REQUEST
 		);
-		done(validation_err, null);
+		done(validationErr, null);
 	}
 	done();
 }
@@ -72,17 +72,17 @@ function authHandler(req, resp, done) {
 			!req.body.username &&
 			!req.body.password)
 	) {
-		p_authorize(req, resp)
-			.then((user_data) => {
-				user = user_data;
+		pAuthorize(req, resp)
+			.then((userData) => {
+				user = userData;
 				req.body.hdb_user = user;
 				done();
 			})
 			.catch((err) => {
-				harper_logger.warn(err);
-				harper_logger.warn(`{"ip":"${req.socket.remoteAddress}", "error":"${err.stack}"`);
-				let err_msg = typeof err === 'string' ? { error: err } : { error: err.message };
-				done(handleHDBError(err, err_msg, hdb_errors.HTTP_STATUS_CODES.UNAUTHORIZED), null);
+				harperLogger.warn(err);
+				harperLogger.warn(`{"ip":"${req.socket.remoteAddress}", "error":"${err.stack}"`);
+				let errMsg = typeof err === 'string' ? { error: err } : { error: err.message };
+				done(handleHDBError(err, errMsg, hdbErrors.HTTP_STATUS_CODES.UNAUTHORIZED), null);
 			});
 	} else {
 		req.body.hdb_user = null;
@@ -93,15 +93,15 @@ function authHandler(req, resp, done) {
 	}
 }
 
-async function handlePostRequest(req, res, bypass_auth = false) {
+async function handlePostRequest(req, res, bypassAuth = false) {
 	let operation_function;
 
 	try {
 		// Just in case someone tries to bypass auth
 		if (req.body.bypass_auth) delete req.body.bypass_auth;
 
-		operation_function = server_utilities.chooseOperation(req.body);
-		let result = await server_utilities.processLocalTransaction(req, operation_function);
+		operation_function = serverUtilities.chooseOperation(req.body);
+		let result = await serverUtilities.processLocalTransaction(req, operation_function);
 		if (result instanceof Readable && result.headers) {
 			for (let [name, value] of result.headers) {
 				res.header(name, value);
@@ -115,7 +115,7 @@ async function handlePostRequest(req, res, bypass_auth = false) {
 		}
 		return result;
 	} catch (error) {
-		harper_logger.error(error);
+		harperLogger.error(error);
 		throw error;
 	}
 }

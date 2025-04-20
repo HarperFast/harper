@@ -1,13 +1,13 @@
 'use strict';
 
-const env_mgr = require('../utility/environment/environmentManager');
-env_mgr.initSync();
-const terms = require('../utility/hdbTerms');
-const { httpRequest } = require('../utility/common_utils');
+const envMgr = require('../utility/environment/environmentManager.js');
+envMgr.initSync();
+const terms = require('../utility/hdbTerms.ts');
+const { httpRequest } = require('../utility/common_utils.js');
 const path = require('path');
 const fs = require('fs-extra');
 const YAML = require('yaml');
-const { packageDirectory } = require('../components/packageComponent');
+const { packageDirectory } = require('../components/packageComponent.ts');
 const { encode } = require('cbor-x');
 
 const SUPPORTED_OPS = [
@@ -87,10 +87,10 @@ const PREPARE_OPERATION = {
 			return;
 		}
 
-		const project_path = process.cwd();
-		req.payload = await packageDirectory(project_path, { skip_node_modules: true, ...req });
+		const projectPath = process.cwd();
+		req.payload = await packageDirectory(projectPath, { skip_node_modules: true, ...req });
 		req.cborEncode = true;
-		if (!req.project) req.project = path.basename(project_path);
+		if (!req.project) req.project = path.basename(projectPath);
 	},
 };
 
@@ -151,12 +151,12 @@ async function cliOperations(req) {
 			rejectUnauthorized: req.rejectUnauthorized,
 		};
 	} else {
-		if (!fs.existsSync(path.join(env_mgr.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE))) {
+		if (!fs.existsSync(path.join(envMgr.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE))) {
 			console.error('HarperDB must be running to perform this operation');
 			process.exit();
 		}
 
-		if (!fs.existsSync(env_mgr.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET))) {
+		if (!fs.existsSync(envMgr.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET))) {
 			console.error('No domain socket found, unable to perform this operation');
 			process.exit();
 		}
@@ -165,7 +165,7 @@ async function cliOperations(req) {
 	try {
 		let options = target ?? {
 			protocol: 'http:',
-			socketPath: env_mgr.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET),
+			socketPath: envMgr.get(terms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_DOMAINSOCKET),
 		};
 		options.method = 'POST';
 		options.headers = { 'Content-Type': 'application/json' };
@@ -195,14 +195,14 @@ async function cliOperations(req) {
 			console.log(YAML.stringify(responseData).trim());
 		}
 	} catch (err) {
-		let err_msg = 'Error: ';
+		let errMsg = 'Error: ';
 		if (err?.response?.data?.error) {
-			err_msg += err.response.data.error;
+			errMsg += err.response.data.error;
 		} else if (err?.response?.data) {
-			err_msg += err?.response?.data;
+			errMsg += err?.response?.data;
 		} else {
 			return console.error(err);
 		}
-		console.error(err_msg);
+		console.error(errMsg);
 	}
 }

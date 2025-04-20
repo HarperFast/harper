@@ -51,7 +51,7 @@ describe('test mount_hdb module', () => {
 		create_table_stub = sandbox.stub(bridge, 'createTable');
 		mount_hdb.__set__('mkdirpSync', mk_dirp_sync_stub);
 		mount_hdb.__set__('copySync', sandbox.stub());
-		mount_hdb.__set__('system_schema', test_system_schema);
+		mount_hdb.__set__('systemSchema', test_system_schema);
 	});
 
 	after(() => {

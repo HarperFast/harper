@@ -12,8 +12,8 @@ const serverHandlers_rw = rewire('../../../server/serverHelpers/serverHandlers')
 const auth = require('../../../security/fastifyAuth');
 const serverUtilities = require('../../../server/serverHelpers/serverUtilities');
 const logger = require('../../../utility/logging/harper_logger');
-const { handleHDBError, hdb_errors } = require('../../../utility/errors/hdbError');
-const { HTTP_STATUS_CODES } = hdb_errors;
+const { handleHDBError, hdbErrors } = require('../../../utility/errors/hdbError');
+const { HTTP_STATUS_CODES } = hdbErrors;
 
 let console_stub;
 let process_exit_stub;
@@ -286,7 +286,7 @@ describe('Test serverHandlers.js module ', () => {
 
 		before(() => {
 			auth_stub = sandbox.stub().resolves(TEST_USER);
-			serverHandlers_rw.__set__('p_authorize', auth_stub);
+			serverHandlers_rw.__set__('pAuthorize', auth_stub);
 		});
 
 		it('Should pass auth for valid nominal request', () => {

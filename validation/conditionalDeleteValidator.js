@@ -1,22 +1,22 @@
-const validator = require('./validationWrapper');
-const { common_validators } = require('./common_validators');
+const validator = require('./validationWrapper.js');
+const { commonValidators } = require('./common_validators.js');
 
 const constraints = {
 	schema: {
 		presence: true,
-		format: common_validators.schema_format,
-		length: common_validators.schema_length,
+		format: commonValidators.schema_format,
+		length: commonValidators.schema_length,
 	},
 	table: {
 		presence: true,
-		format: common_validators.schema_format,
-		length: common_validators.schema_length,
+		format: commonValidators.schema_format,
+		length: commonValidators.schema_length,
 	},
 	conditions: {
 		presence: true,
 	},
 };
 
-module.exports = function (delete_object) {
-	return validator.validateObject(delete_object, constraints);
+module.exports = function (deleteObject) {
+	return validator.validateObject(deleteObject, constraints);
 };
