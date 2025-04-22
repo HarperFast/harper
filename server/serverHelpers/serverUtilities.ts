@@ -493,5 +493,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		new OperationFunctionObject(customFunctionOperations.getSSHKnownHosts)
 	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_ANALYTICS, new OperationFunctionObject(analytics.getOp));
+	opFuncMap.set(terms.OPERATIONS_ENUM.LIST_METRICS, new OperationFunctionObject(analytics.listMetricsOp));
+	opFuncMap.set(terms.OPERATIONS_ENUM.DESCRIBE_METRIC, new OperationFunctionObject(analytics.describeMetricOp));
 	return opFuncMap;
 }
