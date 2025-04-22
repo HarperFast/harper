@@ -31,14 +31,6 @@ export function getOp(req: GetAnalyticsRequest): Promise<GetAnalyticsResponse> {
 	return get(req.metric, req.get_attributes, req.start_time, req.end_time);
 }
 
-async function asyncIterMap<T>(items: AsyncIterable<T>, mapFn: (item: T) => Promise<T>): Promise<T[]> {
-	const promises: Promise<T>[] = [];
-	for await (const item of items) {
-		promises.push(mapFn(item));
-	}
-	return await Promise.all(promises);
-}
-
 export async function get(metric: string, getAttributes?: string[], startTime?: number, endTime?: number): Promise<Metric[]> {
 	const conditions: Conditions = [{ attribute: 'metric', comparator: 'equals', value: metric }];
 	const select = getAttributes ?? ['*'];
@@ -67,7 +59,7 @@ export async function get(metric: string, getAttributes?: string[], startTime?: 
 	log.trace?.("get_analytics hdb_analytics.search request:", request);
 	const searchResults = await databases.system.hdb_analytics.search(request);
 
-	return asyncIterMap(searchResults, async (result) => {
+	return searchResults.map(async (result: Metric) => {
 		// remove nodeId from 'id' attr and resolve it to the actual hostname and
 		// add back in as 'node' attr if selected
 		const nodeId = result.id[1];
