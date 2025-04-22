@@ -52,9 +52,9 @@ describe('9. Transactions', () => {
 		await setTimeout(1000);
 	});
 
-	it('Insert additional new records', async () => {
+	it('Insert additional new records',  () => {
 		testData.insert_timestamp = new Date().getTime();
-		await req()
+		return req()
 			.send({
 				operation: 'insert',
 				schema: 'test_delete_before',
@@ -171,7 +171,7 @@ describe('9. Transactions', () => {
 		await setTimeout(100);
 	});
 
-	it('Delete some records', async () => {
+	it('Delete some records',  async() => {
 		await req()
 			.send({ operation: 'delete', schema: 'test_delete_before', table: 'test_read', hash_values: [3, 1] })
 			.expect((r) => assert.equal(r.body.deleted_hashes.length, 2, r.text))
@@ -192,7 +192,7 @@ describe('9. Transactions', () => {
 		await setTimeout(100);
 	});
 
-	it('Upsert records', async () => {
+	it('Upsert records',  async() => {
 		await req()
 			.send({
 				operation: 'upsert',

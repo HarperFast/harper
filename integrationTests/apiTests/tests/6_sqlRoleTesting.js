@@ -8,8 +8,8 @@ describe('6. SQL Role Testing', () => {
 
 	//SQL Role Testing Folder
 
-	it('SQL Add non SU role', async () => {
-		await req()
+	it('SQL Add non SU role',  () => {
+		return req()
 			.send({
 				operation: 'add_role',
 				role: 'developer_test_5',
@@ -141,8 +141,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Add User with new Role', async () => {
-		await req()
+	it('SQL Add User with new Role',  () => {
+		return req()
 			.send({
 				operation: 'add_user',
 				role: 'developer_test_5',
@@ -154,8 +154,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Add user that already exists', async () => {
-		await req()
+	it('Add user that already exists',  () => {
+		return req()
 			.send({
 				operation: 'add_user',
 				role: 'developer_test_5',
@@ -167,8 +167,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(409);
 	});
 
-	it('Add user bad role name', async () => {
-		await req()
+	it('Add user bad role name',  () => {
+		return req()
 			.send({
 				operation: 'add_user',
 				role: 'developer_test 5',
@@ -180,8 +180,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(400);
 	});
 
-	it('get user info', async () => {
-		await req()
+	it('get user info',  () => {
+		return req()
 			.send({ operation: 'list_users' })
 			.expect((r) => {
 				for (let user of r.body) {
@@ -193,15 +193,15 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('try to set bad role to user', async () => {
-		await req()
+	it('try to set bad role to user',  () => {
+		return req()
 			.send({ operation: 'alter_user', role: 'blahblah', username: 'test_user' })
 			.expect((r) => assert.equal(r.body.error, "Update failed.  Requested 'blahblah' role not found.", r.text))
 			.expect(404);
 	});
 
-	it('get user info make sure role was not changed', async () => {
-		await req()
+	it('get user info make sure role was not changed',  () => {
+		return req()
 			.send({ operation: 'list_users' })
 			.expect((r) => {
 				for (let user of r.body) {
@@ -213,8 +213,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to read suppliers table as SU', async () => {
-		await req()
+	it('SQL Try to read suppliers table as SU',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select *
@@ -223,8 +223,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to read FULLY restricted suppliers table as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('SQL Try to read FULLY restricted suppliers table as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: `select *
@@ -239,8 +239,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('SQL Try to read region table as SU', async () => {
-		await req()
+	it('SQL Try to read region table as SU',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select *
@@ -249,8 +249,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to read region table as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('SQL Try to read region table as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: `select *
@@ -268,8 +268,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to insert into region table as SU', async () => {
-		await req()
+	it('SQL Try to insert into region table as SU',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "insert into northnwd.region (regionid, regiondescription) values ('16', 'test description')",
@@ -277,8 +277,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to insert into restricted region table as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('SQL Try to insert into restricted region table as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: "insert into northnwd.region (regionid, regiondescription) values ('17', 'test description')",
@@ -295,8 +295,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('SQL Try to insert into territories table as SU', async () => {
-		await req()
+	it('SQL Try to insert into territories table as SU',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "insert into northnwd.territories (regionid, territoryid, territorydescription) values ('1', '65', 'Im a test')",
@@ -304,8 +304,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to insert into territories table with restricted attribute as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('SQL Try to insert into territories table with restricted attribute as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: "insert into northnwd.territories (regionid, territoryid, territorydescription) values ('1', '65', 'Im a test')",
@@ -319,8 +319,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('SQL Try to insert into territories table with allowed attributes as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('SQL Try to insert into territories table with allowed attributes as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: "insert into northnwd.territories (territoryid, territorydescription) values (165, 'Im a test')",
@@ -330,8 +330,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to update territories table as SU', async () => {
-		await req()
+	it('SQL Try to update territories table as SU',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "update northnwd.territories set territorydescription = 'update test' where territoryid = 65",
@@ -339,8 +339,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to update restricted territories table as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('SQL Try to update restricted territories table as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: "update northnwd.territories set territorydescription = 'update test' where territoryid = 65",
@@ -357,8 +357,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('SQL Try to update categories table as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('SQL Try to update categories table as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: "update northnwd.categories set description = 'update test' where categoryid = 2",
@@ -366,8 +366,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to update restricted attr in categories table as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('SQL Try to update restricted attr in categories table as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: "update northnwd.categories set description = 'update test', picture = 'test picture' where categoryid = 2",
@@ -381,14 +381,14 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('SQL Try to delete from categories table as SU', async () => {
-		await req()
+	it('SQL Try to delete from categories table as SU',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'delete from northnwd.categories where categoryid = 2' })
 			.expect(200);
 	});
 
-	it('SQL Try to delete from restricted categories table as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('SQL Try to delete from restricted categories table as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({ operation: 'sql', sql: 'delete from northnwd.categories where categoryid = 2' })
 			.expect((r) => {
 				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
@@ -402,8 +402,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('SQL Try to read shippers table w/ FULLY restricted attributes as test_user - expect empty array', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('SQL Try to read shippers table w/ FULLY restricted attributes as test_user - expect empty array',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: `select *
@@ -413,8 +413,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to update shippers table restricted attribute as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('SQL Try to update shippers table restricted attribute as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: `update ${testData.schema}.${testData.ship_tb}
@@ -430,8 +430,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('SQL Try to insert into shippers table w/ FULLY restricted attributes as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('SQL Try to insert into shippers table w/ FULLY restricted attributes as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: "insert into northnwd.shippers (shipperid, companyname, phone) values ('1', 'bad update name', '(503) 555-9831')",
@@ -447,8 +447,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('SQL Try to insert categories table unrestricted attributes as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('SQL Try to insert categories table unrestricted attributes as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: "insert into northnwd.categories (categoryid, description) values ('9', 'Other food stuff')",
@@ -456,8 +456,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to read shippers table as test_user with restricted attribute in WHERE', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('SQL Try to read shippers table as test_user with restricted attribute in WHERE',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: `select shipperid
@@ -476,8 +476,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('Select with restricted CROSS SCHEMA JOIN as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('Select with restricted CROSS SCHEMA JOIN as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id',
@@ -492,8 +492,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('Select * with restricted CROSS SCHEMA JOIN as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('Select * with restricted CROSS SCHEMA JOIN as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.*, o.* FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id ORDER BY o.name, o.id LIMIT 5 OFFSET 1',
@@ -508,8 +508,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('Select restricted attrs in CROSS 3 SCHEMA JOINS as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('Select restricted attrs in CROSS 3 SCHEMA JOINS as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name, b.id, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id',
@@ -528,8 +528,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('Select with complex CROSS 3 SCHEMA JOINS as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('Select with complex CROSS 3 SCHEMA JOINS as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name, b.image FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name',
@@ -548,8 +548,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('Select * w/ two table CROSS SCHEMA JOIN on table with FULLY restricted attributes as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('Select * w/ two table CROSS SCHEMA JOIN on table with FULLY restricted attributes as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.*, o.* FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id ORDER BY o.name, o.id LIMIT 5 OFFSET 1',
@@ -564,8 +564,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('SQL ALTER non SU role', async () => {
-		await req()
+	it('SQL ALTER non SU role',  () => {
+		return req()
 			.send({
 				operation: 'alter_role',
 				role: 'developer_test_5',
@@ -698,8 +698,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Select two table CROSS SCHEMA JOIN as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('Select two table CROSS SCHEMA JOIN as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id',
@@ -723,8 +723,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Select * w/ two table CROSS SCHEMA JOIN as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('Select * w/ two table CROSS SCHEMA JOIN as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.*, o.* FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id ORDER BY o.name, o.id LIMIT 5 OFFSET 1',
@@ -756,8 +756,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Select w/ CROSS 3 SCHEMA JOINS as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('Select w/ CROSS 3 SCHEMA JOINS as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name, b.id, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id',
@@ -784,8 +784,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Select with complex CROSS 3 SCHEMA JOINS as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('Select with complex CROSS 3 SCHEMA JOINS as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name',
@@ -812,8 +812,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL ALTER non SU role with multi table join restrictions', async () => {
-		await req()
+	it('SQL ALTER non SU role with multi table join restrictions',  () => {
+		return req()
 			.send({
 				operation: 'alter_role',
 				role: 'developer_test_5',
@@ -872,8 +872,8 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Select with ALL RESTRICTED complex CROSS 3 SCHEMA JOINS as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('Select with ALL RESTRICTED complex CROSS 3 SCHEMA JOINS as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name, b.country FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name',
@@ -893,29 +893,29 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('SQL drop test user', async () => {
-		await req()
+	it('SQL drop test user',  () => {
+		return req()
 			.send({ operation: 'drop_user', username: 'test_user' })
 			.expect((r) => assert.equal(r.body.message, 'test_user successfully deleted', r.text))
 			.expect(200);
 	});
 
-	it('Drop non-existent user', async () => {
-		await req()
+	it('Drop non-existent user',  () => {
+		return req()
 			.send({ operation: 'drop_user', username: 'test_user' })
 			.expect((r) => assert.equal(r.body.error, 'User test_user does not exist', r.text))
 			.expect(404);
 	});
 
-	it('SQL drop_role', async () => {
-		await req()
+	it('SQL drop_role',  () => {
+		return req()
 			.send({ operation: 'drop_role', id: 'developer_test_5' })
 			.expect((r) => assert.equal(r.body.message, 'developer_test_5 successfully deleted', r.text))
 			.expect(200);
 	});
 
-	it('Drop non-existent role', async () => {
-		await req()
+	it('Drop non-existent role',  () => {
+		return req()
 			.send({ operation: 'drop_role', id: 'developer_test_5' })
 			.expect((r) => assert.equal(r.body.error, 'Role not found', r.text))
 			.expect(404);

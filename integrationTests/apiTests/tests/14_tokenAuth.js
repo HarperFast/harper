@@ -9,22 +9,21 @@ describe('14. Token Auth', () => {
 	//Token Auth Folder
 
 	it('Call create_authentication_tokens no username/pw', async () => {
-		await request(envUrl)
+		const r = await request(envUrl)
 			.post('')
 			.set({ 'Content-Type': 'application/json' })
 			.send({ operation: 'create_authentication_tokens' })
-			.expect(async (r) => {
-				if (await isDevEnv()) {
-					assert.equal(r.status, 200, r.text);
-				} else {
-					assert.equal(r.body['error'], 'Must login', r.text);
-					assert.equal(r.status, 401, r.text);
-				}
-			})
+
+		if (await isDevEnv()) {
+			assert.equal(r.status, 200, r.text);
+		} else {
+			assert.equal(r.body['error'], 'Must login', r.text);
+			assert.equal(r.status, 401, r.text);
+		}
 	});
 
-	it('Call create_authentication_tokens no pw', async () => {
-		await request(envUrl)
+	it('Call create_authentication_tokens no pw',  () => {
+		return request(envUrl)
 			.post('')
 			.set({ 'Content-Type': 'application/json' })
 			.send({ operation: 'create_authentication_tokens', username: `${testData.username}` })
@@ -32,8 +31,8 @@ describe('14. Token Auth', () => {
 			.expect(401);
 	});
 
-	it('Call create_authentication_tokens bad credentials', async () => {
-		await request(envUrl)
+	it('Call create_authentication_tokens bad credentials',  () => {
+		return request(envUrl)
 			.post('')
 			.set({ 'Content-Type': 'application/json' })
 			.send({
@@ -46,8 +45,8 @@ describe('14. Token Auth', () => {
 			.expect(401);
 	});
 
-	it('Call create_authentication_tokens happy path', async () => {
-		await request(envUrl)
+	it('Call create_authentication_tokens happy path',  () => {
+		return request(envUrl)
 			.post('')
 			.set({ 'Content-Type': 'application/json' })
 			.send({
@@ -66,8 +65,8 @@ describe('14. Token Auth', () => {
 			.expect(200);
 	});
 
-	it('test search_by_hash with valid jwt', async () => {
-		await request(envUrl)
+	it('test search_by_hash with valid jwt',  () => {
+		return request(envUrl)
 			.post('')
 			.set('Content-Type', 'application/json')
 			.set('Authorization', `Bearer ${testData.operation_token}`)
@@ -84,8 +83,8 @@ describe('14. Token Auth', () => {
 			.expect(200);
 	});
 
-	it('test search_by_hash with invalid jwt', async () => {
-		await request(envUrl)
+	it('test search_by_hash with invalid jwt',  () => {
+		return request(envUrl)
 			.post('')
 			.set('Content-Type', 'application/json')
 			.set('Authorization', 'Bearer BAD_TOKEN')
@@ -101,8 +100,8 @@ describe('14. Token Auth', () => {
 			.expect(401);
 	});
 
-	it('test refresh_operation_token with correct token', async () => {
-		await request(envUrl)
+	it('test refresh_operation_token with correct token',  () => {
+		return request(envUrl)
 			.post('')
 			.set('Content-Type', 'application/json')
 			.set('Authorization', `Bearer ${testData.refresh_token}`)
@@ -117,8 +116,8 @@ describe('14. Token Auth', () => {
 			.expect(200);
 	});
 
-	it('test refresh_operation_token with incorrect token', async () => {
-		await request(envUrl)
+	it('test refresh_operation_token with incorrect token',  () => {
+		return request(envUrl)
 			.post('')
 			.set('Content-Type', 'application/json')
 			.set('Authorization', 'Bearer bad token')
@@ -127,8 +126,8 @@ describe('14. Token Auth', () => {
 			.expect(401);
 	});
 
-	it('Create token with current user', async () => {
-		await req()
+	it('Create token with current user',  () => {
+		return req()
 			.send({ operation: 'create_authentication_tokens' })
 			.expect((r) => {
 				assert.notEqual(r.body.operation_token, undefined, r.text);

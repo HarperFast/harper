@@ -13,22 +13,22 @@ describe('12. Configuration', () => {
 
 	//Create_Attribute tests
 
-	it('Create table for tests', async () => {
-		await req()
+	it('Create table for tests',  () => {
+		return req()
 			.send({ operation: 'create_table', schema: 'dev', table: 'create_attr_test', hash_attribute: 'id' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 	});
 
-	it('Create Attribute for secondary indexing test', async () => {
-		await req()
+	it('Create Attribute for secondary indexing test',  () => {
+		return req()
 			.send({ operation: 'create_attribute', schema: 'dev', table: 'create_attr_test', attribute: 'owner_id' })
 			.expect((r) => assert.equal(r.body.message, "attribute 'dev.create_attr_test.owner_id' successfully created.", r.text))
 			.expect(200);
 	});
 
-	it('Insert data for secondary indexing test', async () => {
-		await req()
+	it('Insert data for secondary indexing test',  () => {
+		return req()
 			.send({
 				operation: 'insert',
 				schema: 'dev',
@@ -69,8 +69,8 @@ describe('12. Configuration', () => {
 			.expect(200);
 	});
 
-	it('Confirm attribute secondary indexing works', async () => {
-		await req()
+	it('Confirm attribute secondary indexing works',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'select * from dev.create_attr_test where owner_id = 1' })
 			.expect((r) => assert.equal(r.body.length, 3, r.text))
 			.expect(200);
@@ -79,15 +79,15 @@ describe('12. Configuration', () => {
 
 	//Configuration Main Folder
 
-	it('Describe table DropAttributeTest - attr not exist', async () => {
-		await req()
+	it('Describe table DropAttributeTest - attr not exist',  () => {
+		return req()
 			.send({ operation: 'describe_table', table: 'AttributeDropTest', schema: 'dev' })
 			.expect((r) => assert.ok(!r.body.another_attribute, r.text))
 			.expect(200);
 	});
 
-	it('Create Attribute', async () => {
-		await req()
+	it('Create Attribute',  () => {
+		return req()
 			.send({
 				operation: 'create_attribute',
 				schema: 'dev',
@@ -98,8 +98,8 @@ describe('12. Configuration', () => {
 			.expect(200);
 	});
 
-	it('Confirm created attribute', async () => {
-		await req()
+	it('Confirm created attribute',  () => {
+		return req()
 			.send({ operation: 'describe_table', table: 'AttributeDropTest', schema: 'dev' })
 			.expect((r) => {
 				let found = false;
@@ -126,8 +126,8 @@ describe('12. Configuration', () => {
 		await setTimeout(3000);
 	});
 
-	it('Drop Attribute - twice', async () => {
-		await req()
+	it('Drop Attribute - twice',  () => {
+		return req()
 			.send({
 				operation: 'drop_attribute',
 				schema: 'dev',
@@ -177,16 +177,16 @@ describe('12. Configuration', () => {
 			.expect(200);
 	});
 
-	it('Get Fingerprint', async () => {
-		await req()
+	it('Get Fingerprint',  () => {
+		return req()
 			.send({ operation: 'get_fingerprint' })
 			.expect((r) => assert.ok(r.body.hasOwnProperty('message'), r.text))
 			.expect((r) => assert.ok(r.body.message, r.text))
 			.expect(200);
 	});
 
-	it('Set License', async () => {
-		await req()
+	it('Set License',  () => {
+		return req()
 			.send({
 				operation: 'set_license',
 				key: 'uFFG7xAZG11ec9d335bfe27c4ec5555310bd4a27f',
@@ -196,8 +196,8 @@ describe('12. Configuration', () => {
 			.expect(500);
 	});
 
-	it('Get Registration Info', async () => {
-		await req()
+	it('Get Registration Info',  () => {
+		return req()
 			.send({ operation: 'registration_info' })
 			.expect((r) => {
 				assert.ok(r.body.hasOwnProperty('registered'), r.text);
@@ -208,15 +208,15 @@ describe('12. Configuration', () => {
 			.expect(200);
 	});
 
-	it('Set License Bad Key', async () => {
-		await req()
+	it('Set License Bad Key',  () => {
+		return req()
 			.send({ operation: 'set_license', key: '', company: 'harperdb.io' })
 			.expect((r) => assert.equal(r.body['error'], 'Invalid key or company specified for license file.', r.text))
 			.expect(500);
 	});
 
-	it('Get Configuration', async () => {
-		await req()
+	it('Get Configuration',  () => {
+		return req()
 			.send({ operation: 'get_configuration' })
 			.expect((r) => {
 				assert.ok(r.body.componentsRoot, r.text);
@@ -229,8 +229,8 @@ describe('12. Configuration', () => {
 			.expect(200);
 	});
 
-	it('Read log', async () => {
-		await req()
+	it('Read log',  () => {
+		return req()
 			.send({ operation: 'read_log' })
 			.expect((r) => {
 				assert.ok(Array.isArray(r.body), r.text);
@@ -241,8 +241,8 @@ describe('12. Configuration', () => {
 			.expect(200);
 	});
 
-	it('Set Configuration', async () => {
-		await req()
+	it('Set Configuration',  () => {
+		return req()
 			.send({ operation: 'set_configuration', logging_rotation_maxSize: '12M' })
 			.expect((r) =>
 				assert.equal(r.body.message, 'Configuration successfully set. You must restart HarperDB for new config settings to take effect.'
@@ -251,28 +251,28 @@ describe('12. Configuration', () => {
 			.expect(200);
 	});
 
-	it('Confirm Configuration', async () => {
-		await req()
+	it('Confirm Configuration',  () => {
+		return req()
 			.send({ operation: 'get_configuration' })
 			.expect((r) => assert.equal(r.body.logging.rotation.maxSize, '12M', r.text))
 			.expect(200);
 	});
 
-	it('Set Configuration Bad Data', async () => {
-		await req()
+	it('Set Configuration Bad Data',  () => {
+		return req()
 			.send({ operation: 'set_configuration', http_cors: 'spinach' })
 			.expect((r) => assert.equal(r.body.error, "HarperDB config file validation error: 'http.cors' must be a boolean", r.text))
 			.expect(400);
 	});
 
-	it('Add non-SU role', async () => {
-		await req()
+	it('Add non-SU role',  () => {
+		return req()
 			.send({ operation: 'add_role', role: 'test_dev_role', permission: { super_user: false } })
 			.expect(200);
 	});
 
-	it('Add User with non-SU role', async () => {
-		await req()
+	it('Add User with non-SU role',  () => {
+		return req()
 			.send({
 				operation: 'add_user',
 				role: 'test_dev_role',
@@ -283,8 +283,8 @@ describe('12. Configuration', () => {
 			.expect(200);
 	});
 
-	it('Get Configuration non-SU', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('Get Configuration non-SU',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({ operation: 'get_configuration' })
 			.expect((r) => {
 				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
@@ -294,22 +294,22 @@ describe('12. Configuration', () => {
 			.expect(403);
 	});
 
-	it('Drop test_user', async () => {
-		await req()
+	it('Drop test_user',  () => {
+		return req()
 			.send({ operation: 'drop_user', username: 'test_user' })
 			.expect((r) => assert.equal(r.body.message, 'test_user successfully deleted', r.text))
 			.expect(200);
 	});
 
-	it('Drop_role - non-SU role', async () => {
-		await req()
+	it('Drop_role - non-SU role',  () => {
+		return req()
 			.send({ operation: 'drop_role', id: 'test_dev_role' })
 			.expect((r) => assert.equal(r.body.message, 'test_dev_role successfully deleted', r.text))
 			.expect(200);
 	});
 
-	it('Test local studio HTML is returned', async () => {
-		await request(envUrl)
+	it('Test local studio HTML is returned',  () => {
+		return request(envUrl)
 			.get('')
 			.set(headers)
 			.set('content-type','text/html; charset=UTF-8')

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { req } from './request.js';
 
-export async function searchByHash(schemaName, tableName, hashAttribute, hashValues, getAttributes, expectedMessage) {
-    await req()
+ export function searchByHash(schemaName, tableName, hashAttribute, hashValues, getAttributes, expectedMessage) {
+    return req()
         .send({
             operation: 'search_by_hash',
             schema: schemaName,

@@ -18,8 +18,8 @@ describe('15. Custom Functions & components', () => {
 		await setTimeout(15000);
 	});
 
-	it('deploy_component using tar payload', async () => {
-		await req()
+	it('deploy_component using tar payload',  () => {
+		return req()
 			.send({
 				operation: 'deploy_component',
 				project: 'deploy-test-payload',
@@ -44,20 +44,20 @@ describe('15. Custom Functions & components', () => {
 		await setTimeout(30000);
 	});
 
-	it('call component tar payload', async () => {
-		await reqRest('/GreetingTar')
+	it('call component tar payload',  () => {
+		return reqRest('/GreetingTar')
 			.expect((r) => assert.equal(r.body.greeting, 'Hello world from a test for deploying a component with tar payload', r.text))
 			.expect(200);
 	});
 
-	it('call component tar.gz payload', async () => {
-		await reqRest('/GreetingTarGz')
+	it('call component tar.gz payload',  () => {
+		return reqRest('/GreetingTarGz')
 			.expect((r) => assert.equal(r.body.greeting, 'Hello world from deploy test payload tar gz', r.text))
 			.expect(200);
 	});
 
-	it('set_component_file', async () => {
-		await req()
+	it('set_component_file',  () => {
+		return req()
 			.send({
 				operation: 'set_component_file',
 				project: 'set-test',
@@ -69,30 +69,30 @@ describe('15. Custom Functions & components', () => {
 			.expect(200);
 	});
 
-	it('get_component_file', async () => {
-		await req()
+	it('get_component_file',  () => {
+		return req()
 			.send({ operation: 'get_component_file', project: 'set-test', file: 'utils/test.js', encoding: 'utf8' })
 			.expect((r) => assert.equal(r.body.message, 'I am from inside a JS file', r.text))
 			.expect(200);
 	});
 
-	it('add_component', async () => {
-		await req()
+	it('add_component',  () => {
+		return req()
 			.send({ operation: 'add_component', project: 'add-test' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully added project: add-test', r.text))
 			.expect(200);
 	});
 
-	it('package_component', async () => {
-		await req()
+	it('package_component',  () => {
+		return req()
 			.send({ operation: 'package_component', project: 'add-test' })
 			.expect((r) => assert.ok(r.body.hasOwnProperty('project'), r.text))
 			.expect((r) => assert.ok(r.body.hasOwnProperty('payload'), r.text))
 			.expect(200);
 	});
 
-	it('get_components', async () => {
-		await req()
+	it('get_components',  () => {
+		return req()
 			.send({ operation: 'get_components' })
 			.expect((r) => {
 				assert.equal(r.body.entries.length, 5, r.text);
@@ -114,15 +114,15 @@ describe('15. Custom Functions & components', () => {
 			.expect(200);
 	});
 
-	it('drop_component', async () => {
-		await req()
+	it('drop_component',  () => {
+		return req()
 			.send({ operation: 'drop_component', project: 'add-test' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully dropped: add-test', r.text))
 			.expect(200);
 	});
 
-	it('get_components after drop', async () => {
-		await req()
+	it('get_components after drop',  () => {
+		return req()
 			.send({ operation: 'get_components' })
 			.expect((r) => {
 				assert.equal(r.body.entries.length, 4, r.text);
@@ -140,36 +140,36 @@ describe('15. Custom Functions & components', () => {
 			.expect(200);
 	});
 
-	it('drop_component set-test', async () => {
-		await req()
+	it('drop_component set-test',  () => {
+		return req()
 			.send({ operation: 'drop_component', project: 'set-test' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully dropped: set-test', r.text))
 			.expect(200);
 	});
 
-	it('add custom function project', async () => {
-		await req()
+	it('add custom function project',  () => {
+		return req()
 			.send({ operation: 'add_custom_function_project', project: 'test_project' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully added project: test_project', r.text))
 			.expect(200);
 	});
 
-	it('get custom function status', async () => {
-		await req()
+	it('get custom function status',  () => {
+		return req()
 			.send({ operation: 'custom_functions_status' })
 			.expect((r) => assert.ok(r.body.hasOwnProperty('port'), r.text))
 			.expect((r) => assert.ok(r.body.hasOwnProperty('directory'), r.text))
 			.expect(200);
 	});
 
-	it('call custom function', async () => {
-		await reqRest('/Greeting')
+	it('call custom function',  () => {
+		return reqRest('/Greeting')
 			.expect((r) => assert.ok(r.body.hasOwnProperty('greeting'), r.text))
 			.expect(200);
 	});
 
-	it('set custom function', async () => {
-		await req()
+	it('set custom function',  () => {
+		return req()
 			.send({
 				operation: 'set_custom_function',
 				project: 'test_project',
@@ -181,42 +181,42 @@ describe('15. Custom Functions & components', () => {
 			.expect(200);
 	});
 
-	it('get custom function', async () => {
-		await req()
+	it('get custom function',  () => {
+		return req()
 			.send({ operation: 'get_custom_function', project: 'test_project', type: 'routes', file: 'test2' })
 			.expect((r) => assert.equal(r.body.message, 'hello world', r.text))
 			.expect(200);
 	});
 
-	it('drop custom function', async () => {
-		await req()
+	it('drop custom function',  () => {
+		return req()
 			.send({ operation: 'drop_custom_function', project: 'test_project', type: 'routes', file: 'test2' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully deleted custom function: test2.js', r.text))
 			.expect(200);
 	});
 
-	it('confirm function was dropped', async () => {
-		await req()
+	it('confirm function was dropped',  () => {
+		return req()
 			.send({ operation: 'get_custom_function', project: 'test_project', type: 'routes', file: 'test2' })
 			.expect((r) => assert.equal(r.body.error, 'File does not exist', r.text))
 			.expect(400);
 	});
 
-	it('get custom functions', async () => {
-		await req()
+	it('get custom functions',  () => {
+		return req()
 			.send({ operation: 'get_custom_functions' })
 			.expect((r) => assert.ok(r.body.hasOwnProperty('test_project'), r.text))
 			.expect(200);
 	});
 
-	it('drop custom functions project', async () => {
-		await req()
+	it('drop custom functions project',  () => {
+		return req()
 			.send({ operation: 'drop_custom_function_project', project: 'test_project' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully deleted project: test_project', r.text))
 			.expect(200);
 	});
 
-	it('confirm project was dropped', async () => {
+	it('confirm project was dropped',  () => {
 		const expected_obj = {
 			'deploy-test-gh': {
 				routes: [],
@@ -232,7 +232,7 @@ describe('15. Custom Functions & components', () => {
 			},
 		};
 
-		await req()
+		return req()
 			.send({ operation: 'get_custom_functions' })
 			.expect((r) => assert.deepEqual(r.body, expected_obj, r.text))
 			.expect(200);
@@ -252,8 +252,8 @@ describe('15. Custom Functions & components', () => {
 		await setTimeout(22000);
 	});
 
-	it('confirm deploy worked', async () => {
-		await req()
+	it('confirm deploy worked',  () => {
+		return req()
 			.send({ operation: 'get_custom_functions' })
 			.expect((r) => {
 				assert.ok(r.body.hasOwnProperty('test-deploy'), r.text);
@@ -265,36 +265,36 @@ describe('15. Custom Functions & components', () => {
 			.expect(200);
 	});
 
-	it('drop custom functions project deploy', async () => {
-		await req()
+	it('drop custom functions project deploy',  () => {
+		return req()
 			.send({ operation: 'drop_custom_function_project', project: 'test-deploy' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully deleted project: test-deploy', r.text))
 			.expect(200);
 	});
 
-	it('drop deploy-test-payload', async () => {
-		await req()
+	it('drop deploy-test-payload',  () => {
+		return req()
 			.send({ operation: 'drop_component', project: 'deploy-test-payload' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully dropped: deploy-test-payload', r.text))
 			.expect(200);
 	});
 
-	it('drop test-deploy from config', async () => {
-		await req()
+	it('drop test-deploy from config',  () => {
+		return req()
 			.send({ operation: 'drop_component', project: 'test-deploy' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully dropped: test-deploy', r.text))
 			.expect(200);
 	});
 
-	it('drop deploy-test-gh', async () => {
-		await req()
+	it('drop deploy-test-gh',  () => {
+		return req()
 			.send({ operation: 'drop_component', project: 'deploy-test-gh' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully dropped: deploy-test-gh', r.text))
 			.expect(200);
 	});
 
-	it('drop deploy-test-payload-tar-gz', async () => {
-		await req()
+	it('drop deploy-test-payload-tar-gz',  () => {
+		return req()
 			.send({ operation: 'drop_component', project: 'deploy-test-payload-tar-gz' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully dropped: deploy-test-payload-tar-gz', r.text))
 			.expect(200);

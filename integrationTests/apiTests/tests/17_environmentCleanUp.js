@@ -14,43 +14,43 @@ describe('17. Environment Clean Up', () => {
 		await setTimeout(1000);
 	});
 
-	it('VALIDATION Check Schema not found.', async () => {
-		await req()
+	it('VALIDATION Check Schema not found.',  () => {
+		return req()
 			.send({ operation: 'describe_all' })
 			.expect((r) => assert.ok(!r.body.hasOwnProperty('northnwd'), r.text))
 			.expect(200);
 	});
 
-	it('drop schema dev', async () => {
-		await req()
+	it('drop schema dev',  () => {
+		return req()
 			.send({ operation: 'drop_schema', schema: 'dev' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully delete'), r.text))
 			.expect(200);
 	});
 
-	it('drop schema other', async () => {
-		await req()
+	it('drop schema other',  () => {
+		return req()
 			.send({ operation: 'drop_schema', schema: 'other' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully delete'), r.text))
 			.expect(200);
 	});
 
-	it('drop schema another', async () => {
-		await req()
+	it('drop schema another',  () => {
+		return req()
 			.send({ operation: 'drop_schema', schema: 'another' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully delete'), r.text))
 			.expect(200);
 	});
 
-	it('drop schema call', async () => {
-		await req()
+	it('drop schema call',  () => {
+		return req()
 			.send({ operation: 'drop_schema', schema: 'call' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully delete'), r.text))
 			.expect(200);
 	});
 
-	it('drop schema test_delete_before (disabled)', async () => {
-		await req()
+	it('drop schema test_delete_before (disabled)',  () => {
+		return req()
 			.send({ operation: 'drop_schema', schema: 'test_delete_before' })
 			.expect(200);
 	});

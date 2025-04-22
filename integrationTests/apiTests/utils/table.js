@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { req } from './request.js';
 
-export async function createTable(databaseName, tableName, hashAttribute) {
-    await req()
+ export function createTable(databaseName, tableName, hashAttribute) {
+    return req()
         .send({
             operation: 'create_table',
             database: databaseName,
@@ -17,8 +17,8 @@ export async function createTable(databaseName, tableName, hashAttribute) {
         .expect(200)
 }
 
-export async function dropTable(schemaName, tableName, failTest) {
-    await req()
+ export function dropTable(schemaName, tableName, failTest) {
+    return req()
         .send({
             operation: 'drop_table',
             schema: schemaName,

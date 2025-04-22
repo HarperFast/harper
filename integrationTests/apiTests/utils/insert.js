@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { req } from './request.js';
 
-export async function insert(schemaName, tableName, records, expectedMessage) {
-    await req()
+ export function insert(schemaName, tableName, records, expectedMessage) {
+    return req()
         .send({
             operation: 'insert',
             schema: schemaName,

@@ -9,8 +9,8 @@ describe('3. SQL Tests', () => {
 
 	//Invalid Attribute Check
 
-	it('insert invalid attribute name - single row', async () => {
-		await req()
+	it('insert invalid attribute name - single row',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "INSERT INTO dev.invalid_attribute (id, `some/attribute`) VALUES ('1', 'some_attribute')",
@@ -19,8 +19,8 @@ describe('3. SQL Tests', () => {
 			.expect(400);
 	});
 
-	it('update single row w/ invalid attribute name', async () => {
-		await req()
+	it('update single row w/ invalid attribute name',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "UPDATE dev.invalid_attribute SET `some/attribute` = 'some attribute' WHERE id = 100",
@@ -29,8 +29,8 @@ describe('3. SQL Tests', () => {
 			.expect(400);
 	});
 
-	it('insert all invalid attribute names - multiple rows', async () => {
-		await req()
+	it('insert all invalid attribute names - multiple rows',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "INSERT INTO dev.invalid_attribute (id, `some/attribute1`, `some_/attribute2`, `some_attribute/3`) VALUES ('1', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('2', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('3', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('4', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('5', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('6', 'some_attribute', 'another_attribute', 'some_other_attribute')",
@@ -39,8 +39,8 @@ describe('3. SQL Tests', () => {
 			.expect(400);
 	});
 
-	it('update multiple rows with invalid attribute', async () => {
-		await req()
+	it('update multiple rows with invalid attribute',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "UPDATE dev.invalid_attribute SET `/some_attribute` = 'new_value' WHERE id IN(100, 101)",
@@ -49,8 +49,8 @@ describe('3. SQL Tests', () => {
 			.expect(400);
 	});
 
-	it('insert some invalid attribute names - multiple rows', async () => {
-		await req()
+	it('insert some invalid attribute names - multiple rows',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "INSERT INTO dev.invalid_attribute (id, some_attribute, another_attribute, `some_/other_attribute`) VALUES ('1', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('2', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('3', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('4', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('5', 'some_attribute', 'another_attribute', 'some_other_attribute'), ('6', 'some_attribute', 'another_attribute', 'some_other_attribute')",
@@ -61,8 +61,8 @@ describe('3. SQL Tests', () => {
 
 	//Search Response Data Type Check
 
-	it('select by hash no result', async () => {
-		await req()
+	it('select by hash no result',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `SELECT *
@@ -73,8 +73,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select by hash one result', async () => {
-		await req()
+	it('select by hash one result',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `SELECT *
@@ -86,8 +86,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select by hash multiple results', async () => {
-		await req()
+	it('select by hash multiple results',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `SELECT *
@@ -105,8 +105,8 @@ describe('3. SQL Tests', () => {
 
 	//Date Function Check
 
-	it('insert initial date function data into table', async () => {
-		await req()
+	it('insert initial date function data into table',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'INSERT INTO dev.time_functions (id, c_date, c_time, c_timestamp, getdate, now) VALUES (1, CURRENT_DATE(), CURRENT_TIME(), CURRENT_TIMESTAMP, GETDATE(), NOW()), (2, CURRENT_DATE(), CURRENT_TIME(), CURRENT_TIMESTAMP, GETDATE(), NOW()), (3, CURRENT_DATE(), CURRENT_TIME(), CURRENT_TIMESTAMP, GETDATE(), NOW()), (4, CURRENT_DATE(), CURRENT_TIME(), CURRENT_TIMESTAMP, GETDATE(), NOW())',
@@ -116,8 +116,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('check initial date function data in table', async () => {
-		await req()
+	it('check initial date function data in table',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.time_functions' })
 			.expect((r) => {
 				assert.equal(r.body.length, 4, r.text);
@@ -137,8 +137,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update w/ date function data to null in table', async () => {
-		await req()
+	it('update w/ date function data to null in table',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'UPDATE dev.time_functions SET c_date = null, c_time = null, c_timestamp = null, getdate = null, now = null',
@@ -148,12 +148,11 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('check data set to null in table', async () => {
-		await req()
+	it('check data set to null in table',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.time_functions' })
 			.expect((r) => {
 				assert.equal(r.body.length, 4, r.text);
-				let current_date = new Date().getDate();
 				r.body.forEach((row) => {
 					assert.ok([1, 2, 3, 4].includes(row.id), r.text);
 					assert.ok(!row.now, r.text);
@@ -166,8 +165,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update w/ new date function data in table', async () => {
-		await req()
+	it('update w/ new date function data in table',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'UPDATE dev.time_functions SET c_date = CURRENT_DATE(), c_time = CURRENT_TIME(), c_timestamp = CURRENT_TIMESTAMP, getdate = GETDATE(), now = NOW()',
@@ -177,8 +176,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('check data updated to correct date values in table', async () => {
-		await req()
+	it('check data updated to correct date values in table',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.time_functions' })
 			.expect((r) => {
 				assert.equal(r.body.length, 4, r.text);
@@ -198,8 +197,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update w/ other date functions', async () => {
-		await req()
+	it('update w/ other date functions',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "UPDATE dev.time_functions SET today = NOW(), add_day = DATE_ADD(CURRENT_TIMESTAMP, 1, 'days'), sub_3_years = DATE_SUB('2020-4-1', 3, 'years'), server_time = GET_SERVER_TIME(), offset_utc = OFFSET_UTC(NOW(), -6)",
@@ -209,8 +208,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('check other date function updates are correct in table', async () => {
-		await req()
+	it('check other date function updates are correct in table',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.time_functions' })
 			.expect((r) => {
 				assert.equal(r.body.length, 4, r.text);
@@ -231,8 +230,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update w/ other date functions', async () => {
-		await req()
+	it('update w/ other date functions',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "UPDATE dev.time_functions SET add_day = DATE_ADD(DATE(), 5, 'days'), tomorrow_epoch = DATE_FORMAT(DATE_ADD(NOW(), 1, 'days'), 'x') WHERE id > 2",
@@ -242,8 +241,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select with date function in WHERE returns correct rows', async () => {
-		await req()
+	it('select with date function in WHERE returns correct rows',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "SELECT * FROM dev.time_functions WHERE DATE_DIFF(add_day, c_timestamp, 'days') > 3 AND tomorrow_epoch > NOW()",
@@ -260,8 +259,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('delete with date function in WHERE deletes correct rows', async () => {
-		await req()
+	it('delete with date function in WHERE deletes correct rows',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "DELETE FROM dev.time_functions WHERE DATE_DIFF(add_day, c_timestamp, 'days') < 3",
@@ -271,8 +270,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('check that correct rows were deleted based on date function', async () => {
-		await req()
+	it('check that correct rows were deleted based on date function',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.time_functions' })
 			.expect((r) => {
 				assert.equal(r.body.length, 2, r.text);
@@ -286,8 +285,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('check that DATE(__createdtime__) returns correct value w/ correct alias', async () => {
-		await req()
+	it('check that DATE(__createdtime__) returns correct value w/ correct alias',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT id, DATE(__createdtime__), DATE(__updatedtime__) as updatedtime FROM dev.time_functions WHERE id = 3 OR id = 4',
@@ -316,8 +315,8 @@ describe('3. SQL Tests', () => {
 
 	//SEARCH_JSON calls
 
-	it('count movies where movie.keyword starts with super', async () => {
-		await req()
+	it('count movies where movie.keyword starts with super',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT count(*) AS `count` from dev.movie where search_json(\'$[$substring(name,0, 5) = "super"].name\', keywords) is not null',
@@ -327,8 +326,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('return array of just movie keywords', async () => {
-		await req()
+	it('return array of just movie keywords',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "SELECT title, search_json('name', keywords) as keywords from dev.movie where title Like '%Avengers%'",
@@ -343,8 +342,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('filter on credits.cast with join to movie', async () => {
-		await req()
+	it('filter on credits.cast with join to movie',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT m.title, m.overview, m.release_date, search_json(\'$[name in ["Robert Downey Jr.", "Chris Evans", "Scarlett Johansson", "Mark Ruffalo", "Chris Hemsworth", "Jeremy Renner", "Clark Gregg", "Samuel L. Jackson", "Gwyneth Paltrow", "Don Cheadle"]].{"actor": name, "character": character}\', c.`cast`) as characters from dev.credits c inner join dev.movie m on c.movie_id = m.id where search_json(\'$count($[name in ["Robert Downey Jr.", "Chris Evans", "Scarlett Johansson", "Mark Ruffalo", "Chris Hemsworth", "Jeremy Renner", "Clark Gregg", "Samuel L. Jackson", "Gwyneth Paltrow", "Don Cheadle"]])\', c.`cast`) >= 2',
@@ -377,8 +376,8 @@ describe('3. SQL Tests', () => {
 
 	//SQL INSERT/UPDATE with Expressions & Functions
 
-	it('insert values into table dev.sql_function', async () => {
-		await req()
+	it('insert values into table dev.sql_function',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "INSERT INTO dev.sql_function (id, rando, week_day) VALUES (1, FLOOR(RANDOM() * (10 - 1)) + 1, date_format(NOW(), 'dddd')), (2, FLOOR(RANDOM() * (10 - 1)) + 1, date_format(NOW(), 'dddd'))",
@@ -391,8 +390,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('SELECT inserted values FROM dev.sql_function', async () => {
-		await req()
+	it('SELECT inserted values FROM dev.sql_function',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.sql_function' })
 			.expect((r) => {
 				assert.equal(r.body.length, 2, r.text);
@@ -405,8 +404,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update values into table dev.sql_function', async () => {
-		await req()
+	it('update values into table dev.sql_function',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'UPDATE dev.sql_function SET rando = rando * 10, upper_week_day = UPPER(week_day)',
@@ -419,8 +418,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('SELECT updated values FROM dev.sql_function', async () => {
-		await req()
+	it('SELECT updated values FROM dev.sql_function',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.sql_function' })
 			.expect((r) => {
 				assert.equal(r.body.length, 2, r.text);
@@ -432,8 +431,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update value in table for non-existent row', async () => {
-		await req()
+	it('update value in table for non-existent row',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "UPDATE northnwd.customers SET companyname = 'Google' WHERE customerid = -100",
@@ -448,15 +447,15 @@ describe('3. SQL Tests', () => {
 
 	//Restricted Keywords
 
-	it('Create table keywords for SQL tests', async () => {
-		await req()
+	it('Create table keywords for SQL tests',  () => {
+		return req()
 			.send({ operation: 'create_table', schema: 'dev', table: 'keywords', hash_attribute: 'id' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 	});
 
-	it('Upsert keywords data for SQL tests', async () => {
-		await req()
+	it('Upsert keywords data for SQL tests',  () => {
+		return req()
 			.send({
 				operation: 'upsert',
 				schema: 'dev',
@@ -548,8 +547,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Delete row from table with reserverd word in WHERE clause', async () => {
-		await req()
+	it('Delete row from table with reserverd word in WHERE clause',  () => {
+		return req()
 			.send({ operation: 'sql', sql: "DELETE FROM dev.keywords WHERE `group` = 'D'" })
 			.expect((r) => {
 				assert.equal(r.body.message, '1 of 1 record successfully deleted', r.text);
@@ -560,8 +559,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Delete row from table with multiple reserverd words in WHERE clause', async () => {
-		await req()
+	it('Delete row from table with multiple reserverd words in WHERE clause',  () => {
+		return req()
 			.send({ operation: 'sql', sql: "DELETE FROM dev.keywords WHERE `group` = 'A' AND [Inserted] = true" })
 			.expect((r) => {
 				assert.equal(r.body.message, '2 of 2 records successfully deleted', r.text);
@@ -573,8 +572,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('UPDATE rows from table with reserved word in SET and WHERE clause', async () => {
-		await req()
+	it('UPDATE rows from table with reserved word in SET and WHERE clause',  () => {
+		return req()
 			.send({ operation: 'sql', sql: "UPDATE dev.keywords SET `group` = 'D' WHERE [ALL] = 'no'" })
 			.expect((r) => {
 				assert.equal(r.body.message, 'updated 4 of 4 records', r.text);
@@ -584,8 +583,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop table keywords', async () => {
-		await req()
+	it('Drop table keywords',  () => {
+		return req()
 			.send({ operation: 'drop_table', schema: 'dev', table: 'keywords' })
 			.expect((r) => assert.ok(r.body.message.includes("successfully deleted table 'dev.keywords'"), r.text))
 			.expect(200);
@@ -601,8 +600,8 @@ describe('3. SQL Tests', () => {
 		await setTimeout(200);
 	});
 
-	it('Insert data into dev.cat', async () => {
-		await req()
+	it('Insert data into dev.cat',  () => {
+		return req()
 			.send({
 				operation: 'insert',
 				schema: 'dev',
@@ -687,8 +686,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Update record basic where dev.cat', async () => {
-		await req()
+	it('Update record basic where dev.cat',  () => {
+		return req()
 			.send({ operation: 'sql', sql: "UPDATE dev.cat SET cat_name = 'Bobby' WHERE id = 9" })
 			.expect((r) =>
 				assert.equal(r.body.message, 'updated 1 of 1 records',
@@ -699,8 +698,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Confirm update record basic where dev.cat', async () => {
-		await req()
+	it('Confirm update record basic where dev.cat',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT cat_name, weight_lbs, age, id FROM dev.cat WHERE id = 9' })
 			.expect((r) => {
 				assert.equal(r.body[0].id, 9, r.text);
@@ -711,19 +710,19 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Update record "where x != y" dev.cat', async () => {
-		await req()
+	it('Update record "where x != y" dev.cat',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'UPDATE dev.cat SET adorable = false WHERE owner_id != 2' })
 			.expect((r) => assert.equal(r.body.message, 'updated 5 of 5 records', r.text))
 			.expect((r) => assert.ok([3, 4, 6, 7, 8].every((el) => r.body.update_hashes.includes(el)), r.text))
 			.expect(200);
 	});
 
-	it('Confirm update record "where x != y" dev.cat', async () => {
+	it('Confirm update record "where x != y" dev.cat',  () => {
 		const cats = ['Biggie Paws', 'Willow', 'Murph', 'Simba', 'Gemma'];
 		const ids = [3, 4, 6, 7, 8];
 
-		await req()
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT cat_name, adorable, id FROM dev.cat WHERE owner_id != 2' })
 			.expect((r) => assert.equal(r.body.length, 5, r.text))
 			.expect((r) => {
@@ -744,8 +743,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Update record No where dev.cat', async () => {
-		await req()
+	it('Update record No where dev.cat',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'UPDATE dev.cat SET adorable = true' })
 			.expect((r) => {
 				assert.equal(r.body.message, 'updated 9 of 9 records', r.text);
@@ -755,10 +754,10 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Confirm update record No where dev.cat', async () => {
+	it('Confirm update record No where dev.cat',  () => {
 		const cats = ['Sophie', 'George', 'Biggie Paws', 'Willow', 'Bird', 'Murph', 'Simba', 'Gemma', 'Bobby'];
 		const ids = [1, 2, 3, 4, 5, 6, 7, 8, 9];
-		await req()
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT cat_name, adorable, id FROM dev.cat' })
 			.expect((r) => assert.equal(r.body.length, 9, r.text))
 			.expect((r) => {
@@ -778,8 +777,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Update record multiple wheres, multiple columns dev.cat', async () => {
-		await req()
+	it('Update record multiple wheres, multiple columns dev.cat',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "UPDATE dev.cat SET outdoor_privilages = false, weight_lbs = 6 WHERE owner_id = 2 AND cat_name = 'Sophie'",
@@ -793,8 +792,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Confirm update record multiple wheres, multiple columns dev.cat', async () => {
-		await req()
+	it('Confirm update record multiple wheres, multiple columns dev.cat',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "SELECT cat_name, weight_lbs, owner_id, outdoor_privilages, id FROM dev.cat WHERE owner_id = 2 AND cat_name = 'Sophie'",
@@ -810,8 +809,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Update record "where x is NULL" dev.cat', async () => {
-		await req()
+	it('Update record "where x is NULL" dev.cat',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'UPDATE dev.cat SET outdoor_privilages = true WHERE outdoor_privilages IS null',
@@ -821,8 +820,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Confirm update record "where x is NULL" dev.cat', async () => {
-		await req()
+	it('Confirm update record "where x is NULL" dev.cat',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT cat_name, outdoor_privilages, id FROM dev.cat WHERE outdoor_privilages IS null',
@@ -831,23 +830,23 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Update record with nonexistant id dev.cat', async () => {
-		await req()
+	it('Update record with nonexistant id dev.cat',  () => {
+		return req()
 			.send({ operation: 'sql', sql: "UPDATE dev.cat SET cat_name = 'Garfield' WHERE id = 75" })
 			.expect((r) => assert.equal(r.body.message, 'updated 0 of 0 records', r.text))
 			.expect((r) => assert.deepEqual(r.body.update_hashes, [], r.text))
 			.expect(200);
 	});
 
-	it('Confirm update record with nonexistant id dev.cat', async () => {
-		await req()
+	it('Confirm update record with nonexistant id dev.cat',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT cat_name, weight_lbs, age FROM dev.cat WHERE id = 75' })
 			.expect((r) => assert.equal(r.body.length, 0, r.text))
 			.expect(200);
 	});
 
-	it('Drop table cat from dev.cat', async () => {
-		await req()
+	it('Drop table cat from dev.cat',  () => {
+		return req()
 			.send({ operation: 'drop_table', schema: 'dev', table: 'cat' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted table 'dev.cat'", r.text))
 			.expect(200);
@@ -855,15 +854,15 @@ describe('3. SQL Tests', () => {
 
 	//Geospatial
 
-	it('Create table "geo"', async () => {
-		await req()
+	it('Create table "geo"',  () => {
+		return req()
 			.send({ operation: 'create_table', table: 'geo', hash_attribute: 'id' })
 			.expect((r) => assert.equal(r.body.message, "table 'data.geo' successfully created.", r.text))
 			.expect(200);
 	});
 
-	it('Insert values into "geo" table', async () => {
-		await req()
+	it('Insert values into "geo" table',  () => {
+		return req()
 			.send(
 				'{\n   \n\t"operation":"insert",\n\t"table":"geo",\n\t"records": [\n        {\n            "id": 1,\n            "name": "Wellington",\n            "geo_point" : {\n                "type": "Point",\n                "coordinates": [174.776230, -41.286461]\n            },\n            "geo_poly": {\n                "type": "Polygon",\n                "coordinates": [[ [174.615474867904,-41.34148585702194],\n                    [174.8800567396483,-41.31574371071801],\n                    [174.6896944170223,-41.19759744824616],\n                    [174.615474867904,-41.34148585702194]\n                ]]\n            },\n            "geo_line": {\n                "type": "LineString",\n                "coordinates": [\n                    [174.615474867904,-41.34148585702194],\n                    [174.8800567396483,-41.31574371071801]\n                ]\n            }\n        },\n        {\n            "id": 2,\n            "name": "North Adams",\n            "geo_point" : {\n                "type": "Point",\n                "coordinates": [-73.108704, 42.700539]\n            },\n            "geo_poly": {\n                "type": "Polygon",\n                "coordinates": [[                  [-73.12391499193579,42.70656096680374],\n                    [-73.12255557219314,42.69646774251972],\n                    [-73.09908993001123,42.6984753377431],\n                    [-73.10369107948782,42.70876034407737],\n                    [-73.12391499193579,42.70656096680374]\n                ]]\n            }\n        },\n        {\n            "id": 3,\n            "name": "Denver",\n            "geo_point" : {\n                "type": "Point",\n                "coordinates": [-104.990250, 39.739235]\n            },\n            "geo_poly": {\n                "type": "Polygon",\n                "coordinates": [[          [-105.0487835030464,39.77676227285275],\n                    [-105.0175466672944,39.68744341857906],\n                    [-104.9113967289065,39.74637288224356],\n                    [-105.0487835030464,39.77676227285275]\n                ]]\n            }\n        },\n        {\n            "id": 4,\n            "name": "New York City",\n            "geo_point" : {\n                "type": "Point",\n                "coordinates": [-74.005974, 40.712776]\n            },\n            "geo_poly": {\n                "type": "Polygon",\n                "coordinates": [[             [-74.00852603549784,40.73107908806126],\n                    [-74.03702059033735,40.70472625054263],\n                    [-73.98786450714653,40.70419899758365],\n                    [-74.00852603549784,40.73107908806126]\n                ]]\n            }\n        },\n        {\n            "id": 5,\n            "name": "Salt Lake City",\n            "geo_point" : {\n                "type": "Point",\n                "coordinates": [-111.920485, 40.7766079]\n            },\n            "geo_poly": {\n                "type": "Polygon",\n                "coordinates": [[           [-112.8291507578281,40.88206673094385],\n                    [-112.8956858211181,40.30332102898777],\n                    [-111.6032172200158,40.02757615254776],\n                    [-111.1456265349256,40.95908300700454],\n                    [-111.9047878338339,41.3291504973315],\n                    [-112.8291507578281,40.88206673094385]\n                ]]\n            },\n            "geo_line": {\n                "type": "LineString",\n                "coordinates": [        [-112.8291507578281,40.88206673094385],\n                    [-112.8956858211181,40.30332102898777],\n                    [-111.6032172200158,40.02757615254776],\n                    [-111.1456265349256,40.95908300700454],\n                    [-111.9047878338339,41.3291504973315],\n                    [-112.8291507578281,40.88206673094385]\n                ]\n            }\n        },\n        {\n            "id": 6,\n            "name": "Null Island",\n            "geo_point" : {\n                "type": "Point",\n                "coordinates": [null, null]\n            },\n            "geo_poly": null,\n            "geo_line": {\n                "type": "LineString",\n                "coordinates": [\n                    [-112.8291507578281,40.88206673094385],\n                    [null, null]\n                ]\n            }\n        },\n        {\n            "id": 7\n        },\n        {\n            "id": 8,\n            "name": "Hobbiton",\n            "geo_point" : [174.776230, -41.286461],\n            "geo_poly": "Somewhere in the shire",\n            "geo_line": {\n                "type": "LineString"\n            }\n        }\n    ]\n}\n'
 			)
@@ -871,8 +870,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoArea test 1', async () => {
-		await req()
+	it('geoArea test 1',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT id, name, geoArea(geo_poly) as area FROM data.geo ORDER BY area ASC' })
 			.expect((r) =>
 				assert.deepEqual(r.body, [
@@ -918,8 +917,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoArea test 2', async () => {
-		await req()
+	it('geoArea test 2',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT id, name FROM data.geo where geoArea(geo_poly) > 53950986.64863106' })
 			.expect((r) =>
 				assert.deepEqual(r.body, [
@@ -936,8 +935,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoArea test 3', async () => {
-		await req()
+	it('geoArea test 3',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT geoArea(\'{"type":"Feature","geometry":{"type":"Polygon","coordinates":[[[0,0],[0.123456,0],[0.123456,0.123456],[0,0.123456]]]}}\')',
@@ -952,8 +951,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoLength test 1', async () => {
-		await req()
+	it('geoLength test 1',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT geoLength(\'{"type": "Feature","geometry": {"type": "LineString","coordinates": [[-104.97963309288025,39.76163265441438],[-104.9823260307312,39.76365323407955],[-104.99193906784058,39.75616442110704]]}}\')',
@@ -968,8 +967,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoLength test 2', async () => {
-		await req()
+	it('geoLength test 2',  () => {
+		return req()
 			.send({ operation: 'sql', sql: "SELECT id, name, geoLength(geo_line, 'miles') FROM data.geo" })
 			.expect((r) =>
 				assert.deepEqual(r.body, [
@@ -1013,8 +1012,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoLength test 3', async () => {
-		await req()
+	it('geoLength test 3',  () => {
+		return req()
 			.send({ operation: 'sql', sql: "SELECT id, name FROM data.geo WHERE geoLength(geo_line, 'miles') < 100" })
 			.expect((r) =>
 				assert.deepEqual(r.body, [
@@ -1027,8 +1026,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoDifference test 1', async () => {
-		await req()
+	it('geoDifference test 1',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT geoDifference(\'{"type": "Feature","properties": {"name":"Colorado"},"geometry": {"type": "Polygon","coordinates": [[[-109.072265625,37.00255267215955],[-102.01904296874999,37.00255267215955],[-102.01904296874999,41.0130657870063],[-109.072265625,41.0130657870063],[-109.072265625,37.00255267215955]]]}}\',\'{"type": "Feature","properties": {"name":"City Park"},"geometry": {"type": "Polygon","coordinates": [[[-104.95973110198975,39.7543828214657],[-104.95955944061278,39.744781185675386],[-104.95904445648193,39.74422022399989],[-104.95835781097412,39.74402223643582],[-104.94097709655762,39.74392324244047],[-104.9408483505249,39.75434982844515],[-104.95973110198975,39.7543828214657]]]}}\')',
@@ -1070,8 +1069,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoDifference test 2', async () => {
-		await req()
+	it('geoDifference test 2',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT geoDifference(\'{"type": "Feature","properties": {"name":"Colorado"},"geometry": {"type": "Polygon","coordinates": [[[-109.072265625,37.00255267215955],[-102.01904296874999,37.00255267215955],[-102.01904296874999,41.0130657870063],[-109.072265625,41.0130657870063],[-109.072265625,37.00255267215955]]]}}\', null)',
@@ -1080,8 +1079,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoDistance test 1', async () => {
-		await req()
+	it('geoDistance test 1',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "SELECT geoDistance('[-104.979127,39.761563]', '[-77.035248,38.889475]', 'miles')",
@@ -1096,8 +1095,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoDistance test 2', async () => {
-		await req()
+	it('geoDistance test 2',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "SELECT id, name, geoDistance('[-104.979127,39.761563]', geo_point, 'miles') as distance FROM data.geo WHERE geoDistance('[-104.979127,39.761563]', geo_point, 'kilometers') < 40 ORDER BY distance ASC",
@@ -1114,8 +1113,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoDistance test 3', async () => {
-		await req()
+	it('geoDistance test 3',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "SELECT id, name, geoDistance('[-104.979127,39.761563]', geo_point, 'miles') as distance FROM data.geo",
@@ -1166,8 +1165,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoNear test 1', async () => {
-		await req()
+	it('geoNear test 1',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "SELECT id, name FROM data.geo WHERE geoNear('[-104.979127,39.761563]', geo_point, 50, 'miles')",
@@ -1183,8 +1182,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoNear test 2', async () => {
-		await req()
+	it('geoNear test 2',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "SELECT id, name, geoDistance('[-104.979127,39.761563]', geo_point, 'miles') as distance FROM data.geo WHERE geoNear('[-104.979127,39.761563]', geo_point, 20, 'degrees') ORDER BY distance ASC",
@@ -1206,8 +1205,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoContains test 1', async () => {
-		await req()
+	it('geoContains test 1',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT id, name FROM data.geo WHERE geoContains(\'{"type": "Feature","properties": {"name":"Colorado"},"geometry": {"type": "Polygon","coordinates": [[[-109.072265625,37.00255267],[-102.01904296874999,37.00255267],[-102.01904296874999,41.01306579],[-109.072265625,41.01306579],[-109.072265625,37.00255267]]]}}\', geo_point)',
@@ -1223,8 +1222,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoContains test 2', async () => {
-		await req()
+	it('geoContains test 2',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT id, name FROM data.geo WHERE geoContains(geo_poly, \'{"type": "Feature","properties": {"name": "HarperDB Headquarters"},"geometry": {"type": "Polygon","coordinates": [[[-104.98060941696167,39.760704817357905],[-104.98053967952728,39.76065120861263],[-104.98055577278137,39.760642961109674],[-104.98037070035934,39.76049450588716],[-104.9802714586258,39.76056254790385],[-104.9805235862732,39.76076461167841],[-104.98060941696167,39.760704817357905]]]}}\')',
@@ -1240,8 +1239,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoEqual test 1', async () => {
-		await req()
+	it('geoEqual test 1',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT * FROM data.geo WHERE geoEqual(geo_poly, \'{"type": "Feature","properties": {"name": "HarperDB Headquarters"},"geometry": {"type": "Polygon","coordinates": [[[-104.98060941696167,39.760704817357905],[-104.98053967952728,39.76065120861263],[-104.98055577278137,39.760642961109674],[-104.98037070035934,39.76049450588716],[-104.9802714586258,39.76056254790385],[-104.9805235862732,39.76076461167841],[-104.98060941696167,39.760704817357905]]]}}\')',
@@ -1250,8 +1249,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoCrosses test 1', async () => {
-		await req()
+	it('geoCrosses test 1',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT id, name FROM data.geo WHERE geoCrosses(geo_poly,\'{"type": "Feature","properties": {"name": "Highway I-25"},"geometry": {"type": "LineString","coordinates": [[-104.9139404296875,41.00477542222947],[-105.0238037109375,39.715638134796336],[-104.853515625,39.53370327008705],[-104.853515625,38.81403111409755],[-104.61181640625,38.39764411353178],[-104.8974609375,37.68382032669382],[-104.501953125,37.00255267215955]]}}\')',
@@ -1260,8 +1259,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoConvert test 1', async () => {
-		await req()
+	it('geoConvert test 1',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "SELECT geoConvert('[-104.979127,39.761563]','point','{\"name\": \"HarperDB Headquarters\"}')",
@@ -1283,8 +1282,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop table "geo"', async () => {
-		await req()
+	it('Drop table "geo"',  () => {
+		return req()
 			.send({ operation: 'drop_table', schema: 'data', table: 'geo' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted table 'data.geo'", r.text))
 			.expect(200);
@@ -1292,8 +1291,8 @@ describe('3. SQL Tests', () => {
 
 	//SQL Tests Main Folder
 
-	it('insert value into table', async () => {
-		await req()
+	it('insert value into table',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "INSERT INTO northnwd.customers (customerid, postalcode, companyname) VALUES ('TEST3', 11385, 'Microsoft')",
@@ -1303,8 +1302,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('insert value into table confirm', async () => {
-		await req()
+	it('insert value into table confirm',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "SELECT customerid, postalcode, companyname FROM northnwd.customers WHERE customerid = 'TEST3'",
@@ -1317,8 +1316,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update value in table', async () => {
-		await req()
+	it('update value in table',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "UPDATE northnwd.customers SET companyname = 'Google' WHERE customerid = 'TEST3'",
@@ -1332,8 +1331,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update value in table confirm', async () => {
-		await req()
+	it('update value in table confirm',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "SELECT customerid, postalcode, companyname FROM northnwd.customers WHERE customerid = 'TEST3'",
@@ -1346,8 +1345,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('attempt to update __createdtime__ in table', async () => {
-		await req()
+	it('attempt to update __createdtime__ in table',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "UPDATE northnwd.customers SET __createdtime__ = 'bad value' WHERE customerid = 'TEST3'",
@@ -1361,22 +1360,22 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Confirm __createdtime__ did not get changed', async () => {
-		await req()
+	it('Confirm __createdtime__ did not get changed',  () => {
+		return req()
 			.send({ operation: 'sql', sql: "SELECT __createdtime__ FROM northnwd.customers WHERE customerid = 'TEST3'" })
 			.expect((r) => assert.notEqual(r.body[0].__createdtime__, 'bad value', r.text))
 			.expect(200);
 	});
 
-	it('delete value from table', async () => {
-		await req()
+	it('delete value from table',  () => {
+		return req()
 			.send({ operation: 'sql', sql: "DELETE FROM northnwd.customers WHERE customerid = 'TEST3'" })
 			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))
 			.expect(200);
 	});
 
-	it('delete value from table confirm', async () => {
-		await req()
+	it('delete value from table confirm',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "SELECT customerid, postalcode, companyname FROM northnwd.customers WHERE companyname = 'Microsoft'",
@@ -1385,8 +1384,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ where in numeric values as strings', async () => {
-		await req()
+	it('select w/ where in numeric values as strings',  () => {
+		return req()
 			.send({ operation: 'sql', sql: "select * from dev.books WHERE id IN('1','2','3') ORDER BY id" })
 			.expect((r) => assert.equal(r.body.length, 3, r.text))
 			.expect((r) => {
@@ -1397,8 +1396,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ where between', async () => {
-		await req()
+	it('select w/ where between',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'select * from dev.books WHERE id BETWEEN 1 AND 3 ORDER BY id' })
 			.expect((r) => assert.equal(r.body.length, 3, r.text))
 			.expect((r) => {
@@ -1409,8 +1408,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ where not between', async () => {
-		await req()
+	it('select w/ where not between',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'select * from dev.books WHERE id NOT BETWEEN 1 AND 3 ORDER BY id' })
 			.expect((r) => {
 				assert.equal(r.body.length, 47, r.text);
@@ -1421,8 +1420,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ where value equals 0', async () => {
-		await req()
+	it('select w/ where value equals 0',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'select * from dev.books WHERE books_count = 0 ' })
 			.expect((r) => assert.equal(r.body.length, 4, r.text))
 			.expect((r) => {
@@ -1433,8 +1432,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ where value equals "false"', async () => {
-		await req()
+	it('select w/ where value equals "false"',  () => {
+		return req()
 			.send({ operation: 'sql', sql: "select * from dev.books WHERE nytimes_best_seller = 'false' " })
 			.expect((r) => assert.equal(r.body.length, 25, r.text))
 			.expect((r) => {
@@ -1445,8 +1444,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select employees orderby id asc', async () => {
-		await req()
+	it('select employees orderby id asc',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select ${testData.emps_id}, *
@@ -1463,28 +1462,28 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select 2 + 2', async () => {
-		await req()
+	it('select 2 + 2',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'select 2 + 2 ' })
 			.expect((r) => assert.equal(r.body[0]['2 + 2'], 4, r.text))
 			.expect(200);
 	});
 
-	it('select * FROM orders - test no schema', async () => {
-		await req()
+	it('select * FROM orders - test no schema',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'select * FROM orders' })
 			.expect((r) => assert.equal(r.body.error, 'schema not defined for table orders', r.text))
 			.expect(500);
 	});
 
-	it('select * from call.aggr - reserved words', async () => {
-		await req()
+	it('select * from call.aggr - reserved words',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'select * from call.aggr' })
 			.expect(400);
 	});
 
-	it('select * from `call`.`aggr` - reserved words', async () => {
-		await req()
+	it('select * from `call`.`aggr` - reserved words',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'select age AS `alter`, * from `call`.`aggr` as `and` WHERE `all` > 3 ORDER BY `and`.`all` desc',
@@ -1493,8 +1492,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * from call.aggr where id = 11 - select dot & double dot', async () => {
-		await req()
+	it('select * from call.aggr where id = 11 - select dot & double dot',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'select * from `call`.`aggr` where `all` = 11' })
 			.expect((r) => {
 				assert.equal(r.body.length, 1, r.text);
@@ -1504,22 +1503,22 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * from invalid schema - expect fail', async () => {
-		await req()
+	it('select * from invalid schema - expect fail',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'select * from `braaah`.`aggr`' })
 			.expect((r) => assert.equal(r.body.error, "database 'braaah' does not exist", r.text))
 			.expect(404);
 	});
 
-	it('select * from invalid table - expect fail', async () => {
-		await req()
+	it('select * from invalid table - expect fail',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'select * from `call`.`braaaah`' })
 			.expect((r) => assert.equal(r.body.error, "Table 'call.braaaah' does not exist", r.text))
 			.expect(404);
 	});
 
-	it('select orders orderby id desc', async () => {
-		await req()
+	it('select orders orderby id desc',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select ${testData.ords_id}, *
@@ -1530,8 +1529,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select count(*) orders where shipregion is null', async () => {
-		await req()
+	it('select count(*) orders where shipregion is null',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select count(*) as \`count\`
@@ -1542,8 +1541,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select count(*) orders where shipregion is not null', async () => {
-		await req()
+	it('select count(*) orders where shipregion is not null',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select count(*) AS \`count\`
@@ -1554,8 +1553,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select most buyer orderby price asc', async () => {
-		await req()
+	it('select most buyer orderby price asc',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select a.${testData.ords_id},
@@ -1578,8 +1577,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select most buyer orderby price asc & companyname alias', async () => {
-		await req()
+	it('select most buyer orderby price asc & companyname alias',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select a.${testData.ords_id},
@@ -1602,8 +1601,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select most buyer orderby order_id asc & product_id desc', async () => {
-		await req()
+	it('select most buyer orderby order_id asc & product_id desc',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select a.${testData.ords_id} as ords_id,
@@ -1634,8 +1633,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select product orderby id asc', async () => {
-		await req()
+	it('select product orderby id asc',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select ${testData.prod_id}, *
@@ -1646,8 +1645,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select customers orderby id asc', async () => {
-		await req()
+	it('select customers orderby id asc',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select ${testData.cust_id}, *
@@ -1658,8 +1657,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select all details join 5 table where customername', async () => {
-		await req()
+	it('select all details join 5 table where customername',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select a.${testData.cust_id},
@@ -1686,8 +1685,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * with LEFT OUTER JOIN', async () => {
-		await req()
+	it('select * with LEFT OUTER JOIN',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.breed b LEFT JOIN dev.dog d ON b.id = d.breed_id' })
 			.expect((r) => assert.equal(r.body.length, 351, r.text))
 			.expect((r) => {
@@ -1702,8 +1701,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select specific columns with LEFT OUTER JOIN Copy', async () => {
-		await req()
+	it('select specific columns with LEFT OUTER JOIN Copy',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT b.name, b.id, d.* FROM dev.breed b LEFT JOIN dev.dog d ON b.id = d.breed_id',
@@ -1721,8 +1720,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select order details', async () => {
-		await req()
+	it('select order details',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select ${testData.ordd_id}, productid, unitprice, quantity, discount
@@ -1733,8 +1732,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select count groupby country', async () => {
-		await req()
+	it('select count groupby country',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select count(${testData.cust_id}) as counter, country
@@ -1746,8 +1745,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select most have the extension employees', async () => {
-		await req()
+	it('select most have the extension employees',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select extension, *
@@ -1758,8 +1757,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select top 10 most price of product', async () => {
-		await req()
+	it('select top 10 most price of product',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select categoryid, productname, quantityperunit, unitprice, *
@@ -1770,8 +1769,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select count min max avg sum price of products', async () => {
-		await req()
+	it('select count min max avg sum price of products',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select count(unitprice) as allproducts,
@@ -1785,8 +1784,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select round unit price using alias', async () => {
-		await req()
+	it('select round unit price using alias',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `SELECT ROUND(unitprice) AS Price
@@ -1800,8 +1799,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select where (like)and(<=>)', async () => {
-		await req()
+	it('select where (like)and(<=>)',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select *
@@ -1813,8 +1812,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select - where attr < comparator', async () => {
-		await req()
+	it('select - where attr < comparator',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select *
@@ -1829,8 +1828,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select - where attr <= comparator', async () => {
-		await req()
+	it('select - where attr <= comparator',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select *
@@ -1845,8 +1844,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select - where attr > comparator', async () => {
-		await req()
+	it('select - where attr > comparator',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select *
@@ -1861,8 +1860,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select - where attr >= comparator', async () => {
-		await req()
+	it('select - where attr >= comparator',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select *
@@ -1877,8 +1876,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select - where attr w/ multiple comparators', async () => {
-		await req()
+	it('select - where attr w/ multiple comparators',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select *
@@ -1895,8 +1894,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select - where w/ multiple attr comparators', async () => {
-		await req()
+	it('select - where w/ multiple attr comparators',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select *
@@ -1915,8 +1914,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select - where w/ multiple comparators for multiple attrs', async () => {
-		await req()
+	it('select - where w/ multiple comparators for multiple attrs',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select *
@@ -1935,8 +1934,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select - where w/ IN() and multiple of comparators for multiple attrs', async () => {
-		await req()
+	it('select - where w/ IN() and multiple of comparators for multiple attrs',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select *
@@ -1957,8 +1956,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update SQL employee', async () => {
-		await req()
+	it('update SQL employee',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `update ${testData.schema}.${testData.emps_tb}
@@ -1969,8 +1968,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select verify SQL update', async () => {
-		await req()
+	it('select verify SQL update',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select address
@@ -1981,8 +1980,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * dev.long_text', async () => {
-		await req()
+	it('select * dev.long_text',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'select * FROM dev.long_text' })
 			.expect((r) => assert.equal(r.body.length, 25, r.text))
 			.expect((r) => {
@@ -1993,8 +1992,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * dev.long_text regexp', async () => {
-		await req()
+	it('select * dev.long_text regexp',  () => {
+		return req()
 			.send({ operation: 'sql', sql: "select * FROM dev.long_text where remarks regexp 'dock'" })
 			.expect((r) => assert.equal(r.body.length, 3, r.text))
 			.expect((r) => {
@@ -2005,8 +2004,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update employee with falsey data', async () => {
-		await req()
+	it('update employee with falsey data',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `UPDATE ${testData.schema}.${testData.emps_tb}
@@ -2020,8 +2019,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select employee to confirm falsey update', async () => {
-		await req()
+	it('select employee to confirm falsey update',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `SELECT *
@@ -2037,8 +2036,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('setup for next test - insert array', async () => {
-		await req()
+	it('setup for next test - insert array',  () => {
+		return req()
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
@@ -2050,8 +2049,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select array from table', async () => {
-		await req()
+	it('select array from table',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select *
@@ -2063,8 +2062,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('setup for next test - insert object', async () => {
-		await req()
+	it('setup for next test - insert object',  () => {
+		return req()
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
@@ -2076,8 +2075,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select object from table', async () => {
-		await req()
+	it('select object from table',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select *
@@ -2089,8 +2088,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select without sql parameter', async () => {
-		await req()
+	it('select without sql parameter',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				slq: `select *
@@ -2100,8 +2099,8 @@ describe('3. SQL Tests', () => {
 			.expect(400);
 	});
 
-	it('select * dev.remarks_blob like w/ special chars pt1', async () => {
-		await req()
+	it('select * dev.remarks_blob like w/ special chars pt1',  () => {
+		return req()
 			.send({ operation: 'sql', sql: "select * FROM dev.remarks_blob where remarks like '%4 Bedroom/2.5+ bath%'" })
 			.expect((r) => assert.equal(r.body.length, 3, r.text))
 			.expect((r) => {
@@ -2118,8 +2117,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * dev.remarks_blob like w/ special chars pt2', async () => {
-		await req()
+	it('select * dev.remarks_blob like w/ special chars pt2',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "select * FROM dev.remarks_blob where remarks like 'This custom built dream home is stunningly gorgeous!  It is a 5+ acres luxury equestrian property with access to Jennings State Forest from your backyard, no need to trailer your horses anywhere for a beautifully scenic peaceful ride.%'",
@@ -2144,8 +2143,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * dev.remarks_blob like w/ special chars pt3', async () => {
-		await req()
+	it('select * dev.remarks_blob like w/ special chars pt3',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "select * FROM dev.remarks_blob where remarks like '%...GOURGEOUS HOME in a Heart of MANDARIN,Next to Loretto Magnet schoolClose to I-295, shopping & entertainment. Gated community! Loaded with upgrades:%'",
@@ -2170,8 +2169,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * dev.remarks_blob like w/ special chars pt4', async () => {
-		await req()
+	it('select * dev.remarks_blob like w/ special chars pt4',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: "select * FROM dev.remarks_blob where remarks like '**Spacious & updated 2-story home on large preserve lot nearly 1/2 acre! Concrete block constr. & desirable ICW location near JTB, shopping, dining & the beach! Great split BD flrpln w/soaring ceilings features 4BD + office, upstairs loft & 3 full BA.'",
@@ -2197,8 +2196,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * dev.remarks_blob like w/ special chars pt5', async () => {
-		await req()
+	it('select * dev.remarks_blob like w/ special chars pt5',  () => {
+		return req()
 			.send({ operation: 'sql', sql: "select * FROM dev.remarks_blob where remarks like '%'" })
 			.expect((r) => assert.equal(r.body.length, 11, r.text))
 			.expect((r) => {
@@ -2214,8 +2213,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * FROM schema.ords_tb LIMIT 100 OFFSET 0', async () => {
-		await req()
+	it('select * FROM schema.ords_tb LIMIT 100 OFFSET 0',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select *
@@ -2230,8 +2229,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * FROM schema.ords_tb LIMIT 100 OFFSET 0 Copy', async () => {
-		await req()
+	it('select * FROM schema.ords_tb LIMIT 100 OFFSET 0 Copy',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select *
@@ -2246,8 +2245,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select AVE(rating) w/ join, group by and order by (1 of 2)', async () => {
-		await req()
+	it('select AVE(rating) w/ join, group by and order by (1 of 2)',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'select b.authors as authors, AVG(r.rating) as rating from dev.ratings as r join dev.books as b on r.book_id = b.id group by b.authors order by rating desc',
@@ -2264,8 +2263,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select AVE(rating) w/ join, group by and order by (2 of 2)', async () => {
-		await req()
+	it('select AVE(rating) w/ join, group by and order by (2 of 2)',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'select b.id, b.authors as authors, AVG(r.rating) from dev.ratings as r join dev.books as b on r.book_id = b.id group by b.authors, b.id order by b.id',
@@ -2284,8 +2283,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select AVE(rating) w/ join and group by (1 of 2)', async () => {
-		await req()
+	it('select AVE(rating) w/ join and group by (1 of 2)',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'select b.id, b.authors as authors, AVG(r.rating) from dev.ratings as r join dev.books as b on r.book_id = b.id group by b.authors, b.id',
@@ -2298,8 +2297,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select AVE(rating) w/ join, gb, ob, and LIMIT', async () => {
-		await req()
+	it('select AVE(rating) w/ join, gb, ob, and LIMIT',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'select b.id as id, b.authors as authors, AVG(r.rating) as rating from dev.ratings as r join dev.books as b on r.book_id = b.id group by b.id, b.authors order by id limit 10',
@@ -2314,8 +2313,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select COUNT(rating) w/ join, gb, ob, limit, and OFFSET', async () => {
-		await req()
+	it('select COUNT(rating) w/ join, gb, ob, limit, and OFFSET',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'select b.authors as authors, COUNT(r.rating) as rating_count from dev.ratings as r join dev.books as b on r.book_id = b.id group by b.authors order by b.authors limit 15 offset 5',
@@ -2331,8 +2330,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ function alias in ORDER BY and LIMIT', async () => {
-		await req()
+	it('select w/ function alias in ORDER BY and LIMIT',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `select a.${testData.ords_id} as ords_id,
@@ -2360,8 +2359,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ inconsistent table refs & ORDER BY column not in SELECT', async () => {
-		await req()
+	it('select w/ inconsistent table refs & ORDER BY column not in SELECT',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `SELECT a.productid, a.unitprice as unitprice
@@ -2383,8 +2382,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ inconsistent table refs, ORDER BY column not in SELECT & LIMIT/OFFSET', async () => {
-		await req()
+	it('select w/ inconsistent table refs, ORDER BY column not in SELECT & LIMIT/OFFSET',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `SELECT productid, a.unitprice as unitprice
@@ -2407,8 +2406,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ inconsistent table refs & second ORDER BY column not included in SELECT', async () => {
-		await req()
+	it('select w/ inconsistent table refs & second ORDER BY column not included in SELECT',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `SELECT a.${testData.ords_id} as ords_id, a.unitprice as unitprice
@@ -2430,8 +2429,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ inconsistent table refs, second ORDER BY column not included in SELECT & LIMIT/OFFSETS', async () => {
-		await req()
+	it('select w/ inconsistent table refs, second ORDER BY column not included in SELECT & LIMIT/OFFSETS',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `SELECT a.${testData.ords_id} as ords_id, a.unitprice as unitprice
@@ -2454,8 +2453,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select * on 3 table INNER JOIN', async () => {
-		await req()
+	it('Select * on 3 table INNER JOIN',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT `d`.*, `b`.*, `o`.* FROM `dev`.`dog` AS `d` INNER JOIN `dev`.`breed` AS `b` ON `d`.`breed_id` = `b`.`id` INNER JOIN `dev`.`owner` AS `o` ON `d`.`owner_id` = `o`.`id` ORDER BY `dog_name`',
@@ -2478,8 +2477,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select with basic CROSS SCHEMA JOIN', async () => {
-		await req()
+	it('Select with basic CROSS SCHEMA JOIN',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id',
@@ -2502,8 +2501,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select with complex CROSS SCHEMA JOIN', async () => {
-		await req()
+	it('Select with complex CROSS SCHEMA JOIN',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.id, d.dog_name, d.age, d.adorable, o.* FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id ORDER BY o.name, o.id LIMIT 5 OFFSET 1',
@@ -2529,8 +2528,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select with basic CROSS 3 SCHEMA JOINS', async () => {
-		await req()
+	it('Select with basic CROSS 3 SCHEMA JOINS',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name, b.id, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id',
@@ -2557,8 +2556,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select with complex CROSS 3 SCHEMA JOINS', async () => {
-		await req()
+	it('Select with complex CROSS 3 SCHEMA JOINS',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name',
@@ -2585,8 +2584,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select - simple full table query', async () => {
-		await req()
+	it('Select - simple full table query',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.dog' })
 			.expect((r) => assert.equal(r.body.length, 9, r.text))
 			.expect((r) => {
@@ -2597,8 +2596,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select - simple full table query w/ * and alias', async () => {
-		await req()
+	it('Select - simple full table query w/ * and alias',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT *, dog_name as dname FROM dev.dog' })
 			.expect((r) => assert.equal(r.body.length, 9, r.text))
 			.expect((r) => {
@@ -2611,8 +2610,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select - simple full table query w/ single alias', async () => {
-		await req()
+	it('Select - simple full table query w/ single alias',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT dog_name as dname FROM dev.dog' })
 			.expect((r) => assert.equal(r.body.length, 9, r.text))
 			.expect((r) => {
@@ -2625,8 +2624,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select - simple full table query w/ multiple aliases', async () => {
-		await req()
+	it('Select - simple full table query w/ multiple aliases',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT id as dog_id, dog_name as dname, age as dog_age FROM dev.dog' })
 			.expect((r) => assert.equal(r.body.length, 9, r.text))
 			.expect((r) => {
@@ -2643,8 +2642,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select - simple full table query from leading_zero', async () => {
-		await req()
+	it('Select - simple full table query from leading_zero',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.leading_zero' })
 			.expect((r) => assert.equal(r.body.length, 3, r.text))
 			.expect((r) => {
@@ -2658,8 +2657,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select - basic self JOIN', async () => {
-		await req()
+	it('Select - basic self JOIN',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT a.* FROM dev.owner as a INNER JOIN dev.owner as b ON a.name = b.best_friend',
@@ -2669,8 +2668,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select - basic self JOIN - reverse scenario', async () => {
-		await req()
+	it('Select - basic self JOIN - reverse scenario',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: 'SELECT b.* FROM dev.owner as a INNER JOIN dev.owner as b ON a.name = b.best_friend',
@@ -2680,8 +2679,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('query from leading_zero where id = 0', async () => {
-		await req()
+	it('query from leading_zero where id = 0',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.leading_zero where id = 0' })
 			.expect((r) => {
 				assert.equal(r.body.length, 1, r.text);
@@ -2692,8 +2691,8 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it("query from leading_zero where id = '011'", async () => {
-		await req()
+	it("query from leading_zero where id = '011'",  () => {
+		return req()
 			.send({ operation: 'sql', sql: "SELECT * FROM dev.leading_zero where id = '011'" })
 			.expect((r) => {
 				assert.equal(r.body.length, 1, r.text);
@@ -2704,37 +2703,37 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('query from leading_zero where id = 011', async () => {
-		await req()
+	it('query from leading_zero where id = 011',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.leading_zero where id = 011' })
 			.expect((r) => assert.equal(r.body.length, 0, r.text))
 			.expect(200);
 	});
 
-	it('insert record with dog_name =  single space value & empty string', async () => {
-		await req()
+	it('insert record with dog_name =  single space value & empty string',  () => {
+		return req()
 			.send({ operation: 'sql', sql: "INSERT INTO dev.dog (id, dog_name) VALUES (1111, ' '), (2222, '')" })
 			.expect((r) => assert.equal(r.body.message, 'inserted 2 of 2 records', r.text))
 			.expect((r) => assert.deepEqual(r.body.inserted_hashes, [1111, 2222], r.text))
 			.expect(200);
 	});
 
-	it('SELECT record with dog_name = single space and validate value', async () => {
-		await req()
+	it('SELECT record with dog_name = single space and validate value',  () => {
+		return req()
 			.send({ operation: 'sql', sql: "SELECT id, dog_name FROM dev.dog  WHERE dog_name = ' '" })
 			.expect((r) => assert.deepEqual(r.body, [{ id: 1111, dog_name: ' ' }], r.text))
 			.expect(200);
 	});
 
-	it('SELECT record with dog_name = empty string and validate value', async () => {
-		await req()
+	it('SELECT record with dog_name = empty string and validate value',  () => {
+		return req()
 			.send({ operation: 'sql', sql: "SELECT id, dog_name FROM dev.dog  WHERE dog_name = ''" })
 			.expect((r) => assert.deepEqual(r.body, [{ id: 2222, dog_name: '' }], r.text))
 			.expect(200);
 	});
 
-	it('Delete dev.dog records previously created', async () => {
-		await req()
+	it('Delete dev.dog records previously created',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'DELETE FROM dev.dog WHERE id IN (1111, 2222)' })
 			.expect((r) => assert.deepEqual(r.body.deleted_hashes, [1111, 2222], r.text))
 			.expect(200);

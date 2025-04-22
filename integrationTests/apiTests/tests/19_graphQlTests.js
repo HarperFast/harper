@@ -5,15 +5,15 @@ import { req, reqGraphQl } from '../utils/request.js';
 describe('19. GraphQL tests', () => {
 	//GraphQL tests Folder
 
-	it('Insert one null into SubObject', async () => {
-		await req()
+	it('Insert one null into SubObject',  () => {
+		return req()
 			.send({ operation: 'insert', table: 'SubObject', records: [{ id: '0', relatedId: '1', any: null }] })
 			.expect((r) => assert.ok(r.body.message.includes('inserted 1 of 1 records'), r.text))
 			.expect(200);
 	});
 
-	it('Insert into table Related', async () => {
-		await req()
+	it('Insert into table Related',  () => {
+		return req()
 			.send({
 				operation: 'insert',
 				table: 'Related',
@@ -39,8 +39,8 @@ describe('19. GraphQL tests', () => {
 			.expect(200);
 	});
 
-	it('Insert into table SubObject', async () => {
-		await req()
+	it('Insert into table SubObject',  () => {
+		return req()
 			.send({
 				operation: 'insert',
 				table: 'SubObject',
@@ -64,8 +64,8 @@ describe('19. GraphQL tests', () => {
 			.expect(200);
 	});
 
-	it('Shorthand query', async () => {
-		await reqGraphQl()
+	it('Shorthand query',  () => {
+		return reqGraphQl()
 			.send({ query: '{ Related { id name } }' })
 			.expect((r) => {
 				assert.equal(r.body.data.Related.length, 5, r.text);
@@ -76,8 +76,8 @@ describe('19. GraphQL tests', () => {
 			.expect(200);
 	});
 
-	it('Named query', async () => {
-		await reqGraphQl()
+	it('Named query',  () => {
+		return reqGraphQl()
 			.send({ query: 'query GetRelated { Related { id name } }' })
 			.expect((r) => {
 				assert.equal(r.body.data.Related.length, 5, r.text);
@@ -88,8 +88,8 @@ describe('19. GraphQL tests', () => {
 			.expect(200);
 	});
 
-	it('Named query with operationName', async () => {
-		await reqGraphQl()
+	it('Named query with operationName',  () => {
+		return reqGraphQl()
 			.send({ query: 'query GetRelated { Related { id, name } }', operationName: 'GetRelated' })
 			.expect((r) => {
 				assert.equal(r.body.data.Related.length, 5, r.text);
@@ -100,8 +100,8 @@ describe('19. GraphQL tests', () => {
 			.expect(200);
 	});
 
-	it('Named query with operationName 2', async () => {
-		await reqGraphQl()
+	it('Named query with operationName 2',  () => {
+		return reqGraphQl()
 			.send({
 				query: 'query GetRelated { Related { id, name } } query GetSubObject { SubObject { id relatedId } }',
 				operationName: 'GetSubObject',
@@ -115,15 +115,15 @@ describe('19. GraphQL tests', () => {
 			.expect(200);
 	});
 
-	it('Query by primary key field', async () => {
-		await reqGraphQl()
+	it('Query by primary key field',  () => {
+		return reqGraphQl()
 			.send({ query: '{ Related(id: "1") { id name } }' })
 			.expect((r) => assert.equal(r.body.data.Related[0].id, '1', r.text))
 			.expect(200);
 	});
 
-	it('Multi resource query', async () => {
-		await reqGraphQl()
+	it('Multi resource query',  () => {
+		return reqGraphQl()
 			.send({ query: '{ Related { id name } SubObject { id relatedId } }' })
 			.expect((r) => {
 				assert.equal(r.body.data.Related.length, 5, r.text);
@@ -138,29 +138,29 @@ describe('19. GraphQL tests', () => {
 			.expect(200);
 	});
 
-	it('Query by variable non null no default', async () => {
-		await reqGraphQl()
+	it('Query by variable non null no default',  () => {
+		return reqGraphQl()
 			.send({ query: 'query Get($id: ID!) { Related(id: $id) { id name } }', variables: { id: '1' } })
 			.expect((r) => assert.equal(r.body.data.Related[0].id, '1', r.text))
 			.expect(200);
 	});
 
-	it('Query by variable non null with default with var', async () => {
-		await reqGraphQl()
+	it('Query by variable non null with default with var',  () => {
+		return reqGraphQl()
 			.send({ query: 'query Get($id: ID! = "1") { Related(id: $id) { id name } }', variables: { id: '1' } })
 			.expect((r) => assert.equal(r.body.data.Related[0].id, '1', r.text))
 			.expect(200);
 	});
 
-	it('Query by var nullable no default no var', async () => {
-		await reqGraphQl()
+	it('Query by var nullable no default no var',  () => {
+		return reqGraphQl()
 			.send({ query: 'query Get($any: Any) { SubObject(any: $any) { id any } }' })
 			.expect((r) => assert.equal(r.body.data.SubObject[0].id, '0', r.text))
 			.expect(200);
 	});
 
-	it('Query by var nullable w default with var', async () => {
-		await reqGraphQl()
+	it('Query by var nullable w default with var',  () => {
+		return reqGraphQl()
 			.send({
 				query: 'query Get($any: Any = "any-1") { SubObject(any: $any) { id any } }',
 				variables: { any: 'any-2' },
@@ -169,8 +169,8 @@ describe('19. GraphQL tests', () => {
 			.expect(200);
 	});
 
-	it('Query by var w default with null var', async () => {
-		await reqGraphQl()
+	it('Query by var w default with null var',  () => {
+		return reqGraphQl()
 			.send({
 				query: 'query Get($any: Any = "any-1") { SubObject(any: $any) { id any } }',
 				variables: { any: null },
@@ -179,36 +179,36 @@ describe('19. GraphQL tests', () => {
 			.expect(200);
 	});
 
-	it('Query by nested attribute', async () => {
-		await reqGraphQl()
+	it('Query by nested attribute',  () => {
+		return reqGraphQl()
 			.send({ query: '{ SubObject(related: { name: "name-2" }) { id any } }' })
 			.expect((r) => assert.equal(r.body.data.SubObject[0].id, '2', r.text))
 			.expect(200);
 	});
 
-	it('Query by multiple nested attributes', async () => {
-		await reqGraphQl()
+	it('Query by multiple nested attributes',  () => {
+		return reqGraphQl()
 			.send({ query: '{ SubObject(any: "any-1", related: { name: "name-1" }) { id any } }' })
 			.expect((r) => assert.equal(r.body.data.SubObject[0].id, '1', r.text))
 			.expect(200);
 	});
 
-	it('Query by nested attribute primary key', async () => {
-		await reqGraphQl()
+	it('Query by nested attribute primary key',  () => {
+		return reqGraphQl()
 			.send({ query: '{ SubObject(related: { id: "2" }) { id any } }' })
 			.expect((r) => assert.equal(r.body.data.SubObject[0].id, '2', r.text))
 			.expect(200);
 	});
 
-	it('Query by doubly nested attribute', async () => {
-		await reqGraphQl()
+	it('Query by doubly nested attribute',  () => {
+		return reqGraphQl()
 			.send({ query: '{ SubObject(related: { subObject: { any: "any-3" } }) { id any } }' })
 			.expect((r) => assert.equal(r.body.data.SubObject[0].id, '3', r.text))
 			.expect(200);
 	});
 
-	it('Query by doubly nested attribute as var sub level', async () => {
-		await reqGraphQl()
+	it('Query by doubly nested attribute as var sub level',  () => {
+		return reqGraphQl()
 			.send({
 				query: 'query Get($subObject: Any) { SubObject(related: { subObject: $subObject }) { id any } }',
 				variables: { subObject: { any: 'any-3' } },
@@ -217,8 +217,8 @@ describe('19. GraphQL tests', () => {
 			.expect(200);
 	});
 
-	it('Query by doubly nested attribute as var top-level', async () => {
-		await reqGraphQl()
+	it('Query by doubly nested attribute as var top-level',  () => {
+		return reqGraphQl()
 			.send({
 				query: 'query Get($related: Any) { SubObject(related: $related) { id any } }',
 				variables: { related: { subObject: { any: 'any-3' } } },
@@ -227,8 +227,8 @@ describe('19. GraphQL tests', () => {
 			.expect(200);
 	});
 
-	it('Query by nested attribute as var sub level', async () => {
-		await reqGraphQl()
+	it('Query by nested attribute as var sub level',  () => {
+		return reqGraphQl()
 			.send({
 				query: 'query Get($name: String) { SubObject(related: { name: $name }) { id any } }',
 				variables: { name: 'name-2' },
@@ -237,8 +237,8 @@ describe('19. GraphQL tests', () => {
 			.expect(200);
 	});
 
-	it('Query by nested attribute as var top level', async () => {
-		await reqGraphQl()
+	it('Query by nested attribute as var top level',  () => {
+		return reqGraphQl()
 			.send({
 				query: 'query Get($related: Any) { SubObject(related: $related) { id any } }',
 				variables: { related: { name: 'name-2' } },
@@ -247,8 +247,8 @@ describe('19. GraphQL tests', () => {
 			.expect(200);
 	});
 
-	it('Query with top level fragment', async () => {
-		await reqGraphQl()
+	it('Query with top level fragment',  () => {
+		return reqGraphQl()
 			.send({ query: 'query Get { ...related } fragment related on Any { Related { id name } }' })
 			.expect((r) => {
 				assert.equal(r.body.data.Related.length, 5, r.text);
@@ -259,8 +259,8 @@ describe('19. GraphQL tests', () => {
 			.expect(200);
 	});
 
-	it('Query with top level nested fragment', async () => {
-		await reqGraphQl()
+	it('Query with top level nested fragment',  () => {
+		return reqGraphQl()
 			.send({
 				query:
 					'query Get { ...related } fragment related on Any { ...nested } fragment nested on Any { Related { id name } }',
@@ -274,8 +274,8 @@ describe('19. GraphQL tests', () => {
 			.expect(200);
 	});
 
-	it('Query w top level fragment multi resource', async () => {
-		await reqGraphQl()
+	it('Query w top level fragment multi resource',  () => {
+		return reqGraphQl()
 			.send({
 				query:
 					'query Get { ...multiResourceFragment } fragment multiResourceFragment on Any { Related { id name } SubObject { id relatedId } }',
@@ -293,15 +293,15 @@ describe('19. GraphQL tests', () => {
 			.expect(200);
 	});
 
-	it('Query with inline fragment', async () => {
-		await reqGraphQl()
+	it('Query with inline fragment',  () => {
+		return reqGraphQl()
 			.send({ query: 'query Get { Related(id: "1") { ...on Related { id name } } }' })
 			.expect((r) => assert.equal(r.body.data.Related[0].id, '1', r.text))
 			.expect(200);
 	});
 
-	it('Query with nested fragments', async () => {
-		await reqGraphQl()
+	it('Query with nested fragments',  () => {
+		return reqGraphQl()
 			.send({
 				query:
 					'query Get { Related(id: "2") { ...relatedFields otherTable { ...id } } } fragment relatedFields on Related { ...id name } fragment id on Any { id }',

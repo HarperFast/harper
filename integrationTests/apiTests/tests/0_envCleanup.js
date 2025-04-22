@@ -6,7 +6,7 @@ import { req } from '../utils/request.js';
 
 describe('0. Environment Cleanup', () => {
 
-    it('Environment Cleanup', async () => {
+    it('Environment Cleanup',  async () => {
         const response = await req()
           .send({
               operation: 'describe_all'

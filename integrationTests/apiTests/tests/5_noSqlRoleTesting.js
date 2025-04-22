@@ -19,8 +19,8 @@ describe('5. NoSQL Role Testing', () => {
 
 	//Bulk Load Perms Tests
 
-	it('Add non-SU bulk_load_role', async () => {
-		await req()
+	it('Add non-SU bulk_load_role',  () => {
+		return req()
 			.send({
 				operation: 'add_role',
 				role: 'bulk_load_role',
@@ -130,8 +130,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Add user with new bulk_load_role', async () => {
-		await req()
+	it('Add user with new bulk_load_role',  () => {
+		return req()
 			.send({
 				operation: 'add_user',
 				role: 'bulk_load_role',
@@ -434,8 +434,8 @@ describe('5. NoSQL Role Testing', () => {
 		assert.equal(errorMsg.invalid_schema_items.length, 0, resText);
 	});
 
-	it('Alter non-SU bulk_load_role', async () => {
-		await req()
+	it('Alter non-SU bulk_load_role',  () => {
+		return req()
 			.send({
 				operation: 'alter_role',
 				id: 'bulk_load_role',
@@ -508,8 +508,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('CSV Data Load  upsert to table w/ full perms', async () => {
-		await csvDataLoad(
+	it('CSV Data Load  upsert to table w/ full perms', () => {
+		return csvDataLoad(
 			headersBulkLoadUser,
 			'upsert',
 			testData.schema,
@@ -520,8 +520,8 @@ describe('5. NoSQL Role Testing', () => {
 		);
 	});
 
-	it('Check row from Data CSV job was upserted', async () => {
-		await req()
+	it('Check row from Data CSV job was upserted',  () => {
+		return req()
 			.send({
 				operation: 'sql',
 				sql: `SELECT count(*) AS row_count
@@ -549,11 +549,11 @@ describe('5. NoSQL Role Testing', () => {
 			.expect((r) => assert.equal(r.body.message.indexOf('Starting job'), 0, r.text));
 
 		const id = await getJobId(response.body);
-		await checkJobCompleted(id, '', 'successfully loaded 9 of 12 records');
+		return checkJobCompleted(id, '', 'successfully loaded 9 of 12 records');
 	});
 
-	it('Check rows from S3 update were updated', async () => {
-		await req()
+	it('Check rows from S3 update were updated',  () => {
+		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.dog' })
 			.expect((r) => {
 				r.body.forEach((row) => {
@@ -563,16 +563,16 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Drop bulk_load_user', async () => {
-		await req()
+	it('Drop bulk_load_user',  () => {
+		return req()
 			.send({ operation: 'drop_user', username: 'bulk_load_user' })
 			.expect((r) => assert.ok(r.body.message, r.text))
 			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))
 			.expect(200);
 	});
 
-	it('Drop bulk_load_user role', async () => {
-		await req()
+	it('Drop bulk_load_user role',  () => {
+		return req()
 			.send({ operation: 'drop_role', id: 'bulk_load_role' })
 			.expect((r) => assert.ok(r.body.message, r.text))
 			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))
@@ -581,24 +581,24 @@ describe('5. NoSQL Role Testing', () => {
 
 	//NoSQL Role Testing Main Folder
 
-	it('Authentication - bad username', async () => {
+	it('Authentication - bad username',  () => {
 		const myHeaders = createHeaders('bad_username', testData.password);
-		await reqAsNonSU(myHeaders)
+		return reqAsNonSU(myHeaders)
 			.send({ operation: 'create_schema', schema: 'auth' })
 			.expect((r) => assert.ok(r.text.includes('Login failed')))
 			.expect(401);
 	});
 
-	it('Authentication - bad password', async () => {
+	it('Authentication - bad password',  () => {
 		const myHeaders = createHeaders(testData.username, 'bad_password');
-		await reqAsNonSU(myHeaders)
+		return reqAsNonSU(myHeaders)
 			.send({ operation: 'create_schema', schema: 'auth' })
 			.expect((r) => assert.ok(r.text.includes('Login failed')))
 			.expect(401);
 	});
 
-	it('NoSQL Add non SU role', async () => {
-		await req()
+	it('NoSQL Add non SU role',  () => {
+		return req()
 			.send({
 				operation: 'add_role',
 				role: 'developer_test_5',
@@ -785,8 +785,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL Add User with new Role', async () => {
-		await req()
+	it('NoSQL Add User with new Role',  () => {
+		return req()
 			.send({
 				operation: 'add_user',
 				role: 'developer_test_5',
@@ -797,8 +797,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL try to get user info as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL try to get user info as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({ operation: 'list_users' })
 			.expect((r) => {
 				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
@@ -809,8 +809,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL Try to read suppliers table as SU', async () => {
-		await req()
+	it('NoSQL Try to read suppliers table as SU',  () => {
+		return req()
 			.send({
 				operation: 'search_by_value',
 				table: `${testData.supp_tb}`,
@@ -823,8 +823,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL Try to read FULLY restricted suppliers table as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL Try to read FULLY restricted suppliers table as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_value',
 				table: `${testData.supp_tb}`,
@@ -843,8 +843,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL Try to read region table as SU', async () => {
-		await req()
+	it('NoSQL Try to read region table as SU',  () => {
+		return req()
 			.send({
 				operation: 'search_by_value',
 				table: `${testData.regi_tb}`,
@@ -857,8 +857,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL Try to read region table as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL Try to read region table as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_value',
 				table: `${testData.regi_tb}`,
@@ -871,8 +871,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL Try to insert into region table as SU', async () => {
-		await req()
+	it('NoSQL Try to insert into region table as SU',  () => {
+		return req()
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
@@ -882,8 +882,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL Try to insert into insert restricted region table as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL Try to insert into insert restricted region table as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
@@ -902,8 +902,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL Try to insert FULLY restricted attribute in categories table as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL Try to insert FULLY restricted attribute in categories table as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
@@ -919,8 +919,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL Try to insert into territories table as SU', async () => {
-		await req()
+	it('NoSQL Try to insert into territories table as SU',  () => {
+		return req()
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
@@ -930,8 +930,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL Try to insert into territories table as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL Try to insert into territories table as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
@@ -941,8 +941,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL Try to update territories table as SU', async () => {
-		await req()
+	it('NoSQL Try to update territories table as SU',  () => {
+		return req()
 			.send({
 				operation: 'update',
 				schema: `${testData.schema}`,
@@ -952,8 +952,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL Try to update restricted territories table as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL Try to update restricted territories table as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'update',
 				schema: `${testData.schema}`,
@@ -972,8 +972,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL Try to update categories table as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL Try to update categories table as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'update',
 				schema: `${testData.schema}`,
@@ -983,8 +983,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL Try to update categories table with new attr as test_user - expect error', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL Try to update categories table with new attr as test_user - expect error',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'update',
 				schema: `${testData.schema}`,
@@ -1000,8 +1000,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL Try to update FULLY restricted attrs in categories table as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL Try to update FULLY restricted attrs in categories table as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'update',
 				schema: `${testData.schema}`,
@@ -1025,14 +1025,14 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL Try to delete from categories table as SU', async () => {
-		await req()
+	it('NoSQL Try to delete from categories table as SU',  () => {
+		return req()
 			.send({ operation: 'delete', table: `${testData.cate_tb}`, schema: `${testData.schema}`, hash_values: [1] })
 			.expect(200);
 	});
 
-	it('NoSQL Try to delete from restricted categories table as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL Try to delete from restricted categories table as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({ operation: 'delete', table: `${testData.cate_tb}`, schema: `${testData.schema}`, hash_values: [2] })
 			.expect((r) => {
 				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
@@ -1046,8 +1046,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL Try to read shippers table FULLY restricted attribute as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL Try to read shippers table FULLY restricted attribute as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_value',
 				table: `${testData.ship_tb}`,
@@ -1067,8 +1067,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL Try to read ALL shippers table FULLY restricted attributes as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL Try to read ALL shippers table FULLY restricted attributes as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_value',
 				table: `${testData.ship_tb}`,
@@ -1087,8 +1087,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL Try to update shippers table FULLY restricted attributes as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL Try to update shippers table FULLY restricted attributes as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'update',
 				schema: `${testData.schema}`,
@@ -1105,8 +1105,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL Try to insert shippers table restricted attributes as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL Try to insert shippers table restricted attributes as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
@@ -1124,8 +1124,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL Try to insert to categories table with FULLY restricted attribute as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL Try to insert to categories table with FULLY restricted attribute as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
@@ -1141,8 +1141,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL Try to insert categories table unrestricted attribute as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL Try to insert categories table unrestricted attribute as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
@@ -1152,8 +1152,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL Try to update categories table unrestricted attribute as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL Try to update categories table unrestricted attribute as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'update',
 				schema: `${testData.schema}`,
@@ -1163,8 +1163,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL Try to insert to categories table FULLY restricted attribute as test_user', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL Try to insert to categories table FULLY restricted attribute as test_user',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'insert',
 				schema: `${testData.schema}`,
@@ -1180,8 +1180,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL create_schema - non-SU expect fail', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL create_schema - non-SU expect fail',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({ operation: 'create_schema', schema: 'test-schema' })
 			.expect((r) => {
 				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
@@ -1192,14 +1192,14 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL create_schema - SU expect success', async () => {
-		await req()
+	it('NoSQL create_schema - SU expect success',  () => {
+		return req()
 			.send({ operation: 'create_schema', schema: 'test-schema' })
 			.expect(200);
 	});
 
-	it('NoSQL create_table - non-SU expect fail', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL create_table - non-SU expect fail',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({ operation: 'create_table', schema: 'test-schema', table: 'test-table', hash_attribute: 'id' })
 			.expect((r) => {
 				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
@@ -1210,14 +1210,14 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL create_table - SU expect success', async () => {
-		await req()
+	it('NoSQL create_table - SU expect success',  () => {
+		return req()
 			.send({ operation: 'create_table', schema: 'test-schema', table: 'test-table', hash_attribute: 'id' })
 			.expect(200);
 	});
 
-	it('Insert record to evaluate dropAttribute', async () => {
-		await req()
+	it('Insert record to evaluate dropAttribute',  () => {
+		return req()
 			.send({
 				operation: 'insert',
 				schema: 'test-schema',
@@ -1227,8 +1227,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL drop_attribute - non-SU expect fail', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL drop_attribute - non-SU expect fail',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'drop_attribute',
 				schema: 'test-schema',
@@ -1244,8 +1244,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL drop_attribute - SU expect success', async () => {
-		await req()
+	it('NoSQL drop_attribute - SU expect success',  () => {
+		return req()
 			.send({
 				operation: 'drop_attribute',
 				schema: 'test-schema',
@@ -1255,8 +1255,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL drop_table - non-SU expect fail', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL drop_table - non-SU expect fail',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({ operation: 'drop_table', schema: 'test-schema', table: 'test-table' })
 			.expect((r) => {
 				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
@@ -1267,14 +1267,14 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL drop_table - SU expect success', async () => {
-		await req()
+	it('NoSQL drop_table - SU expect success',  () => {
+		return req()
 			.send({ operation: 'drop_table', schema: 'test-schema', table: 'test-table' })
 			.expect(200);
 	});
 
-	it('NoSQL drop_schema - non-SU expect fail', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL drop_schema - non-SU expect fail',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({ operation: 'drop_schema', schema: 'test-schema' })
 			.expect((r) => {
 				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
@@ -1285,14 +1285,14 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL drop_schema - SU expect success', async () => {
-		await req()
+	it('NoSQL drop_schema - SU expect success',  () => {
+		return req()
 			.send({ operation: 'drop_schema', schema: 'test-schema' })
 			.expect(200);
 	});
 
-	it('NoSQL Try to update timestamp value on dog table as test_user - expect fail', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL Try to update timestamp value on dog table as test_user - expect fail',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'insert',
 				schema: 'dev',
@@ -1312,8 +1312,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL Try to update attr w/ timestamp value in update row as SU  - expect success', async () => {
-		await req()
+	it('NoSQL Try to update attr w/ timestamp value in update row as SU  - expect success',  () => {
+		return req()
 			.send({
 				operation: 'update',
 				schema: 'dev',
@@ -1332,8 +1332,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL Try to update timestamp value on dog table as SU - expect', async () => {
-		await req()
+	it('NoSQL Try to update timestamp value on dog table as SU - expect',  () => {
+		return req()
 			.send({
 				operation: 'update',
 				schema: 'dev',
@@ -1351,8 +1351,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL - Upsert - table perms true/no attribute perms set - expect success', async () => {
-		await req()
+	it('NoSQL - Upsert - table perms true/no attribute perms set - expect success',  () => {
+		return req()
 			.send({
 				operation: 'upsert',
 				schema: `${testData.schema}`,
@@ -1375,8 +1375,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL - Upsert - table perms true/attr perms true - expect success', async () => {
-		await req()
+	it('NoSQL - Upsert - table perms true/attr perms true - expect success',  () => {
+		return req()
 			.send({
 				operation: 'upsert',
 				schema: `${testData.schema}`,
@@ -1392,8 +1392,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL - Upsert - table perms true/no attr perms and new attribute included - expect success', async () => {
-		await req()
+	it('NoSQL - Upsert - table perms true/no attr perms and new attribute included - expect success',  () => {
+		return req()
 			.send({
 				operation: 'upsert',
 				schema: `${testData.schema}`,
@@ -1417,8 +1417,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL - Upsert - table perms true/false  - expect error', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL - Upsert - table perms true/false  - expect error',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'upsert',
 				schema: `${testData.schema}`,
@@ -1444,8 +1444,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL - Upsert - table perms true/attr perms true but new attribute included - expect error', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('NoSQL - Upsert - table perms true/attr perms true but new attribute included - expect error',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'upsert',
 				schema: `${testData.schema}`,
@@ -1468,13 +1468,13 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL - Upsert - table perms true/some attr perms false - expect error', async () => {
+	it('NoSQL - Upsert - table perms true/some attr perms false - expect error',  () => {
 		const expected_attr_perm_errs = {
 			dog_name: 'insert',
 			age: 'update',
 		};
 
-		await reqAsNonSU(headersTestUser)
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'upsert',
 				schema: 'dev',
@@ -1507,8 +1507,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL - Upsert - w/ null value as hash- expect error', async () => {
-		await req()
+	it('NoSQL - Upsert - w/ null value as hash- expect error',  () => {
+		return req()
 			.send({
 				operation: 'upsert',
 				schema: `${testData.schema}`,
@@ -1530,8 +1530,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(400);
 	});
 
-	it('NoSQL - Upsert - w/ invalid attr name - expect error', async () => {
-		await req()
+	it('NoSQL - Upsert - w/ invalid attr name - expect error',  () => {
+		return req()
 			.send({
 				operation: 'upsert',
 				schema: `${testData.schema}`,
@@ -1550,8 +1550,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(400);
 	});
 
-	it('search by conditions - equals - allowed attr', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('search by conditions - equals - allowed attr',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1570,8 +1570,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - ends_with - allowed attr', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('search by conditions - ends_with - allowed attr',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1590,8 +1590,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - equals - restricted attr', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('search by conditions - equals - restricted attr',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1608,8 +1608,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('search by conditions - contains - restricted attr', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('search by conditions - contains - restricted attr',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1626,8 +1626,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('search by conditions - starts_with - non-existent attr', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('search by conditions - starts_with - non-existent attr',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1644,8 +1644,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it("search by conditions - starts_with - unauth'd attr", async () => {
-		await reqAsNonSU(headersTestUser)
+	it("search by conditions - starts_with - unauth'd attr",  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1666,8 +1666,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it("search by conditions - starts_with - unauth'd attrs in get / search", async () => {
-		await reqAsNonSU(headersTestUser)
+	it("search by conditions - starts_with - unauth'd attrs in get / search",  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1689,8 +1689,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('search by conditions - equals & contains - restricted attr', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('search by conditions - equals & contains - restricted attr',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1714,8 +1714,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('search by conditions - starts_with & between w/ sort', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('search by conditions - starts_with & between w/ sort',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1743,8 +1743,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('search by conditions - 4 conditions - restricted attrs', async () => {
-		await reqAsNonSU(headersTestUser)
+	it('search by conditions - 4 conditions - restricted attrs',  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1779,8 +1779,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it("search by conditions - 4 conditions - restricted/unauth'd attrs", async () => {
-		await reqAsNonSU(headersTestUser)
+	it("search by conditions - 4 conditions - restricted/unauth'd attrs",  () => {
+		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_by_conditions',
 				schema: 'dev',
@@ -1816,8 +1816,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('NoSQL Alter non-SU role', async () => {
-		await req()
+	it('NoSQL Alter non-SU role',  () => {
+		return req()
 			.send({
 				operation: 'alter_role',
 				id: 'developer_test_5',
@@ -1941,20 +1941,20 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL drop test user', async () => {
-		await req()
+	it('NoSQL drop test user',  () => {
+		return req()
 			.send({ operation: 'drop_user', username: 'test_user' })
 			.expect(200);
 	});
 
-	it('NoSQL drop_role', async () => {
-		await req()
+	it('NoSQL drop_role',  () => {
+		return req()
 			.send({ operation: 'drop_role', id: 'developer_test_5' })
 			.expect(200);
 	});
 
-	it('NoSQL Add cluster_user Role', async () => {
-		await req()
+	it('NoSQL Add cluster_user Role',  () => {
+		return req()
 			.send({ operation: 'add_role', role: 'test_cluster_user_role', permission: { cluster_user: true } })
 			.expect((r) => {
 				assert.ok(r.body.id, r.text);
@@ -1962,8 +1962,8 @@ describe('5. NoSQL Role Testing', () => {
 			});
 	});
 
-	it('NoSQL Add cluster_user with another permission, expect fail', async () => {
-		await req()
+	it('NoSQL Add cluster_user with another permission, expect fail',  () => {
+		return req()
 			.send({
 				operation: 'add_role',
 				role: 'cluster_user_bad',
@@ -1978,8 +1978,8 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(400);
 	});
 
-	it('NoSQL Add User with cluster_user Role', async () => {
-		await req()
+	it('NoSQL Add User with cluster_user Role',  () => {
+		return req()
 			.send({
 				operation: 'add_user',
 				role: 'test_cluster_user_role',
@@ -1992,24 +1992,24 @@ describe('5. NoSQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('NoSQL alter cluster user, change password', async () => {
-		await req()
+	it('NoSQL alter cluster user, change password',  () => {
+		return req()
 			.send({ operation: 'alter_user', username: 'test_cluster_user', password: `${testData.password}111` })
 			.expect((r) => assert.ok(r.body.message, r.text))
 			.expect((r) => assert.ok(r.body.message.includes('updated 1 of 1 records'), r.text))
 			.expect(200);
 	});
 
-	it('NoSQL drop test_cluster_user', async () => {
-		await req()
+	it('NoSQL drop test_cluster_user',  () => {
+		return req()
 			.send({ operation: 'drop_user', username: 'test_cluster_user' })
 			.expect((r) => assert.ok(r.body.message, r.text))
 			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))
 			.expect(200);
 	});
 
-	it('NoSQL drop cluster_user role', async () => {
-		await req()
+	it('NoSQL drop cluster_user role',  () => {
+		return req()
 			.send({ operation: 'drop_role', id: `${testData.cluster_user_role_id}` })
 			.expect((r) => assert.ok(r.body.message, r.text))
 			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))

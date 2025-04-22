@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import { req } from './request.js';
 
-export async function createSchema(schemaName) {
-    await req()
+ export function createSchema(schemaName) {
+    return req()
         .send({
             operation: 'create_schema',
             schema: schemaName
@@ -15,8 +15,8 @@ export async function createSchema(schemaName) {
         .expect(200)
 }
 
-export async function dropSchema(schemaName, failTest) {
-    await req()
+ export function dropSchema(schemaName, failTest) {
+    return req()
         .send({
             operation: 'drop_schema',
             schema: schemaName
@@ -31,8 +31,8 @@ export async function dropSchema(schemaName, failTest) {
         })
 }
 
-export async function describeSchema(schemaName) {
-    await req()
+ export function describeSchema(schemaName) {
+    return req()
         .send({
             operation: 'describe_schema',
             schema: schemaName
@@ -45,8 +45,8 @@ export async function describeSchema(schemaName) {
         .expect(200)
 }
 
-export async function checkTableInSchema(schemaName, checkTableName) {
-    await req()
+ export function checkTableInSchema(schemaName, checkTableName) {
+    return req()
         .send({
             operation: 'describe_schema',
             schema: schemaName

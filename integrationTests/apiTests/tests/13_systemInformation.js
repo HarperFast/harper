@@ -5,8 +5,8 @@ import { req } from '../utils/request.js';
 describe('13. System Information', () => {
 	//System Information Folder
 
-	it('Get all System Information', async () => {
-		await req()
+	it('Get all System Information',  () => {
+		return req()
 			.send({ operation: 'system_information' })
 			.expect((r) => {
 				let attributes = ['system', 'time', 'cpu', 'memory', 'disk', 'network', 'harperdb_processes', 'table_size'];
@@ -17,8 +17,8 @@ describe('13. System Information', () => {
 			.expect(200);
 	});
 
-	it('Get some System Information (time, memory)', async () => {
-		await req()
+	it('Get some System Information (time, memory)',  () => {
+		return req()
 			.send({ operation: 'system_information', attributes: ['memory', 'time'] })
 			.expect((r) => {
 				assert.ok(!r.body.system, r.text);

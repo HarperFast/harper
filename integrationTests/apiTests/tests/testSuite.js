@@ -1,7 +1,7 @@
 import { describe } from 'node:test';
 
 describe('Main Test Suite', async () => {
-	// await import('./0_envCleanup.js');
+	await import('./0_envCleanup.js');
 	await import('./1_environmentSetup.js');
 	await import('./2_dataLoad.js');
 	await import('./3_sqlTests.js');

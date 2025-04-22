@@ -6,15 +6,15 @@ import { req } from '../utils/request.js';
 
 describe('17a. Add components for computed props, graphQL, and open api', () => {
 
-	it('Add component for computed properties', async () => {
-		await req()
+	it('Add component for computed properties',  () => {
+		return req()
 			.send({ operation: 'add_component', project: 'computed' })
 			.expect((r) => assert.ok(r.body.message.includes('Successfully added project: computed'), r.text))
 			.expect(200);
 	});
 
-	it('Set Component File schema.graphql', async () => {
-		await req()
+	it('Set Component File schema.graphql',  () => {
+		return req()
 			.send({
 				operation: 'set_component_file',
 				project: 'computed',
@@ -26,8 +26,8 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 			.expect(200);
 	});
 
-	it('Set Component File resources.js', async () => {
-		await req()
+	it('Set Component File resources.js',  () => {
+		return req()
 			.send({
 				operation: 'set_component_file',
 				project: 'computed',
@@ -41,8 +41,8 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 
 
 
-	it('Add component for graphql and rest tests', async () => {
-		await req()
+	it('Add component for graphql and rest tests',  () => {
+		return req()
 			.send({ operation: 'add_component', project: 'appGraphQL' })
 			.expect((r) => {
 				const res = JSON.stringify(r.body);
@@ -50,8 +50,8 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 			});
 	});
 
-	it('Set Component File schema.graphql', async () => {
-		await req()
+	it('Set Component File schema.graphql',  () => {
+		return req()
 			.send({
 				operation: 'set_component_file',
 				project: 'appGraphQL',
@@ -63,8 +63,8 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 			.expect(200);
 	});
 
-	it('Set Component File config.yaml', async () => {
-		await req()
+	it('Set Component File config.yaml',  () => {
+		return req()
 			.send({
 				operation: 'set_component_file',
 				project: 'appGraphQL',
@@ -77,8 +77,8 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 	});
 
 
-	it('Add default component for openapi endpoint', async () => {
-		await req()
+	it('Add default component for openapi endpoint',  () => {
+		return req()
 			.send({ 'operation': 'add_component', 'project': 'myApp111' })
 			.expect((r) => assert.ok(JSON.stringify(r.body).includes('Successfully added project') ||
 				JSON.stringify(r.body).includes('Project already exists')))
@@ -86,11 +86,11 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 
 
 
-	it('Restart Service: http workers and wait', async () => {
-		await restartServiceHttpWorkersWithTimeout(testData.restartTimeout);
+	it('Restart Service: http workers and wait',  () => {
+		return restartServiceHttpWorkersWithTimeout(testData.restartTimeout);
 	});
 
-	it('Describe all', async () => {
-		await req().send({ operation: 'describe_all' }).expect(200);
+	it('Describe all',  () => {
+		return req().send({ operation: 'describe_all' }).expect(200);
 	});
 });

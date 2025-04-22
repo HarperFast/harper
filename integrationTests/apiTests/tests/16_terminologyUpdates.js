@@ -7,87 +7,87 @@ import { req } from '../utils/request.js';
 describe('16. Terminology Updates', () => {
 	//Terminology Updates Folder
 
-	it('create_database', async () => {
-		await req()
+	it('create_database',  () => {
+		return req()
 			.send({ operation: 'create_database', schema: 'tuckerdoodle' })
 			.expect((r) => assert.equal(r.body.message, "database 'tuckerdoodle' successfully created", r.text))
 			.expect(200);
 	});
 
-	it('create_table todo with database', async () => {
-		await req()
+	it('create_table todo with database',  () => {
+		return req()
 			.send({ operation: 'create_table', database: 'tuckerdoodle', table: 'todo', hash_attribute: 'id' })
 			.expect((r) => assert.equal(r.body.message, "table 'tuckerdoodle.todo' successfully created.", r.text))
 			.expect(200);
 	});
 
-	it('create_table done with database', async () => {
-		await req()
+	it('create_table done with database',  () => {
+		return req()
 			.send({ operation: 'create_table', database: 'tuckerdoodle', table: 'done', hash_attribute: 'id' })
 			.expect((r) => assert.equal(r.body.message, "table 'tuckerdoodle.done' successfully created.", r.text))
 			.expect(200);
 	});
 
-	it('create_table friends without database', async () => {
-		await req()
+	it('create_table friends without database',  () => {
+		return req()
 			.send({ operation: 'create_table', table: 'friends', hash_attribute: 'id' })
 			.expect((r) => assert.equal(r.body.message, "table 'data.friends' successfully created.", r.text))
 			.expect(200);
 	});
 
-	it('create_table frogs using primary_key', async () => {
-		await req()
+	it('create_table frogs using primary_key',  () => {
+		return req()
 			.send({ operation: 'create_table', table: 'frogs', primary_key: 'id' })
 			.expect((r) => assert.equal(r.body.message, "table 'data.frogs' successfully created.", r.text))
 			.expect(200);
 	});
 
-	it('create_attribute with database', async () => {
-		await req()
+	it('create_attribute with database',  () => {
+		return req()
 			.send({ operation: 'create_attribute', database: 'tuckerdoodle', table: 'todo', attribute: 'date' })
 			.expect((r) => assert.equal(r.body.message, "attribute 'tuckerdoodle.todo.date' successfully created.", r.text))
 			.expect(200);
 	});
 
-	it('create_attribute without database', async () => {
-		await req()
+	it('create_attribute without database',  () => {
+		return req()
 			.send({ operation: 'create_attribute', table: 'friends', attribute: 'name' })
 			.expect((r) => assert.equal(r.body.message, "attribute 'data.friends.name' successfully created.", r.text))
 			.expect(200);
 	});
 
-	it('describe_database with database', async () => {
-		await req()
+	it('describe_database with database',  () => {
+		return req()
 			.send({ operation: 'describe_database', database: 'tuckerdoodle' })
 			.expect((r) => assert.ok(r.body.hasOwnProperty('todo'), r.text))
 			.expect(200);
 	});
 
-	it('describe_database without database', async () => {
-		await req()
+	it('describe_database without database',  () => {
+		return req()
 			.send({ operation: 'describe_database' })
 			.expect((r) => assert.ok(r.body.hasOwnProperty('friends'), r.text))
 			.expect(200);
 	});
 
-	it('describe_table with database', async () => {
-		await req()
+	it('describe_table with database',  () => {
+		return req()
 			.send({ operation: 'describe_table', database: 'tuckerdoodle', table: 'todo' })
 			.expect((r) => assert.equal(r.body.schema, 'tuckerdoodle', r.text))
 			.expect((r) => assert.equal(r.body.name, 'todo', r.text))
 			.expect(200);
 	});
 
-	it('describe_table without database', async () => {
-		await req()
+	it('describe_table without database',  () => {
+		return req()
 			.send({ operation: 'describe_table', table: 'friends' })
 			.expect((r) => assert.equal(r.body.schema, 'data', r.text))
 			.expect((r) => assert.equal(r.body.name, 'friends', r.text))
 			.expect(200);
 	});
 
-	it('insert with database', async () => {
-		await req()
+	it('insert with database',  () => {
+		return req()
 			.send({
 				operation: 'insert',
 				database: 'tuckerdoodle',
@@ -98,8 +98,8 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('insert without database', async () => {
-		await req()
+	it('insert without database',  () => {
+		return req()
 			.send({
 				operation: 'insert',
 				table: 'friends',
@@ -112,8 +112,8 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('insert table frog setup for describe', async () => {
-		await req()
+	it('insert table frog setup for describe',  () => {
+		return req()
 			.send({
 				operation: 'insert',
 				table: 'frogs',
@@ -139,8 +139,8 @@ describe('16. Terminology Updates', () => {
 		await setTimeout(1000);
 	});
 
-	it('describe_table frog confirm record count', async () => {
-		await req()
+	it('describe_table frog confirm record count',  () => {
+		return req()
 			.send({ operation: 'describe_table', table: 'frogs' })
 			.expect((r) => {
 				assert.equal(r.body.schema, 'data', r.text);
@@ -150,29 +150,29 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('search_by_id', async () => {
-		await req()
+	it('search_by_id',  () => {
+		return req()
 			.send({ operation: 'search_by_id', table: 'friends', ids: [1], get_attributes: ['*'] })
 			.expect((r) => assert.equal(r.body[0].id, 1, r.text))
 			.expect(200);
 	});
 
-	it('search_by_hash with ids', async () => {
-		await req()
+	it('search_by_hash with ids',  () => {
+		return req()
 			.send({ operation: 'search_by_hash', table: 'friends', ids: [1], get_attributes: ['*'] })
 			.expect((r) => assert.equal(r.body[0].id, 1, r.text))
 			.expect(200);
 	});
 
-	it('delete with ids', async () => {
-		await req()
+	it('delete with ids',  () => {
+		return req()
 			.send({ operation: 'delete', table: 'friends', ids: [2] })
 			.expect((r) => assert.equal(r.body.message, '1 of 1 record successfully deleted', r.text))
 			.expect(200);
 	});
 
-	it('update with database', async () => {
-		await req()
+	it('update with database',  () => {
+		return req()
 			.send({
 				operation: 'update',
 				database: 'tuckerdoodle',
@@ -183,15 +183,15 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('update without database', async () => {
-		await req()
+	it('update without database',  () => {
+		return req()
 			.send({ operation: 'update', table: 'friends', records: [{ id: 1, task: 'Mr Sheriff Woody' }] })
 			.expect((r) => assert.equal(r.body.message, 'updated 1 of 1 records', r.text))
 			.expect(200);
 	});
 
-	it('upsert with database', async () => {
-		await req()
+	it('upsert with database',  () => {
+		return req()
 			.send({
 				operation: 'upsert',
 				database: 'tuckerdoodle',
@@ -202,22 +202,22 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('upsert without database', async () => {
-		await req()
+	it('upsert without database',  () => {
+		return req()
 			.send({ operation: 'upsert', table: 'friends', records: [{ id: 2, name: 'Mr Potato Head' }] })
 			.expect((r) => assert.equal(r.body.message, 'upserted 1 of 1 records', r.text))
 			.expect(200);
 	});
 
-	it('search_by_hash without database', async () => {
-		await req()
+	it('search_by_hash without database',  () => {
+		return req()
 			.send({ operation: 'search_by_hash', table: 'friends', hash_values: [1], get_attributes: ['*'] })
 			.expect((r) => assert.equal(r.body[0].id, 1, r.text))
 			.expect(200);
 	});
 
-	it('search_by_hash with database', async () => {
-		await req()
+	it('search_by_hash with database',  () => {
+		return req()
 			.send({
 				operation: 'search_by_hash',
 				database: 'tuckerdoodle',
@@ -229,8 +229,8 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('search_by_value without database', async () => {
-		await req()
+	it('search_by_value without database',  () => {
+		return req()
 			.send({
 				operation: 'search_by_value',
 				table: 'friends',
@@ -242,8 +242,8 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('search_by_value with database', async () => {
-		await req()
+	it('search_by_value with database',  () => {
+		return req()
 			.send({
 				operation: 'search_by_value',
 				database: 'tuckerdoodle',
@@ -256,8 +256,8 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('search_by_conditions without database', async () => {
-		await req()
+	it('search_by_conditions without database',  () => {
+		return req()
 			.send({
 				operation: 'search_by_conditions',
 				table: 'friends',
@@ -268,8 +268,8 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('search_by_conditions with database', async () => {
-		await req()
+	it('search_by_conditions with database',  () => {
+		return req()
 			.send({
 				operation: 'search_by_conditions',
 				database: 'tuckerdoodle',
@@ -287,64 +287,64 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('delete with database', async () => {
-		await req()
+	it('delete with database',  () => {
+		return req()
 			.send({ operation: 'delete', database: 'tuckerdoodle', table: 'todo', hash_values: [1] })
 			.expect((r) => assert.equal(r.body.message, '1 of 1 record successfully deleted', r.text))
 			.expect(200);
 	});
 
-	it('delete without database', async () => {
-		await req()
+	it('delete without database',  () => {
+		return req()
 			.send({ operation: 'delete', table: 'friends', hash_values: [1] })
 			.expect((r) => assert.equal(r.body.message, '1 of 1 record successfully deleted', r.text))
 			.expect(200);
 	});
 
-	it('drop_attribute with database', async () => {
-		await req()
+	it('drop_attribute with database',  () => {
+		return req()
 			.send({ operation: 'drop_attribute', database: 'tuckerdoodle', table: 'todo', attribute: 'date' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'date'", r.text))
 			.expect(200);
 	});
 
-	it('drop_attribute without database', async () => {
-		await req()
+	it('drop_attribute without database',  () => {
+		return req()
 			.send({ operation: 'drop_attribute', table: 'friends', attribute: 'name' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'name'", r.text))
 			.expect(200);
 	});
 
-	it('drop_table with database', async () => {
-		await req()
+	it('drop_table with database',  () => {
+		return req()
 			.send({ operation: 'drop_table', database: 'tuckerdoodle', table: 'todo' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted table 'tuckerdoodle.todo'", r.text))
 			.expect(200);
 	});
 
-	it('drop_database tuckerdoodle', async () => {
-		await req()
+	it('drop_database tuckerdoodle',  () => {
+		return req()
 			.send({ operation: 'drop_database', database: 'tuckerdoodle' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted 'tuckerdoodle'", r.text))
 			.expect(200);
 	});
 
-	it('create_database "job_guy" for jobs', async () => {
-		await req()
+	it('create_database "job_guy" for jobs',  () => {
+		return req()
 			.send({ operation: 'create_database', database: 'job_guy' })
 			.expect((r) => assert.equal(r.body.message, "database 'job_guy' successfully created", r.text))
 			.expect(200);
 	});
 
-	it('create_table "working" for jobs', async () => {
-		await req()
+	it('create_table "working" for jobs',  () => {
+		return req()
 			.send({ operation: 'create_table', database: 'job_guy', table: 'working', hash_attribute: 'id' })
 			.expect((r) => assert.equal(r.body.message, "table 'job_guy.working' successfully created.", r.text))
 			.expect(200);
 	});
 
-	it('delete_records_before with database', async () => {
-		await req()
+	it('delete_records_before with database',  () => {
+		return req()
 			.send({
 				operation: 'delete_records_before',
 				database: 'job_guy',
@@ -384,8 +384,8 @@ describe('16. Terminology Updates', () => {
 		await setTimeout(5000);
 	});
 
-	it('csv_file_load with database', async () => {
-		await req()
+	it('csv_file_load with database',  () => {
+		return req()
 			.send({
 				operation: 'csv_file_load',
 				database: 'job_guy',
@@ -396,22 +396,22 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('csv_file_load without database error', async () => {
-		await req()
+	it('csv_file_load without database error',  () => {
+		return req()
 			.send({ operation: 'csv_file_load', table: 'todo', file_path: `${getCsvPath()}Suppliers.csv` })
 			.expect((r) => assert.ok(r.body.error.includes("Table 'data.todo' does not exist"), r.text))
 			.expect(400);
 	});
 
-	it('csv_file_load without database', async () => {
-		await req()
+	it('csv_file_load without database',  () => {
+		return req()
 			.send({ operation: 'csv_file_load', table: 'friends', file_path: `${getCsvPath()}Suppliers.csv` })
 			.expect((r) => assert.ok(r.body.message.includes('Starting job with id'), r.text))
 			.expect(200);
 	});
 
-	it('csv_data_load without database', async () => {
-		await req()
+	it('csv_data_load without database',  () => {
+		return req()
 			.send({
 				operation: 'csv_data_load',
 				table: 'friends',
@@ -421,8 +421,8 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('csv_data_load with database', async () => {
-		await req()
+	it('csv_data_load with database',  () => {
+		return req()
 			.send({
 				operation: 'csv_data_load',
 				database: 'job_guy',
@@ -433,8 +433,8 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('csv_url_load without database', async () => {
-		await req()
+	it('csv_url_load without database',  () => {
+		return req()
 			.send({
 				operation: 'csv_url_load',
 				action: 'insert',
@@ -445,8 +445,8 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('csv_url_load with database', async () => {
-		await req()
+	it('csv_url_load with database',  () => {
+		return req()
 			.send({
 				operation: 'csv_url_load',
 				action: 'insert',
@@ -458,8 +458,8 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('import_from_s3 without database', async () => {
-		await req()
+	it('import_from_s3 without database',  () => {
+		return req()
 			.send({
 				operation: 'import_from_s3',
 				table: 'friends',
@@ -475,8 +475,8 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('import_from_s3 with database', async () => {
-		await req()
+	it('import_from_s3 with database',  () => {
+		return req()
 			.send({
 				operation: 'import_from_s3',
 				database: 'job_guy',
@@ -493,8 +493,8 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('Export to S3 search_by_hash with ids', async () => {
-		await req()
+	it('Export to S3 search_by_hash with ids',  () => {
+		return req()
 			.send({
 				operation: 'export_to_s3',
 				format: 'csv',
@@ -511,8 +511,8 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('Export locally search_by_hash with ids', async () => {
-		await req()
+	it('Export locally search_by_hash with ids',  () => {
+		return req()
 			.send({
 				operation: 'export_local',
 				path: './',
@@ -524,15 +524,15 @@ describe('16. Terminology Updates', () => {
 			.expect(200);
 	});
 
-	it('drop_table without database', async () => {
-		await req()
+	it('drop_table without database',  () => {
+		return req()
 			.send({ operation: 'drop_table', table: 'friends' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted table 'data.friends'", r.text))
 			.expect(200);
 	});
 
-	it('drop_database job_guy', async () => {
-		await req()
+	it('drop_database job_guy',  () => {
+		return req()
 			.send({ operation: 'drop_database', database: 'job_guy' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted 'job_guy'", r.text))
 			.expect(200);
