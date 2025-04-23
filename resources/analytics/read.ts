@@ -3,7 +3,7 @@ import { loggerWithTag } from '../../utility/logging/harper_logger.js';
 import { getAnalyticsHostnameTable } from './hostnames.ts';
 import type { Resource } from 'harperdb';
 import type { Conditions } from '../ResourceInterface.ts';
-import { METRIC } from './metadata.ts';
+import { METRIC, type BuiltInMetricName } from './metadata.ts';
 
 const log = loggerWithTag('analytics');
 
@@ -82,16 +82,14 @@ interface ListMetricsRequest {
 
 type ListMetricsResponse = string[];
 
-export async function listMetricsOp(req: ListMetricsRequest): Promise<ListMetricsResponse> {
+export function listMetricsOp(req: ListMetricsRequest): Promise<ListMetricsResponse> {
 	return listMetrics(req.metric_types);
 }
 
-export async function listMetrics(metricTypes?: MetricType[]): Promise<string[]> {
+export async function listMetrics(metricTypes: MetricType[] = ['builtin']): Promise<string[]> {
 	let metrics: string[] = [];
 
-	metricTypes ??= ['builtin'];
-
-	const builtins = Object.values(METRIC);
+	const builtins: BuiltInMetricName[] = Object.values(METRIC);
 
 	if (metricTypes.includes('builtin')) {
 		metrics = builtins;
@@ -129,7 +127,7 @@ interface DescribeMetricResponse {
 	attributes?: string[];
 }
 
-export async function describeMetricOp(req: DescribeMetricRequest): Promise<DescribeMetricResponse> {
+export function describeMetricOp(req: DescribeMetricRequest): Promise<DescribeMetricResponse> {
 	return describeMetric(req.metric);
 }
 
@@ -145,13 +143,8 @@ export async function describeMetric(metric: string): Promise<DescribeMetricResp
 		limit: 1,
 	};
 	const results = databases.system.hdb_analytics.search(lastEntrySearch);
-	let result;
-	for await (result of results) {
-		break;
-	}
-	log.trace?.(`describe metric ${metric}:`, JSON.stringify(result));
+	const result = await results.next().value;
 	if (result) {
-		log.trace?.(`describe metric ${metric} attributes:`, JSON.stringify(Object.keys(result)));
 		return { attributes: Object.keys(result) };
 	}
 	return {};

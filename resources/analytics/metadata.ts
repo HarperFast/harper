@@ -5,4 +5,6 @@ export const METRIC = {
 	MAIN_THREAD_UTILIZATION: 'main-thread-utilization',
 	RESOURCE_USAGE: 'resource-usage',
 	UTILIZATION: 'utilization',
-};
+} as const;
+
+export type BuiltInMetricName = (typeof METRIC)[keyof typeof METRIC];
