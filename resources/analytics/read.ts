@@ -13,43 +13,64 @@ async function lookupHostname(nodeId: number): Promise<string> {
 	return result.hostname;
 }
 
-interface AnalyticsRequest {
-	metric: string;
-	startTimestamp?: number;
-	endTimestamp?: number;
-	getAttributes?: string[];
+function isSelected(querySelect: string[], attr: string) {
+	return (querySelect.length === 1 && querySelect[0] === '*') || querySelect.includes(attr);
 }
 
-export async function get(req: AnalyticsRequest): Promise<Metric[]> {
-	log.trace?.('get analytics request received');
-	const conditions: Conditions = [{ attribute: 'metric', comparator: 'equals', value: req.metric }];
-	const select = req.getAttributes ? req.getAttributes : ['*'];
-	if (req.startTimestamp) {
+interface GetAnalyticsRequest {
+	metric: string;
+	start_time?: number;
+	end_time?: number;
+	get_attributes?: string[];
+}
+
+type GetAnalyticsResponse = Metric[];
+
+export function getOp(req: GetAnalyticsRequest): Promise<GetAnalyticsResponse> {
+	log.trace?.("get_analytics request:", req);
+	return get(req.metric, req.get_attributes, req.start_time, req.end_time);
+}
+
+export async function get(metric: string, getAttributes?: string[], startTime?: number, endTime?: number): Promise<Metric[]> {
+	const conditions: Conditions = [{ attribute: 'metric', comparator: 'equals', value: metric }];
+	const select = getAttributes ?? ['*'];
+
+	// ensure we're always selecting id
+	if (!isSelected(select, 'id')) {
+		select.push('id');
+	}
+
+	if (startTime) {
 		conditions.push({
 			attribute: 'id',
 			comparator: 'greater_than_equal',
-			value: req.startTimestamp,
+			value: startTime,
 		});
 	}
-	if (req.endTimestamp) {
+	if (endTime) {
 		conditions.push({
 			attribute: 'id',
 			comparator: 'less_than',
-			value: req.endTimestamp,
+			value: endTime,
 		});
 	}
+
 	const request = { conditions, select };
-	log.trace?.("get search request:", request);
+	log.trace?.("get_analytics hdb_analytics.search request:", request);
 	const searchResults = await databases.system.hdb_analytics.search(request);
-	const results: Metric[] = [];
-	for await (const result of searchResults) {
-		log.trace?.(`get result: ${JSON.stringify(result)}`);
-		const nodeId: number = result.id[1];
-		const hostname = await lookupHostname(nodeId);
-		results.push({
-			...result,
-			node: hostname,
-		});
+
+	return searchResults.map(async (result: Metric) => {
+		// remove nodeId from 'id' attr and resolve it to the actual hostname and
+		// add back in as 'node' attr if selected
+		const nodeId = result.id[1];
+		result['id'] = result['id'][0];
+		if (isSelected(select, 'node')) {
+			log.trace?.(`get_analytics lookup hostname for nodeId: ${nodeId}`);
+			result['node'] = await lookupHostname(nodeId);
+		}
+		log.trace?.(`get_analytics result:`, JSON.stringify(result));
+		return result;
+	});
+}
 	}
-	return results;
 }

@@ -492,6 +492,6 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		terms.OPERATIONS_ENUM.GET_SSH_KNOWN_HOSTS,
 		new OperationFunctionObject(customFunctionOperations.getSSHKnownHosts)
 	);
-	opFuncMap.set(terms.OPERATIONS_ENUM.GET_ANALYTICS, new OperationFunctionObject(analytics.get));
+	opFuncMap.set(terms.OPERATIONS_ENUM.GET_ANALYTICS, new OperationFunctionObject(analytics.getOp));
 	return opFuncMap;
 }
