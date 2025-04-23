@@ -172,6 +172,8 @@ requiredPermissions.set(keys.getKey.name, new permission(true, []));
 requiredPermissions.set(setNode.addNodeBack.name, new permission(true, []));
 requiredPermissions.set(setNode.removeNodeBack.name, new permission(true, []));
 requiredPermissions.set(analytics.getOp.name, new permission(false, [READ_PERM]));
+requiredPermissions.set(analytics.listMetricsOp.name, new permission(false, [READ_PERM]));
+requiredPermissions.set(analytics.describeMetricOp.name, new permission(false, [READ_PERM]));
 
 //this operation must be available to all users so they can create authentication tokens and login
 requiredPermissions.set(tokenAuthentication.createTokens.name, new permission(false, []));

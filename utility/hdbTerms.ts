@@ -283,6 +283,7 @@ export const OPERATIONS_ENUM = {
 	DESCRIBE_DATABASE: 'describe_database',
 	DESCRIBE_TABLE: 'describe_table',
 	DESCRIBE_ALL: 'describe_all',
+	DESCRIBE_METRIC: 'describe_metric',
 	DELETE: 'delete',
 	ADD_USER: 'add_user',
 	ALTER_USER: 'alter_user',
@@ -366,6 +367,7 @@ export const OPERATIONS_ENUM = {
 	GET_SSH_KNOWN_HOSTS: 'get_ssh_known_hosts',
 	GET_KEY: 'get_key',
 	GET_ANALYTICS: 'get_analytics',
+	LIST_METRICS: 'list_metrics',
 } as const;
 
 /** Defines valid file types that we are able to handle in 'import_from_s3' ops */

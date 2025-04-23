@@ -12,6 +12,7 @@ import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { server } from '../../server/Server.ts';
 import * as fs from 'node:fs';
 import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts';
+import { METRIC } from './metadata.ts';
 
 const log = loggerWithTag('analytics');
 
@@ -292,7 +293,7 @@ function storeTableSizeMetrics(analyticsTable: Table, dbName: string, tables: Ta
 		const fullTableName = `${dbName}.${tableName}`;
 		const tableSize = table.getSize();
 		const metric = {
-			metric: 'table-size',
+			metric: METRIC.TABLE_SIZE,
 			database: dbName,
 			table: tableName,
 			size: tableSize,
@@ -316,7 +317,7 @@ function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 			const dbUsedSize = storeTableSizeMetrics(analyticsTable, db, tables);
 			const dbFree = dbTotalSize - dbUsedSize;
 			const metric = {
-				metric: 'database-size',
+				metric: METRIC.DATABASE_SIZE,
 				database: db,
 				size: dbTotalSize,
 				used: dbUsedSize,
@@ -341,7 +342,7 @@ function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
 				return;
 			}
 			const metric = {
-				metric: 'storage-volume',
+				metric: METRIC.STORAGE_VOLUME,
 				database: db,
 				...storageStats,
 			};
@@ -507,7 +508,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	// don't record boring entries
 	if (hasUpdates || active * 10 > idle) {
 		const value = {
-			metric: 'main-thread-utilization',
+			metric: METRIC.MAIN_THREAD_UTILIZATION,
 			idle: idle - lastIdle,
 			active: active - lastActive,
 			taskQueueLatency: await taskQueueLatency,
@@ -526,7 +527,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	currentResourceUsage.period = lastResourceUsage.time ? now - lastResourceUsage.time : toPeriod;
 	currentResourceUsage.cpuUtilization = calculateCPUUtilization(lastResourceUsage, currentResourceUsage.period);
 	const cruMetric = {
-		metric: 'resource-usage',
+		metric: METRIC.RESOURCE_USAGE,
 		...currentResourceUsage,
 	};
 	storeMetric(analyticsTable, cruMetric);
@@ -645,7 +646,7 @@ function recordAnalytics(message, worker?) {
 	report.totalBytesProcessed = totalBytesProcessed;
 	if (worker) {
 		report.metrics.push({
-			metric: 'utilization',
+			metric: METRIC.UTILIZATION,
 			...worker.performance.eventLoopUtilization(lastUtilizations.get(worker)),
 		});
 		lastUtilizations.set(worker, worker.performance.eventLoopUtilization());

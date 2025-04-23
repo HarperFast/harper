@@ -3,6 +3,7 @@ import { loggerWithTag } from '../../utility/logging/harper_logger.js';
 import { getAnalyticsHostnameTable } from './hostnames.ts';
 import type { Resource } from 'harperdb';
 import type { Conditions } from '../ResourceInterface.ts';
+import { METRIC, type BuiltInMetricName } from './metadata.ts';
 
 const log = loggerWithTag('analytics');
 
@@ -72,5 +73,79 @@ export async function get(metric: string, getAttributes?: string[], startTime?: 
 		return result;
 	});
 }
+
+type MetricType = 'builtin' | 'custom';
+
+interface ListMetricsRequest {
+	metric_types: MetricType[];
+}
+
+type ListMetricsResponse = string[];
+
+export function listMetricsOp(req: ListMetricsRequest): Promise<ListMetricsResponse> {
+	return listMetrics(req.metric_types);
+}
+
+export async function listMetrics(metricTypes: MetricType[] = ['builtin']): Promise<string[]> {
+	let metrics: string[] = [];
+
+	const builtins: BuiltInMetricName[] = Object.values(METRIC);
+
+	if (metricTypes.includes('builtin')) {
+		metrics = builtins;
 	}
+
+	if (metricTypes.includes('custom')) {
+		const conditions = builtins.map(c => {
+			return {
+				attribute: 'metric',
+				comparator: 'not_equal',
+				value: c,
+			}
+		});
+		const customMetricsSearch = {
+			select: ['metric'],
+			conditions: conditions,
+		};
+		const customMetrics = new Set<string>;
+		const searchResults = await databases.system.hdb_analytics.search(customMetricsSearch);
+		for await (const record of searchResults) {
+			customMetrics.add(record.metric);
+		}
+
+		metrics = metrics.concat(Array.from(customMetrics.values()));
+	}
+
+	return metrics;
+}
+
+interface DescribeMetricRequest {
+	metric: string;
+}
+
+interface DescribeMetricResponse {
+	attributes?: string[];
+}
+
+export function describeMetricOp(req: DescribeMetricRequest): Promise<DescribeMetricResponse> {
+	return describeMetric(req.metric);
+}
+
+export async function describeMetric(metric: string): Promise<DescribeMetricResponse> {
+	const lastEntrySearch = {
+		conditions: [
+			{ attribute: 'metric', comparator: 'equals', value: metric },
+		],
+		sort: {
+			attribute: 'id',
+			descending: true,
+		},
+		limit: 1,
+	};
+	const results = databases.system.hdb_analytics.search(lastEntrySearch);
+	const result = await results.next().value;
+	if (result) {
+		return { attributes: Object.keys(result) };
+	}
+	return {};
 }
