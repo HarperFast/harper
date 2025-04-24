@@ -18,6 +18,7 @@ COPY server/nats/utility/* ./server/nats/utility/
 RUN npm ci
 
 COPY . /opt/harper/
+RUN rm -rf ts-build && npx tsc || true
 
 RUN npm link
 
