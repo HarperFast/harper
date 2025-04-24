@@ -279,7 +279,7 @@ const get_on_missing_property = new Proxy(
 				if (changes && name in changes) {
 					return changes[name];
 				}
-				const source_value = receiver.getRecord?.()[name];
+				const source_value = receiver.getRecord?.()?.[name];
 				if (source_value && typeof source_value === 'object') {
 					const updated_value = trackObject(source_value);
 					if (updated_value) {
