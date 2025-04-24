@@ -46,6 +46,7 @@ const npmUtilities = require('./npmUtilities.js');
 const keys = require('../security/keys.js');
 const setNode = require('../server/replication/setNode.ts');
 const analytics = require('../resources/analytics/read.ts');
+const status = require('../server/status');
 
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject.js');
 const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
@@ -174,6 +175,9 @@ requiredPermissions.set(setNode.removeNodeBack.name, new permission(true, []));
 requiredPermissions.set(analytics.getOp.name, new permission(false, [READ_PERM]));
 requiredPermissions.set(analytics.listMetricsOp.name, new permission(false, [READ_PERM]));
 requiredPermissions.set(analytics.describeMetricOp.name, new permission(false, [READ_PERM]));
+requiredPermissions.set(status.clear.name, new permission(true, []));
+requiredPermissions.set(status.get.name, new permission(true, []));
+requiredPermissions.set(status.set.name, new permission(true, []));
 
 //this operation must be available to all users so they can create authentication tokens and login
 requiredPermissions.set(tokenAuthentication.createTokens.name, new permission(false, []));
