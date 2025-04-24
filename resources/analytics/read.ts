@@ -113,7 +113,7 @@ export async function listMetrics(metricTypes: MetricType[] = ['builtin']): Prom
 			customMetrics.add(record.metric);
 		}
 
-		metrics = metrics.concat(Array.from(customMetrics.values()));
+		metrics.push(...Array.from(customMetrics.values()));
 	}
 
 	return metrics;
