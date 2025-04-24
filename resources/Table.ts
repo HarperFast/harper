@@ -930,7 +930,7 @@ export function makeTable(options) {
 				return this.search(query);
 			}
 			if (this.getId() === null) {
-				if (query?.conditions) return this.search(query); // if there is a query, assume it was meant to be a root level query
+				if (query?.conditions || query?.size > 0) return this.search(query); // if there is a query, assume it was meant to be a root level query
 				const description = {
 					// basically a describe call
 					records: './', // an href to the records themselves
