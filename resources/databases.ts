@@ -332,6 +332,7 @@ export function readMetaDb(
 				root_store.databaseName = database_name;
 				primary_store.tableId = table_id;
 			}
+			let attributes_updated: boolean;
 			for (const attribute of attributes) {
 				attribute.attribute = attribute.name;
 				try {
@@ -348,12 +349,32 @@ export function readMetaDb(
 						if (existing_attribute)
 							existing_attributes.splice(existing_attributes.indexOf(existing_attribute), 1, attribute);
 						else existing_attributes.push(attribute);
+						attributes_updated = true;
 					}
 				} catch (error) {
 					harper_logger.error(`Error trying to update attribute`, attribute, existing_attributes, indices, error);
 				}
 			}
-			if (!table) {
+			for (const existing_attribute of existing_attributes) {
+				const attribute = attributes.find((attribute) => attribute.name === existing_attribute.name);
+				if (!attribute) {
+					if (existing_attribute.is_hash_attribute) {
+						harper_logger.error('Unable to remove existing primary key attribute', existing_attribute);
+						continue;
+					}
+					if (existing_attribute.indexed) {
+						// we only remove attributes if they were indexed, in order to support drop_attribute that removes dynamic indexed attributes
+						existing_attributes.splice(existing_attributes.indexOf(existing_attribute), 1);
+						attributes_updated = true;
+					}
+				}
+			}
+			if (table) {
+				if (attributes_updated) {
+					table.schemaVersion++;
+					table.updatedAttributes();
+				}
+			} else {
 				table = setTable(
 					tables,
 					table_name,
@@ -689,7 +710,8 @@ export function table(table_definition: TableDefinition) {
 					(sealed !== undefined && sealed !== Table.sealed) ||
 					(replicate !== undefined && replicate !== Table.replicate) ||
 					(+expiration || undefined) !== (+attribute_descriptor.expiration || undefined) ||
-					(+eviction || undefined) !== (+attribute_descriptor.eviction || undefined)
+					(+eviction || undefined) !== (+attribute_descriptor.eviction || undefined) ||
+					attribute.type !== attribute_descriptor.type
 				) {
 					const updated_primary_attribute = { ...attribute_descriptor };
 					if (typeof audit === 'boolean') {
@@ -700,6 +722,7 @@ export function table(table_definition: TableDefinition) {
 					if (eviction) updated_primary_attribute.eviction = +eviction;
 					if (sealed !== undefined) updated_primary_attribute.sealed = sealed;
 					if (replicate !== undefined) updated_primary_attribute.replicate = replicate;
+					if (attribute.type) updated_primary_attribute.type = attribute.type;
 					has_changes = true; // send out notification of the change
 					startTxn();
 					attributes_dbi.put(dbi_key, updated_primary_attribute);

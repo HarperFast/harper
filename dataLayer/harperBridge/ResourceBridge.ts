@@ -22,13 +22,14 @@ const DEFAULT_DATABASE = 'data';
 const DELETE_CHUNK = 10000;
 const DELETE_PAUSE_MS = 10;
 
-export type SearchByConditionsRequest = Query & Context & {
-	schema?: string;
-	database?: string;
-	table: string;
-	get_attributes: Select;
-	reverse?: boolean;
-};
+export type SearchByConditionsRequest = Query &
+	Context & {
+		schema?: string;
+		database?: string;
+		table: string;
+		get_attributes: Select;
+		reverse?: boolean;
+	};
 
 /**
  * Currently we are extending LMDBBridge so we can use the LMDB methods as a fallback until all our RAPI methods are
@@ -165,7 +166,7 @@ export class ResourceBridge extends LMDBBridge {
 	}
 
 	dropTable(drop_table_object) {
-		getTable(drop_table_object).dropTable();
+		return getTable(drop_table_object).dropTable();
 	}
 
 	createSchema(create_schema_obj) {
