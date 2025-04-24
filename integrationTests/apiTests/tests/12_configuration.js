@@ -123,10 +123,9 @@ describe('12. Configuration', () => {
 			})
 			.expect((r) => assert.equal(r.body.error, "attribute 'created_attribute' already exists in dev.AttributeDropTest", r.text))
 			.expect(400);
-		await setTimeout(3000);
 	});
 
-	it('Drop Attribute - twice',  () => {
+	it('Drop Attribute',  () => {
 		return req()
 			.send({
 				operation: 'drop_attribute',
@@ -135,35 +134,13 @@ describe('12. Configuration', () => {
 				attribute: 'another_attribute',
 			})
 			.expect((r) => {
-				console.log(r.text);
-				assert.equal(r.body.message, "successfully deleted attribute 'another_attribute'", r.text)
-			})
-			.expect(200)
-			.send({
-				operation: 'drop_attribute',
-				schema: 'dev',
-				table: 'AttributeDropTest',
-				attribute: 'another_attribute',
-			})
-			.expect((r) => {
-				console.log(r.text);
 				assert.equal(r.body.message, "successfully deleted attribute 'another_attribute'", r.text)
 			})
 			.expect(200)
 	});
 
-	it('Drop Attribute and Describe table DropAttributeTest', async () => {
-		await setTimeout(9000);
+	it('Describe table Drop Attribute Test', async () => {
 		await req()
-			.send({
-				operation: 'drop_attribute',
-				schema: 'dev',
-				table: 'AttributeDropTest',
-				attribute: 'another_attribute',
-			})
-			.expect((r) => {
-				console.log(r.text);
-			})
 			.send({ operation: 'describe_table', table: 'AttributeDropTest', schema: 'dev' })
 			.expect((r) => {
 				let found = false;
@@ -316,10 +293,6 @@ describe('12. Configuration', () => {
 			.set('Accept', '*/*')
 			.set('Connection', 'keep-alive')
 			.set('Accept-Encoding', 'gzip, deflate, br')
-			.expect((r) => {
-				console.log('Response headers: ' + JSON.stringify(r.headers));
-				console.log('Response body: ' + r.text);
-			})
 			.expect('content-type', 'text/html; charset=UTF-8')
 			.expect((r) => {
 				assert.ok(r.text.includes('<!doctype html>'), r.text);

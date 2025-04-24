@@ -55,6 +55,7 @@ export let testData = {
     my_operation_token: "",
     rootPath: "",
     restartTimeout: 45000,
+		jobErrorMessage: ""
 }
 
 export const envUrl = `${testData.host}:${testData.port}`;

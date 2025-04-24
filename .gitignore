@@ -40,3 +40,4 @@ utility/Docker/licenses/**
 license-output.md
 
 .DS_Store
+integrationTests/apiTests/package.json

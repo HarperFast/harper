@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { setTimeout, setTimeout as sleep } from 'node:timers/promises';
 import { req } from './request.js';
+import { testData } from '../config/envConfig.js';
 
 
 export async function getJobId(jsonData) {
@@ -10,8 +11,6 @@ export async function getJobId(jsonData) {
     let parsedId = jsonData.message.substring(id_index + 3, jsonData.message.length);
     return parsedId;
 }
-
-let errorMessage = "";
 
 export async function checkJobCompleted(job_id, expectedErrorMessage, expectedCompletedMessage) {
     const response = await req()
@@ -34,8 +33,8 @@ export async function checkJobCompleted(job_id, expectedErrorMessage, expectedCo
                 } catch(err) {
                     assert.ok(jsonData[0].message.error.includes(expectedErrorMessage), response.text);
                 }
-                errorMessage = jsonData[0].message;
-                console.log(errorMessage);
+                testData.jobErrorMessage = jsonData[0].message;
+                console.log(testData.jobErrorMessage);
             } else {
                 console.log(status + " job id: " + job_id);
                 console.log(JSON.stringify(jsonData));
@@ -49,7 +48,7 @@ export async function checkJobCompleted(job_id, expectedErrorMessage, expectedCo
                 assert.ok(jsonData[0].message.includes(expectedCompletedMessage), response.text);
             }
             assert.equal(status, 'COMPLETE', response.text);
-            errorMessage = "";
+            testData.jobErrorMessage = "";
             break;
         case '0':
             assert.fail('Status was: ' + response.text);
@@ -68,7 +67,7 @@ export async function checkJobCompleted(job_id, expectedErrorMessage, expectedCo
             assert.fail('Status was not one of the expected ones. Status was: ' + status + ' job id: ' + job_id + ' ' +  response.text);
             break;
     }
-    return errorMessage;
+    return testData.jobErrorMessage;
 }
 
 export async function checkJob(job_id, timeoutInSeconds) {
