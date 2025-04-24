@@ -1,6 +1,6 @@
-import { table } from '../resources/databases';
-import * as logger from '../utility/logging/logger';
-import { OperationRequestBody } from './operationsServer';
+import { table } from '../resources/databases.js';
+import * as logger from '../utility/logging/logger.js';
+import { OperationRequestBody } from './operationsServer.js';
 
 module.exports = {
     clear: clearStatus,
