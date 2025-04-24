@@ -2,10 +2,10 @@ import { table } from '../resources/databases.js';
 import * as logger from '../utility/logging/logger.js';
 import { OperationRequestBody } from './operationsServer.js';
 
-module.exports = {
-    clear: clearStatus,
-    get: getStatus,
-    set: setStatus,
+export {
+    clearStatus as clear,
+    getStatus as get,
+    setStatus as set,
 };
 
 const STATUS_DEFAULT = 'primary';
