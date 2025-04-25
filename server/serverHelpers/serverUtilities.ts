@@ -48,6 +48,8 @@ import operationFunctionCaller from '../../utility/OperationFunctionCaller.js';
 import type { OperationRequest, OperationRequestBody, OperationResult } from '../operationsServer.ts';
 import { transactToClusteringUtils } from '../../utility/clustering/transactToClusteringUtilities.js';
 import type { Context } from '../../resources/ResourceInterface.ts';
+import * as status from '../status.ts';
+
 const pSearchSearch = util.promisify(search.search);
 const pSqlEvaluateSql = util.promisify(sql.evaluateSQL);
 
@@ -495,5 +497,11 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_ANALYTICS, new OperationFunctionObject(analytics.getOp));
 	opFuncMap.set(terms.OPERATIONS_ENUM.LIST_METRICS, new OperationFunctionObject(analytics.listMetricsOp));
 	opFuncMap.set(terms.OPERATIONS_ENUM.DESCRIBE_METRIC, new OperationFunctionObject(analytics.describeMetricOp));
+	
+	// set status operations
+	opFuncMap.set(terms.OPERATIONS_ENUM.GET_STATUS, new OperationFunctionObject(status.get));
+	opFuncMap.set(terms.OPERATIONS_ENUM.SET_STATUS, new OperationFunctionObject(status.set));
+	opFuncMap.set(terms.OPERATIONS_ENUM.CLEAR_STATUS, new OperationFunctionObject(status.clear));
+
 	return opFuncMap;
 }
