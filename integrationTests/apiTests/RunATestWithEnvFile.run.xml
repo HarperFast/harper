@@ -1,0 +1,19 @@
+<component name="ProjectRunConfigurationManager">
+  <configuration default="false" name="RunATestWithEnvFile" type="NodeJsTestRunner">
+    <node-interpreter value="project" />
+    <node-options value="-r dotenv/config" />
+    <working-dir value="$PROJECT_DIR$/integrationTests/apiTests" />
+    <language value="JAVA_SCRIPT" />
+    <typescript-loader value="MANUAL_SETUP_IN_NODE_OPTION" />
+    <envs>
+      <env name="DOTENV_CONFIG_PATH" value="./.env" />
+    </envs>
+    <scope-kind value="TEST" />
+    <test-file value="$PROJECT_DIR$/integrationTests/apiTests/tests/5_noSqlRoleTesting.js" />
+    <test-names>
+      <test-name value="5. NoSQL Role Testing" />
+      <test-name value="Import CSV from S3 to table w/ full attr perms - update" />
+    </test-names>
+    <method v="2" />
+  </configuration>
+</component>

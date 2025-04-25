@@ -5,12 +5,14 @@ on:
     branches:
       - main
       - 'release_*'
+      - CORE-2498
   pull_request:
-    types: [opened, synchronize, reopened]
+    types: [ opened, synchronize, reopened ]
   schedule:
-    - cron: '14 13 * * 1-5'
+    - cron: '30 5 * * 1-5'
   workflow_dispatch:
-name: Run Source Code CI Tests
+  
+name: Run Source Code CI Tests and API Tests with Node js
 jobs:
   getNodeVersion:
     runs-on: ubuntu-latest
@@ -107,9 +109,11 @@ jobs:
       - runUnitTests
       - createInstances
     steps:
-      - name: Run Integration Tests with Postman on Instances
+      - name: Run Integration Tests with Node js on Instances
         env:
           CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+          S3_KEY : ${{ secrets.AWS_S3_INTEGRATION_TEST_DATA_ACCESS_KEY_ID }}
+          S3_SECRET : ${{ secrets.AWS_S3_INTEGRATION_TEST_DATA_SECRET_ACCESS_KEY }}
         run: |
           #!/bin/bash
           cd ../
@@ -120,7 +124,7 @@ jobs:
           do 
             echo "Starting work on: $public_dns_name"
             ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
-                "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh && /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh"
+                "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests-node-api-tests.sh && /home/ubuntu/harperdb/test/ci-tests/ci-tests-node-api-tests.sh ${S3_KEY} ${S3_SECRET}"
             echo "Ending work on: $public_dns_name"
           done
   downloadLogs:

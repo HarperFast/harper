@@ -235,8 +235,7 @@ export function readMetaDb(
 			databaseEnvs.set(path, rootStore);
 		}
 		const internalDbiInit = new OpenDBIObject(false);
-		const dbisStore =
-			rootStore.dbisDb || (rootStore.dbisDb = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit));
+		const dbisStore = rootStore.dbisDb || (rootStore.dbisDb = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit));
 		let auditStore = rootStore.auditStore;
 		if (!auditStore) {
 			if (auditPath) {
@@ -301,9 +300,7 @@ export function readMetaDb(
 			let tableId;
 			let primaryStore;
 			const audit =
-				typeof primaryAttribute.audit === 'boolean'
-					? primaryAttribute.audit
-					: envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
+				typeof primaryAttribute.audit === 'boolean' ? primaryAttribute.audit : envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
 			const trackDeletes = primaryAttribute.trackDeletes;
 			const expiration = primaryAttribute.expiration;
 			const eviction = primaryAttribute.eviction;
@@ -339,7 +336,7 @@ export function readMetaDb(
 				rootStore.databaseName = databaseName;
 				primaryStore.tableId = tableId;
 			}
-			let attributesUpdated;
+			let attributesUpdated: boolean;
 			for (const attribute of attributes) {
 				attribute.attribute = attribute.name;
 				try {

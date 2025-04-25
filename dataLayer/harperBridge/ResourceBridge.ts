@@ -166,7 +166,7 @@ export class ResourceBridge extends LMDBBridge {
 	}
 
 	dropTable(dropTableObject) {
-		getTable(dropTableObject).dropTable();
+		return getTable(dropTableObject).dropTable();
 	}
 
 	createSchema(createSchemaObj) {
