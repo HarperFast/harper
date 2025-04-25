@@ -1,4 +1,5 @@
 import { table } from '../resources/databases.js';
+import { Id } from '../resources/ResourceInterface.js';
 import * as logger from '../utility/logging/logger.js';
 import { OperationRequestBody } from './operationsServer.js';
 
@@ -11,7 +12,7 @@ export {
 const STATUS_DEFAULT = 'primary';
 
 type StatusOperationRequestBody = OperationRequestBody & {
-    id?: string;
+    id?: Id;
     status?: string;
 };
 

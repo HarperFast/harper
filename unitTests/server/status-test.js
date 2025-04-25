@@ -1,7 +1,8 @@
 'use strict';
 
-const { assert, expect } = require('chai');
+const assert = require('node:assert/strict');
 const status = require('../../server/status');
+const { Resource } = require('../../resources/Resource');
 
 describe('server.status', function () {
 
@@ -10,8 +11,8 @@ describe('server.status', function () {
     after(() => clearStatus());
 
     const assertAndOverrideTimestamps = (obj) => {
-        assert.isDefined(obj.__updatedtime__);
-        assert.isDefined(obj.__createdtime__);
+        assert.ok(obj.__updatedtime__ !== undefined);
+        assert.ok(obj.__createdtime__ !== undefined);
         obj.__updatedtime__ = 42;
         obj.__createdtime__ = 42;
     };
@@ -21,10 +22,9 @@ describe('server.status', function () {
             status: 'starting',
         };
         const result = await status.set(statusObj);
-        expect(result).to.be.undefined
+        assert.ok(result === undefined);
     });
 
-    // todo: needed?
     it('should get specific status', async function () {
         const statusObj = {
             id: 'primary',
@@ -38,8 +38,10 @@ describe('server.status', function () {
         };
         await status.set(statusObj);
         const result = await status.get({ id: 'primary' });
-        assertAndOverrideTimestamps(result);
-        expect(result).to.deep.equal(expected);
+        // node assert/strict is blind to resource properties
+        const resultObj = JSON.parse(JSON.stringify(result));
+        assertAndOverrideTimestamps(resultObj);
+        assert.deepEqual(expected, resultObj);
     });
 
     // todo: update to 'also report any additional real-time information about current status'
@@ -64,7 +66,7 @@ describe('server.status', function () {
             assertAndOverrideTimestamps(item);
             resultArray.push(item);
         }
-        expect(resultArray).to.deep.equal(expected);
+        assert.deepEqual(resultArray, expected);
     });
 
     // todo: update to 'also report any additional real-time information about current status'
@@ -81,9 +83,16 @@ describe('server.status', function () {
             {
                 id: 'maintenance',
                 status: 'testing will continue',
-            }
+            },
         ];
+        // assuming the status objects are in id order
         const expected = [
+            {
+                id: 'maintenance',
+                status: 'testing will continue',
+                __updatedtime__: 42,
+                __createdtime__: 42,
+            },
             {
                 id: 'primary',
                 status: 'testing',
@@ -96,12 +105,6 @@ describe('server.status', function () {
                 __updatedtime__: 42,
                 __createdtime__: 42,
             },
-            {
-                id: 'maintenance',
-                status: 'testing will continue',
-                __updatedtime__: 42,
-                __createdtime__: 42,
-            }
         ];
         await Promise.all(statusObjs.map(sO => status.set(sO)));
         const result = await status.get({});
@@ -111,6 +114,6 @@ describe('server.status', function () {
             assertAndOverrideTimestamps(item);
             resultArray.push(item);
         }
-        expect(resultArray).to.have.deep.members(expected);
+        assert.deepEqual(resultArray, expected);
     });
 });
