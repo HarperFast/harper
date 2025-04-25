@@ -44,7 +44,6 @@ describe('server.status', function () {
         assert.deepEqual(expected, resultObj);
     });
 
-    // todo: update to 'also report any additional real-time information about current status'
     it('should get complete status with just primary set', async function () {
         const statusObj = {
             id: 'primary',
@@ -69,16 +68,11 @@ describe('server.status', function () {
         assert.deepEqual(resultArray, expected);
     });
 
-    // todo: update to 'also report any additional real-time information about current status'
     it('should get complete status', async function () {
         const statusObjs = [
             {
                 id: 'primary',
                 status: 'testing',
-            },
-            {
-                id: 'test',
-                status: 'really testing',
             },
             {
                 id: 'maintenance',
@@ -99,12 +93,6 @@ describe('server.status', function () {
                 __updatedtime__: 42,
                 __createdtime__: 42,
             },
-            {
-                id: 'test',
-                status: 'really testing',
-                __updatedtime__: 42,
-                __createdtime__: 42,
-            },
         ];
         await Promise.all(statusObjs.map(sO => status.set(sO)));
         const result = await status.get({});
@@ -115,5 +103,23 @@ describe('server.status', function () {
             resultArray.push(item);
         }
         assert.deepEqual(resultArray, expected);
+    });
+
+    it('should fail validation on test status', async function () {
+        const statusObjs = [
+            {
+                id: 'primary',
+                status: 'testing',
+            },
+            {
+                id: 'test',
+                status: 'really testing',
+            },
+            {
+                id: 'maintenance',
+                status: 'testing will continue',
+            },
+        ];
+        await assert.rejects(async () => Promise.all(statusObjs.map(sO => status.set(sO))), { name: 'Error', message: '\'id\' must be one of [primary, maintenance]' });
     });
 });

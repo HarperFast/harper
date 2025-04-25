@@ -1,6 +1,9 @@
+import Joi from 'joi';
 import { table } from '../resources/databases.js';
 import { Id } from '../resources/ResourceInterface.js';
+import { handleHDBError, hdbErrors } from '../utility/errors/hdbError.js';
 import { loggerWithTag } from '../utility/logging/logger.js';
+import * as validator from '../validation/validationWrapper.js';
 import { OperationRequestBody } from './operationsServer.js';
 
 export {
@@ -10,6 +13,11 @@ export {
 };
 
 const STATUS_DEFAULT = 'primary';
+const STATUS_ALLOWED = [
+    STATUS_DEFAULT,
+    'maintenance',
+];
+const { HTTP_STATUS_CODES } = hdbErrors;
 
 type StatusOperationRequestBody = OperationRequestBody & {
     id: Id;
@@ -51,8 +59,6 @@ function getAllStatus() {
     return Status.get({});
 }
 
-// todo: update to 'also report any additional real-time information about current status'. maybe as a different func
-// todo: is there a reason to get a single status?
 function getStatus({ id }: StatusOperationRequestBody) {
     if (!id) {
         statusLogger.debug?.('getStatus', 'all');
@@ -64,8 +70,17 @@ function getStatus({ id }: StatusOperationRequestBody) {
 }
 
 function setStatus({ status, id = STATUS_DEFAULT }: StatusOperationWriteRequestBody) {
-    // todo: validate
-    // todo: return all, or just this status, or just success...or just the put operation
+    const validation = setStatusValidator({ status, id});
+	if (validation) {
+		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
+	}
+    
     statusLogger.debug?.('setStatus', id, status);
     return Status.put(id, { status });
 }
+
+const setStatusSchema = Joi.object({
+    id: Joi.string().valid(...STATUS_ALLOWED).required(),
+    status: Joi.string().min(1).max(512).required(),
+});
+const setStatusValidator = (obj) => validator.validateBySchema(obj, setStatusSchema);
