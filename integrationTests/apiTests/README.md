@@ -9,7 +9,19 @@
 
 ## How to run the tests
 
-> Note: Harper needs to be running before starting the tests
+> Notes:
+> 
+> Harper needs to be running before starting the tests.
+>
+> Some tests require AWS S3 to import data. The S3 key and secret must be specified as environment variables (`S3_KEY` and `S3_SECRET`) or in the `/integrationTests/apiTests/.env` file. See example file `.env.test.example`
+
+
+Run all integration tests directly from the root of the repo using the npm script `test:integration`.
+
+ 
+```
+npm run test:integration
+```
 
 Use the Node.js test runner to run the tests from the `/integrationTests/apiTests` folder.
 
@@ -24,33 +36,27 @@ For more information, review the [Node.js test runner](https://nodejs.org/docs/l
 
 ### Run all tests
 
-Some tests require AWS S3 to import data. The S3 key and secret must be specified as environment variables `S3_KEY` and `S3_SECRET` respectively.
+```
+cd /integrationTests/apiTests
 
-```S3_KEY='value' S3_SECRET='value' node --experimental-default-type="module" --stack-trace-limit=2 --test tests/testSuite.js```
+S3_KEY='value' S3_SECRET='value' node --experimental-default-type="module" --stack-trace-limit=2 --test tests/testSuite.js
+```
 
 or specify them in an `/integrationTests/apiTests/.env` file:
 ```
 S3_KEY=value
 S3_SECRET=value
 ```
-So then (having the .env file set) we can just run:
+With .env file set, run:
 ```
 node --experimental-default-type="module" --stack-trace-limit=2 --test tests/testSuite.js
 ```
-To run a test from the IDE that uses the environment variables specified in the .env file, use the Run Configuration saved as RunATestWithEnvFile.run.xml.
-Replace the Test file and the Test name with your test.  
 
 When running via GitHub Actions we grab the values from GitHub Secrets in the repo.
 
-You can also run all integration tests directly from the root of the repo using the npm script `test:integration`.
-```
-npm run test:integration
-```
+To run a test from the IDE that uses the environment variables specified in the .env file, use the Run Configuration saved as RunATestWithEnvFile.run.xml.
+Replace the Test file and the Test name with your test.  
 
-from apiTests folder run:
-```
-node --experimental-default-type="module" --stack-trace-limit=2 tests/testSuite.js
-```
 
 Docker
 
