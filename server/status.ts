@@ -6,7 +6,11 @@ import { loggerWithTag } from '../utility/logging/logger.js';
 import * as validator from '../validation/validationWrapper.js';
 import { OperationRequestBody } from './operationsServer.js';
 
-export { clearStatus as clear, getStatus as get, setStatus as set };
+export { 
+	clearStatus as clear,
+	getStatus as get, 
+	setStatus as set 
+};
 
 const STATUS_DEFAULT = 'primary';
 const STATUS_ALLOWED = [STATUS_DEFAULT, 'maintenance'];
