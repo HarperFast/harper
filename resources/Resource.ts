@@ -528,8 +528,7 @@ function transactional(action, options) {
 							if (query) {
 								if (parsedQuery) query = Object.assign(parsedQuery, query);
 							} else query = parsedQuery;
-							id = id.slice(id.startsWith('/') ? 1 : 0, searchIndex);
-							if (id) parsedQuery.id = id;
+							id = id.slice(0, searchIndex);
 						}
 						// handle paths of the form /path/id.property
 						const parsedId = this.parsePath(id, context, query);
@@ -542,8 +541,8 @@ function transactional(action, options) {
 							id = parsedId.id;
 						} else {
 							id = parsedId;
-							idOrQuery.id = id;
 						}
+						if (id) query.id = id;
 					}
 				} else if (idOrQuery[Symbol.iterator]) {
 					// get the id part from an iterable query

@@ -583,6 +583,7 @@ export function makeTable(options) {
 								if (loadingFromSource) {
 									txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
 									resource.#loadedFromSource = true;
+									request.loadedFromSource = true;
 									return when(loadingFromSource, (entry) => {
 										TableResource._updateResource(resource, entry);
 										return resource;
@@ -613,6 +614,7 @@ export function makeTable(options) {
 			const loadedFromSource = ensureLoadedFromSource(this.getId(), this.#entry, this.getContext());
 			if (loadedFromSource) {
 				this.#loadedFromSource = true;
+				this.getContext().loadedFromSource = true;
 				return when(loadedFromSource, (entry) => {
 					this.#entry = entry;
 					this.#record = entry.value;
@@ -911,7 +913,7 @@ export function makeTable(options) {
 		get(locator?: Query | string): Promise<object | void> | object | void {
 			const constructor: Resource = this.constructor;
 			if (typeof locator === 'string' && constructor.loadAsInstance !== false) return this.getProperty(locator);
-			if (locator?.search) return this.search(locator);
+			if (locator?.search) return this.search(locator as Query);
 			if (locator?.url === '') {
 				const description = {
 					// basically a describe call
