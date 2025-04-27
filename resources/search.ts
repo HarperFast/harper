@@ -1183,14 +1183,22 @@ export function intersectionEstimate(store, left, right) {
 	return (left * right) / estimatedEntryCount(store);
 }
 export class SimpleURLQuery {
-	url: string;
-	constructor(url: string) {
+	url?: string;
+	id: any;
+	constructor(url?: string, id: any) {
 		this.url = url;
+		this.id = id;
+	}
+	get pathname() {
+		return this.url.split('?')[0];
 	}
 	get() {
 		// this is a simple holder for the URL query, so we don't return anything (will be parsed later into a USP or Query object as needed)
 	}
 	[Symbol.iterator]() {
 		return [][Symbol.iterator]();
+	}
+	toString() {
+		return this.url ?? '/' + this.id;
 	}
 }

@@ -19,7 +19,7 @@ import type {
 	SubSelect,
 } from './ResourceInterface.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
-import { Resource } from './Resource.ts';
+import { Resource, contextStorage } from './Resource.ts';
 import { DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
 import { addSubscription } from './transactionBroadcast.ts';
@@ -49,6 +49,7 @@ import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject } from './blob.ts';
 import { onStorageReclamation } from '../server/storageReclamation.ts';
+
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
 
@@ -386,8 +387,7 @@ export function makeTable(options) {
 					const subscribeOnThisThread = source.subscribeOnThisThread
 						? source.subscribeOnThisThread(getWorkerIndex(), subscriptionOptions)
 						: getWorkerIndex() === 0;
-					const subscription =
-						hasSubscribe && subscribeOnThisThread && (await source.subscribe?.(subscriptionOptions));
+					const subscription = hasSubscribe && subscribeOnThisThread && (await source.subscribe?.(subscriptionOptions));
 					if (subscription) {
 						let txnInProgress;
 						// we listen for events by iterating through the async iterator provided by the subscription
@@ -551,7 +551,7 @@ export function makeTable(options) {
 		 */
 		static getResource(id: Id, request: Context, resourceOptions?: any): Promise<TableResource> | TableResource {
 			const resource: TableResource = super.getResource(id, request, resourceOptions) as any;
-			if (id != null) {
+			if (id != null && this.loadAsInstance !== false) {
 				checkValidId(id);
 				try {
 					if (resource.getRecord?.()) return resource; // already loaded, don't reload, current version may have modifications
@@ -906,15 +906,13 @@ export function makeTable(options) {
 		}
 		/**
 		 * This retrieves the data of this resource. By default, with no argument, just return `this`.
-		 * @param query - If included, specifies a query to perform on the record
+		 * @param locator - If included, specifies a query to perform on the record
 		 */
-		get(query?: Query | string): Promise<object | void> | object | void {
-			if (typeof query === 'string') return this.getProperty(query);
-			if (this.isCollection) {
-				return this.search(query);
-			}
-			if (this.getId() === null) {
-				if (query?.conditions) return this.search(query); // if there is a query, assume it was meant to be a root level query
+		get(locator?: Query | string): Promise<object | void> | object | void {
+			const constructor: Resource = this.constructor;
+			if (typeof locator === 'string' && constructor.loadAsInstance !== false) return this.getProperty(locator);
+			if (locator?.search) return this.search(locator);
+			if (locator?.url === '') {
 				const description = {
 					// basically a describe call
 					records: './', // an href to the records themselves
@@ -932,8 +930,34 @@ export function makeTable(options) {
 				}
 				return description;
 			}
-			if (query?.property) return this.getProperty(query.property);
-			if (this.doesExist() || query?.ensureLoaded === false || this.getContext()?.returnNonexistent) {
+			if (constructor.loadAsInstance === false) {
+				const context = this.getContext();
+				const txn = txnForContext(context);
+				const readTxn = txn.getReadTxn();
+				if (readTxn?.isDone) {
+					throw new Error('You can not read from a transaction that has already been committed/aborted');
+				}
+				const ensureLoaded = true;
+				const id = typeof locator === 'object' ? locator.id : locator;
+				return loadLocalRecord(id, context, { transaction: readTxn, ensureLoaded }, false, (entry) => {
+					if (context.onlyIfCached && context.noCacheStore) {
+						// don't go into the loading from source condition, but HTTP spec says to
+						// return 504 (rather than 404) if there is no content and the cache-control header
+						// dictates not to go to source (and not store new value)
+						if (!entry?.value) throw new ServerError('Entry is not cached', 504);
+					} else if (ensureLoaded) {
+						const loadingFromSource = ensureLoadedFromSource(id, entry, context);
+						if (loadingFromSource) {
+							txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
+							context.loadedFromSource = true;
+							return loadingFromSource.then((entry) => entry?.value);
+						}
+					}
+					return entry?.value;
+				});
+			}
+			if (locator?.property) return this.getProperty(locator.property);
+			if (this.doesExist() || locator?.ensureLoaded === false || this.getContext()?.returnNonexistent) {
 				return this;
 			}
 		}
@@ -954,8 +978,7 @@ export function makeTable(options) {
 					// Note that if we do not have a select, we do not return any relationships by default.
 					if (!query) query = {};
 					if (select) {
-						const attrsForType =
-							attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
+						const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
 						query.select = select
 							.map((property) => {
 								const propertyName = property.name || property;
@@ -1335,8 +1358,7 @@ export function makeTable(options) {
 							if (fullUpdate) {
 								if (primaryKey && recordUpdate[primaryKey] !== id) recordUpdate[primaryKey] = id;
 								if (createdTimeProperty) {
-									if (entry?.value)
-										recordUpdate[createdTimeProperty.name] = entry?.value[createdTimeProperty.name];
+									if (entry?.value) recordUpdate[createdTimeProperty.name] = entry?.value[createdTimeProperty.name];
 									else
 										recordUpdate[createdTimeProperty.name] =
 											createdTimeProperty.type === 'Date'
@@ -1496,9 +1518,7 @@ export function makeTable(options) {
 						`Saving record with id: ${id}, timestamp: ${new Date(txnTime).toISOString()}${
 							expiresAt ? ', expires at: ' + new Date(expiresAt).toISOString() : ''
 						}${
-							existingEntry
-								? ', replaces entry from: ' + new Date(existingEntry.version).toISOString()
-								: ', new entry'
+							existingEntry ? ', replaces entry from: ' + new Date(existingEntry.version).toISOString() : ', new entry'
 						}`,
 						(() => {
 							try {
@@ -1603,12 +1623,13 @@ export function makeTable(options) {
 			else if (conditions.length === undefined) {
 				conditions = conditions[Symbol.iterator] ? Array.from(conditions) : [conditions];
 			}
-			if (this.getId()) {
+			const id = request.id ?? this.getId();
+			if (id) {
 				conditions = [
 					{
 						attribute: null,
-						comparator: Array.isArray(this.getId()) ? 'prefix' : 'starts_with',
-						value: this.getId(),
+						comparator: Array.isArray(id) ? 'prefix' : 'starts_with',
+						value: id,
 					},
 				].concat(conditions);
 			}
@@ -2850,6 +2871,20 @@ export function makeTable(options) {
 				}
 			}
 			assignTrackedAccessors(this, this);
+			for (const attribute of attributes) {
+				const name = attribute.name;
+				if (attribute.resolve) {
+					Object.defineProperty(primaryStore.encoder.structPrototype, name, {
+						get() {
+							return attribute.resolve(this, contextStorage.getStore()); // it is only possible to get the context from ALS, we don't have a direct reference to the current context
+						},
+						set(related) {
+							return attribute.set(this, related);
+						},
+						configurable: true,
+					});
+				}
+			}
 		}
 		static setComputedAttribute(attribute_name, resolver) {
 			const attribute = findAttribute(attributes, attribute_name);
@@ -3421,8 +3456,7 @@ export function makeTable(options) {
 						if (expirationMs && sourceContext.expiresAt == undefined)
 							sourceContext.expiresAt = Date.now() + expirationMs;
 						if (updatedRecord) {
-							if (typeof updatedRecord !== 'object')
-								throw new Error('Only objects can be cached and stored in tables');
+							if (typeof updatedRecord !== 'object') throw new Error('Only objects can be cached and stored in tables');
 							if (updatedRecord.status > 0 && updatedRecord.headers) {
 								// if the source has a status code and headers, treat it as a response
 								if (updatedRecord.status >= 300) {
@@ -3699,13 +3733,9 @@ export function makeTable(options) {
 		}
 	}
 	function addDeleteRemoval() {
-		deleteCallbackHandle = auditStore?.addDeleteRemovalCallback(
-			tableId,
-			primaryStore,
-			(id: Id, version: number) => {
-				primaryStore.remove(id, version);
-			}
-		);
+		deleteCallbackHandle = auditStore?.addDeleteRemovalCallback(tableId, primaryStore, (id: Id, version: number) => {
+			primaryStore.remove(id, version);
+		});
 	}
 	function runRecordExpirationEviction() {
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
@@ -3899,3 +3929,4 @@ function hasOtherProcesses(store) {
 			return +line.match(/\d+/)?.[0] != pid;
 		});
 }
+export { clearStatus as clear, getStatus as get, setStatus as set };

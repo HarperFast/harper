@@ -106,6 +106,7 @@ export interface Query {
 	/**	 Force the query to be executed in the order of conditions */
 	enforceExecutionOrder?: boolean;
 	lazy?: boolean;
+	url?: string; // path and query string
 }
 export interface SubscriptionRequest {
 	/** The starting time of events to return (defaults to now) */

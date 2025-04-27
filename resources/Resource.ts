@@ -6,6 +6,8 @@ import { _assignPackageExport } from '../globals.js';
 import { ClientError } from '../utility/errors/hdbError.js';
 import { transaction } from './transaction.ts';
 import { parseQuery, SimpleURLQuery } from './search.ts';
+import { AsyncLocalStorage } from 'async_hooks';
+export const contextStorage = new AsyncLocalStorage<Context>();
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -32,6 +34,7 @@ export class Resource implements ResourceInterface {
 	#isCollection: boolean;
 	static transactions: Transaction[] & { timestamp: number };
 	static directURLMapping = false;
+	static loadAsInstance: boolean;
 	constructor(identifier: Id, source: any) {
 		this.#id = identifier;
 		const context = source?.getContext ? (source.getContext() ?? null) : undefined;
@@ -88,7 +91,11 @@ export class Resource implements ResourceInterface {
 				}
 				return Promise.all(results);
 			}
-			return resource.put ? resource.put(data, query) : missingMethod(resource, 'put');
+			return resource.put
+				? resource.constructor.loadAsInstance === false
+					? resource.put(query, data)
+					: resource.put(data, query)
+				: missingMethod(resource, 'put');
 		},
 		{ hasContent: true, type: 'update' }
 	);
@@ -164,7 +171,11 @@ export class Resource implements ResourceInterface {
 
 	static connect = transactional(
 		function (resource: Resource, query?: Map, request: Context, data?: any) {
-			return resource.connect ? resource.connect(data, query) : missingMethod(resource, 'connect');
+			return resource.connect
+				? resource.constructor.loadAsInstance === false
+					? resource.connect(query, data)
+					: resource.connect(data, query)
+				: missingMethod(resource, 'connect');
 		},
 		{ hasContent: true, type: 'read' }
 	);
@@ -180,7 +191,11 @@ export class Resource implements ResourceInterface {
 	static publish = transactional(
 		function (resource: Resource, query?: Map, request: Context, data?: any) {
 			if (resource.#id != null) resource.update?.(); // save any changes made during publish
-			return resource.publish ? resource.publish(data, query) : missingMethod(resource, 'publish');
+			return resource.publish
+				? resource.constructor.loadAsInstance === false
+					? resource.publish(query, data)
+					: resource.publish(data, query)
+				: missingMethod(resource, 'publish');
 		},
 		{ hasContent: true, type: 'create' }
 	);
@@ -200,21 +215,33 @@ export class Resource implements ResourceInterface {
 
 	static query = transactional(
 		function (resource: Resource, query?: Map, request: Context, data?: any) {
-			return resource.search ? resource.search(data, query) : missingMethod(resource, 'search');
+			return resource.search
+				? resource.constructor.loadAsInstance === false
+					? resource.search(query, data)
+					: resource.search(data, query)
+				: missingMethod(resource, 'search');
 		},
 		{ hasContent: true, type: 'read' }
 	);
 
 	static copy = transactional(
 		function (resource: Resource, query?: Map, request: Context, data?: any) {
-			return resource.copy ? resource.copy(data, query) : missingMethod(resource, 'copy');
+			return resource.copy
+				? resource.constructor.loadAsInstance === false
+					? resource.copy(query, data)
+					: resource.copy(data, query)
+				: missingMethod(resource, 'copy');
 		},
 		{ hasContent: true, type: 'create' }
 	);
 
 	static move = transactional(
 		function (resource: Resource, query?: Map, request: Context, data?: any) {
-			return resource.move ? resource.move(data, query) : missingMethod(resource, 'move');
+			return resource.move
+				? resource.constructor.loadAsInstance === false
+					? resource.move(query, data)
+					: resource.move(data, query)
+				: missingMethod(resource, 'move');
 		},
 		{ hasContent: true, type: 'delete' }
 	);
@@ -445,7 +472,7 @@ function transactional(action, options) {
 	applyContext.reliesOnPrototype = true;
 	const hasContent = options.hasContent;
 	return applyContext;
-	function applyContext(idOrQuery: string | Id, dataOrContext?: any, context?: Context) {
+	function applyContext(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context) {
 		let id, query, isCollection;
 		let data;
 		// First we do our argument normalization. There are two main types of methods, with or without content
@@ -501,7 +528,8 @@ function transactional(action, options) {
 							if (query) {
 								if (parsedQuery) query = Object.assign(parsedQuery, query);
 							} else query = parsedQuery;
-							id = id.slice(0, searchIndex);
+							id = id.slice(id.startsWith('/') ? 1 : 0, searchIndex);
+							if (id) parsedQuery.id = id;
 						}
 						// handle paths of the form /path/id.property
 						const parsedId = this.parsePath(id, context, query);
@@ -512,7 +540,10 @@ function transactional(action, options) {
 							}
 							isCollection = parsedId.isCollection;
 							id = parsedId.id;
-						} else id = parsedId;
+						} else {
+							id = parsedId;
+							idOrQuery.id = id;
+						}
 					}
 				} else if (idOrQuery[Symbol.iterator]) {
 					// get the id part from an iterable query
@@ -540,30 +571,36 @@ function transactional(action, options) {
 				}
 			} else {
 				id = idOrQuery;
-				query = new SimpleURLQuery(id);
+				query = new SimpleURLQuery(undefined, id);
 				if (id == null) isCollection = true;
 			}
 		}
-
-		if (!context) context = {};
+		if (isCollection) query.search = true;
 		let resourceOptions;
+		if (!context) context = contextStorage.getStore();
 		if (query?.ensureLoaded != null || query?.async || isCollection) {
 			resourceOptions = { ...options };
 			if (query?.ensureLoaded != null) resourceOptions.ensureLoaded = query.ensureLoaded;
 			if (query?.async) resourceOptions.async = query.async;
 			if (isCollection) resourceOptions.isCollection = true;
 		} else resourceOptions = options;
-		if (context.transaction) {
+		let runAction = authorizeActionOnResource;
+		if (this.loadAsInstance === false ? !this.explicitContext : this.explicitContext === false) {
+			// if we are using the newer resource API, we default to doing ALS context tracking, which is also
+			// necessary for accessing relationship properties on the direct frozen records
+			runAction = (resource) => contextStorage.run(context, () => authorizeActionOnResource(resource));
+		}
+		if (context?.transaction) {
 			// we are already in a transaction, proceed
 			const resource = this.getResource(id, context, resourceOptions);
-			return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
+			return resource.then ? resource.then(runAction) : runAction(resource);
 		} else {
 			// start a transaction
 			return transaction(
 				context,
 				() => {
 					const resource = this.getResource(id, context, resourceOptions);
-					return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
+					return resource.then ? resource.then(runAction) : runAction(resource);
 				},
 				resourceOptions
 			);

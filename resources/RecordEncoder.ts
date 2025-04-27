@@ -49,6 +49,7 @@ let lastEncoding,
 export class RecordEncoder extends Encoder {
 	constructor(options) {
 		options.useBigIntExtension = true;
+		options.structPrototype = {};
 		super(options);
 		const superEncode = this.encode;
 		this.encode = function (record, options?) {

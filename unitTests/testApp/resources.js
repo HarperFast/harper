@@ -52,7 +52,7 @@ class ResourceC extends Resource {
 
 export const api = {
 	v1: {
-		resourceA: ResourceA,
+		'resourceA': ResourceA,
 		'resourceA/resourceB': ResourceB,
 		'resourceA/resourceB/subPath/ResourceC': ResourceC,
 	},
@@ -84,6 +84,7 @@ class SimpleCacheSource extends tables.FourProp {
 	}
 }
 export class SimpleCache extends tables.SimpleCache.sourcedFrom(SimpleCacheSource) {
+	static loadAsInstance = false;
 	post(data) {
 		if (data.invalidate) this.invalidate();
 		if (data.customResponse) {
@@ -161,14 +162,14 @@ server.getUser = function (username, password) {
 
 // These are for the "handles iterator content type handler" tests in unitTests/apiTests/basicREST-test.mjs
 server.contentTypes.set('application/custom-async-iterator', {
-	async * serializeStream (data) {
+	async *serializeStream(data) {
 		yield 'one';
 		yield 'two';
 	},
 });
 
 server.contentTypes.set('application/custom-iterator', {
-	* serializeStream (data) {
+	*serializeStream(data) {
 		yield 'one';
 		yield 'two';
 	},
