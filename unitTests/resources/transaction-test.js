@@ -32,8 +32,11 @@ describe('Transactions', () => {
 				{ name: 'count' },
 				{ name: 'countBigInt', type: 'BigInt' },
 				{ name: 'countInt', type: 'Int' },
+				{ name: 'computed', computed: true, indexed: true },
 			],
 		});
+		TxnTest.loadAsInstance = false;
+		TxnTest.setComputedAttribute('computed', (instance) => instance.name + ' computed');
 		setPublishToStream(
 			(subject, stream, header, message) => {
 				published_messages.push(message);
@@ -62,7 +65,9 @@ describe('Transactions', () => {
 		await transaction(context, () => {
 			TxnTest.put(42, { name: 'the answer' }, context);
 		});
-		assert.equal((await TxnTest.get(42)).name, 'the answer');
+		let answer = await TxnTest.get(42);
+		assert.equal(answer.name, 'the answer');
+		assert.equal(answer.computed, 'the answer computed');
 	});
 	it('Can run txn with three tables and two databases', async function () {
 		const context = {};
@@ -111,7 +116,7 @@ describe('Transactions', () => {
 			});
 			assert.equal((await TxnTest.get(45)).name, 'a counter');
 			await transaction(async (txn) => {
-				let counter = await TxnTest.get(45, txn);
+				let counter = await TxnTest.update(45, txn);
 				counter.addTo('count', 1);
 				counter.addTo('countInt', 1);
 				counter.addTo('countBigInt', 1n);
@@ -153,7 +158,7 @@ describe('Transactions', () => {
 			let entity = await TxnTest.get(45);
 			published_messages = [];
 			assert.equal(entity.name, 'a counter');
-			assert.equal(entity.get('count'), 1);
+			assert.equal(entity.count, 1);
 			assert.equal(entity.get('new prop 0'), undefined);
 			await TxnTest.patch(45, { count: { __op__: 'add', value: 2 } });
 			entity = await TxnTest.get(45);
@@ -184,8 +189,8 @@ describe('Transactions', () => {
 			});
 			let entity = await TxnTest.get(45);
 			assert.equal(entity.name, 'a counter');
-			assert.equal(entity.get('count'), 1);
-			assert.equal(entity.get('new prop 0'), undefined);
+			assert.equal(entity.count, 1);
+			assert.equal(entity['new prop 0'], undefined);
 			published_messages = [];
 			await new Promise((resolve) => setTimeout(resolve, 20));
 			await TxnTest.patch(45, { count: { __op__: 'add', value: 2 }, propertyA: 'valueA' });

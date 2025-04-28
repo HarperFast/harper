@@ -36,7 +36,7 @@ import {
 	executeConditions,
 } from './search.ts';
 import logger from '../utility/logging/logger.js';
-import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges } from './tracked.ts';
+import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericTrackedObject } from './tracked.ts';
 import { transaction } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
@@ -189,6 +189,7 @@ export function makeTable(options) {
 		if (hasSourceGet) return scheduleCleanup(priority);
 	});
 
+	class Updatable extends GenericTrackedObject {}
 	class TableResource extends Resource {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
@@ -932,7 +933,7 @@ export function makeTable(options) {
 				}
 				return description;
 			}
-			if (constructor.loadAsInstance === false) {
+			if (locator !== undefined && constructor.loadAsInstance === false) {
 				const context = this.getContext();
 				const txn = txnForContext(context);
 				const readTxn = txn.getReadTxn();
@@ -1080,7 +1081,14 @@ export function makeTable(options) {
 		 * @param updates This can be a record to update the current resource with.
 		 * @param fullUpdate The provided data in updates is the full intended record; any properties in the existing record that are not in the updates, should be removed
 		 */
-		update(updates?: any, fullUpdate?: boolean) {
+		update(target: Query, updates?: any, fullUpdate?: boolean) {
+			const hasTarget = typeof target !== 'object' || !target || typeof target.getAll === 'function';
+			if (hasTarget) {
+				// first argument appears to be a target identifier
+			} else {
+				updates = target;
+			}
+
 			const envTxn = txnForContext(this.getContext());
 			if (!envTxn) throw new Error('Can not update a table resource outside of a transaction');
 			// record in the list of updating records so it can be written to the database when we commit
@@ -1088,19 +1096,29 @@ export function makeTable(options) {
 				// TODO: Remove from transaction
 				return this;
 			}
-			let ownData;
+			let ownData, updatable;
 			if (typeof updates === 'object' && updates) {
 				if (fullUpdate) {
-					if (Object.isFrozen(updates)) updates = { ...updates };
-					this.#record = {}; // clear out the existing record
-					this.#changes = updates;
+					if (hasTarget) {
+						updatable = new Updatable({}, this.getContext());
+						updatable._setChanges(updates);
+					} else {
+						if (Object.isFrozen(updates)) updates = { ...updates };
+						this.#record = {}; // clear out the existing record
+						this.#changes = updates;
+					}
 				} else {
-					ownData = this.#changes;
-					if (ownData) updates = Object.assign(ownData, updates);
-					this.#changes = updates;
+					if (hasTarget) {
+						updatable = new Updatable(this.get(target), this.getContext());
+						updatable._setChanges(updates);
+					} else {
+						ownData = this.#changes;
+						if (ownData) updates = Object.assign(ownData, updates);
+						this.#changes = updates;
+					}
 				}
 			}
-			this._writeUpdate(this.#changes, fullUpdate);
+			this._writeUpdate(updatable ? updatable.getChanges() : this.#changes, fullUpdate);
 			return this;
 		}
 
@@ -1321,11 +1339,11 @@ export function makeTable(options) {
 		 * @param record
 		 * @param options
 		 */
-		put(record): void {
-			this.update(record, true);
+		put(target: Query, record: any): void {
+			this.update(target, record, true);
 		}
-		patch(recordUpdate: any): void {
-			this.update(recordUpdate, false);
+		patch(target: Query, recordUpdate: any): void {
+			this.update(target, recordUpdate, false);
 		}
 		// perform the actual write operation; this may come from a user request to write (put, post, etc.), or
 		// a notification that a write has already occurred in the canonical data source, we need to update our
@@ -2873,6 +2891,7 @@ export function makeTable(options) {
 				}
 			}
 			assignTrackedAccessors(this, this);
+			assignTrackedAccessors(Updatable, this);
 			for (const attribute of attributes) {
 				const name = attribute.name;
 				if (attribute.resolve) {

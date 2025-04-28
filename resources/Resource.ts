@@ -529,6 +529,7 @@ function transactional(action, options) {
 								if (parsedQuery) query = Object.assign(parsedQuery, query);
 							} else query = parsedQuery;
 							id = id.slice(0, searchIndex);
+							if (id === '') isCollection = true;
 						}
 						// handle paths of the form /path/id.property
 						const parsedId = this.parsePath(id, context, query);
@@ -594,6 +595,7 @@ function transactional(action, options) {
 			const resource = this.getResource(id, context, resourceOptions);
 			return resource.then ? resource.then(runAction) : runAction(resource);
 		} else {
+			if (!context) context = {};
 			// start a transaction
 			return transaction(
 				context,

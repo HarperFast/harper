@@ -1164,6 +1164,14 @@ class Query {
 			if (condition.attribute === name) return condition.value;
 		}
 	}
+	getAll() {
+		const values = [];
+		for (let i = 0; i < this.conditions.length; i++) {
+			const condition = this.conditions[i];
+			if (condition.attribute) values.push(condition.value);
+		}
+		return values;
+	}
 }
 export function flattenKey(key) {
 	if (Array.isArray(key)) return key.join('\x00');
@@ -1185,7 +1193,7 @@ export function intersectionEstimate(store, left, right) {
 export class SimpleURLQuery {
 	url?: string;
 	id: any;
-	constructor(url?: string, id: any) {
+	constructor(url?: string, id?: any) {
 		this.url = url;
 		this.id = id;
 	}
@@ -1200,5 +1208,8 @@ export class SimpleURLQuery {
 	}
 	toString() {
 		return this.url ?? '/' + this.id;
+	}
+	getAll() {
+		return [];
 	}
 }
