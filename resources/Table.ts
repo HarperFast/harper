@@ -49,6 +49,7 @@ import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject } from './blob.ts';
 import { onStorageReclamation } from '../server/storageReclamation.ts';
+import { VectorIndex } from './vectorIndex.ts';
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
 
@@ -112,6 +113,9 @@ export interface Table {
 }
 type ResidencyDefinition = number | string[] | void;
 
+const CUSTOM_INDEXES = {
+	HNSW: VectorIndex,
+};
 // we default to the max age of the streams because this is the limit on the number of old transactions
 // we might need to reconcile deleted entries against.
 const DELETE_ENTRY_EXPIRATION =
@@ -2842,6 +2846,23 @@ export function makeTable(options) {
 							this.userResolvers[attribute.name] = () => {};
 						}
 					};
+				}
+				if (attribute.indexed?.type) {
+					const index = indices[attribute.name];
+					if (index) {
+						if (index.type !== attribute.indexed.type) {
+							console.error(
+								`The attribute "${attribute.name}" in table "${tableName}" is already indexed with a different type`
+							);
+						} else {
+							const CustomIndex = CUSTOM_INDEXES[attribute.indexed.type];
+							if (CustomIndex) {
+								index.customIndex = new CustomIndex(index);
+							} else {
+								console.error(`The indexing type '${attribute.indexed.type}' is unknown`);
+							}
+						}
+					}
 				}
 			}
 			assignTrackedAccessors(this, this);

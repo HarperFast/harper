@@ -1,12 +1,15 @@
 /**
  * Implementation of a vector index for HarperDB, using hierarchical navigable small world graphs.
  */
-class VectorIndex {
+export class VectorIndex {
 	indexStore: any;
 	M: number = 16; // max number of connections per layer
 	efConstruction: number = 100; // size of dynamic candidate list
 	mL: number = 1 / Math.log(this.M); // normalization factor for level generation
 
+	constructor(indexStore: any) {
+		this.indexStore = indexStore;
+	}
 	index(id: string, vector: number[], existingValue?: any) {
 		// If this is the first entry, create it as the entry point
 		const firstEntry = this.indexStore.getRange({ limit: 1 });

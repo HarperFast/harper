@@ -110,7 +110,11 @@ export function start({ ensureTable }) {
 									hasPrimaryKey = true;
 								}
 							} else if (directiveName === 'indexed') {
-								property.indexed = true;
+								const indexedDefinition = {};
+								for (const arg of directive.arguments || []) {
+									indexedDefinition[arg.name.value] = (arg.value as StringValueNode).value;
+								}
+								property.indexed = indexedDefinition;
 							} else if (directiveName === 'computed') {
 								for (const arg of directive.arguments || []) {
 									if (arg.name.value === 'from') {
