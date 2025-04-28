@@ -23,6 +23,7 @@ type StatusOperationWriteRequestBody = StatusOperationRequestBody & {
 const Status = table({
 	database: 'system',
 	table: 'hdb_status',
+	replicate: false,
 	attributes: [
 		{
 			name: 'id',
