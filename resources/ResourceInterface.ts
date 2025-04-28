@@ -2,12 +2,15 @@ import { DatabaseTransaction } from './DatabaseTransaction.ts';
 import { OperationFunctionName } from '../server/serverHelpers/serverUtilities.ts';
 
 export interface ResourceInterface<Key = any, Record = any> {
-	get?(): Promise<UpdatableRecord<Record>>;
+	get?(id: Id): Promise<UpdatableRecord<Record>>;
+	get?(id: TargetId): Promise<UpdatableRecord<Record>>;
 	get?(query: Query): Promise<AsyncIterable<Record>>;
-	get?(property: string): any;
-	put?(record: any): void;
+	put?(target: RequestTarget, record: any): void;
+	post?(target: RequestTarget, record: any): void;
+	patch?(target: RequestTarget, record: any): void;
+	publish?(target: RequestTarget, record: any): void;
 	update?(updates: any, fullUpdate?: boolean): Promise<UpdatableRecord<Record>>;
-	delete?(): boolean;
+	delete?(target: RequestTarget): boolean;
 	search?(query: Query): AsyncIterable<any>;
 	subscribe?(request: SubscriptionRequest): Subscription;
 	allowRead(user: any, query?: Query, context: Context): boolean | Promise<boolean>;
@@ -86,7 +89,7 @@ export interface SubSelect {
 	select: (string | SubSelect)[];
 }
 export type Select = (string | SubSelect)[];
-export interface Query {
+export interface Query extends URLSearchParams {
 	/** Retrieve a specific record, but can be combined with select */
 	id?: Id;
 	/**	 The conditions to use in the query, that the returned records must satisfy	 */
@@ -116,7 +119,13 @@ export interface SubscriptionRequest {
 	/** If the current record state should be omitted as the first event */
 	omitCurrent?: boolean;
 }
+export interface TargetId extends URLSearchParams {
+	id: Id;
+	url?: string; // path and query string
+}
+
 export type Id = number | string | (number | string | null)[] | null;
+export type RequestTarget = Id | TargetId | Query;
 type UpdatableRecord<T> = T;
 interface Subscription {}
 type ResourceId = Request | number | string;

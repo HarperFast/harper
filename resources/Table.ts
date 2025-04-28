@@ -8,7 +8,7 @@ import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME 
 import { SKIP, type Database } from 'lmdb';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.js';
 import lodash from 'lodash';
-import type {
+import {
 	Query,
 	ResourceInterface,
 	SubscriptionRequest,
@@ -17,6 +17,7 @@ import type {
 	Condition,
 	Sort,
 	SubSelect,
+	RequestTarget,
 } from './ResourceInterface.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
 import { Resource, contextStorage } from './Resource.ts';
@@ -909,13 +910,13 @@ export function makeTable(options) {
 		}
 		/**
 		 * This retrieves the data of this resource. By default, with no argument, just return `this`.
-		 * @param locator - If included, specifies a query to perform on the record
+		 * @param target - If included, is an identifier/query that specifies the requested target to retrieve and query
 		 */
-		get(locator?: Query | string): Promise<object | void> | object | void {
+		get(target?: RequestTarget): Promise<object | void> | object | void {
 			const constructor: Resource = this.constructor;
-			if (typeof locator === 'string' && constructor.loadAsInstance !== false) return this.getProperty(locator);
-			if (locator?.search) return this.search(locator as Query);
-			if (locator?.url === '') {
+			if (typeof target === 'string' && constructor.loadAsInstance !== false) return this.getProperty(target);
+			if (target?.search) return this.search(target as Query);
+			if (target?.url === '') {
 				const description = {
 					// basically a describe call
 					records: './', // an href to the records themselves
@@ -933,7 +934,7 @@ export function makeTable(options) {
 				}
 				return description;
 			}
-			if (locator !== undefined && constructor.loadAsInstance === false) {
+			if (target !== undefined && constructor.loadAsInstance === false) {
 				const context = this.getContext();
 				const txn = txnForContext(context);
 				const readTxn = txn.getReadTxn();
@@ -941,7 +942,7 @@ export function makeTable(options) {
 					throw new Error('You can not read from a transaction that has already been committed/aborted');
 				}
 				const ensureLoaded = true;
-				const id = typeof locator === 'object' ? locator.id : locator;
+				const id = typeof target === 'object' ? target.id : target;
 				return loadLocalRecord(id, context, { transaction: readTxn, ensureLoaded }, false, (entry) => {
 					if (context.onlyIfCached && context.noCacheStore) {
 						// don't go into the loading from source condition, but HTTP spec says to
@@ -959,8 +960,8 @@ export function makeTable(options) {
 					return entry?.value;
 				});
 			}
-			if (locator?.property) return this.getProperty(locator.property);
-			if (this.doesExist() || locator?.ensureLoaded === false || this.getContext()?.returnNonexistent) {
+			if (target?.property) return this.getProperty(target.property);
+			if (this.doesExist() || target?.ensureLoaded === false || this.getContext()?.returnNonexistent) {
 				return this;
 			}
 		}
@@ -1081,7 +1082,7 @@ export function makeTable(options) {
 		 * @param updates This can be a record to update the current resource with.
 		 * @param fullUpdate The provided data in updates is the full intended record; any properties in the existing record that are not in the updates, should be removed
 		 */
-		update(target: Query, updates?: any, fullUpdate?: boolean) {
+		update(target: RequestTarget, updates?: any, fullUpdate?: boolean) {
 			const hasTarget = typeof target !== 'object' || !target || typeof target.getAll === 'function';
 			if (hasTarget) {
 				// first argument appears to be a target identifier

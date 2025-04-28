@@ -1,4 +1,4 @@
-import type { ResourceInterface, SubscriptionRequest, Id, Context, Query } from './ResourceInterface.ts';
+import type { ResourceInterface, SubscriptionRequest, Id, Context, Query, RequestTarget } from './ResourceInterface.ts';
 import { randomUUID } from 'crypto';
 import type { Transaction } from './DatabaseTransaction.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
@@ -47,7 +47,7 @@ export class Resource implements ResourceInterface {
 	static get(identifier: Id, context?: Context): Promise<Resource>;
 	static get(query: Query, context?: Context): Promise<AsyncIterable<object>>;
 	static get = transactional(
-		function (resource: Resource, query?: Map, request: Context, data?: any) {
+		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			const result = resource.get?.(query);
 			if (result?.then) return result.then(handleSelect);
 			return handleSelect(result);
@@ -77,7 +77,7 @@ export class Resource implements ResourceInterface {
 	 * Store the provided record by the provided id. If no id is provided, it is auto-generated.
 	 */
 	static put = transactional(
-		function (resource: Resource, query?: Map, request: Context, data?: any) {
+		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			if (Array.isArray(data) && resource.#isCollection) {
 				const results = [];
 				const authorize = request.authorize;
@@ -101,7 +101,7 @@ export class Resource implements ResourceInterface {
 	);
 
 	static patch = transactional(
-		function (resource: Resource, query?: Map, request: Context, data?: any) {
+		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			// TODO: Allow array like put?
 			return resource.patch ? resource.patch(data, query) : missingMethod(resource, 'patch');
 		},
@@ -111,7 +111,7 @@ export class Resource implements ResourceInterface {
 	static delete(identifier: Id, context?: Context): Promise<boolean>;
 	static delete(request: Context, context?: Context): Promise<object>;
 	static delete = transactional(
-		function (resource: Resource, query?: Map, request: Context, data?: any) {
+		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			return resource.delete ? resource.delete(query) : missingMethod(resource, 'delete');
 		},
 		{ hasContent: false, type: 'delete' }
@@ -155,22 +155,29 @@ export class Resource implements ResourceInterface {
 		});
 	}
 	static invalidate = transactional(
-		function (resource: Resource, query?: Map, request: Context, data?: any) {
+		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			return resource.invalidate ? resource.invalidate(query) : missingMethod(resource, 'delete');
 		},
 		{ hasContent: false, type: 'update' }
 	);
 
 	static post = transactional(
-		function (resource: Resource, query?: Map, request: Context, data?: any) {
+		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			if (resource.#id != null) resource.update?.(); // save any changes made during post
-			return resource.post(data, query);
+			return resource.constructor.loadAsInstance === false ? resource.post(query, data) : resource.post(data, query);
+		},
+		{ hasContent: true, type: 'create' }
+	);
+
+	static update = transactional(
+		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
+			return resource.update(query, data);
 		},
 		{ hasContent: true, type: 'create' }
 	);
 
 	static connect = transactional(
-		function (resource: Resource, query?: Map, request: Context, data?: any) {
+		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			return resource.connect
 				? resource.constructor.loadAsInstance === false
 					? resource.connect(query, data)
@@ -182,7 +189,7 @@ export class Resource implements ResourceInterface {
 
 	static subscribe(request: SubscriptionRequest): Promise<AsyncIterable<{ id: any; operation: string; value: object }>>;
 	static subscribe = transactional(
-		function (resource: Resource, query?: Map, request: Context, data?: any) {
+		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			return resource.subscribe ? resource.subscribe(query) : missingMethod(resource, 'subscribe');
 		},
 		{ type: 'read' }
