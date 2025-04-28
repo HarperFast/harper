@@ -143,9 +143,7 @@ export async function describeMetric(metric: string): Promise<DescribeMetricResp
 		limit: 1,
 	};
 	const results = databases.system.hdb_analytics.search(lastEntrySearch);
-	const resultsIter = results[Symbol.asyncIterator]();
-	const result = (await resultsIter.next()).value;
-	if (result) {
+	for await (const result of results) {
 		return { attributes: Object.keys(result) };
 	}
 	return {};
