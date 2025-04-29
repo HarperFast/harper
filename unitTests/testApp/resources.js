@@ -1,6 +1,6 @@
 import assert from 'node:assert';
 export class Echo extends Resource {
-	async connect(incoming_messages) {
+	async connect(incoming_messages, query) {
 		if (incoming_messages) {
 			// echo service for WebSockets
 			return (async function* () {
@@ -10,7 +10,7 @@ export class Echo extends Resource {
 			})();
 		} else {
 			// for server sent events, just send greetings, and try using super.connect
-			let outgoing_messages = super.connect();
+			let outgoing_messages = super.connect(incoming_messages, query);
 			outgoing_messages.send('greetings');
 			let timer = setTimeout(() => {
 				outgoing_messages.send({
@@ -24,6 +24,13 @@ export class Echo extends Resource {
 			return outgoing_messages;
 		}
 	}
+	subscribe(query) {
+		if (!query.get || typeof query.url !== 'string') {
+			throw new Error('Invalid subscribe query');
+		}
+		return super.subscribe(query);
+	}
+
 	get() {
 		return {
 			change: 'this',
@@ -52,7 +59,7 @@ class ResourceC extends Resource {
 
 export const api = {
 	v1: {
-		resourceA: ResourceA,
+		'resourceA': ResourceA,
 		'resourceA/resourceB': ResourceB,
 		'resourceA/resourceB/subPath/ResourceC': ResourceC,
 	},
@@ -161,14 +168,14 @@ server.getUser = function (username, password) {
 
 // These are for the "handles iterator content type handler" tests in unitTests/apiTests/basicREST-test.mjs
 server.contentTypes.set('application/custom-async-iterator', {
-	async * serializeStream (data) {
+	async *serializeStream(data) {
 		yield 'one';
 		yield 'two';
 	},
 });
 
 server.contentTypes.set('application/custom-iterator', {
-	* serializeStream (data) {
+	*serializeStream(data) {
 		yield 'one';
 		yield 'two';
 	},
