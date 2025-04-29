@@ -814,11 +814,29 @@ export function makeTable(options) {
 			return dbisDb.get([Symbol.for('residency_by_id'), id]);
 		}
 
-		static setResidency(getResidency: (record: object, context: Context) => ResidencyDefinition) {
-			TableResource.getResidency = getResidency;
+		static setResidency(getResidency?: (record: object, context: Context) => ResidencyDefinition) {
+			TableResource.getResidency =
+				getResidency &&
+				((record: object, context: Context) => {
+					try {
+						return getResidency(record, context);
+					} catch (error: unknown) {
+						error.message += ` in residency function for table ${table_name}`;
+						throw error;
+					}
+				});
 		}
-		static setResidencyById(getResidencyById: (id: Id) => number | void) {
-			TableResource.getResidencyById = getResidencyById;
+		static setResidencyById(getResidencyById?: (id: Id) => number | void) {
+			TableResource.getResidencyById =
+				getResidencyById &&
+				((id: Id) => {
+					try {
+						return getResidencyById(id);
+					} catch (error: unknown) {
+						error.message += ` in residency function for table ${table_name}`;
+						throw error;
+					}
+				});
 		}
 		static getResidency(record: object, context: Context) {
 			if (TableResource.getResidencyById) {
@@ -914,7 +932,7 @@ export function makeTable(options) {
 				return this.search(query);
 			}
 			if (this.getId() === null) {
-				if (query?.conditions) return this.search(query); // if there is a query, assume it was meant to be a root level query
+				if (query?.conditions || query?.size > 0) return this.search(query); // if there is a query, assume it was meant to be a root level query
 				const description = {
 					// basically a describe call
 					records: './', // an href to the records themselves
