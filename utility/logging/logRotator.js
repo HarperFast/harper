@@ -26,15 +26,6 @@ let setIntervalId;
 
 module.exports = logRotator;
 
-// On restart event check to see if rotator should be enabled
-onMessageFromWorkers((message) => {
-	if (message.type === ITC_EVENT_TYPES.RESTART) {
-		envMgr.initSync(true);
-		clearInterval(setIntervalId);
-		if (envMgr.get(CONFIG_PARAMS.LOGGING_ROTATION_ENABLED)) logRotator();
-	}
-});
-
 /**
  * Rotates hdb.log using an interval and/or maxSize param to determine if log should be rotated.
  * Uses an unref setInterval to periodically check time passed since rotation and size of log file.
