@@ -75,7 +75,7 @@ if (__filename.endsWith('dev.js')) {
 					try {
 						process.kill(+readFileSync(pidPath, 'utf8'), 0);
 						isRunning = true;
-					} catch (_) {}
+					} catch {}
 				}
 
 				if (!isRunning) {
