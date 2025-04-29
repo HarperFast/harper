@@ -22,6 +22,7 @@ import * as manageThreads from '../server/threads/manageThreads.js';
 import { openAuditStore, transactionKeyEncoder } from './auditStore.ts';
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
 import { deleteRootBlobPathsForDB } from './blob.ts';
+import { CUSTOM_INDEXES } from './customIndexes';
 
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
@@ -235,8 +236,7 @@ export function readMetaDb(
 			databaseEnvs.set(path, rootStore);
 		}
 		const internalDbiInit = new OpenDBIObject(false);
-		const dbisStore =
-			rootStore.dbisDb || (rootStore.dbisDb = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit));
+		const dbisStore = rootStore.dbisDb || (rootStore.dbisDb = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit));
 		let auditStore = rootStore.auditStore;
 		if (!auditStore) {
 			if (auditPath) {
@@ -301,9 +301,7 @@ export function readMetaDb(
 			let tableId;
 			let primaryStore;
 			const audit =
-				typeof primaryAttribute.audit === 'boolean'
-					? primaryAttribute.audit
-					: envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
+				typeof primaryAttribute.audit === 'boolean' ? primaryAttribute.audit : envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
 			const trackDeletes = primaryAttribute.trackDeletes;
 			const expiration = primaryAttribute.expiration;
 			const eviction = primaryAttribute.eviction;
@@ -346,7 +344,10 @@ export function readMetaDb(
 					// now load the non-primary keys, opening the dbs as necessary for indices
 					if (!attribute.is_hash_attribute && (attribute.indexed || (attribute.attribute && !attribute.name))) {
 						if (!indices[attribute.name]) {
-							const dbiInit = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
+							const objectStorage =
+								attribute.is_hash_attribute ||
+								(attribute.indexed?.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
+							const dbiInit = new OpenDBIObject(!objectStorage, objectStorage);
 							indices[attribute.name] = rootStore.openDB(attribute.key, dbiInit);
 							indices[attribute.name].indexNulls = attribute.indexNulls;
 						}
@@ -749,7 +750,8 @@ export function table(tableDefinition: TableDefinition) {
 				JSON.stringify(attributeDescriptor.properties) !== JSON.stringify(attribute.properties) ||
 				JSON.stringify(attributeDescriptor.elements) !== JSON.stringify(attribute.elements);
 			if (attribute.indexed) {
-				const dbiInit = new OpenDBIObject(true, false);
+				const objectStorage = attribute.indexed.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore;
+				const dbiInit = new OpenDBIObject(!objectStorage, objectStorage);
 				const dbi = rootStore.openDB(dbiKey, dbiInit);
 				if (
 					changed ||

@@ -2,6 +2,7 @@
  * Implementation of a vector index for HarperDB, using hierarchical navigable small world graphs.
  */
 export class VectorIndex {
+	static useObjectStore = true;
 	indexStore: any;
 	M: number = 16; // max number of connections per layer
 	efConstruction: number = 100; // size of dynamic candidate list
