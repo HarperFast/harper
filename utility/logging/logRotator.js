@@ -102,12 +102,12 @@ function logRotator({ logger, maxSize, interval, retention, enabled, path: rotat
 			// adjust retention time if there is a reclamation priority in place
 			const retentionMs = convertToMS(retention ?? '1M') / (1 + reclamationPriority);
 			reclamationPriority = 0; // reset it after use
-			const files = await fsProm.readdir(rotatedLogPath);
+			const files = await fsProm.readdir(rotatedLogDir);
 			for (const file of files) {
 				try {
-					const fileStats = await fsProm.stat(path.join(rotatedLogPath, file));
+					const fileStats = await fsProm.stat(path.join(rotatedLogDir, file));
 					if (Date.now() - fileStats.mtimeMs > retentionMs) {
-						await fsProm.unlink(path.join(rotatedLogPath, file));
+						await fsProm.unlink(path.join(rotatedLogDir, file));
 					}
 				} catch (err) {
 					hdbLogger.error('Error trying to remove log', file, err);
