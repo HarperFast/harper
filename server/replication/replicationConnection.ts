@@ -122,7 +122,7 @@ export async function createWebSocket(
 	if (secure_context) {
 		ws_options.secureContext = tls.createSecureContext({
 			...secure_context.options,
-			ca: Array.from(replication_certificate_authorities), // do we need to add CA if secure context had one?
+			ca: [...replication_certificate_authorities, ...secure_context.options.availableCAs.values()], // add CA if secure context had one
 		});
 	}
 	return new WebSocket(url, 'harperdb-replication-v1', ws_options);
