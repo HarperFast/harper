@@ -76,7 +76,7 @@ if (__filename.endsWith('dev.js') && !process.env.HARPER_SKIP_COMPILE) {
 					try {
 						process.kill(+readFileSync(pidPath, 'utf8'), 0);
 						isRunning = true;
-					} catch (_) {}
+					} catch {}
 				}
 
 				if (!isRunning) {
