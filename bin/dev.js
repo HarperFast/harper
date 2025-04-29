@@ -2,7 +2,7 @@ if (__filename.endsWith('dev.js')) {
 	const fg = require('fast-glob');
 	const { tmpdir } = require('node:os');
 	const { relative, join } = require('node:path');
-	const { existsSync, statSync, readFileSync, writeFileSync } = require('node:fs');
+	const { existsSync, statSync, readFileSync, writeFileSync, unlinkSync } = require('node:fs');
 	const { isMainThread } = require('node:worker_threads');
 	const { spawnSync, spawn } = require('node:child_process');
 
@@ -14,26 +14,48 @@ if (__filename.endsWith('dev.js')) {
 
 	const { PACKAGE_ROOT } = require('../utility/packageUtils');
 
-	const SRC_DIRECTORIES = ['bin', 'components', 'dataLayer', 'resources', 'server', 'sqlTranslator', 'upgrade', 'utility', 'validation'];
+	const SRC_DIRECTORIES = [
+		'bin',
+		'components',
+		'dataLayer',
+		'resources',
+		'server',
+		'sqlTranslator',
+		'upgrade',
+		'utility',
+		'validation',
+	];
 	const TS_DIRECTORY = 'ts-build';
 
 	if (isMainThread) {
 		let needsCompile = false;
 		let buildDirectoryExists = false;
 		if ((buildDirectoryExists = existsSync(join(PACKAGE_ROOT, TS_DIRECTORY)))) {
-			needsCompile = fg.sync(
+			let existingTSFiles = new Set();
+			fg.sync(
 				SRC_DIRECTORIES.map((dir) => `${dir}/**/*.ts`),
 				{ cwd: PACKAGE_ROOT }
-			).some((file) => {
+			).forEach((file) => {
 				let sourceTime = 0;
 				let compiledTime = 0;
 
 				try {
+					existingTSFiles.add(file);
 					sourceTime = statSync(join(PACKAGE_ROOT, file)).mtimeMs - 5000;
 					compiledTime = statSync(join(PACKAGE_ROOT, TS_DIRECTORY, file.replace(/.ts$/, '.js'))).mtimeMs;
-				} catch (_) { }
+				} catch (_) {}
 
-				return sourceTime > compiledTime;
+				if (sourceTime > compiledTime) needsCompile = true;
+			});
+			fg.sync(
+				SRC_DIRECTORIES.map((dir) => `${dir}/**/*.js`),
+				{ cwd: join(PACKAGE_ROOT, TS_DIRECTORY) }
+			).forEach((file) => {
+				if (!existingTSFiles.has(file.replace(/.js$/, '.ts'))) {
+					try {
+						unlinkSync(join(PACKAGE_ROOT, TS_DIRECTORY, file));
+					} catch (_) {}
+				}
 			});
 		} else {
 			needsCompile = true;
@@ -53,7 +75,7 @@ if (__filename.endsWith('dev.js')) {
 					try {
 						process.kill(+readFileSync(pidPath, 'utf8'), 0);
 						isRunning = true;
-					} catch (_) { }
+					} catch {}
 				}
 
 				if (!isRunning) {
