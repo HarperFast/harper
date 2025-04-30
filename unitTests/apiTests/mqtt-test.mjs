@@ -1,8 +1,8 @@
 'use strict';
 
-import { assert, expect } from 'chai';
-import { decode, encode, DecoderStream } from 'cbor-x';
-import { getVariables, callOperation } from './utility.js';
+import assert from 'node:assert/strict';
+import { decode } from 'cbor-x';
+import { callOperation } from './utility.js';
 import { setupTestApp } from './setupTestApp.mjs';
 import { get as env_get, setProperty } from '../../utility/environment/environmentManager.js';
 import { connect } from 'mqtt';
@@ -12,15 +12,10 @@ import axios from 'axios';
 import {
 	setNATSReplicator,
 	setPublishToStream,
-	publishToStream,
-	setSubscription,
 } from '../../ts-build/server/nats/natsReplicator.js';
-const { authorization, url } = getVariables();
 describe('test MQTT connections and commands', () => {
 	let available_records;
 	let client, client2;
-	let natsPublishToStream = publishToStream;
-	let natsSetSubscription = setSubscription;
 	let replicated_published_messages = [];
 	before(async () => {
 		available_records = await setupTestApp();

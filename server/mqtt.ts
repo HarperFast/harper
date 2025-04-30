@@ -236,7 +236,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							});
 						}
 					}
-					if (!user && mqttSettings.requireAuthentication && !authorizeLocal(socket.remoteAddress)) {
+					if (!user && mqttSettings.requireAuthentication) {
 						mqttSettings.events.emit('auth-failed', packet, socket);
 						recordActionBinary(false, 'connection', 'mqtt', 'connect');
 						return sendPacket({
