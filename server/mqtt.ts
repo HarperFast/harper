@@ -18,6 +18,8 @@ export function bypassAuth() {
 	AUTHORIZE_LOCAL = true;
 }
 
+const authorizeLocal = (remoteAddress: string) => AUTHORIZE_LOCAL && (remoteAddress.includes('127.0.0.') || remoteAddress === '::1');
+
 export function start({ server, port, network, webSocket, securePort, requireAuthentication }) {
 	// here we basically normalize the different types of sockets to pass to our socket/message handler
 	if (!server.mqtt) {
@@ -117,7 +119,7 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 							return socket.end();
 						}
 					}
-					if (!user && AUTHORIZE_LOCAL && (socket.remoteAddress.includes('127.0.0.') || socket.remoteAddress === '::1')) {
+					if (!user && authorizeLocal(socket.remoteAddress)) {
 						user = await getSuperUser();
 						mqttLog.debug?.('Auto-authorizing local connection', user?.username);
 					}
@@ -234,7 +236,7 @@ function onSocket(socket, send, request, user, mqttSettings) {
 							});
 						}
 					}
-					if (!user && mqttSettings.requireAuthentication) {
+					if (!user && mqttSettings.requireAuthentication && !authorizeLocal(socket.remoteAddress)) {
 						mqttSettings.events.emit('auth-failed', packet, socket);
 						recordActionBinary(false, 'connection', 'mqtt', 'connect');
 						return sendPacket({
