@@ -117,7 +117,7 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 							return socket.end();
 						}
 					}
-					if (!user && AUTHORIZE_LOCAL && socket.remoteAddress.includes('127.0.0.1')) {
+					if (!user && AUTHORIZE_LOCAL && (socket.remoteAddress.includes('127.0.0.') || socket.remoteAddress === '::1')) {
 						user = await getSuperUser();
 						mqttLog.debug?.('Auto-authorizing local connection', user?.username);
 					}
