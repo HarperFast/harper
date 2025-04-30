@@ -91,6 +91,23 @@ describe('test MQTT connections and commands', () => {
 			}, 50);
 		});
 	});
+	it('subscribe to top level without wildcard should not match record', async function () {
+		let path = 'VariedProps/' + available_records[1];
+		await new Promise((resolve, reject) => {
+			client2.subscribe('VariedProps/', function (err) {
+				if (err) reject(err);
+			});
+			const onMessage = (topic, payload, packet) => {
+				let record = decode(payload);
+				reject(new Error('Should not receive any top-level messages'));
+			};
+			client2.once('message', onMessage);
+			setTimeout(() => {
+				client2.off('message', onMessage);
+				resolve();
+			}, 50);
+		});
+	});
 
 	it('can repeatedly publish', async () => {
 		const vus = 5;
