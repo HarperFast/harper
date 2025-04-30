@@ -41,6 +41,7 @@ function getHubConfigPath() {
  * @returns {Promise<void>}
  */
 async function generateNatsConfig(isRestart = false, processName = undefined) {
+	console.error('Warning: NATS replication is deprecated and will be removed in version 5.0 of Harper');
 	const HDB_ROOT = envManager.get(CONFIG_PARAMS.ROOTPATH);
 	fs.ensureDirSync(path.join(HDB_ROOT, 'clustering', 'leaf'));
 	envManager.initSync();
