@@ -1,6 +1,9 @@
 /**
  * Implementation of a vector index for HarperDB, using hierarchical navigable small world graphs.
  */
+const ENTRY_POINT = Symbol.for('entryPoint');
+const KEY_PREFIX = Symbol.for('key');
+const MAX_LEVEL = 10; // should give good high-level skip list performance up to trillions of nodes
 export class VectorIndex {
 	static useObjectStore = true;
 	indexStore: any;
@@ -11,82 +14,92 @@ export class VectorIndex {
 	constructor(indexStore: any) {
 		this.indexStore = indexStore;
 	}
-	index(id: string, vector: number[], existingValue?: any) {
+	index(primaryKey: string, vector: number[], existingValue?: any) {
+		// first get the node id for the primary key; we use internal node ids for better efficiency,
+		// but we must use a safe key that won't collide with the node ids
+		const safeKey = typeof primaryKey === 'number' ? [KEY_PREFIX, primaryKey] : primaryKey;
+		let nodeId = this.indexStore.get(safeKey);
+		if (!nodeId) {
+			// TODO: Use auto-incrementing node ids
+			nodeId = Math.floor(Math.random() * 1000000000);
+			this.indexStore.put(safeKey, nodeId);
+		}
+
 		// If this is the first entry, create it as the entry point
-		const firstEntry = this.indexStore.getRange({ limit: 1 });
-		if (!firstEntry || firstEntry.length === 0) {
+		let entryPointId = this.indexStore.get(ENTRY_POINT);
+		if (entryPointId === undefined) {
 			const level = Math.floor(-Math.log(Math.random()) * this.mL);
-			this.indexStore.put(id, {
+			this.indexStore.put(nodeId, {
 				vector,
 				level,
+				primaryKey,
+				// TODO: Make each level of connections a separate top-level property so we can use lazy deserialization to access them
 				connections: new Array(level + 1).fill([]),
 			});
+			this.indexStore.put(ENTRY_POINT, nodeId);
 			return;
 		}
 
+		let entryPoint = this.indexStore.get(entryPointId);
 		// Generate random level for this new element
-		const level = Math.floor(-Math.log(Math.random()) * this.mL);
+		const level = Math.min(Math.floor(-Math.log(Math.random()) * this.mL), MAX_LEVEL);
 
-		// Find entry point
-		let entryPoint = this.getEntryPoint();
 		let currentLevel = entryPoint.level;
 
 		// For each level from top to bottom
 		while (currentLevel > level) {
 			// Search for closest neighbors at current level
-			const neighbors = this.searchLayer(vector, entryPoint, this.efConstruction, currentLevel);
+			const neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, currentLevel);
 
 			if (neighbors.length > 0) {
-				entryPoint = neighbors[0]; // closest neighbor becomes new entry point
+				entryPointId = neighbors[0]; // closest neighbor becomes new entry point
+				entryPoint = this.indexStore.get(entryPointId);
 			}
 			currentLevel--;
 		}
-
+		const connections = new Array(level + 1).fill([]);
 		// Connect the new element to neighbors at its level and below
 		for (let l = Math.min(level, currentLevel); l >= 0; l--) {
-			const neighbors = this.searchLayer(vector, entryPoint, this.efConstruction, l);
+			const neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, l);
 
 			// Select M closest neighbors
-			const connections = neighbors.slice(0, this.M).map((n) => n.id);
+			const connectionsAtLevel = neighbors.slice(0, this.M >> 1);
 
 			// Create bidirectional connections
-			for (const neighborId of connections) {
-				// Add connection to new element
-				this.addConnection(id, neighborId, l);
+			for (const { id, node } of connectionsAtLevel) {
+				// Add connection to the new element
+				if (!connections[l]) connections[l] = [];
+				connections[l].push(id);
 				// Add reverse connection from neighbor to new element
-				this.addConnection(neighborId, id, l);
+				this.addConnection(id, structuredClone(node), nodeId, l);
 			}
 		}
 
 		// Store the new element
-		this.indexStore.put(id, {
+		this.indexStore.put(nodeId, {
 			vector,
 			level,
-			connections: new Array(level + 1).fill([]),
+			primaryKey,
+			connections,
 		});
 	}
 
 	private getEntryPoint() {
-		// Get element with highest level
-		const entries = this.indexStore.getRange({});
-		let maxLevel = -1;
-		let entryPoint = null;
+		// Get entry point
+		// TODO: Try to keep moving this around to keep the index balanced
+		const entryPointId = this.indexStore.get(ENTRY_POINT);
 
-		for (const entry of entries) {
-			if (entry.value.level > maxLevel) {
-				maxLevel = entry.value.level;
-				entryPoint = { ...entry.value, id: entry.key };
-			}
-		}
-		return entryPoint;
+		const node = this.indexStore.get(entryPointId);
+		return { id: entryPointId, ...node };
 	}
 
-	private searchLayer(queryVector: number[], entryPoint: any, ef: number, level: number) {
-		const visited = new Set([entryPoint.id]);
+	private searchLayer(queryVector: number[], entryPointId: number, entryPoint: any, ef: number, level: number) {
+		const visited = new Set([entryPointId]);
 		const candidates = [
 			{
-				id: entryPoint.id,
+				id: entryPointId,
 				distance: this.similarity(queryVector, entryPoint.vector),
+				node: entryPoint,
 			},
 		];
 		const results = [...candidates];
@@ -103,7 +116,7 @@ export class VectorIndex {
 			if (current.distance > furthestDistance) break;
 
 			// Check neighbors of current point
-			const currentNode = this.indexStore.get(current.id);
+			const currentNode = current.node;
 			for (const neighborId of currentNode.connections[level] || []) {
 				if (visited.has(neighborId)) continue;
 				visited.add(neighborId);
@@ -112,8 +125,13 @@ export class VectorIndex {
 				const distance = this.similarity(queryVector, neighbor.vector);
 
 				if (distance < furthestDistance || results.length < ef) {
-					candidates.push({ id: neighborId, distance });
-					results.push({ id: neighborId, distance });
+					const candidate = {
+						id: neighborId,
+						distance,
+						node: neighbor,
+					};
+					candidates.push(candidate);
+					results.push(candidate);
 					results.sort((a, b) => a.distance - b.distance);
 					if (results.length > ef) results.pop();
 				}
@@ -127,14 +145,35 @@ export class VectorIndex {
 		// Euclidean distance
 		return Math.sqrt(a.reduce((sum, val, i) => sum + Math.pow(val - b[i], 2), 0));
 	}
+	search(comparator, value) {
+		if (comparator !== 'similarity') return;
+		const entryPoint = this.getEntryPoint();
+		if (!entryPoint) return [];
 
-	private addConnection(fromId: string, toId: string, level: number) {
-		const node = this.indexStore.get(fromId);
+		const results = this.searchLayer(value, entryPoint.id, entryPoint, this.efConstruction, entryPoint.level);
+		return results.map((candidate) => ({
+			value: candidate.node.primaryKey // return values
+		});
+	}
+
+	private addConnection(fromId: number, node: any, toId: number, level: number) {
 		if (!node.connections[level]) {
 			node.connections[level] = [];
 		}
 		if (!node.connections[level].includes(toId)) {
 			node.connections[level].push(toId);
+		}
+		if (node.connections[level].length > this.M) {
+			// prune the connections to the M/2 closest neighbors
+			const withDistance = node.connections[level].map((id) => {
+				const neighboringNode = this.indexStore.get(id);
+				return {
+					id,
+					distance: neighboringNode ? this.similarity(node.vector, neighboringNode.vector) : 0,
+				};
+			});
+			withDistance.sort((a, b) => a.distance - b.distance);
+			node.connections[level] = withDistance.slice(0, this.M >> 1).map((item) => item.id);
 		}
 		this.indexStore.put(fromId, node);
 	}

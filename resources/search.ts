@@ -190,6 +190,9 @@ export function searchByIndex(
 			throw new ClientError('Unable to query by attribute ' + JSON.stringify(attribute_name));
 		}
 	}
+	const isPrimaryKey = attribute_name === Table.primaryKey || attribute_name == null;
+	const index = isPrimaryKey ? Table.primaryStore : Table.indices[attribute_name];
+	let customResults;
 	let start;
 	let end, inclusiveEnd, exclusiveStart;
 	if (value instanceof Date) value = value.getTime();
@@ -257,10 +260,10 @@ export function searchByIndex(
 			needFullScan = true;
 			break;
 		default:
-			throw new ClientError(`Unknown query comparator "${comparator}"`);
+			customResults = index.customIndex?.search?.(comparator, value);
+			if (!customResults) throw new ClientError(`Unknown query comparator "${comparator}"`);
 	}
 	let filter;
-	const isPrimaryKey = attribute_name === Table.primaryKey || attribute_name == null;
 	if (typeof start === 'string' && start.length > MAX_SEARCH_KEY_LENGTH) {
 		// if the key is too long, we need to truncate it and filter the results
 		start = start.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER;
@@ -281,7 +284,6 @@ export function searchByIndex(
 		exclusiveStart = !inclusiveEnd;
 		inclusiveEnd = newEnd;
 	}
-	const index = isPrimaryKey ? Table.primaryStore : Table.indices[attribute_name];
 	if (!index || index.isIndexing || needFullScan || (value === null && !index.indexNulls)) {
 		// no indexed searching available, need a full scan
 		if (allowFullScan === false && !index)
@@ -340,7 +342,7 @@ export function searchByIndex(
 		results.hasEntries = true;
 		return results;
 	} else if (index) {
-		return index.getRange(rangeOptions).map(
+		return (customResults || index.getRange(rangeOptions)).map(
 			filter
 				? function ({ key, value }) {
 						let recordMatcher: any;
