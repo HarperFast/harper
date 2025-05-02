@@ -147,13 +147,25 @@ export class VectorIndex {
 	}
 	search(comparator, value) {
 		if (comparator !== 'similarity') return;
-		const entryPoint = this.getEntryPoint();
+		let entryPoint = this.getEntryPoint();
 		if (!entryPoint) return [];
+		let entryPointId = entryPoint.id;
+		let results: any[];
+		// For each level from top to bottom
+		for (let l = entryPoint.level; l >= 0; l--) {
+			// Search for closest neighbors at current level
+			results = this.searchLayer(value, entryPointId, entryPoint, this.efConstruction, l);
 
-		const results = this.searchLayer(value, entryPoint.id, entryPoint, this.efConstruction, entryPoint.level);
+			if (results.length > 0) {
+				const neighbor = results[0]; // closest neighbor becomes new entry point
+				entryPoint = neighbor.node;
+				entryPointId = neighbor.id;
+			}
+		}
+
 		return results.map((candidate) => ({
-			value: candidate.node.primaryKey // return values
-		});
+			value: candidate.node.primaryKey, // return values
+		}));
 	}
 
 	private addConnection(fromId: number, node: any, toId: number, level: number) {
@@ -163,18 +175,79 @@ export class VectorIndex {
 		if (!node.connections[level].includes(toId)) {
 			node.connections[level].push(toId);
 		}
-		if (node.connections[level].length > this.M) {
-			// prune the connections to the M/2 closest neighbors
+
+		const maxConnections = level === 0 ? this.M : this.M >> 1;
+		if (node.connections[level].length > maxConnections) {
+			// Get all connections with their distances
 			const withDistance = node.connections[level].map((id) => {
 				const neighboringNode = this.indexStore.get(id);
+				if (!neighboringNode) {
+					return { id, distance: Infinity };
+				}
+
+				// Count reverse connections to this node
+				const reverseConnections = neighboringNode.connections[level]?.filter((nid) => nid === fromId).length ?? 0;
+
 				return {
 					id,
-					distance: neighboringNode ? this.similarity(node.vector, neighboringNode.vector) : 0,
+					distance: this.similarity(node.vector, neighboringNode.vector),
+					reverseConnections,
 				};
 			});
-			withDistance.sort((a, b) => a.distance - b.distance);
-			node.connections[level] = withDistance.slice(0, this.M >> 1).map((item) => item.id);
+
+			// Sort by distance but prioritize nodes that have reverse connections
+			withDistance.sort((a, b) => {
+				if (a.reverseConnections !== b.reverseConnections) {
+					return b.reverseConnections - a.reverseConnections; // Keep mutual connections
+				}
+				return a.distance - b.distance;
+			});
+
+			// Keep the best connections
+			const keptConnections = withDistance.slice(0, maxConnections);
+			const removedConnections = withDistance.slice(maxConnections);
+
+			// Update this node's connections
+			node.connections[level] = keptConnections.map((item) => item.id);
+
+			// For removed connections, ensure there's still a path to them
+			for (const removed of removedConnections) {
+				const removedNode = this.indexStore.get(removed.id);
+				if (removedNode) {
+					// Remove the reverse connection if it exists
+					if (removedNode.connections[level]) {
+						removedNode.connections[level] = removedNode.connections[level].filter((id) => id !== fromId);
+						this.indexStore.put(removed.id, removedNode);
+					}
+				}
+			}
 		}
 		this.indexStore.put(fromId, node);
+	}
+	private validateConnectivity(startLevel: number = 0) {
+		const entryPoint = this.getEntryPoint();
+		const visited = new Set<number>();
+
+		// BFS from entry point to ensure all nodes are reachable
+		const queue = [entryPoint.id];
+		visited.add(entryPoint.id);
+
+		while (queue.length > 0) {
+			const currentId = queue.shift()!;
+			const current = this.indexStore.get(currentId);
+
+			for (let level = startLevel; level <= current.level; level++) {
+				for (const neighborId of current.connections[level] || []) {
+					if (!visited.has(neighborId)) {
+						visited.add(neighborId);
+						queue.push(neighborId);
+					}
+				}
+			}
+		}
+
+		// Check if all nodes are reachable
+		// This would require maintaining a separate set/count of all nodes
+		return visited.size === this.totalNodes;
 	}
 }
