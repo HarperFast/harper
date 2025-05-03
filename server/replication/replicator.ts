@@ -88,9 +88,19 @@ export function start(options) {
 			}
 			const hdbNodesStore = getHDBNodeTable().primaryStore;
 			// attempt to authorize by certificate common name, this is the most common means of auth
-			if (request.authorized && request.peerCertificate.subject) {
-				const subject = request.peerCertificate.subject;
-				const node = subject && (hdbNodesStore.get(subject.CN) || routeByHostname.get(subject.CN));
+			if (request.authorized && request.peerCertificate.subjectaltname) {
+				const hostnames = [
+					request.peerCertificate.subject, // use the subject if it exists
+					...request.peerCertificate.subjectaltname // otherwise use the subject alternative names
+						.split(',')
+						.filter((n) => n.trim().startsWith('DNS:')) // find the DNS names
+						.map((n) => n.trim().substring(4)),
+				];
+				let node: any;
+				for (const hostname of hostnames) {
+					node = hostname && (hdbNodesStore.get(hostname.CN) || routeByHostname.get(hostname.CN));
+					if (node) break;
+				}
 				if (node) {
 					if (node?.revoked_certificates?.includes(request.peerCertificate.serialNumber)) {
 						logger.warn(
