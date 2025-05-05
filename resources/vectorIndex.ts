@@ -43,8 +43,11 @@ export class VectorIndex {
 		let entryPoint = this.indexStore.get(entryPointId);
 		// Generate random level for this new element
 		const level = Math.min(Math.floor(-Math.log(Math.random()) * this.mL), MAX_LEVEL);
-
 		let currentLevel = entryPoint.level;
+		if (level >= currentLevel) {
+			// if we are at this level or higher, make this the new entry point
+			this.indexStore.put(ENTRY_POINT, nodeId);
+		}
 
 		// For each level from top to bottom
 		while (currentLevel > level) {
@@ -52,8 +55,8 @@ export class VectorIndex {
 			const neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, currentLevel);
 
 			if (neighbors.length > 0) {
-				entryPointId = neighbors[0]; // closest neighbor becomes new entry point
-				entryPoint = this.indexStore.get(entryPointId);
+				entryPointId = neighbors[0].id; // closest neighbor becomes new entry point
+				entryPoint = neighbors[0].node;
 			}
 			currentLevel--;
 		}
@@ -71,7 +74,7 @@ export class VectorIndex {
 				if (!connections[l]) connections[l] = [];
 				connections[l].push(id);
 				// Add reverse connection from neighbor to new element
-				this.addConnection(id, structuredClone(node), nodeId, l);
+				this.addConnection(id, node, nodeId, l);
 			}
 		}
 
@@ -143,7 +146,13 @@ export class VectorIndex {
 
 	private similarity(a: number[], b: number[]): number {
 		// Euclidean distance
-		return Math.sqrt(a.reduce((sum, val, i) => sum + Math.pow(val - b[i], 2), 0));
+		let distanceSquared = 0;
+		for (let i = 0; i < Math.max(a.length, b.length); i++) {
+			const va = a[i] || 0;
+			const vb = b[i] || 0;
+			distanceSquared += Math.pow(va - vb, 2);
+		}
+		return Math.sqrt(distanceSquared);
 	}
 	search(comparator, value) {
 		if (comparator !== 'similarity') return;
@@ -169,11 +178,12 @@ export class VectorIndex {
 	}
 
 	private addConnection(fromId: number, node: any, toId: number, level: number) {
+		node = { ...node, connections: node.connections.slice(0) }; // copy the node so we can modify it
 		if (!node.connections[level]) {
 			node.connections[level] = [];
 		}
 		if (!node.connections[level].includes(toId)) {
-			node.connections[level].push(toId);
+			node.connections[level] = [...node.connections[level], toId]; // copy and add
 		}
 
 		const maxConnections = level === 0 ? this.M : this.M >> 1;
@@ -212,10 +222,11 @@ export class VectorIndex {
 
 			// For removed connections, ensure there's still a path to them
 			for (const removed of removedConnections) {
-				const removedNode = this.indexStore.get(removed.id);
+				let removedNode = this.indexStore.get(removed.id);
 				if (removedNode) {
 					// Remove the reverse connection if it exists
 					if (removedNode.connections[level]) {
+						removedNode = { ...removedNode, connections: removedNode.connections.slice(0) };
 						removedNode.connections[level] = removedNode.connections[level].filter((id) => id !== fromId);
 						this.indexStore.put(removed.id, removedNode);
 					}
