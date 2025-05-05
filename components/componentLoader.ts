@@ -14,6 +14,7 @@ import * as REST from '../server/REST.ts';
 import * as fastifyRoutesHandler from '../server/fastifyRoutes.ts';
 import * as staticFiles from '../server/static.ts';
 import * as loadEnv from '../resources/loadEnv.ts';
+import * as dataLoader from '../resources/dataLoader.ts';
 import fg from 'fast-glob';
 import { watchDir, getWorkerIndex } from '../server/threads/manageThreads.js';
 import harperLogger from '../utility/logging/harper_logger.js';
@@ -87,6 +88,7 @@ const TRUSTED_RESOURCE_LOADERS = {
 	authentication: auth,
 	mqtt,
 	loadEnv,
+	dataLoader,
 	/*
 	static: ...
 	login: ...
@@ -110,6 +112,9 @@ const DEFAULT_CONFIG = {
 		files: 'routes/*.js',
 		path: '.', // relative to the app-name, like  http://server/app-name/route-name
 	},
+	// dataLoader: {
+	// 	files: 'data/*.{json,yaml,yml}',
+	// },
 	/*{
 		module: 'login',
 		path: '/',
