@@ -29,13 +29,15 @@ export class VectorIndex {
 		let entryPointId = this.indexStore.get(ENTRY_POINT);
 		if (entryPointId === undefined) {
 			const level = Math.floor(-Math.log(Math.random()) * this.mL);
-			this.indexStore.put(nodeId, {
+			const node = {
 				vector,
 				level,
 				primaryKey,
-				// TODO: Make each level of connections a separate top-level property so we can use lazy deserialization to access them
-				connections: new Array(level + 1).fill([]),
-			});
+			};
+			for (let i = 0; i <= level; i++) {
+				node[i] = [];
+			}
+			this.indexStore.put(nodeId, node);
 			this.indexStore.put(ENTRY_POINT, nodeId);
 			return;
 		}
@@ -83,7 +85,7 @@ export class VectorIndex {
 			vector,
 			level,
 			primaryKey,
-			connections,
+			...connections,
 		});
 	}
 
@@ -120,7 +122,7 @@ export class VectorIndex {
 
 			// Check neighbors of current point
 			const currentNode = current.node;
-			for (const neighborId of currentNode.connections[level] || []) {
+			for (const neighborId of currentNode[level] || []) {
 				if (visited.has(neighborId)) continue;
 				visited.add(neighborId);
 
@@ -178,25 +180,25 @@ export class VectorIndex {
 	}
 
 	private addConnection(fromId: number, node: any, toId: number, level: number) {
-		node = { ...node, connections: node.connections.slice(0) }; // copy the node so we can modify it
-		if (!node.connections[level]) {
-			node.connections[level] = [];
+		node = { ...node }; // copy the node so we can modify it
+		if (!node[level]) {
+			node[level] = [];
 		}
-		if (!node.connections[level].includes(toId)) {
-			node.connections[level] = [...node.connections[level], toId]; // copy and add
+		if (!node[level].includes(toId)) {
+			node[level] = [...node[level], toId]; // copy and add
 		}
 
 		const maxConnections = level === 0 ? this.M : this.M >> 1;
-		if (node.connections[level].length > maxConnections) {
+		if (node[level].length > maxConnections) {
 			// Get all connections with their distances
-			const withDistance = node.connections[level].map((id) => {
+			const withDistance = node[level].map((id) => {
 				const neighboringNode = this.indexStore.get(id);
 				if (!neighboringNode) {
 					return { id, distance: Infinity };
 				}
 
 				// Count reverse connections to this node
-				const reverseConnections = neighboringNode.connections[level]?.filter((nid) => nid === fromId).length ?? 0;
+				const reverseConnections = neighboringNode[level]?.filter((nid) => nid === fromId).length ?? 0;
 
 				return {
 					id,
@@ -218,16 +220,16 @@ export class VectorIndex {
 			const removedConnections = withDistance.slice(maxConnections);
 
 			// Update this node's connections
-			node.connections[level] = keptConnections.map((item) => item.id);
+			node[level] = keptConnections.map((item) => item.id);
 
 			// For removed connections, ensure there's still a path to them
 			for (const removed of removedConnections) {
 				let removedNode = this.indexStore.get(removed.id);
 				if (removedNode) {
 					// Remove the reverse connection if it exists
-					if (removedNode.connections[level]) {
-						removedNode = { ...removedNode, connections: removedNode.connections.slice(0) };
-						removedNode.connections[level] = removedNode.connections[level].filter((id) => id !== fromId);
+					if (removedNode[level]) {
+						removedNode = { ...removedNode };
+						removedNode[level] = removedNode[level].filter((id) => id !== fromId);
 						this.indexStore.put(removed.id, removedNode);
 					}
 				}
@@ -248,7 +250,7 @@ export class VectorIndex {
 			const current = this.indexStore.get(currentId);
 
 			for (let level = startLevel; level <= current.level; level++) {
-				for (const neighborId of current.connections[level] || []) {
+				for (const neighborId of current[level] || []) {
 					if (!visited.has(neighborId)) {
 						visited.add(neighborId);
 						queue.push(neighborId);
