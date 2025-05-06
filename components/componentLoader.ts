@@ -62,9 +62,7 @@ export function loadComponentDirectories(loadedPluginModules?: Map<any, any>, lo
 	}
 	const hdbAppFolder = process.env.RUN_HDB_APP;
 	if (hdbAppFolder) {
-		cfsLoaded.push(
-			loadComponent(hdbAppFolder, resources, hdbAppFolder, false, null, Boolean(process.env.DEV_MODE))
-		);
+		cfsLoaded.push(loadComponent(hdbAppFolder, resources, hdbAppFolder, false, null, Boolean(process.env.DEV_MODE)));
 	}
 	return Promise.all(cfsLoaded).then(() => {
 		watchesSetup = true;
@@ -298,7 +296,7 @@ export async function loadComponent(
 					componentFunctionality[componentName] = await processResourceExtensionComponent(component);
 				}
 			} catch (error) {
-				error.message = `Could not load component '${component_name}' for application '${basename(folder)}' due to: ${
+				error.message = `Could not load component '${componentName}' for application '${basename(folder)}' due to: ${
 					error.message
 				}`;
 				errorReporter?.(error);

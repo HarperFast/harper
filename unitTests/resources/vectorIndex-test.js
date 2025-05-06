@@ -2,11 +2,11 @@ require('../test_utils');
 const assert = require('node:assert');
 const { getMockLMDBPath } = require('../test_utils');
 const { table } = require('../../resources/databases');
-const { VectorIndex } = require('../../ts-build/resources/vectorIndex');
+const { HierarchicalNavigableSmallWorld } = require('../../ts-build/resources/indexes/HierarchicalNavigableSmallWorld');
 
-describe('Vector indexing', () => {
+describe('HierarchicalNavigableSmallWorld indexing', () => {
 	let VectorTest;
-	let testInstance = new VectorIndex();
+	let testInstance = new HierarchicalNavigableSmallWorld();
 	before(() => {
 		VectorTest = table({
 			table: 'VectorTest',

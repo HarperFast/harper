@@ -4,7 +4,7 @@
 const ENTRY_POINT = Symbol.for('entryPoint');
 const KEY_PREFIX = Symbol.for('key');
 const MAX_LEVEL = 10; // should give good high-level skip list performance up to trillions of nodes
-export class VectorIndex {
+export class HierarchicalNavigableSmallWorld {
 	static useObjectStore = true;
 	indexStore: any;
 	M: number = 16; // max number of connections per layer
@@ -156,7 +156,7 @@ export class VectorIndex {
 		}
 		return Math.sqrt(distanceSquared);
 	}
-	search(comparator, value) {
+	search(comparator: string, value: number[]) {
 		if (comparator !== 'similarity') return;
 		let entryPoint = this.getEntryPoint();
 		if (!entryPoint) return [];

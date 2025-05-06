@@ -22,7 +22,7 @@ import * as manageThreads from '../server/threads/manageThreads.js';
 import { openAuditStore, transactionKeyEncoder } from './auditStore.ts';
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
 import { deleteRootBlobPathsForDB } from './blob.ts';
-import { CUSTOM_INDEXES } from './customIndexes';
+import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
 
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
