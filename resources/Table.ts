@@ -2844,22 +2844,6 @@ export function makeTable(options) {
 						}
 					};
 				}
-				if (attribute.indexed?.type) {
-					const index = indices[attribute.name];
-					if (index) {
-						/*if (index.type !== attribute.indexed.type) {
-							console.error(
-								`The attribute "${attribute.name}" of type "${attribute.indexed.type}" in table "${tableName}" is already indexed with a different type "${index.type}"`
-							);
-						} else {*/
-						const CustomIndex = CUSTOM_INDEXES[attribute.indexed.type];
-						if (CustomIndex) {
-							index.customIndex = new CustomIndex(index);
-						} else {
-							console.error(`The indexing type '${attribute.indexed.type}' is unknown`);
-						}
-					}
-				}
 			}
 			assignTrackedAccessors(this, this);
 		}

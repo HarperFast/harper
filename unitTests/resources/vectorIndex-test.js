@@ -20,6 +20,8 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 	});
 	it('can index and search with vector index', async () => {
 		let all = [];
+		let starting = Array.from(VectorTest.indices.vector.getRange({}));
+		console.log(starting);
 		for (let i = 0; i < 200; i++) {
 			let vector = [i % 2, i % 3, i % 4, i % 5, i % 6, i % 7, i % 8, i % 9, i % 10, i % 11];
 			await VectorTest.put(i, {
@@ -47,6 +49,8 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 			results.slice(0, 10).map((obj) => obj.vector)
 		);
 	});
+	it('can delete and update and search with vector index with one dimension', async () => {});
+	it('can index and search with vector index with one dimension', async () => {});
 });
 async function fromAsync(iterable) {
 	let results = [];

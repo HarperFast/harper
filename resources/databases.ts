@@ -1,6 +1,6 @@
 import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.js';
 import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.js';
-import { open, compareKeys } from 'lmdb';
+import { open, compareKeys, type Database } from 'lmdb';
 import { join, extname, basename } from 'path';
 import { existsSync, readdirSync } from 'fs';
 import {
@@ -344,11 +344,8 @@ export function readMetaDb(
 					// now load the non-primary keys, opening the dbs as necessary for indices
 					if (!attribute.is_hash_attribute && (attribute.indexed || (attribute.attribute && !attribute.name))) {
 						if (!indices[attribute.name]) {
-							const objectStorage =
-								attribute.is_hash_attribute ||
-								(attribute.indexed?.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
-							const dbiInit = new OpenDBIObject(!objectStorage, objectStorage);
-							indices[attribute.name] = rootStore.openDB(attribute.key, dbiInit);
+							const dbi = openIndex(attribute.key, rootStore, attribute);
+							indices[attribute.name] = dbi;
 							indices[attribute.name].indexNulls = attribute.indexNulls;
 						}
 						const existingAttribute = existingAttributes.find(
@@ -539,6 +536,22 @@ export async function dropDatabase(databaseName) {
 	delete databases[databaseName];
 	dbRemovalListeners.forEach((listener) => listener(databaseName));
 	await deleteRootBlobPathsForDB(rootStore);
+}
+
+function openIndex(dbiKey: string, rootStore: Database, attribute: any): Database {
+	const objectStorage =
+		attribute.is_hash_attribute || (attribute.indexed.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
+	const dbiInit = new OpenDBIObject(!objectStorage, objectStorage);
+	const dbi = rootStore.openDB(dbiKey, dbiInit);
+	if (attribute.indexed.type) {
+		const CustomIndex = CUSTOM_INDEXES[attribute.indexed.type];
+		if (CustomIndex) {
+			dbi.customIndex = new CustomIndex(dbi);
+		} else {
+			console.error(`The indexing type '${attribute.indexed.type}' is unknown`);
+		}
+	}
+	return dbi;
 }
 
 /**
@@ -741,18 +754,17 @@ export function table(tableDefinition: TableDefinition) {
 
 			// note that non-indexed attributes do not need a dbi
 			if (attributeDescriptor?.attribute && !attributeDescriptor.name) attributeDescriptor.indexed = true; // legacy descriptor
+			const indexDefinition = (attribute) => (attribute.indexed && attribute.indexed.type) || attribute.index;
 			const changed =
 				!attributeDescriptor ||
 				attributeDescriptor.type !== attribute.type ||
-				attributeDescriptor.indexed !== attribute.indexed ||
+				indexDefinition(attributeDescriptor) !== indexDefinition(attribute) ||
 				attributeDescriptor.nullable !== attribute.nullable ||
 				attributeDescriptor.version !== attribute.version ||
 				JSON.stringify(attributeDescriptor.properties) !== JSON.stringify(attribute.properties) ||
 				JSON.stringify(attributeDescriptor.elements) !== JSON.stringify(attribute.elements);
 			if (attribute.indexed) {
-				const objectStorage = attribute.indexed.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore;
-				const dbiInit = new OpenDBIObject(!objectStorage, objectStorage);
-				const dbi = rootStore.openDB(dbiKey, dbiInit);
+				const dbi = openIndex(dbiKey, rootStore, attribute);
 				if (
 					changed ||
 					(attributeDescriptor.indexingPID && attributeDescriptor.indexingPID !== process.pid) ||
@@ -877,9 +889,14 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					for (let i = 0; i < attributesLength; i++) {
 						const attribute = attributes[i];
 						const property = attribute.name;
+						const index = attribute.dbi;
 						try {
 							const resolver = attribute.resolve;
 							const value = record && (resolver ? resolver(record) : record[property]);
+							if (index.customIndex) {
+								index.customIndex.index(key, value);
+								continue;
+							}
 							const values = getIndexedValues(value);
 							if (values) {
 								/*					if (LMDB_PREFETCH_WRITES)
@@ -888,7 +905,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 															noop
 														);*/
 								for (let i = 0, l = values.length; i < l; i++) {
-									attribute.dbi.put(values[i], key);
+									index.put(values[i], key);
 								}
 							}
 						} catch (error) {

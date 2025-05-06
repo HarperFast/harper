@@ -5,6 +5,16 @@ import { cosineSimilarity, euclideanSimilarity } from './vector';
 const ENTRY_POINT = Symbol.for('entryPoint');
 const KEY_PREFIX = Symbol.for('key');
 const MAX_LEVEL = 10; // should give good high-level skip list performance up to trillions of nodes
+type Node = {
+	vector: number[];
+	level: number;
+	primaryKey: string;
+	[level: number]: number[];
+};
+/**
+ * Represents a Hierarchical Navigable Small World (HNSW) index for approximate nearest neighbor search.
+ * This implementation is based on hierarchical graph navigation to efficiently index and search high-dimensional vectors.
+ */
 export class HierarchicalNavigableSmallWorld {
 	static useObjectStore = true;
 	indexStore: any;
@@ -12,88 +22,159 @@ export class HierarchicalNavigableSmallWorld {
 	efConstruction: number = 100; // size of dynamic candidate list
 	mL: number = 1 / Math.log(this.M); // normalization factor for level generation
 
+	idIncrementer: BigInt64Array | undefined;
+	similarity: (a: number[], b: number[]) => number;
 	constructor(indexStore: any, options) {
 		this.indexStore = indexStore;
 		this.similarity = options?.similarity === 'euclidean' ? euclideanSimilarity : cosineSimilarity;
 	}
-	index(primaryKey: string, vector: number[], existingValue?: any) {
+	index(primaryKey: string, vector: number[], existingVector?: number[]) {
 		// first get the node id for the primary key; we use internal node ids for better efficiency,
 		// but we must use a safe key that won't collide with the node ids
 		const safeKey = typeof primaryKey === 'number' ? [KEY_PREFIX, primaryKey] : primaryKey;
 		let nodeId = this.indexStore.get(safeKey);
+		// if the node id is not found, create a new node (and store it in the index store)
+		// (note that we don't need to check if the node id is already in the index store,
+		// because we use internal node ids for better efficiency, and we use a safe key
+		// that won't collide with the node ids, so we can't have a collision with internal
 		if (!nodeId) {
-			// TODO: Use auto-incrementing node ids
-			nodeId = Math.floor(Math.random() * 1000000000);
+			if (!vector) return; // didn't exist before, doesn't exist now, nothing to do
+			if (!this.idIncrementer) {
+				let largestNodeId = 0;
+				for (const key of this.indexStore.getKeys({
+					reverse: true,
+					limit: 1,
+					start: Infinity,
+					end: 0,
+				})) {
+					if (typeof key === 'number') largestNodeId = key;
+				}
+
+				this.idIncrementer = new BigInt64Array([BigInt(largestNodeId) + 1n]);
+				this.idIncrementer = new BigInt64Array(
+					this.indexStore.getUserSharedBuffer('next-id', this.idIncrementer.buffer)
+				);
+			}
+			nodeId = Number(Atomics.add(this.idIncrementer, 0, 1n));
 			this.indexStore.put(safeKey, nodeId);
 		}
 
+		let oldNode: Node;
 		// If this is the first entry, create it as the entry point
 		let entryPointId = this.indexStore.get(ENTRY_POINT);
-		if (entryPointId === undefined) {
-			const level = Math.floor(-Math.log(Math.random()) * this.mL);
-			const node = {
+		if (existingVector) {
+			// If we are updating an existing entry, we need to update the entry point
+			// if the new entry is closer to the entry point than the old one
+			oldNode = { ...this.indexStore.get(nodeId) };
+		} else oldNode = {} as Node;
+		if (vector) {
+			if (entryPointId === undefined) {
+				const level = Math.floor(-Math.log(Math.random()) * this.mL);
+				const node = {
+					vector,
+					level,
+					primaryKey,
+				};
+				for (let i = 0; i <= level; i++) {
+					node[i] = [];
+				}
+				this.indexStore.put(nodeId, node);
+				this.indexStore.put(ENTRY_POINT, nodeId);
+				return;
+			}
+
+			let entryPoint = this.indexStore.get(entryPointId);
+			// Generate random level for this new element
+			const level = oldNode.level ?? Math.min(Math.floor(-Math.log(Math.random()) * this.mL), MAX_LEVEL);
+			let currentLevel = entryPoint.level;
+			if (level >= currentLevel) {
+				// if we are at this level or higher, make this the new entry point
+				this.indexStore.put(ENTRY_POINT, nodeId);
+			}
+
+			// For each level from top to bottom
+			while (currentLevel > level) {
+				// Search for closest neighbors at current level
+				const neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, currentLevel);
+
+				if (neighbors.length > 0) {
+					entryPointId = neighbors[0].id; // closest neighbor becomes new entry point
+					entryPoint = neighbors[0].node;
+				}
+				currentLevel--;
+			}
+			const connections = new Array(level + 1).fill([]);
+			// Connect the new element to neighbors at its level and below
+			for (let l = Math.min(level, currentLevel); l >= 0; l--) {
+				const neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, l);
+
+				// Select M closest neighbors
+				const connectionsAtLevel = neighbors.slice(0, this.M >> 1);
+
+				// Create bidirectional connections
+				for (const { id, node } of connectionsAtLevel) {
+					// Add connection to the new element
+					if (!connections[l]) connections[l] = [];
+					connections[l].push(id);
+					// Add reverse connection from neighbor to new element if it didn't exist before
+					// First check to see if we had an existing neighbor connection before. If we did we can
+					// just remove from the list of the connections to remove (don't remove, leave it in place)
+					let oldConnections = oldNode[l];
+					const oldPosition = oldConnections?.indexOf(nodeId);
+					if (oldPosition > -1) {
+						if (oldConnections) {
+							if (!oldConnections.copied) {
+								// make a copy, it is likely frozen
+								oldConnections = [...oldConnections];
+								oldConnections.copied = true;
+								oldNode[l] = oldConnections;
+							}
+							oldConnections.splice(oldPosition, 1);
+						}
+					} else this.addConnection(id, node, nodeId, l); // add new connection since this is truly a new connection now
+				}
+			}
+
+			// Store the new element
+			this.indexStore.put(nodeId, {
 				vector,
 				level,
 				primaryKey,
-			};
-			for (let i = 0; i <= level; i++) {
-				node[i] = [];
+				...connections,
+			});
+		} else {
+			// removal of this node
+			this.indexStore.delete(nodeId);
+			if (entryPointId === nodeId) {
+				// if this is the entry point, find a new entry point
+				// TODO: Find a new entry point
+				throw new Error('Entry point deleted, new entry point not implemented');
+				this.indexStore.put(ENTRY_POINT, entryPoint.id);
 			}
-			this.indexStore.put(nodeId, node);
-			this.indexStore.put(ENTRY_POINT, nodeId);
-			return;
+			// remove connections to this node
 		}
-
-		let entryPoint = this.indexStore.get(entryPointId);
-		// Generate random level for this new element
-		const level = Math.min(Math.floor(-Math.log(Math.random()) * this.mL), MAX_LEVEL);
-		let currentLevel = entryPoint.level;
-		if (level >= currentLevel) {
-			// if we are at this level or higher, make this the new entry point
-			this.indexStore.put(ENTRY_POINT, nodeId);
-		}
-
-		// For each level from top to bottom
-		while (currentLevel > level) {
-			// Search for closest neighbors at current level
-			const neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, currentLevel);
-
-			if (neighbors.length > 0) {
-				entryPointId = neighbors[0].id; // closest neighbor becomes new entry point
-				entryPoint = neighbors[0].node;
-			}
-			currentLevel--;
-		}
-		const connections = new Array(level + 1).fill([]);
-		// Connect the new element to neighbors at its level and below
-		for (let l = Math.min(level, currentLevel); l >= 0; l--) {
-			const neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, l);
-
-			// Select M closest neighbors
-			const connectionsAtLevel = neighbors.slice(0, this.M >> 1);
-
-			// Create bidirectional connections
-			for (const { id, node } of connectionsAtLevel) {
-				// Add connection to the new element
-				if (!connections[l]) connections[l] = [];
-				connections[l].push(id);
-				// Add reverse connection from neighbor to new element
-				this.addConnection(id, node, nodeId, l);
+		if (oldNode.level !== undefined) {
+			for (let l = 0; l <= oldNode.level; l++) {
+				const oldConnections = oldNode[l];
+				for (const neighborId of oldConnections) {
+					const neighborNode = { ...this.indexStore.get(neighborId) };
+					let found = false;
+					for (let l2 = 0; l2 <= l; l2++) {
+						neighborNode[l2] = neighborNode[l2]?.filter((nid) => {
+							if (nid === nodeId) {
+								found = true;
+								return false;
+							} else return true;
+						});
+					}
+					if (found) this.indexStore.put(neighborId, neighborNode);
+				}
 			}
 		}
-
-		// Store the new element
-		this.indexStore.put(nodeId, {
-			vector,
-			level,
-			primaryKey,
-			...connections,
-		});
 	}
 
 	private getEntryPoint() {
 		// Get entry point
-		// TODO: Try to keep moving this around to keep the index balanced
 		const entryPointId = this.indexStore.get(ENTRY_POINT);
 
 		const node = this.indexStore.get(entryPointId);
@@ -254,5 +335,14 @@ export class HierarchicalNavigableSmallWorld {
 		// Check if all nodes are reachable
 		// This would require maintaining a separate set/count of all nodes
 		return visited.size === this.totalNodes;
+	}
+	get totalNodes() {
+		return this.indexStore.getKeys({ reverse: true, limit: 1, start: KEY_PREFIX, exclusiveStart: true }).length;
+	}
+	get totalConnections() {
+		let count = 0;
+		for (const key of this.indexStore.getKeys({ reverse: true, limit: 1, start: KEY_PREFIX, exclusiveStart: true })) {
+			if (typeof key === 'number' || typeof key === 'bigint') count++;
+		}
 	}
 }
