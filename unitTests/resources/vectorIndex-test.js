@@ -40,7 +40,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		);
 		// find the best matches through brute force comparison
 		let withSimilarity = all.map((vector) => ({ vector, similarity: testInstance.similarity(testVector, vector) }));
-		withSimilarity.sort((a, b) => a.similarity - b.similarity);
+		withSimilarity.sort((a, b) => b.similarity - a.similarity);
 		// verify the first 10 match
 		assert.deepEqual(
 			withSimilarity.slice(0, 10).map((obj) => obj.vector),

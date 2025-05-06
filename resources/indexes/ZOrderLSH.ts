@@ -8,6 +8,7 @@ const MAX_LEVEL = 10; // should give good high-level skip list performance up to
 const RANDOM_PROJECTION_INPUT_DIMENSIONS = 10000;
 export class ZOrderLSH {
 	indexStore: any;
+	precision = 1 / (1 << 8);
 	constructor(indexStore: any, useRandomProjectionCount?: number) {
 		this.indexStore = indexStore;
 		if (useRandomProjectionCount) {
@@ -45,7 +46,10 @@ export class ZOrderLSH {
 			vector = this.applyRandomProjection(vector);
 		}
 		const result = 0;
-		do {} while (vector.some((v) => v < 0 || v > 1));
+		do {
+			for (value of vector) {
+			}
+		} while (vector.some((v) => v < 0 || v > 1));
 		this.indexStore;
 	}
 }

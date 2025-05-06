@@ -1,3 +1,4 @@
+import { cosineSimilarity, euclideanSimilarity } from './vector';
 /**
  * Implementation of a vector index for HarperDB, using hierarchical navigable small world graphs.
  */
@@ -11,8 +12,9 @@ export class HierarchicalNavigableSmallWorld {
 	efConstruction: number = 100; // size of dynamic candidate list
 	mL: number = 1 / Math.log(this.M); // normalization factor for level generation
 
-	constructor(indexStore: any) {
+	constructor(indexStore: any, options) {
 		this.indexStore = indexStore;
+		this.similarity = options?.similarity === 'euclidean' ? euclideanSimilarity : cosineSimilarity;
 	}
 	index(primaryKey: string, vector: number[], existingValue?: any) {
 		// first get the node id for the primary key; we use internal node ids for better efficiency,
@@ -103,7 +105,7 @@ export class HierarchicalNavigableSmallWorld {
 		const candidates = [
 			{
 				id: entryPointId,
-				distance: this.similarity(queryVector, entryPoint.vector),
+				similarity: this.similarity(queryVector, entryPoint.vector),
 				node: entryPoint,
 			},
 		];
@@ -111,14 +113,14 @@ export class HierarchicalNavigableSmallWorld {
 
 		while (candidates.length > 0) {
 			// Get closest unvisited element
-			candidates.sort((a, b) => a.distance - b.distance);
+			candidates.sort((a, b) => b.similarity - a.similarity);
 			const current = candidates.shift()!;
 
-			// Get furthest result distance
-			const furthestDistance = results[results.length - 1].distance;
+			// Get least result similarity
+			const leastSimilarity = results[results.length - 1].similarity;
 
-			// If current candidate is further than our worst result, we're done
-			if (current.distance > furthestDistance) break;
+			// If current candidate is less similar than our worst result, we're done
+			if (current.similarity < leastSimilarity) break;
 
 			// Check neighbors of current point
 			const currentNode = current.node;
@@ -127,17 +129,17 @@ export class HierarchicalNavigableSmallWorld {
 				visited.add(neighborId);
 
 				const neighbor = this.indexStore.get(neighborId);
-				const distance = this.similarity(queryVector, neighbor.vector);
+				const similarity = this.similarity(queryVector, neighbor.vector);
 
-				if (distance < furthestDistance || results.length < ef) {
+				if (similarity > leastSimilarity || results.length < ef) {
 					const candidate = {
 						id: neighborId,
-						distance,
+						similarity,
 						node: neighbor,
 					};
 					candidates.push(candidate);
 					results.push(candidate);
-					results.sort((a, b) => a.distance - b.distance);
+					results.sort((a, b) => b.similarity - a.similarity);
 					if (results.length > ef) results.pop();
 				}
 			}
@@ -146,16 +148,6 @@ export class HierarchicalNavigableSmallWorld {
 		return results;
 	}
 
-	private similarity(a: number[], b: number[]): number {
-		// Euclidean distance
-		let distanceSquared = 0;
-		for (let i = 0; i < Math.max(a.length, b.length); i++) {
-			const va = a[i] || 0;
-			const vb = b[i] || 0;
-			distanceSquared += Math.pow(va - vb, 2);
-		}
-		return Math.sqrt(distanceSquared);
-	}
 	search(comparator: string, value: number[]) {
 		if (comparator !== 'similarity') return;
 		let entryPoint = this.getEntryPoint();
@@ -190,11 +182,11 @@ export class HierarchicalNavigableSmallWorld {
 
 		const maxConnections = level === 0 ? this.M : this.M >> 1;
 		if (node[level].length > maxConnections) {
-			// Get all connections with their distances
-			const withDistance = node[level].map((id) => {
+			// Get all connections with their similaritys
+			const withSimilarity = node[level].map((id) => {
 				const neighboringNode = this.indexStore.get(id);
 				if (!neighboringNode) {
-					return { id, distance: Infinity };
+					return { id, similarity: Infinity };
 				}
 
 				// Count reverse connections to this node
@@ -202,22 +194,22 @@ export class HierarchicalNavigableSmallWorld {
 
 				return {
 					id,
-					distance: this.similarity(node.vector, neighboringNode.vector),
+					similarity: this.similarity(node.vector, neighboringNode.vector),
 					reverseConnections,
 				};
 			});
 
-			// Sort by distance but prioritize nodes that have reverse connections
-			withDistance.sort((a, b) => {
+			// Sort by similarity but prioritize nodes that have reverse connections
+			withSimilarity.sort((a, b) => {
 				if (a.reverseConnections !== b.reverseConnections) {
 					return b.reverseConnections - a.reverseConnections; // Keep mutual connections
 				}
-				return a.distance - b.distance;
+				return b.similarity - a.similarity;
 			});
 
 			// Keep the best connections
-			const keptConnections = withDistance.slice(0, maxConnections);
-			const removedConnections = withDistance.slice(maxConnections);
+			const keptConnections = withSimilarity.slice(0, maxConnections);
+			const removedConnections = withSimilarity.slice(maxConnections);
 
 			// Update this node's connections
 			node[level] = keptConnections.map((item) => item.id);
