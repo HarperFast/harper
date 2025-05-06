@@ -129,6 +129,9 @@ function startWorker(path, options = {}) {
 
 	if (!extname(path)) path += '.js';
 
+	const execArgv = ['--enable-source-maps'];
+	if (env_mgr.get(hdb_terms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT))
+		execArgv.push('--heapsnapshot-near-heap-limit=1');
 	const worker = new Worker(
 		isAbsolute(path) ? path : join(PACKAGE_ROOT, path),
 		Object.assign(
@@ -137,7 +140,7 @@ function startWorker(path, options = {}) {
 					maxOldGenerationSizeMb: max_old_memory,
 					maxYoungGenerationSizeMb: max_young_memory,
 				},
-				execArgv: ['--enable-source-maps'],
+				execArgv,
 				argv: process.argv.slice(2),
 				// pass these in synchronously to the worker so it has them on startup:
 				workerData: {
