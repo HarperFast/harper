@@ -103,7 +103,7 @@ export class HierarchicalNavigableSmallWorld {
 				}
 				currentLevel--;
 			}
-			const connections = new Array(level + 1).fill([]);
+			const connections = new Array(level + 1);
 			// Connect the new element to neighbors at its level and below
 			for (let l = Math.min(level, currentLevel); l >= 0; l--) {
 				const neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, l);
@@ -113,6 +113,7 @@ export class HierarchicalNavigableSmallWorld {
 
 				// Create bidirectional connections
 				for (const { id, node } of connectionsAtLevel) {
+					if (id === nodeId) continue; // don't connect to self
 					// Add connection to the new element
 					if (!connections[l]) connections[l] = [];
 					connections[l].push(id);
@@ -151,15 +152,17 @@ export class HierarchicalNavigableSmallWorld {
 				throw new Error('Entry point deleted, new entry point not implemented');
 				this.indexStore.put(ENTRY_POINT, entryPoint.id);
 			}
-			// remove connections to this node
 		}
+		// remove connections to this node that are no longer valid
 		if (oldNode.level !== undefined) {
 			for (let l = 0; l <= oldNode.level; l++) {
 				const oldConnections = oldNode[l];
 				for (const neighborId of oldConnections) {
+					// get and copy the neighbor node so we can modify it
 					const neighborNode = { ...this.indexStore.get(neighborId) };
 					let found = false;
 					for (let l2 = 0; l2 <= l; l2++) {
+						// remove the connection to this node from the neighbor node
 						neighborNode[l2] = neighborNode[l2]?.filter((nid) => {
 							if (nid === nodeId) {
 								found = true;
@@ -263,11 +266,11 @@ export class HierarchicalNavigableSmallWorld {
 
 		const maxConnections = level === 0 ? this.M : this.M >> 1;
 		if (node[level].length > maxConnections) {
-			// Get all connections with their similaritys
+			// Get all connections with their similarities
 			const withSimilarity = node[level].map((id) => {
 				const neighboringNode = this.indexStore.get(id);
 				if (!neighboringNode) {
-					return { id, similarity: Infinity };
+					return { id, similarity: 1e30, reverseConnections: 1e30 };
 				}
 
 				// Count reverse connections to this node
@@ -289,8 +292,8 @@ export class HierarchicalNavigableSmallWorld {
 			});
 
 			// Keep the best connections
-			const keptConnections = withSimilarity.slice(0, maxConnections);
-			const removedConnections = withSimilarity.slice(maxConnections);
+			const keptConnections = withSimilarity.slice(0, maxConnections - (maxConnections >> 2));
+			const removedConnections = withSimilarity.slice(maxConnections - (maxConnections >> 2));
 
 			// Update this node's connections
 			node[level] = keptConnections.map((item) => item.id);

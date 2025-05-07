@@ -5,26 +5,26 @@ const { table } = require('../../resources/databases');
 const { HierarchicalNavigableSmallWorld } = require('../../ts-build/resources/indexes/HierarchicalNavigableSmallWorld');
 
 describe('HierarchicalNavigableSmallWorld indexing', () => {
-	let VectorTest;
+	let HNSWTest;
 	let testInstance = new HierarchicalNavigableSmallWorld();
 	before(() => {
-		VectorTest = table({
-			table: 'VectorTest',
+		HNSWTest = table({
+			table: 'HNSWTest',
 			database: 'test',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'name' },
-				{ name: 'vector', indexed: { type: 'HNSW', dimension: 100, distance: 'cosine' }, type: 'Array' },
+				{ name: 'vector', indexed: { type: 'HNSW' }, type: 'Array' },
 			],
 		});
 	});
 	it('can index and search with vector index', async () => {
 		let all = [];
-		let starting = Array.from(VectorTest.indices.vector.getRange({}));
-		console.log(starting);
+		let starting = Array.from(HNSWTest.indices.vector.getRange({}));
+		console.log(starting.map());
 		for (let i = 0; i < 200; i++) {
 			let vector = [i % 2, i % 3, i % 4, i % 5, i % 6, i % 7, i % 8, i % 9, i % 10, i % 11];
-			await VectorTest.put(i, {
+			await HNSWTest.put(i, {
 				name: 'test',
 				vector,
 			});
@@ -32,7 +32,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		}
 		const testVector = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10];
 		let results = await fromAsync(
-			VectorTest.search([
+			HNSWTest.search([
 				{
 					attribute: 'vector',
 					comparator: 'similarity',
