@@ -1,4 +1,5 @@
 import { cosineSimilarity, euclideanSimilarity } from './vector';
+import assert from 'node:assert';
 /**
  * Implementation of a vector index for HarperDB, using hierarchical navigable small world graphs.
  */
@@ -58,7 +59,7 @@ export class HierarchicalNavigableSmallWorld {
 			nodeId = Number(Atomics.add(this.idIncrementer, 0, 1n));
 			this.indexStore.put(safeKey, nodeId);
 		}
-
+		const updatedNodes = new Map<Node>();
 		let oldNode: Node;
 		// If this is the first entry, create it as the entry point
 		let entryPointId = this.indexStore.get(ENTRY_POINT);
@@ -84,6 +85,7 @@ export class HierarchicalNavigableSmallWorld {
 			}
 
 			let entryPoint = this.indexStore.get(entryPointId);
+			entryPoint = this.indexStore.get(entryPointId);
 			// Generate random level for this new element
 			const level = oldNode.level ?? Math.min(Math.floor(-Math.log(Math.random()) * this.mL), MAX_LEVEL);
 			let currentLevel = entryPoint.level;
@@ -104,35 +106,40 @@ export class HierarchicalNavigableSmallWorld {
 				currentLevel--;
 			}
 			const connections = new Array(level + 1);
+			for (let i = 0; i <= level; i++) {
+				connections[i] = [];
+			}
 			// Connect the new element to neighbors at its level and below
 			for (let l = Math.min(level, currentLevel); l >= 0; l--) {
 				const neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, l);
 
 				// Select M closest neighbors
 				const connectionsAtLevel = neighbors.slice(0, this.M >> 1);
-
+				if (connectionsAtLevel.length === 0 && l === 0) {
+					console.log('should not have zero connections here');
+				}
 				// Create bidirectional connections
 				for (const { id, node } of connectionsAtLevel) {
 					if (id === nodeId) continue; // don't connect to self
 					// Add connection to the new element
-					if (!connections[l]) connections[l] = [];
 					connections[l].push(id);
 					// Add reverse connection from neighbor to new element if it didn't exist before
 					// First check to see if we had an existing neighbor connection before. If we did we can
 					// just remove from the list of the connections to remove (don't remove, leave it in place)
 					let oldConnections = oldNode[l];
-					const oldPosition = oldConnections?.indexOf(nodeId);
+					const oldPosition = oldConnections?.indexOf(id);
 					if (oldPosition > -1) {
-						if (oldConnections) {
-							if (!oldConnections.copied) {
-								// make a copy, it is likely frozen
-								oldConnections = [...oldConnections];
-								oldConnections.copied = true;
-								oldNode[l] = oldConnections;
-							}
-							oldConnections.splice(oldPosition, 1);
+						if (!oldConnections.copied) {
+							// make a copy, it is likely frozen
+							oldConnections = [...oldConnections];
+							oldConnections.copied = true;
+							oldNode[l] = oldConnections;
 						}
-					} else this.addConnection(id, node, nodeId, l); // add new connection since this is truly a new connection now
+						oldConnections.splice(oldPosition, 1);
+					} else {
+						// add new connection since this is truly a new connection now
+						this.addConnection(id, updateNode(id, node), nodeId, l, updateNode);
+					}
 				}
 			}
 
@@ -157,9 +164,12 @@ export class HierarchicalNavigableSmallWorld {
 		if (oldNode.level !== undefined) {
 			for (let l = 0; l <= oldNode.level; l++) {
 				const oldConnections = oldNode[l];
+				if (!oldConnections) {
+					console.log('oldNode', oldNode);
+				}
 				for (const neighborId of oldConnections) {
 					// get and copy the neighbor node so we can modify it
-					const neighborNode = { ...this.indexStore.get(neighborId) };
+					const neighborNode = updateNode(neighborId, this.indexStore.get(neighborId));
 					let found = false;
 					for (let l2 = 0; l2 <= l; l2++) {
 						// remove the connection to this node from the neighbor node
@@ -169,11 +179,31 @@ export class HierarchicalNavigableSmallWorld {
 								return false;
 							} else return true;
 						});
+						if (neighborNode[l2].length === 0) {
+							console.log('should not have zero connections here');
+						}
 					}
-					if (found) this.indexStore.put(neighborId, neighborNode);
+					/*if (found) {
+						this.indexStore.put(neighborId, neighborNode);
+						this.verifyMap.set(neighborId, neighborNode);
+					}*/
 				}
 			}
 		}
+		function updateNode(id: number, node?: Node) {
+			// keep a record of all our changes, maintaining any changes that are queued to be written
+			let updatedNode: Node = updatedNodes.get(id);
+			if (!updatedNode && node) {
+				// copy the node so we can modify it
+				updatedNode = { ...node };
+				updatedNodes.set(id, updatedNode);
+			}
+			return updatedNode;
+		}
+		for (const [id, updatedNode] of updatedNodes) {
+			this.indexStore.put(id, updatedNode);
+		}
+		this.checkSymmetry(nodeId, this.indexStore.get(nodeId));
 	}
 
 	private getEntryPoint() {
@@ -254,9 +284,34 @@ export class HierarchicalNavigableSmallWorld {
 			value: candidate.node.primaryKey, // return values
 		}));
 	}
-
-	private addConnection(fromId: number, node: any, toId: number, level: number) {
-		node = { ...node }; // copy the node so we can modify it
+	private checkSymmetry(id, node) {
+		let l = 0;
+		let connections;
+		while ((connections = node[l])) {
+			// verify that the level is not empty, otherwise this means we have an orphaned node
+			if (connections.length === 0) break;
+			for (const neighbor of connections) {
+				const neighborNode = this.indexStore.get(neighbor);
+				if (!neighborNode) {
+					console.log('could not find neighbor node', neighborNode);
+				}
+				// verify that the connection is symmetrical
+				const symmetrical = neighborNode[l]?.includes(id);
+				if (!symmetrical) {
+					console.log(neighborNode[l]);
+				}
+				assert(symmetrical);
+			}
+			l++;
+		}
+	}
+	private addConnection(
+		fromId: number,
+		node: any,
+		toId: number,
+		level: number,
+		updateNode: (id: number, node?: Node) => any
+	) {
 		if (!node[level]) {
 			node[level] = [];
 		}
@@ -268,26 +323,23 @@ export class HierarchicalNavigableSmallWorld {
 		if (node[level].length > maxConnections) {
 			// Get all connections with their similarities
 			const withSimilarity = node[level].map((id) => {
-				const neighboringNode = this.indexStore.get(id);
-				if (!neighboringNode) {
-					return { id, similarity: 1e30, reverseConnections: 1e30 };
+				if (id === toId) {
+					return { id, similarity: 1e30 };
 				}
-
-				// Count reverse connections to this node
-				const reverseConnections = neighboringNode[level]?.filter((nid) => nid === fromId).length ?? 0;
-
+				const neighboringNode = this.indexStore.get(id);
+				const similarity = this.similarity(node.vector, neighboringNode.vector);
+				const adjustedSimilarity =
+					similarity / Math.sqrt(Math.sqrt(Math.max(neighboringNode[level].length - 1, 1e-30)));
 				return {
 					id,
-					similarity: this.similarity(node.vector, neighboringNode.vector),
-					reverseConnections,
+					similarity: adjustedSimilarity,
+					rawSimilarity: similarity,
+					connectionCount: neighboringNode[level].length,
 				};
 			});
 
 			// Sort by similarity but prioritize nodes that have reverse connections
 			withSimilarity.sort((a, b) => {
-				if (a.reverseConnections !== b.reverseConnections) {
-					return b.reverseConnections - a.reverseConnections; // Keep mutual connections
-				}
 				return b.similarity - a.similarity;
 			});
 
@@ -297,21 +349,23 @@ export class HierarchicalNavigableSmallWorld {
 
 			// Update this node's connections
 			node[level] = keptConnections.map((item) => item.id);
-
 			// For removed connections, ensure there's still a path to them
 			for (const removed of removedConnections) {
-				let removedNode = this.indexStore.get(removed.id);
+				let removedNode = updateNode(removed.id) ?? this.indexStore.get(removed.id);
 				if (removedNode) {
 					// Remove the reverse connection if it exists
 					if (removedNode[level]) {
-						removedNode = { ...removedNode };
+						removedNode = updateNode(removed.id, removedNode);
 						removedNode[level] = removedNode[level].filter((id) => id !== fromId);
-						this.indexStore.put(removed.id, removedNode);
+						if (level === 0 && removedNode[level].length === 0) {
+							console.log('should not remove last connection');
+						}
 					}
 				}
 			}
 		}
-		this.indexStore.put(fromId, node);
+		//this.indexStore.put(fromId, node);
+		//this.checkSymmetry(fromId, node);
 	}
 	private validateConnectivity(startLevel: number = 0) {
 		const entryPoint = this.getEntryPoint();
