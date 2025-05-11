@@ -2729,6 +2729,7 @@ export function makeTable(options) {
 				$id: (object, context, entry) => ({ value: entry.key }),
 				$updatedtime: (object, context, entry) => entry.version,
 				$record: (object, context, entry) => (entry ? { value: object } : object),
+				$similarity: (object, context, entry) => entry.similarity,
 			};
 			for (const attribute of this.attributes) {
 				if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;

@@ -342,7 +342,17 @@ export function searchByIndex(
 		results.hasEntries = true;
 		return results;
 	} else if (index) {
-		return (customResults || index.getRange(rangeOptions)).map(
+		if (customResults) {
+			return customResults.map((entry) => {
+				if (typeof entry === 'object' && entry) {
+					const { key, ...otherProps } = entry;
+					const loadedEntry = Table.primaryStore.getEntry(entry.key);
+					return { ...otherProps, ...loadedEntry };
+				}
+				return entry;
+			});
+		}
+		return index.getRange(rangeOptions).map(
 			filter
 				? function ({ key, value }) {
 						let recordMatcher: any;

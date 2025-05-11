@@ -1,4 +1,5 @@
 import { cosineSimilarity, euclideanSimilarity } from './vector';
+import { FLOAT32_OPTIONS } from 'msgpackr';
 import assert from 'node:assert';
 /**
  * Implementation of a vector index for HarperDB, using hierarchical navigable small world graphs.
@@ -15,6 +16,12 @@ type Node = {
 /**
  * Represents a Hierarchical Navigable Small World (HNSW) index for approximate nearest neighbor search.
  * This implementation is based on hierarchical graph navigation to efficiently index and search high-dimensional vectors.
+ * A HNSW is basically a multi-dimensional skip list. Each node has (potentially) higher levels that are used for quickly
+ * traversing the graph get in the neighborhood of the node, and then lower levels are used to more accurately find the
+ * closest neighbors.
+ *
+ * This implementation is based on the paper "Efficient and Robust Approximate Nearest Neighbor Search in High Dimensions"
+ * (mostly influenced AI's contributions)
  */
 export class HierarchicalNavigableSmallWorld {
 	static useObjectStore = true;
@@ -22,11 +29,15 @@ export class HierarchicalNavigableSmallWorld {
 	M: number = 16; // max number of connections per layer
 	efConstruction: number = 100; // size of dynamic candidate list
 	mL: number = 1 / Math.log(this.M); // normalization factor for level generation
+	nodesVisitedCount = 0;
 
 	idIncrementer: BigInt64Array | undefined;
 	similarity: (a: number[], b: number[]) => number;
-	constructor(indexStore: any, options) {
+	constructor(indexStore: any, options: any) {
 		this.indexStore = indexStore;
+		if (indexStore) {
+			this.indexStore.encoder.useFloat32 = 1;
+		}
 		this.similarity = options?.similarity === 'euclidean' ? euclideanSimilarity : cosineSimilarity;
 	}
 	index(primaryKey: string, vector: number[], existingVector?: number[]) {
@@ -80,24 +91,31 @@ export class HierarchicalNavigableSmallWorld {
 					node[i] = [];
 				}
 				this.indexStore.put(nodeId, node);
+				if (typeof nodeId !== 'number') {
+					throw new Error('Invalid nodeId: ' + nodeId);
+				}
+				console.log('setting entry point to', nodeId);
 				this.indexStore.put(ENTRY_POINT, nodeId);
 				return;
 			}
 
 			let entryPoint = this.indexStore.get(entryPointId);
-			entryPoint = this.indexStore.get(entryPointId);
 			// Generate random level for this new element
 			const level = oldNode.level ?? Math.min(Math.floor(-Math.log(Math.random()) * this.mL), MAX_LEVEL);
 			let currentLevel = entryPoint.level;
 			if (level >= currentLevel) {
 				// if we are at this level or higher, make this the new entry point
+				if (typeof nodeId !== 'number') {
+					throw new Error('Invalid nodeId: ' + nodeId);
+				}
+				console.log('setting entry point to', nodeId);
 				this.indexStore.put(ENTRY_POINT, nodeId);
 			}
 
 			// For each level from top to bottom
 			while (currentLevel > level) {
 				// Search for closest neighbors at current level
-				const neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, currentLevel);
+				const neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, currentLevel, 0);
 
 				if (neighbors.length > 0) {
 					entryPointId = neighbors[0].id; // closest neighbor becomes new entry point
@@ -111,7 +129,7 @@ export class HierarchicalNavigableSmallWorld {
 			}
 			// Connect the new element to neighbors at its level and below
 			for (let l = Math.min(level, currentLevel); l >= 0; l--) {
-				const neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, l);
+				const neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, l, 4);
 
 				// Select M closest neighbors
 				const connectionsAtLevel = neighbors.slice(0, this.M >> 1);
@@ -119,19 +137,19 @@ export class HierarchicalNavigableSmallWorld {
 					console.log('should not have zero connections here');
 				}
 				// Create bidirectional connections
-				for (const { id, node } of connectionsAtLevel) {
+				for (const { id, similarity, node } of connectionsAtLevel) {
 					if (id === nodeId) continue; // don't connect to self
 					// Add connection to the new element
 					connections[l].push(id);
 					// Add reverse connection from neighbor to new element if it didn't exist before
 					// First check to see if we had an existing neighbor connection before. If we did we can
 					// just remove from the list of the connections to remove (don't remove, leave it in place)
-					let oldConnections = oldNode[l];
+					let oldConnections: WithCopied = oldNode[l];
 					const oldPosition = oldConnections?.indexOf(id);
 					if (oldPosition > -1) {
 						if (!oldConnections.copied) {
 							// make a copy, it is likely frozen
-							oldConnections = [...oldConnections];
+							oldConnections = [...oldConnections] as WithCopied;
 							oldConnections.copied = true;
 							oldNode[l] = oldConnections;
 						}
@@ -151,15 +169,43 @@ export class HierarchicalNavigableSmallWorld {
 				...connections,
 			});
 		} else {
-			// removal of this node
-			this.indexStore.delete(nodeId);
+			// removal of this node, but first make sure we have a valid entry point
 			if (entryPointId === nodeId) {
 				// if this is the entry point, find a new entry point
-				// TODO: Find a new entry point
-				throw new Error('Entry point deleted, new entry point not implemented');
-				this.indexStore.put(ENTRY_POINT, entryPoint.id);
+				const lastLevel = oldNode.level ?? 0;
+				for (let l = lastLevel; l >= 0; l--) {
+					entryPointId = oldNode[l][0];
+					if (entryPointId !== undefined) break;
+				}
+				if (entryPointId === undefined) {
+					// scan through all nodes to find one with highest level
+					let highestLevel = -1;
+					for (const { key, value } of this.indexStore.getRange({
+						start: 0,
+						end: Infinity,
+					})) {
+						if (value.level > highestLevel) {
+							entryPointId = key;
+							if (value.level === lastLevel) break; // if we found a node at the same level as the last entry point, we can stop
+							highestLevel = value.level;
+						}
+					}
+				}
+				if (entryPointId === undefined) {
+					// no nodes left in index
+					this.indexStore.remove(ENTRY_POINT);
+				} else {
+					// set the new entry point
+					if (typeof entryPointId !== 'number') {
+						throw new Error('Invalid nodeId: ' + entryPointId);
+					}
+					console.log('setting entry point to', entryPointId);
+					this.indexStore.put(ENTRY_POINT, entryPointId);
+				}
 			}
+			this.indexStore.remove(nodeId);
 		}
+		const needsReindexing = new Map();
 		// remove connections to this node that are no longer valid
 		if (oldNode.level !== undefined) {
 			for (let l = 0; l <= oldNode.level; l++) {
@@ -180,7 +226,8 @@ export class HierarchicalNavigableSmallWorld {
 							} else return true;
 						});
 						if (neighborNode[l2].length === 0) {
-							console.log('should not have zero connections here');
+							console.log('node was left orphaned, will reindex', neighborId);
+							needsReindexing.set(neighborNode.primaryKey, neighborNode.vector);
 						}
 					}
 					/*if (found) {
@@ -203,6 +250,9 @@ export class HierarchicalNavigableSmallWorld {
 		for (const [id, updatedNode] of updatedNodes) {
 			this.indexStore.put(id, updatedNode);
 		}
+		for (const [key, vector] of needsReindexing) {
+			this.index(key, vector, vector);
+		}
 		this.checkSymmetry(nodeId, this.indexStore.get(nodeId));
 	}
 
@@ -214,7 +264,14 @@ export class HierarchicalNavigableSmallWorld {
 		return { id: entryPointId, ...node };
 	}
 
-	private searchLayer(queryVector: number[], entryPointId: number, entryPoint: any, ef: number, level: number) {
+	private searchLayer(
+		queryVector: number[],
+		entryPointId: number,
+		entryPoint: any,
+		ef: number,
+		level: number,
+		antiCliqueFactor: number
+	): SearchResults {
 		const visited = new Set([entryPointId]);
 		const candidates = [
 			{
@@ -223,7 +280,7 @@ export class HierarchicalNavigableSmallWorld {
 				node: entryPoint,
 			},
 		];
-		const results = [...candidates];
+		let results = [...candidates] as SearchResults;
 
 		while (candidates.length > 0) {
 			// Get closest unvisited element
@@ -243,6 +300,7 @@ export class HierarchicalNavigableSmallWorld {
 				visited.add(neighborId);
 
 				const neighbor = this.indexStore.get(neighborId);
+				this.nodesVisitedCount++;
 				const similarity = this.similarity(queryVector, neighbor.vector);
 
 				if (similarity > leastSimilarity || results.length < ef) {
@@ -253,12 +311,39 @@ export class HierarchicalNavigableSmallWorld {
 					};
 					candidates.push(candidate);
 					results.push(candidate);
-					results.sort((a, b) => b.similarity - a.similarity);
-					if (results.length > ef) results.pop();
 				}
 			}
+			results.sort((a, b) => b.similarity - a.similarity);
+			if (results.length > ef) results.splice(ef, results.length - ef);
 		}
-
+		if (antiCliqueFactor) {
+			// when anti-clique measures are applied, we skip nodes that are reachable through other nodes
+			const included = new Set<number>(); // track which nodes are directly included or reachable
+			const reachable = new Set<number>();
+			results = results.filter(({ id, node }, rank) => {
+				for (let l = node.level; l >= 0; l--) {
+					const level = node[l];
+					for (let i = 0; i < level.length; i++) {
+						// if already reachable, we skip this one
+						if (included.has(level[i])) {
+							return false;
+						}
+						if (reachable.has(level[i]) && rank > antiCliqueFactor) {
+							return false;
+						}
+					}
+				}
+				included.add(id);
+				for (let l = node.level; l >= 0; l--) {
+					const level = node[l];
+					for (let i = 0; i < level.length; i++) {
+						reachable.add(level[i]);
+					}
+				}
+				return true;
+			}) as SearchResults;
+		}
+		results.visited = visited.size;
 		return results;
 	}
 
@@ -271,7 +356,7 @@ export class HierarchicalNavigableSmallWorld {
 		// For each level from top to bottom
 		for (let l = entryPoint.level; l >= 0; l--) {
 			// Search for closest neighbors at current level
-			results = this.searchLayer(value, entryPointId, entryPoint, this.efConstruction, l);
+			results = this.searchLayer(value, entryPointId, entryPoint, this.efConstruction, l, 0);
 
 			if (results.length > 0) {
 				const neighbor = results[0]; // closest neighbor becomes new entry point
@@ -281,10 +366,12 @@ export class HierarchicalNavigableSmallWorld {
 		}
 
 		return results.map((candidate) => ({
-			value: candidate.node.primaryKey, // return values
+			key: candidate.node.primaryKey, // return values
+			similarity: candidate.similarity,
 		}));
 	}
 	private checkSymmetry(id, node) {
+		if (!node) return;
 		let l = 0;
 		let connections;
 		while ((connections = node[l])) {
@@ -367,7 +454,7 @@ export class HierarchicalNavigableSmallWorld {
 		//this.indexStore.put(fromId, node);
 		//this.checkSymmetry(fromId, node);
 	}
-	private validateConnectivity(startLevel: number = 0) {
+	validateConnectivity(startLevel: number = 0) {
 		const entryPoint = this.getEntryPoint();
 		const visited = new Set<number>();
 
@@ -391,10 +478,14 @@ export class HierarchicalNavigableSmallWorld {
 
 		// Check if all nodes are reachable
 		// This would require maintaining a separate set/count of all nodes
+		if (visited.size !== this.totalNodes) {
+			console.log('visited', visited);
+			console.log('total', this.totalNodes);
+		}
 		return visited.size === this.totalNodes;
 	}
 	get totalNodes() {
-		return this.indexStore.getKeys({ reverse: true, limit: 1, start: KEY_PREFIX, exclusiveStart: true }).length;
+		return Array.from(this.indexStore.getKeys({ start: 0, end: Infinity })).length;
 	}
 	get totalConnections() {
 		let count = 0;
@@ -403,3 +494,10 @@ export class HierarchicalNavigableSmallWorld {
 		}
 	}
 }
+type WithCopied = [] & { copied: boolean };
+type Candidate = {
+	id: number;
+	similarity: number;
+	node: Node;
+};
+type SearchResults = Candidate[] & { visited: number };
