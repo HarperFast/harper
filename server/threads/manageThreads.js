@@ -133,12 +133,15 @@ function startWorker(path, options = {}) {
 
 	if (!extname(path)) path += '.js';
 
+	const execArgv = ['--enable-source-maps'];
+	if (env_mgr.get(hdb_terms.CONFIG_PARAMS.THREADS_HEAPSNAPSHOTNEARLIMIT))
+		execArgv.push('--heapsnapshot-near-heap-limit=1');
 	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
 		resourceLimits: {
 			maxOldGenerationSizeMb: max_old_memory,
 			maxYoungGenerationSizeMb: max_young_memory,
 		},
-		execArgv: ['--enable-source-maps'],
+		execArgv,
 		argv: process.argv.slice(2),
 		// pass these in synchronously to the worker so it has them on startup:
 		workerData: {
@@ -153,7 +156,7 @@ function startWorker(path, options = {}) {
 		transferList: ports_to_send,
 		...options,
 	});
-	// now that we have the new thread ids, we can finishing connecting the channel and notify the existing
+	// now that we have the new thread ids, we can finish connecting the channel and notify the existing
 	// worker of the new port with thread id.
 	for (let { port1, existingPort: existing_port } of channels_to_connect) {
 		existing_port.postMessage(

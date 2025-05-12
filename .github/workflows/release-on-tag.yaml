@@ -485,7 +485,7 @@ jobs:
     timeout-minutes: 30
     strategy:
       matrix:
-        nodeVersion: [ 16, 18, 20, 22 ]
+        nodeVersion: [ 22 ]
         container:
           - 'harperdb/harperdb'
           - 'harperdb/harperdb-openshift'
