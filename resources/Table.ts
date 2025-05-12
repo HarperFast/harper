@@ -49,7 +49,6 @@ import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject } from './blob.ts';
 import { onStorageReclamation } from '../server/storageReclamation.ts';
-import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
 

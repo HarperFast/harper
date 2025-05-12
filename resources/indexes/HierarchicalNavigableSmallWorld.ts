@@ -1,6 +1,7 @@
 import { cosineSimilarity, euclideanSimilarity } from './vector';
 import { FLOAT32_OPTIONS } from 'msgpackr';
-
+import { loggerWithTag } from '../../utility/logging/logger.js';
+const logger = loggerWithTag('HNSW');
 /**
  * Implementation of a vector index for HarperDB, using hierarchical navigable small world graphs.
  */
@@ -30,12 +31,13 @@ type Node = {
 export class HierarchicalNavigableSmallWorld {
 	static useObjectStore = true;
 	indexStore: any;
-	M: number = 32; // max number of connections per layer
+	M: number = 16; // max number of connections per layer
 	efConstruction: number = 100; // size of dynamic candidate list
+	efConstructionSearch: number = 50; // size of dynamic candidate list for search
 	mL: number = 1 / Math.log(this.M); // normalization factor for level generation
 	// how aggressive do we avoid connections that have alternate indirect routes; a value of 0 never avoids connections,
 	// a value of 1 is extremely aggressive.
-	indirectnessFactor = 0.4;
+	indirectnessFactor = 0.6;
 	nodesVisitedCount = 0;
 
 	idIncrementer: BigInt64Array | undefined;
@@ -44,28 +46,19 @@ export class HierarchicalNavigableSmallWorld {
 		this.indexStore = indexStore;
 		if (indexStore) {
 			this.indexStore.encoder.useFloat32 = FLOAT32_OPTIONS.ALWAYS;
-			const cacheMap = new Map();
-			const storeGet = this.indexStore.get;
-			this.indexStore.get = (key) => {
-				if (cacheMap.has(key)) {
-					return cacheMap.get(key);
-				}
-				const value = storeGet.call(this.indexStore, key);
-				cacheMap.set(key, value);
-				return value;
-			};
-			const storePut = this.indexStore.put;
-			this.indexStore.put = (key, value) => {
-				cacheMap.set(key, value);
-				storePut.call(this.indexStore, key, value);
-			};
-			const storeRemove = this.indexStore.remove;
-			this.indexStore.remove = (key) => {
-				cacheMap.set(key, undefined);
-				storeRemove.call(this.indexStore, key);
-			};
 		}
 		this.similarity = options?.similarity === 'euclidean' ? euclideanSimilarity : cosineSimilarity;
+		if (options) {
+			if (options.M !== undefined) {
+				this.M = options.M;
+				this.mL = 1 / Math.log(this.M); // recalculate
+			}
+			if (options.efConstruction !== undefined)
+				this.efConstruction = this.efConstructionSearch = options.efConstruction;
+			if (options.efConstructionSearch !== undefined) this.efConstructionSearch = options.efConstructionSearch;
+			if (options.mL !== undefined) this.mL = options.mL;
+			if (options.indirectnessFactor !== undefined) this.indirectnessFactor = options.indirectnessFactor;
+		}
 	}
 	index(primaryKey: string, vector: number[], existingVector?: number[]) {
 		// first get the node id for the primary key; we use internal node ids for better efficiency,
@@ -121,7 +114,7 @@ export class HierarchicalNavigableSmallWorld {
 				if (typeof nodeId !== 'number') {
 					throw new Error('Invalid nodeId: ' + nodeId);
 				}
-				console.log('setting entry point to', nodeId);
+				logger.debug?.('setting entry point to', nodeId);
 				this.indexStore.put(ENTRY_POINT, nodeId);
 				return;
 			}
@@ -135,7 +128,7 @@ export class HierarchicalNavigableSmallWorld {
 				if (typeof nodeId !== 'number') {
 					throw new Error('Invalid nodeId: ' + nodeId);
 				}
-				console.log('setting entry point to', nodeId);
+				logger.debug?.('setting entry point to', nodeId);
 				this.indexStore.put(ENTRY_POINT, nodeId);
 			}
 
@@ -154,49 +147,50 @@ export class HierarchicalNavigableSmallWorld {
 			for (let i = 0; i <= level; i++) {
 				connections[i] = [];
 			}
-			const similarityThreshold = 1 + this.indirectnessFactor;
+
 			// Connect the new element to neighbors at its level and below
 			for (let l = Math.min(level, currentLevel); l >= 0; l--) {
-				const neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, l, 0);
+				let neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, l, 0);
+				neighbors = neighbors.slice(0, this.M << 1) as SearchResults;
 
 				if (neighbors.length === 0 && l === 0) {
-					console.log('should not have zero connections here');
+					logger.info?.('should not have zero connections for', entryPointId);
 				}
 				const connectionsAtLevel = connections[l];
-				let skipping = false;
 				// Create bidirectional connections
 				for (let i = 0; i < neighbors.length; i++) {
 					const { id, similarity, node } = neighbors[i];
 					if (id === nodeId) continue; // don't connect to self
-					const neighborNeighbors = node[l];
-					const adjustedM = (this.M >> 1) - connectionsAtLevel.length;
 					const connectionsToBeReplaced: { fromId: number; toId: number }[] = [];
-					for (let i2 = 0; i2 < neighborNeighbors.length; i2++) {
-						const { id: neighborId, similarity: neighborSimilarity } = neighborNeighbors[i2];
-						for (let i3 = 0; i3 < connectionsAtLevel.length; i3++) {
-							const { id: addedId, similarity: addedSimilarity } = connectionsAtLevel[i3];
-							if (addedId === neighborId) {
-								if (
-									-similarity * (1 + (this.indirectnessFactor * i) / this.M) >
-									-addedSimilarity - neighborSimilarity
-								) {
-									// if the new similarity is relatively low compared to existing indirect connections,
-									// we skip this neighbor since it is of less value
-									skipping = true;
-								} else if (
-									(-neighborSimilarity * (this.indirectnessFactor * i2)) / this.M >
-									-similarity - addedSimilarity
-								) {
-									// potentially remove the neighbor's neighbor, because we are adding a better route (if we do add it)
-									connectionsToBeReplaced.push({ fromId: addedId, toId: id });
-									connectionsToBeReplaced.push({ fromId: id, toId: addedId });
+					if (this.indirectnessFactor) {
+						let skipping = false;
+						const neighborNeighbors = node[l];
+						const similarityThreshold = 1 + this.indirectnessFactor * (1 + (0.5 * i) / this.M);
+						for (let i2 = 0; i2 < neighborNeighbors.length; i2++) {
+							const { id: neighborId, similarity: neighborSimilarity } = neighborNeighbors[i2];
+							const neighborSimilarityThreshold = 1 + this.indirectnessFactor * (1 + (0.5 * i2) / this.M);
+							for (let i3 = 0; i3 < connectionsAtLevel.length; i3++) {
+								const { id: addedId, similarity: addedSimilarity } = connectionsAtLevel[i3];
+								if (addedId === neighborId) {
+									if (-similarity * similarityThreshold > -addedSimilarity - neighborSimilarity) {
+										// if the new similarity is relatively low compared to existing indirect connections,
+										// we skip this neighbor since it is of less value
+										skipping = true;
+									} else if (-neighborSimilarity * neighborSimilarityThreshold > -similarity - addedSimilarity) {
+										// potentially remove the neighbor's neighbor, because we are adding a better route (if we do add it)
+										connectionsToBeReplaced.push({ fromId: addedId, toId: id });
+										connectionsToBeReplaced.push({ fromId: id, toId: addedId });
+									}
+									break;
 								}
-								break;
 							}
+							if (skipping) break;
 						}
-						if (skipping) break;
+						if (skipping) continue;
+					} else if (i >= (l > 0 ? this.M : this.M << 1)) {
+						// if we are at the maximum number of neighbors, we skip this one
+						continue;
 					}
-					if (skipping) continue;
 					// Add connection to the new element
 					connectionsAtLevel.push({ id, similarity });
 
@@ -205,6 +199,9 @@ export class HierarchicalNavigableSmallWorld {
 						if (!from) from = updateNode(fromId, this.indexStore.get(fromId));
 						for (let i = 0; i < from[l].length; i++) {
 							if (from[l][i].id === toId) {
+								if (Object.isFrozen(from[l])) {
+									from[l] = from[l].slice();
+								}
 								from[l].splice(i, 1);
 								break;
 							}
@@ -269,7 +266,7 @@ export class HierarchicalNavigableSmallWorld {
 					if (typeof entryPointId !== 'number') {
 						throw new Error('Invalid nodeId: ' + entryPointId);
 					}
-					console.log('setting entry point to', entryPointId);
+					logger.debug?.('setting entry point to', entryPointId);
 					this.indexStore.put(ENTRY_POINT, entryPointId);
 				}
 			}
@@ -280,9 +277,6 @@ export class HierarchicalNavigableSmallWorld {
 		if (oldNode.level !== undefined) {
 			for (let l = 0; l <= oldNode.level; l++) {
 				const oldConnections = oldNode[l];
-				if (!oldConnections) {
-					console.log('oldNode', oldNode);
-				}
 				for (const { id: neighborId } of oldConnections) {
 					// get and copy the neighbor node so we can modify it
 					const neighborNode = updateNode(neighborId, this.indexStore.get(neighborId));
@@ -292,14 +286,10 @@ export class HierarchicalNavigableSmallWorld {
 							return nid !== nodeId;
 						});
 						if (neighborNode[l2].length === 0) {
-							console.log('node was left orphaned, will reindex', neighborId);
+							logger.info?.('node was left orphaned, will reindex', neighborId);
 							needsReindexing.set(neighborNode.primaryKey, neighborNode.vector);
 						}
 					}
-					/*if (found) {
-						this.indexStore.put(neighborId, neighborNode);
-						this.verifyMap.set(neighborId, neighborNode);
-					}*/
 				}
 			}
 		}
@@ -422,7 +412,7 @@ export class HierarchicalNavigableSmallWorld {
 		// For each level from top to bottom
 		for (let l = entryPoint.level; l >= 0; l--) {
 			// Search for closest neighbors at current level
-			results = this.searchLayer(value, entryPointId, entryPoint, this.efConstruction >> 1, l, 0);
+			results = this.searchLayer(value, entryPointId, entryPoint, this.efConstructionSearch, l, 0);
 
 			if (results.length > 0) {
 				const neighbor = results[0]; // closest neighbor becomes new entry point
@@ -446,12 +436,12 @@ export class HierarchicalNavigableSmallWorld {
 			for (const { id: neighbor } of connections) {
 				const neighborNode = this.indexStore.get(neighbor);
 				if (!neighborNode) {
-					console.log('could not find neighbor node', neighborNode);
+					logger.info?.('could not find neighbor node', neighborNode);
 				}
 				// verify that the connection is symmetrical
 				const symmetrical = neighborNode[l]?.find(({ id: nid }) => nid == id);
 				if (!symmetrical) {
-					console.log('asymmetry detected', neighborNode[l]);
+					logger.info?.('asymmetry detected', neighborNode[l]);
 				}
 				//assert(symmetrical);
 			}
@@ -472,17 +462,18 @@ export class HierarchicalNavigableSmallWorld {
 
 		const maxConnections = level === 0 ? this.M << 3 : this.M << 2;
 		if (node[level].length >= maxConnections) {
-			console.log('maxConnections reached, removing some connections', maxConnections);
+			logger.warn?.('maxConnections reached, removing some connections', maxConnections);
 			// Get all connections with their similarities
 
 			// Sort by similarity but prioritize nodes that have reverse connections
-			node[level].sort((a, b) => {
+			const connections = [...node[level]];
+			connections.sort((a, b) => {
 				return b.similarity - a.similarity;
 			});
 
 			// Keep the best connections
-			const keptConnections = node[level].slice(0, maxConnections - (maxConnections >> 2));
-			const removedConnections = node[level].slice(maxConnections - (maxConnections >> 2));
+			const keptConnections = connections.slice(0, maxConnections - (maxConnections >> 2));
+			const removedConnections = connections.slice(maxConnections - (maxConnections >> 2));
 
 			// Update this node's connections
 			node[level] = keptConnections;
@@ -495,16 +486,16 @@ export class HierarchicalNavigableSmallWorld {
 						removedNode = updateNode(removed.id, removedNode);
 						removedNode[level] = removedNode[level].filter(({ id }) => id !== fromId);
 						if (level === 0 && removedNode[level].length === 0) {
-							console.log('should not remove last connection');
+							logger.info?.('should not remove last connection', fromId, toId);
 						}
 					}
 				}
 			}
 		}
 		if (node[level].find(({ id }) => id === toId)) {
-			console.log('already connected');
+			logger.debug?.('already connected', fromId, toId);
 		} else {
-			node[level].push({ id: toId, similarity }); // add
+			node[level] = [...node[level], { id: toId, similarity }]; // add
 		}
 
 		//this.indexStore.put(fromId, node);
@@ -546,12 +537,6 @@ export class HierarchicalNavigableSmallWorld {
 	}
 	get totalNodes() {
 		return Array.from(this.indexStore.getKeys({ start: 0, end: Infinity })).length;
-	}
-	get totalConnections() {
-		let count = 0;
-		for (const key of this.indexStore.getKeys({ reverse: true, limit: 1, start: KEY_PREFIX, exclusiveStart: true })) {
-			if (typeof key === 'number' || typeof key === 'bigint') count++;
-		}
 	}
 }
 type WithCopied = number[] & { copied: boolean };
