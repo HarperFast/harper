@@ -28,5 +28,5 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 	magnitudeA = Math.sqrt(magnitudeA);
 	magnitudeB = Math.sqrt(magnitudeB);
 
-	return dotProduct / (magnitudeA * magnitudeB || 1);
+	return dotProduct / (magnitudeA * magnitudeB || 1) - 1;
 }

@@ -7,11 +7,15 @@ import { FLOAT32_OPTIONS } from 'msgpackr';
 const ENTRY_POINT = Symbol.for('entryPoint');
 const KEY_PREFIX = Symbol.for('key');
 const MAX_LEVEL = 10; // should give good high-level skip list performance up to trillions of nodes
+type Connection = {
+	id: number;
+	similarity: number;
+};
 type Node = {
 	vector: number[];
 	level: number;
 	primaryKey: string;
-	[level: number]: number[];
+	[level: number]: Connection[];
 };
 /**
  * Represents a Hierarchical Navigable Small World (HNSW) index for approximate nearest neighbor search.
@@ -29,6 +33,9 @@ export class HierarchicalNavigableSmallWorld {
 	M: number = 32; // max number of connections per layer
 	efConstruction: number = 100; // size of dynamic candidate list
 	mL: number = 1 / Math.log(this.M); // normalization factor for level generation
+	// how aggressive do we avoid connections that have alternate indirect routes; a value of 0 never avoids connections,
+	// a value of 1 is extremely aggressive.
+	indirectnessFactor = 0.4;
 	nodesVisitedCount = 0;
 
 	idIncrementer: BigInt64Array | undefined;
@@ -40,17 +47,22 @@ export class HierarchicalNavigableSmallWorld {
 			const cacheMap = new Map();
 			const storeGet = this.indexStore.get;
 			this.indexStore.get = (key) => {
-				let value = cacheMap.get(key);
-				if (value === undefined) {
-					value = storeGet.call(this.indexStore, key);
-					cacheMap.set(key, value);
+				if (cacheMap.has(key)) {
+					return cacheMap.get(key);
 				}
+				const value = storeGet.call(this.indexStore, key);
+				cacheMap.set(key, value);
 				return value;
 			};
 			const storePut = this.indexStore.put;
 			this.indexStore.put = (key, value) => {
 				cacheMap.set(key, value);
 				storePut.call(this.indexStore, key, value);
+			};
+			const storeRemove = this.indexStore.remove;
+			this.indexStore.remove = (key) => {
+				cacheMap.set(key, undefined);
+				storeRemove.call(this.indexStore, key);
 			};
 		}
 		this.similarity = options?.similarity === 'euclidean' ? euclideanSimilarity : cosineSimilarity;
@@ -142,20 +154,63 @@ export class HierarchicalNavigableSmallWorld {
 			for (let i = 0; i <= level; i++) {
 				connections[i] = [];
 			}
+			const similarityThreshold = 1 + this.indirectnessFactor;
 			// Connect the new element to neighbors at its level and below
 			for (let l = Math.min(level, currentLevel); l >= 0; l--) {
 				const neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, l, 0);
 
-				// Select M closest neighbors
-				const connectionsAtLevel = neighbors.slice(0, this.M >> 1);
-				if (connectionsAtLevel.length === 0 && l === 0) {
+				if (neighbors.length === 0 && l === 0) {
 					console.log('should not have zero connections here');
 				}
+				const connectionsAtLevel = connections[l];
+				let skipping = false;
 				// Create bidirectional connections
-				for (const { id, similarity, node } of connectionsAtLevel) {
+				for (let i = 0; i < neighbors.length; i++) {
+					const { id, similarity, node } = neighbors[i];
 					if (id === nodeId) continue; // don't connect to self
+					const neighborNeighbors = node[l];
+					const adjustedM = (this.M >> 1) - connectionsAtLevel.length;
+					const connectionsToBeReplaced: { fromId: number; toId: number }[] = [];
+					for (let i2 = 0; i2 < neighborNeighbors.length; i2++) {
+						const { id: neighborId, similarity: neighborSimilarity } = neighborNeighbors[i2];
+						for (let i3 = 0; i3 < connectionsAtLevel.length; i3++) {
+							const { id: addedId, similarity: addedSimilarity } = connectionsAtLevel[i3];
+							if (addedId === neighborId) {
+								if (
+									-similarity * (1 + (this.indirectnessFactor * i) / this.M) >
+									-addedSimilarity - neighborSimilarity
+								) {
+									// if the new similarity is relatively low compared to existing indirect connections,
+									// we skip this neighbor since it is of less value
+									skipping = true;
+								} else if (
+									(-neighborSimilarity * (this.indirectnessFactor * i2)) / this.M >
+									-similarity - addedSimilarity
+								) {
+									// potentially remove the neighbor's neighbor, because we are adding a better route (if we do add it)
+									connectionsToBeReplaced.push({ fromId: addedId, toId: id });
+									connectionsToBeReplaced.push({ fromId: id, toId: addedId });
+								}
+								break;
+							}
+						}
+						if (skipping) break;
+					}
+					if (skipping) continue;
 					// Add connection to the new element
-					connections[l].push(id);
+					connectionsAtLevel.push({ id, similarity });
+
+					for (const { fromId, toId } of connectionsToBeReplaced) {
+						let from = updateNode(fromId);
+						if (!from) from = updateNode(fromId, this.indexStore.get(fromId));
+						for (let i = 0; i < from[l].length; i++) {
+							if (from[l][i].id === toId) {
+								from[l].splice(i, 1);
+								break;
+							}
+						}
+					}
+
 					// Add reverse connection from neighbor to new element if it didn't exist before
 					// First check to see if we had an existing neighbor connection before. If we did we can
 					// just remove from the list of the connections to remove (don't remove, leave it in place)
@@ -171,7 +226,7 @@ export class HierarchicalNavigableSmallWorld {
 						oldConnections.splice(oldPosition, 1);
 					} else {
 						// add new connection since this is truly a new connection now
-						this.addConnection(id, updateNode(id, node), nodeId, l, updateNode);
+						this.addConnection(id, updateNode(id, node), nodeId, l, similarity, updateNode);
 					}
 				}
 			}
@@ -189,7 +244,7 @@ export class HierarchicalNavigableSmallWorld {
 				// if this is the entry point, find a new entry point
 				const lastLevel = oldNode.level ?? 0;
 				for (let l = lastLevel; l >= 0; l--) {
-					entryPointId = oldNode[l][0];
+					entryPointId = oldNode[l][0]?.id;
 					if (entryPointId !== undefined) break;
 				}
 				if (entryPointId === undefined) {
@@ -228,15 +283,13 @@ export class HierarchicalNavigableSmallWorld {
 				if (!oldConnections) {
 					console.log('oldNode', oldNode);
 				}
-				for (const neighborId of oldConnections) {
+				for (const { id: neighborId } of oldConnections) {
 					// get and copy the neighbor node so we can modify it
 					const neighborNode = updateNode(neighborId, this.indexStore.get(neighborId));
 					for (let l2 = 0; l2 <= l; l2++) {
 						// remove the connection to this node from the neighbor node
-						neighborNode[l2] = neighborNode[l2]?.filter((nid) => {
-							if (nid === nodeId) {
-								return false;
-							} else return true;
+						neighborNode[l2] = neighborNode[l2]?.filter(({ id: nid }) => {
+							return nid !== nodeId;
 						});
 						if (neighborNode[l2].length === 0) {
 							console.log('node was left orphaned, will reindex', neighborId);
@@ -308,8 +361,8 @@ export class HierarchicalNavigableSmallWorld {
 
 			// Check neighbors of current point
 			const currentNode = current.node;
-			for (const neighborId of currentNode[level] || []) {
-				if (visited.has(neighborId)) continue;
+			for (const { id: neighborId } of currentNode[level] || []) {
+				if (visited.has(neighborId) || neighborId === undefined) continue;
 				visited.add(neighborId);
 
 				const neighbor = this.indexStore.get(neighborId);
@@ -369,7 +422,7 @@ export class HierarchicalNavigableSmallWorld {
 		// For each level from top to bottom
 		for (let l = entryPoint.level; l >= 0; l--) {
 			// Search for closest neighbors at current level
-			results = this.searchLayer(value, entryPointId, entryPoint, this.efConstruction, l, 0);
+			results = this.searchLayer(value, entryPointId, entryPoint, this.efConstruction >> 1, l, 0);
 
 			if (results.length > 0) {
 				const neighbor = results[0]; // closest neighbor becomes new entry point
@@ -390,13 +443,13 @@ export class HierarchicalNavigableSmallWorld {
 		while ((connections = node[l])) {
 			// verify that the level is not empty, otherwise this means we have an orphaned node
 			if (connections.length === 0) break;
-			for (const neighbor of connections) {
+			for (const { id: neighbor } of connections) {
 				const neighborNode = this.indexStore.get(neighbor);
 				if (!neighborNode) {
 					console.log('could not find neighbor node', neighborNode);
 				}
 				// verify that the connection is symmetrical
-				const symmetrical = neighborNode[l]?.includes(id);
+				const symmetrical = neighborNode[l]?.find(({ id: nid }) => nid == id);
 				if (!symmetrical) {
 					console.log('asymmetry detected', neighborNode[l]);
 				}
@@ -410,45 +463,29 @@ export class HierarchicalNavigableSmallWorld {
 		node: any,
 		toId: number,
 		level: number,
+		similarity: number,
 		updateNode: (id: number, node?: Node) => any
 	) {
 		if (!node[level]) {
 			node[level] = [];
 		}
-		if (!node[level].includes(toId)) {
-			node[level] = [...node[level], toId]; // copy and add
-		}
 
-		const maxConnections = level === 0 ? this.M : this.M >> 1;
-		if (node[level].length > maxConnections) {
+		const maxConnections = level === 0 ? this.M << 3 : this.M << 2;
+		if (node[level].length >= maxConnections) {
+			console.log('maxConnections reached, removing some connections', maxConnections);
 			// Get all connections with their similarities
-			const withSimilarity = node[level].map((id) => {
-				if (id === toId) {
-					return { id, similarity: 1e30 };
-				}
-				const neighboringNode = this.indexStore.get(id);
-				const similarity = this.similarity(node.vector, neighboringNode.vector);
-				const adjustedSimilarity =
-					similarity / Math.sqrt(Math.sqrt(Math.max(neighboringNode[level].length - 1, 1e-30)));
-				return {
-					id,
-					similarity: adjustedSimilarity,
-					rawSimilarity: similarity,
-					connectionCount: neighboringNode[level].length,
-				};
-			});
 
 			// Sort by similarity but prioritize nodes that have reverse connections
-			withSimilarity.sort((a, b) => {
+			node[level].sort((a, b) => {
 				return b.similarity - a.similarity;
 			});
 
 			// Keep the best connections
-			const keptConnections = withSimilarity.slice(0, maxConnections - (maxConnections >> 2));
-			const removedConnections = withSimilarity.slice(maxConnections - (maxConnections >> 2));
+			const keptConnections = node[level].slice(0, maxConnections - (maxConnections >> 2));
+			const removedConnections = node[level].slice(maxConnections - (maxConnections >> 2));
 
 			// Update this node's connections
-			node[level] = keptConnections.map((item) => item.id);
+			node[level] = keptConnections;
 			// For removed connections, ensure there's still a path to them
 			for (const removed of removedConnections) {
 				let removedNode = updateNode(removed.id) ?? this.indexStore.get(removed.id);
@@ -456,7 +493,7 @@ export class HierarchicalNavigableSmallWorld {
 					// Remove the reverse connection if it exists
 					if (removedNode[level]) {
 						removedNode = updateNode(removed.id, removedNode);
-						removedNode[level] = removedNode[level].filter((id) => id !== fromId);
+						removedNode[level] = removedNode[level].filter(({ id }) => id !== fromId);
 						if (level === 0 && removedNode[level].length === 0) {
 							console.log('should not remove last connection');
 						}
@@ -464,6 +501,12 @@ export class HierarchicalNavigableSmallWorld {
 				}
 			}
 		}
+		if (node[level].find(({ id }) => id === toId)) {
+			console.log('already connected');
+		} else {
+			node[level].push({ id: toId, similarity }); // add
+		}
+
 		//this.indexStore.put(fromId, node);
 		//this.checkSymmetry(fromId, node);
 	}
@@ -474,13 +517,15 @@ export class HierarchicalNavigableSmallWorld {
 		// BFS from entry point to ensure all nodes are reachable
 		const queue = [entryPoint.id];
 		visited.add(entryPoint.id);
+		let connections = 0;
 
 		while (queue.length > 0) {
 			const currentId = queue.shift()!;
 			const current = this.indexStore.get(currentId);
 
 			for (let level = startLevel; level <= current.level; level++) {
-				for (const neighborId of current[level] || []) {
+				for (const { id: neighborId } of current[level] || []) {
+					connections++;
 					if (!visited.has(neighborId)) {
 						visited.add(neighborId);
 						queue.push(neighborId);
@@ -492,10 +537,12 @@ export class HierarchicalNavigableSmallWorld {
 		// Check if all nodes are reachable
 		// This would require maintaining a separate set/count of all nodes
 		if (visited.size !== this.totalNodes) {
-			console.log('visited', visited);
-			console.log('total', this.totalNodes);
+			console.log('visited', visited.size, 'total', this.totalNodes);
 		}
-		return visited.size === this.totalNodes;
+		return {
+			isFullyConnected: visited.size === this.totalNodes,
+			averageConnections: connections / visited.size,
+		};
 	}
 	get totalNodes() {
 		return Array.from(this.indexStore.getKeys({ start: 0, end: Infinity })).length;
