@@ -135,7 +135,7 @@ export class HierarchicalNavigableSmallWorld {
 			// For each level from top to bottom
 			while (currentLevel > level) {
 				// Search for closest neighbors at current level
-				const neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, currentLevel, 0);
+				const neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, currentLevel);
 
 				if (neighbors.length > 0) {
 					entryPointId = neighbors[0].id; // closest neighbor becomes new entry point
@@ -150,7 +150,7 @@ export class HierarchicalNavigableSmallWorld {
 
 			// Connect the new element to neighbors at its level and below
 			for (let l = Math.min(level, currentLevel); l >= 0; l--) {
-				let neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, l, 0);
+				let neighbors = this.searchLayer(vector, entryPointId, entryPoint, this.efConstruction, l);
 				neighbors = neighbors.slice(0, this.M << 1) as SearchResults;
 
 				if (neighbors.length === 0 && l === 0) {
@@ -388,7 +388,7 @@ export class HierarchicalNavigableSmallWorld {
 		// For each level from top to bottom
 		for (let l = entryPoint.level; l >= 0; l--) {
 			// Search for closest neighbors at current level
-			results = this.searchLayer(value, entryPointId, entryPoint, this.efConstructionSearch, l, 0);
+			results = this.searchLayer(value, entryPointId, entryPoint, this.efConstructionSearch, l);
 
 			if (results.length > 0) {
 				const neighbor = results[0]; // closest neighbor becomes new entry point
@@ -516,7 +516,7 @@ export class HierarchicalNavigableSmallWorld {
 		return Array.from(this.indexStore.getKeys({ start: 0, end: Infinity })).length;
 	}
 }
-type WithCopied = number[] & { copied: boolean };
+type WithCopied = Connection[] & { copied: boolean };
 type Candidate = {
 	id: number;
 	similarity: number;
