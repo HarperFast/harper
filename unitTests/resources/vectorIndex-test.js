@@ -15,7 +15,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'name' },
-				{ name: 'vector', indexed: { type: 'HNSW', indirectnessFactor: 0.3 }, type: 'Array' },
+				{ name: 'vector', indexed: { type: 'HNSW', indirectnessFactor: 0.6 }, type: 'Array' },
 			],
 		});
 	});
@@ -94,11 +94,11 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 				conditions: [
 					{
 						attribute: 'vector',
-						comparator: 'similarity',
+						comparator: 'near',
 						value: testVector,
 					},
 				],
-				select: ['id', 'vector', '$similarity'],
+				select: ['id', 'vector', '$difference'],
 			})
 		);
 		console.log(
@@ -106,19 +106,19 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 			HNSWTest.indices.vector.customIndex.nodesVisitedCount - startingNodesVisited
 		);
 		// find the best matches through brute force comparison
-		let withSimilarity = all.map((vector) => ({ vector, similarity: testInstance.similarity(testVector, vector) }));
-		withSimilarity.sort((a, b) => b.similarity - a.similarity);
+		let withDistance = all.map((vector) => ({ vector, distance: testInstance.distance(testVector, vector) }));
+		withDistance.sort((a, b) => a.distance - b.distance);
 		// verify the first 10 match
 		assert.deepEqual(
-			withSimilarity.slice(0, 10).map((obj) => obj.vector),
+			withDistance.slice(0, 10).map((obj) => obj.vector),
 			results.slice(0, 10).map((obj) => obj.vector)
 		);
 	}
 	function verifyIntegrity() {
-		// now verify integrity and proper similarity/distancing across levels
+		// now verify integrity and proper distance/distancing across levels
 		let invertedSimiliarities = 0;
 		for (let { key, value } of HNSWTest.indices.vector.getRange({})) {
-			let lastSimilarity = 1;
+			let lastDistance = 0;
 			let l = 0;
 			let connections;
 			while ((connections = value[l])) {
@@ -129,8 +129,8 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 					continue;
 				}
 				//assert(connections.length > 0);
-				// compute the average similarity of the neighbors in this level
-				let totalSimilarity = 0;
+				// compute the average distance of the neighbors in this level
+				let totalDistance = 0;
 				for (let { id: neighborId } of connections) {
 					let neighborNode = HNSWTest.indices.vector.get(neighborId);
 					assert(neighborNode); // it should exist
@@ -140,23 +140,23 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 						console.log(neighborNode[l]);
 					}
 					assert(symmetrical);
-					let similarity = testInstance.similarity(value.vector, neighborNode.vector);
-					totalSimilarity += similarity;
+					let distance = testInstance.distance(value.vector, neighborNode.vector);
+					totalDistance += distance;
 				}
-				let similarity = totalSimilarity / connections.length;
+				let distance = totalDistance / connections.length;
 				// verify that most of the higher level (skip level) similarities are less than previous levels
 				// (non-skip,
 				// or shorter skip), which should be the case for a HNSW index
-				if (!(similarity < lastSimilarity)) {
-					console.log(similarity, lastSimilarity);
+				if (!(distance > lastDistance)) {
+					console.log(distance, lastDistance);
 					invertedSimiliarities++;
 				}
-				lastSimilarity = similarity;
+				lastDistance = distance;
 				l++;
 			}
 		}
 		if (invertedSimiliarities > 4)
-			console.log('found', invertedSimiliarities, 'inversions of similarity, which is more than desirable');
+			console.log('found', invertedSimiliarities, 'inversions of distance, which is more than desirable');
 		assert(invertedSimiliarities < 5);
 	}
 });

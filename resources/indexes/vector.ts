@@ -1,4 +1,4 @@
-export function euclideanSimilarity(a: number[], b: number[]): number {
+export function euclideanDistance(a: number[], b: number[]): number {
 	// Euclidean distance
 	let distanceSquared = 0;
 	const length = Math.max(a.length, b.length);
@@ -8,10 +8,10 @@ export function euclideanSimilarity(a: number[], b: number[]): number {
 		const distance = va - vb;
 		distanceSquared += distance * distance;
 	}
-	return -distanceSquared; // technically distance is the square root, but skipping that doesn't change the order
+	return distanceSquared; // technically distance is the square root, but skipping that doesn't change the order
 }
 
-export function cosineSimilarity(a: number[], b: number[]): number {
+export function cosineDistance(a: number[], b: number[]): number {
 	// Cosine similarity
 	let dotProduct = 0;
 	let magnitudeA = 0;
@@ -28,5 +28,5 @@ export function cosineSimilarity(a: number[], b: number[]): number {
 	magnitudeA = Math.sqrt(magnitudeA);
 	magnitudeB = Math.sqrt(magnitudeB);
 
-	return dotProduct / (magnitudeA * magnitudeB || 1) - 1;
+	return 1 - dotProduct / (magnitudeA * magnitudeB || 1);
 }

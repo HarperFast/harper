@@ -1,4 +1,4 @@
-import { cosineSimilarity, euclideanSimilarity } from './vector';
+import { cosineDistance, euclideanDistance } from './vector';
 import { FLOAT32_OPTIONS } from 'msgpackr';
 import { loggerWithTag } from '../../utility/logging/logger.js';
 const logger = loggerWithTag('HNSW');
@@ -10,7 +10,7 @@ const KEY_PREFIX = Symbol.for('key');
 const MAX_LEVEL = 10; // should give good high-level skip list performance up to trillions of nodes
 type Connection = {
 	id: number;
-	similarity: number;
+	distance: number;
 };
 type Node = {
 	vector: number[];
@@ -41,13 +41,13 @@ export class HierarchicalNavigableSmallWorld {
 	nodesVisitedCount = 0;
 
 	idIncrementer: BigInt64Array | undefined;
-	similarity: (a: number[], b: number[]) => number;
+	distance: (a: number[], b: number[]) => number;
 	constructor(indexStore: any, options: any) {
 		this.indexStore = indexStore;
 		if (indexStore) {
 			this.indexStore.encoder.useFloat32 = FLOAT32_OPTIONS.ALWAYS;
 		}
-		this.similarity = options?.similarity === 'euclidean' ? euclideanSimilarity : cosineSimilarity;
+		this.distance = options?.distance === 'euclidean' ? euclideanDistance : cosineDistance;
 		if (options) {
 			if (options.M !== undefined) {
 				this.M = options.M;
@@ -159,7 +159,7 @@ export class HierarchicalNavigableSmallWorld {
 				const connectionsAtLevel = connections[l];
 				// Create bidirectional connections
 				for (let i = 0; i < neighbors.length; i++) {
-					const { id, similarity, node } = neighbors[i];
+					const { id, distance, node } = neighbors[i];
 					if (id === nodeId) continue; // don't connect to self
 					const connectionsToBeReplaced: { fromId: number; toId: number }[] = [];
 					if (this.indirectnessFactor) {
@@ -168,18 +168,18 @@ export class HierarchicalNavigableSmallWorld {
 						// towards desired results
 						let skipping = false;
 						const neighborNeighbors = node[l];
-						const similarityThreshold = 1 + this.indirectnessFactor * (1 + (0.5 * i) / this.M);
+						const distanceThreshold = 1 + this.indirectnessFactor * (1 + (0.5 * i) / this.M);
 						for (let i2 = 0; i2 < neighborNeighbors.length; i2++) {
-							const { id: neighborId, similarity: neighborSimilarity } = neighborNeighbors[i2];
-							const neighborSimilarityThreshold = 1 + this.indirectnessFactor * (1 + (0.5 * i2) / this.M);
+							const { id: neighborId, distance: neighborDistance } = neighborNeighbors[i2];
+							const neighborDistanceThreshold = 1 + this.indirectnessFactor * (1 + (0.5 * i2) / this.M);
 							for (let i3 = 0; i3 < connectionsAtLevel.length; i3++) {
-								const { id: addedId, similarity: addedSimilarity } = connectionsAtLevel[i3];
+								const { id: addedId, distance: addedDistance } = connectionsAtLevel[i3];
 								if (addedId === neighborId) {
-									if (-similarity * similarityThreshold > -addedSimilarity - neighborSimilarity) {
-										// if the new similarity is relatively low compared to existing indirect connections,
+									if (distance * distanceThreshold > addedDistance + neighborDistance) {
+										// if the new distance is relatively low compared to existing indirect connections,
 										// we skip this neighbor since it is of less value
 										skipping = true;
-									} else if (-neighborSimilarity * neighborSimilarityThreshold > -similarity - addedSimilarity) {
+									} else if (neighborDistance * neighborDistanceThreshold > distance + addedDistance) {
 										// potentially remove the neighbor's neighbor, because we are adding a better route (if we do add it)
 										connectionsToBeReplaced.push({ fromId: addedId, toId: id });
 										connectionsToBeReplaced.push({ fromId: id, toId: addedId });
@@ -195,7 +195,7 @@ export class HierarchicalNavigableSmallWorld {
 						continue;
 					}
 					// Add connection to the new element
-					connectionsAtLevel.push({ id, similarity });
+					connectionsAtLevel.push({ id, distance });
 
 					for (const { fromId, toId } of connectionsToBeReplaced) {
 						let from = updateNode(fromId);
@@ -227,7 +227,7 @@ export class HierarchicalNavigableSmallWorld {
 						oldConnections.splice(oldPosition, 1);
 					} else {
 						// add new connection since this is truly a new connection now
-						this.addConnection(id, updateNode(id, node), nodeId, l, similarity, updateNode);
+						this.addConnection(id, updateNode(id, node), nodeId, l, distance, updateNode);
 					}
 				}
 			}
@@ -329,13 +329,14 @@ export class HierarchicalNavigableSmallWorld {
 		entryPointId: number,
 		entryPoint: any,
 		ef: number,
-		level: number
+		level: number,
+		distanceFunction = this.distance
 	): SearchResults {
 		const visited = new Set([entryPointId]);
 		const candidates = [
 			{
 				id: entryPointId,
-				similarity: this.similarity(queryVector, entryPoint.vector),
+				distance: this.distance(queryVector, entryPoint.vector),
 				node: entryPoint,
 			},
 		];
@@ -343,14 +344,14 @@ export class HierarchicalNavigableSmallWorld {
 
 		while (candidates.length > 0) {
 			// Get closest unvisited element
-			candidates.sort((a, b) => b.similarity - a.similarity);
+			candidates.sort((a, b) => a.distance - b.distance);
 			const current = candidates.shift()!;
 
-			// Get least result similarity
-			const leastSimilarity = results[results.length - 1].similarity;
+			// Get least result distance
+			const furthestDistance = results[results.length - 1].distance;
 
 			// If current candidate is less similar than our worst result, we're done
-			if (current.similarity < leastSimilarity) break;
+			if (current.distance > furthestDistance) break;
 
 			// Check neighbors of current point
 			const currentNode = current.node;
@@ -360,19 +361,19 @@ export class HierarchicalNavigableSmallWorld {
 
 				const neighbor = this.indexStore.get(neighborId);
 				this.nodesVisitedCount++;
-				const similarity = this.similarity(queryVector, neighbor.vector);
+				const distance = distanceFunction(queryVector, neighbor.vector);
 
-				if (similarity > leastSimilarity || results.length < ef) {
+				if (distance > furthestDistance || results.length < ef) {
 					const candidate = {
 						id: neighborId,
-						similarity,
+						distance,
 						node: neighbor,
 					};
 					candidates.push(candidate);
 					results.push(candidate);
 				}
 			}
-			results.sort((a, b) => b.similarity - a.similarity);
+			results.sort((a, b) => a.distance - b.distance);
 			if (results.length > ef) results.splice(ef, results.length - ef);
 		}
 		results.visited = visited.size;
@@ -380,7 +381,11 @@ export class HierarchicalNavigableSmallWorld {
 	}
 
 	search(comparator: string, value: number[]) {
-		if (comparator !== 'similarity') return;
+		let distanceFunction: (a: number[], b: number[]) => number;
+		if (comparator === 'near') distanceFunction = this.distance;
+		else if (comparator === 'near-cosine') distanceFunction = cosineDistance;
+		else if (comparator === 'near-euclidean') distanceFunction = euclideanDistance;
+		else return;
 		let entryPoint = this.getEntryPoint();
 		if (!entryPoint) return [];
 		let entryPointId = entryPoint.id;
@@ -388,7 +393,7 @@ export class HierarchicalNavigableSmallWorld {
 		// For each level from top to bottom
 		for (let l = entryPoint.level; l >= 0; l--) {
 			// Search for closest neighbors at current level
-			results = this.searchLayer(value, entryPointId, entryPoint, this.efConstructionSearch, l);
+			results = this.searchLayer(value, entryPointId, entryPoint, this.efConstructionSearch, l, distanceFunction);
 
 			if (results.length > 0) {
 				const neighbor = results[0]; // closest neighbor becomes new entry point
@@ -399,7 +404,7 @@ export class HierarchicalNavigableSmallWorld {
 
 		return results.map((candidate) => ({
 			key: candidate.node.primaryKey, // return values
-			similarity: candidate.similarity,
+			distance: candidate.distance,
 		}));
 	}
 	private checkSymmetry(id, node) {
@@ -430,7 +435,7 @@ export class HierarchicalNavigableSmallWorld {
 		node: any,
 		toId: number,
 		level: number,
-		similarity: number,
+		distance: number,
 		updateNode: (id: number, node?: Node) => any
 	) {
 		if (!node[level]) {
@@ -442,10 +447,10 @@ export class HierarchicalNavigableSmallWorld {
 			logger.warn?.('maxConnections reached, removing some connections', maxConnections);
 			// Get all connections with their similarities
 
-			// Sort by similarity but prioritize nodes that have reverse connections
+			// Sort by distance but prioritize nodes that have reverse connections
 			const connections = [...node[level]];
 			connections.sort((a, b) => {
-				return b.similarity - a.similarity;
+				return a.distance - b.distance;
 			});
 
 			// Keep the best connections
@@ -472,7 +477,7 @@ export class HierarchicalNavigableSmallWorld {
 		if (node[level].find(({ id }) => id === toId)) {
 			logger.debug?.('already connected', fromId, toId);
 		} else {
-			node[level] = [...node[level], { id: toId, similarity }]; // add
+			node[level] = [...node[level], { id: toId, distance }]; // add
 		}
 
 		//this.indexStore.put(fromId, node);
@@ -519,7 +524,7 @@ export class HierarchicalNavigableSmallWorld {
 type WithCopied = Connection[] & { copied: boolean };
 type Candidate = {
 	id: number;
-	similarity: number;
+	distance: number;
 	node: Node;
 };
 type SearchResults = Candidate[] & { visited: number };
