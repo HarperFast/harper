@@ -100,7 +100,8 @@ export class HierarchicalNavigableSmallWorld {
 			oldNode = { ...this.indexStore.get(nodeId) };
 		} else oldNode = {} as Node;
 		if (vector) {
-			if (entryPointId === undefined) {
+			let entryPoint = entryPointId && this.indexStore.get(entryPointId);
+			if (entryPoint === undefined) {
 				const level = Math.floor(-Math.log(Math.random()) * this.mL);
 				const node = {
 					vector,
@@ -119,7 +120,6 @@ export class HierarchicalNavigableSmallWorld {
 				return;
 			}
 
-			let entryPoint = this.indexStore.get(entryPointId);
 			// Generate random level for this new element
 			const level = oldNode.level ?? Math.min(Math.floor(-Math.log(Math.random()) * this.mL), MAX_LEVEL);
 			let currentLevel = entryPoint.level;
@@ -382,10 +382,10 @@ export class HierarchicalNavigableSmallWorld {
 					const level = node[l];
 					for (let i = 0; i < level.length; i++) {
 						// if already reachable, we skip this one
-						if (included.has(level[i])) {
+						if (included.has(level[i].id)) {
 							return false;
 						}
-						if (reachable.has(level[i]) && rank > antiCliqueFactor) {
+						if (reachable.has(level[i].id) && rank > antiCliqueFactor) {
 							return false;
 						}
 					}
@@ -394,7 +394,7 @@ export class HierarchicalNavigableSmallWorld {
 				for (let l = node.level; l >= 0; l--) {
 					const level = node[l];
 					for (let i = 0; i < level.length; i++) {
-						reachable.add(level[i]);
+						reachable.add(level[i].id);
 					}
 				}
 				return true;
@@ -438,6 +438,7 @@ export class HierarchicalNavigableSmallWorld {
 				const neighborNode = this.indexStore.get(neighbor);
 				if (!neighborNode) {
 					logger.info?.('could not find neighbor node', neighborNode);
+					continue;
 				}
 				// verify that the connection is symmetrical
 				const symmetrical = neighborNode[l]?.find(({ id: nid }) => nid == id);

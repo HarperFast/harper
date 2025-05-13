@@ -15,7 +15,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'name' },
-				{ name: 'vector', indexed: { type: 'HNSW' }, type: 'Array' },
+				{ name: 'vector', indexed: { type: 'HNSW', indirectnessFactor: 0.3 }, type: 'Array' },
 			],
 		});
 	});
@@ -47,7 +47,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		console.log(connectivity);
 		assert(connectivity.isFullyConnected);
 		await verifySearch();
-		verifyIntegrity(); /*
+		verifyIntegrity();
 		all = [];
 		for (let i = 0; i < 200; i++) {
 			let k = i * i + 1;
@@ -59,9 +59,34 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 			all.push(vector);
 		}
 		await verifySearch();
-		verifyIntegrity();*/
+		verifyIntegrity();
 	});
-	it('can index and search with vector index with one dimension', async () => {});
+	it('can index and search with vector index with two dimensions', async () => {
+		HNSWTest = table({
+			table: 'HNSWTest',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name' },
+				{ name: 'vector', indexed: { type: 'HNSW' }, type: 'Array' },
+			],
+		});
+		all = [];
+		for (let i = 0; i < 200; i++) {
+			let k = i * i + 1;
+			let vector = [(k % 20) + 0.3, (k % 33) + 0.2];
+			await HNSWTest.put(i, {
+				name: 'test',
+				vector,
+			});
+			all.push(vector);
+		}
+		await verifySearch(all[55]);
+		verifyIntegrity();
+	});
+	after(() => {
+		HNSWTest.dropTable();
+	});
 	async function verifySearch(testVector = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
 		let startingNodesVisited = HNSWTest.indices.vector.customIndex.nodesVisitedCount;
 		let results = await fromAsync(

@@ -546,7 +546,7 @@ function openIndex(dbiKey: string, rootStore: Database, attribute: any): Databas
 	if (attribute.indexed.type) {
 		const CustomIndex = CUSTOM_INDEXES[attribute.indexed.type];
 		if (CustomIndex) {
-			dbi.customIndex = new CustomIndex(dbi);
+			dbi.customIndex = new CustomIndex(dbi, attribute.indexed);
 		} else {
 			console.error(`The indexing type '${attribute.indexed.type}' is unknown`);
 		}
