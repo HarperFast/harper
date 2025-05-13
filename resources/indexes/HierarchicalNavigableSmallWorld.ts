@@ -37,7 +37,7 @@ export class HierarchicalNavigableSmallWorld {
 	mL: number = 1 / Math.log(this.M); // normalization factor for level generation
 	// how aggressive do we avoid connections that have alternate indirect routes; a value of 0 never avoids connections,
 	// a value of 1 is extremely aggressive.
-	indirectnessFactor = 0.6;
+	optimizeRouting = 0.6;
 	nodesVisitedCount = 0;
 
 	idIncrementer: BigInt64Array | undefined;
@@ -57,7 +57,7 @@ export class HierarchicalNavigableSmallWorld {
 				this.efConstruction = this.efConstructionSearch = options.efConstruction;
 			if (options.efConstructionSearch !== undefined) this.efConstructionSearch = options.efConstructionSearch;
 			if (options.mL !== undefined) this.mL = options.mL;
-			if (options.indirectnessFactor !== undefined) this.indirectnessFactor = options.indirectnessFactor;
+			if (options.optimizeRouting !== undefined) this.optimizeRouting = options.optimizeRouting;
 		}
 	}
 	index(primaryKey: string, vector: number[], existingVector?: number[]) {
@@ -162,16 +162,16 @@ export class HierarchicalNavigableSmallWorld {
 					const { id, distance, node } = neighbors[i];
 					if (id === nodeId) continue; // don't connect to self
 					const connectionsToBeReplaced: { fromId: number; toId: number }[] = [];
-					if (this.indirectnessFactor) {
+					if (this.optimizeRouting) {
 						// if we have existing connections through other nodes, we deprioritize new connections through them.
 						// I believe this yields better HNSW graphs, avoiding redundant paths, with better directed connectivity
 						// towards desired results
 						let skipping = false;
 						const neighborNeighbors = node[l];
-						const distanceThreshold = 1 + this.indirectnessFactor * (1 + (0.5 * i) / this.M);
+						const distanceThreshold = 1 + this.optimizeRouting * (1 + (0.5 * i) / this.M);
 						for (let i2 = 0; i2 < neighborNeighbors.length; i2++) {
 							const { id: neighborId, distance: neighborDistance } = neighborNeighbors[i2];
-							const neighborDistanceThreshold = 1 + this.indirectnessFactor * (1 + (0.5 * i2) / this.M);
+							const neighborDistanceThreshold = 1 + this.optimizeRouting * (1 + (0.5 * i2) / this.M);
 							for (let i3 = 0; i3 < connectionsAtLevel.length; i3++) {
 								const { id: addedId, distance: addedDistance } = connectionsAtLevel[i3];
 								if (addedId === neighborId) {
@@ -363,7 +363,7 @@ export class HierarchicalNavigableSmallWorld {
 				this.nodesVisitedCount++;
 				const distance = distanceFunction(queryVector, neighbor.vector);
 
-				if (distance > furthestDistance || results.length < ef) {
+				if (distance < furthestDistance || results.length < ef) {
 					const candidate = {
 						id: neighborId,
 						distance,

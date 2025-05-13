@@ -15,7 +15,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'name' },
-				{ name: 'vector', indexed: { type: 'HNSW', indirectnessFactor: 0.6 }, type: 'Array' },
+				{ name: 'vector', indexed: { type: 'HNSW', optimizeRouting: 0.6 }, type: 'Array' },
 			],
 		});
 	});
@@ -68,7 +68,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
 				{ name: 'name' },
-				{ name: 'vector', indexed: { type: 'HNSW' }, type: 'Array' },
+				{ name: 'vector', indexed: { type: 'HNSW', optimizeRouting: false }, type: 'Array' },
 			],
 		});
 		all = [];
