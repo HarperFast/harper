@@ -212,8 +212,9 @@ export class HierarchicalNavigableSmallWorld {
 					// First check to see if we had an existing neighbor connection before. If we did we can
 					// just remove from the list of the connections to remove (don't remove, leave it in place)
 					let oldConnections = oldNode[l] as WithCopied;
-					const oldPosition = oldConnections?.indexOf(id);
-					if (oldPosition > -1) {
+					const oldConnection = oldConnections?.find(({ id: nid }) => nid === id);
+					if (oldConnection) {
+						const oldPosition = oldConnections?.indexOf(oldConnection);
 						if (!oldConnections.copied) {
 							// make a copy, it is likely frozen
 							oldConnections = [...oldConnections] as WithCopied;

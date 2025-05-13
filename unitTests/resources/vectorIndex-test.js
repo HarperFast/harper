@@ -32,7 +32,9 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		verifyIntegrity();
 	});
 	it('can delete and update and search with vector index with one dimension', async () => {
-		assert(HNSWTest.indices.vector.customIndex.validateConnectivity());
+		let connectivity = HNSWTest.indices.vector.customIndex.validateConnectivity();
+		console.log(connectivity);
+		assert(connectivity.isFullyConnected);
 		for (let i = 0; i < 100; i++) {
 			const entryPointId = HNSWTest.indices.vector.get(Symbol.for('entryPoint'));
 			if (typeof entryPointId !== 'number') {
@@ -41,7 +43,9 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 			await HNSWTest.delete(i);
 		}
 		all = all.slice(100);
-		assert(HNSWTest.indices.vector.customIndex.validateConnectivity());
+		connectivity = HNSWTest.indices.vector.customIndex.validateConnectivity();
+		console.log(connectivity);
+		assert(connectivity.isFullyConnected);
 		await verifySearch();
 		verifyIntegrity(); /*
 		all = [];
@@ -102,11 +106,11 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 				//assert(connections.length > 0);
 				// compute the average similarity of the neighbors in this level
 				let totalSimilarity = 0;
-				for (let neighbor of connections) {
-					let neighborNode = HNSWTest.indices.vector.get(neighbor);
+				for (let { id: neighborId } of connections) {
+					let neighborNode = HNSWTest.indices.vector.get(neighborId);
 					assert(neighborNode); // it should exist
 					// verify that the connection is symmetrical
-					let symmetrical = neighborNode[l].includes(key);
+					let symmetrical = neighborNode[l].find(({ id }) => id === key);
 					if (!symmetrical) {
 						console.log(neighborNode[l]);
 					}
