@@ -111,6 +111,7 @@ export function start({ ensureTable }) {
 								}
 							} else if (directiveName === 'indexed') {
 								const indexedDefinition = {};
+								// store indexed arguments for configurable indexes.
 								for (const arg of directive.arguments || []) {
 									indexedDefinition[arg.name.value] = (arg.value as StringValueNode).value;
 								}

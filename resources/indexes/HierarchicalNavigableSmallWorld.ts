@@ -163,6 +163,9 @@ export class HierarchicalNavigableSmallWorld {
 					if (id === nodeId) continue; // don't connect to self
 					const connectionsToBeReplaced: { fromId: number; toId: number }[] = [];
 					if (this.indirectnessFactor) {
+						// if we have existing connections through other nodes, we deprioritize new connections through them.
+						// I believe this yields better HNSW graphs, avoiding redundant paths, with better directed connectivity
+						// towards desired results
 						let skipping = false;
 						const neighborNeighbors = node[l];
 						const similarityThreshold = 1 + this.indirectnessFactor * (1 + (0.5 * i) / this.M);
@@ -188,7 +191,7 @@ export class HierarchicalNavigableSmallWorld {
 						}
 						if (skipping) continue;
 					} else if (i >= (l > 0 ? this.M : this.M << 1)) {
-						// if we are at the maximum number of neighbors, we skip this one
+						// fallback to traditional HNSW level limiting; if we are at the maximum number of neighbors, we skip this one
 						continue;
 					}
 					// Add connection to the new element
@@ -326,8 +329,7 @@ export class HierarchicalNavigableSmallWorld {
 		entryPointId: number,
 		entryPoint: any,
 		ef: number,
-		level: number,
-		antiCliqueFactor: number
+		level: number
 	): SearchResults {
 		const visited = new Set([entryPointId]);
 		const candidates = [
@@ -337,7 +339,7 @@ export class HierarchicalNavigableSmallWorld {
 				node: entryPoint,
 			},
 		];
-		let results = [...candidates] as SearchResults;
+		const results = [...candidates] as SearchResults;
 
 		while (candidates.length > 0) {
 			// Get closest unvisited element
@@ -372,33 +374,6 @@ export class HierarchicalNavigableSmallWorld {
 			}
 			results.sort((a, b) => b.similarity - a.similarity);
 			if (results.length > ef) results.splice(ef, results.length - ef);
-		}
-		if (antiCliqueFactor) {
-			// when anti-clique measures are applied, we skip nodes that are reachable through other nodes
-			const included = new Set<number>(); // track which nodes are directly included or reachable
-			const reachable = new Set<number>();
-			results = results.filter(({ id, node }, rank) => {
-				for (let l = node.level; l >= 0; l--) {
-					const level = node[l];
-					for (let i = 0; i < level.length; i++) {
-						// if already reachable, we skip this one
-						if (included.has(level[i].id)) {
-							return false;
-						}
-						if (reachable.has(level[i].id) && rank > antiCliqueFactor) {
-							return false;
-						}
-					}
-				}
-				included.add(id);
-				for (let l = node.level; l >= 0; l--) {
-					const level = node[l];
-					for (let i = 0; i < level.length; i++) {
-						reachable.add(level[i].id);
-					}
-				}
-				return true;
-			}) as SearchResults;
 		}
 		results.visited = visited.size;
 		return results;
