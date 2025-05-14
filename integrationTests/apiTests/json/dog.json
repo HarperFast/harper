@@ -1,0 +1,84 @@
+{
+  "records": [
+    {
+      "id": 1,
+      "breed_id": 154,
+      "weight_lbs": 35,
+      "dog_name": "Penny",
+      "age": 5,
+      "adorable": true,
+      "owner_id": 2
+    },
+    {
+      "id": 2,
+      "breed_id": 346,
+      "weight_lbs": 55,
+      "dog_name": "Harper",
+      "age": 5,
+      "adorable": true,
+      "owner_id": 3
+    },
+    {
+      "id": 3,
+      "breed_id": 348,
+      "weight_lbs": 84,
+      "dog_name": "Alby",
+      "age": 5,
+      "adorable": true,
+      "owner_id": 4
+    },
+    {
+      "id": 4,
+      "breed_id": 347,
+      "weight_lbs": 60,
+      "dog_name": "Billy",
+      "age": 4,
+      "adorable": true,
+      "owner_id": 1
+    },
+    {
+      "id": 5,
+      "breed_id": 348,
+      "weight_lbs": 15,
+      "dog_name": "Rose Merry",
+      "age": 6,
+      "adorable": true,
+      "owner_id": 2
+    },
+    {
+      "id": 6,
+      "breed_id": 351,
+      "weight_lbs": 28,
+      "dog_name": "Kato",
+      "age": 4,
+      "adorable": true,
+      "owner_id": 3
+    },
+    {
+      "id": 7,
+      "breed_id": 349,
+      "weight_lbs": 35,
+      "dog_name": "Simon",
+      "age": 1,
+      "adorable": true,
+      "owner_id": 4
+    },
+    {
+      "id": 8,
+      "breed_id": 250,
+      "weight_lbs": 55,
+      "dog_name": "Gemma",
+      "age": 3,
+      "adorable": true,
+      "owner_id": 1
+    },
+    {
+      "id": 9,
+      "breed_id": 104,
+      "weight_lbs": 75,
+      "dog_name": "Bode",
+      "age": 8,
+      "adorable": true
+    }
+  ]
+}

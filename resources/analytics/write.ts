@@ -218,7 +218,7 @@ export async function recordHostname() {
 			id: nodeId,
 			hostname,
 		};
-		log.trace?.(`storing hostname: ${JSON.stringify(hostnameRecord)}`);
+		log.trace?.(`recordHostname storing hostname: ${JSON.stringify(hostnameRecord)}`);
 		hostnamesTable.put(hostnameRecord.id, hostnameRecord);
 	}
 }
@@ -249,13 +249,15 @@ interface ResourceUsage extends Partial<NodeJS.ResourceUsage> {
 	time?: number;
 	period?: number;
 	cpuUtilization?: number;
+	userCPUTime?: number;
+	systemCPUTime?: number;
 }
 
-/** calculateCPUUtilization takes a ResourceUsage with at least userCPUTime & systemCPUTime set
- *  with millisecond values (NB: Node's process.resourceUsage returns values in microseconds for
- *  these fields so divide them by 1000 to get milliseconds) and a time period in milliseconds
- *  and returns the percentage of that time the CPU was being utilized as a decimal value
- *  between 0 and 1. So for example, 50% utilization will be returned as 0.5.
+/** calculateCPUUtilization takes a ResourceUsage with at least userCPUTime &
+ *  systemCPUTime set with millisecond values and a time period in milliseconds
+ *  and returns the percentage of that time the CPU was being utilized as a
+ *  decimal value between 0 and 1. So for example, 50% utilization will be
+ *  returned as 0.5.
  */
 export function calculateCPUUtilization(resourceUsage: ResourceUsage, period: number): number {
 	const cpuTime = resourceUsage.userCPUTime + resourceUsage.systemCPUTime;
@@ -544,7 +546,10 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 }
 let lastIdle = 0;
 let lastActive = 0;
-let lastResourceUsage: ResourceUsage = {};
+let lastResourceUsage: ResourceUsage = {
+	userCPUTime: 0,
+	systemCPUTime: 0,
+};
 
 const rest = () => new Promise(setImmediate);
 

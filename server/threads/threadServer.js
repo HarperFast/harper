@@ -77,7 +77,7 @@ exports.deliverSocket = deliverSocket;
 exports.startServers = startServers;
 exports.listenOnPorts = listenOnPorts;
 exports.globals = globals;
-exports.when_components_loaded = null;
+exports.whenComponentsLoaded = null;
 server.http = httpServer;
 server.request = onRequest;
 server.socket = onSocket;
@@ -89,7 +89,7 @@ let httpServers = {},
 	httpResponders = [];
 
 function startServers() {
-	return (exports.when_components_loaded = require('../loadRootComponents.js')
+	return (exports.whenComponentsLoaded = require('../loadRootComponents.js')
 		.loadRootComponents(true)
 		.then(() => {
 			parentPort

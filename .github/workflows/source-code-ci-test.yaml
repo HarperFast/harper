@@ -107,7 +107,7 @@ jobs:
       - runUnitTests
       - createInstances
     steps:
-      - name: Run Integration Tests on Instances
+      - name: Run Integration Tests with Postman on Instances
         env:
           CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
         run: |

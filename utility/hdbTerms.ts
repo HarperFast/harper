@@ -368,6 +368,9 @@ export const OPERATIONS_ENUM = {
 	GET_KEY: 'get_key',
 	GET_ANALYTICS: 'get_analytics',
 	LIST_METRICS: 'list_metrics',
+	GET_STATUS: 'get_status',
+	SET_STATUS: 'set_status',
+	CLEAR_STATUS: 'clear_status',
 } as const;
 
 /** Defines valid file types that we are able to handle in 'import_from_s3' ops */

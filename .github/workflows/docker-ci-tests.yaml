@@ -1,4 +1,4 @@
-name: 'Run Docker CI Tests'
+name: 'Run Docker CI Tests with Postman'
 
 on:
   push:
@@ -62,7 +62,7 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ needs.build.outputs.nodeVersion }}
-      - name: Run Tests
+      - name: Run Tests with Postman
         timeout-minutes: 20
         run: |
           pushd utility/Docker
