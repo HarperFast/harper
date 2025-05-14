@@ -832,7 +832,7 @@ export function estimateCondition(table) {
 			else {
 				const attribute_name = condition[0] ?? condition.attribute;
 				const index = table.indices[attribute_name];
-				if (index.customIndex?.estimateCount)
+				if (index?.customIndex?.estimateCount)
 					condition.estimated_count = index.customIndex.estimateCount(condition.value);
 				else condition.estimated_count = OPEN_RANGE_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			}
