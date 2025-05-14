@@ -76,6 +76,9 @@ const SUPPORTED_OPS = [
 	'list_ssh_keys',
 	'set_ssh_known_hosts',
 	'get_ssh_known_hosts',
+	'get_status',
+	'set_status',
+	'clear_status',
 ];
 
 const OP_ALIASES = { deploy: 'deploy_component', package: 'package_component' };

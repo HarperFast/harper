@@ -3,7 +3,7 @@ if (__filename.endsWith('dev.js') && !process.env.HARPER_SKIP_COMPILE) {
 	const fg = require('fast-glob');
 	const { tmpdir } = require('node:os');
 	const { relative, join } = require('node:path');
-	const { existsSync, statSync, readFileSync, writeFileSync } = require('node:fs');
+	const { existsSync, statSync, readFileSync, writeFileSync, unlinkSync } = require('node:fs');
 	const { isMainThread } = require('node:worker_threads');
 	const { spawnSync, spawn } = require('node:child_process');
 
@@ -32,22 +32,32 @@ if (__filename.endsWith('dev.js') && !process.env.HARPER_SKIP_COMPILE) {
 		let needsCompile = false;
 		let buildDirectoryExists = false;
 		if ((buildDirectoryExists = existsSync(join(PACKAGE_ROOT, TS_DIRECTORY)))) {
-			needsCompile = fg
-				.sync(
-					SRC_DIRECTORIES.map((dir) => `${dir}/**/*.ts`),
-					{ cwd: PACKAGE_ROOT }
-				)
-				.some((file) => {
-					let sourceTime = 0;
-					let compiledTime = 0;
+			let existingTSFiles = new Set();
+			fg.sync(
+				SRC_DIRECTORIES.map((dir) => `${dir}/**/*.ts`),
+				{ cwd: PACKAGE_ROOT }
+			).forEach((file) => {
+				let sourceTime = 0;
+				let compiledTime = 0;
 
+				try {
+					existingTSFiles.add(file);
+					sourceTime = statSync(join(PACKAGE_ROOT, file)).mtimeMs - 5000;
+					compiledTime = statSync(join(PACKAGE_ROOT, TS_DIRECTORY, file.replace(/.ts$/, '.js'))).mtimeMs;
+				} catch (_) {}
+
+				if (sourceTime > compiledTime) needsCompile = true;
+			});
+			fg.sync(
+				SRC_DIRECTORIES.map((dir) => `${dir}/**/*.js`),
+				{ cwd: join(PACKAGE_ROOT, TS_DIRECTORY) }
+			).forEach((file) => {
+				if (!existingTSFiles.has(file.replace(/.js$/, '.ts'))) {
 					try {
-						sourceTime = statSync(join(PACKAGE_ROOT, file)).mtimeMs - 5000;
-						compiledTime = statSync(join(PACKAGE_ROOT, TS_DIRECTORY, file.replace(/.ts$/, '.js'))).mtimeMs;
+						unlinkSync(join(PACKAGE_ROOT, TS_DIRECTORY, file));
 					} catch (_) {}
-
-					return sourceTime > compiledTime;
-				});
+				}
+			});
 		} else {
 			needsCompile = true;
 		}
@@ -66,7 +76,7 @@ if (__filename.endsWith('dev.js') && !process.env.HARPER_SKIP_COMPILE) {
 					try {
 						process.kill(+readFileSync(pidPath, 'utf8'), 0);
 						isRunning = true;
-					} catch (_) {}
+					} catch {}
 				}
 
 				if (!isRunning) {

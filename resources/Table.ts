@@ -818,11 +818,29 @@ export function makeTable(options) {
 			return dbisDb.get([Symbol.for('residency_by_id'), id]);
 		}
 
-		static setResidency(getResidency: (record: object, context: Context) => ResidencyDefinition) {
-			TableResource.getResidency = getResidency;
+		static setResidency(getResidency?: (record: object, context: Context) => ResidencyDefinition) {
+			TableResource.getResidency =
+				getResidency &&
+				((record: object, context: Context) => {
+					try {
+						return getResidency(record, context);
+					} catch (error: unknown) {
+						error.message += ` in residency function for table ${table_name}`;
+						throw error;
+					}
+				});
 		}
-		static setResidencyById(getResidencyById: (id: Id) => number | void) {
-			TableResource.getResidencyById = getResidencyById;
+		static setResidencyById(getResidencyById?: (id: Id) => number | void) {
+			TableResource.getResidencyById =
+				getResidencyById &&
+				((id: Id) => {
+					try {
+						return getResidencyById(id);
+					} catch (error: unknown) {
+						error.message += ` in residency function for table ${table_name}`;
+						throw error;
+					}
+				});
 		}
 		static getResidency(record: object, context: Context) {
 			if (TableResource.getResidencyById) {

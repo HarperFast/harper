@@ -113,7 +113,7 @@ export async function listMetrics(metricTypes: MetricType[] = ['builtin']): Prom
 			customMetrics.add(record.metric);
 		}
 
-		metrics = metrics.concat(Array.from(customMetrics.values()));
+		metrics.push(...Array.from(customMetrics.values()));
 	}
 
 	return metrics;
@@ -143,8 +143,7 @@ export async function describeMetric(metric: string): Promise<DescribeMetricResp
 		limit: 1,
 	};
 	const results = databases.system.hdb_analytics.search(lastEntrySearch);
-	const result = await results.next().value;
-	if (result) {
+	for await (const result of results) {
 		return { attributes: Object.keys(result) };
 	}
 	return {};

@@ -10,6 +10,7 @@
 		"module": "NodeNext",
 		"sourceMap": true,
 		"strict": true,
-		"rootDir": "."
+		"rootDir": ".",
+		"rewriteRelativeImportExtensions": true
 	}
 }

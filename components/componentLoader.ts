@@ -318,7 +318,8 @@ export async function loadComponent(
 			loadedPaths.set(resolvedFolder, extensionModule);
 			return extensionModule;
 		}
-		if (Object.values(componentFunctionality).every((functionality) => !functionality) && resources.isWorker) {
+		const componentFunctionalityValues = Object.values(componentFunctionality);
+		if (componentFunctionalityValues.length > 0 && componentFunctionalityValues.every((functionality) => !functionality) && resources.isWorker) {
 			const errorMessage = `${folder} did not load any modules, resources, or files, is this a valid component?`;
 			errorReporter?.(new Error(errorMessage));
 			(getWorkerIndex() === 0 ? console : harperLogger).error(errorMessage);
