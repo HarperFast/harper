@@ -415,6 +415,7 @@ export class HierarchicalNavigableSmallWorld {
 		else if (distance === 'euclidean') distanceFunction = euclideanDistance;
 		else if (distance) throw new ClientError('Unknown distance function');
 		else distanceFunction = this.distance;
+
 		let entryPoint = this.getEntryPoint();
 		if (!entryPoint) return [];
 		let entryPointId = entryPoint.id;
@@ -475,8 +476,10 @@ export class HierarchicalNavigableSmallWorld {
 			node[level] = [];
 		}
 
-		const maxConnections = level === 0 ? this.M << 3 : this.M << 2;
-		if (node[level].length >= maxConnections) {
+		let maxConnections = level === 0 ? this.M << 1 : this.M;
+		if (this.optimizeRouting) maxConnections <<= 2; // bump up the max connections beyond traditional HNSW because we are naturally limiting
+		// have we exceeded the max connections (with 25% grace period)
+		if (node[level].length >= maxConnections + (maxConnections >> 2)) {
 			logger.warn?.('maxConnections reached, removing some connections', maxConnections);
 			// Get all connections with their similarities
 
@@ -487,8 +490,8 @@ export class HierarchicalNavigableSmallWorld {
 			});
 
 			// Keep the best connections
-			const keptConnections = connections.slice(0, maxConnections - (maxConnections >> 2));
-			const removedConnections = connections.slice(maxConnections - (maxConnections >> 2));
+			const keptConnections = connections.slice(0, maxConnections);
+			const removedConnections = connections.slice(maxConnections);
 
 			// Update this node's connections
 			node[level] = keptConnections;
