@@ -14,7 +14,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 			database: 'test',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
-				{ name: 'name' },
+				{ name: 'name', indexed: true },
 				{ name: 'vector', indexed: { type: 'HNSW', optimizeRouting: 0.6 }, type: 'Array' },
 			],
 		});
@@ -23,7 +23,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		for (let i = 0; i < 200; i++) {
 			let vector = [i % 2, i % 3, i % 4, i % 5, i % 6, i % 7, i % 8, i % 9, i % 10, i % 11];
 			await HNSWTest.put(i, {
-				name: 'test',
+				name: 'test' + i,
 				vector,
 			});
 			all.push(vector);
@@ -53,7 +53,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 			let k = i * i + 1;
 			let vector = [k % 2, k % 3, k % 4, k % 5, k % 6, k % 7, k % 8, k % 9, k % 10, k % 11];
 			await HNSWTest.put(i, {
-				name: 'test',
+				name: 'test' + i,
 				vector,
 			});
 			all.push(vector);
@@ -67,7 +67,7 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 			database: 'test',
 			attributes: [
 				{ name: 'id', isPrimaryKey: true },
-				{ name: 'name' },
+				{ name: 'name', indexed: true },
 				{ name: 'vector', indexed: { type: 'HNSW', optimizeRouting: false }, type: 'Array' },
 			],
 		});
@@ -90,16 +90,13 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 	async function verifySearch(testVector = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
 		let startingNodesVisited = HNSWTest.indices.vector.customIndex.nodesVisitedCount;
 		let results = await fromAsync(
-			HNSWTest.search({
-				conditions: [
-					{
-						attribute: 'vector',
-						comparator: 'near',
-						value: testVector,
-					},
-				],
-				select: ['id', 'vector', '$difference'],
-			})
+			HNSWTest.search(
+				{
+					sort: { attribute: 'vector', target: testVector, distance: 'cosine' },
+					select: ['id', 'vector', '$difference'],
+				},
+				{}
+			)
 		);
 		console.log(
 			'nodes visited for search: ',
@@ -112,6 +109,19 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		assert.deepEqual(
 			withDistance.slice(0, 10).map((obj) => obj.vector),
 			results.slice(0, 10).map((obj) => obj.vector)
+		);
+		assert(results[0].$difference < 0.4);
+		results = await fromAsync(
+			HNSWTest.search({
+				sort: { attribute: 'vector', target: testVector, distance: 'cosine' },
+				conditions: [{ attribute: 'name', comparator: 'gt', value: 'test9' }],
+				select: ['id', 'vector', 'name', '$difference'],
+			})
+		);
+		console.log(
+			'nodes visited for search: ',
+			HNSWTest.indices.vector.customIndex.nodesVisitedCount - startingNodesVisited,
+			results
 		);
 	}
 	function verifyIntegrity() {

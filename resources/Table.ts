@@ -1719,7 +1719,7 @@ export function makeTable(options) {
 							);
 						if (attribute.indexed) {
 							// if it is indexed, we add a pseudo-condition to align with the natural sort order of the index
-							orderAlignedCondition = { attribute: attribute_name, comparator: 'sort' };
+							orderAlignedCondition = { ...sort, comparator: 'sort' };
 							conditions.push(orderAlignedCondition);
 						} else if (conditions.length === 0 && !request.allowFullScan)
 							throw handleHDBError(
@@ -1793,8 +1793,8 @@ export function makeTable(options) {
 				entries,
 				select,
 				postOrdering,
-				readTxn,
 				context,
+				readTxn,
 				transformToRecord
 			);
 			function applyOffset(entries: any[]) {
@@ -1862,6 +1862,7 @@ export function makeTable(options) {
 					function createComparator(order: Sort) {
 						const nextComparator = order.next && createComparator(order.next);
 						const descending = order.descending;
+						context.sort = order; // make sure this is set to the current sort order
 						return (entryA, entryB) => {
 							const a = getAttributeValue(entryA, order.attribute, context);
 							const b = getAttributeValue(entryB, order.attribute, context);
@@ -2093,6 +2094,7 @@ export function makeTable(options) {
 								value = resolver(record, context, entry);
 							}
 							const handleResolvedValue = (value: any) => {
+								if (resolver.directReturn) return callback(value, attribute_name);
 								if (value && typeof value === 'object') {
 									const targetTable = resolver.definition?.tableClass || TableResource;
 									if (!transformCache) transformCache = {};
@@ -2728,7 +2730,9 @@ export function makeTable(options) {
 				$id: (object, context, entry) => ({ value: entry.key }),
 				$updatedtime: (object, context, entry) => entry.version,
 				$record: (object, context, entry) => (entry ? { value: object } : object),
-				$difference: (object, context, entry) => entry.distance,
+				$difference: (object, context, entry) => {
+					return entry && context?.vectorDifferences?.get(entry.key);
+				},
 			};
 			for (const attribute of this.attributes) {
 				if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
@@ -2843,6 +2847,13 @@ export function makeTable(options) {
 							this.userResolvers[attribute.name] = () => {};
 						}
 					};
+				} else if (indices[attribute.name]?.customIndex?.propertyResolver) {
+					const customIndex = indices[attribute.name].customIndex;
+					propertyResolvers[attribute.name] = (object, context, entry) => {
+						const value = object[attribute.name];
+						return customIndex.propertyResolver(value, context, object[primaryKey]);
+					};
+					propertyResolvers[attribute.name].directReturn = true;
 				}
 			}
 			assignTrackedAccessors(this, this);

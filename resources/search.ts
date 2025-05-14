@@ -79,7 +79,8 @@ export function executeConditions(conditions, operator, table, txn, request, con
 			condition.descending || request.reverse === true,
 			table,
 			request.allowFullScan,
-			filtered
+			filtered,
+			context
 		);
 	}
 	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount) {
@@ -122,7 +123,8 @@ export function searchByIndex(
 	reverse: boolean,
 	Table: any,
 	allowFullScan?: boolean,
-	filtered?: boolean
+	filtered?: boolean,
+	context?: any
 ): AsyncIterable<Id | { key: Id; value: any }> {
 	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
 	let value = searchCondition[1] ?? searchCondition.value;
@@ -192,7 +194,6 @@ export function searchByIndex(
 	}
 	const isPrimaryKey = attribute_name === Table.primaryKey || attribute_name == null;
 	const index = isPrimaryKey ? Table.primaryStore : Table.indices[attribute_name];
-	let customResults;
 	let start;
 	let end, inclusiveEnd, exclusiveStart;
 	if (value instanceof Date) value = value.getTime();
@@ -260,8 +261,7 @@ export function searchByIndex(
 			needFullScan = true;
 			break;
 		default:
-			customResults = index.customIndex?.search?.(comparator, value);
-			if (!customResults) throw new ClientError(`Unknown query comparator "${comparator}"`);
+			throw new ClientError(`Unknown query comparator "${comparator}"`);
 	}
 	let filter;
 	if (typeof start === 'string' && start.length > MAX_SEARCH_KEY_LENGTH) {
@@ -342,15 +342,8 @@ export function searchByIndex(
 		results.hasEntries = true;
 		return results;
 	} else if (index) {
-		if (customResults) {
-			return customResults.map((entry) => {
-				if (typeof entry === 'object' && entry) {
-					const { key, ...otherProps } = entry;
-					const loadedEntry = Table.primaryStore.getEntry(entry.key);
-					return { ...otherProps, ...loadedEntry };
-				}
-				return entry;
-			});
+		if (index.customIndex) {
+			return index.customIndex.search(searchCondition, context);
 		}
 		return index.getRange(rangeOptions).map(
 			filter
@@ -836,7 +829,13 @@ export function estimateCondition(table) {
 			else if (searchType === 'sort')
 				condition.estimated_count = estimatedEntryCount(table.primaryStore) + 1; // only used by sort
 			// for the search types that use the broadest range, try do them last
-			else condition.estimated_count = OPEN_RANGE_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
+			else {
+				const attribute_name = condition[0] ?? condition.attribute;
+				const index = table.indices[attribute_name];
+				if (index.customIndex?.estimateCount)
+					condition.estimated_count = index.customIndex.estimateCount(condition.value);
+				else condition.estimated_count = OPEN_RANGE_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
+			}
 			// we give a condition significantly more weight/preference if we will be ordering by it
 			if (typeof condition.descending === 'boolean') condition.estimated_count /= 2;
 		}

@@ -1,6 +1,8 @@
 import { cosineDistance, euclideanDistance } from './vector';
 import { FLOAT32_OPTIONS } from 'msgpackr';
 import { loggerWithTag } from '../../utility/logging/logger.js';
+import { ClientError } from '../../utility/errors/hdbError.js';
+
 const logger = loggerWithTag('HNSW');
 /**
  * Implementation of a vector index for HarperDB, using hierarchical navigable small world graphs.
@@ -380,12 +382,39 @@ export class HierarchicalNavigableSmallWorld {
 		return results;
 	}
 
-	search(comparator: string, value: number[]) {
+	search(
+		{
+			target,
+			value,
+			descending,
+			distance,
+			comparator,
+		}: {
+			target: number[];
+			value: number;
+			descending: boolean;
+			distance: string;
+			comparator: string;
+		},
+		context: any
+	) {
+		let limit: number;
+		switch (comparator) {
+			case 'lt':
+			case 'le':
+				limit = value;
+			// fallthrough
+			case 'sort':
+				break;
+			default:
+				throw new ClientError(`Can not use "${comparator}" comparator with HNSW`);
+		}
+		if (descending) throw new ClientError(`Can not use descending sort order with HNSW`);
 		let distanceFunction: (a: number[], b: number[]) => number;
-		if (comparator === 'near') distanceFunction = this.distance;
-		else if (comparator === 'near-cosine') distanceFunction = cosineDistance;
-		else if (comparator === 'near-euclidean') distanceFunction = euclideanDistance;
-		else return;
+		if (distance === 'cosine') distanceFunction = cosineDistance;
+		else if (distance === 'euclidean') distanceFunction = euclideanDistance;
+		else if (distance) throw new ClientError('Unknown distance function');
+		else distanceFunction = this.distance;
 		let entryPoint = this.getEntryPoint();
 		if (!entryPoint) return [];
 		let entryPointId = entryPoint.id;
@@ -393,7 +422,7 @@ export class HierarchicalNavigableSmallWorld {
 		// For each level from top to bottom
 		for (let l = entryPoint.level; l >= 0; l--) {
 			// Search for closest neighbors at current level
-			results = this.searchLayer(value, entryPointId, entryPoint, this.efConstructionSearch, l, distanceFunction);
+			results = this.searchLayer(target, entryPointId, entryPoint, this.efConstructionSearch, l, distanceFunction);
 
 			if (results.length > 0) {
 				const neighbor = results[0]; // closest neighbor becomes new entry point
@@ -401,11 +430,15 @@ export class HierarchicalNavigableSmallWorld {
 				entryPointId = neighbor.id;
 			}
 		}
-
-		return results.map((candidate) => ({
-			key: candidate.node.primaryKey, // return values
-			distance: candidate.distance,
-		}));
+		if (limit) results = results.filter((candidate) => candidate.distance < limit);
+		return results.map((candidate) => {
+			const key = candidate.node.primaryKey;
+			if (context) {
+				if (!context.vectorDifferences) context.vectorDifferences = new Map();
+				context.vectorDifferences.set(key, candidate.distance);
+			}
+			return key;
+		});
 	}
 	private checkSymmetry(id, node) {
 		if (!node) return;
@@ -519,6 +552,28 @@ export class HierarchicalNavigableSmallWorld {
 	}
 	get totalNodes() {
 		return Array.from(this.indexStore.getKeys({ start: 0, end: Infinity })).length;
+	}
+	estimateCount() {
+		return Math.sqrt(this.indexStore.getStats().entryCount) * 2;
+	}
+	propertyResolver(vector: number[], context: any, id: any) {
+		const sortDefinition = context?.sort;
+		if (sortDefinition) {
+			// set up a cache for these so they can be accessed by $property and not be recalculated during a sort
+			let vectorDifferences = sortDefinition.vectorDifferences;
+			if (vectorDifferences) {
+				const difference = vectorDifferences.get(id);
+				if (difference) return difference;
+			} else vectorDifferences = context.vectorDifferences = sortDefinition.vectorDifferences = new Map();
+
+			let distanceFunction = this.distance;
+			if (sortDefinition.type)
+				distanceFunction = sortDefinition.distance === 'euclidean' ? euclideanDistance : cosineDistance;
+			const distance = distanceFunction(sortDefinition.target, vector);
+			vectorDifferences.set(id, distance);
+			return distance;
+		}
+		return vector;
 	}
 }
 type WithCopied = Connection[] & { copied: boolean };
