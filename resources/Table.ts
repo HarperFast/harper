@@ -2730,7 +2730,7 @@ export function makeTable(options) {
 				$id: (object, context, entry) => ({ value: entry.key }),
 				$updatedtime: (object, context, entry) => entry.version,
 				$record: (object, context, entry) => (entry ? { value: object } : object),
-				$difference: (object, context, entry) => {
+				$distance: (object, context, entry) => {
 					return entry && context?.vectorDifferences?.get(entry.key);
 				},
 			};

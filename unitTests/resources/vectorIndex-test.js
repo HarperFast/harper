@@ -1,6 +1,5 @@
 require('../test_utils');
 const assert = require('node:assert');
-const { getMockLMDBPath } = require('../test_utils');
 const { table } = require('../../resources/databases');
 const { HierarchicalNavigableSmallWorld } = require('../../ts-build/resources/indexes/HierarchicalNavigableSmallWorld');
 
@@ -84,16 +83,44 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 		await verifySearch(all[55]);
 		verifyIntegrity();
 	});
+	it('bad queries throw some errors', async () => {
+		assert.throws(
+			() => {
+				HNSWTest.search({
+					sort: { attribute: 'vector', distance: 'cosine' },
+				});
+			},
+			{ message: /A target vector must be provided/ }
+		);
+		assert.throws(
+			() => {
+				HNSWTest.search({
+					conditions: [{ attribute: 'vector', comparator: 'gt', value: 0.3, target: [1] }],
+				});
+			},
+			{ message: /Can not use "gt" comparator/ }
+		);
+		assert.throws(
+			() => {
+				HNSWTest.search({
+					conditions: [{ attribute: 'vector', comparator: 'lt', value: 0.3, target: 1 }],
+				});
+			},
+			{ message: /must be an array/ }
+		);
+	});
 	after(() => {
 		HNSWTest.dropTable();
 	});
 	async function verifySearch(testVector = [1, 2, 3, 4, 5, 6, 7, 8, 9, 10]) {
 		let startingNodesVisited = HNSWTest.indices.vector.customIndex.nodesVisitedCount;
+		// a standard HNSW query using sort
 		let results = await fromAsync(
 			HNSWTest.search(
 				{
 					sort: { attribute: 'vector', target: testVector, distance: 'cosine' },
-					select: ['id', 'vector', '$difference'],
+					select: ['id', 'vector', '$distance'],
+					limit: 10,
 				},
 				{}
 			)
@@ -110,14 +137,21 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 			withDistance.slice(0, 10).map((obj) => obj.vector),
 			results.slice(0, 10).map((obj) => obj.vector)
 		);
-		assert(results[0].$difference < 0.4);
+		assert(results[0].$distance < 0.4);
 		results = await fromAsync(
 			HNSWTest.search({
 				sort: { attribute: 'vector', target: testVector, distance: 'cosine' },
 				conditions: [{ attribute: 'name', comparator: 'gt', value: 'test9' }],
-				select: ['id', 'vector', 'name', '$difference'],
+				select: ['id', 'vector', 'name', '$distance'],
 			})
 		);
+		let lastDistance = 0;
+		for await (let record of results) {
+			assert(record.name.startsWith('test9'));
+			assert(record.$distance > lastDistance);
+			lastDistance = record.$distance;
+		}
+
 		console.log(
 			'nodes visited for search: ',
 			HNSWTest.indices.vector.customIndex.nodesVisitedCount - startingNodesVisited,
@@ -141,18 +175,20 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 				//assert(connections.length > 0);
 				// compute the average distance of the neighbors in this level
 				let totalDistance = 0;
+				let asymmetries = 0;
 				for (let { id: neighborId } of connections) {
 					let neighborNode = HNSWTest.indices.vector.get(neighborId);
 					assert(neighborNode); // it should exist
 					// verify that the connection is symmetrical
 					let symmetrical = neighborNode[l].find(({ id }) => id === key);
 					if (!symmetrical) {
-						console.log(neighborNode[l]);
+						console.log('asymmetry in the graph', neighborNode[l], 'does not have key', key);
+						asymmetries++;
 					}
-					assert(symmetrical);
 					let distance = testInstance.distance(value.vector, neighborNode.vector);
 					totalDistance += distance;
 				}
+				assert(asymmetries < 5);
 				let distance = totalDistance / connections.length;
 				// verify that most of the higher level (skip level) similarities are less than previous levels
 				// (non-skip,

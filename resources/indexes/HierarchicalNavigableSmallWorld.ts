@@ -1,7 +1,8 @@
-import { cosineDistance, euclideanDistance } from './vector';
+import { cosineDistance, euclideanDistance } from './vector.ts';
 import { FLOAT32_OPTIONS } from 'msgpackr';
 import { loggerWithTag } from '../../utility/logging/logger.js';
 import { ClientError } from '../../utility/errors/hdbError.js';
+import type { Id } from '../../resources/ResourceInterface.ts';
 
 const logger = loggerWithTag('HNSW');
 /**
@@ -39,7 +40,7 @@ export class HierarchicalNavigableSmallWorld {
 	mL: number = 1 / Math.log(this.M); // normalization factor for level generation
 	// how aggressive do we avoid connections that have alternate indirect routes; a value of 0 never avoids connections,
 	// a value of 1 is extremely aggressive.
-	optimizeRouting = 0.6;
+	optimizeRouting = 0.5;
 	nodesVisitedCount = 0;
 
 	idIncrementer: BigInt64Array | undefined;
@@ -47,10 +48,13 @@ export class HierarchicalNavigableSmallWorld {
 	constructor(indexStore: any, options: any) {
 		this.indexStore = indexStore;
 		if (indexStore) {
+			// use float32 representation of numbers as it is twice as space efficient as typical float64 and plenty accurate
+			// (we would actually like to use float16 if it were available)
 			this.indexStore.encoder.useFloat32 = FLOAT32_OPTIONS.ALWAYS;
 		}
 		this.distance = options?.distance === 'euclidean' ? euclideanDistance : cosineDistance;
 		if (options) {
+			// allow all the HNSW parameters to be configured/tuned
 			if (options.M !== undefined) {
 				this.M = options.M;
 				this.mL = 1 / Math.log(this.M); // recalculate
@@ -62,7 +66,7 @@ export class HierarchicalNavigableSmallWorld {
 			if (options.optimizeRouting !== undefined) this.optimizeRouting = options.optimizeRouting;
 		}
 	}
-	index(primaryKey: string, vector: number[], existingVector?: number[]) {
+	index(primaryKey: Id, vector: number[], existingVector?: number[]) {
 		// first get the node id for the primary key; we use internal node ids for better efficiency,
 		// but we must use a safe key that won't collide with the node ids
 		const safeKey = typeof primaryKey === 'number' ? [KEY_PREFIX, primaryKey] : primaryKey;
@@ -326,6 +330,18 @@ export class HierarchicalNavigableSmallWorld {
 		return { id: entryPointId, ...node };
 	}
 
+	/**
+	 * Search one layer of the skip-list using HNSW algorithm for creating a candidate list and navigating the graph
+	 * TODO: This should be async, but we can't really do that with lmdb-js's transaction system right now. Should be
+	 * doable with RocksDB. We could also create an async version for searching.
+	 * @param queryVector
+	 * @param entryPointId
+	 * @param entryPoint
+	 * @param ef
+	 * @param level
+	 * @param distanceFunction
+	 * @private
+	 */
 	private searchLayer(
 		queryVector: number[],
 		entryPointId: number,
@@ -382,6 +398,17 @@ export class HierarchicalNavigableSmallWorld {
 		return results;
 	}
 
+	/**
+	 * This the main entry from Harper's query functionality, where we actually search for an ordered list of nearest
+	 * neighbors, using the provided sort/order definition object and performing the multi-layer skip-list search.
+	 * This returns an iterable of the nearest neighbors to the provided target vector, with nearest ordered first.
+	 * @param target
+	 * @param value
+	 * @param descending
+	 * @param distance
+	 * @param comparator
+	 * @param context
+	 */
 	search(
 		{
 			target,
@@ -398,7 +425,7 @@ export class HierarchicalNavigableSmallWorld {
 		},
 		context: any
 	) {
-		let limit: number;
+		let limit = 0; // zero is ignored, only used if set below
 		switch (comparator) {
 			case 'lt':
 			case 'le':
@@ -415,6 +442,8 @@ export class HierarchicalNavigableSmallWorld {
 		else if (distance === 'euclidean') distanceFunction = euclideanDistance;
 		else if (distance) throw new ClientError('Unknown distance function');
 		else distanceFunction = this.distance;
+		if (!target) throw new ClientError('A target vector must be provided for an HNSW query');
+		if (!Array.isArray(target)) throw new ClientError('The target vector must be an array');
 
 		let entryPoint = this.getEntryPoint();
 		if (!entryPoint) return [];
@@ -444,7 +473,7 @@ export class HierarchicalNavigableSmallWorld {
 	private checkSymmetry(id, node) {
 		if (!node) return;
 		let l = 0;
-		let connections;
+		let connections: Candidate[];
 		while ((connections = node[l])) {
 			// verify that the level is not empty, otherwise this means we have an orphaned node
 			if (connections.length === 0) break;
@@ -459,7 +488,6 @@ export class HierarchicalNavigableSmallWorld {
 				if (!symmetrical) {
 					logger.info?.('asymmetry detected', neighborNode[l]);
 				}
-				//assert(symmetrical);
 			}
 			l++;
 		}
