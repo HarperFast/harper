@@ -537,7 +537,7 @@ export async function dropDatabase(databaseName) {
 	dbRemovalListeners.forEach((listener) => listener(databaseName));
 	await deleteRootBlobPathsForDB(rootStore);
 }
-
+// opens an index, consulting with custom indexes that may use alternate store configuration
 function openIndex(dbiKey: string, rootStore: Database, attribute: any): Database {
 	const objectStorage =
 		attribute.is_hash_attribute || (attribute.indexed.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
@@ -548,7 +548,7 @@ function openIndex(dbiKey: string, rootStore: Database, attribute: any): Databas
 		if (CustomIndex) {
 			dbi.customIndex = new CustomIndex(dbi, attribute.indexed);
 		} else {
-			console.error(`The indexing type '${attribute.indexed.type}' is unknown`);
+			harperLogger.error(`The indexing type '${attribute.indexed.type}' is unknown`);
 		}
 	}
 	return dbi;

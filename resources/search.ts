@@ -841,6 +841,7 @@ export function estimateCondition(table) {
 				const attribute_name = condition[0] ?? condition.attribute;
 				const index = table.indices[attribute_name];
 				if (index?.customIndex?.estimateCount)
+					// allow custom index to define its own estimation of counts
 					condition.estimated_count = index.customIndex.estimateCount(condition.value);
 				else condition.estimated_count = OPEN_RANGE_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			}

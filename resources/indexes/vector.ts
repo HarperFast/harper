@@ -12,7 +12,7 @@ export function euclideanDistance(a: number[], b: number[]): number {
 }
 
 export function cosineDistance(a: number[], b: number[]): number {
-	// Cosine similarity
+	// Cosine similarity, negated so it can be a "distance" function
 	let dotProduct = 0;
 	let magnitudeA = 0;
 	let magnitudeB = 0;
