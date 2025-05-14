@@ -461,14 +461,11 @@ export class HierarchicalNavigableSmallWorld {
 			}
 		}
 		if (limit) results = results.filter((candidate) => candidate.distance < limit);
-		return results.map((candidate) => {
-			const key = candidate.node.primaryKey;
-			if (context) {
-				if (!context.vectorDifferences) context.vectorDifferences = new Map();
-				context.vectorDifferences.set(key, candidate.distance);
-			}
-			return key;
-		});
+		return results.map((candidate) => ({
+			// we return the result as an entry so we can provide distance as metadata
+			key: candidate.node.primaryKey, // return value
+			distance: candidate.distance,
+		}));
 	}
 	private checkSymmetry(id, node) {
 		if (!node) return;
@@ -584,24 +581,36 @@ export class HierarchicalNavigableSmallWorld {
 	get totalNodes() {
 		return Array.from(this.indexStore.getKeys({ start: 0, end: Infinity })).length;
 	}
+
+	/**
+	 * This is used by the query planner to determine what order to apply conditions. Our best guess at an estimated count.
+	 */
 	estimateCount() {
 		return Math.sqrt(this.indexStore.getStats().entryCount) * 2;
 	}
-	propertyResolver(vector: number[], context: any, id: any) {
+
+	/**
+	 * This is used to resolve the vector property, which should be resolved to the distance when used in a sort comparator
+	 * We also want to cache distance calculations so they can be accessed efficently later
+	 * @param vector
+	 * @param context
+	 * @param entry
+	 */
+	propertyResolver(vector: number[], context: any, entry: any) {
 		const sortDefinition = context?.sort;
 		if (sortDefinition) {
-			// set up a cache for these so they can be accessed by $property and not be recalculated during a sort
-			let vectorDifferences = sortDefinition.vectorDifferences;
-			if (vectorDifferences) {
-				const difference = vectorDifferences.get(id);
+			// set up a cache for these so they can be accessed by $distance and not be recalculated during a sort
+			let vectorDistances = sortDefinition.vectorDistances;
+			if (vectorDistances) {
+				const difference = vectorDistances.get(entry);
 				if (difference) return difference;
-			} else vectorDifferences = context.vectorDifferences = sortDefinition.vectorDifferences = new Map();
+			} else vectorDistances = context.vectorDistances = sortDefinition.vectorDistances = new Map();
 
 			let distanceFunction = this.distance;
 			if (sortDefinition.type)
 				distanceFunction = sortDefinition.distance === 'euclidean' ? euclideanDistance : cosineDistance;
 			const distance = distanceFunction(sortDefinition.target, vector);
-			vectorDifferences.set(id, distance);
+			vectorDistances.set(entry, distance);
 			return distance;
 		}
 		return vector;

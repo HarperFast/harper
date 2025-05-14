@@ -343,7 +343,15 @@ export function searchByIndex(
 		return results;
 	} else if (index) {
 		if (index.customIndex) {
-			return index.customIndex.search(searchCondition, context);
+			return index.customIndex.search(searchCondition, context).map((entry) => {
+				// if the custom index returns an entry with metadata, merge it with the loaded entry
+				if (typeof entry === 'object' && entry) {
+					const { key, ...otherProps } = entry;
+					const loadedEntry = Table.primaryStore.getEntry(key);
+					return { ...otherProps, ...loadedEntry };
+				}
+				return entry;
+			});
 		}
 		return index.getRange(rangeOptions).map(
 			filter
