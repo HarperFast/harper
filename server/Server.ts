@@ -1,6 +1,7 @@
 import { Socket } from 'net';
 import { _assignPackageExport } from '../globals.js';
 import type { Value } from '../resources/analytics/write.ts';
+import type { Resources } from '../resources/Resources.ts';
 
 /**
  * This is the central interface by which we define entry points for different server protocol plugins to listen for
@@ -25,6 +26,7 @@ interface Server {
 	nodes: string[];
 	shards: Map<number, string[]>;
 	hostname: string;
+	resources: Resources;
 }
 export interface ServerOptions {
 	port?: number;
