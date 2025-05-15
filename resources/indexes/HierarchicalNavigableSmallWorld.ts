@@ -17,10 +17,10 @@ type Connection = {
 };
 type Node = {
 	vector: number[];
-	level: number;
+	level?: number;
 	primaryKey: string;
 	[level: number]: Connection[];
-} | {};
+};
 /**
  * Represents a Hierarchical Navigable Small World (HNSW) index for approximate nearest neighbor search.
  * This implementation is based on hierarchical graph navigation to efficiently index and search high-dimensional vectors.
@@ -409,22 +409,19 @@ export class HierarchicalNavigableSmallWorld {
 	 * @param comparator
 	 * @param context
 	 */
-	search(
-		{
-			target,
-			value,
-			descending,
-			distance,
-			comparator,
-		}: {
-			target: number[];
-			value: number;
-			descending: boolean;
-			distance: string;
-			comparator: string;
-		},
-		context: any
-	) {
+	search({
+		target,
+		value,
+		descending,
+		distance,
+		comparator,
+	}: {
+		target: number[];
+		value: number;
+		descending: boolean;
+		distance: string;
+		comparator: string;
+	}) {
 		let limit = 0; // zero is ignored, only used if set below
 		switch (comparator) {
 			case 'lt':
