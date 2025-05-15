@@ -20,7 +20,7 @@ type Node = {
 	level: number;
 	primaryKey: string;
 	[level: number]: Connection[];
-};
+} | {};
 /**
  * Represents a Hierarchical Navigable Small World (HNSW) index for approximate nearest neighbor search.
  * This implementation is based on hierarchical graph navigation to efficiently index and search high-dimensional vectors.
