@@ -19,7 +19,7 @@ interface ResourceEntry {
 export class Resources extends Map<string, ResourceEntry> {
 	isWorker = true;
 	loginPath?: (request) => string;
-	set(path, resource, export_types?: { [key: string]: boolean }, force?: boolean): void {
+	set(path, resource, exportTypes?: { [key: string]: boolean }, force?: boolean): void {
 		if (!resource) throw new Error('Must provide a resource');
 		if (path.startsWith('/')) path = path.replace(/^\/+/, '');
 		const entry = {
