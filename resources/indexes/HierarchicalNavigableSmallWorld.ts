@@ -580,10 +580,13 @@ export class HierarchicalNavigableSmallWorld {
 	}
 
 	/**
-	 * This is used by the query planner to determine what order to apply conditions. Our best guess at an estimated count.
-	 * This unit is typically the number of records that need to be accessed to satisfy the query. From my testing, the
-	 * best guess at the number of nodes that need to be accessed is the geometric mean of the total number of nodes
-	 * and the efConstruction parameter (for search).
+	 * This is used by the query planner to determine what order to apply conditions. It is our best guess at an estimated count.
+	 * This unit is typically the number of records that need to be accessed to satisfy the query. We know that we will visit
+	 * a minimum of efConstructionSearch nodes and a maximum of the total nodes (in absolute worst case).
+	 * The original paper described the complexity as polylogarithmic. From my testing, the
+	 * best and simplest guess at the number of nodes that need to be accessed is the geometric mean of the total number of nodes
+	 * and the efConstruction parameter (for search), which clearly constrains the estimate to the correct range and is
+	 * similar to polylogarithmic for realistic values.
 	 *
 	 * @returns
 	 */
