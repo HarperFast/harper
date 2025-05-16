@@ -1,4 +1,10 @@
-import { getDatabases, databases, table as ensureTable, onUpdatedTable, onRemovedDB } from '../../resources/databases.ts';
+import {
+	getDatabases,
+	databases,
+	table as ensureTable,
+	onUpdatedTable,
+	onRemovedDB,
+} from '../../resources/databases.ts';
 import {
 	createAuditEntry,
 	Decoder,
@@ -122,7 +128,7 @@ export async function createWebSocket(
 	if (secureContext) {
 		wsOptions.secureContext = tls.createSecureContext({
 			...secureContext.options,
-			ca: Array.from(replicationCertificateAuthorities), // do we need to add CA if secure context had one?
+			ca: [...replicationCertificateAuthorities, ...secureContext.options.availableCAs.values()], // add CA if secure context had one
 		});
 	}
 	return new WebSocket(url, 'harperdb-replication-v1', wsOptions);
@@ -693,10 +699,7 @@ export function replicateOverWS(ws, options, authorization) {
 						let subscriptionToHdbNodes, whenSubscribedToHdbNodes;
 						let closed = false;
 						if (tableSubscriptionToReplicator) {
-							if (
-								databaseName !== tableSubscriptionToReplicator.databaseName &&
-								!tableSubscriptionToReplicator.then
-							) {
+							if (databaseName !== tableSubscriptionToReplicator.databaseName && !tableSubscriptionToReplicator.then) {
 								logger.error?.(
 									'Subscription request for wrong database',
 									databaseName,
@@ -792,9 +795,7 @@ export function replicateOverWS(ws, options, authorization) {
 							const tableId = auditRecord.tableId;
 							let tableEntry = tableById[tableId];
 							if (!tableEntry) {
-								tableEntry = tableById[tableId] = tableToTableEntry(
-									tableSubscriptionToReplicator.tableById[tableId]
-								);
+								tableEntry = tableById[tableId] = tableToTableEntry(tableSubscriptionToReplicator.tableById[tableId]);
 								if (!tableEntry) {
 									return logger.debug?.('Not subscribed to table', tableId);
 								}
@@ -810,9 +811,7 @@ export function replicateOverWS(ws, options, authorization) {
 							}
 							const timeRange = subscribedNodeIds[nodeId];
 							const isWithinSubscriptionRange =
-								timeRange &&
-								timeRange.startTime < localTime &&
-								(!timeRange.endTime || timeRange.endTime > localTime);
+								timeRange && timeRange.startTime < localTime && (!timeRange.endTime || timeRange.endTime > localTime);
 							if (!isWithinSubscriptionRange) {
 								if (DEBUG_MODE)
 									logger.trace?.(
@@ -935,12 +934,7 @@ export function replicateOverWS(ws, options, authorization) {
 								tableEntry.typed_length = typedStructs?.length;
 								tableEntry.structure_length = structures.length;
 								// the structure used for encoding records has changed, so we need to send the new structure
-								logger.debug?.(
-									connectionId,
-									'send table struct',
-									tableEntry.typed_length,
-									tableEntry.structure_length
-								);
+								logger.debug?.(connectionId, 'send table struct', tableEntry.typed_length, tableEntry.structure_length);
 								if (!tableEntry.sentName) {
 									tableEntry.sentName = true;
 								}
@@ -974,11 +968,7 @@ export function replicateOverWS(ws, options, authorization) {
 								const encoded = auditRecord.encoded;
 								if (auditRecord.extendedType & HAS_BLOBS) {
 									// if there are blobs, we need to find them and send their contents
-									decodeWithBlobCallback(
-										() => auditRecord.getValue(primaryStore),
-										sendBlobs,
-										primaryStore.rootStore
-									);
+									decodeWithBlobCallback(() => auditRecord.getValue(primaryStore), sendBlobs, primaryStore.rootStore);
 								}
 								// If it starts with the previous local time, we omit that
 								const start = encoded[0] === 66 ? 8 : 0;
@@ -1490,8 +1480,7 @@ export function replicateOverWS(ws, options, authorization) {
 				// indirect connection through a proxying node
 				// if there is a last sequence id we received through the proxying node that is newer, we can start from there
 				const connectedNodeId = auditStore && getIdOfRemoteNode(connectedNode.name, auditStore);
-				const sequenceEntry =
-					tableSubscriptionToReplicator?.dbisDB?.get([Symbol.for('seq'), connectedNodeId]) ?? 1;
+				const sequenceEntry = tableSubscriptionToReplicator?.dbisDB?.get([Symbol.for('seq'), connectedNodeId]) ?? 1;
 				for (const seqNode of sequenceEntry?.nodes || []) {
 					if (seqNode.name === node.name) {
 						startTime = seqNode.seqId;

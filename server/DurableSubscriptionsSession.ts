@@ -190,7 +190,7 @@ class SubscriptionsSession {
 			if (path.indexOf('#') > -1 && path.indexOf('#') !== path.length - 1)
 				throw new Error('Multi-level wildcards can only be used at the end of a topic');
 			// treat as a collection to get all children, but we will need to filter out any that are not direct children or matching the pattern
-			request.isCollection = true;
+			request.isCollection = true; // used by Resource to determine if the resource should be treated as a collection
 			if (path.indexOf('+') === path.length - 1) {
 				// if it is only a trailing single-level wildcard, we can treat it as a shallow wildcard
 				// and use the optimized onlyChildren option, which will be faster, and does not require any filtering
@@ -236,7 +236,7 @@ class SubscriptionsSession {
 				request.url =
 					'/' + (firstWildcard > -1 ? matchingPath.slice(0, firstWildcard) : matchingPath).concat('').join('/');
 			}
-		}
+		} else request.isCollection = false; // must explicitly turn this off so topics that end in a slash are not treated as collections
 
 		const resourcePath = entry.path;
 		const resource = entry.Resource;
@@ -244,6 +244,7 @@ class SubscriptionsSession {
 			const context = this.createContext();
 			context.topic = topic;
 			context.retainHandling = retainHandling;
+			context.isCollection = request.isCollection;
 			const subscription = await resource.subscribe(request, context);
 			if (!subscription) {
 				return; // if no subscription, nothing to return
@@ -275,12 +276,7 @@ class SubscriptionsSession {
 						let path = update.id;
 						if (Array.isArray(path)) path = keyArrayToString(path);
 						if (path == null) path = '';
-						const result = await this.listener(
-							resourcePath + '/' + path,
-							update.value,
-							messageId,
-							subscriptionRequest
-						);
+						const result = await this.listener(resourcePath + '/' + path, update.value, messageId, subscriptionRequest);
 						if (result === false) break;
 						if (this.awaitingAcks?.size > AWAITING_ACKS_HIGH_WATER_MARK) {
 							// slow it down if we are getting too far ahead in acks
