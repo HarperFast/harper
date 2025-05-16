@@ -387,6 +387,19 @@ describe('test REST calls', () => {
 		assert(!response.headers['server-timing'].includes('miss'));
 		assert.equal(response.data.name, 'name3');
 	});
+	it('invalidate and get from cache and check headers with loadAsInstance', async () => {
+		let response = await axios.post('http://localhost:9926/SimpleCacheLoadAsInstance/3', {
+			invalidate: true,
+		});
+		response = await axios('http://localhost:9926/SimpleCacheLoadAsInstance/3');
+		assert.equal(response.status, 200);
+		assert(response.headers['server-timing'].includes('miss'));
+		assert.equal(response.data.name, 'name3');
+		response = await axios('http://localhost:9926/SimpleCacheLoadAsInstance/3');
+		assert.equal(response.status, 200);
+		assert(!response.headers['server-timing'].includes('miss'));
+		assert.equal(response.data.name, 'name3');
+	});
 	it('query from cache with errors', async () => {
 		// ensure that the error entry exists so we can query with it.
 		let response = await axios.post('http://localhost:9926/SimpleCache/error', {
@@ -458,6 +471,23 @@ describe('test REST calls', () => {
 				name: 'hello world',
 			});
 			response = await axios('http://localhost:9926/SimpleCache/with-query?query=string');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.id, 'with-query?query=string');
+			assert.equal(response.data.name, 'hello world');
+		});
+		after(() => {
+			tables.SimpleCache.directURLMapping = false;
+		});
+	});
+	describe('direct URL mapping with loadAsInstance', function () {
+		before(() => {
+			tables.SimpleCache.directURLMapping = true;
+		});
+		it('direct URL mapping', async () => {
+			let response = await axios.put('http://localhost:9926/SimpleCacheLoadAsInstance/with-query?query=string', {
+				name: 'hello world',
+			});
+			response = await axios('http://localhost:9926/SimpleCacheLoadAsInstance/with-query?query=string');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.id, 'with-query?query=string');
 			assert.equal(response.data.name, 'hello world');

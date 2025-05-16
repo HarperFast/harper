@@ -1101,10 +1101,11 @@ export function makeTable(options) {
 		 * @param fullUpdate The provided data in updates is the full intended record; any properties in the existing record that are not in the updates, should be removed
 		 */
 		update(target: RequestTarget, updates?: any, fullUpdate?: boolean) {
-			const hasTarget = typeof target !== 'object' || !target || typeof target.getAll === 'function';
-			if (hasTarget) {
-				// first argument appears to be a target identifier
-			} else {
+			// determine if the first argument appears to be a target identifier
+			const hasTarget = typeof target !== 'object' || !target || typeof target.getAll === 'function'; // getAll is a function on URLSearchParams objects and other URL-ish objects
+			if (!hasTarget) {
+				// shift the arguments otherwise
+				fullUpdate = updates;
 				updates = target;
 			}
 
@@ -1359,10 +1360,12 @@ export function makeTable(options) {
 		 * @param options
 		 */
 		put(target: Query, record: any): void {
-			this.update(target, record, true);
+			if (this.constructor.loadAsInstance === false) this.update(target, record, true);
+			else this.update(target, true);
 		}
 		patch(target: Query, recordUpdate: any): void {
-			this.update(target, recordUpdate, false);
+			if (this.constructor.loadAsInstance === false) this.update(target, record, false);
+			else this.update(target, false);
 		}
 		// perform the actual write operation; this may come from a user request to write (put, post, etc.), or
 		// a notification that a write has already occurred in the canonical data source, we need to update our

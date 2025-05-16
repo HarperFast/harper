@@ -527,6 +527,7 @@ function transactional(action, options) {
 				if (typeof (id = idOrQuery.url) === 'string') {
 					if (this.directURLMapping) {
 						id = id.slice(1); // remove the leading slash
+						query.id = id;
 					} else {
 						// handle queries in local URLs like /path/?name=value
 						const searchIndex = id.indexOf('?');
