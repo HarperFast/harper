@@ -9,7 +9,6 @@ import { SKIP, type Database } from 'lmdb';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.js';
 import lodash from 'lodash';
 import {
-	Query,
 	ResourceInterface,
 	SubscriptionRequest,
 	Id,
@@ -17,7 +16,6 @@ import {
 	Condition,
 	Sort,
 	SubSelect,
-	RequestTarget,
 } from './ResourceInterface.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
 import { Resource, contextStorage } from './Resource.ts';
@@ -43,7 +41,7 @@ import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { HAS_BLOBS, readAuditEntry, removeAuditEntry } from './auditStore.ts';
 import { autoCast, convertToMS } from '../utility/common_utils.js';
-import { recordUpdater, removeEntry, PENDING_LOCAL_TIME } from './RecordEncoder.ts';
+import { recordUpdater, removeEntry, PENDING_LOCAL_TIME, VERSION, EXPIRES_AT, Record } from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
@@ -191,11 +189,25 @@ export function makeTable(options) {
 		if (hasSourceGet) return scheduleCleanup(priority);
 	});
 
-	class Updatable extends GenericTrackedObject {
-		getUpdatedTime() {
-			//return this.#version;
+	class Updatable extends GenericTrackedObject implements Record {
+		declare set: (property: string, value: any) => void;
+		declare getProperty: (property: string) => any;
+		getUpdatedTime(): number {
+			return this[VERSION];
 		}
-		addTo() {}
+		getExpiresAt(): number {
+			return this[EXPIRES_AT];
+		}
+		addTo(property: string, value: number | bigint) {
+			if (typeof value === 'number' || typeof value === 'bigint') {
+				this.set(property, new Addition(value));
+			} else {
+				throw new Error('Can not add or subtract a non-numeric value');
+			}
+		}
+		subtractFrom(property: string, value: number | bigint) {
+			return this.addTo(property, -value);
+		}
 	}
 	class TableResource extends Resource {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
@@ -1134,7 +1146,7 @@ export function makeTable(options) {
 			if (typeof updates === 'object' && updates) {
 				if (fullUpdate) {
 					if (!directInstance) {
-						updatable = new Updatable({}, this.getContext());
+						updatable = new Updatable({});
 						updatable._setChanges(updates);
 					} else {
 						if (Object.isFrozen(updates)) updates = { ...updates };
@@ -1144,7 +1156,11 @@ export function makeTable(options) {
 				} else {
 					if (!directInstance) {
 						return when(this.get(target), (record) => {
-							updatable = new Updatable(record, this.getContext());
+							updatable = new Updatable(record);
+							if (record) {
+								updatable[VERSION] = record[VERSION];
+								if (record[EXPIRES_AT]) updatable[EXPIRES_AT] = record[EXPIRES_AT];
+							}
 							updatable._setChanges(updates);
 							this._writeUpdate(id, updatable.getChanges(), false);
 							return updatable;
@@ -1385,7 +1401,7 @@ export function makeTable(options) {
 		patch(target: RequestTarget, recordUpdate: any): void {
 			if (recordUpdate === undefined || recordUpdate instanceof URLSearchParams) this.update(target, false);
 			else {
-				const result = this.update(target, record, false);
+				const result = this.update(target, recordUpdate, false);
 				if (result?.then) return result.then(() => undefined); // wait for the update, but return undefined
 			}
 		}
@@ -2936,7 +2952,7 @@ export function makeTable(options) {
 				}
 			}
 			assignTrackedAccessors(this, this);
-			assignTrackedAccessors(Updatable, this);
+			assignTrackedAccessors(Updatable, this, true);
 			primaryStore.encoder.structPrototype.getUpdatedTime = function () {};
 			for (const attribute of attributes) {
 				const name = attribute.name;

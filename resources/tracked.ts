@@ -1,6 +1,7 @@
 import { ClientError } from '../utility/errors/hdbError.js';
 import * as crdtOperations from './crdt.ts';
 import { Blob } from './blob.ts';
+import { EXPIRES_AT, VERSION } from './RecordEncoder';
 // perhaps we want these in the global registry, not sure:
 const recordClassCache = {}; // we cache the WritableRecord classes because they are pretty expensive to create
 
@@ -23,7 +24,7 @@ function getChanges(target) {
  * @param Target Class to add accessors to
  * @param typeDef Type definition for determining property
  */
-export function assignTrackedAccessors(Target, typeDef) {
+export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = false) {
 	const prototype = Target.prototype;
 	const descriptors = {};
 	const attributes = typeDef.attributes || typeDef.properties || [];
@@ -252,50 +253,62 @@ export function assignTrackedAccessors(Target, typeDef) {
 			configurable: true,
 		});
 	}
+	Object.defineProperty(prototype, VERSION, { writable: true }); // define the property so it doesn't forward to the proxy
+	Object.defineProperty(prototype, EXPIRES_AT, { writable: true }); // define the property so it doesn't forward to the proxy
 	// walk the prototype chain and set the prototype of the last object to the proxy that forwards to get
 	let lastPrototype = prototype;
 	do {
 		const nextPrototype = Object.getPrototypeOf(lastPrototype);
 		if (nextPrototype === Object.prototype) {
-			Object.setPrototypeOf(lastPrototype, getOnMissingProperty);
+			Object.setPrototypeOf(lastPrototype, useFullPropertyProxy ? fullPropertyProxy : getOnMissingProperty);
 			break;
 		}
 		lastPrototype = nextPrototype;
-	} while (lastPrototype && lastPrototype !== getOnMissingProperty);
+	} while (lastPrototype && lastPrototype !== getOnMissingProperty && lastPrototype !== fullPropertyProxy);
 }
 const ObjectPrototype = Object.prototype;
 // Here we define a proxy that will handle any missing property access as a getter, that will attempt
 // get the property value from the tracked object's changes or record. This is set as a prototype of
 // any tracked objects (including Table/Resource instances), so that any property access will be
 // intercepted by the proxy and the value will be returned from the changes or record.
-const getOnMissingProperty = new Proxy(
-	{},
-	{
-		get(target, name, receiver) {
-			if (typeof name === 'string') {
-				if (name === 'then' || name === 'getRecord' || name === 'getChanges') return undefined; // shortcut
-				if (ObjectPrototype[name]) return ObjectPrototype[name];
-				let changes = receiver.getChanges?.();
-				if (changes && name in changes) {
-					return changes[name];
+const getOnMissingProperty = new Proxy({}, { get: getProxiedProperty });
+const fullPropertyProxy = new Proxy({}, { get: getProxiedProperty, set: setProxiedProperty });
+function getProxiedProperty(target, name, receiver) {
+	if (typeof name === 'string') {
+		if (name === 'then' || name === 'getRecord' || name === 'getChanges') return undefined; // shortcut
+		if (ObjectPrototype[name]) return ObjectPrototype[name];
+		let changes = receiver.getChanges?.();
+		if (changes && name in changes) {
+			return changes[name];
+		}
+		const sourceValue = receiver.getRecord?.()?.[name];
+		if (sourceValue && typeof sourceValue === 'object') {
+			const updatedValue = trackObject(sourceValue);
+			if (updatedValue) {
+				if (!changes) {
+					changes = Object.create(null);
+					receiver._setChanges(changes);
 				}
-				const sourceValue = receiver.getRecord?.()?.[name];
-				if (sourceValue && typeof sourceValue === 'object') {
-					const updatedValue = trackObject(sourceValue);
-					if (updatedValue) {
-						if (!changes) {
-							changes = Object.create(null);
-							receiver._setChanges(changes);
-						}
-						changes[name] = updatedValue;
-						return updatedValue;
-					}
-				}
-				return sourceValue;
+				changes[name] = updatedValue;
+				return updatedValue;
 			}
-		},
+		}
+		return sourceValue;
 	}
-);
+}
+function setProxiedProperty(target: any, name: string | symbol, value, receiver) {
+	if (typeof name === 'string') {
+		let changes = receiver.getChanges?.();
+		if (!changes) {
+			changes = {};
+			receiver._setChanges(changes);
+		}
+		changes[name] = value;
+	} else {
+		Object.defineProperty(receiver, name, { value, configurable: true, writable: true });
+	}
+	return true;
+}
 
 function trackObject(sourceObject: any, typeDef?: any) {
 	// lazily instantiate in case of recursive structures
@@ -346,7 +359,7 @@ export class GenericTrackedObject {
 		this.#changes = changes;
 	}
 }
-assignTrackedAccessors(GenericTrackedObject, {});
+assignTrackedAccessors(GenericTrackedObject, {}, true);
 /**
  * Collapse the changed and transitive and source/record data into single object that
  * can be directly serialized. Performed recursively

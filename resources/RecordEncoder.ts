@@ -28,6 +28,8 @@ export const PREVIOUS_TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 3, 0x4
 export const NEW_TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 0, 0x40, 0, 0]);
 export const LOCAL_TIMESTAMP = Symbol('local-timestamp');
 export const METADATA = Symbol('metadata');
+export const VERSION = Symbol('version');
+export const EXPIRES_AT = Symbol('expiresAt');
 const TIMESTAMP_HOLDER = new Uint8Array(8);
 const TIMESTAMP_VIEW = new DataView(TIMESTAMP_HOLDER.buffer, 0, 8);
 export const NO_TIMESTAMP = 0;
@@ -49,7 +51,22 @@ let lastEncoding,
 export class RecordEncoder extends Encoder {
 	constructor(options) {
 		options.useBigIntExtension = true;
-		options.structPrototype = {};
+		/**
+		 * The base class for records that provides the read-only methods for accessing
+		 * metadata and will be assigned computed property getters. On its own, these instances
+		 * are usually frozen, but this can be extended (by the Updatable class) for providing
+		 * mutation methods.
+		 */
+		class Record {
+			getUpdatedTime() {
+				return this[VERSION];
+			}
+			getExpiresAt() {
+				return this[EXPIRES_AT];
+			}
+		}
+
+		options.structPrototype = Record.prototype;
 		super(options);
 		const superEncode = this.encode;
 		this.encode = function (record, options?) {
@@ -214,7 +231,15 @@ export function handleLocalTimeForGets(store, rootStore) {
 			entry.localTime = recordEntry.localTime;
 			entry.value = recordEntry.value;
 			entry.residencyId = recordEntry.residencyId;
-			if (recordEntry.expiresAt >= 0) entry.expiresAt = recordEntry.expiresAt;
+			if (recordEntry.expiresAt >= 0) {
+				entry.expiresAt = recordEntry.expiresAt;
+				if (entry.value) {
+					entry.value[EXPIRES_AT] = recordEntry.expiresAt;
+				}
+			}
+			if (entry.value) {
+				entry.value[VERSION] = recordEntry.version; // add version to value
+			}
 		}
 		if (entry) entry.key = id;
 		return entry;
@@ -223,7 +248,17 @@ export function handleLocalTimeForGets(store, rootStore) {
 	store.get = function (id, options) {
 		const value = storeGet.call(this, id, options);
 		// an object with metadata, but we want to just return the value
-		return value?.[METADATA] >= 0 ? value.value : value;
+		if (value?.[METADATA] >= 0) {
+			if (value.value) {
+				// set the metadata symbol properties if possible
+				if (value.expiresAt >= 0) {
+					value.value[EXPIRES_AT] = value.expiresAt;
+				}
+				value.value[VERSION] = value.version; // add version to value
+			}
+			return value.value;
+		}
+		return value;
 	};
 	//store.pendingTimestampUpdates = new Map();
 	const storeGetRange = store.getRange;
@@ -444,4 +479,8 @@ export function removeEntry(store: any, entry: any, existingVersion?: number) {
 		deleteBlobsInObject(entry.value);
 	}
 	return store.remove(entry.key, existingVersion);
+}
+export interface Record {
+	getUpdatedTime(): number;
+	getExpiresAt(): number;
 }
