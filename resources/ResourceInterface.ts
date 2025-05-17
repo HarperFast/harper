@@ -89,28 +89,6 @@ export interface SubSelect {
 	select: (string | SubSelect)[];
 }
 export type Select = (string | SubSelect)[];
-export interface Query extends URLSearchParams {
-	/** Retrieve a specific record, but can be combined with select */
-	id?: Id;
-	/**	 The conditions to use in the query, that the returned records must satisfy	 */
-	conditions?: Conditions;
-	/**	 The number of records to return	 */
-	limit?: number;
-	/**	 The number of records to skip	 */
-	offset?: number;
-	/**	 The number of operator to use*/
-	operator?: 'AND' | 'OR';
-	/**	 The sort attribute and direction to use */
-	sort?: Sort;
-	/**	 The selected attributes to return	 */
-	select?: Select;
-	/**	 Return an explanation of the query order */
-	explain?: boolean;
-	/**	 Force the query to be executed in the order of conditions */
-	enforceExecutionOrder?: boolean;
-	lazy?: boolean;
-	url?: string; // path and query string
-}
 export interface SubscriptionRequest {
 	/** The starting time of events to return (defaults to now) */
 	startTime?: number;
@@ -125,7 +103,6 @@ export interface TargetId extends URLSearchParams {
 }
 
 export type Id = number | string | (number | string | null)[] | null;
-export type RequestTarget = Id | TargetId | Query;
 type UpdatableRecord<T> = T;
 interface Subscription {}
 type ResourceId = Request | number | string;

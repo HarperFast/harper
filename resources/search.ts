@@ -5,6 +5,7 @@ import { SKIP } from 'lmdb';
 import { INVALIDATED, EVICTED } from './Table.ts';
 import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { MultiPartId } from './Resource.ts';
+import { RequestTarget } from './RequestTarget.ts';
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;
 const BETWEEN_ESTIMATE = 0.1;
@@ -842,14 +843,15 @@ let queryString;
  * structure
  * @param queryString
  */
-export function parseQuery(queryToParse) {
+export function parseQuery(queryToParse, query: RequestTarget) {
 	if (!queryToParse) return;
 	queryString = queryToParse;
 	// TODO: We can remove this if we are sure all exits points end with lastIndex as zero (reaching the end of parsing will do that)
 	QUERY_PARSER.lastIndex = 0;
 	if (NEEDS_PARSER.test(queryToParse)) {
 		try {
-			const query = parseBlock(new Query(), '');
+			if (query) query.conditions = [];
+			query = parseBlock(query ?? new Query(), '');
 			if (lastIndex !== queryString.length) throw new SyntaxError(`Unable to parse query, unexpected end of query`);
 			return query;
 		} catch (error) {
@@ -858,7 +860,7 @@ export function parseQuery(queryToParse) {
 			throw error;
 		}
 	} else {
-		return new URLSearchParams(queryToParse);
+		return query ?? new RequestTarget(queryToParse);
 	}
 }
 function parseBlock(query, expectedEnd) {
@@ -1189,27 +1191,4 @@ function estimatedEntryCount(store) {
 
 export function intersectionEstimate(store, left, right) {
 	return (left * right) / estimatedEntryCount(store);
-}
-export class SimpleURLQuery {
-	url?: string;
-	id: any;
-	constructor(url?: string, id?: any) {
-		this.url = url;
-		this.id = id;
-	}
-	get pathname() {
-		return this.url.split('?')[0];
-	}
-	get() {
-		// this is a simple holder for the URL query, so we don't return anything (will be parsed later into a USP or Query object as needed)
-	}
-	[Symbol.iterator]() {
-		return [][Symbol.iterator]();
-	}
-	toString() {
-		return this.url ?? '/' + this.id;
-	}
-	getAll() {
-		return [];
-	}
 }

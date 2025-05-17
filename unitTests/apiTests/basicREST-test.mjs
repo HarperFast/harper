@@ -577,20 +577,20 @@ describe('test REST calls', () => {
 
 		let response2 = await axios('http://localhost:9926/api/v1/resourceA/?queryA=1&queryB=2');
 		assert.equal(response2.data.name, 'ResourceA');
-		assert.strictEqual(response2.data.params.url, '/?queryA=1&queryB=2');
+		assert.strictEqual(response2.data.params.target, '/?queryA=1&queryB=2');
 
 		let response3 = await axios('http://localhost:9926/api/v1/resourceA/resourceB/');
 		assert.equal(response3.data.name, 'ResourceB');
-		assert.strictEqual(response3.data.params.url, '/');
+		assert.strictEqual(response3.data.params.target, '/');
 
 		let response4 = await axios('http://localhost:9926/api/v1/resourceA/resourceB/subPath/ResourceC?queryA=2&queryB=3');
 		assert.equal(response4.data.name, 'ResourceC');
-		assert.strictEqual(response4.data.params.url, '?queryA=2&queryB=3');
+		assert.strictEqual(response4.data.params.target, '?queryA=2&queryB=3');
 
 		let response5 = await axios(
 			'http://localhost:9926/api/v1/resourceA/resourceB/subPath/ResourceC/some/relative/path/?with=query.property'
 		);
 		assert.equal(response5.data.name, 'ResourceC');
-		assert.strictEqual(response5.data.params.url, '/some/relative/path/?with=query.property');
+		assert.strictEqual(response5.data.params.target, '/some/relative/path/?with=query.property');
 	});
 });

@@ -173,7 +173,7 @@ class SubscriptionsSession {
 			user: this.user,
 			startTime,
 			omitCurrent,
-			url: '',
+			target: '',
 		};
 		if (startTime) trace('Resuming subscription from', topic, 'from', startTime);
 		const entry = resources.getMatch(path, 'mqtt');
@@ -184,9 +184,9 @@ class SubscriptionsSession {
 			notFoundError.statusCode = 404;
 			throw notFoundError;
 		}
-		request.url = entry.relativeURL;
-		if (request.url.indexOf('+') > -1 || request.url.indexOf('#') > -1) {
-			const path = request.url.slice(1); // remove leading slash
+		request.target = entry.relativeURL;
+		if (request.target.indexOf('+') > -1 || request.target.indexOf('#') > -1) {
+			const path = request.target.slice(1); // remove leading slash
 			if (path.indexOf('#') > -1 && path.indexOf('#') !== path.length - 1)
 				throw new Error('Multi-level wildcards can only be used at the end of a topic');
 			// treat as a collection to get all children, but we will need to filter out any that are not direct children or matching the pattern
@@ -195,7 +195,7 @@ class SubscriptionsSession {
 				// if it is only a trailing single-level wildcard, we can treat it as a shallow wildcard
 				// and use the optimized onlyChildren option, which will be faster, and does not require any filtering
 				request.onlyChildren = true;
-				request.url = '/' + path.slice(0, path.length - 1);
+				request.target = '/' + path.slice(0, path.length - 1);
 			} else {
 				// otherwise we have a potentially complex wildcard, so we will need to filter out any that are not direct children or matching the pattern
 				const matchingPath = path.split('/');
@@ -233,7 +233,7 @@ class SubscriptionsSession {
 					};
 				}
 				const firstWildcard = matchingPath.indexOf('+');
-				request.url =
+				request.target =
 					'/' + (firstWildcard > -1 ? matchingPath.slice(0, firstWildcard) : matchingPath).concat('').join('/');
 			}
 		} else request.isCollection = false; // must explicitly turn this off so topics that end in a slash are not treated as collections
@@ -340,7 +340,7 @@ class SubscriptionsSession {
 		};
 		if (this.request) {
 			context.request = this.request;
-			context.url = this.request.url;
+			context.target = this.request.target;
 			context.headers = this.request.headers;
 		}
 		return context;
@@ -391,7 +391,7 @@ function publish(message, data, context) {
 		throw new Error(
 			`Can not publish to topic ${topic} as it does not exist, no resource has been defined to handle this topic`
 		);
-	message.url = entry.relativeURL;
+	message.target = entry.relativeURL;
 	const resource = entry.Resource;
 
 	return transaction(context, () => {

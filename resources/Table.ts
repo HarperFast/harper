@@ -50,6 +50,7 @@ import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject } from './blob.ts';
 import { onStorageReclamation } from '../server/storageReclamation.ts';
+import { RequestTarget } from './RequestTarget.ts';
 
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
@@ -190,7 +191,12 @@ export function makeTable(options) {
 		if (hasSourceGet) return scheduleCleanup(priority);
 	});
 
-	class Updatable extends GenericTrackedObject {}
+	class Updatable extends GenericTrackedObject {
+		getUpdatedTime() {
+			//return this.#version;
+		}
+		addTo() {}
+	}
 	class TableResource extends Resource {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
@@ -345,26 +351,27 @@ export function makeTable(options) {
 						ensureLoaded: false,
 						nodeId: event.nodeId,
 					};
-					const resource: TableResource = await Table.getResource(event.id, context, options);
+					const id = event.id;
+					const resource: TableResource = await Table.getResource(id, context, options);
 					if (event.finished) await event.finished;
 					switch (event.type) {
 						case 'put':
 							return shouldRevalidateEvents
-								? resource._writeInvalidate(value, options)
-								: resource._writeUpdate(value, true, options);
+								? resource._writeInvalidate(id, value, options)
+								: resource._writeUpdate(id, value, true, options);
 						case 'patch':
 							return shouldRevalidateEvents
-								? resource._writeInvalidate(value, options)
-								: resource._writeUpdate(value, false, options);
+								? resource._writeInvalidate(id, value, options)
+								: resource._writeUpdate(id, value, false, options);
 						case 'delete':
-							return resource._writeDelete(options);
+							return resource._writeDelete(id, options);
 						case 'publish':
 						case 'message':
-							return resource._writePublish(value, options);
+							return resource._writePublish(id, value, options);
 						case 'invalidate':
-							return resource._writeInvalidate(value, options);
+							return resource._writeInvalidate(id, value, options);
 						case 'relocate':
-							return resource._writeRelocate(options);
+							return resource._writeRelocate(id, options);
 						default:
 							logger.error?.('Unknown operation', event.type, event.id);
 					}
@@ -933,8 +940,8 @@ export function makeTable(options) {
 		get(target?: RequestTarget): Promise<object | void> | object | void {
 			const constructor: Resource = this.constructor;
 			if (typeof target === 'string' && constructor.loadAsInstance !== false) return this.getProperty(target);
-			if (target?.search) return this.search(target as Query);
-			if (target?.url === '') {
+			if (isSearchTarget(target)) return this.search(target);
+			if (target?.target === '') {
 				const description = {
 					// basically a describe call
 					records: './', // an href to the records themselves
@@ -960,7 +967,7 @@ export function makeTable(options) {
 					throw new Error('You can not read from a transaction that has already been committed/aborted');
 				}
 				const ensureLoaded = true;
-				const id = typeof target === 'object' ? target.id : target;
+				const id = requestTargetToId(target);
 				return loadLocalRecord(id, context, { transaction: readTxn, ensureLoaded }, false, (entry) => {
 					if (context.onlyIfCached && context.noCacheStore) {
 						// don't go into the loading from source condition, but HTTP spec says to
@@ -1101,12 +1108,19 @@ export function makeTable(options) {
 		 * @param fullUpdate The provided data in updates is the full intended record; any properties in the existing record that are not in the updates, should be removed
 		 */
 		update(target: RequestTarget, updates?: any, fullUpdate?: boolean) {
-			// determine if the first argument appears to be a target identifier
-			const hasTarget = typeof target !== 'object' || !target || typeof target.getAll === 'function'; // getAll is a function on URLSearchParams objects and other URL-ish objects
-			if (!hasTarget) {
-				// shift the arguments otherwise
+			let id: Id;
+			// determine if it is a legacy call
+			const directInstance =
+				typeof updates === 'boolean' ||
+				(updates === undefined &&
+					(target == undefined || (typeof target === 'object' && !(target instanceof URLSearchParams))));
+			if (directInstance) {
+				// legacy, shift the arguments
 				fullUpdate = updates;
 				updates = target;
+				id = this.getId();
+			} else {
+				id = requestTargetToId(target);
 			}
 
 			const envTxn = txnForContext(this.getContext());
@@ -1119,7 +1133,7 @@ export function makeTable(options) {
 			let ownData, updatable;
 			if (typeof updates === 'object' && updates) {
 				if (fullUpdate) {
-					if (hasTarget) {
+					if (!directInstance) {
 						updatable = new Updatable({}, this.getContext());
 						updatable._setChanges(updates);
 					} else {
@@ -1128,9 +1142,13 @@ export function makeTable(options) {
 						this.#changes = updates;
 					}
 				} else {
-					if (hasTarget) {
-						updatable = new Updatable(this.get(target), this.getContext());
-						updatable._setChanges(updates);
+					if (!directInstance) {
+						return when(this.get(target), (record) => {
+							updatable = new Updatable(record, this.getContext());
+							updatable._setChanges(updates);
+							this._writeUpdate(id, updatable.getChanges(), false);
+							return updatable;
+						});
 					} else {
 						ownData = this.#changes;
 						if (ownData) updates = Object.assign(ownData, updates);
@@ -1138,8 +1156,8 @@ export function makeTable(options) {
 					}
 				}
 			}
-			this._writeUpdate(updatable ? updatable.getChanges() : this.#changes, fullUpdate);
-			return this;
+			this._writeUpdate(id, updatable ? updatable.getChanges() : this.#changes, fullUpdate);
+			return updatable ?? this;
 		}
 
 		addTo(property, value) {
@@ -1176,12 +1194,11 @@ export function makeTable(options) {
 			this.#record = record;
 		}
 
-		invalidate() {
-			this._writeInvalidate();
+		invalidate(id: Id) {
+			this._writeInvalidate(id ?? this.getId());
 		}
-		_writeInvalidate(partialRecord?: any, options?: any) {
+		_writeInvalidate(id: Id, partialRecord?: any, options?: any) {
 			const context = this.getContext();
-			const id = this.getId();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
 			transaction.addWrite({
@@ -1217,9 +1234,8 @@ export function makeTable(options) {
 				},
 			});
 		}
-		_writeRelocate(options) {
+		_writeRelocate(id: Id, options: any) {
 			const context = this.getContext();
-			const id = this.getId();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
 			transaction.addWrite({
@@ -1359,22 +1375,27 @@ export function makeTable(options) {
 		 * @param record
 		 * @param options
 		 */
-		put(target: Query, record: any): void {
-			if (this.constructor.loadAsInstance === false) this.update(target, record, true);
-			else this.update(target, true);
+		put(target: RequestTarget, record: any): void {
+			if (record === undefined || record instanceof URLSearchParams) this.update(target, true);
+			else {
+				const result = this.update(target, record, true);
+				if (result?.then) return result.then(() => undefined); // wait for the update, but return undefined
+			}
 		}
-		patch(target: Query, recordUpdate: any): void {
-			if (this.constructor.loadAsInstance === false) this.update(target, record, false);
-			else this.update(target, false);
+		patch(target: RequestTarget, recordUpdate: any): void {
+			if (recordUpdate === undefined || recordUpdate instanceof URLSearchParams) this.update(target, false);
+			else {
+				const result = this.update(target, record, false);
+				if (result?.then) return result.then(() => undefined); // wait for the update, but return undefined
+			}
 		}
 		// perform the actual write operation; this may come from a user request to write (put, post, etc.), or
 		// a notification that a write has already occurred in the canonical data source, we need to update our
 		// local copy
-		_writeUpdate(recordUpdate: any, fullUpdate: boolean, options?: any) {
+		_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any) {
 			const context = this.getContext();
 			const transaction = txnForContext(context);
 
-			const id = this.getId();
 			checkValidId(id);
 			const entry = this.#entry;
 			this.#saveMode = fullUpdate ? SAVING_FULL_UPDATE : SAVING_CRDT_UPDATE; // mark that this resource is being saved so doesExist return true
@@ -1598,24 +1619,20 @@ export function makeTable(options) {
 			transaction.addWrite(write);
 		}
 
-		async delete(request?: Query | string): Promise<boolean> {
-			if (typeof request === 'string') return this.deleteProperty(request);
-			// TODO: Handle deletion of a collection/query
-			if (this.isCollection) {
-				for await (const entry of this.search(request)) {
-					const resource = await TableResource.getResource(entry[primaryKey], this.getContext(), {
-						ensureLoaded: false,
-					});
-					resource._writeDelete(request);
+		async delete(target: RequestTarget): Promise<boolean> {
+			if (isSearchTarget(target)) {
+				for await (const entry of this.search(target)) {
+					this._writeDelete(entry.key);
 				}
-				return;
+				return true;
 			}
-			if (!this.#record) return false;
-			return this._writeDelete(request);
+
+			const id = requestTargetToId(target);
+			this._writeDelete(id);
+			return this.constructor.loadAsInstance === false ? true : Boolean(this.#record);
 		}
-		_writeDelete(options?: any) {
+		_writeDelete(id: Id, options?: any) {
 			const transaction = txnForContext(this.getContext());
-			const id = this.getId();
 			checkValidId(id);
 			const context = this.getContext();
 			transaction.addWrite({
@@ -2470,13 +2487,19 @@ export function makeTable(options) {
 		 * @param message
 		 * @param options
 		 */
-		publish(message, options?) {
-			this._writePublish(message, options);
+		publish(target: RequestTarget, message: any, options?: any) {
+			if (message === undefined || message instanceof URLSearchParams) {
+				// legacy arg format, shift the args
+				this._writePublish(this.getId(), target, message);
+			} else {
+				const id = requestTargetToId(target);
+				this._writePublish(id, message, options);
+			}
 		}
-		_writePublish(message, options?: any) {
+		_writePublish(id: Id, message, options?: any) {
 			const transaction = txnForContext(this.getContext());
-			const id = this.getId() || null;
-			if (id != null) checkValidId(id); // note that we allow the null id for publishing so that you can publish to the root topic
+			id ??= null;
+			if (id !== null) checkValidId(id); // note that we allow the null id for publishing so that you can publish to the root topic
 			const context = this.getContext();
 			transaction.addWrite({
 				key: id,
@@ -2914,6 +2937,7 @@ export function makeTable(options) {
 			}
 			assignTrackedAccessors(this, this);
 			assignTrackedAccessors(Updatable, this);
+			primaryStore.encoder.structPrototype.getUpdatedTime = function () {};
 			for (const attribute of attributes) {
 				const name = attribute.name;
 				if (attribute.resolve) {
@@ -3109,6 +3133,13 @@ export function makeTable(options) {
 		if (length > MAX_KEY_BYTES) throw new Error('Primary key size is too large: ' + id.length);
 		return true;
 	}
+	function requestTargetToId(target: RequestTarget) {
+		return typeof target === 'object' && target ? target.id : target;
+	}
+	function isSearchTarget(target: RequestTarget) {
+		return typeof target === 'object' && target && target.isCollection;
+	}
+	function isRequestTarget(target: unknown): target is RequestTarget {}
 	function loadLocalRecord(id, context, options, sync, withEntry) {
 		if (TableResource.getResidencyById && options.ensureLoaded && context?.replicateFrom !== false) {
 			// this is a special case for when the residency can be determined from the id alone (hash-based sharding),

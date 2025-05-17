@@ -1,12 +1,13 @@
-import type { ResourceInterface, SubscriptionRequest, Id, Context, Query, RequestTarget } from './ResourceInterface.ts';
+import type { ResourceInterface, SubscriptionRequest, Id, Context, Query } from './ResourceInterface.ts';
 import { randomUUID } from 'crypto';
 import type { Transaction } from './DatabaseTransaction.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { _assignPackageExport } from '../globals.js';
 import { ClientError } from '../utility/errors/hdbError.js';
 import { transaction } from './transaction.ts';
-import { parseQuery, SimpleURLQuery } from './search.ts';
+import { parseQuery } from './search.ts';
 import { AsyncLocalStorage } from 'async_hooks';
+import { RequestTarget } from './RequestTarget.ts';
 export const contextStorage = new AsyncLocalStorage<Context>();
 
 const EXTENSION_TYPES = {
@@ -45,7 +46,7 @@ export class Resource implements ResourceInterface {
 	 * The get methods are for directly getting a resource, and called for HTTP GET requests.
 	 */
 	static get(identifier: Id, context?: Context): Promise<Resource>;
-	static get(query: Query, context?: Context): Promise<AsyncIterable<object>>;
+	static get(target: RequestTarget, context?: Context): Promise<AsyncIterable<object>>;
 	static get = transactional(
 		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			const result = resource.get?.(query);
@@ -83,11 +84,18 @@ export class Resource implements ResourceInterface {
 				const authorize = request.authorize;
 				for (const element of data) {
 					const resourceClass = resource.constructor;
-					const elementResource = resourceClass.getResource(element[resourceClass.primaryKey], request, {
-						async: true,
-					});
-					if (elementResource.then) results.push(elementResource.then((resource) => resource.put(element, request)));
-					else results.push(elementResource.put(element, request));
+					const id = element[resourceClass.primaryKey];
+					if (resource.constructor.loadAsInstance === false) {
+						const elementQuery = new RequestTarget();
+						elementQuery.id = id;
+						results.push(resource.put(elementQuery, element));
+					} else {
+						const elementResource = resourceClass.getResource(id, request, {
+							async: true,
+						});
+						if (elementResource.then) results.push(elementResource.then((resource) => resource.put(element, request)));
+						else results.push(elementResource.put(element, request));
+					}
 				}
 				return Promise.all(results);
 			}
@@ -103,7 +111,11 @@ export class Resource implements ResourceInterface {
 	static patch = transactional(
 		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			// TODO: Allow array like put?
-			return resource.patch ? resource.patch(data, query) : missingMethod(resource, 'patch');
+			return resource.patch
+				? resource.constructor.loadAsInstance === false
+					? resource.patch(query, data)
+					: resource.patch(data, query)
+				: missingMethod(resource, 'patch');
 		},
 		{ hasContent: true, type: 'update' }
 	);
@@ -270,8 +282,8 @@ export class Resource implements ResourceInterface {
 	static coerceId(id: string): number | string {
 		return id;
 	}
-	static parseQuery(search) {
-		return parseQuery(search);
+	static parseQuery(search, query) {
+		return parseQuery(search, query);
 	}
 	static parsePath(path, context, query) {
 		const dotIndex = path.indexOf('.');
@@ -524,7 +536,7 @@ function transactional(action, options) {
 			if (typeof idOrQuery === 'object' && idOrQuery) {
 				// it is a query
 				query = idOrQuery;
-				if (typeof (id = idOrQuery.url) === 'string') {
+				if (typeof (id = idOrQuery.target) === 'string') {
 					if (this.directURLMapping) {
 						id = id.slice(1); // remove the leading slash
 						query.id = id;
@@ -532,10 +544,7 @@ function transactional(action, options) {
 						// handle queries in local URLs like /path/?name=value
 						const searchIndex = id.indexOf('?');
 						if (searchIndex > -1) {
-							const parsedQuery = this.parseQuery(id.slice(searchIndex + 1));
-							if (query) {
-								if (parsedQuery) query = Object.assign(parsedQuery, query);
-							} else query = parsedQuery;
+							query = this.parseQuery(id.slice(searchIndex + 1), idOrQuery);
 							id = id.slice(0, searchIndex);
 							if (id === '') isCollection = true;
 						}
@@ -579,11 +588,12 @@ function transactional(action, options) {
 				}
 			} else {
 				id = idOrQuery;
-				query = new SimpleURLQuery(undefined, id);
+				query = new RequestTarget();
+				query.id = id;
 				if (id == null) isCollection = true;
 			}
 		}
-		if (isCollection) query.search = true;
+		if (isCollection) query.isCollection = true;
 		let resourceOptions;
 		if (!context) context = contextStorage.getStore();
 		if (query?.ensureLoaded != null || query?.async || isCollection) {
