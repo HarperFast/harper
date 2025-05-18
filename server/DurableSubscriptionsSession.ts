@@ -6,6 +6,7 @@ import { transaction } from '../resources/transaction.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.js';
 import { whenComponentsLoaded } from '../server/threads/threadServer.js';
 import { server } from '../server/Server.ts';
+import { RequestTarget } from '../resources/RequestTarget';
 
 const AWAITING_ACKS_HIGH_WATER_MARK = 100;
 const DurableSession = table({
@@ -392,14 +393,16 @@ function publish(message, data, context) {
 			`Can not publish to topic ${topic} as it does not exist, no resource has been defined to handle this topic`
 		);
 	message.target = entry.relativeURL;
+	const target = new RequestTarget(entry.relativeURL);
+
 	const resource = entry.Resource;
 
 	return transaction(context, () => {
 		return retain
 			? data === undefined
-				? resource.delete(message, context)
-				: resource.put(message, message.data, context)
-			: resource.publish(message, message.data, context);
+				? resource.delete(target, context)
+				: resource.put(target, message.data, context)
+			: resource.publish(target, message.data, context);
 	});
 }
 export class DurableSubscriptionsSession extends SubscriptionsSession {
