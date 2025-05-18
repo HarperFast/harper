@@ -196,7 +196,7 @@ describe('Transactions', () => {
 			await TxnTest.patch(45, { count: { __op__: 'add', value: 2 }, propertyA: 'valueA' });
 			entity = await TxnTest.get(45);
 			assert.equal(entity.count, 3);
-			assert.equal(entity.get('propertyA'), 'valueA');
+			assert.equal(entity['propertyA'], 'valueA');
 			assert.equal(published_messages.length, 1);
 			assert.equal(published_messages[0].operation, 'patch');
 			await new Promise((resolve) => {
@@ -213,8 +213,8 @@ describe('Transactions', () => {
 			entity = await TxnTest.get(45);
 			// Should have incrementation and correct property values
 			assert.equal(entity.count, 5);
-			assert.equal(entity.get('propertyA'), 'valueA');
-			assert.equal(entity.get('propertyB'), 'valueB');
+			assert.equal(entity['propertyA'], 'valueA');
+			assert.equal(entity['propertyB'], 'valueB');
 
 			await new Promise((resolve) => {
 				// send an update with a duplicate timestamp, this should be ignored
@@ -230,8 +230,8 @@ describe('Transactions', () => {
 			entity = await TxnTest.get(45);
 			// nothing should have changed
 			assert.equal(entity.count, 5);
-			assert.equal(entity.get('propertyA'), 'valueA');
-			assert.equal(entity.get('propertyB'), 'valueB');
+			assert.equal(entity['propertyA'], 'valueA');
+			assert.equal(entity['propertyB'], 'valueB');
 		});
 		it('Can update new object and addTo consecutively replication updates', async function () {
 			class WithCountOnGet extends TxnTest {

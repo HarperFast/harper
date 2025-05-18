@@ -41,7 +41,15 @@ import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { HAS_BLOBS, readAuditEntry, removeAuditEntry } from './auditStore.ts';
 import { autoCast, convertToMS } from '../utility/common_utils.js';
-import { recordUpdater, removeEntry, PENDING_LOCAL_TIME, VERSION, EXPIRES_AT, Record } from './RecordEncoder.ts';
+import {
+	recordUpdater,
+	removeEntry,
+	PENDING_LOCAL_TIME,
+	VERSION,
+	EXPIRES_AT,
+	Record,
+	type Entry,
+} from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
@@ -60,14 +68,6 @@ type Attribute = {
 	assignUpdatedTime?: boolean;
 	expiresAt?: boolean;
 	isPrimaryKey?: boolean;
-};
-type Entry = {
-	key: any;
-	value: any;
-	version: number;
-	localTime: number;
-	expiresAt: number;
-	deref?: () => any;
 };
 
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
@@ -159,8 +159,8 @@ export function makeTable(options) {
 	let prefetchCallbacks = [];
 	let untilNextPrefetch = 1;
 	let nonPrefetchSequence = 2;
-	let applyToSources = {};
-	let applyToSourcesIntermediate = {};
+	let applyToSources: any = {};
+	let applyToSourcesIntermediate: any = {};
 	let cleanupInterval = 86400000;
 	let cleanupPriority = 0;
 	let lastCleanupInterval: number;
@@ -168,9 +168,8 @@ export function makeTable(options) {
 	let propertyResolvers: any;
 	let hasRelationships = false;
 	let runningRecordExpiration: boolean;
-	const residencyListToId = new Map();
-	const residencyIdToList = new Map();
-	let idIncrementer: BigInt64Array;
+	type BigInt64ArrayAndMaxSafeId = BigInt64Array & { maxSafeId: number };
+	let idIncrementer: BigInt64ArrayAndMaxSafeId;
 	let replicateToCount;
 	const databaseReplications = envMngr.get(CONFIG_PARAMS.REPLICATION_DATABASES);
 	if (Array.isArray(databaseReplications)) {
@@ -212,10 +211,11 @@ export function makeTable(options) {
 	class TableResource extends Resource {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
-		#version: number; // version of the record
-		#entry: Entry; // the entry from the database
-		#saveMode: boolean; // indicates that the record is currently being saved
-		#loadedFromSource: boolean; // indicates that the record was loaded from the source
+		#version?: number; // version of the record
+		#entry?: Entry; // the entry from the database
+		#saveMode?: boolean; // indicates that the record is currently being saved
+		#loadedFromSource?: boolean; // indicates that the record was loaded from the source
+		declare getProperty: (name: string) => any;
 		static name = tableName; // for display/debugging purposes
 		static primaryStore = primaryStore;
 		static auditStore = auditStore;
@@ -234,7 +234,9 @@ export function makeTable(options) {
 		static updatedTimeProperty = updatedTimeProperty;
 		static propertyResolvers;
 		static userResolvers = {};
-		static sources = [];
+		static sources: (typeof TableResource)[] = [];
+		declare static sourceOptions: any;
+		declare static intermediateSource: boolean;
 		static getResidencyById: (id: Id) => number | void;
 		static get expirationMS() {
 			return expirationMs;
@@ -292,7 +294,7 @@ export function makeTable(options) {
 					} else {
 						return (context, id, data) => {
 							// if multiple intermediate sources, call them in parallel
-							const results = [];
+							const results: Promise<any>[] = [];
 							for (const source of sources) {
 								if (context?.source === source) break;
 								results.push(source[method](id, data, context));
@@ -303,7 +305,7 @@ export function makeTable(options) {
 				}
 			};
 			let canonicalSource = this.sources[this.sources.length - 1];
-			if (canonicalSource.intermediateSource) canonicalSource = {}; // don't treat intermediate sources as canonical
+			if (canonicalSource.intermediateSource) canonicalSource = {} as typeof TableResource; // don't treat intermediate sources as canonical
 			const getApplyToCanonicalSource = (method) => {
 				if (
 					canonicalSource[method] &&
@@ -483,12 +485,13 @@ export function makeTable(options) {
 								const commitResolution = transaction(event, () => {
 									if (event.type === 'transaction') {
 										// if it is a transaction, we need to individually iterate through each write event
-										const promises = [];
+										const promises: Promise<any>[] = [];
 										for (const write of event.writes) {
 											try {
 												promises.push(writeUpdate(write, event));
 											} catch (error) {
-												error.message += ' writing ' + JSON.stringify(write) + ' of event ' + JSON.stringify(event);
+												(error as Error).message +=
+													' writing ' + JSON.stringify(write) + ' of event ' + JSON.stringify(event);
 												throw error;
 											}
 										}
@@ -496,7 +499,7 @@ export function makeTable(options) {
 									} else if (event.type === 'define_schema') {
 										// ensure table has the provided attributes
 										const updatedAttributes = this.attributes.slice(0);
-										let hasChanges: boolean;
+										let hasChanges = false;
 										for (const attribute of event.attributes) {
 											if (!updatedAttributes.find((existing) => existing.name === attribute.name)) {
 												updatedAttributes.push(attribute);
@@ -673,9 +676,11 @@ export function makeTable(options) {
 				// all threads will use a shared buffer to atomically increment the id
 				// first, we create our proposed incrementer buffer that will be used if we are the first thread to get here
 				// and initialize it with the starting id
-				idIncrementer = new BigInt64Array([BigInt(lastKey) + 1n]);
+				idIncrementer = new BigInt64Array([BigInt(lastKey) + 1n]) as BigInt64ArrayAndMaxSafeId;
 				// now get the selected incrementer buffer, this is the shared buffer was first registered and that all threads will use
-				idIncrementer = new BigInt64Array(primaryStore.getUserSharedBuffer('id', idIncrementer.buffer));
+				idIncrementer = new BigInt64Array(
+					primaryStore.getUserSharedBuffer('id', idIncrementer.buffer)
+				) as BigInt64ArrayAndMaxSafeId;
 				// and we set the maximum safe id to the end of the allocated range before we check for conflicting ids again
 				idIncrementer.maxSafeId = idAllocation.end;
 			}
@@ -833,7 +838,7 @@ export function makeTable(options) {
 			scheduleCleanup();
 		}
 
-		static getResidencyRecord(id) {
+		static getResidencyRecord(id: Id) {
 			return dbisDb.get([Symbol.for('residency_by_id'), id]);
 		}
 
@@ -844,7 +849,7 @@ export function makeTable(options) {
 					try {
 						return getResidency(record, context);
 					} catch (error: unknown) {
-						error.message += ` in residency function for table ${table_name}`;
+						(error as Error).message += ` in residency function for table ${tableName}`;
 						throw error;
 					}
 				});
@@ -856,7 +861,7 @@ export function makeTable(options) {
 					try {
 						return getResidencyById(id);
 					} catch (error: unknown) {
-						error.message += ` in residency function for table ${table_name}`;
+						(error as Error).message += ` in residency function for table ${tableName}`;
 						throw error;
 					}
 				});
@@ -934,12 +939,7 @@ export function makeTable(options) {
 				// legacy table per database
 				console.log('legacy dropTable');
 				await primaryStore.close();
-				await fs.remove(dataPath);
-				await fs.remove(
-					dataPath === standardPath
-						? dataPath + MDB_LOCK_FILE_SUFFIX
-						: path.join(path.dirname(dataPath), MDB_LEGACY_LOCK_FILE_NAME)
-				); // I suspect we may have problems with this on Windows
+				fs.unlinkSync(primaryStore.env.path);
 			}
 			signalling.signalSchemaChange(
 				new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, databaseName, tableName)
@@ -961,6 +961,8 @@ export function makeTable(options) {
 					database: databaseName,
 					auditSize: auditStore?.getStats().entryCount,
 					attributes,
+					recordCount: undefined,
+					estimatedRecordRange: undefined,
 				};
 				if (this.getContext()?.includeExpensiveRecordCountEstimates) {
 					return TableResource.getRecordCount().then((recordCount) => {
@@ -1688,7 +1690,7 @@ export function makeTable(options) {
 			return true;
 		}
 
-		search(request: Query): AsyncIterable<any> {
+		search(request: RequestTarget): AsyncIterable<any> {
 			const context = this.getContext();
 			const txn = txnForContext(context);
 			if (!request) throw new Error('No query provided');
@@ -2834,6 +2836,8 @@ export function makeTable(options) {
 			propertyResolvers = this.propertyResolvers = {
 				$id: (object, context, entry) => ({ value: entry.key }),
 				$updatedtime: (object, context, entry) => entry.version,
+				$updatedTime: (object, context, entry) => entry.version,
+				$expiresAt: (object, context, entry) => entry.expiresAt,
 				$record: (object, context, entry) => (entry ? { value: object } : object),
 			};
 			for (const attribute of this.attributes) {
@@ -2953,7 +2957,6 @@ export function makeTable(options) {
 			}
 			assignTrackedAccessors(this, this);
 			assignTrackedAccessors(Updatable, this, true);
-			primaryStore.encoder.structPrototype.getUpdatedTime = function () {};
 			for (const attribute of attributes) {
 				const name = attribute.name;
 				if (attribute.resolve) {
@@ -3279,8 +3282,8 @@ export function makeTable(options) {
 		const permission = user.role.permission;
 		if (permission.super_user) return FULL_PERMISSIONS;
 		const dbPermission = permission[databaseName];
-		let table,
-			tables = dbPermission?.tables;
+		let table: any;
+		const tables = dbPermission?.tables;
 		if (tables) {
 			return tables[tableName];
 		} else if (databaseName === 'data' && (table = permission[tableName]) && !table.tables) {
@@ -3466,7 +3469,7 @@ export function makeTable(options) {
 	/**
 	 * This is used to record that a retrieve a record from source
 	 */
-	async function getFromSource(id, existingEntry, context) {
+	async function getFromSource(id: Id, existingEntry: Entry, context: Context): Promise<Entry> {
 		const metadataFlags = existingEntry?.metadataFlags;
 
 		const existingVersion = existingEntry?.version;
@@ -3513,6 +3516,9 @@ export function makeTable(options) {
 			// use the same resource cache as a parent context so that if modifications are made to resources,
 			// they are visible in the parent requesting context
 			resourceCache: context?.resourceCache,
+			transaction: undefined,
+			expiresAt: undefined,
+			lastModified: undefined,
 		};
 		const responseHeaders = context?.responseHeaders;
 		return new Promise((resolve, reject) => {
