@@ -839,11 +839,10 @@ const VALUE_PARSER = /([^&|=[\]{}]+)([[\]{}]|[&|=]*)/g;
 let lastIndex;
 let queryString;
 /**
- * This is responsible for taking a query string (from a get()) and converting it to a standard query object
- * structure
+ * This is responsible for taking a query string (from a get()) and merging the parsed elements into a RequestTarget object.
  * @param queryString
  */
-export function parseQuery(queryToParse, query: RequestTarget) {
+export function parseQuery(queryToParse: string, query: RequestTarget) {
 	if (!queryToParse) return;
 	queryString = queryToParse;
 	// TODO: We can remove this if we are sure all exits points end with lastIndex as zero (reaching the end of parsing will do that)
@@ -860,7 +859,7 @@ export function parseQuery(queryToParse, query: RequestTarget) {
 			throw error;
 		}
 	} else {
-		return query ?? new RequestTarget(queryToParse);
+		return query ?? new URLSearchParams(queryToParse);
 	}
 }
 function parseBlock(query, expectedEnd) {
