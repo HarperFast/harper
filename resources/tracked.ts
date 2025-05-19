@@ -252,8 +252,6 @@ export function assignTrackedAccessors(Target, typeDef, useFullPropertyProxy = f
 			configurable: true,
 		});
 	}
-	Object.defineProperty(prototype, VERSION, { writable: true }); // define the property so it doesn't forward to the proxy
-	Object.defineProperty(prototype, EXPIRES_AT, { writable: true }); // define the property so it doesn't forward to the proxy
 	// walk the prototype chain and set the prototype of the last object to the proxy that forwards to get
 	let lastPrototype = prototype;
 	do {
