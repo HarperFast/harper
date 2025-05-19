@@ -3319,6 +3319,8 @@ export function makeTable(options) {
 					)
 						needsSourceData = true;
 					// else needsSourceData is left falsy
+					// TODO: Allow getEntryByVariation to find a sub-variation of this record and determine if
+					// it still needs to be loaded from source
 				} else needsSourceData = true;
 				recordActionBinary(!needsSourceData, 'cache-hit', tableName);
 			}

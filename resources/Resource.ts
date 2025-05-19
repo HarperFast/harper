@@ -530,7 +530,8 @@ function transactional(action, options) {
 			if (typeof idOrQuery === 'object' && idOrQuery) {
 				// it is a query
 				query = idOrQuery;
-				if (typeof (id = idOrQuery.target) === 'string') {
+				id = idOrQuery.target ?? idOrQuery.url; // get the request target (check .url for back-compat), and try to parse
+				if (typeof id === 'string') {
 					if (this.directURLMapping) {
 						id = id.slice(1); // remove the leading slash
 						query.id = id;
