@@ -66,11 +66,7 @@ async function installAllRootModules(ignoreScripts = false, workingDir = env.get
 		}
 	}
 
-	await runCommand(
-		ignoreScripts ? 'npm install --force --ignore-scripts --no-bin-links' : 'npm install --force --no-bin-links',
-		workingDir,
-		envVars
-	);
+	await runCommand(ignoreScripts ? 'npm install --force --ignore-scripts' : 'npm install --force', workingDir, envVars);
 }
 
 /**

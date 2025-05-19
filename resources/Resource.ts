@@ -336,7 +336,7 @@ export class Resource implements ResourceInterface {
 		return new IterableEventQueue();
 	}
 
-	connect(query?: {}): AsyncIterable<any> {
+	connect(incomingMessages: IterableEventQueue, query?: {}): AsyncIterable<any> {
 		// convert subscription to an (async) iterator
 		if (query?.subscribe !== false) {
 			// subscribing is the default action, but can be turned off

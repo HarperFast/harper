@@ -3,6 +3,7 @@ import { transaction } from './transaction.ts';
 import { ErrorResource } from './ErrorResource.ts';
 import logger from '../utility/logging/harper_logger.js';
 import { ServerError } from '../utility/errors/hdbError.js';
+import { server } from '../server/Server.ts';
 
 interface ResourceEntry {
 	Resource: typeof Resource;
@@ -18,7 +19,7 @@ interface ResourceEntry {
 export class Resources extends Map<string, ResourceEntry> {
 	isWorker = true;
 	loginPath?: (request) => string;
-	set(path, resource, exportTypes?: string[], force?: boolean): void {
+	set(path, resource, exportTypes?: { [key: string]: boolean }, force?: boolean): void {
 		if (!resource) throw new Error('Must provide a resource');
 		if (path.startsWith('/')) path = path.replace(/^\/+/, '');
 		const entry = {
@@ -143,7 +144,9 @@ export class Resources extends Map<string, ResourceEntry> {
 }
 export let resources: Resources;
 export function resetResources() {
-	return (resources = new Resources());
+	resources = new Resources();
+	server.resources = resources;
+	return resources;
 }
 
 export function keyArrayToString(key) {
