@@ -1236,12 +1236,12 @@ export function makeTable(options) {
 							partialRecord[name] = this.getProperty(name);
 						}
 					}
-					logger.trace?.(`Invalidating entry id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
+					logger.trace?.(`Invalidating entry in ${tableName} id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
 
 					updateRecord(
 						id,
 						partialRecord,
-						this.#entry,
+						existingEntry,
 						txnTime,
 						INVALIDATED,
 						audit,
@@ -1285,7 +1285,7 @@ export function makeTable(options) {
 					updateRecord(
 						id,
 						newRecord,
-						this.#entry,
+						existingEntry,
 						txnTime,
 						metadata,
 						audit,
@@ -1415,7 +1415,7 @@ export function makeTable(options) {
 			const transaction = txnForContext(context);
 
 			checkValidId(id);
-			const entry = this.#entry;
+			const entry = this.#entry ?? primaryStore.getEntry(id);
 			this.#saveMode = fullUpdate ? SAVING_FULL_UPDATE : SAVING_CRDT_UPDATE; // mark that this resource is being saved so doesExist return true
 			const write = {
 				key: id,
@@ -1639,8 +1639,9 @@ export function makeTable(options) {
 
 		async delete(target: RequestTarget): Promise<boolean> {
 			if (isSearchTarget(target)) {
+				target.select = ['$id']; // just get the primary key of each record so we can delete them
 				for await (const entry of this.search(target)) {
-					this._writeDelete(entry.key);
+					this._writeDelete(entry.$id);
 				}
 				return true;
 			}
@@ -1674,7 +1675,7 @@ export function makeTable(options) {
 						updateRecord(
 							id,
 							null,
-							this.#entry,
+							existingEntry,
 							txnTime,
 							0,
 							audit,
