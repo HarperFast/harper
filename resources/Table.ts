@@ -42,7 +42,7 @@ import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { HAS_BLOBS, readAuditEntry, removeAuditEntry } from './auditStore.ts';
 import { autoCast, convertToMS } from '../utility/common_utils.js';
-import { recordUpdater, removeEntry, PENDING_LOCAL_TIME, Record, type Entry } from './RecordEncoder.ts';
+import { recordUpdater, removeEntry, PENDING_LOCAL_TIME, Record, type Entry, entryMap } from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
@@ -185,10 +185,10 @@ export function makeTable(options) {
 		declare set: (property: string, value: any) => void;
 		declare getProperty: (property: string) => any;
 		getUpdatedTime(): number {
-			return this[VERSION];
+			return entryMap.get(this.getRecord())?.version;
 		}
 		getExpiresAt(): number {
-			return this[EXPIRES_AT];
+			return entryMap.get(this.getRecord())?.expiresAt;
 		}
 		addTo(property: string, value: number | bigint) {
 			if (typeof value === 'number' || typeof value === 'bigint') {
@@ -1152,10 +1152,6 @@ export function makeTable(options) {
 					if (!directInstance) {
 						return when(this.get(target), (record) => {
 							updatable = new Updatable(record);
-							if (record) {
-								updatable[VERSION] = record[VERSION];
-								if (record[EXPIRES_AT]) updatable[EXPIRES_AT] = record[EXPIRES_AT];
-							}
 							updatable._setChanges(updates);
 							this._writeUpdate(id, updatable.getChanges(), false);
 							return updatable;

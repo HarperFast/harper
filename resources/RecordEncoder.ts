@@ -53,7 +53,7 @@ export const HAS_STRUCTURE_UPDATE = 0x100;
 // For now we use this as the private property mechanism for mapping records to entries.
 // WeakMaps are definitely not the fastest form of private properties, but they are the only
 // way to do this with how the objects are frozen for now.
-const entryMap = new WeakMap<any, Entry>();
+export const entryMap = new WeakMap<any, Entry>();
 let lastEncoding,
 	lastValueEncoding,
 	timestampNextEncoding = 0,
