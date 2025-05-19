@@ -79,23 +79,17 @@ export class Resource implements ResourceInterface {
 	 */
 	static put = transactional(
 		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
-			if (Array.isArray(data) && resource.#isCollection) {
+			if (Array.isArray(data) && resource.#isCollection && resource.constructor.loadAsInstance !== false) {
 				const results = [];
 				const authorize = request.authorize;
 				for (const element of data) {
 					const resourceClass = resource.constructor;
 					const id = element[resourceClass.primaryKey];
-					if (resource.constructor.loadAsInstance === false) {
-						const elementQuery = new RequestTarget();
-						elementQuery.id = id;
-						results.push(resource.put(elementQuery, element));
-					} else {
-						const elementResource = resourceClass.getResource(id, request, {
-							async: true,
-						});
-						if (elementResource.then) results.push(elementResource.then((resource) => resource.put(element, request)));
-						else results.push(elementResource.put(element, request));
-					}
+					const elementResource = resourceClass.getResource(id, request, {
+						async: true,
+					});
+					if (elementResource.then) results.push(elementResource.then((resource) => resource.put(element, request)));
+					else results.push(elementResource.put(element, request));
 				}
 				return Promise.all(results);
 			}
@@ -576,7 +570,8 @@ function transactional(action, options) {
 						if (query.slice) {
 							query = query.slice(id.length, query.length);
 							if (query.length === 0) {
-								query = null;
+								query = new RequestTarget();
+								query.id = id;
 								isCollection = false;
 							}
 						}

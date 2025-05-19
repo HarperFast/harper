@@ -8,7 +8,7 @@ import { CONFIG_PARAMS, OPERATIONS_ENUM, SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME 
 import { SKIP, type Database } from 'lmdb';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.js';
 import lodash from 'lodash';
-import {
+import type {
 	ResourceInterface,
 	SubscriptionRequest,
 	Id,
@@ -16,6 +16,7 @@ import {
 	Condition,
 	Sort,
 	SubSelect,
+	RequestTargetOrId,
 } from './ResourceInterface.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
 import { Resource, contextStorage } from './Resource.ts';
@@ -1212,8 +1213,8 @@ export function makeTable(options) {
 			this.#record = record;
 		}
 
-		invalidate(id: Id) {
-			this._writeInvalidate(id ?? this.getId());
+		invalidate(target: RequestTargetOrId) {
+			this._writeInvalidate(target ? requestTargetToId(target) : this.getId());
 		}
 		_writeInvalidate(id: Id, partialRecord?: any, options?: any) {
 			const context = this.getContext();
@@ -1394,9 +1395,22 @@ export function makeTable(options) {
 		 * @param options
 		 */
 		put(target: RequestTarget, record: any): void {
-			if (record === undefined || record instanceof URLSearchParams) this.update(target, true);
-			else {
-				const result = this.update(target, record, true);
+			if (record === undefined || record instanceof URLSearchParams) {
+				// legacy, shift the arguments
+				this.update(target, true);
+			} else {
+				let result;
+				if (Array.isArray(record)) {
+					const results = [];
+					for (const element of record) {
+						const id = element[primaryKey];
+						result = this.update(id, element, true);
+						results.push(result);
+					}
+					result = Promise.all(results);
+				} else {
+					result = this.update(target, record, true);
+				}
 				if (result?.then) return result.then(() => undefined); // wait for the update, but return undefined
 			}
 		}
@@ -3153,8 +3167,8 @@ export function makeTable(options) {
 		if (length > MAX_KEY_BYTES) throw new Error('Primary key size is too large: ' + id.length);
 		return true;
 	}
-	function requestTargetToId(target: RequestTarget) {
-		return typeof target === 'object' && target ? target.id : target;
+	function requestTargetToId(target: RequestTargetOrId): Id {
+		return typeof target === 'object' && target ? target.id : (target as Id);
 	}
 	function isSearchTarget(target: RequestTarget) {
 		return typeof target === 'object' && target && target.isCollection;
