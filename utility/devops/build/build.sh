@@ -67,7 +67,7 @@ npm shrinkwrap
 npm install --global pnpm
 pnpm install --lockfile-only
 
-dot-json ./npm_pack/package.json overrides --delete
+dot-json ./package.json overrides --delete
 
 cd ../
 
