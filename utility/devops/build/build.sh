@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 # only if we have a system with apt-get
 if command -v apt-get &> /dev/null; then

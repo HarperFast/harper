@@ -1,6 +1,7 @@
 import { ClientError } from '../utility/errors/hdbError.js';
 import * as crdtOperations from './crdt.ts';
 import { Blob } from './blob.ts';
+
 // perhaps we want these in the global registry, not sure:
 const recordClassCache = {}; // we cache the WritableRecord classes because they are pretty expensive to create
 
