@@ -120,6 +120,7 @@ describe('Transactions', () => {
 				counter.addTo('count', 1);
 				counter.addTo('countInt', 1);
 				counter.addTo('countBigInt', 1n);
+				assert(counter.getUpdatedTime() > 1);
 			});
 			let entity = await TxnTest.get(45);
 			assert.equal(entity.count, 2);
