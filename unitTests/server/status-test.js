@@ -2,7 +2,6 @@
 
 const assert = require('node:assert');
 const status = require('../../server/status');
-const { Resource } = require('../../resources/Resource');
 
 describe('server.status', function () {
 	const clearStatus = async () => Promise.all(['primary', 'test', 'maintenance'].map((id) => status.clear({ id })));
