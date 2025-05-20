@@ -49,6 +49,22 @@ export async function startOnMainThread(options) {
 	// we need to wait for the threads to start before we can start adding nodes
 	// but don't await this because this start function has to finish before the threads can start
 	whenThreadsStarted.then(async () => {
+		const thisName = getThisNodeName();
+		// If it doesn't exist and or needs to be updated.
+		const existing = getHDBNodeTable().primaryStore.get(thisName);
+		if (existing !== null) {
+			// if this was null it has previously been deleted, and we don't want to recreate nodes for deleted nodes
+			const url = options.url ?? getThisNodeUrl();
+			if (existing === undefined || existing.url !== url || existing.shard !== options.shard) {
+				await ensureNode(thisName, {
+					name: thisName,
+					url,
+					shard: options.shard,
+					replicates: true,
+				});
+			}
+		}
+
 		const nodes = [];
 		// if we are getting notified of system table updates, hdbNodes could be absent
 		for await (const node of databases.system.hdb_nodes?.search([]) || []) {
@@ -57,23 +73,6 @@ export async function startOnMainThread(options) {
 		for (const route of iterateRoutes(options)) {
 			try {
 				const replicateAll = !route.subscriptions;
-				if (replicateAll) {
-					const thisName = getThisNodeName();
-					// If it doesn't exist and or needs to be updated.
-					const existing = getHDBNodeTable().primaryStore.get(thisName);
-					if (existing !== null) {
-						// if this was null it has previously been deleted, and we don't want to recreate nodes for deleted nodes
-						const url = options.url ?? getThisNodeUrl();
-						if (existing === undefined || existing.url !== url || existing.shard !== options.shard) {
-							await ensureNode(thisName, {
-								name: thisName,
-								url,
-								shard: options.shard,
-								replicates: true,
-							});
-						}
-					}
-				}
 				const replicateSystem = route.trusted !== false;
 				if (replicateAll) {
 					if (route.replicates == undefined) route.replicates = true;
@@ -162,16 +161,13 @@ export async function startOnMainThread(options) {
 			dbReplicationWorkers = new Map();
 			connectionReplicationMap.set(node.url, dbReplicationWorkers);
 		}
-		dbReplicationWorkers.iterator = forEachReplicatedDatabase(
-			options,
-			(database, databaseName, replicateByDefault) => {
-				if (replicateByDefault) {
-					onDatabase(databaseName, true);
-				} else {
-					onDatabase(databaseName, false);
-				}
+		dbReplicationWorkers.iterator = forEachReplicatedDatabase(options, (database, databaseName, replicateByDefault) => {
+			if (replicateByDefault) {
+				onDatabase(databaseName, true);
+			} else {
+				onDatabase(databaseName, false);
 			}
-		);
+		});
 		// check to see if there are any explicit subscriptions to databases that don't exist yet
 		if (node.subscriptions) {
 			// if we can't find any more granular subscriptions, then we skip this database
