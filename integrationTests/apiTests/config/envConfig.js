@@ -55,7 +55,9 @@ export let testData = {
 	'my_operation_token': '',
 	'rootPath': '',
 	'restartTimeout': 45000,
+	'restartHttpWorkersTimeout': 15000,
 	'jobErrorMessage': '',
+	'blobsPath' : '/blobs/blob/0/0/',
 };
 
 export const envUrl = `${testData.host}:${testData.port}`;

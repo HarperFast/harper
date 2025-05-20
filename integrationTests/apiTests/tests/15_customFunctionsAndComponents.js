@@ -7,6 +7,7 @@ describe('15. Custom Functions & components', () => {
 	//Custom Functions & components Folder
 
 	it('deploy_component github package', async () => {
+		await setTimeout(3000);
 		await req()
 			.send({
 				operation: 'deploy_component',

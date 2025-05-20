@@ -98,7 +98,7 @@ jobs:
           do 
             echo "Starting work on: $public_dns_name"
             ssh -i private_key -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@"$public_dns_name" \
-                  "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests-node-api-tests.sh && /home/ubuntu/harperdb/test/ci-tests/ci-tests-node-api-tests.sh ${S3_KEY} ${S3_SECRET}"
+                  "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests-node-api-tests.sh && /home/ubuntu/harperdb/test/ci-tests/ci-tests-node-api-tests.sh ${S3_KEY} ${S3_SECRET} true"
             echo "Ending work on: $public_dns_name"
           done
         shell: bash

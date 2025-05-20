@@ -6,6 +6,8 @@ on:
       - main
       - 'release_*'
       - CORE-2498
+      - CORE-2733
+      - CORE-2733-1
   pull_request:
    types: [opened, synchronize, reopened]
   # paths:
@@ -87,7 +89,7 @@ jobs:
           docker cp test/data/integrationTestsCsvs/ $containerId:/home/harperdb/
           cd ./integrationTests/apiTests
           npm install
-          FILES_LOCATION=/home/harperdb/integrationTestsCsvs/ S3_KEY=${S3_KEY} S3_SECRET=${S3_SECRET} node --test-reporter spec --test-reporter-destination report.txt --test-reporter spec --test-reporter-destination stdout --experimental-default-type="module" --stack-trace-limit=2 tests/testSuite.js
+          DOCKER_CONTAINER_ID=$containerId FILES_LOCATION=/home/harperdb/integrationTestsCsvs/ S3_KEY=${S3_KEY} S3_SECRET=${S3_SECRET} node --test-reporter spec --test-reporter-destination report.txt --test-reporter spec --test-reporter-destination stdout --experimental-default-type="module" tests/testSuite.js
 
       - name: Create artifact
         if: always()
