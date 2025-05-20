@@ -618,7 +618,7 @@ export function replicateOverWS(ws, options, authorization) {
 							// receiving side can properly decode it. We only need to send this once until it changes again, so we can check if the structure
 							// has changed. It will only grow, so we can just check the length.
 							const structuresBinary = table.primaryStore.getBinaryFast(Symbol.for('structures'));
-							const structureLength = structuresBinary.length;
+							const structureLength = structuresBinary?.length ?? 0;
 							if (structureLength !== lastStructureLength) {
 								lastStructureLength = structureLength;
 								const structure = decode(structuresBinary);
