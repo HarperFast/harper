@@ -386,8 +386,7 @@ export function makeTable(options) {
 					const subscribeOnThisThread = source.subscribeOnThisThread
 						? source.subscribeOnThisThread(getWorkerIndex(), subscriptionOptions)
 						: getWorkerIndex() === 0;
-					const subscription =
-						hasSubscribe && subscribeOnThisThread && (await source.subscribe?.(subscriptionOptions));
+					const subscription = hasSubscribe && subscribeOnThisThread && (await source.subscribe?.(subscriptionOptions));
 					if (subscription) {
 						let txnInProgress;
 						// we listen for events by iterating through the async iterator provided by the subscription
@@ -972,8 +971,7 @@ export function makeTable(options) {
 					// Note that if we do not have a select, we do not return any relationships by default.
 					if (!query) query = {};
 					if (select) {
-						const attrsForType =
-							attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
+						const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
 						query.select = select
 							.map((property) => {
 								const propertyName = property.name || property;
@@ -1353,8 +1351,7 @@ export function makeTable(options) {
 							if (fullUpdate) {
 								if (primaryKey && recordUpdate[primaryKey] !== id) recordUpdate[primaryKey] = id;
 								if (createdTimeProperty) {
-									if (entry?.value)
-										recordUpdate[createdTimeProperty.name] = entry?.value[createdTimeProperty.name];
+									if (entry?.value) recordUpdate[createdTimeProperty.name] = entry?.value[createdTimeProperty.name];
 									else
 										recordUpdate[createdTimeProperty.name] =
 											createdTimeProperty.type === 'Date'
@@ -1514,9 +1511,7 @@ export function makeTable(options) {
 						`Saving record with id: ${id}, timestamp: ${new Date(txnTime).toISOString()}${
 							expiresAt ? ', expires at: ' + new Date(expiresAt).toISOString() : ''
 						}${
-							existingEntry
-								? ', replaces entry from: ' + new Date(existingEntry.version).toISOString()
-								: ', new entry'
+							existingEntry ? ', replaces entry from: ' + new Date(existingEntry.version).toISOString() : ', new entry'
 						}`,
 						(() => {
 							try {
@@ -2020,19 +2015,6 @@ export function makeTable(options) {
 		 * @returns
 		 */
 		static transformEntryForSelect(select, context, readTxn, filtered, ensure_loaded?, canSkip?) {
-			if (
-				select &&
-				(select === primaryKey || (select?.length === 1 && select[0] === primaryKey && Array.isArray(select)))
-			) {
-				// fast path if only the primary key is selected, so we don't have to load records
-				const transform = (entry) => {
-					if (context?.transaction?.stale) context.transaction.stale = false;
-					return entry?.key ?? entry;
-				};
-				if (select === primaryKey) return transform;
-				else if (select.asArray) return (entry) => [transform(entry)];
-				else return (entry) => ({ [primaryKey]: transform(entry) });
-			}
 			let checkLoaded;
 			if (
 				ensure_loaded &&
@@ -3439,8 +3421,7 @@ export function makeTable(options) {
 						if (expirationMs && sourceContext.expiresAt == undefined)
 							sourceContext.expiresAt = Date.now() + expirationMs;
 						if (updatedRecord) {
-							if (typeof updatedRecord !== 'object')
-								throw new Error('Only objects can be cached and stored in tables');
+							if (typeof updatedRecord !== 'object') throw new Error('Only objects can be cached and stored in tables');
 							if (updatedRecord.status > 0 && updatedRecord.headers) {
 								// if the source has a status code and headers, treat it as a response
 								if (updatedRecord.status >= 300) {
@@ -3717,13 +3698,9 @@ export function makeTable(options) {
 		}
 	}
 	function addDeleteRemoval() {
-		deleteCallbackHandle = auditStore?.addDeleteRemovalCallback(
-			tableId,
-			primaryStore,
-			(id: Id, version: number) => {
-				primaryStore.remove(id, version);
-			}
-		);
+		deleteCallbackHandle = auditStore?.addDeleteRemovalCallback(tableId, primaryStore, (id: Id, version: number) => {
+			primaryStore.remove(id, version);
+		});
 	}
 	function runRecordExpirationEviction() {
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now

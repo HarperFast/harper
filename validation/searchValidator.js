@@ -159,7 +159,7 @@ module.exports = function (searchObject, type) {
 			// return error with proper message - replace last comma with and
 			let errorMsg = unknownAttributes.join(', ');
 			errorMsg = errorMsg.replace(/,([^,]*)$/, ' and$1');
-			return new Error(`unknown attribute '${error_msg}'`);
+			return new Error(`unknown attribute '${errorMsg}'`);
 		}
 	}
 
