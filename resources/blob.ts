@@ -604,7 +604,10 @@ export function getRootBlobPathsForDB(store: LMDBStore) {
 	}
 	let paths: string[] = databasePaths.get(store);
 	if (!paths) {
-		if (!store.databaseName) throw new Error('No database name specified, can not determine blob storage path');
+		if (!store.databaseName) {
+			logger.warn?.('No database name specified, can not determine blob storage path');
+			return [];
+		}
 		const blobPaths: string[] = envGet(CONFIG_PARAMS.STORAGE_BLOBPATHS);
 		if (blobPaths) {
 			paths = blobPaths.map((path) => join(path, store.databaseName));
