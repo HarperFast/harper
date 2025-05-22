@@ -8,4 +8,4 @@ cd /home/ubuntu/harperdb/integrationTests/apiTests
 
 npm install
 
-S3_KEY=$1 S3_SECRET=$2 node --test-reporter spec --test-reporter-destination report.txt --test-reporter spec --test-reporter-destination stdout --experimental-default-type="module" --stack-trace-limit=2 tests/testSuite.js
+S3_KEY=$1 S3_SECRET=$2 node --test-reporter spec --test-reporter-destination report.txt --test-reporter spec --test-reporter-destination stdout --experimental-default-type="module" tests/testSuite.js

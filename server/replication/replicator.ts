@@ -33,6 +33,7 @@ import * as tls from 'node:tls';
 import { ServerError } from '../../utility/errors/hdbError.js';
 import { isMainThread } from 'worker_threads';
 import { Database } from 'lmdb';
+import { getHostnamesFromCertificate } from '../../security/keys.js';
 
 let replicationDisabled;
 let nextId = 1; // for request ids
@@ -88,9 +89,13 @@ export function start(options) {
 			}
 			const hdbNodesStore = getHDBNodeTable().primaryStore;
 			// attempt to authorize by certificate common name, this is the most common means of auth
-			if (request.authorized && request.peerCertificate.subject) {
-				const subject = request.peerCertificate.subject;
-				const node = subject && (hdbNodesStore.get(subject.CN) || routeByHostname.get(subject.CN));
+			if (request.authorized && request.peerCertificate.subjectaltname) {
+				const hostnames = getHostnamesFromCertificate(request.peerCertificate);
+				let node: any;
+				for (const hostname of hostnames) {
+					node = hostname && (hdbNodesStore.get(hostname) || routeByHostname.get(hostname));
+					if (node) break;
+				}
 				if (node) {
 					if (node?.revoked_certificates?.includes(request.peerCertificate.serialNumber)) {
 						logger.warn(

@@ -4,7 +4,7 @@ const assert = require('node:assert');
 const status = require('../../server/status');
 
 describe('server.status', function () {
-	const clearStatus = async () => Promise.all(['primary', 'test', 'maintenance'].map((id) => status.clear({ id })));
+	const clearStatus = async () => Promise.all(['primary', 'test', 'maintenance', 'availability'].map((id) => status.clear({ id })));
 	beforeEach(() => clearStatus());
 	after(() => clearStatus());
 
@@ -120,7 +120,28 @@ describe('server.status', function () {
 		];
 		await assert.rejects(async () => Promise.all(statusObjs.map((sO) => status.set(sO))), {
 			name: 'Error',
-			message: "'id' must be one of [primary, maintenance]",
+			message: "'id' must be one of [primary, maintenance, availability]",
+		});
+	});
+
+	it('should validate availability status values', async function () {
+		// Valid availability value
+		const validStatus = {
+			id: 'availability',
+			status: 'Available',
+		};
+		await status.set(validStatus);
+		const result = await status.get({ id: 'availability' });
+		assert.strictEqual(result.status, 'Available');
+		
+		// Invalid availability value
+		const invalidStatus = {
+			id: 'availability',
+			status: 'Partially Available',
+		};
+		await assert.rejects(async () => status.set(invalidStatus), {
+			name: 'Error',
+			message: 'Status "availability" only accepts these values: Available, Unavailable'
 		});
 	});
 });

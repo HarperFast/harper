@@ -604,7 +604,10 @@ export function getRootBlobPathsForDB(store: LMDBStore) {
 	}
 	let paths: string[] = databasePaths.get(store);
 	if (!paths) {
-		if (!store.databaseName) throw new Error('No database name specified, can not determine blob storage path');
+		if (!store.databaseName) {
+			logger.warn?.('No database name specified, can not determine blob storage path');
+			return [];
+		}
 		const blobPaths: string[] = envGet(CONFIG_PARAMS.STORAGE_BLOBPATHS);
 		if (blobPaths) {
 			paths = blobPaths.map((path) => join(path, store.databaseName));
@@ -616,7 +619,7 @@ export function getRootBlobPathsForDB(store: LMDBStore) {
 	return paths;
 }
 export async function deleteRootBlobPathsForDB(store: LMDBStore): Promise<any[]> {
-	const paths = databasePaths.get(store);
+	const paths = getRootBlobPathsForDB(store);
 	if (paths) {
 		await Promise.all(paths.map((path) => rimrafSteadily(path)));
 	}
@@ -627,6 +630,7 @@ export async function deleteRootBlobPathsForDB(store: LMDBStore): Promise<any[]>
  * @param path
  */
 async function rimrafSteadily(path: string) {
+	if (!existsSync(path)) return;
 	for (const entry of await readdir(path, { withFileTypes: true })) {
 		if (entry.isDirectory()) {
 			await rimrafSteadily(join(path, entry.name));
