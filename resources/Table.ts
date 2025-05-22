@@ -975,6 +975,7 @@ export function makeTable(options) {
 				}
 				const ensureLoaded = true;
 				const id = requestTargetToId(target);
+				checkValidId(id);
 				return loadLocalRecord(id, context, { transaction: readTxn, ensureLoaded }, false, (entry) => {
 					if (context.onlyIfCached && context.noCacheStore) {
 						// don't go into the loading from source condition, but HTTP spec says to
@@ -1114,13 +1115,14 @@ export function makeTable(options) {
 		 * @param updates This can be a record to update the current resource with.
 		 * @param fullUpdate The provided data in updates is the full intended record; any properties in the existing record that are not in the updates, should be removed
 		 */
-		update(target: RequestTarget, updates?: any, fullUpdate?: boolean) {
+		update(target: RequestTarget, updates?: any) {
 			let id: Id;
 			// determine if it is a legacy call
 			const directInstance =
 				typeof updates === 'boolean' ||
 				(updates === undefined &&
 					(target == undefined || (typeof target === 'object' && !(target instanceof URLSearchParams))));
+			let fullUpdate: boolean = false;
 			if (directInstance) {
 				// legacy, shift the arguments
 				fullUpdate = updates;
@@ -1137,34 +1139,31 @@ export function makeTable(options) {
 				// TODO: Remove from transaction
 				return this;
 			}
-			let ownData, updatable;
 			if (typeof updates === 'object' && updates) {
 				if (fullUpdate) {
-					if (!directInstance) {
-						updatable = new Updatable({});
-						updatable._setChanges(updates);
-					} else {
-						if (Object.isFrozen(updates)) updates = { ...updates };
-						this.#record = {}; // clear out the existing record
-						this.#changes = updates;
-					}
+					// legacy full update where we need to update the entire record, but the instance needs to continue
+					// track any further changes
+					if (Object.isFrozen(updates)) updates = { ...updates };
+					this.#record = {}; // clear out the existing record
+					this.#changes = updates;
+				} else if (directInstance) {
+					// incremental update with legacy arguments
+					const ownData = this.#changes;
+					if (ownData) updates = Object.assign(ownData, updates);
+					this.#changes = updates;
 				} else {
-					if (!directInstance) {
-						return when(this.get(target), (record) => {
-							updatable = new Updatable(record);
-							updatable._setChanges(updates);
-							this._writeUpdate(id, updatable.getChanges(), false);
-							return updatable;
-						});
-					} else {
-						ownData = this.#changes;
-						if (ownData) updates = Object.assign(ownData, updates);
-						this.#changes = updates;
-					}
+					// standard path, where we retrieve the references record and return an Updatable, initialized with any
+					// updates that were passed into this method
+					return when(this.get(target), (record) => {
+						const updatable = new Updatable(record);
+						updatable._setChanges(updates);
+						this._writeUpdate(id, updatable.getChanges(), false);
+						return updatable;
+					});
 				}
 			}
-			this._writeUpdate(id, updatable ? updatable.getChanges() : this.#changes, fullUpdate);
-			return updatable ?? this;
+			this._writeUpdate(id, this.#changes, fullUpdate);
+			return this;
 		}
 
 		addTo(property, value) {
@@ -1384,23 +1383,21 @@ export function makeTable(options) {
 		 */
 		put(target: RequestTarget, record: any): void {
 			if (record === undefined || record instanceof URLSearchParams) {
-				// legacy, shift the arguments
+				// legacy argument position, shift the arguments and go through the update method for back-compat
 				this.update(target, true);
 			} else {
-				let result;
+				// standard path, handle arrays as multiple updates, and otherwise do a direct update
 				if (Array.isArray(record)) {
-					const results = [];
 					for (const element of record) {
 						const id = element[primaryKey];
-						result = this.update(id, element, true);
-						results.push(result);
+						this._writeUpdate(id, element, true);
 					}
-					result = Promise.all(results);
 				} else {
-					result = this.update(target, record, true);
+					const id = requestTargetToId(target);
+					this._writeUpdate(id, record, true);
 				}
-				if (result?.then) return result.then(() => undefined); // wait for the update, but return undefined
 			}
+			// always return undefined
 		}
 		patch(target: RequestTarget, recordUpdate: any): void {
 			if (recordUpdate === undefined || recordUpdate instanceof URLSearchParams) this.update(target, false);

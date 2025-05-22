@@ -589,13 +589,17 @@ function transactional(action, options) {
 				if (id == null) isCollection = true;
 			}
 		}
+		if (!query) {
+			query = new RequestTarget();
+			query.id = id;
+		}
 		if (isCollection) query.isCollection = true;
 		let resourceOptions;
-		if (!context) context = contextStorage.getStore();
-		if (query?.ensureLoaded != null || query?.async || isCollection) {
+		if (!context) context = contextStorage.getStore(); // try to get the context from the async context if possible
+		if (query.ensureLoaded != null || query.async || isCollection) {
 			resourceOptions = { ...options };
-			if (query?.ensureLoaded != null) resourceOptions.ensureLoaded = query.ensureLoaded;
-			if (query?.async) resourceOptions.async = query.async;
+			if (query.ensureLoaded != null) resourceOptions.ensureLoaded = query.ensureLoaded;
+			if (query.async) resourceOptions.async = query.async;
 			if (isCollection) resourceOptions.isCollection = true;
 		} else resourceOptions = options;
 		let runAction = authorizeActionOnResource;
