@@ -118,8 +118,7 @@ describe('CRUD operations with the Resource API', () => {
 		registerTests();
 	});
 	function registerTests() {
-		// This test should be working. My local reproduction works fine with the code changes. I'm sure this has to do with how I created the tables and records in the `before()` maybe?
-		it('put operations', async function () {
+		it('puts', async function () {
 			await CRUDTable.put({
 				id: 'one',
 				name: 'One',
@@ -138,7 +137,15 @@ describe('CRUD operations with the Resource API', () => {
 			});
 			assert.equal((await CRUDTable.get('two')).name, 'Two');
 		});
-		it('delete operations', async function () {
+		it('update', async function () {
+			const context = {};
+			await transaction(context, async () => {
+				let updatable = await CRUDTable.update('one', context);
+				updatable.name = 'One updated';
+			});
+			assert.equal((await CRUDTable.get('one')).name, 'One updated');
+		});
+		it('deletes', async function () {
 			await CRUDTable.delete('one');
 			assert.equal(await CRUDTable.get('one'), undefined);
 			let target = new RequestTarget();

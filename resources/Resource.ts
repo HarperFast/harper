@@ -1,6 +1,6 @@
 import type { ResourceInterface, SubscriptionRequest, Id, Context, Query } from './ResourceInterface.ts';
 import { randomUUID } from 'crypto';
-import type { Transaction } from './DatabaseTransaction.ts';
+import { DatabaseTransaction, Transaction } from './DatabaseTransaction.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { _assignPackageExport } from '../globals.js';
 import { ClientError } from '../utility/errors/hdbError.js';
@@ -506,15 +506,20 @@ function transactional(action, options) {
 					data = idOrQuery;
 					id = data[this.primaryKey] ?? null;
 					context = dataOrContext.getContext?.() || dataOrContext;
+				} else if (dataOrContext?.transaction instanceof DatabaseTransaction) {
+					// (id, context) form
+					context = dataOrContext;
 				} else {
 					// (id, data) form
 					data = dataOrContext;
 				}
-			} else {
+			} else if (idOrQuery && typeof idOrQuery === 'object') {
 				// single argument form, just data
 				data = idOrQuery;
 				idOrQuery = undefined;
 				id = data.getId?.() ?? data[this.primaryKey];
+			} else {
+				throw new ClientError(`Invalid argument for data, must be an object, but got ${idOrQuery}`);
 			}
 			if (id === null) isCollection = true;
 			// otherwise handle methods for get, delete, etc.
