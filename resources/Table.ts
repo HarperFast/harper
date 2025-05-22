@@ -52,7 +52,7 @@ import { onStorageReclamation } from '../server/storageReclamation.ts';
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
 
-type Attribute = {
+export type Attribute = {
 	name: string;
 	type: string;
 	assignCreatedTime?: boolean;

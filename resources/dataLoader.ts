@@ -5,6 +5,7 @@ import { Databases, databases, Tables, tables } from './databases.ts';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.js';
 import { ClientError } from '../utility/errors/hdbError.js';
 import { loggerWithTag } from '../utility/logging/logger.js';
+import { Attribute } from './Table.ts';
 
 const dataLoaderLogger = loggerWithTag('dataLoader');
 
@@ -103,14 +104,14 @@ export function start({ ensureTable, tablesOverride, databasesOverride }) {
 				dataLoaderLogger.info(`Table ${tableIdentifier} not found, creating new table`);
 
 				// Extract attributes from the first record for the ensureTable call
-				const attributes: { name: string; isPrimaryKey?: boolean }[] = [];
+				const attributes: Attribute[] = [];
 				if (records.length > 0) {
 					const firstRecord = records[0];
 					Object.keys(firstRecord).map(attrName => {
-						const attr = { name: attrName };
+						const attr: Attribute = { name: attrName, type: typeof firstRecord[attrName] };
 						// If the attribute is 'id', mark it as primary key
 						if (attrName === 'id') {
-							(attr as { name: string; isPrimaryKey?: boolean }).isPrimaryKey = true;
+							attr.isPrimaryKey = true;
 						}
 						return attr;
 					}).forEach(attr => {
