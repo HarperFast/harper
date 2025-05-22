@@ -1,7 +1,7 @@
 import { stat } from 'fs/promises';
 import { basename } from 'path';
 import { parseDocument } from 'yaml';
-import { databases, tables } from './databases.ts';
+import { Databases, databases, Tables, tables } from './databases.ts';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.js';
 import { ClientError } from '../utility/errors/hdbError.js';
 import { loggerWithTag } from '../utility/logging/logger.js';
@@ -30,8 +30,8 @@ export function start({ ensureTable, tablesOverride, databasesOverride }) {
 	 * @param tablesRef - Reference to tables object (local const for testing)
 	 * @param databasesRef - Reference to databases object (local const for testing)
 	 */
-	async function handleFile(dataContent, filePath, tablesRef, databasesRef) {
-		const fileExt = filePath.toLowerCase().split('.').pop();
+	async function handleFile(dataContent: Buffer, filePath: string, tablesRef: Tables, databasesRef: Databases) {
+		const fileExt = filePath.toLowerCase().split('.').pop() || 'unknown';
 		let data: DataFileFormat;
 
 		// Need to grab the file extension to determine how to parse the content
