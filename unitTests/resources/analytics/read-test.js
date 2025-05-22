@@ -403,5 +403,3 @@ describe('describeMetric', () => {
 		expect(result).to.not.have.property('types');
 	});
 });
-
-// });
