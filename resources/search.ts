@@ -1167,7 +1167,7 @@ class Query {
 	}
 	getAll() {
 		const values = [];
-		for (let i = 0; i < this.conditions.length; i++) {
+		for (let i = 0, len = this.conditions.length; i < len; i++) {
 			const condition = this.conditions[i];
 			if (condition.attribute) values.push(condition.value);
 		}
