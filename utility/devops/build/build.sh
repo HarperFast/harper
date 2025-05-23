@@ -1,4 +1,5 @@
 #!/bin/bash
+set -e
 
 # only if we have a system with apt-get
 if command -v apt-get &> /dev/null; then
@@ -66,7 +67,7 @@ npm shrinkwrap
 npm install --global pnpm
 pnpm install --lockfile-only
 
-dot-json ./npm_pack/package.json overrides --delete
+dot-json ./package.json overrides --delete
 
 cd ../
 

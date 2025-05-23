@@ -9,9 +9,9 @@ import { IterableEventQueue } from '../resources/IterableEventQueue.ts';
 import { transaction } from '../resources/transaction.ts';
 import { Headers, mergeHeaders } from '../server/serverHelpers/Headers.ts';
 import { generateJsonApi } from '../resources/openApi.ts';
-import { SimpleURLQuery } from '../resources/search.ts';
 import type { Context } from '../resources/ResourceInterface.ts';
 import { Request } from '../server/serverHelpers/Request.ts';
+import { RequestTarget } from '../resources/RequestTarget';
 interface Response {
 	status?: number;
 	headers?: any;
@@ -40,7 +40,7 @@ async function http(request: Context & Request, nextHandler) {
 			const entry = resources.getMatch(url, isSse ? 'sse' : 'rest');
 			if (!entry) return nextHandler(request); // no resource handler found
 			request.handlerPath = entry.path;
-			resourceRequest = new SimpleURLQuery(entry.relativeURL); // TODO: We don't want to have to remove the forward slash and then re-add it
+			resourceRequest = new RequestTarget(entry.relativeURL); // TODO: We don't want to have to remove the forward slash and then re-add it
 			resourceRequest.async = true;
 			resource = entry.Resource;
 		}
@@ -195,7 +195,7 @@ async function http(request: Context & Request, nextHandler) {
 			headers,
 			body: undefined,
 		};
-		const loadedFromSource = responseData?.wasLoadedFromSource?.();
+		const loadedFromSource = request.loadedFromSource ?? responseData?.wasLoadedFromSource?.();
 		if (loadedFromSource !== undefined) {
 			// this appears to be a caching table with a source
 			responseObject.wasCacheMiss = loadedFromSource; // indicate if it was a missed cache
@@ -306,7 +306,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 					'ws'
 				);
 				request.authorize = true;
-				const resourceRequest = new SimpleURLQuery(entry.relativeURL); // TODO: We don't want to have to remove the forward slash and then re-add it
+				const resourceRequest = new RequestTarget(entry.relativeURL); // TODO: We don't want to have to remove the forward slash and then re-add it
 				const resource = entry.Resource;
 				const responseStream = await transaction(request, () => {
 					return resource.connect(resourceRequest, incomingMessages, request);

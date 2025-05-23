@@ -44,7 +44,7 @@ exports.getReplicationCertAuth = getReplicationCertAuth;
 exports.renewSelfSigned = renewSelfSigned;
 exports.hostnamesFromCert = hostnamesFromCert;
 exports.getKey = getKey;
-
+exports.getHostnamesFromCertificate = getHostnamesFromCertificate;
 
 const {
 	urlToNodeName,
@@ -695,11 +695,7 @@ async function reviewSelfSignedCert() {
 		caAndKey = caAndKey ?? (await getCertAuthority());
 		const hdbCa = pki.certificateFromPem(caAndKey.ca.certificate);
 		const publicKey = hdbCa.publicKey;
-		const newPublicCert = await generateCertificates(
-			pki.privateKeyFromPem(caAndKey.private_key),
-			publicKey,
-			hdbCa
-		);
+		const newPublicCert = await generateCertificates(pki.privateKeyFromPem(caAndKey.private_key), publicKey, hdbCa);
 		await setCertTable({
 			name: certName,
 			uses: ['https', 'operations', 'wss'],
@@ -753,8 +749,7 @@ function updateConfigCert() {
 		newCerts[conf.CLUSTERING_TLS_CERTIFICATE] =
 			cliEnvArgs[conf.CLUSTERING_TLS_CERTIFICATE.toLowerCase()] ?? natsPubCert;
 		newCerts[conf.CLUSTERING_TLS_CERT_AUTH] = cliEnvArgs[conf.CLUSTERING_TLS_CERT_AUTH.toLowerCase()] ?? natsCa;
-		newCerts[conf.CLUSTERING_TLS_PRIVATEKEY] =
-			cliEnvArgs[conf.CLUSTERING_TLS_PRIVATEKEY.toLowerCase()] ?? private_key;
+		newCerts[conf.CLUSTERING_TLS_PRIVATEKEY] = cliEnvArgs[conf.CLUSTERING_TLS_PRIVATEKEY.toLowerCase()] ?? private_key;
 	}
 
 	configUtils.updateConfigValue(undefined, undefined, newCerts, false, true);
@@ -1184,4 +1179,13 @@ async function getKey(req) {
 	} else {
 		throw new ClientError('Key not found');
 	}
+}
+function getHostnamesFromCertificate(certificate) {
+	return [
+		certificate.subject?.CN, // use the subject if it exists
+		...certificate.subjectaltname // otherwise use the subject alternative names
+			.split(',')
+			.filter((n) => n.trim().startsWith('DNS:')) // find the DNS names
+			.map((n) => n.trim().substring(4)),
+	];
 }

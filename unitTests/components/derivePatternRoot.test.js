@@ -1,7 +1,12 @@
-const { derivePatternRoot, derivePatternRoots } = require('../../components/componentLoader');
+/* eslint-disable sonarjs/no-nested-template-literals */
+const {
+	derivePatternRoot,
+	derivePatternRoots,
+	InvalidPatternRootError,
+} = require('../../components/derivePatternRoots');
 const assert = require('node:assert/strict');
 
-describe('componentLoader derivePatternRoot', () => {
+describe('derivePatternRoot', () => {
 	[
 		// Simple, valid patterns
 		['*', '/'],
@@ -36,32 +41,26 @@ describe('componentLoader derivePatternRoot', () => {
 		['web?/*', null],
 		['web+/*', null],
 	].forEach(([pattern, expected]) => {
-		it(`should derive ${expected ?? 'null'} from ${pattern}`, () => {
+		it(`should derive ${expected ? `'${expected}'` : 'null'} from '${pattern}'`, () => {
 			assert.deepEqual(derivePatternRoot(pattern), expected);
 		});
 	});
 
 	it('should throw an error for invalid patterns', () => {
-		assert.throws(() => derivePatternRoot('/'), { message: `Pattern must not start with '/'. Received: '/'` });
-		assert.throws(() => derivePatternRoot('/web'), { message: `Pattern must not start with '/'. Received: '/web'` });
-		assert.throws(() => derivePatternRoot('..'), { message: `Pattern must not contain '..'. Received: '..'` });
-		assert.throws(() => derivePatternRoot('web/static/../../..'), {
-			message: `Pattern must not contain '..'. Received: 'web/static/../../..'`,
+		['/', '/web', '..', 'web/static/../../..'].forEach((pattern) => {
+			assert.throws(() => derivePatternRoot(pattern), new InvalidPatternRootError(pattern));
 		});
 	});
 });
 
-describe('componentLoader derivePatternRoots', () => {
+describe('derivePatternRoots', () => {
 	[
 		// Multiple Patterns
 		[
 			['web/*', 'static/*'],
 			['web/', 'static/'],
 		],
-		[
-			['web/*', 'static-[123]/*'],
-			['web/', null],
-		],
+		[['web/*', 'static-[123]/*'], ['web/']],
 		// Multiple Patterns with a common root
 		[['web/index.html', 'web/style.css'], ['/']],
 		[
@@ -70,7 +69,7 @@ describe('componentLoader derivePatternRoots', () => {
 		],
 		[['web/*.html', 'web/*.css'], ['web/']],
 	].forEach(([patterns, expected]) => {
-		it(`should derive ${expected.map((e) => e ?? 'null')} from ${patterns}`, () => {
+		it(`should derive [${expected.map((e) => `'${e}'`).join(', ')}] from [${patterns.map((p) => `'${p}'`).join(', ')}]`, () => {
 			assert.deepEqual(derivePatternRoots(patterns), expected);
 		});
 	});

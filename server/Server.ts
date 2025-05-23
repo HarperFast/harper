@@ -7,7 +7,7 @@ import type { Resources } from '../resources/Resources.ts';
  * This is the central interface by which we define entry points for different server protocol plugins to listen for
  * incoming connections and requests.
  */
-interface Server {
+export interface Server {
 	socket?(listener: (socket: Socket) => void, options: ServerOptions): void;
 	http?(listener: (request: Request, nextLayer: (request: Request) => Response) => void, options?: ServerOptions): void;
 	request?(

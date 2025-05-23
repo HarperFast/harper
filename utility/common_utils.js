@@ -16,7 +16,6 @@ const isNumber = require('is-number');
 const minimist = require('minimist');
 const https = require('https');
 const http = require('http');
-const { hdbErrors } = require('./errors/hdbError.js');
 
 const ISO_DATE =
 	/^((\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d\.\d+([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z)))$/;
@@ -40,60 +39,58 @@ const AUTOCAST_COMMON_STRINGS = {
 	NULL: null,
 	NaN: NaN,
 };
-module.exports = {
-	isEmpty,
-	isEmptyOrZeroLength,
-	arrayHasEmptyValues,
-	arrayHasEmptyOrZeroLengthValues,
-	buildFolderPath,
-	isBoolean,
-	errorizeMessage,
-	stripFileExtension,
-	autoCast,
-	autoCastJSON,
-	autoCastJSONDeep,
-	removeDir,
-	compareVersions,
-	isCompatibleDataVersion,
-	escapeRawValue,
-	unescapeValue,
-	stringifyProps,
-	timeoutPromise,
-	isClusterOperation,
-	getClusterUser,
-	checkGlobalSchemaTable,
-	getHomeDir,
-	getPropsFilePath,
-	promisifyPapaParse,
-	removeBOM,
-	createEventPromise,
-	checkProcessRunning,
-	checkSchemaTableExist,
-	checkSchemaExists,
-	checkTableExists,
-	getStartOfTomorrowInSeconds,
-	getLimitKey,
-	isObject,
-	isNotEmptyAndHasValue,
-	autoCasterIsNumberCheck,
-	backtickASTSchemaItems,
-	isPortTaken,
-	createForkArgs,
-	autoCastBoolean,
-	asyncSetTimeout,
-	getTableHashAttribute,
-	doesSchemaExist,
-	doesTableExist,
-	stringifyObj,
-	ms_to_time,
-	changeExtension,
-	getEnvCliRootPath,
-	noBootFile,
-	httpRequest,
-	transformReq,
-	convertToMS,
-	PACKAGE_ROOT,
-};
+exports.isEmpty = isEmpty;
+exports.isEmptyOrZeroLength = isEmptyOrZeroLength;
+exports.arrayHasEmptyValues = arrayHasEmptyValues;
+exports.arrayHasEmptyOrZeroLengthValues = arrayHasEmptyOrZeroLengthValues;
+exports.buildFolderPath = buildFolderPath;
+exports.isBoolean = isBoolean;
+exports.errorizeMessage = errorizeMessage;
+exports.stripFileExtension = stripFileExtension;
+exports.autoCast = autoCast;
+exports.autoCastJSON = autoCastJSON;
+exports.autoCastJSONDeep = autoCastJSONDeep;
+exports.removeDir = removeDir;
+exports.compareVersions = compareVersions;
+exports.isCompatibleDataVersion = isCompatibleDataVersion;
+exports.escapeRawValue = escapeRawValue;
+exports.unescapeValue = unescapeValue;
+exports.stringifyProps = stringifyProps;
+exports.timeoutPromise = timeoutPromise;
+exports.isClusterOperation = isClusterOperation;
+exports.getClusterUser = getClusterUser;
+exports.checkGlobalSchemaTable = checkGlobalSchemaTable;
+exports.getHomeDir = getHomeDir;
+exports.getPropsFilePath = getPropsFilePath;
+exports.promisifyPapaParse = promisifyPapaParse;
+exports.removeBOM = removeBOM;
+exports.createEventPromise = createEventPromise;
+exports.checkProcessRunning = checkProcessRunning;
+exports.checkSchemaTableExist = checkSchemaTableExist;
+exports.checkSchemaExists = checkSchemaExists;
+exports.checkTableExists = checkTableExists;
+exports.getStartOfTomorrowInSeconds = getStartOfTomorrowInSeconds;
+exports.getLimitKey = getLimitKey;
+exports.isObject = isObject;
+exports.isNotEmptyAndHasValue = isNotEmptyAndHasValue;
+exports.autoCasterIsNumberCheck = autoCasterIsNumberCheck;
+exports.backtickASTSchemaItems = backtickASTSchemaItems;
+exports.isPortTaken = isPortTaken;
+exports.createForkArgs = createForkArgs;
+exports.autoCastBoolean = autoCastBoolean;
+exports.asyncSetTimeout = asyncSetTimeout;
+exports.getTableHashAttribute = getTableHashAttribute;
+exports.doesSchemaExist = doesSchemaExist;
+exports.doesTableExist = doesTableExist;
+exports.stringifyObj = stringifyObj;
+exports.ms_to_time = ms_to_time;
+exports.changeExtension = changeExtension;
+exports.getEnvCliRootPath = getEnvCliRootPath;
+exports.noBootFile = noBootFile;
+exports.httpRequest = httpRequest;
+exports.transformReq = transformReq;
+exports.convertToMS = convertToMS;
+exports.PACKAGE_ROOT = PACKAGE_ROOT;
 
 /**
  * Converts a message to an error containing the error as a message. Will always return an error if the passed in error is
@@ -554,11 +551,7 @@ function getClusterUser(users, clusterUserName) {
 	try {
 		const tempClusterUser = users.get(clusterUserName);
 
-		if (
-			tempClusterUser &&
-			tempClusterUser.role.permission.cluster_user === true &&
-			tempClusterUser.active === true
-		) {
+		if (tempClusterUser && tempClusterUser.role.permission.cluster_user === true && tempClusterUser.active === true) {
 			cluster_user = tempClusterUser;
 		}
 	} catch (e) {
@@ -923,3 +916,4 @@ function convertToMS(interval) {
 	}
 	return seconds * 1000;
 }
+const hdbErrors = require('./errors/commonErrors.js');

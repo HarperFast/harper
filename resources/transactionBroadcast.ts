@@ -1,12 +1,8 @@
 import { info, trace, warn } from '../utility/logging/harper_logger.js';
-import { threadId } from 'worker_threads';
-import { onMessageByType, broadcast, broadcastWithAcknowledgement } from '../server/threads/manageThreads.js';
-import { writeKey } from 'ordered-binary';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { keyArrayToString } from './Resources.ts';
 import { readAuditEntry } from './auditStore.ts';
-const TRANSACTION_EVENT_TYPE = 'transaction';
-const FAILED_CONDITION = 0x4000000;
+import type { Id } from './ResourceInterface.ts';
 const allSubscriptions = Object.create(null); // using it as a map that doesn't change much
 const allSameThreadSubscriptions = Object.create(null); // using it as a map that doesn't change much
 /**
@@ -73,9 +69,12 @@ export function addSubscription(table, key, listener?: (key) => any, startTime: 
  * subscription and get the initial state.
  */
 class Subscription extends IterableEventQueue {
-	listener: (key) => any;
+	listener: (recordId: Id, auditEntry: any, localTime: number, beginTxn: boolean) => void;
 	subscriptions: [];
 	startTime?: number;
+	includeDescendants?: boolean;
+	supportsTransactions?: boolean;
+	onlyChildren?: boolean;
 	constructor(listener) {
 		super();
 		this.listener = listener;

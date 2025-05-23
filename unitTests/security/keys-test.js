@@ -15,7 +15,6 @@ const mkcert = require('mkcert');
 const forge = require('node-forge');
 const pki = forge.pki;
 const { X509Certificate, createPrivateKey, createPublicKey } = require('crypto');
-const { createSNICallback } = require('../../server/threads/threadServer');
 
 describe('Test keys module', () => {
 	const sandbox = sinon.createSandbox();
@@ -243,6 +242,15 @@ describe('Test keys module', () => {
 			error = err;
 		}
 		expect(error.message).to.equal('Key not found');
+	});
+	it('can extract the hostnames from a certificate', async () => {
+		const cert = {
+			subjectaltname: 'IP Address:127.0.0.1, DNS:localhost, IP Address:0:0:0:0:0:0:0:1',
+			subject: { CN: '127.0.0.1', C: 'USA', ST: 'Colorado', L: 'Denver', O: 'HarperDB, Inc.' },
+		};
+
+		const hostnames = await keys.getHostnamesFromCertificate(cert);
+		expect(hostnames).to.have.members(['127.0.0.1', 'localhost']);
 	});
 	/*	it('Test SNI with wildcards', async () => {
 		let cert1 = await mkcert.createCert({

@@ -1,0 +1,153 @@
+require('../test_utils');
+const assert = require('assert');
+const { getMockLMDBPath } = require('../test_utils');
+const { parseQuery } = require('../../resources/search');
+const { table } = require('../../resources/databases');
+const { transaction } = require('../../resources/transaction');
+const { setMainIsWorker } = require('../../server/threads/manageThreads');
+const { RequestTarget } = require('../../resources/RequestTarget');
+
+// might want to enable an iteration with NATS being assigned as a source
+describe('CRUD operations with the Resource API', () => {
+	let CRUDTable, CRUDRelatedTable;
+	let long_str = 'testing' + Math.random();
+	for (let i = 0; i < 10; i++) {
+		long_str += 'testing';
+	}
+	before(async function () {
+		getMockLMDBPath();
+		setMainIsWorker(true);
+		let relationship_attribute = {
+			name: 'related',
+			type: 'CRUDRelatedTable',
+			relationship: { from: 'relatedId' },
+			definition: {},
+		};
+		CRUDTable = table({
+			table: 'CRUDTable',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true },
+				{ name: 'name', indexed: true },
+				{ name: 'sparse', indexed: true },
+				{ name: 'relatedId', indexed: true },
+				{ name: 'notIndexed' },
+				relationship_attribute,
+				{ name: 'computed', computed: true, indexed: true },
+				{
+					name: 'nestedData',
+					properties: [
+						{ name: 'id', type: 'String' },
+						{ name: 'name', type: 'String' },
+					],
+				},
+			],
+		});
+		CRUDTable.loadAsInstance = false;
+		CRUDTable.setComputedAttribute('computed', (instance) => instance.name + ' computed');
+		const children_of_self_attribute = {
+			name: 'childrenOfSelf',
+			relationship: { to: 'parentId' },
+			elements: { type: 'CRUDRelatedTable', definition: {} },
+		};
+		const parent_of_self_attribute = {
+			name: 'parentOfSelf',
+			relationship: { from: 'parentId' },
+			type: 'CRUDRelatedTable',
+			definition: {},
+		};
+		CRUDRelatedTable = table({
+			table: 'CRUDRelatedTable',
+			database: 'test',
+			attributes: [
+				{ name: 'id', isPrimaryKey: true, type: 'Int' },
+				{ name: 'aFlag', type: 'Boolean', indexed: true },
+				{ name: 'name', indexed: true },
+				{ name: 'parentId', indexed: true },
+				{
+					name: 'relatedToMany',
+					relationship: { to: 'relatedId' },
+					elements: { type: 'CRUDTable', definition: { tableClass: CRUDTable } },
+				},
+				children_of_self_attribute,
+				parent_of_self_attribute,
+			],
+		});
+		CRUDRelatedTable.loadAsInstance = false;
+		children_of_self_attribute.elements.definition.tableClass = CRUDRelatedTable;
+		parent_of_self_attribute.definition.tableClass = CRUDRelatedTable;
+
+		for (let i = 0; i < 5; i++) {
+			CRUDRelatedTable.put({
+				id: i,
+				name: 'related name ' + i,
+				aFlag: i % 3 === 0,
+				parentId: i % 2,
+			});
+		}
+		let last;
+		for (let i = 0; i < 100; i++) {
+			last = CRUDTable.put({
+				id: 'id-' + i,
+				name: i > 0 ? 'name-' + i : null,
+				relatedId: i % 5,
+				sparse: i % 6 === 2 ? i : null,
+				notIndexed: 'not indexed ' + i,
+				nestedData: i > 0 ? { id: 'nested-' + i, name: 'nested name ' + i } : null,
+			});
+		}
+		await last;
+	});
+	describe('CRUD operations with loadAsInstance = false', () => {
+		before(async function () {
+			CRUDTable.loadAsInstance = false;
+			CRUDRelatedTable.loadAsInstance = false;
+		});
+		registerTests();
+	});
+	describe('CRUD operations with loadAsInstance = true', () => {
+		before(async function () {
+			CRUDTable.loadAsInstance = true;
+			CRUDRelatedTable.loadAsInstance = true;
+		});
+		registerTests();
+	});
+	function registerTests() {
+		it('puts', async function () {
+			await CRUDTable.put({
+				id: 'one',
+				name: 'One',
+				relatedId: 1,
+				sparse: null,
+				notIndexed: 'this data is not indexed',
+				nestedData: { id: 'some-id', name: 'nested name ' },
+			});
+			assert.equal((await CRUDTable.get('one')).name, 'One');
+			await CRUDTable.put('two', {
+				name: 'Two',
+				relatedId: 1,
+				sparse: null,
+				notIndexed: 'this data is not indexed',
+				nestedData: { id: 'some-id', name: 'nested name ' },
+			});
+			assert.equal((await CRUDTable.get('two')).name, 'Two');
+		});
+		it('update', async function () {
+			const context = {};
+			await transaction(context, async () => {
+				let updatable = await CRUDTable.update('one', context);
+				updatable.name = 'One updated';
+			});
+			assert.equal((await CRUDTable.get('one')).name, 'One updated');
+		});
+		it('deletes', async function () {
+			await CRUDTable.delete('one');
+			assert.equal(await CRUDTable.get('one'), undefined);
+			let target = new RequestTarget();
+			target.id = 'two';
+			await CRUDTable.delete(target);
+			assert.equal(await CRUDTable.get('two'), undefined);
+		});
+	}
+	after(() => {});
+});

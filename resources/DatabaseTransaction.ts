@@ -174,7 +174,7 @@ export class DatabaseTransaction implements Transaction {
 			const write = this.writes[writeIndex++];
 			if (write) {
 				if (write.key) {
-					if (retries > 0) {
+					if (retries > 0 || !write.entry) {
 						// if the first optimistic attempt failed, we need to try again with the very latest version
 						write.entry = write.store.getEntry(write.key);
 					}

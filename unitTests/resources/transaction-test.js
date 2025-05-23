@@ -32,8 +32,11 @@ describe('Transactions', () => {
 				{ name: 'count' },
 				{ name: 'countBigInt', type: 'BigInt' },
 				{ name: 'countInt', type: 'Int' },
+				{ name: 'computed', computed: true, indexed: true },
 			],
 		});
+		TxnTest.loadAsInstance = false;
+		TxnTest.setComputedAttribute('computed', (instance) => instance.name + ' computed');
 		setPublishToStream(
 			(subject, stream, header, message) => {
 				published_messages.push(message);
@@ -62,7 +65,9 @@ describe('Transactions', () => {
 		await transaction(context, () => {
 			TxnTest.put(42, { name: 'the answer' }, context);
 		});
-		assert.equal((await TxnTest.get(42)).name, 'the answer');
+		let answer = await TxnTest.get(42);
+		assert.equal(answer.name, 'the answer');
+		assert.equal(answer.computed, 'the answer computed');
 	});
 	it('Can run txn with three tables and two databases', async function () {
 		const context = {};
@@ -111,27 +116,28 @@ describe('Transactions', () => {
 			});
 			assert.equal((await TxnTest.get(45)).name, 'a counter');
 			await transaction(async (txn) => {
-				let counter = await TxnTest.get(45, txn);
+				let counter = await TxnTest.update(45, {}, txn);
 				counter.addTo('count', 1);
 				counter.addTo('countInt', 1);
 				counter.addTo('countBigInt', 1n);
+				assert(counter.getUpdatedTime() > 1);
 			});
 			let entity = await TxnTest.get(45);
 			assert.equal(entity.count, 2);
 			assert.equal(entity.countInt, 101);
 			assert.equal(entity.countBigInt, 4611686018427388001n);
-			assert.equal(entity.get('propertyA'), undefined);
+			assert.equal(entity.propertyA, undefined);
 			// concurrently, to ensure the incrementation is really correct:
 			let promises = [];
 			for (let i = 0; i < 3; i++) {
 				promises.push(
 					transaction(async (txn) => {
-						let counter = await TxnTest.get(45, txn);
+						let counter = await TxnTest.update(45, {}, txn);
 						await new Promise((resolve) => setTimeout(resolve, 1));
 						counter.addTo('count', 3);
 						counter.subtractFrom('countInt', 2);
 						counter.addTo('countBigInt', 5);
-						counter.set('new prop ' + i, 'new value ' + i);
+						counter['new prop ' + i] = 'new value ' + i;
 					})
 				);
 			}
@@ -141,9 +147,9 @@ describe('Transactions', () => {
 			assert.equal(entity.countInt, 95);
 			assert.equal(entity.countBigInt, 4611686018427388016n);
 			// all three properties should be added even though no single update did this
-			assert.equal(entity.get('new prop 0'), 'new value 0');
-			assert.equal(entity.get('new prop 1'), 'new value 1');
-			assert.equal(entity.get('new prop 2'), 'new value 2');
+			assert.equal(entity['new prop 0'], 'new value 0');
+			assert.equal(entity['new prop 1'], 'new value 1');
+			assert.equal(entity['new prop 2'], 'new value 2');
 		});
 		it('Can update with patch', async function () {
 			const context = {};
@@ -153,8 +159,8 @@ describe('Transactions', () => {
 			let entity = await TxnTest.get(45);
 			published_messages = [];
 			assert.equal(entity.name, 'a counter');
-			assert.equal(entity.get('count'), 1);
-			assert.equal(entity.get('new prop 0'), undefined);
+			assert.equal(entity.count, 1);
+			assert.equal(entity['new prop 0'], undefined);
 			await TxnTest.patch(45, { count: { __op__: 'add', value: 2 } });
 			entity = await TxnTest.get(45);
 			assert.equal(entity.count, 3);
@@ -170,11 +176,11 @@ describe('Transactions', () => {
 			entity = await TxnTest.get(45);
 			assert.equal(entity.count, -3);
 			// all three properties should be added even though no single update did this
-			assert.equal(entity.get('new prop 0'), 'new value 0');
-			assert.equal(entity.get('new prop 1'), 'new value 1');
-			assert.equal(entity.get('new prop 2'), 'new value 2');
+			assert.equal(entity['new prop 0'], 'new value 0');
+			assert.equal(entity['new prop 1'], 'new value 1');
+			assert.equal(entity['new prop 2'], 'new value 2');
 			assert.equal(published_messages.length, 4);
-			assert(entity.getMetadata().version > 1);
+			assert(entity.getUpdatedTime() > 1);
 		});
 
 		it('Can merge replication updates', async function () {
@@ -184,14 +190,14 @@ describe('Transactions', () => {
 			});
 			let entity = await TxnTest.get(45);
 			assert.equal(entity.name, 'a counter');
-			assert.equal(entity.get('count'), 1);
-			assert.equal(entity.get('new prop 0'), undefined);
+			assert.equal(entity.count, 1);
+			assert.equal(entity['new prop 0'], undefined);
 			published_messages = [];
 			await new Promise((resolve) => setTimeout(resolve, 20));
 			await TxnTest.patch(45, { count: { __op__: 'add', value: 2 }, propertyA: 'valueA' });
 			entity = await TxnTest.get(45);
 			assert.equal(entity.count, 3);
-			assert.equal(entity.get('propertyA'), 'valueA');
+			assert.equal(entity['propertyA'], 'valueA');
 			assert.equal(published_messages.length, 1);
 			assert.equal(published_messages[0].operation, 'patch');
 			await new Promise((resolve) => {
@@ -208,8 +214,8 @@ describe('Transactions', () => {
 			entity = await TxnTest.get(45);
 			// Should have incrementation and correct property values
 			assert.equal(entity.count, 5);
-			assert.equal(entity.get('propertyA'), 'valueA');
-			assert.equal(entity.get('propertyB'), 'valueB');
+			assert.equal(entity['propertyA'], 'valueA');
+			assert.equal(entity['propertyB'], 'valueB');
 
 			await new Promise((resolve) => {
 				// send an update with a duplicate timestamp, this should be ignored
@@ -225,8 +231,8 @@ describe('Transactions', () => {
 			entity = await TxnTest.get(45);
 			// nothing should have changed
 			assert.equal(entity.count, 5);
-			assert.equal(entity.get('propertyA'), 'valueA');
-			assert.equal(entity.get('propertyB'), 'valueB');
+			assert.equal(entity['propertyA'], 'valueA');
+			assert.equal(entity['propertyB'], 'valueB');
 		});
 		it('Can update new object and addTo consecutively replication updates', async function () {
 			class WithCountOnGet extends TxnTest {

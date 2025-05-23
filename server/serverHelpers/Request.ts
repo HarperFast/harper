@@ -47,6 +47,9 @@ export class Request {
 	get host() {
 		return this._nodeRequest.authority || this._nodeRequest.headers.host;
 	}
+	get httpVersion() {
+		return this._nodeRequest.httpVersion;
+	}
 	get isAborted() {
 		// TODO: implement this
 		return false;

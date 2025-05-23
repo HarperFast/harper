@@ -30,7 +30,7 @@ module.exports = logRotator;
  * Rotates hdb.log using an interval and/or maxSize param to determine if log should be rotated.
  * Uses an unref setInterval to periodically check time passed since rotation and size of log file.
  * If log file is within the values set in config, log file will be renamed/moved and a new empty hdb.log created.
- * @returns {Promise<void>}
+ * @returns LogRotator
  */
 function logRotator({ logger, maxSize, interval, retention, enabled, path: rotatedLogDir, auditInterval }) {
 	if (enabled === false) return;

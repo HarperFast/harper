@@ -1,11 +1,14 @@
 import type { ResourceInterface, SubscriptionRequest, Id, Context, Query } from './ResourceInterface.ts';
 import { randomUUID } from 'crypto';
-import type { Transaction } from './DatabaseTransaction.ts';
+import { DatabaseTransaction, Transaction } from './DatabaseTransaction.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { _assignPackageExport } from '../globals.js';
 import { ClientError } from '../utility/errors/hdbError.js';
 import { transaction } from './transaction.ts';
-import { parseQuery, SimpleURLQuery } from './search.ts';
+import { parseQuery } from './search.ts';
+import { AsyncLocalStorage } from 'async_hooks';
+import { RequestTarget } from './RequestTarget.ts';
+export const contextStorage = new AsyncLocalStorage<Context>();
 
 const EXTENSION_TYPES = {
 	json: 'application/json',
@@ -32,6 +35,7 @@ export class Resource implements ResourceInterface {
 	#isCollection: boolean;
 	static transactions: Transaction[] & { timestamp: number };
 	static directURLMapping = false;
+	static loadAsInstance: boolean;
 	constructor(identifier: Id, source: any) {
 		this.#id = identifier;
 		const context = source?.getContext ? (source.getContext() ?? null) : undefined;
@@ -42,9 +46,9 @@ export class Resource implements ResourceInterface {
 	 * The get methods are for directly getting a resource, and called for HTTP GET requests.
 	 */
 	static get(identifier: Id, context?: Context): Promise<Resource>;
-	static get(query: Query, context?: Context): Promise<AsyncIterable<object>>;
+	static get(target: RequestTarget, context?: Context): Promise<AsyncIterable<object>>;
 	static get = transactional(
-		function (resource: Resource, query?: Map, request: Context, data?: any) {
+		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			const result = resource.get?.(query);
 			if (result?.then) return result.then(handleSelect);
 			return handleSelect(result);
@@ -74,13 +78,14 @@ export class Resource implements ResourceInterface {
 	 * Store the provided record by the provided id. If no id is provided, it is auto-generated.
 	 */
 	static put = transactional(
-		function (resource: Resource, query?: Map, request: Context, data?: any) {
-			if (Array.isArray(data) && resource.#isCollection) {
+		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
+			if (Array.isArray(data) && resource.#isCollection && resource.constructor.loadAsInstance !== false) {
 				const results = [];
 				const authorize = request.authorize;
 				for (const element of data) {
 					const resourceClass = resource.constructor;
-					const elementResource = resourceClass.getResource(element[resourceClass.primaryKey], request, {
+					const id = element[resourceClass.primaryKey];
+					const elementResource = resourceClass.getResource(id, request, {
 						async: true,
 					});
 					if (elementResource.then) results.push(elementResource.then((resource) => resource.put(element, request)));
@@ -88,15 +93,23 @@ export class Resource implements ResourceInterface {
 				}
 				return Promise.all(results);
 			}
-			return resource.put ? resource.put(data, query) : missingMethod(resource, 'put');
+			return resource.put
+				? resource.constructor.loadAsInstance === false
+					? resource.put(query, data)
+					: resource.put(data, query)
+				: missingMethod(resource, 'put');
 		},
 		{ hasContent: true, type: 'update' }
 	);
 
 	static patch = transactional(
-		function (resource: Resource, query?: Map, request: Context, data?: any) {
+		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			// TODO: Allow array like put?
-			return resource.patch ? resource.patch(data, query) : missingMethod(resource, 'patch');
+			return resource.patch
+				? resource.constructor.loadAsInstance === false
+					? resource.patch(query, data)
+					: resource.patch(data, query)
+				: missingMethod(resource, 'patch');
 		},
 		{ hasContent: true, type: 'update' }
 	);
@@ -104,7 +117,7 @@ export class Resource implements ResourceInterface {
 	static delete(identifier: Id, context?: Context): Promise<boolean>;
 	static delete(request: Context, context?: Context): Promise<object>;
 	static delete = transactional(
-		function (resource: Resource, query?: Map, request: Context, data?: any) {
+		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			return resource.delete ? resource.delete(query) : missingMethod(resource, 'delete');
 		},
 		{ hasContent: false, type: 'delete' }
@@ -148,30 +161,41 @@ export class Resource implements ResourceInterface {
 		});
 	}
 	static invalidate = transactional(
-		function (resource: Resource, query?: Map, request: Context, data?: any) {
+		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			return resource.invalidate ? resource.invalidate(query) : missingMethod(resource, 'delete');
 		},
 		{ hasContent: false, type: 'update' }
 	);
 
 	static post = transactional(
-		function (resource: Resource, query?: Map, request: Context, data?: any) {
+		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			if (resource.#id != null) resource.update?.(); // save any changes made during post
-			return resource.post(data, query);
+			return resource.constructor.loadAsInstance === false ? resource.post(query, data) : resource.post(data, query);
+		},
+		{ hasContent: true, type: 'create' }
+	);
+
+	static update = transactional(
+		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
+			return resource.update(query, data);
 		},
 		{ hasContent: true, type: 'create' }
 	);
 
 	static connect = transactional(
-		function (resource: Resource, query?: Map, request: Context, data?: any) {
-			return resource.connect ? resource.connect(data, query) : missingMethod(resource, 'connect');
+		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
+			return resource.connect
+				? resource.constructor.loadAsInstance === false
+					? resource.connect(query, data)
+					: resource.connect(data, query)
+				: missingMethod(resource, 'connect');
 		},
 		{ hasContent: true, type: 'read' }
 	);
 
 	static subscribe(request: SubscriptionRequest): Promise<AsyncIterable<{ id: any; operation: string; value: object }>>;
 	static subscribe = transactional(
-		function (resource: Resource, query?: Map, request: Context, data?: any) {
+		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			return resource.subscribe ? resource.subscribe(query) : missingMethod(resource, 'subscribe');
 		},
 		{ type: 'read' }
@@ -180,7 +204,11 @@ export class Resource implements ResourceInterface {
 	static publish = transactional(
 		function (resource: Resource, query?: Map, request: Context, data?: any) {
 			if (resource.#id != null) resource.update?.(); // save any changes made during publish
-			return resource.publish ? resource.publish(data, query) : missingMethod(resource, 'publish');
+			return resource.publish
+				? resource.constructor.loadAsInstance === false
+					? resource.publish(query, data)
+					: resource.publish(data, query)
+				: missingMethod(resource, 'publish');
 		},
 		{ hasContent: true, type: 'create' }
 	);
@@ -200,21 +228,33 @@ export class Resource implements ResourceInterface {
 
 	static query = transactional(
 		function (resource: Resource, query?: Map, request: Context, data?: any) {
-			return resource.search ? resource.search(data, query) : missingMethod(resource, 'search');
+			return resource.search
+				? resource.constructor.loadAsInstance === false
+					? resource.search(query, data)
+					: resource.search(data, query)
+				: missingMethod(resource, 'search');
 		},
 		{ hasContent: true, type: 'read' }
 	);
 
 	static copy = transactional(
 		function (resource: Resource, query?: Map, request: Context, data?: any) {
-			return resource.copy ? resource.copy(data, query) : missingMethod(resource, 'copy');
+			return resource.copy
+				? resource.constructor.loadAsInstance === false
+					? resource.copy(query, data)
+					: resource.copy(data, query)
+				: missingMethod(resource, 'copy');
 		},
 		{ hasContent: true, type: 'create' }
 	);
 
 	static move = transactional(
 		function (resource: Resource, query?: Map, request: Context, data?: any) {
-			return resource.move ? resource.move(data, query) : missingMethod(resource, 'move');
+			return resource.move
+				? resource.constructor.loadAsInstance === false
+					? resource.move(query, data)
+					: resource.move(data, query)
+				: missingMethod(resource, 'move');
 		},
 		{ hasContent: true, type: 'delete' }
 	);
@@ -236,8 +276,8 @@ export class Resource implements ResourceInterface {
 	static coerceId(id: string): number | string {
 		return id;
 	}
-	static parseQuery(search) {
-		return parseQuery(search);
+	static parseQuery(search, query) {
+		return parseQuery(search, query);
 	}
 	static parsePath(path, context, query) {
 		const dotIndex = path.indexOf('.');
@@ -445,7 +485,7 @@ function transactional(action, options) {
 	applyContext.reliesOnPrototype = true;
 	const hasContent = options.hasContent;
 	return applyContext;
-	function applyContext(idOrQuery: string | Id, dataOrContext?: any, context?: Context) {
+	function applyContext(idOrQuery: string | Id | Query, dataOrContext?: any, context?: Context) {
 		let id, query, isCollection;
 		let data;
 		// First we do our argument normalization. There are two main types of methods, with or without content
@@ -466,15 +506,20 @@ function transactional(action, options) {
 					data = idOrQuery;
 					id = data[this.primaryKey] ?? null;
 					context = dataOrContext.getContext?.() || dataOrContext;
+				} else if (dataOrContext?.transaction instanceof DatabaseTransaction) {
+					// (id, context) form
+					context = dataOrContext;
 				} else {
 					// (id, data) form
 					data = dataOrContext;
 				}
-			} else {
+			} else if (idOrQuery && typeof idOrQuery === 'object') {
 				// single argument form, just data
 				data = idOrQuery;
 				idOrQuery = undefined;
 				id = data.getId?.() ?? data[this.primaryKey];
+			} else {
+				throw new ClientError(`Invalid argument for data, must be an object, but got ${idOrQuery}`);
 			}
 			if (id === null) isCollection = true;
 			// otherwise handle methods for get, delete, etc.
@@ -490,18 +535,18 @@ function transactional(action, options) {
 			if (typeof idOrQuery === 'object' && idOrQuery) {
 				// it is a query
 				query = idOrQuery;
-				if (typeof (id = idOrQuery.url) === 'string') {
+				id = idOrQuery.target ?? idOrQuery.url; // get the request target (check .url for back-compat), and try to parse
+				if (typeof id === 'string') {
 					if (this.directURLMapping) {
 						id = id.slice(1); // remove the leading slash
+						query.id = id;
 					} else {
 						// handle queries in local URLs like /path/?name=value
 						const searchIndex = id.indexOf('?');
 						if (searchIndex > -1) {
-							const parsedQuery = this.parseQuery(id.slice(searchIndex + 1));
-							if (query) {
-								if (parsedQuery) query = Object.assign(parsedQuery, query);
-							} else query = parsedQuery;
+							query = this.parseQuery(id.slice(searchIndex + 1), idOrQuery);
 							id = id.slice(0, searchIndex);
+							if (id === '') isCollection = true;
 						}
 						// handle paths of the form /path/id.property
 						const parsedId = this.parsePath(id, context, query);
@@ -512,7 +557,10 @@ function transactional(action, options) {
 							}
 							isCollection = parsedId.isCollection;
 							id = parsedId.id;
-						} else id = parsedId;
+						} else {
+							id = parsedId;
+						}
+						if (id) query.id = id;
 					}
 				} else if (idOrQuery[Symbol.iterator]) {
 					// get the id part from an iterable query
@@ -528,7 +576,8 @@ function transactional(action, options) {
 						if (query.slice) {
 							query = query.slice(id.length, query.length);
 							if (query.length === 0) {
-								query = null;
+								query = new RequestTarget();
+								query.id = id;
 								isCollection = false;
 							}
 						}
@@ -540,30 +589,42 @@ function transactional(action, options) {
 				}
 			} else {
 				id = idOrQuery;
-				query = new SimpleURLQuery(id);
+				query = new RequestTarget();
+				query.id = id;
 				if (id == null) isCollection = true;
 			}
 		}
-
-		if (!context) context = {};
+		if (!query) {
+			query = new RequestTarget();
+			query.id = id;
+		}
+		if (isCollection) query.isCollection = true;
 		let resourceOptions;
-		if (query?.ensureLoaded != null || query?.async || isCollection) {
+		if (!context) context = contextStorage.getStore(); // try to get the context from the async context if possible
+		if (query.ensureLoaded != null || query.async || isCollection) {
 			resourceOptions = { ...options };
-			if (query?.ensureLoaded != null) resourceOptions.ensureLoaded = query.ensureLoaded;
-			if (query?.async) resourceOptions.async = query.async;
+			if (query.ensureLoaded != null) resourceOptions.ensureLoaded = query.ensureLoaded;
+			if (query.async) resourceOptions.async = query.async;
 			if (isCollection) resourceOptions.isCollection = true;
 		} else resourceOptions = options;
-		if (context.transaction) {
+		let runAction = authorizeActionOnResource;
+		if (this.loadAsInstance === false ? !this.explicitContext : this.explicitContext === false) {
+			// if we are using the newer resource API, we default to doing ALS context tracking, which is also
+			// necessary for accessing relationship properties on the direct frozen records
+			runAction = (resource) => contextStorage.run(context, () => authorizeActionOnResource(resource));
+		}
+		if (context?.transaction) {
 			// we are already in a transaction, proceed
 			const resource = this.getResource(id, context, resourceOptions);
-			return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
+			return resource.then ? resource.then(runAction) : runAction(resource);
 		} else {
+			if (!context) context = {};
 			// start a transaction
 			return transaction(
 				context,
 				() => {
 					const resource = this.getResource(id, context, resourceOptions);
-					return resource.then ? resource.then(authorizeActionOnResource) : authorizeActionOnResource(resource);
+					return resource.then ? resource.then(runAction) : runAction(resource);
 				},
 				resourceOptions
 			);

@@ -11,7 +11,9 @@ const hook_std = require('intercept-stdout');
 const os = require('os');
 const YAML = require('yaml');
 const logger = require('../../../utility/logging/logger');
-const { createLogger } = require('../../../utility/logging/harper_logger');
+const harperLoggerModule = require('../../../utility/logging/harper_logger');
+const { createLogger } = harperLoggerModule;
+const { getHttpOptions, handleComponent, logRequest, getRequestId } = require('../../../server/http');
 
 const HARPER_LOGGER_MODULE = '../../../utility/logging/harper_logger';
 const LOG_DIR_TEST = 'testLogger';
@@ -717,6 +719,95 @@ describe('Test harper_logger module', () => {
 				for (let key in tagged_logger) if (tagged_logger[key] != null) keys.push(key);
 				expect(keys).to.deep.equal(['notify', 'fatal']);
 				tagged_logger.fatal('test');
+			});
+		});
+		describe('Test HTTP logger', () => {
+			let originalHttpOptions, originalHttpLogOptions, httpLogPath, httpLogger;
+			before(() => {
+				originalHttpOptions = getHttpOptions();
+				httpLogger = harperLoggerModule.forComponent('http');
+				const { path: logPath, level } = httpLogger;
+				originalHttpLogOptions = { path: logPath, level };
+
+				httpLogPath = path.join(TEST_LOG_DIR, 'http.log');
+				httpLogger.path = httpLogPath;
+				httpLogger.level = 1;
+
+				handleComponent({
+					options: {
+						getAll() {
+							return {
+								logging: {
+									id: true,
+									timing: true,
+									headers: true,
+									path: httpLogPath,
+								},
+							};
+						},
+						on() {},
+					},
+				});
+			});
+			it('Test the correct output from HTTP logger on GET', async () => {
+				logRequest(
+					{
+						method: 'GET',
+						url: '/test',
+						socket: { encrypted: true },
+						httpVersion: '1.1',
+						headers: { 'content-type': 'application/json' },
+					},
+					200,
+					getRequestId(),
+					3.71
+				);
+
+				// Wait for the log to be written
+				await new Promise((resolve) => setTimeout(resolve, 100));
+
+				const httpLog = fs.readFileSync(httpLogPath, 'utf8');
+				expect(httpLog).to.include('GET /test HTTPS/1.1');
+				expect(httpLog).to.match(/id: \d+/);
+				expect(httpLog).to.include(' 200');
+				expect(httpLog).to.include(' 3.71ms');
+				expect(httpLog).to.include('type: application/json');
+			});
+			it('Test the correct output from HTTP logger on POST', async () => {
+				logRequest(
+					{
+						method: 'POST',
+						url: '/post-test',
+						socket: { encrypted: false },
+						httpVersion: 1.1,
+						headers: { 'content-type': 'application/json' },
+					},
+					201,
+					getRequestId(),
+					5.13
+				);
+
+				// Wait for the log to be written
+				await new Promise((resolve) => setTimeout(resolve, 100));
+
+				const httpLog = fs.readFileSync(httpLogPath, 'utf8');
+				expect(httpLog).to.include('POST /post-test HTTP/1.1');
+				expect(httpLog).to.match(/id: \d+/);
+				expect(httpLog).to.include(' 201');
+				expect(httpLog).to.include(' 5.13ms');
+			});
+			after(() => {
+				handleComponent({
+					options: {
+						getAll() {
+							return originalHttpOptions;
+						},
+						on() {},
+					},
+				});
+				fs.unlink(httpLogger.path);
+				httpLogger.path = originalHttpLogOptions.path;
+				httpLogger.level = originalHttpLogOptions.level;
 			});
 		});
 	});
