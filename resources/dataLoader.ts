@@ -1,5 +1,5 @@
-import { stat } from 'fs/promises';
-import { basename } from 'path';
+import { stat } from 'node:fs/promises';
+import { basename } from 'node:path';
 import { parseDocument } from 'yaml';
 import { Databases, databases, Tables, tables } from './databases.ts';
 import { HTTP_STATUS_CODES } from '../utility/errors/commonErrors.js';
@@ -62,22 +62,21 @@ export function start({ ensureTable, tablesOverride, databasesOverride }) {
 			throw new EmptyFileError(filePath);
 		}
 
+		const { database, table: tableName, records } = data;
+
 		// Validate the data format
-		if (!data.table) {
+		if (!tableName) {
 			throw new MissingRequiredPropertyError(filePath, 'table');
 		}
 
-		if (!data.records) {
+		if (!records) {
 			throw new MissingRequiredPropertyError(filePath, 'records');
 		}
 
-		if (!Array.isArray(data.records)) {
+		if (!Array.isArray(records)) {
 			throw new InvalidPropertyTypeError(filePath, 'records', 'array');
 		}
 
-		const database = data.database;
-		const tableName = data.table;
-		const records = data.records;
 		// tableIdentifier is used for logging and error messages
 		const tableIdentifier = database ? `${database}.${tableName}` : tableName;
 

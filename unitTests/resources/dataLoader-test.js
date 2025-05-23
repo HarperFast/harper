@@ -1,9 +1,9 @@
 'use strict';
 
 const assert = require('node:assert/strict');
+const fs = require('node:fs');
+const { join } = require('node:path');
 const sinon = require('sinon');
-const { join } = require('path');
-const fs = require('fs');
 const { promises: fsPromises } = fs;
 const dataLoader = require('../../resources/dataLoader.ts');
 
@@ -35,6 +35,7 @@ describe('Data Loader', function () {
 
 	// Mock tables
 	let mockTables;
+	this.testfoothing = 'test';
 	
 	// Create a base ensureTable function
 	const baseEnsureTable = async (options) => {
@@ -138,6 +139,8 @@ records:
 		mockTables = {};
 		// Create a fresh spy on the ensureTable function for each test
 		mockEnsureTable = sinon.spy(baseEnsureTable);
+		console.log(this.testfoothing)
+		this.testboothing = 'test2';
 		
 	});
 	
@@ -149,7 +152,7 @@ records:
 	it('should load data from YAML file into empty table', async function () {
 		const loader = dataLoader.start({ ensureTable: mockEnsureTable });
 		const fileContent = await fsPromises.readFile(yamlDataFile);
-
+		console.log(this.testboothing)
 		const results = await loader.setupFile(fileContent, '/data/test', yamlDataFile);
 
 		// Check results
