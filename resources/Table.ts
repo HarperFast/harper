@@ -1399,7 +1399,7 @@ export function makeTable(options) {
 			}
 			// always return undefined
 		}
-		patch(target: RequestTarget, recordUpdate: any): void {
+		patch(target: RequestTarget, recordUpdate: any): void | Promise<void> {
 			if (recordUpdate === undefined || recordUpdate instanceof URLSearchParams) this.update(target, false);
 			else {
 				const result = this.update(target, recordUpdate, false);
