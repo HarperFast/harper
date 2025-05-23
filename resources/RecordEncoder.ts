@@ -69,7 +69,7 @@ export class RecordEncoder extends Encoder {
 		 * are usually frozen, but this can be extended (by the Updatable class) for providing
 		 * mutation methods.
 		 */
-		class Record {
+		class RecordObject {
 			getUpdatedTime() {
 				return entryMap.get(this)?.version;
 			}
@@ -78,7 +78,7 @@ export class RecordEncoder extends Encoder {
 			}
 		}
 
-		options.structPrototype = Record.prototype;
+		options.structPrototype = RecordObject.prototype;
 		super(options);
 		const superEncode = this.encode;
 		this.encode = function (record, options?) {
@@ -486,7 +486,7 @@ export function removeEntry(store: any, entry: any, existingVersion?: number) {
 	}
 	return store.remove(entry.key, existingVersion);
 }
-export interface Record {
+export interface RecordObject {
 	getUpdatedTime(): number;
 	getExpiresAt(): number;
 }

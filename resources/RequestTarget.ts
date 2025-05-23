@@ -1,29 +1,29 @@
 import { Conditions, Id, Select, Sort } from './ResourceInterface';
 
 export class RequestTarget extends URLSearchParams {
-	declare target?: string;
-	declare pathname: string;
-	declare search?: string;
+	target?: string;
+	pathname: string;
+	search?: string;
 	/** Target a specific record, but can be combined with select */
-	declare id?: Id;
+	id?: Id;
 	/**	 The conditions to use in the query, that the returned records must satisfy	 */
-	declare conditions?: Conditions;
+	conditions?: Conditions;
 	/**	 The number of records to return	 */
-	declare limit?: number;
+	limit?: number;
 	/**	 The number of records to skip	 */
-	declare offset?: number;
+	offset?: number;
 	/**	 The number of operator to use*/
-	declare operator?: 'AND' | 'OR';
+	operator?: 'AND' | 'OR';
 	/**	 The sort attribute and direction to use */
 	/** @ts-ignore*/
 	sort?: Sort = null; // USP has a sort method, we hide it
 	/**	 The selected attributes to return	 */
-	declare select?: Select;
+	select?: Select;
 	/**	 Return an explanation of the query order */
-	declare explain?: boolean;
+	explain?: boolean;
 	/**	 Force the query to be executed in the order of conditions */
-	declare enforceExecutionOrder?: boolean;
-	declare lazy?: boolean;
+	enforceExecutionOrder?: boolean;
+	lazy?: boolean;
 	constructor(target?: string) {
 		let searchIndex: number | undefined;
 		let path: string | undefined;
