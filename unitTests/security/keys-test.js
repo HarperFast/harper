@@ -15,7 +15,6 @@ const mkcert = require('mkcert');
 const forge = require('node-forge');
 const pki = forge.pki;
 const { X509Certificate, createPrivateKey, createPublicKey } = require('crypto');
-const { createSNICallback } = require('../../server/threads/threadServer');
 
 describe('Test keys module', () => {
 	const sandbox = sinon.createSandbox();

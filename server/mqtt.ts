@@ -8,17 +8,19 @@ import { recordAction, addAnalyticsListener, recordActionBinary } from '../resou
 import { server } from '../server/Server.ts';
 import { get } from '../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.ts';
-import { loggerWithTag } from '../utility/logging/logger.js';
+import { loggerWithTag, forComponent } from '../utility/logging/logger.js';
+import { forComponent as loggerForComponent } from '../utility/logging/harper_logger.js';
 import { EventEmitter } from 'events';
 const authEventLog = loggerWithTag('auth-event');
-const mqttLog = loggerWithTag('mqtt');
+const mqttLog = loggerForComponent('mqtt');
 
 let AUTHORIZE_LOCAL = get(CONFIG_PARAMS.AUTHENTICATION_AUTHORIZELOCAL) ?? process.env.DEV_MODE;
 export function bypassAuth() {
 	AUTHORIZE_LOCAL = true;
 }
 
-const authorizeLocal = (remoteAddress: string) => AUTHORIZE_LOCAL && (remoteAddress.includes('127.0.0.') || remoteAddress === '::1');
+const authorizeLocal = (remoteAddress: string) =>
+	AUTHORIZE_LOCAL && (remoteAddress.includes('127.0.0.') || remoteAddress === '::1');
 
 export function start({ server, port, network, webSocket, securePort, requireAuthentication }) {
 	// here we basically normalize the different types of sockets to pass to our socket/message handler
@@ -124,13 +126,7 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 						mqttLog.debug?.('Auto-authorizing local connection', user?.username);
 					}
 
-					const { onMessage, onClose } = onSocket(
-						socket,
-						(message) => socket.write(message),
-						null,
-						user,
-						mqttSettings
-					);
+					const { onMessage, onClose } = onSocket(socket, (message) => socket.write(message), null, user, mqttSettings);
 					socket.on('data', onMessage);
 					socket.on('close', onClose);
 					socket.on('error', (error) => {

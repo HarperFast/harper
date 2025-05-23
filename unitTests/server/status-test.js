@@ -1,6 +1,6 @@
 'use strict';
 
-const assert = require('node:assert/strict');
+const assert = require('node:assert');
 const status = require('../../server/status');
 
 describe('server.status', function () {

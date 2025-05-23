@@ -1,7 +1,7 @@
-const { resolveBaseURLPath } = require('../../components/componentLoader');
+const { resolveBaseURLPath, InvalidBaseURLPathError } = require('../../components/resolveBaseURLPath');
 const assert = require('node:assert/strict');
 
-describe('componentLoader resolveBaseURLPath', () => {
+describe('resolveBaseURLPath', () => {
 	const componentName = 'test-component';
 	it('should resolve to / when no path, or an empty path is provided', () => {
 		[undefined, '', '/'].forEach((path) => {
@@ -35,10 +35,7 @@ describe('componentLoader resolveBaseURLPath', () => {
 
 	it('should error when path starts with `..`', () => {
 		['..', '../', '../static', './..', './static/../'].forEach((path) => {
-			assert.throws(() => resolveBaseURLPath(componentName, path), {
-				name: 'Error',
-				message: `urlPath must not contain '..'. Received: '${path}'`,
-			});
+			assert.throws(() => resolveBaseURLPath(componentName, path), new InvalidBaseURLPathError(path));
 		});
 	});
 });

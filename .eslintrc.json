@@ -28,6 +28,7 @@
 		"sonarjs/public-static-readonly": "off",
 		"sonarjs/pseudo-random": "off",
 		"sonarjs/assertions-in-tests": "off",
+		"sonarjs/no-nested-functions": "off",
 		"@typescript-eslint/no-explicit-any": "off",
 		"@typescript-eslint/no-var-requires": "off"
 	},

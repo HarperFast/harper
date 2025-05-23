@@ -17,7 +17,7 @@ type StatusOperationWriteRequestBody = StatusOperationRequestBody & {
 	status: string;
 };
 
-const Status = table({
+export const Status = table({
 	database: 'system',
 	table: 'hdb_status',
 	replicate: false,

@@ -3,7 +3,7 @@
 // Note - do not import/use commonUtils.js in this module, it will cause circular dependencies.
 const fs = require('fs-extra');
 const { workerData, threadId, isMainThread } = require('worker_threads');
-const path = require('path');
+const pathModule = require('path');
 const YAML = require('yaml');
 const PropertiesReader = require('properties-reader');
 const hdbTerms = require('../hdbTerms.ts');
@@ -16,6 +16,7 @@ const { Console } = require('console');
 // because unit tests will create multiple instances of this module)
 let nativeStdWrite = process.stdout.nativeWrite || (process.stdout.nativeWrite = process.stdout.write);
 let fileLoggers = new Map();
+const { join } = pathModule;
 
 const MAX_LOG_BUFFER = 10000;
 const LOG_LEVEL_HIERARCHY = {
@@ -34,10 +35,10 @@ const OUTPUTS = {
 };
 
 // Install log is created in harperdb/logs because the hdb folder doesn't exist initially during the install process.
-const INSTALL_LOG_LOCATION = path.join(PACKAGE_ROOT, `logs`);
+const INSTALL_LOG_LOCATION = join(PACKAGE_ROOT, `logs`);
 
 // Location of default config YAML.
-const DEFAULT_CONFIG_FILE = path.join(PACKAGE_ROOT, 'config/yaml/', hdbTerms.HDB_DEFAULT_CONFIG_FILE);
+const DEFAULT_CONFIG_FILE = join(PACKAGE_ROOT, 'config/yaml/', hdbTerms.HDB_DEFAULT_CONFIG_FILE);
 
 const CLOSE_LOG_FD_TIMEOUT = 10000;
 
@@ -56,6 +57,52 @@ let logImmediately;
 // If this is the first time logger is called by process, hdb props will be undefined.
 // Call init to get all the required log settings.
 let hdbProperties;
+
+let rootConfig;
+
+function updateLogger(logger, logOptions, name) {
+	logger.rotation = logOptions.rotation;
+	let path = logOptions.path;
+	if (path) {
+		if (!logOptions.root) logOptions.root = pathModule.dirname(path);
+	} else if (logOptions.root) {
+		path = join(logOptions.root, logName);
+	} else {
+		path = mainLogger.path;
+		if (!logOptions.root) logOptions.root = pathModule.dirname(path);
+	}
+	if (path) logger.path = path;
+	else console.error('No path for logger', logOptions);
+	logger.level = LOG_LEVEL_HIERARCHY[logOptions.level] ?? mainLogger?.level ?? LOG_LEVEL_HIERARCHY.info;
+	logger.logToStdstreams = logOptions.stdStreams ?? false;
+	// if there is a configured tag or if a component is logging to default/main log path, use the component name as the tag
+	// to differentiate it
+	logger.tag = logOptions.tag ?? (mainLogger.path === logger.path && name);
+}
+async function updateLogSettings() {
+	if (!rootConfig) {
+		// set up the initial watcher
+		rootConfig = new RootConfigWatcher();
+		// wait for it to be ready
+		await rootConfig.ready();
+		// TODO: Any way to differentiate changes that we can and can't handle?
+		rootConfig.on('change', updateLogSettings);
+	}
+	let rootConfigObject = rootConfig.config;
+	const logOptions = rootConfigObject.logging ?? {};
+	updateLogger(mainLogger, logOptions);
+	logFilePath = mainLogger.path;
+	logConsole = logOptions.console ?? false;
+	for (const name in rootConfigObject) {
+		// we now scan each component to see if it has logging individual configured
+		const component = rootConfigObject[name];
+		if (component.logging) {
+			updateLogger(mainLogger.forComponent(name), component.logging, name);
+		} else if (mainLogger.hasComponent(name)) {
+			updateLogger(mainLogger.forComponent(name), logOptions, name);
+		}
+	}
+}
 
 class HarperLogger extends Console {
 	constructor(streams, level) {
@@ -132,6 +179,10 @@ class HarperLogger extends Console {
 		// to be replaced
 		return this;
 	}
+	hasComponent(name) {
+		// to be replaced
+		return false;
+	}
 }
 
 if (hdbProperties === undefined) initLogSettings();
@@ -153,9 +204,14 @@ module.exports = {
 	createLogger,
 	logsAtLevel,
 	getLogFilePath: () => logFilePath,
+	forComponent: (name) => mainLogger.forComponent(name),
 	setMainLogger,
 	OUTPUTS,
 	AuthAuditLog,
+	// for now these functions at least notify us of when the component system is ready so
+	// we can start using the RootConfigWatcher
+	start: updateLogSettings,
+	startOnMainThread: updateLogSettings,
 };
 function getLogFilePath() {
 	return logFilePath;
@@ -189,7 +245,7 @@ function initLogSettings(forceInit = false) {
 				// This is here for situations where HDB isn't using a boot file
 				if (
 					!properties.ROOTPATH ||
-					(properties.ROOTPATH && !fs.pathExistsSync(path.join(properties.ROOTPATH, hdbTerms.HDB_CONFIG_FILE)))
+					(properties.ROOTPATH && !fs.pathExistsSync(join(properties.ROOTPATH, hdbTerms.HDB_CONFIG_FILE)))
 				)
 					throw err;
 			}
@@ -205,13 +261,11 @@ function initLogSettings(forceInit = false) {
 				rotation,
 				toStream: logToStdstreams,
 			} = getLogConfig(
-				properties.ROOTPATH
-					? path.join(properties.ROOTPATH, hdbTerms.HDB_CONFIG_FILE)
-					: hdbProperties.get('settings_path')
+				properties.ROOTPATH ? join(properties.ROOTPATH, hdbTerms.HDB_CONFIG_FILE) : hdbProperties.get('settings_path')
 			));
 
 			logName = hdbTerms.LOG_NAMES.HDB;
-			logFilePath = path.join(logRoot, logName);
+			logFilePath = join(logRoot, logName);
 
 			mainLogger = createLogger({
 				path: logFilePath,
@@ -223,7 +277,7 @@ function initLogSettings(forceInit = false) {
 			if (isMainThread) {
 				try {
 					const SegfaultHandler = require('segfault-handler');
-					SegfaultHandler.registerHandler(path.join(logRoot, 'crash.log'));
+					SegfaultHandler.registerHandler(join(logRoot, 'crash.log'));
 				} catch (error) {
 					// optional dependency, ok if we can't run it
 				}
@@ -231,10 +285,7 @@ function initLogSettings(forceInit = false) {
 		}
 	} catch (err) {
 		hdbProperties = undefined;
-		if (
-			err.code === hdbTerms.NODE_ERROR_CODES.ENOENT ||
-			err.code === hdbTerms.NODE_ERROR_CODES.ERR_INVALID_ARG_TYPE
-		) {
+		if (err.code === hdbTerms.NODE_ERROR_CODES.ENOENT || err.code === hdbTerms.NODE_ERROR_CODES.ERR_INVALID_ARG_TYPE) {
 			// If the env settings haven't been initialized check cmd/env vars for values. If values not found used default.
 			const cmdEnvs = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
 			for (const key in cmdEnvs) {
@@ -314,7 +365,7 @@ function loggerWithTag(tag, conditional, logger = mainLogger) {
 			? function (...args) {
 					currentTag = tag;
 					try {
-						return loggerMethod.call(logger, args);
+						return loggerMethod.call(logger, ...args);
 					} finally {
 						currentTag = undefined;
 					}
@@ -356,7 +407,7 @@ function createLogger({
 	 */
 	function logStdOut(log) {
 		if (log_to_file) {
-			if (logToStdstreams) {
+			if (logger.logToStdstreams) {
 				// eslint-disable-next-line no-control-regex,sonarjs/no-control-regex
 				logToFile(log.replace(/\x1b\[[0-9;]*m/g, '')); // remove color codes
 				loggingEnabled = false;
@@ -397,6 +448,7 @@ function createLogger({
 				let tags = [currentLevel];
 				tags.unshift(currentServiceName || SERVICE_NAME + '/' + threadId);
 				if (currentTag) tags.push(currentTag);
+				if (logger.tag) tags.push(logger.tag);
 				write(`[${tags.join('] [')}]: ${log}`);
 			},
 		};
@@ -419,7 +471,19 @@ function createLogger({
 		level
 	);
 	logger.path = logFilePath;
+	Object.defineProperty(logger, 'path', {
+		get() {
+			return logFilePath;
+		},
+		set(path) {
+			logFilePath = path;
+			logToFile = getFileLogger(logFilePath, logger.rotation, isMainInstance);
+			if (isMainInstance) writeToLogFile = logToFile;
+		},
+		enumerable: true,
+	});
 	logger.closeLogFile = logToFile?.closeLogFile;
+	logger.logToStdstreams = logToStdstreams;
 	if (!component) {
 		let components = new Map();
 		logger.forComponent = function (name) {
@@ -437,6 +501,9 @@ function createLogger({
 				components.set(name, componentLogger);
 			}
 			return componentLogger;
+		};
+		logger.hasComponent = function (name) {
+			return components.has(name);
 		};
 	}
 	return logger;
@@ -458,19 +525,22 @@ function getFileLogger(path, rotation, isMainInstance) {
 		logger.closeLogFile = closeLogFile;
 		logger.path = path;
 		fileLoggers.set(path, logger);
-		if (isMainThread && rotation) {
-			setTimeout(() => {
-				const logRotator = require('./logRotator.js');
-				try {
-					logRotator({
-						logger,
-						...rotation,
-					});
-				} catch (error) {
-					logger('Error initializing log rotator', error);
-				}
-			}, 100);
-		}
+	}
+	if (isMainThread && JSON.stringify(rotation) !== JSON.stringify(logger.rotation)) {
+		logger.rotation = rotation;
+		setTimeout(() => {
+			logger.rotator?.end();
+			if (!rotation) return;
+			const logRotator = require('./logRotator.js');
+			try {
+				logger.rotator = logRotator({
+					logger,
+					...rotation,
+				});
+			} catch (error) {
+				logger('Error initializing log rotator', error);
+			}
+		}, 100);
 	}
 	let logCount = 0;
 	return logger;
@@ -521,12 +591,17 @@ function getFileLogger(path, rotation, isMainInstance) {
 		if (isMainInstance) mainLogFd = null;
 	}
 
-	function openLogFile() {
+	function openLogFile(isRetry) {
 		if (!logFD) {
 			try {
 				logFD = fs.openSync(path, 'a');
 				if (isMainInstance) mainLogFd = logFD;
 			} catch (error) {
+				if (error.code === 'ENOENT' && !isRetry) {
+					// if the directory doesn't exist, create it
+					fs.mkdirpSync(pathModule.dirname(path));
+					return openLogFile(true);
+				}
 				if (!loggedFDError) {
 					loggedFDError = true;
 					console.error(error);
@@ -627,10 +702,10 @@ function getPropsFilePath() {
 		homeDir = '~/';
 	}
 
-	let _bootPropsFilePath = path.join(homeDir, hdbTerms.HDB_HOME_DIR_NAME, hdbTerms.BOOT_PROPS_FILE_NAME);
+	let _bootPropsFilePath = join(homeDir, hdbTerms.HDB_HOME_DIR_NAME, hdbTerms.BOOT_PROPS_FILE_NAME);
 	// this checks how we used to store the boot props file for older installations.
 	if (!fs.existsSync(_bootPropsFilePath)) {
-		_bootPropsFilePath = path.join(PACKAGE_ROOT, 'utility/hdb_boot_properties.file');
+		_bootPropsFilePath = join(PACKAGE_ROOT, 'utility/hdb_boot_properties.file');
 	}
 	return _bootPropsFilePath;
 }
@@ -660,7 +735,7 @@ function getLogConfig(hdbConfigPath) {
 			const oldHdbSettings = PropertiesReader(hdbConfigPath);
 			return {
 				level: oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY),
-				configLogPath: path.dirname(oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY)),
+				configLogPath: pathModule.dirname(oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY)),
 				toFile: oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_TO_FILE),
 				toStream: oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS),
 			};
@@ -732,3 +807,5 @@ function AuthAuditLog(username, status, type, originatingIp, requestMethod, path
 	this.request_method = requestMethod;
 	this.path = path;
 }
+// we have to load this at the end to avoid circular dependencies problems
+const { RootConfigWatcher } = require('../../config/RootConfigWatcher');

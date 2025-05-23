@@ -13,7 +13,7 @@ const {
 	InvalidRootOptionError,
 	InvalidPathOptionError,
 	InvalidURLPathOptionError,
-} = require('../../components/componentLoader');
+} = require('../../components/Component');
 const { Resources } = require('../../resources/Resources');
 const assert = require('node:assert/strict');
 const { join } = require('node:path');
@@ -21,7 +21,7 @@ const { mkdtempSync, writeFileSync, mkdirSync, rmSync } = require('node:fs');
 const { fake, restore, replace } = require('sinon');
 const fg = require('fast-glob');
 
-const TEMP_DIR_PATH = join(tmpdir(), 'harper.unit-test.process-resource-extension-component-');
+const TEMP_DIR_PATH = join(tmpdir(), 'harper.unit-test.component-');
 
 function createFixture(dirPath, fixture) {
 	mkdirSync(dirPath, { recursive: true });
@@ -42,7 +42,7 @@ function createTempFixture(fixture) {
 	return root;
 }
 
-describe('componentLoader', () => {
+describe('Component', () => {
 	const componentName = 'test-component';
 
 	const harperLogger = require('../../utility/logging/harper_logger');
