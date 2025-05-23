@@ -172,7 +172,6 @@ describe('HierarchicalNavigableSmallWorld indexing', () => {
 					l++;
 					continue;
 				}
-				//assert(connections.length > 0);
 				// compute the average distance of the neighbors in this level
 				let totalDistance = 0;
 				let asymmetries = 0;

@@ -754,11 +754,10 @@ export function table(tableDefinition: TableDefinition) {
 
 			// note that non-indexed attributes do not need a dbi
 			if (attributeDescriptor?.attribute && !attributeDescriptor.name) attributeDescriptor.indexed = true; // legacy descriptor
-			const indexDefinition = (attribute) => (attribute.indexed && attribute.indexed.type) || attribute.indexed;
 			const changed =
 				!attributeDescriptor ||
 				attributeDescriptor.type !== attribute.type ||
-				indexDefinition(attributeDescriptor) !== indexDefinition(attribute) ||
+				JSON.stringify(attributeDescriptor) !== JSON.stringify(attribute) ||
 				attributeDescriptor.nullable !== attribute.nullable ||
 				attributeDescriptor.version !== attribute.version ||
 				JSON.stringify(attributeDescriptor.properties) !== JSON.stringify(attribute.properties) ||
