@@ -1,10 +1,9 @@
 'use strict';
 
 const assert = require('node:assert/strict');
-const fs = require('node:fs');
+const { mkdir, readFile, rm, stat, writeFile } = require('node:fs/promises');
 const { join } = require('node:path');
 const sinon = require('sinon');
-const { promises: fsPromises } = fs;
 const dataLoader = require('../../resources/dataLoader.ts');
 
 // Helper function to create a record with getUpdatedTime method
@@ -35,7 +34,6 @@ describe('Data Loader', function () {
 
 	// Mock tables
 	let mockTables;
-	this.testfoothing = 'test';
 	
 	// Create a base ensureTable function
 	const baseEnsureTable = async (options) => {
@@ -64,12 +62,13 @@ describe('Data Loader', function () {
 	// Will hold the spy on ensureTable function
 	let mockEnsureTable;
 	
-	
 	before(async function () {
 		// Create temp directory and files
-		if (!fs.existsSync(tempDir)) {
-			fs.mkdirSync(tempDir, { recursive: true });
-		}
+		await stat(tempDir)
+			.catch(() => {
+				// Directory doesn't exist, create it
+				return mkdir(tempDir, { recursive: true });
+			})
 
 		// Create test YAML file
 		const yamlContent = `
@@ -83,7 +82,7 @@ records:
     name: "Test Item 2"
     value: 200
 `;
-		await fsPromises.writeFile(yamlDataFile, yamlContent);
+		await writeFile(yamlDataFile, yamlContent);
 
 		// Create test JSON file
 		const jsonContent = `{
@@ -102,7 +101,7 @@ records:
     }
   ]
 }`;
-		await fsPromises.writeFile(jsonDataFile, jsonContent);
+		await writeFile(jsonDataFile, jsonContent);
 
 		// Create complex JSON file with various data types
 		const complexContent = `{
@@ -124,14 +123,16 @@ records:
     }
   ]
 }`;
-		await fsPromises.writeFile(complexDataFile, complexContent);
+		await writeFile(complexDataFile, complexContent);
 	});
 
 	after(async function () {
 		// Clean up test files
-		if (fs.existsSync(tempDir)) {
-			fs.rmSync(tempDir, { recursive: true, force: true });
-		}
+		await stat(tempDir)
+			.then(() => {
+				// Directory exists, remove it
+				return rm(tempDir, { recursive: true, force: true });
+			});
 	});
 
 	beforeEach(function () {
@@ -139,9 +140,6 @@ records:
 		mockTables = {};
 		// Create a fresh spy on the ensureTable function for each test
 		mockEnsureTable = sinon.spy(baseEnsureTable);
-		console.log(this.testfoothing)
-		this.testboothing = 'test2';
-		
 	});
 	
 	afterEach(function() {
@@ -151,8 +149,7 @@ records:
 
 	it('should load data from YAML file into empty table', async function () {
 		const loader = dataLoader.start({ ensureTable: mockEnsureTable });
-		const fileContent = await fsPromises.readFile(yamlDataFile);
-		console.log(this.testboothing)
+		const fileContent = await readFile(yamlDataFile);
 		const results = await loader.setupFile(fileContent, '/data/test', yamlDataFile);
 
 		// Check results
@@ -189,7 +186,7 @@ records:
 
 	it('should load data from JSON file into empty table', async function () {
 		const loader = dataLoader.start({ ensureTable: mockEnsureTable });
-		const fileContent = await fsPromises.readFile(jsonDataFile);
+		const fileContent = await readFile(jsonDataFile);
 
 		const results = await loader.setupFile(fileContent, '/data/test', jsonDataFile);
 
@@ -205,7 +202,7 @@ records:
 
 	it('should handle complex data with different types', async function () {
 		const loader = dataLoader.start({ ensureTable: mockEnsureTable });
-		const fileContent = await fsPromises.readFile(complexDataFile);
+		const fileContent = await readFile(complexDataFile);
 
 		const results = await loader.setupFile(fileContent, '/data/test', complexDataFile);
 
@@ -260,7 +257,7 @@ records:
 		mockTables['dev.test_table'].records.push(record1, record2);
 
 		const loader = dataLoader.start({ ensureTable: mockEnsureTable });
-		const fileContent = await fsPromises.readFile(yamlDataFile);
+		const fileContent = await readFile(yamlDataFile);
 
 		const results = await loader.setupFile(fileContent, '/data/test', yamlDataFile);
 
@@ -297,10 +294,10 @@ records:
     value: 200
 `;
 		const updatedYamlFile = join(tempDir, 'updated-data.yaml');
-		await fsPromises.writeFile(updatedYamlFile, yamlContent);
+		await writeFile(updatedYamlFile, yamlContent);
 
 		const loader = dataLoader.start({ ensureTable: mockEnsureTable });
-		const fileContent = await fsPromises.readFile(updatedYamlFile);
+		const fileContent = await readFile(updatedYamlFile);
 
 		const results = await loader.setupFile(fileContent, '/data/test', updatedYamlFile);
 
@@ -346,10 +343,10 @@ records:
   ]
 }`;
 		const invalidFile = join(tempDir, 'invalid-format.json');
-		await fsPromises.writeFile(invalidFile, invalidContent);
+		await writeFile(invalidFile, invalidContent);
 
 		const loader = dataLoader.start({ ensureTable: mockEnsureTable });
-		const fileContent = await fsPromises.readFile(invalidFile);
+		const fileContent = await readFile(invalidFile);
 
 		const results = await loader.setupFile(fileContent, '/data/test', invalidFile);
 		
@@ -371,10 +368,10 @@ records:
   "records": { "id": 1, "name": "Not an array" }
 }`;
 		const invalidFile = join(tempDir, 'non-array.json');
-		await fsPromises.writeFile(invalidFile, invalidContent);
+		await writeFile(invalidFile, invalidContent);
 
 		const loader = dataLoader.start({ ensureTable: mockEnsureTable });
-		const fileContent = await fsPromises.readFile(invalidFile);
+		const fileContent = await readFile(invalidFile);
 
 		// Now we expect an error to be thrown
 		try {
@@ -410,7 +407,7 @@ records:
   ]
 }`;
 		const errorFile = join(tempDir, 'error-table.json');
-		await fsPromises.writeFile(errorFile, errorContent);
+		await writeFile(errorFile, errorContent);
 
 		// Create a separate test file for success case
 		const successContent = `{
@@ -421,12 +418,12 @@ records:
   ]
 }`;
 		const successFile = join(tempDir, 'success-table.json');
-		await fsPromises.writeFile(successFile, successContent);
+		await writeFile(successFile, successContent);
 
 		const loader = dataLoader.start({ ensureTable: errorEnsureTable });
 
 		// Test error case - this should now throw a RecordProcessingError
-		const errorFileContent = await fsPromises.readFile(errorFile);
+		const errorFileContent = await readFile(errorFile);
 
 		try {
 			await loader.setupFile(errorFileContent, '/data/test', errorFile);
@@ -440,7 +437,7 @@ records:
 		}
 
 		// Test success case - this should still work as before
-		const successFileContent = await fsPromises.readFile(successFile);
+		const successFileContent = await readFile(successFile);
 		const successResults = await loader.setupFile(successFileContent, '/data/test', successFile);
 
 		assert.ok(successResults instanceof dataLoader.DataLoaderResult);
@@ -459,10 +456,10 @@ records:
   ]
 }`;
 		const noDbFile = join(tempDir, 'no-db.json');
-		await fsPromises.writeFile(noDbFile, noDbContent);
+		await writeFile(noDbFile, noDbContent);
 		
 		const loader = dataLoader.start({ ensureTable: mockEnsureTable });
-		const fileContent = await fsPromises.readFile(noDbFile);
+		const fileContent = await readFile(noDbFile);
 		
 		const results = await loader.setupFile(fileContent, '/data/test', noDbFile);
 		
@@ -485,10 +482,10 @@ records:
   ]
 }`;
 		const systemFile = join(tempDir, 'system-db.json');
-		await fsPromises.writeFile(systemFile, systemContent);
+		await writeFile(systemFile, systemContent);
 
 		const loader = dataLoader.start({ ensureTable: mockEnsureTable });
-		const fileContent = await fsPromises.readFile(systemFile);
+		const fileContent = await readFile(systemFile);
 
 		// Now we expect an error to be thrown
 		try {
@@ -509,7 +506,7 @@ records:
 	
 	it('should properly process data files through the setupFile method', async function () {
 		const loader = dataLoader.start({ ensureTable: mockEnsureTable });
-		const fileContent = await fsPromises.readFile(yamlDataFile);
+		const fileContent = await readFile(yamlDataFile);
 
 		// Process YAML data through setupFile
 		const results = await loader.setupFile(fileContent, '/data/test', yamlDataFile);
@@ -537,17 +534,17 @@ records:
   ]
 }`;
 		const globalTableFile = join(tempDir, 'global-table.json');
-		await fsPromises.writeFile(globalTableFile, globalTableContent);
+		await writeFile(globalTableFile, globalTableContent);
 
 		// Create a spy for our table's put method
-		const putSpy = sinon.spy(async (record) => {
+		const putSpy = sinon.spy(async (_record) => {
 			return { inserted: 1 };
 		});
 
 		// Create a mock table with our test data
 		const mockTableOverride = {
 			global_table_test: {
-				get: async (id) => {
+				get: async (_id) => {
 					// Return null to simulate no existing record
 					return null;
 				},
@@ -566,7 +563,7 @@ records:
 			tablesOverride: mockTableOverride
 		});
 
-		const fileContent = await fsPromises.readFile(globalTableFile);
+		const fileContent = await readFile(globalTableFile);
 		const results = await loader.setupFile(fileContent, '/data/test', globalTableFile);
 
 		// Check results
@@ -592,17 +589,17 @@ records:
   ]
 }`;
 		const dbTableFile = join(tempDir, 'db-table.json');
-		await fsPromises.writeFile(dbTableFile, dbTableContent);
+		await writeFile(dbTableFile, dbTableContent);
 
 		// Create a spy for our table's put method
-		const putSpy = sinon.spy(async (record) => {
+		const putSpy = sinon.spy(async (_record) => {
 			return { inserted: 1 };
 		});
 
 		// Create a mock table in a mock database
 		const mockDb = {
 			db_table_test: {
-				get: async (id) => {
+				get: async (_id) => {
 					// Return null to simulate no existing record
 					return null;
 				},
@@ -626,7 +623,7 @@ records:
 			databasesOverride: mockDatabasesOverride
 		});
 
-		const fileContent = await fsPromises.readFile(dbTableFile);
+		const fileContent = await readFile(dbTableFile);
 		const results = await loader.setupFile(fileContent, '/data/test', dbTableFile);
 
 		// Check results
@@ -743,7 +740,7 @@ records:
   "records": []
 }`;
 		const emptyErrorFile = join(tempDir, 'empty-with-errors.json');
-		await fsPromises.writeFile(emptyErrorFile, emptyContentWithErrors);
+		await writeFile(emptyErrorFile, emptyContentWithErrors);
 
 		// Create a mock function that gets called during record processing to test error handling branches
 		const putWithError = sinon.spy(async () => {
@@ -756,12 +753,12 @@ records:
 			schema: undefined,
 			attributes: [],
 			records: [],
-			get: async (id) => null,
+			get: async (_id) => null,
 			put: putWithError
 		};
 
 		const loader = dataLoader.start({ ensureTable: mockEnsureTable });
-		const fileContent = await fsPromises.readFile(emptyErrorFile);
+		const fileContent = await readFile(emptyErrorFile);
 
 		// Since records array is empty, we'll just get a success result with 0 records
 		const results = await loader.setupFile(fileContent, '/data/test', emptyErrorFile);
@@ -784,10 +781,10 @@ records:
   "records": []
 }`;
 		const emptyRecordsFile = join(tempDir, 'empty-records.json');
-		await fsPromises.writeFile(emptyRecordsFile, emptyRecordsContent);
+		await writeFile(emptyRecordsFile, emptyRecordsContent);
 
 		const loader = dataLoader.start({ ensureTable: mockEnsureTable });
-		const fileContent = await fsPromises.readFile(emptyRecordsFile);
+		const fileContent = await readFile(emptyRecordsFile);
 
 		const results = await loader.setupFile(fileContent, '/data/test', emptyRecordsFile);
 
@@ -807,7 +804,7 @@ records:
   ]
 }`;
 		const errorSimFile = join(tempDir, 'error-simulated.json');
-		await fsPromises.writeFile(errorSimFile, errorSimContent);
+		await writeFile(errorSimFile, errorSimContent);
 
 		// Create a table with a put method that throws an error
 		const errorTable = {
@@ -815,7 +812,7 @@ records:
 			schema: undefined,
 			attributes: [],
 			records: [],
-			get: async (id) => null,
+			get: async (_id) => null,
 			put: sinon.stub().rejects(new Error('Simulated put error'))
 		};
 
@@ -824,7 +821,7 @@ records:
 
 		// Use the custom ensureTable
 		const loader = dataLoader.start({ ensureTable: errorEnsureTable });
-		const fileContent = await fsPromises.readFile(errorSimFile);
+		const fileContent = await readFile(errorSimFile);
 
 		// We now expect this to throw an error
 		try {
@@ -851,7 +848,7 @@ records:
   ]
 }`;
 		const errorFile = join(tempDir, 'error-rethrow.json');
-		await fsPromises.writeFile(errorFile, errorContent);
+		await writeFile(errorFile, errorContent);
 
 		// Create a DataLoaderError to throw
 		const customError = new dataLoader.DataLoaderError('Custom DataLoaderError for testing');
@@ -861,7 +858,7 @@ records:
 
 		// Create a loader with our error-throwing ensureTable
 		const loader = dataLoader.start({ ensureTable: errorThrowingEnsureTable });
-		const fileContent = await fsPromises.readFile(errorFile);
+		const fileContent = await readFile(errorFile);
 
 		// Since we're throwing from ensureTable, it should be caught and rethrown
 		try {
@@ -886,7 +883,7 @@ records:
   ]
 }`;
 		const mixedFile = join(tempDir, 'mixed-results.json');
-		await fsPromises.writeFile(mixedFile, mixedContent);
+		await writeFile(mixedFile, mixedContent);
 
 		// Pre-populate a record that will be skipped due to timestamp
 		const existingRecord = createTestRecord({ id: 3, name: "Existing record", _updatedTime: Date.now() + 10000 }); // Future timestamp
@@ -911,7 +908,7 @@ records:
 		};
 
 		const loader = dataLoader.start({ ensureTable: mockEnsureTable });
-		const fileContent = await fsPromises.readFile(mixedFile);
+		const fileContent = await readFile(mixedFile);
 
 		const results = await loader.setupFile(fileContent, '/data/test', mixedFile);
 
