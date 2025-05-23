@@ -25,9 +25,9 @@ export class RequestTarget extends URLSearchParams {
 	declare enforceExecutionOrder?: boolean;
 	declare lazy?: boolean;
 	constructor(target?: string) {
-		const searchIndex = target?.indexOf('?');
+		let searchIndex: number | undefined;
 		let path: string | undefined;
-		if ((searchIndex as number) > -1) {
+		if (target && (searchIndex = target.indexOf('?')) > -1) {
 			path = (target as string).slice(0, searchIndex);
 			const search = (target as string).slice((searchIndex as number) + 1);
 			super(search);
