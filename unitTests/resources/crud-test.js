@@ -6,11 +6,6 @@ const { table } = require('../../resources/databases');
 const { transaction } = require('../../resources/transaction');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
 const { RequestTarget } = require('../../resources/RequestTarget');
-let x = 532532;
-function random(max) {
-	x = (x * 16843009 + 3014898611) >>> 0;
-	return x % max;
-}
 
 // might want to enable an iteration with NATS being assigned as a source
 describe('CRUD operations with the Resource API', () => {

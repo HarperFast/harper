@@ -186,9 +186,11 @@ class SubscriptionsSession {
 			throw notFoundError;
 		}
 		request.target = entry.relativeURL;
-		if (request.target.indexOf('+') > -1 || request.target.indexOf('#') > -1) {
+		let hashIndex: number;
+		if (request.target.indexOf('+') > -1 || (hashIndex = request.target.indexOf('#')) > -1) {
 			const path = request.target.slice(1); // remove leading slash
-			if (path.indexOf('#') > -1 && path.indexOf('#') !== path.length - 1)
+			hashIndex--; // adjust accordingly
+			if (hashIndex > -1 && hashIndex !== path.length - 1)
 				throw new Error('Multi-level wildcards can only be used at the end of a topic');
 			// treat as a collection to get all children, but we will need to filter out any that are not direct children or matching the pattern
 			request.isCollection = true; // used by Resource to determine if the resource should be treated as a collection
