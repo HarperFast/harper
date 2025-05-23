@@ -757,7 +757,7 @@ export function table(tableDefinition: TableDefinition) {
 			const changed =
 				!attributeDescriptor ||
 				attributeDescriptor.type !== attribute.type ||
-				JSON.stringify(attributeDescriptor) !== JSON.stringify(attribute) ||
+				JSON.stringify(attributeDescriptor.indexed) !== JSON.stringify(attribute.indexed) ||
 				attributeDescriptor.nullable !== attribute.nullable ||
 				attributeDescriptor.version !== attribute.version ||
 				JSON.stringify(attributeDescriptor.properties) !== JSON.stringify(attribute.properties) ||

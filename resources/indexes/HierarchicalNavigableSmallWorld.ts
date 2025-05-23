@@ -378,6 +378,7 @@ export class HierarchicalNavigableSmallWorld {
 				visited.add(neighborId);
 
 				const neighbor = this.indexStore.get(neighborId);
+				if (!neighbor) continue;
 				this.nodesVisitedCount++;
 				const distance = distanceFunction(queryVector, neighbor.vector);
 
