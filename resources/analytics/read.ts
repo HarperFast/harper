@@ -2,7 +2,7 @@ import type { Metric } from './write.ts';
 import { loggerWithTag } from '../../utility/logging/harper_logger.js';
 import { getAnalyticsHostnameTable } from './hostnames.ts';
 import type { Resource } from 'harperdb';
-import type { Conditions } from '../ResourceInterface.ts';
+import type { Condition, Conditions } from '../ResourceInterface.ts';
 import { METRIC, type BuiltInMetricName } from './metadata.ts';
 
 const log = loggerWithTag('analytics');
@@ -15,7 +15,7 @@ async function lookupHostname(nodeId: number): Promise<string> {
 }
 
 function isSelected(querySelect: string[], attr: string) {
-	return (querySelect.length === 1 && querySelect[0] === '*') || querySelect.includes(attr);
+	return querySelect.length === 0 || querySelect.includes(attr);
 }
 
 interface GetAnalyticsRequest {
@@ -23,18 +23,22 @@ interface GetAnalyticsRequest {
 	start_time?: number;
 	end_time?: number;
 	get_attributes?: string[];
+	conditions?: Conditions;
 }
 
 type GetAnalyticsResponse = Metric[];
 
 export function getOp(req: GetAnalyticsRequest): Promise<GetAnalyticsResponse> {
 	log.trace?.("get_analytics request:", req);
-	return get(req.metric, req.get_attributes, req.start_time, req.end_time);
+	return get(req.metric, req.get_attributes, req.start_time, req.end_time, req.conditions);
 }
 
-export async function get(metric: string, getAttributes?: string[], startTime?: number, endTime?: number): Promise<Metric[]> {
+export async function get(metric: string, getAttributes?: string[], startTime?: number, endTime?: number, additionalConditions?: Conditions): Promise<Metric[]> {
 	const conditions: Conditions = [{ attribute: 'metric', comparator: 'equals', value: metric }];
-	const select = getAttributes ?? ['*'];
+	if (additionalConditions) {
+		conditions.push(...additionalConditions);
+	}
+	const select = getAttributes ?? [];
 
 	// ensure we're always selecting id
 	if (!isSelected(select, 'id')) {
@@ -56,8 +60,11 @@ export async function get(metric: string, getAttributes?: string[], startTime?: 
 		});
 	}
 
-	const request = { conditions, select };
-	log.trace?.("get_analytics hdb_analytics.search request:", request);
+	const request = { conditions };
+	if (select.length > 0) {
+		request['select'] = select;
+	}
+	log.trace?.("get_analytics hdb_analytics.search request:", JSON.stringify(request));
 	const searchResults = await databases.system.hdb_analytics.search(request);
 
 	return searchResults.map(async (result: Metric) => {
