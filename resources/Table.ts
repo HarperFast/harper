@@ -2104,19 +2104,6 @@ export function makeTable(options) {
 		 * @returns
 		 */
 		static transformEntryForSelect(select, context, readTxn, filtered, ensure_loaded?, canSkip?) {
-			if (
-				select &&
-				(select === primaryKey || (select?.length === 1 && select[0] === primaryKey && Array.isArray(select)))
-			) {
-				// fast path if only the primary key is selected, so we don't have to load records
-				const transform = (entry) => {
-					if (context?.transaction?.stale) context.transaction.stale = false;
-					return entry?.key ?? entry;
-				};
-				if (select === primaryKey) return transform;
-				else if (select.asArray) return (entry) => [transform(entry)];
-				else return (entry) => ({ [primaryKey]: transform(entry) });
-			}
 			let checkLoaded;
 			if (
 				ensure_loaded &&
