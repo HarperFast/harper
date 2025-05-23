@@ -1400,9 +1400,12 @@ export function makeTable(options) {
 			// always return undefined
 		}
 		patch(target: RequestTarget, recordUpdate: any): void | Promise<void> {
-			if (recordUpdate === undefined || recordUpdate instanceof URLSearchParams) this.update(target, false);
-			else {
-				const result = this.update(target, recordUpdate, false);
+			if (recordUpdate === undefined || recordUpdate instanceof URLSearchParams) {
+				// legacy argument position, shift the arguments and go through the update method for back-compat
+				this.update(target, false);
+			} else {
+				// standard path, ensure there is no return object
+				const result = this.update(target, recordUpdate);
 				if (result?.then) return result.then(() => undefined); // wait for the update, but return undefined
 			}
 		}
