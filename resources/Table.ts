@@ -1825,7 +1825,7 @@ export function makeTable(options) {
 							);
 						if (attribute.indexed) {
 							// if it is indexed, we add a pseudo-condition to align with the natural sort order of the index
-							orderAlignedCondition = { attribute: attribute_name, comparator: 'sort' };
+							orderAlignedCondition = { ...sort, comparator: 'sort' };
 							conditions.push(orderAlignedCondition);
 						} else if (conditions.length === 0 && !request.allowFullScan)
 							throw handleHDBError(
@@ -1899,8 +1899,8 @@ export function makeTable(options) {
 				entries,
 				select,
 				postOrdering,
-				readTxn,
 				context,
+				readTxn,
 				transformToRecord
 			);
 			function applyOffset(entries: any[]) {
@@ -1968,6 +1968,7 @@ export function makeTable(options) {
 					function createComparator(order: Sort) {
 						const nextComparator = order.next && createComparator(order.next);
 						const descending = order.descending;
+						context.sort = order; // make sure this is set to the current sort order
 						return (entryA, entryB) => {
 							const a = getAttributeValue(entryA, order.attribute, context);
 							const b = getAttributeValue(entryB, order.attribute, context);
@@ -2199,6 +2200,7 @@ export function makeTable(options) {
 								value = resolver(record, context, entry);
 							}
 							const handleResolvedValue = (value: any) => {
+								if (resolver.directReturn) return callback(value, attribute_name);
 								if (value && typeof value === 'object') {
 									const targetTable = resolver.definition?.tableClass || TableResource;
 									if (!transformCache) transformCache = {};
@@ -2842,6 +2844,9 @@ export function makeTable(options) {
 				$updatedTime: (object, context, entry) => entry.version,
 				$expiresAt: (object, context, entry) => entry.expiresAt,
 				$record: (object, context, entry) => (entry ? { value: object } : object),
+				$distance: (object, context, entry) => {
+					return entry && (entry.distance ?? context?.vectorDistances?.get(entry));
+				},
 			};
 			for (const attribute of this.attributes) {
 				if (attribute.isPrimaryKey) primaryKeyAttribute = attribute;
@@ -2956,6 +2961,13 @@ export function makeTable(options) {
 							this.userResolvers[attribute.name] = () => {};
 						}
 					};
+				} else if (indices[attribute.name]?.customIndex?.propertyResolver) {
+					const customIndex = indices[attribute.name].customIndex;
+					propertyResolvers[attribute.name] = (object, context, entry) => {
+						const value = object[attribute.name];
+						return customIndex.propertyResolver(value, context, entry);
+					};
+					propertyResolvers[attribute.name].directReturn = true;
 				}
 			}
 			assignTrackedAccessors(this, this);
@@ -3079,6 +3091,10 @@ export function makeTable(options) {
 			const value = record && (resolver ? resolver(record) : record[key]);
 			const existingValue = existingRecord && (resolver ? resolver(existingRecord) : existingRecord[key]);
 			if (value === existingValue && !isIndexing) {
+				continue;
+			}
+			if (index.customIndex) {
+				index.customIndex.index(id, value, existingValue);
 				continue;
 			}
 			hasChanges = true;
@@ -3381,13 +3397,13 @@ export function makeTable(options) {
 			for (let i = 0, l = attribute_name.length; i < l; i++) {
 				const attribute = attribute_name[i];
 				const resolver = resolvers?.[attribute];
-				value = resolver && value ? resolver(value, context, true)?.value : value?.[attribute];
+				value = resolver && value ? resolver(value, context, entry)?.value : value?.[attribute];
 				resolvers = resolver?.definition?.tableClass?.propertyResolvers;
 			}
 			return value;
 		}
 		const resolver = propertyResolvers[attribute_name];
-		return resolver ? resolver(record, context) : record[attribute_name];
+		return resolver ? resolver(record, context, entry) : record[attribute_name];
 	}
 	function transformToEntries(ids, select, context, readTxn, filters?) {
 		// TODO: Test and ensure that we break out of these loops when a connection is lost
