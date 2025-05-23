@@ -19,6 +19,15 @@ import {
 import * as harperLogger from '../utility/logging/harper_logger.js';
 import './blob.ts';
 import { blobsWereEncoded, decodeFromDatabase, deleteBlobsInObject, encodeBlobsWithFilePath } from './blob.ts';
+export type Entry = {
+	key: any;
+	value: any;
+	version: number;
+	localTime: number;
+	expiresAt: number;
+	metadataFlags: number;
+	deref?: () => any;
+};
 
 // these are matched by lmdb-js for timestamp replacement. the first byte here is used to xor with the first byte of the date as a double so that it ends up less than 32 for easier identification (otherwise dates start with 66)
 export const TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 4, 0x40, 0, 0]);
@@ -28,6 +37,7 @@ export const PREVIOUS_TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 3, 0x4
 export const NEW_TIMESTAMP_PLACEHOLDER = new Uint8Array([1, 1, 1, 1, 0, 0x40, 0, 0]);
 export const LOCAL_TIMESTAMP = Symbol('local-timestamp');
 export const METADATA = Symbol('metadata');
+export const ENTRY = Symbol('entry');
 const TIMESTAMP_HOLDER = new Uint8Array(8);
 const TIMESTAMP_VIEW = new DataView(TIMESTAMP_HOLDER.buffer, 0, 8);
 export const NO_TIMESTAMP = 0;
@@ -40,6 +50,10 @@ export const HAS_RESIDENCY_ID = 32;
 export const PENDING_LOCAL_TIME = 1;
 export const HAS_STRUCTURE_UPDATE = 0x100;
 
+// For now we use this as the private property mechanism for mapping records to entries.
+// WeakMaps are definitely not the fastest form of private properties, but they are the only
+// way to do this with how the objects are frozen for now.
+export const entryMap = new WeakMap<any, Entry>();
 let lastEncoding,
 	lastValueEncoding,
 	timestampNextEncoding = 0,
@@ -49,6 +63,22 @@ let lastEncoding,
 export class RecordEncoder extends Encoder {
 	constructor(options) {
 		options.useBigIntExtension = true;
+		/**
+		 * The base class for records that provides the read-only methods for accessing
+		 * metadata and will be assigned computed property getters. On its own, these instances
+		 * are usually frozen, but this can be extended (by the Updatable class) for providing
+		 * mutation methods.
+		 */
+		class RecordObject {
+			getUpdatedTime() {
+				return entryMap.get(this)?.version;
+			}
+			getExpiresAt() {
+				return entryMap.get(this)?.expiresAt;
+			}
+		}
+
+		options.structPrototype = RecordObject.prototype;
 		super(options);
 		const superEncode = this.encode;
 		this.encode = function (record, options?) {
@@ -213,7 +243,12 @@ export function handleLocalTimeForGets(store, rootStore) {
 			entry.localTime = recordEntry.localTime;
 			entry.value = recordEntry.value;
 			entry.residencyId = recordEntry.residencyId;
-			if (recordEntry.expiresAt >= 0) entry.expiresAt = recordEntry.expiresAt;
+			if (recordEntry.expiresAt >= 0) {
+				entry.expiresAt = recordEntry.expiresAt;
+			}
+			if (entry.value) {
+				entryMap.set(entry.value, entry); // allow the record to access the entry
+			}
 		}
 		if (entry) entry.key = id;
 		return entry;
@@ -222,7 +257,14 @@ export function handleLocalTimeForGets(store, rootStore) {
 	store.get = function (id, options) {
 		const value = storeGet.call(this, id, options);
 		// an object with metadata, but we want to just return the value
-		return value?.[METADATA] >= 0 ? value.value : value;
+		if (value?.[METADATA] >= 0) {
+			if (value.value) {
+				// give access to the entry
+				entryMap.set(value.value, value); // allow the record to access the entry
+			}
+			return value.value;
+		}
+		return value;
 	};
 	//store.pendingTimestampUpdates = new Map();
 	const storeGetRange = store.getRange;
@@ -443,4 +485,8 @@ export function removeEntry(store: any, entry: any, existingVersion?: number) {
 		deleteBlobsInObject(entry.value);
 	}
 	return store.remove(entry.key, existingVersion);
+}
+export interface RecordObject {
+	getUpdatedTime(): number;
+	getExpiresAt(): number;
 }

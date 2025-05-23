@@ -9,7 +9,6 @@ import { SKIP, type Database } from 'lmdb';
 import { getIndexedValues, getNextMonotonicTime } from '../utility/lmdb/commonUtility.js';
 import lodash from 'lodash';
 import type {
-	Query,
 	ResourceInterface,
 	SubscriptionRequest,
 	Id,
@@ -17,9 +16,10 @@ import type {
 	Condition,
 	Sort,
 	SubSelect,
+	RequestTargetOrId,
 } from './ResourceInterface.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
-import { Resource } from './Resource.ts';
+import { Resource, contextStorage } from './Resource.ts';
 import { DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
 import { addSubscription } from './transactionBroadcast.ts';
@@ -36,19 +36,21 @@ import {
 	executeConditions,
 } from './search.ts';
 import logger from '../utility/logging/logger.js';
-import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges } from './tracked.ts';
+import { Addition, assignTrackedAccessors, updateAndFreeze, hasChanges, GenericTrackedObject } from './tracked.ts';
 import { transaction } from './transaction.ts';
 import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { HAS_BLOBS, readAuditEntry, removeAuditEntry } from './auditStore.ts';
 import { autoCast, convertToMS } from '../utility/common_utils.js';
-import { recordUpdater, removeEntry, PENDING_LOCAL_TIME } from './RecordEncoder.ts';
+import { recordUpdater, removeEntry, PENDING_LOCAL_TIME, RecordObject, type Entry, entryMap } from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject } from './blob.ts';
 import { onStorageReclamation } from '../server/storageReclamation.ts';
+import { RequestTarget } from './RequestTarget.ts';
+
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
 
@@ -59,14 +61,6 @@ type Attribute = {
 	assignUpdatedTime?: boolean;
 	expiresAt?: boolean;
 	isPrimaryKey?: boolean;
-};
-type Entry = {
-	key: any;
-	value: any;
-	version: number;
-	localTime: number;
-	expiresAt: number;
-	deref?: () => any;
 };
 
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
@@ -158,8 +152,8 @@ export function makeTable(options) {
 	let prefetchCallbacks = [];
 	let untilNextPrefetch = 1;
 	let nonPrefetchSequence = 2;
-	let applyToSources = {};
-	let applyToSourcesIntermediate = {};
+	let applyToSources: any = {};
+	let applyToSourcesIntermediate: any = {};
 	let cleanupInterval = 86400000;
 	let cleanupPriority = 0;
 	let lastCleanupInterval: number;
@@ -167,9 +161,8 @@ export function makeTable(options) {
 	let propertyResolvers: any;
 	let hasRelationships = false;
 	let runningRecordExpiration: boolean;
-	const residencyListToId = new Map();
-	const residencyIdToList = new Map();
-	let idIncrementer: BigInt64Array;
+	type BigInt64ArrayAndMaxSafeId = BigInt64Array & { maxSafeId: number };
+	let idIncrementer: BigInt64ArrayAndMaxSafeId;
 	let replicateToCount;
 	const databaseReplications = envMngr.get(CONFIG_PARAMS.REPLICATION_DATABASES);
 	if (Array.isArray(databaseReplications)) {
@@ -188,13 +181,34 @@ export function makeTable(options) {
 		if (hasSourceGet) return scheduleCleanup(priority);
 	});
 
+	class Updatable extends GenericTrackedObject implements RecordObject {
+		declare set: (property: string, value: any) => void;
+		declare getProperty: (property: string) => any;
+		getUpdatedTime(): number {
+			return entryMap.get(this.getRecord())?.version;
+		}
+		getExpiresAt(): number {
+			return entryMap.get(this.getRecord())?.expiresAt;
+		}
+		addTo(property: string, value: number | bigint) {
+			if (typeof value === 'number' || typeof value === 'bigint') {
+				this.set(property, new Addition(value));
+			} else {
+				throw new Error('Can not add or subtract a non-numeric value');
+			}
+		}
+		subtractFrom(property: string, value: number | bigint) {
+			return this.addTo(property, -value);
+		}
+	}
 	class TableResource extends Resource {
 		#record: any; // the stored/frozen record from the database and stored in the cache (should not be modified directly)
 		#changes: any; // the changes to the record that have been made (should not be modified directly)
-		#version: number; // version of the record
-		#entry: Entry; // the entry from the database
-		#saveMode: boolean; // indicates that the record is currently being saved
-		#loadedFromSource: boolean; // indicates that the record was loaded from the source
+		#version?: number; // version of the record
+		#entry?: Entry; // the entry from the database
+		#saveMode?: boolean; // indicates that the record is currently being saved
+		#loadedFromSource?: boolean; // indicates that the record was loaded from the source
+		declare getProperty: (name: string) => any;
 		static name = tableName; // for display/debugging purposes
 		static primaryStore = primaryStore;
 		static auditStore = auditStore;
@@ -213,7 +227,9 @@ export function makeTable(options) {
 		static updatedTimeProperty = updatedTimeProperty;
 		static propertyResolvers;
 		static userResolvers = {};
-		static sources = [];
+		static sources: (typeof TableResource)[] = [];
+		declare static sourceOptions: any;
+		declare static intermediateSource: boolean;
 		static getResidencyById: (id: Id) => number | void;
 		static get expirationMS() {
 			return expirationMs;
@@ -271,7 +287,7 @@ export function makeTable(options) {
 					} else {
 						return (context, id, data) => {
 							// if multiple intermediate sources, call them in parallel
-							const results = [];
+							const results: Promise<any>[] = [];
 							for (const source of sources) {
 								if (context?.source === source) break;
 								results.push(source[method](id, data, context));
@@ -282,7 +298,7 @@ export function makeTable(options) {
 				}
 			};
 			let canonicalSource = this.sources[this.sources.length - 1];
-			if (canonicalSource.intermediateSource) canonicalSource = {}; // don't treat intermediate sources as canonical
+			if (canonicalSource.intermediateSource) canonicalSource = {} as typeof TableResource; // don't treat intermediate sources as canonical
 			const getApplyToCanonicalSource = (method) => {
 				if (
 					canonicalSource[method] &&
@@ -342,26 +358,27 @@ export function makeTable(options) {
 						ensureLoaded: false,
 						nodeId: event.nodeId,
 					};
-					const resource: TableResource = await Table.getResource(event.id, context, options);
+					const id = event.id;
+					const resource: TableResource = await Table.getResource(id, context, options);
 					if (event.finished) await event.finished;
 					switch (event.type) {
 						case 'put':
 							return shouldRevalidateEvents
-								? resource._writeInvalidate(value, options)
-								: resource._writeUpdate(value, true, options);
+								? resource._writeInvalidate(id, value, options)
+								: resource._writeUpdate(id, value, true, options);
 						case 'patch':
 							return shouldRevalidateEvents
-								? resource._writeInvalidate(value, options)
-								: resource._writeUpdate(value, false, options);
+								? resource._writeInvalidate(id, value, options)
+								: resource._writeUpdate(id, value, false, options);
 						case 'delete':
-							return resource._writeDelete(options);
+							return resource._writeDelete(id, options);
 						case 'publish':
 						case 'message':
-							return resource._writePublish(value, options);
+							return resource._writePublish(id, value, options);
 						case 'invalidate':
-							return resource._writeInvalidate(value, options);
+							return resource._writeInvalidate(id, value, options);
 						case 'relocate':
-							return resource._writeRelocate(options);
+							return resource._writeRelocate(id, options);
 						default:
 							logger.error?.('Unknown operation', event.type, event.id);
 					}
@@ -386,8 +403,7 @@ export function makeTable(options) {
 					const subscribeOnThisThread = source.subscribeOnThisThread
 						? source.subscribeOnThisThread(getWorkerIndex(), subscriptionOptions)
 						: getWorkerIndex() === 0;
-					const subscription =
-						hasSubscribe && subscribeOnThisThread && (await source.subscribe?.(subscriptionOptions));
+					const subscription = hasSubscribe && subscribeOnThisThread && (await source.subscribe?.(subscriptionOptions));
 					if (subscription) {
 						let txnInProgress;
 						// we listen for events by iterating through the async iterator provided by the subscription
@@ -462,12 +478,13 @@ export function makeTable(options) {
 								const commitResolution = transaction(event, () => {
 									if (event.type === 'transaction') {
 										// if it is a transaction, we need to individually iterate through each write event
-										const promises = [];
+										const promises: Promise<any>[] = [];
 										for (const write of event.writes) {
 											try {
 												promises.push(writeUpdate(write, event));
 											} catch (error) {
-												error.message += ' writing ' + JSON.stringify(write) + ' of event ' + JSON.stringify(event);
+												(error as Error).message +=
+													' writing ' + JSON.stringify(write) + ' of event ' + JSON.stringify(event);
 												throw error;
 											}
 										}
@@ -475,7 +492,7 @@ export function makeTable(options) {
 									} else if (event.type === 'define_schema') {
 										// ensure table has the provided attributes
 										const updatedAttributes = this.attributes.slice(0);
-										let hasChanges: boolean;
+										let hasChanges = false;
 										for (const attribute of event.attributes) {
 											if (!updatedAttributes.find((existing) => existing.name === attribute.name)) {
 												updatedAttributes.push(attribute);
@@ -551,7 +568,7 @@ export function makeTable(options) {
 		 */
 		static getResource(id: Id, request: Context, resourceOptions?: any): Promise<TableResource> | TableResource {
 			const resource: TableResource = super.getResource(id, request, resourceOptions) as any;
-			if (id != null) {
+			if (id != null && this.loadAsInstance !== false) {
 				checkValidId(id);
 				try {
 					if (resource.getRecord?.()) return resource; // already loaded, don't reload, current version may have modifications
@@ -583,6 +600,7 @@ export function makeTable(options) {
 								if (loadingFromSource) {
 									txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
 									resource.#loadedFromSource = true;
+									request.loadedFromSource = true;
 									return when(loadingFromSource, (entry) => {
 										TableResource._updateResource(resource, entry);
 										return resource;
@@ -613,6 +631,7 @@ export function makeTable(options) {
 			const loadedFromSource = ensureLoadedFromSource(this.getId(), this.#entry, this.getContext());
 			if (loadedFromSource) {
 				this.#loadedFromSource = true;
+				this.getContext().loadedFromSource = true;
 				return when(loadedFromSource, (entry) => {
 					this.#entry = entry;
 					this.#record = entry.value;
@@ -650,9 +669,11 @@ export function makeTable(options) {
 				// all threads will use a shared buffer to atomically increment the id
 				// first, we create our proposed incrementer buffer that will be used if we are the first thread to get here
 				// and initialize it with the starting id
-				idIncrementer = new BigInt64Array([BigInt(lastKey) + 1n]);
+				idIncrementer = new BigInt64Array([BigInt(lastKey) + 1n]) as BigInt64ArrayAndMaxSafeId;
 				// now get the selected incrementer buffer, this is the shared buffer was first registered and that all threads will use
-				idIncrementer = new BigInt64Array(primaryStore.getUserSharedBuffer('id', idIncrementer.buffer));
+				idIncrementer = new BigInt64Array(
+					primaryStore.getUserSharedBuffer('id', idIncrementer.buffer)
+				) as BigInt64ArrayAndMaxSafeId;
 				// and we set the maximum safe id to the end of the allocated range before we check for conflicting ids again
 				idIncrementer.maxSafeId = idAllocation.end;
 			}
@@ -810,7 +831,7 @@ export function makeTable(options) {
 			scheduleCleanup();
 		}
 
-		static getResidencyRecord(id) {
+		static getResidencyRecord(id: Id) {
 			return dbisDb.get([Symbol.for('residency_by_id'), id]);
 		}
 
@@ -821,7 +842,7 @@ export function makeTable(options) {
 					try {
 						return getResidency(record, context);
 					} catch (error: unknown) {
-						error.message += ` in residency function for table ${table_name}`;
+						(error as Error).message += ` in residency function for table ${tableName}`;
 						throw error;
 					}
 				});
@@ -833,7 +854,7 @@ export function makeTable(options) {
 					try {
 						return getResidencyById(id);
 					} catch (error: unknown) {
-						error.message += ` in residency function for table ${table_name}`;
+						(error as Error).message += ` in residency function for table ${tableName}`;
 						throw error;
 					}
 				});
@@ -911,12 +932,7 @@ export function makeTable(options) {
 				// legacy table per database
 				console.log('legacy dropTable');
 				await primaryStore.close();
-				await fs.remove(dataPath);
-				await fs.remove(
-					dataPath === standardPath
-						? dataPath + MDB_LOCK_FILE_SUFFIX
-						: path.join(path.dirname(dataPath), MDB_LEGACY_LOCK_FILE_NAME)
-				); // I suspect we may have problems with this on Windows
+				fs.unlinkSync(primaryStore.env.path);
 			}
 			signalling.signalSchemaChange(
 				new SchemaEventMsg(process.pid, OPERATIONS_ENUM.DROP_TABLE, databaseName, tableName)
@@ -924,15 +940,13 @@ export function makeTable(options) {
 		}
 		/**
 		 * This retrieves the data of this resource. By default, with no argument, just return `this`.
-		 * @param query - If included, specifies a query to perform on the record
+		 * @param target - If included, is an identifier/query that specifies the requested target to retrieve and query
 		 */
-		get(query?: Query | string): Promise<object | void> | object | void {
-			if (typeof query === 'string') return this.getProperty(query);
-			if (this.isCollection) {
-				return this.search(query);
-			}
-			if (this.getId() === null) {
-				if (query?.conditions || query?.size > 0) return this.search(query); // if there is a query, assume it was meant to be a root level query
+		get(target?: RequestTarget): Promise<object | void> | object | void {
+			const constructor: Resource = this.constructor;
+			if (typeof target === 'string' && constructor.loadAsInstance !== false) return this.getProperty(target);
+			if (isSearchTarget(target)) return this.search(target);
+			if (target?.target === '') {
 				const description = {
 					// basically a describe call
 					records: './', // an href to the records themselves
@@ -940,6 +954,8 @@ export function makeTable(options) {
 					database: databaseName,
 					auditSize: auditStore?.getStats().entryCount,
 					attributes,
+					recordCount: undefined,
+					estimatedRecordRange: undefined,
 				};
 				if (this.getContext()?.includeExpensiveRecordCountEstimates) {
 					return TableResource.getRecordCount().then((recordCount) => {
@@ -950,8 +966,35 @@ export function makeTable(options) {
 				}
 				return description;
 			}
-			if (query?.property) return this.getProperty(query.property);
-			if (this.doesExist() || query?.ensureLoaded === false || this.getContext()?.returnNonexistent) {
+			if (target !== undefined && constructor.loadAsInstance === false) {
+				const context = this.getContext();
+				const txn = txnForContext(context);
+				const readTxn = txn.getReadTxn();
+				if (readTxn?.isDone) {
+					throw new Error('You can not read from a transaction that has already been committed/aborted');
+				}
+				const ensureLoaded = true;
+				const id = requestTargetToId(target);
+				checkValidId(id);
+				return loadLocalRecord(id, context, { transaction: readTxn, ensureLoaded }, false, (entry) => {
+					if (context.onlyIfCached && context.noCacheStore) {
+						// don't go into the loading from source condition, but HTTP spec says to
+						// return 504 (rather than 404) if there is no content and the cache-control header
+						// dictates not to go to source (and not store new value)
+						if (!entry?.value) throw new ServerError('Entry is not cached', 504);
+					} else if (ensureLoaded) {
+						const loadingFromSource = ensureLoadedFromSource(id, entry, context);
+						if (loadingFromSource) {
+							txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
+							context.loadedFromSource = true;
+							return loadingFromSource.then((entry) => entry?.value);
+						}
+					}
+					return entry?.value;
+				});
+			}
+			if (target?.property) return this.getProperty(target.property);
+			if (this.doesExist() || target?.ensureLoaded === false || this.getContext()?.returnNonexistent) {
 				return this;
 			}
 		}
@@ -972,8 +1015,7 @@ export function makeTable(options) {
 					// Note that if we do not have a select, we do not return any relationships by default.
 					if (!query) query = {};
 					if (select) {
-						const attrsForType =
-							attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
+						const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
 						query.select = select
 							.map((property) => {
 								const propertyName = property.name || property;
@@ -1073,7 +1115,23 @@ export function makeTable(options) {
 		 * @param updates This can be a record to update the current resource with.
 		 * @param fullUpdate The provided data in updates is the full intended record; any properties in the existing record that are not in the updates, should be removed
 		 */
-		update(updates?: any, fullUpdate?: boolean) {
+		update(target: RequestTarget, updates?: any) {
+			let id: Id;
+			// determine if it is a legacy call
+			const directInstance =
+				typeof updates === 'boolean' ||
+				(updates === undefined &&
+					(target == undefined || (typeof target === 'object' && !(target instanceof URLSearchParams))));
+			let fullUpdate: boolean = false;
+			if (directInstance) {
+				// legacy, shift the arguments
+				fullUpdate = updates;
+				updates = target;
+				id = this.getId();
+			} else {
+				id = requestTargetToId(target);
+			}
+
 			const envTxn = txnForContext(this.getContext());
 			if (!envTxn) throw new Error('Can not update a table resource outside of a transaction');
 			// record in the list of updating records so it can be written to the database when we commit
@@ -1081,19 +1139,30 @@ export function makeTable(options) {
 				// TODO: Remove from transaction
 				return this;
 			}
-			let ownData;
 			if (typeof updates === 'object' && updates) {
 				if (fullUpdate) {
+					// legacy full update where we need to update the entire record, but the instance needs to continue
+					// track any further changes
 					if (Object.isFrozen(updates)) updates = { ...updates };
 					this.#record = {}; // clear out the existing record
 					this.#changes = updates;
-				} else {
-					ownData = this.#changes;
+				} else if (directInstance) {
+					// incremental update with legacy arguments
+					const ownData = this.#changes;
 					if (ownData) updates = Object.assign(ownData, updates);
 					this.#changes = updates;
+				} else {
+					// standard path, where we retrieve the references record and return an Updatable, initialized with any
+					// updates that were passed into this method
+					return when(this.get(target), (record) => {
+						const updatable = new Updatable(record);
+						updatable._setChanges(updates);
+						this._writeUpdate(id, updatable.getChanges(), false);
+						return updatable;
+					});
 				}
 			}
-			this._writeUpdate(this.#changes, fullUpdate);
+			this._writeUpdate(id, this.#changes, fullUpdate);
 			return this;
 		}
 
@@ -1131,12 +1200,11 @@ export function makeTable(options) {
 			this.#record = record;
 		}
 
-		invalidate() {
-			this._writeInvalidate();
+		invalidate(target: RequestTargetOrId) {
+			this._writeInvalidate(target ? requestTargetToId(target) : this.getId());
 		}
-		_writeInvalidate(partialRecord?: any, options?: any) {
+		_writeInvalidate(id: Id, partialRecord?: any, options?: any) {
 			const context = this.getContext();
-			const id = this.getId();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
 			transaction.addWrite({
@@ -1156,12 +1224,12 @@ export function makeTable(options) {
 							partialRecord[name] = this.getProperty(name);
 						}
 					}
-					logger.trace?.(`Invalidating entry id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
+					logger.trace?.(`Invalidating entry in ${tableName} id: ${id}, timestamp: ${new Date(txnTime).toISOString()}`);
 
 					updateRecord(
 						id,
 						partialRecord,
-						this.#entry,
+						existingEntry,
 						txnTime,
 						INVALIDATED,
 						audit,
@@ -1172,9 +1240,8 @@ export function makeTable(options) {
 				},
 			});
 		}
-		_writeRelocate(options) {
+		_writeRelocate(id: Id, options: any) {
 			const context = this.getContext();
-			const id = this.getId();
 			checkValidId(id);
 			const transaction = txnForContext(this.getContext());
 			transaction.addWrite({
@@ -1206,7 +1273,7 @@ export function makeTable(options) {
 					updateRecord(
 						id,
 						newRecord,
-						this.#entry,
+						existingEntry,
 						txnTime,
 						metadata,
 						audit,
@@ -1314,22 +1381,43 @@ export function makeTable(options) {
 		 * @param record
 		 * @param options
 		 */
-		put(record): void {
-			this.update(record, true);
+		put(target: RequestTarget, record: any): void {
+			if (record === undefined || record instanceof URLSearchParams) {
+				// legacy argument position, shift the arguments and go through the update method for back-compat
+				this.update(target, true);
+			} else {
+				// standard path, handle arrays as multiple updates, and otherwise do a direct update
+				if (Array.isArray(record)) {
+					for (const element of record) {
+						const id = element[primaryKey];
+						this._writeUpdate(id, element, true);
+					}
+				} else {
+					const id = requestTargetToId(target);
+					this._writeUpdate(id, record, true);
+				}
+			}
+			// always return undefined
 		}
-		patch(recordUpdate: any): void {
-			this.update(recordUpdate, false);
+		patch(target: RequestTarget, recordUpdate: any): void | Promise<void> {
+			if (recordUpdate === undefined || recordUpdate instanceof URLSearchParams) {
+				// legacy argument position, shift the arguments and go through the update method for back-compat
+				this.update(target, false);
+			} else {
+				// standard path, ensure there is no return object
+				const result = this.update(target, recordUpdate);
+				if (result?.then) return result.then(() => undefined); // wait for the update, but return undefined
+			}
 		}
 		// perform the actual write operation; this may come from a user request to write (put, post, etc.), or
 		// a notification that a write has already occurred in the canonical data source, we need to update our
 		// local copy
-		_writeUpdate(recordUpdate: any, fullUpdate: boolean, options?: any) {
+		_writeUpdate(id: Id, recordUpdate: any, fullUpdate: boolean, options?: any) {
 			const context = this.getContext();
 			const transaction = txnForContext(context);
 
-			const id = this.getId();
 			checkValidId(id);
-			const entry = this.#entry;
+			const entry = this.#entry ?? primaryStore.getEntry(id);
 			this.#saveMode = fullUpdate ? SAVING_FULL_UPDATE : SAVING_CRDT_UPDATE; // mark that this resource is being saved so doesExist return true
 			const write = {
 				key: id,
@@ -1353,8 +1441,7 @@ export function makeTable(options) {
 							if (fullUpdate) {
 								if (primaryKey && recordUpdate[primaryKey] !== id) recordUpdate[primaryKey] = id;
 								if (createdTimeProperty) {
-									if (entry?.value)
-										recordUpdate[createdTimeProperty.name] = entry?.value[createdTimeProperty.name];
+									if (entry?.value) recordUpdate[createdTimeProperty.name] = entry?.value[createdTimeProperty.name];
 									else
 										recordUpdate[createdTimeProperty.name] =
 											createdTimeProperty.type === 'Date'
@@ -1514,9 +1601,7 @@ export function makeTable(options) {
 						`Saving record with id: ${id}, timestamp: ${new Date(txnTime).toISOString()}${
 							expiresAt ? ', expires at: ' + new Date(expiresAt).toISOString() : ''
 						}${
-							existingEntry
-								? ', replaces entry from: ' + new Date(existingEntry.version).toISOString()
-								: ', new entry'
+							existingEntry ? ', replaces entry from: ' + new Date(existingEntry.version).toISOString() : ', new entry'
 						}`,
 						(() => {
 							try {
@@ -1554,24 +1639,21 @@ export function makeTable(options) {
 			transaction.addWrite(write);
 		}
 
-		async delete(request?: Query | string): Promise<boolean> {
-			if (typeof request === 'string') return this.deleteProperty(request);
-			// TODO: Handle deletion of a collection/query
-			if (this.isCollection) {
-				for await (const entry of this.search(request)) {
-					const resource = await TableResource.getResource(entry[primaryKey], this.getContext(), {
-						ensureLoaded: false,
-					});
-					resource._writeDelete(request);
+		async delete(target: RequestTarget): Promise<boolean> {
+			if (isSearchTarget(target)) {
+				target.select = ['$id']; // just get the primary key of each record so we can delete them
+				for await (const entry of this.search(target)) {
+					this._writeDelete(entry.$id);
 				}
-				return;
+				return true;
 			}
-			if (!this.#record) return false;
-			return this._writeDelete(request);
+
+			const id = requestTargetToId(target);
+			this._writeDelete(id);
+			return this.constructor.loadAsInstance === false ? true : Boolean(this.#record);
 		}
-		_writeDelete(options?: any) {
+		_writeDelete(id: Id, options?: any) {
 			const transaction = txnForContext(this.getContext());
-			const id = this.getId();
 			checkValidId(id);
 			const context = this.getContext();
 			transaction.addWrite({
@@ -1595,7 +1677,7 @@ export function makeTable(options) {
 						updateRecord(
 							id,
 							null,
-							this.#entry,
+							existingEntry,
 							txnTime,
 							0,
 							audit,
@@ -1611,7 +1693,7 @@ export function makeTable(options) {
 			return true;
 		}
 
-		search(request: Query): AsyncIterable<any> {
+		search(request: RequestTarget): AsyncIterable<any> {
 			const context = this.getContext();
 			const txn = txnForContext(context);
 			if (!request) throw new Error('No query provided');
@@ -1621,12 +1703,13 @@ export function makeTable(options) {
 			else if (conditions.length === undefined) {
 				conditions = conditions[Symbol.iterator] ? Array.from(conditions) : [conditions];
 			}
-			if (this.getId()) {
+			const id = request.id ?? this.getId();
+			if (id) {
 				conditions = [
 					{
 						attribute: null,
-						comparator: Array.isArray(this.getId()) ? 'prefix' : 'starts_with',
-						value: this.getId(),
+						comparator: Array.isArray(id) ? 'prefix' : 'starts_with',
+						value: id,
 					},
 				].concat(conditions);
 			}
@@ -2425,13 +2508,19 @@ export function makeTable(options) {
 		 * @param message
 		 * @param options
 		 */
-		publish(message, options?) {
-			this._writePublish(message, options);
+		publish(target: RequestTarget, message: any, options?: any) {
+			if (message === undefined || message instanceof URLSearchParams) {
+				// legacy arg format, shift the args
+				this._writePublish(this.getId(), target, message);
+			} else {
+				const id = requestTargetToId(target);
+				this._writePublish(id, message, options);
+			}
 		}
-		_writePublish(message, options?: any) {
+		_writePublish(id: Id, message, options?: any) {
 			const transaction = txnForContext(this.getContext());
-			const id = this.getId() || null;
-			if (id != null) checkValidId(id); // note that we allow the null id for publishing so that you can publish to the root topic
+			id ??= null;
+			if (id !== null) checkValidId(id); // note that we allow the null id for publishing so that you can publish to the root topic
 			const context = this.getContext();
 			transaction.addWrite({
 				key: id,
@@ -2750,6 +2839,8 @@ export function makeTable(options) {
 			propertyResolvers = this.propertyResolvers = {
 				$id: (object, context, entry) => ({ value: entry.key }),
 				$updatedtime: (object, context, entry) => entry.version,
+				$updatedTime: (object, context, entry) => entry.version,
+				$expiresAt: (object, context, entry) => entry.expiresAt,
 				$record: (object, context, entry) => (entry ? { value: object } : object),
 			};
 			for (const attribute of this.attributes) {
@@ -2868,6 +2959,21 @@ export function makeTable(options) {
 				}
 			}
 			assignTrackedAccessors(this, this);
+			assignTrackedAccessors(Updatable, this, true);
+			for (const attribute of attributes) {
+				const name = attribute.name;
+				if (attribute.resolve) {
+					Object.defineProperty(primaryStore.encoder.structPrototype, name, {
+						get() {
+							return attribute.resolve(this, contextStorage.getStore()); // it is only possible to get the context from ALS, we don't have a direct reference to the current context
+						},
+						set(related) {
+							return attribute.set(this, related);
+						},
+						configurable: true,
+					});
+				}
+			}
 		}
 		static setComputedAttribute(attribute_name, resolver) {
 			const attribute = findAttribute(attributes, attribute_name);
@@ -3049,6 +3155,13 @@ export function makeTable(options) {
 		if (length > MAX_KEY_BYTES) throw new Error('Primary key size is too large: ' + id.length);
 		return true;
 	}
+	function requestTargetToId(target: RequestTargetOrId): Id {
+		return typeof target === 'object' && target ? target.id : (target as Id);
+	}
+	function isSearchTarget(target: RequestTarget) {
+		return typeof target === 'object' && target && target.isCollection;
+	}
+	function isRequestTarget(target: unknown): target is RequestTarget {}
 	function loadLocalRecord(id, context, options, sync, withEntry) {
 		if (TableResource.getResidencyById && options.ensureLoaded && context?.replicateFrom !== false) {
 			// this is a special case for when the residency can be determined from the id alone (hash-based sharding),
@@ -3172,8 +3285,8 @@ export function makeTable(options) {
 		const permission = user.role.permission;
 		if (permission.super_user) return FULL_PERMISSIONS;
 		const dbPermission = permission[databaseName];
-		let table,
-			tables = dbPermission?.tables;
+		let table: any;
+		const tables = dbPermission?.tables;
 		if (tables) {
 			return tables[tableName];
 		} else if (databaseName === 'data' && (table = permission[tableName]) && !table.tables) {
@@ -3194,6 +3307,8 @@ export function makeTable(options) {
 					)
 						needsSourceData = true;
 					// else needsSourceData is left falsy
+					// TODO: Allow getEntryByVariation to find a sub-variation of this record and determine if
+					// it still needs to be loaded from source
 				} else needsSourceData = true;
 				recordActionBinary(!needsSourceData, 'cache-hit', tableName);
 			}
@@ -3359,7 +3474,7 @@ export function makeTable(options) {
 	/**
 	 * This is used to record that a retrieve a record from source
 	 */
-	async function getFromSource(id, existingEntry, context) {
+	async function getFromSource(id: Id, existingEntry: Entry, context: Context): Promise<Entry> {
 		const metadataFlags = existingEntry?.metadataFlags;
 
 		const existingVersion = existingEntry?.version;
@@ -3406,6 +3521,9 @@ export function makeTable(options) {
 			// use the same resource cache as a parent context so that if modifications are made to resources,
 			// they are visible in the parent requesting context
 			resourceCache: context?.resourceCache,
+			transaction: undefined,
+			expiresAt: undefined,
+			lastModified: undefined,
 		};
 		const responseHeaders = context?.responseHeaders;
 		return new Promise((resolve, reject) => {
@@ -3439,8 +3557,7 @@ export function makeTable(options) {
 						if (expirationMs && sourceContext.expiresAt == undefined)
 							sourceContext.expiresAt = Date.now() + expirationMs;
 						if (updatedRecord) {
-							if (typeof updatedRecord !== 'object')
-								throw new Error('Only objects can be cached and stored in tables');
+							if (typeof updatedRecord !== 'object') throw new Error('Only objects can be cached and stored in tables');
 							if (updatedRecord.status > 0 && updatedRecord.headers) {
 								// if the source has a status code and headers, treat it as a response
 								if (updatedRecord.status >= 300) {
@@ -3717,13 +3834,9 @@ export function makeTable(options) {
 		}
 	}
 	function addDeleteRemoval() {
-		deleteCallbackHandle = auditStore?.addDeleteRemovalCallback(
-			tableId,
-			primaryStore,
-			(id: Id, version: number) => {
-				primaryStore.remove(id, version);
-			}
-		);
+		deleteCallbackHandle = auditStore?.addDeleteRemovalCallback(tableId, primaryStore, (id: Id, version: number) => {
+			primaryStore.remove(id, version);
+		});
 	}
 	function runRecordExpirationEviction() {
 		// Periodically evict expired records, searching for records who expiresAt timestamp is before now
@@ -3917,3 +4030,4 @@ function hasOtherProcesses(store) {
 			return +line.match(/\d+/)?.[0] != pid;
 		});
 }
+export { clearStatus as clear, getStatus as get, setStatus as set };

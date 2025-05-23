@@ -9,6 +9,7 @@
 		"moduleResolution": "NodeNext",
 		"module": "NodeNext",
 		"sourceMap": true,
+		"erasableSyntaxOnly": true,
 		"rootDir": ".",
 		"rewriteRelativeImportExtensions": true
 	}

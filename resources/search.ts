@@ -5,6 +5,7 @@ import { SKIP } from 'lmdb';
 import { INVALIDATED, EVICTED } from './Table.ts';
 import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { MultiPartId } from './Resource.ts';
+import { RequestTarget } from './RequestTarget.ts';
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;
 const BETWEEN_ESTIMATE = 0.1;
@@ -838,18 +839,18 @@ const VALUE_PARSER = /([^&|=[\]{}]+)([[\]{}]|[&|=]*)/g;
 let lastIndex;
 let queryString;
 /**
- * This is responsible for taking a query string (from a get()) and converting it to a standard query object
- * structure
+ * This is responsible for taking a query string (from a get()) and merging the parsed elements into a RequestTarget object.
  * @param queryString
  */
-export function parseQuery(queryToParse) {
+export function parseQuery(queryToParse: string, query: RequestTarget) {
 	if (!queryToParse) return;
 	queryString = queryToParse;
 	// TODO: We can remove this if we are sure all exits points end with lastIndex as zero (reaching the end of parsing will do that)
 	QUERY_PARSER.lastIndex = 0;
 	if (NEEDS_PARSER.test(queryToParse)) {
 		try {
-			const query = parseBlock(new Query(), '');
+			if (query) query.conditions = [];
+			query = parseBlock(query ?? new Query(), '');
 			if (lastIndex !== queryString.length) throw new SyntaxError(`Unable to parse query, unexpected end of query`);
 			return query;
 		} catch (error) {
@@ -858,7 +859,7 @@ export function parseQuery(queryToParse) {
 			throw error;
 		}
 	} else {
-		return new URLSearchParams(queryToParse);
+		return query ?? new URLSearchParams(queryToParse);
 	}
 }
 function parseBlock(query, expectedEnd) {
@@ -1164,6 +1165,14 @@ class Query {
 			if (condition.attribute === name) return condition.value;
 		}
 	}
+	getAll() {
+		const values = [];
+		for (let i = 0, len = this.conditions.length; i < len; i++) {
+			const condition = this.conditions[i];
+			if (condition.attribute) values.push(condition.value);
+		}
+		return values;
+	}
 }
 export function flattenKey(key) {
 	if (Array.isArray(key)) return key.join('\x00');
@@ -1181,16 +1190,4 @@ function estimatedEntryCount(store) {
 
 export function intersectionEstimate(store, left, right) {
 	return (left * right) / estimatedEntryCount(store);
-}
-export class SimpleURLQuery {
-	url: string;
-	constructor(url: string) {
-		this.url = url;
-	}
-	get() {
-		// this is a simple holder for the URL query, so we don't return anything (will be parsed later into a USP or Query object as needed)
-	}
-	[Symbol.iterator]() {
-		return [][Symbol.iterator]();
-	}
 }

@@ -903,7 +903,8 @@ export function findBlobsInObject(object: any, callback: (blob: Blob) => void) {
 		for (const value of object) {
 			if (typeof value === 'object' && value) findBlobsInObject(value, callback);
 		}
-	} else if (object.constructor === Object) {
+	} else if (object && typeof object === 'object' && !object[Symbol.iterator]) {
+		// try to find plain objects, excluding things like buffers and typed arrays
 		for (const key in object) {
 			const value = object[key];
 			if (typeof value === 'object' && value) findBlobsInObject(object[key], callback);
