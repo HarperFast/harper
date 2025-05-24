@@ -8,7 +8,7 @@ import harperLogger from '../utility/logging/harper_logger.js';
 import { Attribute } from './Table.ts';
 import { FileEntry } from '../components/EntryHandler.ts';
 
-const dataLoaderLogger = harperLogger.forComponent('dataLoader');
+const dataLoaderLogger = harperLogger.forComponent('dataLoader').withTag('dataLoader');
 
 /**
  * Set up file handlers for data files and loads them into the appropriate tables
@@ -20,7 +20,7 @@ export function handleComponent(scope) {
 	// Currently using getWorkerIndex() over server.workerIndex to appease ts. The latter defined in manageThreads.js.
 	if (getWorkerIndex() !== 0) {
 		// debug and return
-		dataLoaderLogger.debug('Skipping data loader initialization on non-primary worker');
+		dataLoaderLogger.debug?.('Skipping data loader initialization on non-primary worker');
 		return;
 	}
 
@@ -32,7 +32,7 @@ export function handleComponent(scope) {
 		}
 
 		const result = await loadDataFile(entry, tables, databases);
-		dataLoaderLogger.debug('Data loader processed file: %s: %s', basename(entry.absolutePath), result.message);
+		dataLoaderLogger.debug?.('Data loader processed file: %s: %s', basename(entry.absolutePath), result.message);
 	});
 }
 
@@ -103,16 +103,16 @@ export async function loadDataFile({ contents, absolutePath, stats }: FileEntry,
 		
 		// If a database is specified, check if the table exists in that database
 		if (database && databasesRef[database] && databasesRef[database][tableName]) {
-			dataLoaderLogger.debug(`Using existing table ${tableIdentifier} from database tables`);
+			dataLoaderLogger.debug?.(`Using existing table ${tableIdentifier} from database tables`);
 			tableRef = databasesRef[database][tableName];
 		}
 		// If no database is specified, check if the table exists in the global tables
 		else if (tablesRef && tablesRef[tableName]) {
-			dataLoaderLogger.debug(`Using existing table ${tableIdentifier} from global tables`);
+			dataLoaderLogger.debug?.(`Using existing table ${tableIdentifier} from global tables`);
 			tableRef = tablesRef[tableName];
 		} else {
 			// Table doesn't exist. Try to infer the schema from the first record
-			dataLoaderLogger.debug(`Table ${tableIdentifier} not found, creating new table`);
+			dataLoaderLogger.debug?.(`Table ${tableIdentifier} not found, creating new table`);
 
 			// Extract attributes from the first record for the ensureTable call
 			const attributes: Attribute[] = [];
@@ -186,10 +186,10 @@ export async function loadDataFile({ contents, absolutePath, stats }: FileEntry,
 						// For individual record errors, we log but continue processing other records
 						// This allows partial success in data loading
 						if (error instanceof DataLoaderError) {
-							dataLoaderLogger.error(`Record processing error: ${error.message}`);
+							dataLoaderLogger.error?.(`Record processing error: ${error.message}`);
 						} else {
 							const recError = new RecordProcessingError(tableIdentifier, error);
-							dataLoaderLogger.error(`Record processing error: ${recError.message}`);
+							dataLoaderLogger.error?.(`Record processing error: ${recError.message}`);
 						}
 
 						// Don't throw, just return a failed operation result
@@ -208,17 +208,17 @@ export async function loadDataFile({ contents, absolutePath, stats }: FileEntry,
 			if (skippedRecords > 0) {
 				message += ` (${skippedRecords} records skipped)`;
 			}
-			dataLoaderLogger.info(message);
+			dataLoaderLogger.info?.(message);
 			
 			return new DataLoaderResult(absolutePath, database, tableName, 'success', newRecords + updatedRecords, message);
 		} else if (skippedRecords > 0) {
 			const message = `All ${skippedRecords} records in ${tableIdentifier} already up-to-date`;
-			dataLoaderLogger.info(message);
+			dataLoaderLogger.info?.(message);
 			
 			return new DataLoaderResult(absolutePath, database, tableName, 'skipped', dataFIleRecords, message);
 		} else {
 			const message = `No records to process in ${tableIdentifier}`;
-			dataLoaderLogger.info(message);
+			dataLoaderLogger.info?.(message);
 			
 			return new DataLoaderResult(absolutePath, database, tableName, 'success', 0, message);
 		}
