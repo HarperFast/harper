@@ -464,6 +464,34 @@ records:
 			assert.equal(result.count, 0); // No records successfully processed
 		});
 		
+		it('should handle DataLoaderError during record processing', async function () {
+			const errorFile = join(tempDir, 'dataloader_error.json');
+			await writeFile(errorFile, JSON.stringify({
+				table: 'dataloader_error_table',
+				records: [{ id: 1, name: 'Will fail with DataLoaderError' }]
+			}));
+			
+			// Create mock table that throws a DataLoaderError
+			const mockTable = {
+				get: sinon.stub().rejects(new MissingRequiredPropertyError('id')),
+				put: sinon.stub().resolves({ inserted: 1 })
+			};
+			
+			mockTables.dataloader_error_table = mockTable;
+			
+			// Reset the logger stub to ensure clean state
+			loggerStub.error.resetHistory();
+			
+			// With the current implementation, individual record errors are logged but don't fail the whole operation
+			const result = await loadDataFile(await createFileEntry(errorFile), mockTables, mockDatabases);
+			
+			assert.ok(result instanceof DataLoaderResult);
+			assert.equal(result.status, 'success');
+			assert.equal(result.count, 0); // No records successfully processed
+			assert.equal(loggerStub.error.callCount, 1, `Logger error should be called once, but was called ${loggerStub.error.callCount} times`);
+			assert.ok(loggerStub.error.firstCall.args[0].includes('Record processing error:'));
+		});
+		
 		it('should process records in batches', async function () {
 			// Create a file with many records
 			const manyRecords = [];
@@ -563,6 +591,56 @@ records:
 				}
 			);
 		});
+		
+		it('should create new table when table does not exist', async function () {
+			const newTableFile = join(tempDir, 'new_table.json');
+			await writeFile(newTableFile, JSON.stringify({
+				database: 'testdb',
+				table: 'new_table',
+				records: [
+					{ id: 1, name: 'First', active: true },
+					{ id: 2, name: 'Second', active: false }
+				]
+			}));
+			
+			// Mock the table function from databases module
+			const databasesModule = require('../../resources/databases.ts');
+			const mockNewTable = {
+				put: sinon.stub().resolves({ inserted: 1 }),
+				get: sinon.stub().resolves(null),
+				batchPut: sinon.stub().resolves()
+			};
+			
+			const originalTable = databasesModule.table;
+			sinon.stub(databasesModule, 'table').callsFake(async (options) => {
+				if (options.name === 'new_table' && options.database === 'testdb') {
+					// Verify attributes were passed correctly
+					assert.equal(options.attributes.length, 3);
+					assert.equal(options.attributes[0].name, 'id');
+					assert.equal(options.attributes[0].isPrimaryKey, true);
+					assert.equal(options.attributes[1].name, 'name');
+					assert.equal(options.attributes[2].name, 'active');
+					return mockNewTable;
+				}
+				return originalTable.call(databasesModule, options);
+			});
+			
+			try {
+				const result = await loadDataFile(await createFileEntry(newTableFile), mockTables, mockDatabases);
+				
+				assert.ok(result instanceof DataLoaderResult);
+				assert.equal(result.status, 'success');
+				assert.equal(result.count, 2);
+				assert.ok(result.message.includes('Loaded 2 new') || result.message.includes('Loaded 0 new and updated 2 records'), `Unexpected message: ${result.message}`);
+				
+				// Verify table was called with correct parameters
+				assert.ok(databasesModule.table.calledOnce);
+			} finally {
+				// Restore the stub
+				databasesModule.table.restore();
+			}
+		});
+		
 	});
 	
 	describe('Error Classes', function () {
