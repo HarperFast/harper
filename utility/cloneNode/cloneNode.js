@@ -293,8 +293,21 @@ async function cloneUsingWS() {
 	await cloneKeys();
 
 	// Monitor sync and update status when complete
-	// TODO: should an error being thrown here stop the clone process?
-	await monitorSyncAndUpdateStatus(lastUpdatedTimestamps);
+	try {
+		await monitorSyncAndUpdateStatus(lastUpdatedTimestamps);
+	} catch (error) {
+		console.error('Sync monitoring failed:', error.message);
+		
+		// Optionally set availability status to Unavailable if status updates are enabled
+		if (isStatusUpdateEnabled()) {
+			try {
+				await setStatus({ id: 'availability', status: 'Unavailable' });
+				console.log('Set availability status to Unavailable due to sync failure');
+			} catch (statusError) {
+				console.error('Failed to update availability status:', statusError);
+			}
+		}
+	}
 
 	console.log(`Successfully cloned node: ${leaderUrl} using WebSockets`);
 	configUtils.updateConfigValue(CONFIG_PARAMS.CLONED, true);
@@ -342,30 +355,31 @@ async function getLastUpdatedRecord() {
 }
 
 /**
- * Monitor sync status and update 'availability' status when synchronization is complete
+ * Check if status updates are enabled via environment variable
+ * @returns {boolean} - True if status updates are enabled
+ */
+function isStatusUpdateEnabled() {
+	return process.env.CLONE_NODE_UPDATE_STATUS === 'true';
+}
+
+/**
+ * Monitor sync status and optionally update 'availability' status when synchronization is complete
  * @param {Object} targetTimestamps - Object with database names as keys and timestamps as values
  * @returns {Promise<void>}
+ * @throws {CloneSyncError} - If sync times out or targetTimestamps is invalid
  */
 async function monitorSyncAndUpdateStatus(targetTimestamps) {
-	// Check if status update is enabled
-	if (process.env.CLONE_NODE_UPDATE_STATUS !== 'true') {
-		console.log('Clone node status update is not enabled. Skipping sync monitoring.');
-		return;
-	}
-
 	// Validate target timestamps early
 	if (!targetTimestamps || Object.keys(targetTimestamps).length === 0) {
 		throw new CloneSyncError('No target timestamps available to check synchronization status');
 	}
 
-	const statusId = 'availability';
-	const statusValue = 'Available';
-
 	// Configuration from environment variables
 	const maxWaitTime = parseInt(process.env.HDB_CLONE_SYNC_TIMEOUT || '300000'); // 5 minutes default
 	const checkInterval = parseInt(process.env.HDB_CLONE_CHECK_INTERVAL || '10000'); // 10 seconds default
+	const shouldUpdateStatus = isStatusUpdateEnabled();
 
-	console.log(`Starting sync monitoring for status update (${statusId}: ${statusValue})`);
+	console.log('Starting sync monitoring');
 	console.log(`Max wait time: ${maxWaitTime}ms, Check interval: ${checkInterval}ms`);
 
 	const startTime = Date.now();
@@ -373,19 +387,21 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 
 	while (!syncComplete && (Date.now() - startTime) < maxWaitTime) {
 		try {
-			// Get cluster status
-			const clusterResponse = await clusterStatus();
-			
 			// Check if all databases are synchronized
-			syncComplete = checkSyncStatus(clusterResponse, targetTimestamps);
+			syncComplete = await checkSyncStatus(targetTimestamps);
 
 			if (syncComplete) {
-				console.log('All databases synchronized, updating status');
-				try {
-					await setStatus({ id: statusId, status: statusValue });
-					console.log(`Successfully updated status: ${statusId} = ${statusValue}`);
-				} catch (error) {
-					console.error('Error updating status:', error);
+				console.log('All databases synchronized');
+				
+				// Only update status if enabled
+				if (shouldUpdateStatus) {
+					try {
+						await setStatus({ id: 'availability', status: 'Available' });
+						console.log('Successfully updated availability status to Available');
+					} catch (error) {
+						console.error('Error updating status:', error);
+						// Don't fail the sync monitoring due to status update failure
+					}
 				}
 			} else {
 				console.log(`Sync not complete, waiting ${checkInterval}ms before next check`);
@@ -399,7 +415,7 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 	}
 
 	if (!syncComplete) {
-		console.warn(`Sync monitoring timed out after ${maxWaitTime}ms`);
+		throw new CloneSyncError(`Sync monitoring timed out after ${maxWaitTime}ms`);
 	}
 }
 
@@ -407,9 +423,11 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
  * Check if all databases are synchronized by comparing timestamps
  * @param {Object} clusterResponse - Response from clusterStatus()
  * @param {Object} targetTimestamps - Target timestamps to check against
- * @returns {boolean} - True if all databases are synchronized
+ * @returns {Promise<boolean>} - True if all databases are synchronized
  */
-function checkSyncStatus(clusterResponse, targetTimestamps) {
+async function checkSyncStatus(targetTimestamps) {
+	// Get cluster status
+	const clusterResponse = await clusterStatus();
 
 	for (const connection of clusterResponse.connections || []) {
 		for (const socket of connection.database_sockets || []) {
