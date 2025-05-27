@@ -31,6 +31,8 @@ const { sendOperationToNode } = require('../../server/replication/replicator.ts'
 const { updateConfigCert } = require('../../security/keys.js');
 const { restartWorkers } = require('../../server/threads/manageThreads.js');
 const { databases } = require('../../resources/databases.ts');
+const { clusterStatus } = require('../clustering/clusterStatus.js');
+const { set: setStatus } = require('../../server/status.ts');
 
 const { SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME, CONFIG_PARAMS, OPERATIONS_ENUM } = hdbTerms;
 const WAIT_FOR_RESTART_TIME = 10000;
@@ -259,7 +261,7 @@ async function cloneUsingWS() {
 
 	// Get last updated record timestamps for all DB and write to file
 	// These values can be used for checking when the clone replication has caught up with leader
-	await getLastUpdatedRecord();
+	const lastUpdatedTimestamps = await getLastUpdatedRecord();
 
 	// When cloning with WS we utilize addNode to clone all the DB and setup replication
 	console.log('Adding node to the cluster');
@@ -271,6 +273,9 @@ async function cloneUsingWS() {
 	console.log('Add node response: ', addNodeResponse);
 
 	await cloneKeys();
+
+	// Monitor sync and update status when complete
+	await monitorSyncAndUpdateStatus(lastUpdatedTimestamps);
 
 	console.log(`Successfully cloned node: ${leaderUrl} using WebSockets`);
 	configUtils.updateConfigValue(CONFIG_PARAMS.CLONED, true);
@@ -313,6 +318,108 @@ async function getLastUpdatedRecord() {
 	const lastUpdatedFilePath = join(rootPath, 'tmp', 'lastUpdated.json');
 	console.log('Writing last updated database timestamps to:', lastUpdatedFilePath);
 	await fs.outputJson(lastUpdatedFilePath, lastUpdated);
+	
+	return lastUpdated;
+}
+
+/**
+ * Monitor sync status and update Harper status when synchronization is complete
+ * @param {Object} targetTimestamps - Object with database names as keys and timestamps as values
+ * @returns {Promise<void>}
+ */
+async function monitorSyncAndUpdateStatus(targetTimestamps) {
+	// Check if status update is enabled
+	if (process.env.CLONE_NODE_UPDATE_STATUS !== 'true') {
+		console.log('Clone node status update is disabled');
+		return;
+	}
+
+	// Configuration from environment variables
+	const statusId = process.env.HDB_CLONE_STATUS_ID || 'availability';
+	const statusValue = process.env.HDB_CLONE_SUCCESS_STATUS || 'Available';
+	const maxWaitTime = parseInt(process.env.HDB_CLONE_SYNC_TIMEOUT || '300000'); // 5 minutes default
+	const checkInterval = parseInt(process.env.HDB_CLONE_CHECK_INTERVAL || '10000'); // 10 seconds default
+
+	console.log(`Starting sync monitoring for status update (${statusId}: ${statusValue})`);
+	console.log(`Max wait time: ${maxWaitTime}ms, Check interval: ${checkInterval}ms`);
+
+	const startTime = Date.now();
+	let syncComplete = false;
+
+	while (!syncComplete && (Date.now() - startTime) < maxWaitTime) {
+		try {
+			// Get cluster status
+			const clusterResponse = await clusterStatus();
+			
+			// Check if all databases are synchronized
+			syncComplete = checkSyncStatus(clusterResponse, targetTimestamps);
+
+			if (syncComplete) {
+				console.log('All databases synchronized, updating status');
+				try {
+					await setStatus({ id: statusId, status: statusValue });
+					console.log(`Successfully updated status: ${statusId} = ${statusValue}`);
+				} catch (error) {
+					console.error('Error updating status:', error);
+				}
+			} else {
+				console.log(`Sync not complete, waiting ${checkInterval}ms before next check`);
+				await new Promise(resolve => setTimeout(resolve, checkInterval));
+			}
+		} catch (error) {
+			console.error('Error checking cluster status:', error);
+			// Continue monitoring on error
+			await new Promise(resolve => setTimeout(resolve, checkInterval));
+		}
+	}
+
+	if (!syncComplete) {
+		console.warn(`Sync monitoring timed out after ${maxWaitTime}ms`);
+	}
+}
+
+/**
+ * Check if all databases are synchronized by comparing timestamps
+ * @param {Object} clusterResponse - Response from clusterStatus()
+ * @param {Object} targetTimestamps - Target timestamps to check against
+ * @returns {boolean} - True if all databases are synchronized
+ */
+function checkSyncStatus(clusterResponse, targetTimestamps) {
+	// Handle empty or invalid targetTimestamps
+	if (!targetTimestamps || Object.keys(targetTimestamps).length === 0) {
+		console.log('No target timestamps to check');
+		return true;
+	}
+
+	for (const connection of clusterResponse.connections || []) {
+		for (const socket of connection.database_sockets || []) {
+			const dbName = socket.database;
+			const targetTime = targetTimestamps[dbName];
+			
+			// Skip if no target time for this database
+			if (!targetTime) continue;
+
+			const receivedTime = socket.lastReceivedRemoteTime;
+			
+			// Check if we have received data and if it's up to date
+			if (!receivedTime) {
+				console.log(`Database ${dbName}: No data received yet`);
+				return false;
+			}
+
+			// Convert timestamps to numbers for comparison
+			const receivedTimeNum = new Date(receivedTime).getTime();
+			
+			if (receivedTimeNum < targetTime) {
+				console.log(`Database ${dbName}: Not synchronized (received: ${receivedTimeNum}, target: ${targetTime})`);
+				return false;
+			}
+
+			console.log(`Database ${dbName}: Synchronized`);
+		}
+	}
+
+	return true;
 }
 
 /**
