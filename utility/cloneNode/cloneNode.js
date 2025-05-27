@@ -375,8 +375,8 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 	}
 
 	// Configuration from environment variables
-	const maxWaitTime = parseInt(process.env.HDB_CLONE_SYNC_TIMEOUT || '300000'); // 5 minutes default
-	const checkInterval = parseInt(process.env.HDB_CLONE_CHECK_INTERVAL || '10000'); // 10 seconds default
+	const maxWaitTime = Math.max(1, parseInt(process.env.HDB_CLONE_SYNC_TIMEOUT || '300000') || 300000); // 5 minutes default, min 1ms
+	const checkInterval = Math.max(1, parseInt(process.env.HDB_CLONE_CHECK_INTERVAL || '10000') || 10000); // 10 seconds default, min 1ms
 	const shouldUpdateStatus = isStatusUpdateEnabled();
 
 	console.log('Starting sync monitoring');

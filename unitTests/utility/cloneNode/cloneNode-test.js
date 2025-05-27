@@ -217,6 +217,62 @@ describe('cloneNode', () => {
 			assert(clusterStatusStub.notCalled);
 			assert(setStatusStub.notCalled);
 		});
+
+		it('should enforce minimum 1ms values for time configuration', async () => {
+			process.env.CLONE_NODE_UPDATE_STATUS = 'true';
+			process.env.HDB_CLONE_SYNC_TIMEOUT = '0'; // Invalid, should become 1
+			process.env.HDB_CLONE_CHECK_INTERVAL = '-100'; // Invalid, should become 1
+			
+			const targetTimestamps = { database1: 1234567890 };
+			
+			// Mock immediate sync completion
+			clusterStatusStub.resolves({
+				connections: [{
+					database_sockets: [{
+						database: 'database1',
+						lastReceivedRemoteTime: new Date(1234567891)
+					}]
+				}]
+			});
+
+			await monitorSyncAndUpdateStatus(targetTimestamps);
+			
+			// Should complete successfully with minimum values
+			assert(clusterStatusStub.called);
+			assert(setStatusStub.called);
+			
+			// Clean up
+			delete process.env.HDB_CLONE_SYNC_TIMEOUT;
+			delete process.env.HDB_CLONE_CHECK_INTERVAL;
+		});
+
+		it('should handle NaN environment values with defaults', async () => {
+			process.env.CLONE_NODE_UPDATE_STATUS = 'true';
+			process.env.HDB_CLONE_SYNC_TIMEOUT = 'not-a-number';
+			process.env.HDB_CLONE_CHECK_INTERVAL = 'invalid';
+			
+			const targetTimestamps = { database1: 1234567890 };
+			
+			// Mock immediate sync completion
+			clusterStatusStub.resolves({
+				connections: [{
+					database_sockets: [{
+						database: 'database1',
+						lastReceivedRemoteTime: new Date(1234567891)
+					}]
+				}]
+			});
+
+			await monitorSyncAndUpdateStatus(targetTimestamps);
+			
+			// Should complete successfully with default values (300000ms and 10000ms)
+			assert(clusterStatusStub.called);
+			assert(setStatusStub.called);
+			
+			// Clean up
+			delete process.env.HDB_CLONE_SYNC_TIMEOUT;
+			delete process.env.HDB_CLONE_CHECK_INTERVAL;
+		});
 	});
 
 	describe('checkSyncStatus', () => {
