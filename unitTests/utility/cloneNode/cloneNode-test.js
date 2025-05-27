@@ -51,8 +51,6 @@ describe('cloneNode', () => {
 		afterEach(() => {
 			clock.restore();
 			delete process.env.CLONE_NODE_UPDATE_STATUS;
-			delete process.env.HDB_CLONE_STATUS_ID;
-			delete process.env.HDB_CLONE_SUCCESS_STATUS;
 			delete process.env.HDB_CLONE_SYNC_TIMEOUT;
 			delete process.env.HDB_CLONE_CHECK_INTERVAL;
 		});
@@ -64,7 +62,7 @@ describe('cloneNode', () => {
 			
 			assert(clusterStatusStub.notCalled);
 			assert(setStatusStub.notCalled);
-			assert(consoleLogStub.calledWith('Clone node status update is disabled'));
+			assert(consoleLogStub.calledWith('Clone node status update is not enabled. Skipping sync monitoring.'));
 		});
 
 		it('should update status when sync is complete', async () => {
@@ -90,27 +88,6 @@ describe('cloneNode', () => {
 			assert(consoleLogStub.calledWith('All databases synchronized, updating status'));
 		});
 
-		it('should use custom environment variables', async () => {
-			process.env.CLONE_NODE_UPDATE_STATUS = 'true';
-			process.env.HDB_CLONE_STATUS_ID = 'custom-status';
-			process.env.HDB_CLONE_SUCCESS_STATUS = 'Ready';
-			process.env.HDB_CLONE_CHECK_INTERVAL = '100';
-			
-			const targetTimestamps = { database1: 1234567890 };
-			
-			clusterStatusStub.resolves({
-				connections: [{
-					database_sockets: [{
-						database: 'database1',
-						lastReceivedRemoteTime: new Date(1234567891)
-					}]
-				}]
-			});
-
-			await monitorSyncAndUpdateStatus(targetTimestamps);
-			
-			assert(setStatusStub.calledOnceWith({ id: 'custom-status', status: 'Ready' }));
-		});
 
 		it('should timeout when sync does not complete', async () => {
 			process.env.CLONE_NODE_UPDATE_STATUS = 'true';
@@ -169,6 +146,33 @@ describe('cloneNode', () => {
 			assert(clusterStatusStub.calledTwice);
 			assert(setStatusStub.calledOnce);
 			assert(consoleErrorStub.calledWith('Error checking cluster status:', sinon.match.instanceOf(Error)));
+		});
+
+		it('should throw CloneSyncError when no target timestamps available', async () => {
+			process.env.CLONE_NODE_UPDATE_STATUS = 'true';
+			const CloneSyncError = cloneNode.__get__('CloneSyncError');
+			
+			// Test with null timestamps
+			await assert.rejects(
+				async () => await monitorSyncAndUpdateStatus(null),
+				{
+					name: 'CloneSyncError',
+					message: 'No target timestamps available to check synchronization status'
+				}
+			);
+			
+			// Test with empty timestamps
+			await assert.rejects(
+				async () => await monitorSyncAndUpdateStatus({}),
+				{
+					name: 'CloneSyncError',
+					message: 'No target timestamps available to check synchronization status'
+				}
+			);
+			
+			// Should not have called cluster status since validation fails early
+			assert(clusterStatusStub.notCalled);
+			assert(setStatusStub.notCalled);
 		});
 	});
 

@@ -33,6 +33,24 @@ const { restartWorkers } = require('../../server/threads/manageThreads.js');
 const { databases } = require('../../resources/databases.ts');
 const { clusterStatus } = require('../clustering/clusterStatus.js');
 const { set: setStatus } = require('../../server/status.ts');
+const { ClientError } = require('../errors/hdbError.js');
+const { HTTP_STATUS_CODES } = require('../errors/commonErrors.js');
+
+// Custom error class for clone node operations
+class CloneNodeError extends Error {
+	constructor(message, statusCode = HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR) {
+		super(message);
+		this.name = 'CloneNodeError';
+		this.statusCode = statusCode;
+	}
+}
+
+class CloneSyncError extends CloneNodeError {
+	constructor(message) {
+		super(message, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+		this.name = 'CloneSyncError';
+	}
+}
 
 const { SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME, CONFIG_PARAMS, OPERATIONS_ENUM } = hdbTerms;
 const WAIT_FOR_RESTART_TIME = 10000;
@@ -275,6 +293,7 @@ async function cloneUsingWS() {
 	await cloneKeys();
 
 	// Monitor sync and update status when complete
+	// TODO: should an error being thrown here stop the clone process?
 	await monitorSyncAndUpdateStatus(lastUpdatedTimestamps);
 
 	console.log(`Successfully cloned node: ${leaderUrl} using WebSockets`);
@@ -323,20 +342,26 @@ async function getLastUpdatedRecord() {
 }
 
 /**
- * Monitor sync status and update Harper status when synchronization is complete
+ * Monitor sync status and update 'availability' status when synchronization is complete
  * @param {Object} targetTimestamps - Object with database names as keys and timestamps as values
  * @returns {Promise<void>}
  */
 async function monitorSyncAndUpdateStatus(targetTimestamps) {
 	// Check if status update is enabled
 	if (process.env.CLONE_NODE_UPDATE_STATUS !== 'true') {
-		console.log('Clone node status update is disabled');
+		console.log('Clone node status update is not enabled. Skipping sync monitoring.');
 		return;
 	}
 
+	// Validate target timestamps early
+	if (!targetTimestamps || Object.keys(targetTimestamps).length === 0) {
+		throw new CloneSyncError('No target timestamps available to check synchronization status');
+	}
+
+	const statusId = 'availability';
+	const statusValue = 'Available';
+
 	// Configuration from environment variables
-	const statusId = process.env.HDB_CLONE_STATUS_ID || 'availability';
-	const statusValue = process.env.HDB_CLONE_SUCCESS_STATUS || 'Available';
 	const maxWaitTime = parseInt(process.env.HDB_CLONE_SYNC_TIMEOUT || '300000'); // 5 minutes default
 	const checkInterval = parseInt(process.env.HDB_CLONE_CHECK_INTERVAL || '10000'); // 10 seconds default
 
@@ -385,11 +410,6 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
  * @returns {boolean} - True if all databases are synchronized
  */
 function checkSyncStatus(clusterResponse, targetTimestamps) {
-	// Handle empty or invalid targetTimestamps
-	if (!targetTimestamps || Object.keys(targetTimestamps).length === 0) {
-		console.log('No target timestamps to check');
-		return true;
-	}
 
 	for (const connection of clusterResponse.connections || []) {
 		for (const socket of connection.database_sockets || []) {
