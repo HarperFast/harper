@@ -1,4 +1,6 @@
 import { Conditions, Id, Select, Sort } from './ResourceInterface';
+import { _assignPackageExport } from '../globals';
+import { Resource } from './Resource';
 
 export class RequestTarget extends URLSearchParams {
 	target?: string;
@@ -6,6 +8,10 @@ export class RequestTarget extends URLSearchParams {
 	search?: string;
 	/** Target a specific record, but can be combined with select */
 	id?: Id;
+
+	/** Indicates that this is a request to query for collection of records */
+	isCollection?: boolean;
+	// these are query parameters
 	/**	 The conditions to use in the query, that the returned records must satisfy	 */
 	conditions?: Conditions;
 	/**	 The number of records to return	 */
@@ -24,6 +30,23 @@ export class RequestTarget extends URLSearchParams {
 	/**	 Force the query to be executed in the order of conditions */
 	enforceExecutionOrder?: boolean;
 	lazy?: boolean;
+
+	// caching directives
+	noCacheStore?: boolean;
+	noCache?: boolean;
+	onlyIfCached?: boolean;
+	staleIfError?: boolean;
+	mustRevalidate?: boolean;
+
+	// replication directives
+	replicateTo?: string[];
+	replicateFrom?: boolean;
+	replicatedConfirmation?: number;
+	originatingOperation?: string;
+	previousResidency?: string[];
+
+	authorize?: Permission | boolean;
+
 	constructor(target?: string) {
 		let searchIndex: number | undefined;
 		let path: string | undefined;
@@ -49,3 +72,34 @@ export class RequestTarget extends URLSearchParams {
 	}
 }
 export type RequestTargetOrId = RequestTarget | Id;
+_assignPackageExport('Resource', Resource);
+
+interface Permission {
+	read: boolean;
+	update: boolean;
+	delete: boolean;
+	insert: boolean;
+
+	[database: string]:
+		| boolean
+		| {
+				read: boolean;
+				update: boolean;
+				delete: boolean;
+				insert: boolean;
+				tables: {
+					[table: string]: {
+						read: boolean;
+						update: boolean;
+						delete: boolean;
+						insert: boolean;
+						attribute_permissions: {
+							attribute_name: string;
+							read: boolean;
+							update: boolean;
+							delete: boolean;
+						}[];
+					};
+				};
+		  };
+}

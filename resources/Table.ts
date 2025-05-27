@@ -23,7 +23,7 @@ import { Resource, contextStorage } from './Resource.ts';
 import { DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
 import { addSubscription } from './transactionBroadcast.ts';
-import { handleHDBError, ClientError, ServerError } from '../utility/errors/hdbError.js';
+import { handleHDBError, ClientError, ServerError, AccessError } from '../utility/errors/hdbError.js';
 import * as signalling from '../utility/signalling.js';
 import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc.js';
 import { databases, table } from './databases.ts';
@@ -942,7 +942,7 @@ export function makeTable(options) {
 		 * This retrieves the data of this resource. By default, with no argument, just return `this`.
 		 * @param target - If included, is an identifier/query that specifies the requested target to retrieve and query
 		 */
-		get(target?: RequestTarget): Promise<object | void> | object | void {
+		get(target?: RequestTarget): Promise<object | void> {
 			const constructor: Resource = this.constructor;
 			if (typeof target === 'string' && constructor.loadAsInstance !== false) return this.getProperty(target);
 			if (isSearchTarget(target)) return this.search(target);
@@ -973,24 +973,34 @@ export function makeTable(options) {
 				if (readTxn?.isDone) {
 					throw new Error('You can not read from a transaction that has already been committed/aborted');
 				}
-				const ensureLoaded = true;
 				const id = requestTargetToId(target);
 				checkValidId(id);
-				return loadLocalRecord(id, context, { transaction: readTxn, ensureLoaded }, false, (entry) => {
-					if (context.onlyIfCached && context.noCacheStore) {
-						// don't go into the loading from source condition, but HTTP spec says to
-						// return 504 (rather than 404) if there is no content and the cache-control header
-						// dictates not to go to source (and not store new value)
-						if (!entry?.value) throw new ServerError('Entry is not cached', 504);
-					} else if (ensureLoaded) {
-						const loadingFromSource = ensureLoadedFromSource(id, entry, context);
-						if (loadingFromSource) {
-							txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
-							context.loadedFromSource = true;
-							return loadingFromSource.then((entry) => entry?.value);
-						}
+				let allowed = true;
+				if (target.authorize) {
+					// requesting authorization verification
+					allowed = this.allowRead(context.user, target, context);
+				}
+				return when(allowed, (allowed: boolean) => {
+					if (!allowed) {
+						throw new AccessError(context.user);
 					}
-					return entry?.value;
+					const ensureLoaded = true;
+					return loadLocalRecord(id, context, { transaction: readTxn, ensureLoaded }, false, (entry) => {
+						if (context.onlyIfCached && context.noCacheStore) {
+							// don't go into the loading from source condition, but HTTP spec says to
+							// return 504 (rather than 404) if there is no content and the cache-control header
+							// dictates not to go to source (and not store new value)
+							if (!entry?.value) throw new ServerError('Entry is not cached', 504);
+						} else if (ensureLoaded) {
+							const loadingFromSource = ensureLoadedFromSource(id, entry, context);
+							if (loadingFromSource) {
+								txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
+								context.loadedFromSource = true;
+								return loadingFromSource.then((entry) => entry?.value);
+							}
+						}
+						return entry?.value;
+					});
 				});
 			}
 			if (target?.property) return this.getProperty(target.property);
@@ -1003,8 +1013,8 @@ export function makeTable(options) {
 		 * @param user The current, authenticated user
 		 * @param query The parsed query from the search part of the URL
 		 */
-		allowRead(user, query) {
-			const tablePermission = getTablePermissions(user);
+		allowRead(user: any, target: RequestTarget, context: Context): boolean {
+			const tablePermission = getTablePermissions(user, target);
 			if (tablePermission?.read) {
 				if (tablePermission.isSuperUser) return true;
 				const attribute_permissions = tablePermission.attribute_permissions;
@@ -1049,8 +1059,8 @@ export function makeTable(options) {
 		 * @param updatedData
 		 * @param fullUpdate
 		 */
-		allowUpdate(user, updatedData: any) {
-			const tablePermission = getTablePermissions(user);
+		allowUpdate(user, updatedData: any, target: RequestTarget) {
+			const tablePermission = getTablePermissions(user, target);
 			if (tablePermission?.update) {
 				const attribute_permissions = tablePermission.attribute_permissions;
 				if (attribute_permissions?.length > 0) {
@@ -1132,7 +1142,8 @@ export function makeTable(options) {
 				id = requestTargetToId(target);
 			}
 
-			const envTxn = txnForContext(this.getContext());
+			const context = this.getContext();
+			const envTxn = txnForContext(context);
 			if (!envTxn) throw new Error('Can not update a table resource outside of a transaction');
 			// record in the list of updating records so it can be written to the database when we commit
 			if (updates === false) {
@@ -1154,11 +1165,23 @@ export function makeTable(options) {
 				} else {
 					// standard path, where we retrieve the references record and return an Updatable, initialized with any
 					// updates that were passed into this method
-					return when(this.get(target), (record) => {
-						const updatable = new Updatable(record);
-						updatable._setChanges(updates);
-						this._writeUpdate(id, updatable.getChanges(), false);
-						return updatable;
+					let allowed = true;
+					if (target == undefined) throw new TypeError('Can not put a record without a target');
+					if (target.authorize) {
+						// requesting authorization verification
+						allowed = this.allowUpdate(context.user, record, target);
+					}
+					return when(allowed, (allowed) => {
+						if (!allowed) {
+							throw new AccessError(context.user);
+						}
+
+						return when(this.get(target), (record) => {
+							const updatable = new Updatable(record);
+							updatable._setChanges(updates);
+							this._writeUpdate(id, updatable.getChanges(), false);
+							return updatable;
+						});
 					});
 				}
 			}
@@ -1375,27 +1398,37 @@ export function makeTable(options) {
 
 		/**
 		 * Store the provided record data into the current resource. This is not written
-		 * until the corresponding transaction is committed. This will either immediately fail (synchronously) or always
-		 * succeed. That doesn't necessarily mean it will "win", another concurrent put could come "after" (monotonically,
-		 * even if not chronologically) this one.
+		 * until the corresponding transaction is committed.
 		 * @param record
 		 * @param options
 		 */
-		put(target: RequestTarget, record: any): void {
+		put(target: RequestTarget, record: any): void | Promise<void> {
 			if (record === undefined || record instanceof URLSearchParams) {
 				// legacy argument position, shift the arguments and go through the update method for back-compat
 				this.update(target, true);
 			} else {
-				// standard path, handle arrays as multiple updates, and otherwise do a direct update
-				if (Array.isArray(record)) {
-					for (const element of record) {
-						const id = element[primaryKey];
-						this._writeUpdate(id, element, true);
-					}
-				} else {
-					const id = requestTargetToId(target);
-					this._writeUpdate(id, record, true);
+				let allowed = true;
+				if (target == undefined) throw new TypeError('Can not put a record without a target');
+				const context = this.getContext();
+				if (target.authorize) {
+					// requesting authorization verification
+					allowed = this.allowUpdate(context.user, record, target);
 				}
+				return when(allowed, (allowed) => {
+					if (!allowed) {
+						throw new AccessError(context.user);
+					}
+					// standard path, handle arrays as multiple updates, and otherwise do a direct update
+					if (Array.isArray(record)) {
+						for (const element of record) {
+							const id = element[primaryKey];
+							this._writeUpdate(id, element, true);
+						}
+					} else {
+						const id = requestTargetToId(target);
+						this._writeUpdate(id, record, true);
+					}
+				});
 			}
 			// always return undefined
 		}
@@ -1639,7 +1672,7 @@ export function makeTable(options) {
 			transaction.addWrite(write);
 		}
 
-		async delete(target: RequestTarget): Promise<boolean> {
+		async delete(target: RequestTarget): Promise<boolean> | boolean {
 			if (isSearchTarget(target)) {
 				target.select = ['$id']; // just get the primary key of each record so we can delete them
 				for await (const entry of this.search(target)) {
@@ -1647,10 +1680,23 @@ export function makeTable(options) {
 				}
 				return true;
 			}
-
-			const id = requestTargetToId(target);
-			this._writeDelete(id);
-			return this.constructor.loadAsInstance === false ? true : Boolean(this.#record);
+			if (target) {
+				let allowed = true;
+				if (target.authorize) {
+					// requesting authorization verification
+					allowed = this.allowRead(context.user, target, context);
+				}
+				return when(allowed, (allowed: boolean) => {
+					if (!allowed) {
+						throw new AccessError(context.user);
+					}
+					const id = requestTargetToId(target);
+					this._writeDelete(id);
+					return true;
+				});
+			}
+			this._writeDelete(this.getId());
+			return Boolean(this.#record);
 		}
 		_writeDelete(id: Id, options?: any) {
 			const transaction = txnForContext(this.getContext());
@@ -3283,9 +3329,12 @@ export function makeTable(options) {
 			}
 		});
 	}
-	function getTablePermissions(user) {
-		if (!user?.role) return;
-		const permission = user.role.permission;
+	function getTablePermissions(user: any, target?: RequestTarget) {
+		let permission = target?.authorize; // first check to see the request target specifically provides the permissions to authorize
+		if (typeof permission !== 'object') {
+			if (!user?.role) return;
+			permission = user.role.permission;
+		}
 		if (permission.super_user) return FULL_PERMISSIONS;
 		const dbPermission = permission[databaseName];
 		let table: any;
@@ -4007,9 +4056,9 @@ function isDescendantId(ancestorId, descendantId): boolean {
 const rest = () => new Promise(setImmediate);
 
 // wait for a promise or plain object to resolve
-function when(value, callback, reject?) {
+function when<T, R>(value: T | Promise<T>, callback: (value: T) => R, reject?: (error: any) => void): R {
 	if (value?.then) return value.then(callback, reject);
-	return callback(value);
+	return callback(value as T);
 }
 // for filtering
 function exists(value) {

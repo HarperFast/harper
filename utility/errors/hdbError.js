@@ -26,8 +26,8 @@ class HdbError extends Error {
 		this.http_resp_msg = httpMsg
 			? httpMsg
 			: hdbErrors.DEFAULT_ERROR_MSGS[httpCode]
-			? hdbErrors.DEFAULT_ERROR_MSGS[httpCode]
-			: hdbErrors.DEFAULT_ERROR_MSGS[hdbErrors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
+				? hdbErrors.DEFAULT_ERROR_MSGS[httpCode]
+				: hdbErrors.DEFAULT_ERROR_MSGS[hdbErrors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
 		this.message = errOrig.message ? errOrig.message : this.http_resp_msg;
 		this.type = errOrig.name;
 		if (logLevel) this.logLevel = logLevel;
@@ -94,6 +94,18 @@ function handleHDBError(
 
 	return error;
 }
+class AccessError extends Error {
+	constructor(user) {
+		if (user) {
+			super('Unauthorized access to resource');
+			this.statusCode = 403;
+		} else {
+			super('Must login');
+			this.statusCode = 401;
+			// TODO: Optionally allow a Location header to redirect to
+		}
+	}
+}
 
 function isHDBError(e) {
 	return e.__proto__.constructor.name === HdbError.name;
@@ -104,6 +116,7 @@ module.exports = {
 	handleHDBError,
 	ClientError,
 	ServerError,
+	AccessError,
 	//Including common hdbErrors here so that they can be brought into modules on the same line where the handler method is brought in
 	hdbErrors,
 };
