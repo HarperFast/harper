@@ -39,13 +39,12 @@ function conformCondition(condition: Condition): Condition {
 			...condition,
 			conditions: condition.conditions.map(conformCondition),
 		};
-	} else {
-		return {
-			attribute: condition.search_attribute ?? condition.attribute,
-			comparator: condition.search_type ?? condition.comparator,
-			value: condition.search_value ?? condition.value,
-		};
 	}
+	return {
+		attribute: condition.search_attribute ?? condition.attribute,
+		comparator: condition.search_type ?? condition.comparator,
+		value: condition.search_value ?? condition.value,
+	};
 }
 
 export async function get(
