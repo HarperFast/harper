@@ -1011,22 +1011,22 @@ export function makeTable(options) {
 		/**
 		 * Determine if the user is allowed to get/read data from the current resource
 		 * @param user The current, authenticated user
-		 * @param query The parsed query from the search part of the URL
+		 * @param target The parsed query from the search part of the URL
 		 */
 		allowRead(user: any, target: RequestTarget, context: Context): boolean {
 			const tablePermission = getTablePermissions(user, target);
 			if (tablePermission?.read) {
 				if (tablePermission.isSuperUser) return true;
 				const attribute_permissions = tablePermission.attribute_permissions;
-				const select = query?.select;
+				const select = target?.select;
 				if (attribute_permissions?.length > 0 || (hasRelationships && select)) {
 					// If attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
 					// or if there are relationships, we need to ensure that the user has permission to read from the related table
 					// Note that if we do not have a select, we do not return any relationships by default.
-					if (!query) query = {};
+					if (!target) target = {};
 					if (select) {
 						const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
-						query.select = select
+						target.select = select
 							.map((property) => {
 								const propertyName = property.name || property;
 								if (!attrsForType || attrsForType[propertyName]) {
@@ -1042,11 +1042,11 @@ export function makeTable(options) {
 							})
 							.filter(Boolean);
 					} else {
-						query.select = attribute_permissions
+						target.select = attribute_permissions
 							.filter((attribute) => attribute.read && !propertyResolvers[attribute.attribute_name])
 							.map((attribute) => attribute.attribute_name);
 					}
-					return query;
+					return target;
 				} else {
 					return true;
 				}
