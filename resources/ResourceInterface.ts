@@ -70,11 +70,11 @@ type SearchType =
 
 export interface DirectCondition {
 	attribute?: string;
-	searchAttribute?: string;
+	search_attribute?: string;
 	comparator?: SearchType;
-	searchType?: SearchType;
+	search_type?: SearchType;
 	value?: any;
-	searchValue?: any;
+	search_value?: any;
 }
 interface ConditionGroup {
 	conditions: Conditions;
