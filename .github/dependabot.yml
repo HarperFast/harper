@@ -11,13 +11,13 @@ updates:
     # Group updates to reduce PR noise
     groups:
       # Group all patch updates
-      minor-and-patch:
+      patch:
         patterns:
           - "*"
         update-types:
           - "patch"
       # Group all minor updates
-      minor-and-patch:
+      minor:
         patterns:
           - "*"
         update-types:
