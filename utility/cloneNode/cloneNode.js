@@ -168,6 +168,10 @@ module.exports = async function cloneNode(background = false, run = false) {
 		console.log('Using default root path', rootPath);
 	}
 
+	// Set the root path in environment manager immediately after determining it
+	// This ensures getHdbBasePath() will work for any subsequent module imports
+	envMgr.setHdbBasePath(rootPath);
+
 	let cloneConfigPath;
 	try {
 		cloneConfigPath = join(rootPath, CLONE_CONFIG_FILE);
@@ -208,7 +212,6 @@ module.exports = async function cloneNode(background = false, run = false) {
 
 	await cloneConfig();
 	envMgr.setCloneVar(false);
-	envMgr.setHdbBasePath(rootPath);
 
 	fs.ensureDir(envMgr.get(hdbTerms.CONFIG_PARAMS.LOGGING_ROOT));
 	hdbLog.initLogSettings();
