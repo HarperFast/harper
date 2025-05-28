@@ -2601,7 +2601,7 @@ export function makeTable(options) {
 				},
 			});
 		}
-		validate(record, patch?) {
+		validate(record: any, patch?: boolean) {
 			let validationErrors;
 			const validateValue = (value, attribute, name) => {
 				if (attribute.type && value != null) {
@@ -2617,6 +2617,14 @@ export function makeTable(options) {
 						const properties = attribute.properties;
 						for (let i = 0, l = properties.length; i < l; i++) {
 							const attribute = properties[i];
+							if (attribute.relationship || attribute.computed) {
+								if (record.hasOwnProperty(attribute.name)) {
+									(validationErrors || (validationErrors = [])).push(
+										`Computed property ${name}.${attribute.name} may not be directly assigned a value`
+									);
+								}
+								continue;
+							}
 							const updated = validateValue(value[attribute.name], attribute, name + '.' + attribute.name);
 							if (updated) value[attribute.name] = updated;
 						}
@@ -2737,10 +2745,17 @@ export function makeTable(options) {
 			};
 			for (let i = 0, l = attributes.length; i < l; i++) {
 				const attribute = attributes[i];
-				if (attribute.relationship || attribute.computed) continue;
+				if (attribute.relationship || attribute.computed) {
+					if (Object.hasOwn(record, attribute.name)) {
+						(validationErrors || (validationErrors = [])).push(
+							`Computed property ${attribute.name} may not be directly assigned a value`
+						);
+					}
+					continue;
+				}
 				if (!patch || attribute.name in record) {
 					const updated = validateValue(record[attribute.name], attribute, attribute.name);
-					if (updated) record[attribute.name] = updated;
+					if (updated !== undefined) record[attribute.name] = updated;
 				}
 			}
 			if (sealed) {
@@ -2916,7 +2931,9 @@ export function makeTable(options) {
 								return relatedTable.search([{ attribute: relationship.to, value: id }], context).asArray;
 							};
 							attribute.set = () => {
-								throw new Error('Setting a one-to-many relationship property is not supported');
+								// ideally we want to throw an error here, but if the user had (accidently?) set a property into storage
+								// conflicts with this attribute, we don't want to prevent loading
+								// throw new Error('Setting a one-to-many relationship property is not supported');
 							};
 							attribute.resolve.definition = attribute.elements.definition;
 							if (relationship.from) attribute.resolve.from = relationship.from;
