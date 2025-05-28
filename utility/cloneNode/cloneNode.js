@@ -375,8 +375,8 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 	}
 
 	// Configuration from environment variables
-	const maxWaitTime = Math.max(1, parseInt(process.env.HDB_CLONE_SYNC_TIMEOUT || '300000') || 300000); // 5 minutes default, min 1ms
-	const checkInterval = Math.max(1, parseInt(process.env.HDB_CLONE_CHECK_INTERVAL || '10000') || 10000); // 10 seconds default, min 1ms
+	const maxWaitTime = Math.max(1, parseInt(process.env.HDB_CLONE_SYNC_TIMEOUT) || 300000); // 5 minutes default, min 1ms
+	const checkInterval = Math.max(1, parseInt(process.env.HDB_CLONE_CHECK_INTERVAL) || 10000); // 10 seconds default, min 1ms
 	const shouldUpdateStatus = isStatusUpdateEnabled();
 
 	console.log('Starting sync monitoring');
@@ -429,8 +429,14 @@ async function checkSyncStatus(targetTimestamps) {
 	// Get cluster status
 	const clusterResponse = await clusterStatus();
 
-	for (const connection of clusterResponse.connections || []) {
-		for (const socket of connection.database_sockets || []) {
+	// There should always be a response with at least an empty connections []
+	for (const connection of clusterResponse.connections) {
+		// ...but not always database_sockets
+		if (!connection.database_sockets) {
+			continue;
+		}
+
+		for (const socket of connection.database_sockets) {
 			const dbName = socket.database;
 			const targetTime = targetTimestamps[dbName];
 			
