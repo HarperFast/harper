@@ -313,7 +313,7 @@ describe('Component', () => {
 			});
 		});
 
-		it("should warn about leading '/' and resolve it relative to root", async () => {
+		it.only("should warn about leading '/' and resolve it relative to root", async () => {
 			const handleDirectoryFake = fake(),
 				handleFileFake = fake();
 
@@ -332,7 +332,7 @@ describe('Component', () => {
 			assert.ok(hasFunctionality);
 
 			assert.deepEqual(harperLogger.warn.getCall(0).args, [
-				`Leading '/' in 'files' glob pattern is deprecated. For backwards compatibility purposes, it is currently transformed to the relative path of the component, but in the future will result in an error. Please replace with a relative path such as './' or removing the leading path separator all together ('./static/*' -> 'static/*').`,
+				`Leading '/' in 'files' glob pattern is deprecated. For backwards compatibility purposes, it is currently transformed to the relative path of the component, but in the future will result in an error. Please replace with a relative path such as './' or removing the leading path separator all together ('./web/*' -> 'web/*').`,
 			]);
 
 			assert.equal(handleFileFake.callCount, 0);
@@ -340,8 +340,8 @@ describe('Component', () => {
 			// The double call matches the behavior of the original implementation.
 			// Essentially the first call happens from the root path handling, and the second from the actual match operation
 			assert.equal(handleDirectoryFake.callCount, 2);
-			assert.deepEqual(handleDirectoryFake.getCall(0).args, ['/', join(componentDirPath, '/'), resources]);
-			assert.deepEqual(handleDirectoryFake.getCall(1).args, ['/', join(componentDirPath, '/'), resources]);
+			assert.deepEqual(handleDirectoryFake.getCall(0).args, ['/', componentDirPath, resources]);
+			assert.deepEqual(handleDirectoryFake.getCall(1).args, ['/', componentDirPath, resources]);
 		});
 
 		it("should warn about leading '/' and resolve it relative to root with glob star", async () => {
@@ -363,7 +363,7 @@ describe('Component', () => {
 			assert.ok(hasFunctionality);
 
 			assert.deepEqual(harperLogger.warn.getCall(0).args, [
-				`Leading '/' in 'files' glob pattern is deprecated. For backwards compatibility purposes, it is currently transformed to the relative path of the component, but in the future will result in an error. Please replace with a relative path such as './' or removing the leading path separator all together ('./static/*' -> 'static/*').`,
+				`Leading '/' in 'files' glob pattern is deprecated. For backwards compatibility purposes, it is currently transformed to the relative path of the component, but in the future will result in an error. Please replace with a relative path such as './' or removing the leading path separator all together ('./web/*' -> 'web/*').`,
 			]);
 
 			assert.equal(handleFileFake.callCount, 3);

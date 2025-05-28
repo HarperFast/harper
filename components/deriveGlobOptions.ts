@@ -1,5 +1,3 @@
-import type fg from 'fast-glob';
-
 interface FilesOptionObject {
 	source: string | string[];
 	only?: 'all' | 'files' | 'directories';
@@ -8,7 +6,7 @@ interface FilesOptionObject {
 
 export type FilesOption = string | string[] | FilesOptionObject;
 
-export type FastGlobOptions = fg.Options & {
+export type FastGlobOptions = {
 	source: string[];
 	ignore: string[];
 	onlyFiles: boolean;

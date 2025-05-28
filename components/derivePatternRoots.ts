@@ -22,47 +22,34 @@ export class InvalidPatternRootError extends Error {
 }
 
 /**
- * Derives non-ambiguous root paths from a pattern.
+ * Derives longest, unambiguous paths from a pattern.
  *
- * The pattern should not have leading `/` or contain `..`
+ * The pattern should not have leading `/` or contain `..`.
  *
  * @param pattern
  * @returns
  */
-export function derivePatternRoot(pattern: string): string | null {
+export function derivePatternRoot(pattern: string) {
 	if (pattern.startsWith('/') || pattern.includes('..')) {
 		throw new InvalidPatternRootError(pattern);
 	}
 
-	if (['*', `./*`, '**', `./**`, `**/*`, `./**/*`].includes(pattern)) {
-		return '/';
-	}
+	pattern = pattern.replace(/^(\.\/)/, ''); // Remove leading `./` if present
 
-	const ambiguousCharacters = ['\\', '[', ']', '(', ')', '{', '}', '@', '!', '+', '?', '|', '^', '$'];
-	let root: string | null = '';
+	// If the input pattern is only `./` it would become '' in the previous step.
+	if (pattern === '') return '.';
+
+	const dynamicCharacter = ['*', '\\', '[', ']', '(', ')', '{', '}', '@', '!', '+', '?', '|', '^', '$'];
+	let root: string = '';
 
 	for (const c of pattern) {
-		if (ambiguousCharacters.includes(c)) {
-			if (root.includes('/')) {
-				root = root.slice(0, root.lastIndexOf('/') + 1);
-			} else {
-				root = null;
-			}
-			break;
-		}
-
-		if (c === '*') {
-			if (!root.includes('/')) root = null;
+		if (dynamicCharacter.includes(c)) {
+			root = root.includes('/') ? root.slice(0, root.lastIndexOf('/')) : '.';
 			break;
 		}
 
 		root += c;
 	}
 
-	// static pattern of a file or directory
-	if (root === pattern) {
-		root = '/';
-	}
-
-	return root;
+	return root.replace(/\/$/, '');
 }

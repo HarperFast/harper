@@ -1,3 +1,4 @@
+import { url } from 'inspector';
 import { secureImport } from '../security/jsLoader.ts';
 import { dirname } from 'path';
 
@@ -13,6 +14,7 @@ import { dirname } from 'path';
  * @param resources
  */
 export async function handleFile(js, urlPath, filePath, resources) {
+	console.log({ urlPath, filePath });
 	const handlers = new Map();
 	// use our configurable secure JS import loader
 	const exports = await secureImport(filePath);

@@ -1,4 +1,3 @@
-/* eslint-disable sonarjs/no-nested-template-literals */
 const {
 	derivePatternRoot,
 	derivePatternRoots,
@@ -8,42 +7,46 @@ const assert = require('node:assert/strict');
 
 describe('derivePatternRoot', () => {
 	[
-		// Simple, valid patterns
-		['*', '/'],
-		['**', '/'],
-		['**/*', '/'],
-		['web/*', 'web/'],
-		['web/**', 'web/'],
-		['web/**/*', 'web/'],
-		['web/index.html', '/'],
-		['web', '/'],
-		['web/static', '/'],
-		// Handles relative `./` paths
-		['./*', '/'],
-		['./**', '/'],
-		['./**/*', '/'],
-		['./web/*', './web/'],
-		['./web/index.html', '/'],
-		['./web', '/'],
+		// Static Patterns return themselves
+		['index.html', 'index.html'],
+		['web/index.html', 'web/index.html'],
+		['web/static/index.html', 'web/static/index.html'],
+		['.', '.'],
+		['web', 'web'],
+		['web/static', 'web/static'],
+		// Dynamic Patterns
+		['*', '.'],
+		['**', '.'],
+		['**/*', '.'],
+		['web/*', 'web'],
+		['web/**', 'web'],
+		['web/**/*', 'web'],
+		['web/static/*', 'web/static'],
+		['web/static/**', 'web/static'],
+		['web/static/**/*', 'web/static'],
+		['web/index*.html', 'web'],
+		['web/static/index*.html', 'web/static'],
 		// Certain non-alphanumeric characters are okay
-		['web123_foo.bar-fuzz/*', 'web123_foo.bar-fuzz/'],
-		['web/static/*', 'web/static/'],
+		['web123_foo.bar-fuzz/*', 'web123_foo.bar-fuzz'],
 		// Valid entries with ambiguous characters later in the pattern
-		['base/{web,static}/*', 'base/'],
-		['a/b/{web,static}/*', 'a/b/'],
+		['web/{a,b}', 'web'],
+		['web/static/{a,b}/*', 'web/static'],
 		// Ambiguous entries
-		['web[ab]/*', null],
-		['web(a|b)/*', null],
-		['web{a,b}/*', null],
-		['web@/*', null],
-		['web!/*', null],
-		['web*/*', null],
-		['web?/*', null],
-		['web+/*', null],
+		['web[ab]', '.'],
+		['web(a|b)', '.'],
+		['web{a,b}', '.'],
+		['web@', '.'],
+		['web!', '.'],
+		['web*', '.'],
+		['web?', '.'],
+		['web+', '.'],
 	].forEach(([pattern, expected]) => {
-		it(`should derive ${expected ? `'${expected}'` : 'null'} from '${pattern}'`, () => {
+		it(`should derive '${expected}' from '${pattern}'`, () => {
 			assert.deepEqual(derivePatternRoot(pattern), expected);
+			assert.deepEqual(derivePatternRoot(`./${pattern}`), expected);
+			assert.deepEqual(derivePatternRoot(`${pattern}/`), expected);
 		});
+		
 	});
 
 	it('should throw an error for invalid patterns', () => {
@@ -58,16 +61,16 @@ describe('derivePatternRoots', () => {
 		// Multiple Patterns
 		[
 			['web/*', 'static/*'],
-			['web/', 'static/'],
+			['web', 'static'],
 		],
-		[['web/*', 'static-[123]/*'], ['web/']],
-		// Multiple Patterns with a common root
-		[['web/index.html', 'web/style.css'], ['/']],
 		[
 			['web/foo/*', 'web/bar/*'],
-			['web/foo/', 'web/bar/'],
+			['web/foo', 'web/bar'],
 		],
-		[['web/*.html', 'web/*.css'], ['web/']],
+		[['web/*', 'static-[123]/*'], ['web', '.']],
+		[['web/index.html', 'web/style.css'], ['web/index.html', 'web/style.css']],
+		// Multiple Patterns with a common root
+		[['web/*.html', 'web/*.css'], ['web']],
 	].forEach(([patterns, expected]) => {
 		it(`should derive [${expected.map((e) => `'${e}'`).join(', ')}] from [${patterns.map((p) => `'${p}'`).join(', ')}]`, () => {
 			assert.deepEqual(derivePatternRoots(patterns), expected);
