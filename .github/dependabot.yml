@@ -1,6 +1,59 @@
 version: 2
 updates:
-  - package-ecosystem: 'npm' # See documentation for possible values
-    directory: '/' # Location of package manifests
+  # Main package.json updates
+  - package-ecosystem: 'npm'
+    directory: '/'
     schedule:
       interval: 'weekly'
+      day: 'monday'
+      time: '09:00' # UTC
+    open-pull-requests-limit: 10
+    # Group updates to reduce PR noise
+    groups:
+      # Group all patch updates
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "patch"
+      # Group all minor updates
+      minor-and-patch:
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+      # Group testing dependencies
+      test-dependencies:
+        patterns:
+          - "mocha*"
+          - "chai*"
+          - "sinon*"
+          - "nyc"
+          - "supertest"
+          - "mock*"
+      # Group linting and formatting tools
+      lint-and-format:
+        patterns:
+          - "eslint*"
+          - "prettier*"
+          - "@typescript-eslint/*"
+          - "typescript"
+      # Group AWS SDK updates
+      aws-dependencies:
+        patterns:
+          - "@aws-sdk/*"
+    # Add labels to PRs
+    labels:
+      - "dependencies"
+      - "automated"
+    # Customize commit message
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    # Allow specific updates
+    allow:
+      - dependency-type: "all"
+    # Ignore specific dependencies if needed
+    ignore:
+      # Completely ignore NATS
+      - dependency-name: "nats"
