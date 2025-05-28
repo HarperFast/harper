@@ -17,37 +17,45 @@ type StatusOperationWriteRequestBody = StatusOperationRequestBody & {
 	status: string;
 };
 
-export const Status = table({
-	database: 'system',
-	table: 'hdb_status',
-	replicate: false,
-	attributes: [
-		{
-			name: 'id',
-			isPrimaryKey: true,
-		},
-		{
-			name: 'status',
-		},
-		{
-			name: '__createdtime__',
-		},
-		{
-			name: '__updatedtime__',
-		},
-	],
-});
+// Lazy-initialize the Status table to avoid initialization issues during module import
+let Status: ReturnType<typeof table>;
+
+function getStatusTable() {
+	if (!Status) {
+		Status = table({
+			database: 'system',
+			table: 'hdb_status',
+			replicate: false,
+			attributes: [
+				{
+					name: 'id',
+					isPrimaryKey: true,
+				},
+				{
+					name: 'status',
+				},
+				{
+					name: '__createdtime__',
+				},
+				{
+					name: '__updatedtime__',
+				},
+			],
+		});
+	}
+	return Status;
+}
 
 const statusLogger = loggerWithTag('status');
 
 function clearStatus({ id }: StatusOperationRequestBody) {
 	statusLogger.debug?.('clearStatus', id);
-	return Status.delete(id);
+	return getStatusTable().delete(id);
 }
 
 function getAllStatus() {
 	statusLogger.debug?.('getAllStatus');
-	return Status.get({});
+	return getStatusTable().get({});
 }
 
 function getStatus({ id }: StatusOperationRequestBody) {
@@ -57,7 +65,7 @@ function getStatus({ id }: StatusOperationRequestBody) {
 	}
 
 	statusLogger.debug?.('getStatus', id);
-	return Status.get(id);
+	return getStatusTable().get(id);
 }
 
 function setStatus({ status, id = STATUS_DEFAULT }: StatusOperationWriteRequestBody) {
@@ -67,5 +75,5 @@ function setStatus({ status, id = STATUS_DEFAULT }: StatusOperationWriteRequestB
 	}
 
 	statusLogger.debug?.('setStatus', id, status);
-	return Status.put(id, { status });
+	return getStatusTable().put(id, { status });
 }
