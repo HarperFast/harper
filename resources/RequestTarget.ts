@@ -45,7 +45,7 @@ export class RequestTarget extends URLSearchParams {
 	originatingOperation?: string;
 	previousResidency?: string[];
 
-	authorize?: Permission | boolean;
+	checkPermission?: Permission | boolean;
 
 	constructor(target?: string) {
 		let searchIndex: number | undefined;

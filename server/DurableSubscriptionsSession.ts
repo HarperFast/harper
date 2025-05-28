@@ -175,6 +175,7 @@ class SubscriptionsSession {
 			startTime,
 			omitCurrent,
 			target: '',
+			checkPermission: this.user?.role?.permission ?? {},
 		};
 		if (startTime) trace('Resuming subscription from', topic, 'from', startTime);
 		const entry = resources.getMatch(path, 'mqtt');
@@ -396,6 +397,7 @@ function publish(message, data, context) {
 		);
 	message.target = entry.relativeURL;
 	const target = new RequestTarget(entry.relativeURL);
+	target.checkPermission = context.user?.role?.permission ?? {};
 
 	const resource = entry.Resource;
 

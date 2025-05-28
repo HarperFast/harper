@@ -23,7 +23,7 @@ import { Resource, contextStorage } from './Resource.ts';
 import { DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
 import { addSubscription } from './transactionBroadcast.ts';
-import { handleHDBError, ClientError, ServerError, AccessError } from '../utility/errors/hdbError.js';
+import { handleHDBError, ClientError, ServerError, AccessViolation } from '../utility/errors/hdbError.js';
 import * as signalling from '../utility/signalling.js';
 import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc.js';
 import { databases, table } from './databases.ts';
@@ -976,13 +976,13 @@ export function makeTable(options) {
 				const id = requestTargetToId(target);
 				checkValidId(id);
 				let allowed = true;
-				if (target.authorize) {
+				if (target.checkPermission) {
 					// requesting authorization verification
 					allowed = this.allowRead(context.user, target, context);
 				}
 				return when(allowed, (allowed: boolean) => {
 					if (!allowed) {
-						throw new AccessError(context.user);
+						throw new AccessViolation(context.user);
 					}
 					const ensureLoaded = true;
 					return loadLocalRecord(id, context, { transaction: readTxn, ensureLoaded }, false, (entry) => {
@@ -1167,13 +1167,13 @@ export function makeTable(options) {
 					// updates that were passed into this method
 					let allowed = true;
 					if (target == undefined) throw new TypeError('Can not put a record without a target');
-					if (target.authorize) {
+					if (target.checkPermission) {
 						// requesting authorization verification
-						allowed = this.allowUpdate(context.user, record, target);
+						allowed = this.allowUpdate(context.user, updates, target);
 					}
 					return when(allowed, (allowed) => {
 						if (!allowed) {
-							throw new AccessError(context.user);
+							throw new AccessViolation(context.user);
 						}
 
 						return when(this.get(target), (record) => {
@@ -1224,7 +1224,18 @@ export function makeTable(options) {
 		}
 
 		invalidate(target: RequestTargetOrId) {
-			this._writeInvalidate(target ? requestTargetToId(target) : this.getId());
+			let allowed = true;
+			const context = this.getContext();
+			if ((target as RequestTarget).checkPermission) {
+				// requesting authorization verification
+				allowed = this.allowDelete(context.user, target, context);
+			}
+			return when(allowed, (allowed: boolean) => {
+				if (!allowed) {
+					throw new AccessViolation(context.user);
+				}
+				this._writeInvalidate(target ? requestTargetToId(target) : this.getId());
+			});
 		}
 		_writeInvalidate(id: Id, partialRecord?: any, options?: any) {
 			const context = this.getContext();
@@ -1410,13 +1421,13 @@ export function makeTable(options) {
 				let allowed = true;
 				if (target == undefined) throw new TypeError('Can not put a record without a target');
 				const context = this.getContext();
-				if (target.authorize) {
+				if (target.checkPermission) {
 					// requesting authorization verification
 					allowed = this.allowUpdate(context.user, record, target);
 				}
 				return when(allowed, (allowed) => {
 					if (!allowed) {
-						throw new AccessError(context.user);
+						throw new AccessViolation(context.user);
 					}
 					// standard path, handle arrays as multiple updates, and otherwise do a direct update
 					if (Array.isArray(record)) {
@@ -1682,13 +1693,14 @@ export function makeTable(options) {
 			}
 			if (target) {
 				let allowed = true;
-				if (target.authorize) {
+				const context = this.getContext();
+				if (target.checkPermission) {
 					// requesting authorization verification
-					allowed = this.allowRead(context.user, target, context);
+					allowed = this.allowDelete(context.user, target, context);
 				}
 				return when(allowed, (allowed: boolean) => {
 					if (!allowed) {
-						throw new AccessError(context.user);
+						throw new AccessViolation(context.user);
 					}
 					const id = requestTargetToId(target);
 					this._writeDelete(id);
@@ -1743,6 +1755,14 @@ export function makeTable(options) {
 			const context = this.getContext();
 			const txn = txnForContext(context);
 			if (!request) throw new Error('No query provided');
+			if (request.checkPermission) {
+				// requesting authorization verification
+				const allowed = this.allowRead(context.user, request, context);
+				if (!allowed) {
+					throw new AccessViolation(context.user);
+				}
+			}
+
 			let conditions = request.conditions;
 			if (!conditions)
 				conditions = Array.isArray(request) ? request : request[Symbol.iterator] ? Array.from(request) : [];
@@ -2548,8 +2568,19 @@ export function makeTable(options) {
 				// legacy arg format, shift the args
 				this._writePublish(this.getId(), target, message);
 			} else {
-				const id = requestTargetToId(target);
-				this._writePublish(id, message, options);
+				let allowed = true;
+				const context = this.getContext();
+				if (target.checkPermission) {
+					// requesting authorization verification
+					allowed = this.allowCreate(context.user, target, context);
+				}
+				return when(allowed, (allowed: boolean) => {
+					if (!allowed) {
+						throw new AccessViolation(context.user);
+					}
+					const id = requestTargetToId(target);
+					this._writePublish(id, message, options);
+				});
 			}
 		}
 		_writePublish(id: Id, message, options?: any) {
@@ -3347,7 +3378,7 @@ export function makeTable(options) {
 		});
 	}
 	function getTablePermissions(user: any, target?: RequestTarget) {
-		let permission = target?.authorize; // first check to see the request target specifically provides the permissions to authorize
+		let permission = target?.checkPermission; // first check to see the request target specifically provides the permissions to authorize
 		if (typeof permission !== 'object') {
 			if (!user?.role) return;
 			permission = user.role.permission;

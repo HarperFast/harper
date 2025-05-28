@@ -100,6 +100,7 @@ async function http(request: Context & Request, nextHandler) {
 				}
 			}
 			request.authorize = true;
+			resourceRequest.checkPermission = request.user?.role?.permission ?? {};
 
 			if (url === OPENAPI_DOMAIN && method === 'GET') {
 				if (request?.user?.role?.permission?.super_user) {
@@ -307,6 +308,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 				);
 				request.authorize = true;
 				const resourceRequest = new RequestTarget(entry.relativeURL); // TODO: We don't want to have to remove the forward slash and then re-add it
+				resourceRequest.checkPermission = request.user?.role?.permission ?? {};
 				const resource = entry.Resource;
 				const responseStream = await transaction(request, () => {
 					return resource.connect(resourceRequest, incomingMessages, request);

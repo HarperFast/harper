@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import { DatabaseTransaction, Transaction } from './DatabaseTransaction.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { _assignPackageExport } from '../globals.js';
-import { ClientError, AccessError } from '../utility/errors/hdbError.js';
+import { ClientError, AccessViolation } from '../utility/errors/hdbError.js';
 import { transaction } from './transaction.ts';
 import { parseQuery } from './search.ts';
 import { AsyncLocalStorage } from 'async_hooks';
@@ -81,7 +81,6 @@ export class Resource implements ResourceInterface {
 		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			if (Array.isArray(data) && resource.#isCollection && resource.constructor.loadAsInstance !== false) {
 				const results = [];
-				const authorize = request.authorize;
 				for (const element of data) {
 					const resourceClass = resource.constructor;
 					const id = element[resourceClass.primaryKey];
@@ -601,8 +600,9 @@ function transactional(action, options) {
 			if (query.async) resourceOptions.async = query.async;
 			if (isCollection) resourceOptions.isCollection = true;
 		} else resourceOptions = options;
+		const loadAsInstance = this.loadAsInstance;
 		let runAction = authorizeActionOnResource;
-		if (this.loadAsInstance === false ? !this.explicitContext : this.explicitContext === false) {
+		if (loadAsInstance === false ? !this.explicitContext : this.explicitContext === false) {
 			// if we are using the newer resource API, we default to doing ALS context tracking, which is also
 			// necessary for accessing relationship properties on the direct frozen records
 			runAction = (resource) => contextStorage.run(context, () => authorizeActionOnResource(resource));
@@ -623,7 +623,7 @@ function transactional(action, options) {
 			);
 		}
 		function authorizeActionOnResource(resource: ResourceInterface) {
-			if (context.authorize) {
+			if (loadAsInstance !== false && context.authorize) {
 				// do permission checks (and don't require subsequent uses of this request/context to need to do it)
 				context.authorize = false;
 				const allowed =
@@ -639,14 +639,14 @@ function transactional(action, options) {
 				if (allowed?.then) {
 					return allowed.then((allowed) => {
 						if (!allowed) {
-							throw new AccessError(context.user);
+							throw new AccessViolation(context.user);
 						}
 						if (typeof data?.then === 'function') return data.then((data) => action(resource, query, context, data));
 						return action(resource, query, context, data);
 					});
 				}
 				if (!allowed) {
-					throw new AccessError(context.user);
+					throw new AccessViolation(context.user);
 				}
 			}
 			if (typeof data?.then === 'function') return data.then((data) => action(resource, query, context, data));
