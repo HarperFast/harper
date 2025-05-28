@@ -405,12 +405,12 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 				}
 			} else {
 				console.log(`Sync not complete, waiting ${checkInterval}ms before next check`);
-				await new Promise(resolve => setTimeout(resolve, checkInterval));
+				await hdbUtils.asyncSetTimeout(checkInterval);
 			}
 		} catch (error) {
 			console.error('Error checking cluster status:', error);
 			// Continue monitoring on error
-			await new Promise(resolve => setTimeout(resolve, checkInterval));
+			await hdbUtils.asyncSetTimeout(checkInterval);
 		}
 	}
 
