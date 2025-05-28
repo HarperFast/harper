@@ -18,11 +18,11 @@ type StatusOperationWriteRequestBody = StatusOperationRequestBody & {
 };
 
 // Lazy-initialize the Status table to avoid initialization issues during module import
-let Status: ReturnType<typeof table>;
+let _statusTable: ReturnType<typeof table>;
 
 function getStatusTable() {
-	if (!Status) {
-		Status = table({
+	if (!_statusTable) {
+		_statusTable = table({
 			database: 'system',
 			table: 'hdb_status',
 			replicate: false,
@@ -43,8 +43,15 @@ function getStatusTable() {
 			],
 		});
 	}
-	return Status;
+	return _statusTable;
 }
+
+// Export Status as a getter for compatibility with modules that need direct table access
+export const Status = {
+	get primaryStore() {
+		return getStatusTable().primaryStore;
+	}
+};
 
 const statusLogger = loggerWithTag('status');
 
