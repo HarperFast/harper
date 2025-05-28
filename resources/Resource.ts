@@ -592,14 +592,7 @@ function transactional(action, options) {
 			// try to get the context from the async context if possible
 			context = contextStorage.getStore();
 			if (!context) {
-				if (this.loadAsInstance === false)
-					// with the newer API version, be stricter with context
-					throw new (class NoContextError extends TypeError {})(
-						'No context provided, the context argument must be included. Context can be passed in using ' +
-							'this.getContext() from a resource instance, a new context can be created with by providing an object as the context, ' +
-							'or context can be automatically passed in if you set `static contextTracking = true` in your resource class.'
-					);
-				else context = {}; // maintain back-compat of
+				context = {};
 			}
 		}
 		if (query.ensureLoaded != null || query.async || isCollection) {
@@ -609,9 +602,9 @@ function transactional(action, options) {
 			if (isCollection) resourceOptions.isCollection = true;
 		} else resourceOptions = options;
 		let runAction = authorizeActionOnResource;
-		if (this.contextTracking) {
-			// if context tracking, we default to doing ALS context tracking, which is also
-			// necessary for accessing relationship properties within transactions on the direct frozen records
+		if (this.loadAsInstance === false ? !this.explicitContext : this.explicitContext === false) {
+			// if we are using the newer resource API, we default to doing ALS context tracking, which is also
+			// necessary for accessing relationship properties on the direct frozen records
 			runAction = (resource) => contextStorage.run(context, () => authorizeActionOnResource(resource));
 		}
 		if (context?.transaction) {
