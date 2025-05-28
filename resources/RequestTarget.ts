@@ -1,9 +1,9 @@
-import { Conditions, Id, Select, Sort } from './ResourceInterface';
+import { Conditions, DirectCondition, Id, Select, Sort } from './ResourceInterface';
 import { _assignPackageExport } from '../globals';
 import { Resource } from './Resource';
 
 export class RequestTarget extends URLSearchParams {
-	target?: string;
+	#target?: string;
 	pathname: string;
 	search?: string;
 	/** Target a specific record, but can be combined with select */
@@ -60,15 +60,39 @@ export class RequestTarget extends URLSearchParams {
 			path = target;
 		}
 		this.pathname = path ?? '';
-		this.target = target;
+		this.#target = target;
 	}
 	toString() {
+		if (this.#target) return this.#target;
 		if (this.size > 0) return this.pathname + '?' + super.toString();
 		else return this.pathname;
 	}
 	get url() {
 		// for back-compat?
 		return this.toString();
+	}
+
+	delete(name: string) {
+		super.delete(name);
+		if (this.conditions) {
+			// remove any associated conditions (we may want to consider recursively going into nested conditions?)
+			this.conditions = this.conditions.filter((condition: DirectCondition) => condition.attribute !== name);
+		}
+		this.#target = undefined; // remove this so that we can regenerate string representation based on query params
+	}
+	set(name: string, value: string) {
+		this.delete(name); // clear out any existing conditions and #target
+		super.set(name, value);
+		if (this.conditions) {
+			this.conditions.push({ attribute: name, value });
+		}
+	}
+	append(name: string, value: string) {
+		super.append(name, value);
+		this.#target = undefined; // remove this so that we can regenerate string representation based on query params
+		if (this.conditions) {
+			this.conditions.push({ attribute: name, value });
+		}
 	}
 }
 export type RequestTargetOrId = RequestTarget | Id;
