@@ -946,7 +946,7 @@ export function makeTable(options) {
 			const constructor: Resource = this.constructor;
 			if (typeof target === 'string' && constructor.loadAsInstance !== false) return this.getProperty(target);
 			if (isSearchTarget(target)) return this.search(target);
-			if (target?.target === '') {
+			if (!target.id && !target.toString()) {
 				const description = {
 					// basically a describe call
 					records: './', // an href to the records themselves
@@ -1226,7 +1226,7 @@ export function makeTable(options) {
 		invalidate(target: RequestTargetOrId) {
 			let allowed = true;
 			const context = this.getContext();
-			if ((target as RequestTarget).checkPermission) {
+			if ((target as RequestTarget)?.checkPermission) {
 				// requesting authorization verification
 				allowed = this.allowDelete(context.user, target, context);
 			}
