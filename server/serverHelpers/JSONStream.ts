@@ -47,6 +47,7 @@ class JSONStream extends Readable {
 									},
 									(error) => {
 										// try to properly serialize the error, but then finish the iterator
+										harperLogger.warn('Error serializing in stream', error);
 										iteratorResult = { done: false, value: { error: error.toString() } };
 										iterator = {
 											next: () => ({ done: true }),
