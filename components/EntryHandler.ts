@@ -3,13 +3,10 @@ import { EventEmitter, once } from 'node:events';
 import { ComponentV2, FileAndURLPathConfig } from './ComponentV2';
 import harperLogger from '../utility/logging/harper_logger.js';
 import chokidar, { FSWatcher, FSWatcherEventMap } from 'chokidar';
-import fg from 'fast-glob';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { FilesOption } from './deriveGlobOptions.js';
 import { deriveURLPath } from './deriveURLPath.js';
-import { contains, isMatch } from 'micromatch';
-import { deriveCommonPatternBase } from './deriveCommonPatternBase.js';
 
 interface BaseEntry {
 	stats?: Stats;
