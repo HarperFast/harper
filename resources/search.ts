@@ -835,10 +835,15 @@ export function estimateCondition(table) {
 				condition.estimated_count = STARTS_WITH_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
 			else if (searchType === 'between')
 				condition.estimated_count = BETWEEN_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
-			else if (searchType === 'sort')
-				condition.estimated_count = estimatedEntryCount(table.primaryStore) + 1; // only used by sort
-			// for the search types that use the broadest range, try do them last
-			else {
+			else if (searchType === 'sort') {
+				const attribute_name = condition[0] ?? condition.attribute;
+				const index = table.indices[attribute_name];
+				if (index?.customIndex?.estimateCountAsSort)
+					// allow custom index to define its own estimation of counts
+					condition.estimated_count = index.customIndex.estimateCountAsSort(condition);
+				else condition.estimated_count = estimatedEntryCount(table.primaryStore) + 1; // only used by sort
+			} else {
+				// for the search types that use the broadest range, try do them last
 				const attribute_name = condition[0] ?? condition.attribute;
 				const index = table.indices[attribute_name];
 				if (index?.customIndex?.estimateCount)

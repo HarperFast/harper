@@ -591,7 +591,7 @@ export class HierarchicalNavigableSmallWorld {
 	 *
 	 * @returns
 	 */
-	estimateCount() {
+	estimateCountAsSort() {
 		return Math.sqrt(this.indexStore.getStats().entryCount * this.efConstructionSearch);
 	}
 
