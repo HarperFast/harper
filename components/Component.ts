@@ -119,7 +119,7 @@ export class Component {
 
 			if (pattern.startsWith('/')) {
 				harperLogger.warn(
-					`Leading '/' in 'files' glob pattern is deprecated. For backwards compatibility purposes, it is currently transformed to the relative path of the component, but in the future will result in an error. Please replace with a relative path such as './' or removing the leading path separator all together ('./web/*' -> 'web/*').`
+					`Leading '/' in 'files' glob pattern is deprecated. For backwards compatibility purposes, it is currently transformed to the relative path of the component, but in the future will result in an error. Paths are automatically derived from the root of the component directory. Please remove (i.e. '/web/*' -> 'web/*').`
 				);
 
 				pattern = pattern === '/' ? '.' : pattern.slice(1);
