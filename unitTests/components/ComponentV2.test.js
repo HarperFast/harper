@@ -27,7 +27,7 @@ describe('ComponentV2', () => {
 	}
 
 	describe('with singular pattern', () => {
-		const patternRoots = ['/'];
+		const patternRoots = ['.'];
 
 		describe('with files as a string', () => {
 			it('should instantiate without any other options', () => {
@@ -144,7 +144,7 @@ describe('ComponentV2', () => {
 	});
 
 	describe('with multiple patterns', () => {
-		const patternRoots = ['foo/', 'bar/'];
+		const patternRoots = ['foo', 'bar'];
 
 		describe('with files as a string', () => {
 			it('should instantiate without any other options', () => {
