@@ -1906,7 +1906,6 @@ export function makeTable(options) {
 				}
 			}
 			conditions = orderConditions(conditions, operator);
-
 			if (sort) {
 				if (orderAlignedCondition && conditions[0] === orderAlignedCondition) {
 					// The db index is providing the order for the first sort, may need post ordering next sort order
@@ -2191,7 +2190,7 @@ export function makeTable(options) {
 				let record;
 				if (context?.transaction?.stale) context.transaction.stale = false;
 				if (entry != undefined) {
-					record = entry.value || entry.deref?.()?.value;
+					record = entry.deref ? entry.deref() : entry.value;
 					if ((!record && (entry.key === undefined || entry.deref)) || entry.metadataFlags & INVALIDATED) {
 						if (entry.metadataFlags & INVALIDATED && context.replicateFrom === false && canSkip && entry.residencyId) {
 							return SKIP;
@@ -3473,7 +3472,7 @@ export function makeTable(options) {
 		if (!entry) {
 			return;
 		}
-		const record = entry.value || primaryStore.getEntry(entry.key)?.value;
+		const record = (entry.deref ? entry.deref() : entry.value) ?? primaryStore.getEntry(entry.key)?.value;
 		if (typeof attribute_name === 'object') {
 			// attribute_name is an array of attributes, pointing to nested attribute
 			let resolvers = propertyResolvers;

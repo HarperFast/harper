@@ -60,6 +60,7 @@ let lastEncoding,
 	metadataInNextEncoding = -1,
 	expiresAtNextEncoding = -1,
 	residencyIdAtNextEncoding = 0;
+let lastMetadata: Entry = null;
 export class RecordEncoder extends Encoder {
 	constructor(options) {
 		options.useBigIntExtension = true;
@@ -206,13 +207,13 @@ export class RecordEncoder extends Encoder {
 							: super.decode(buffer.subarray(position, end), end - position),
 					this.rootStore
 				);
-				return {
+				lastMetadata = {
 					localTime,
-					value,
 					[METADATA]: metadataFlags,
 					expiresAt,
 					residencyId,
 				};
+				return value;
 			} // else a normal entry
 			return options?.valueAsBuffer ? buffer : decodeFromDatabase(() => super.decode(buffer, options), this.rootStore);
 		} catch (error) {
@@ -234,35 +235,33 @@ export function handleLocalTimeForGets(store, rootStore) {
 	store.encoder.rootStore = rootStore;
 	store.getEntry = function (id, options) {
 		store.readCount++;
+		lastMetadata = null;
 		const entry = storeGetEntry.call(this, id, options);
 		// if we have decoded with metadata, we want to pull it out and assign to this entry
-		const recordEntry = entry?.value;
-		const metadata = recordEntry?.[METADATA];
-		if (metadata >= 0) {
-			entry.metadataFlags = metadata;
-			entry.localTime = recordEntry.localTime;
-			entry.value = recordEntry.value;
-			entry.residencyId = recordEntry.residencyId;
-			if (recordEntry.expiresAt >= 0) {
-				entry.expiresAt = recordEntry.expiresAt;
+		if (entry) {
+			if (lastMetadata) {
+				entry.metadataFlags = lastMetadata[METADATA];
+				entry.localTime = lastMetadata.localTime;
+				entry.residencyId = lastMetadata.residencyId;
+				if (lastMetadata.expiresAt >= 0) {
+					entry.expiresAt = lastMetadata.expiresAt;
+				}
+				lastMetadata = null;
 			}
 			if (entry.value) {
 				entryMap.set(entry.value, entry); // allow the record to access the entry
 			}
+			entry.key = id;
 		}
-		if (entry) entry.key = id;
 		return entry;
 	};
 	const storeGet = store.get;
 	store.get = function (id, options) {
+		lastMetadata = null;
 		const value = storeGet.call(this, id, options);
-		// an object with metadata, but we want to just return the value
-		if (value?.[METADATA] >= 0) {
-			if (value.value) {
-				// give access to the entry
-				entryMap.set(value.value, value); // allow the record to access the entry
-			}
-			return value.value;
+		if (lastMetadata && value) {
+			entryMap.set(value, lastMetadata);
+			lastMetadata = null;
 		}
 		return value;
 	};
@@ -275,15 +274,13 @@ export function handleLocalTimeForGets(store, rootStore) {
 		}
 		if (options.values === false || options.onlyCount) return iterable;
 		return iterable.map((entry) => {
-			const recordEntry = entry.value;
 			// if we have metadata, move the metadata to the entry
-			const metadata = recordEntry[METADATA];
-			if (metadata >= 0) {
-				entry.metadataFlags = metadata;
-				entry.localTime = recordEntry.localTime;
-				entry.value = recordEntry.value;
-				entry.residencyId = recordEntry.residencyId;
-				if (recordEntry.expiresAt >= 0) entry.expiresAt = recordEntry.expiresAt;
+			if (lastMetadata) {
+				entry.metadataFlags = lastMetadata[METADATA];
+				entry.localTime = lastMetadata.localTime;
+				entry.residencyId = lastMetadata.residencyId;
+				if (lastMetadata.expiresAt >= 0) entry.expiresAt = lastMetadata.expiresAt;
+				lastMetadata = null;
 			}
 			return entry;
 		});
