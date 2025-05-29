@@ -2,11 +2,12 @@ import { isMainThread } from 'node:worker_threads';
 import fg from 'fast-glob';
 import { Resources } from '../resources/Resources.ts';
 import harperLogger from '../utility/logging/harper_logger.js';
-import { derivePatternRoots } from './derivePatternRoots.ts';
 import { resolveBaseURLPath } from './resolveBaseURLPath.ts';
 import { deriveGlobOptions, FastGlobOptions, FilesOption } from './deriveGlobOptions.ts';
 import { basename, join } from 'node:path';
 import { readFile } from 'node:fs/promises';
+import { deriveURLPath } from './deriveURLPath.ts';
+import { scan } from 'micromatch';
 
 interface ComponentConfig {
 	files: string | string[] | FilesOption;
@@ -38,7 +39,7 @@ export class Component {
 	readonly module: Readonly<ComponentModule>;
 	readonly resources: Resources;
 	readonly globOptions: FastGlobOptions;
-	readonly patternRoots: string[];
+	readonly patternBases: string[];
 	readonly baseURLPath: string;
 
 	constructor(options: ComponentDetails) {
@@ -126,7 +127,7 @@ export class Component {
 
 			return pattern;
 		});
-		this.patternRoots = derivePatternRoots(this.globOptions.source);
+		this.patternBases = this.globOptions.source.map((pattern) => scan(pattern).base);
 		this.baseURLPath = resolveBaseURLPath(this.name, this.config.urlPath);
 	}
 }
@@ -259,14 +260,12 @@ async function handleRoots(component: Component) {
 			return false;
 		}
 
-		rootPaths = component.patternRoots;
+		rootPaths = component.patternBases;
 	}
 
 	let hasFunctionality: boolean | undefined = false;
 
 	for (const rootPath of rootPaths) {
-		if (!rootPath) continue;
-
 		const rootPathAbsolute = join(component.directory, rootPath);
 
 		if (isMainThread && component.module.setupDirectory) {
@@ -309,18 +308,7 @@ export async function processResourceExtensionComponent(component: Component) {
 	});
 
 	for (const entry of matches) {
-		let entryPathPart = entry.path;
-
-		if (entryPathPart !== '/') {
-			for (const root of component.patternRoots) {
-				if (entryPathPart !== root && entryPathPart.startsWith(root)) {
-					entryPathPart = entry.path.slice(root.length);
-					break;
-				}
-			}
-		}
-
-		const urlPath = join(component.baseURLPath, entryPathPart);
+		const urlPath = deriveURLPath(component, entry.path);
 		const absolutePath = join(component.directory, entry.path);
 
 		if (entry.dirent.isDirectory()) {

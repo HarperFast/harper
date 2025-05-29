@@ -156,6 +156,7 @@
 	},
 	"devDependencies": {
 		"@tsconfig/node16": "^1.0.3",
+		"@types/micromatch": "^4.0.9",
 		"@types/node": "20.14.8",
 		"@typescript-eslint/eslint-plugin": "^7.18.0",
 		"@typescript-eslint/parser": "^7.18.0",
@@ -185,10 +186,10 @@
 		"rimraf": "3.0.2",
 		"sinon": "10.0.0",
 		"sinon-chai": "3.7.0",
+		"supertest": "^7.0.0",
 		"typescript": "^5.8.2",
 		"undici": "^7.3.0",
-		"why-is-node-still-running": "^1.0.0",
-		"supertest": "^7.0.0"
+		"why-is-node-still-running": "^1.0.0"
 	},
 	"overrides": {
 		"alasql": {

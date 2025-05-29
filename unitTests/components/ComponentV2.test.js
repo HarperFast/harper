@@ -18,7 +18,8 @@ describe('ComponentV2', () => {
 		assert.deepEqual(actual.config, config);
 		assert.equal(actual.baseURLPath, expected.baseURLPath);
 		assert.deepEqual(actual.globOptions, expected.globOptions);
-		assert.deepEqual(actual.patternRoots, expected.patternRoots);
+		assert.deepEqual(actual.patternBases, expected.patternBases);
+		assert.equal(actual.commonPatternBase, expected.commonPatternBase);
 	}
 
 	// Helper function to generate expected globOptions
@@ -27,7 +28,8 @@ describe('ComponentV2', () => {
 	}
 
 	describe('with singular pattern', () => {
-		const patternRoots = ['.'];
+		const patternBases = [''];
+		const commonPatternBase = '';
 
 		describe('with files as a string', () => {
 			it('should instantiate without any other options', () => {
@@ -35,7 +37,8 @@ describe('ComponentV2', () => {
 				testComponentV2(config, {
 					baseURLPath: '/',
 					globOptions: getExpectedGlobOptions([singlePattern]),
-					patternRoots,
+					patternBases,
+					commonPatternBase,
 				});
 			});
 
@@ -44,7 +47,8 @@ describe('ComponentV2', () => {
 				testComponentV2(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions([singlePattern]),
-					patternRoots,
+					patternBases,
+					commonPatternBase,
 				});
 			});
 
@@ -55,7 +59,8 @@ describe('ComponentV2', () => {
 					testComponentV2(config, {
 						baseURLPath: '/',
 						globOptions: getExpectedGlobOptions([invalidPattern]),
-						patternRoots,
+						patternBases,
+						commonPatternBase,
 					});
 				}, new ComponentV2InvalidPatternError(invalidPattern));
 			});
@@ -66,7 +71,8 @@ describe('ComponentV2', () => {
 					testComponentV2(config, {
 						baseURLPath: '/',
 						globOptions: getExpectedGlobOptions([invalidPattern]),
-						patternRoots,
+						patternBases,
+						commonPatternBase,
 					});
 				}, new ComponentV2InvalidPatternError(invalidPattern));
 			});
@@ -78,7 +84,8 @@ describe('ComponentV2', () => {
 				testComponentV2(config, {
 					baseURLPath: '/',
 					globOptions: getExpectedGlobOptions([singlePattern]),
-					patternRoots,
+					patternBases,
+					commonPatternBase,
 				});
 			});
 
@@ -87,7 +94,8 @@ describe('ComponentV2', () => {
 				testComponentV2(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions([singlePattern]),
-					patternRoots,
+					patternBases,
+					commonPatternBase,
 				});
 			});
 
@@ -96,7 +104,8 @@ describe('ComponentV2', () => {
 				testComponentV2(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions([singlePattern], true),
-					patternRoots,
+					patternBases,
+					commonPatternBase,
 				});
 			});
 
@@ -105,7 +114,8 @@ describe('ComponentV2', () => {
 				testComponentV2(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions([singlePattern], false, true),
-					patternRoots,
+					patternBases,
+					commonPatternBase,
 				});
 			});
 
@@ -114,7 +124,8 @@ describe('ComponentV2', () => {
 				testComponentV2(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions([singlePattern], false, false, ['buzz']),
-					patternRoots,
+					patternBases,
+					commonPatternBase,
 				});
 			});
 
@@ -125,7 +136,8 @@ describe('ComponentV2', () => {
 					testComponentV2(config, {
 						baseURLPath: '/',
 						globOptions: getExpectedGlobOptions([invalidPattern]),
-						patternRoots,
+						patternBases,
+						commonPatternBase,
 					});
 				}, new ComponentV2InvalidPatternError(invalidPattern));
 			});
@@ -136,7 +148,8 @@ describe('ComponentV2', () => {
 					testComponentV2(config, {
 						baseURLPath: '/',
 						globOptions: getExpectedGlobOptions([invalidPattern]),
-						patternRoots,
+						patternBases,
+						commonPatternBase,
 					});
 				}, new ComponentV2InvalidPatternError(invalidPattern));
 			});
@@ -144,7 +157,8 @@ describe('ComponentV2', () => {
 	});
 
 	describe('with multiple patterns', () => {
-		const patternRoots = ['foo', 'bar'];
+		const patternBases = ['foo', 'bar'];
+		const commonPatternBase = '.';
 
 		describe('with files as a string', () => {
 			it('should instantiate without any other options', () => {
@@ -152,7 +166,8 @@ describe('ComponentV2', () => {
 				testComponentV2(config, {
 					baseURLPath: '/',
 					globOptions: getExpectedGlobOptions(multiplePatterns),
-					patternRoots,
+					patternBases,
+					commonPatternBase,
 				});
 			});
 
@@ -161,7 +176,8 @@ describe('ComponentV2', () => {
 				testComponentV2(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions(multiplePatterns),
-					patternRoots,
+					patternBases,
+					commonPatternBase,
 				});
 			});
 
@@ -172,7 +188,8 @@ describe('ComponentV2', () => {
 					testComponentV2(config, {
 						baseURLPath: '/',
 						globOptions: getExpectedGlobOptions([invalidPattern]),
-						patternRoots,
+						patternBases,
+						commonPatternBase,
 					});
 				}, new ComponentV2InvalidPatternError(invalidPattern));
 			});
@@ -183,7 +200,8 @@ describe('ComponentV2', () => {
 					testComponentV2(config, {
 						baseURLPath: '/',
 						globOptions: getExpectedGlobOptions([invalidPattern]),
-						patternRoots,
+						patternBases,
+						commonPatternBase,
 					});
 				}, new ComponentV2InvalidPatternError(invalidPattern));
 			});
@@ -195,7 +213,8 @@ describe('ComponentV2', () => {
 				testComponentV2(config, {
 					baseURLPath: '/',
 					globOptions: getExpectedGlobOptions(multiplePatterns),
-					patternRoots,
+					patternBases,
+					commonPatternBase,
 				});
 			});
 
@@ -204,7 +223,8 @@ describe('ComponentV2', () => {
 				testComponentV2(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions(multiplePatterns),
-					patternRoots,
+					patternBases,
+					commonPatternBase,
 				});
 			});
 
@@ -213,7 +233,8 @@ describe('ComponentV2', () => {
 				testComponentV2(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions(multiplePatterns, true),
-					patternRoots,
+					patternBases,
+					commonPatternBase,
 				});
 			});
 
@@ -222,7 +243,8 @@ describe('ComponentV2', () => {
 				testComponentV2(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions(multiplePatterns, false, true),
-					patternRoots,
+					patternBases,
+					commonPatternBase,
 				});
 			});
 
@@ -231,7 +253,8 @@ describe('ComponentV2', () => {
 				testComponentV2(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions(multiplePatterns, false, false, ['buzz']),
-					patternRoots,
+					patternBases,
+					commonPatternBase,
 				});
 			});
 
@@ -242,7 +265,8 @@ describe('ComponentV2', () => {
 					testComponentV2(config, {
 						baseURLPath: '/',
 						globOptions: getExpectedGlobOptions([invalidPattern]),
-						patternRoots,
+						patternBases,
+						commonPatternBase,
 					});
 				}, new ComponentV2InvalidPatternError(invalidPattern));
 			});
@@ -253,7 +277,8 @@ describe('ComponentV2', () => {
 					testComponentV2(config, {
 						baseURLPath: '/',
 						globOptions: getExpectedGlobOptions([invalidPattern]),
-						patternRoots,
+						patternBases,
+						commonPatternBase,
 					});
 				}, new ComponentV2InvalidPatternError(invalidPattern));
 			});

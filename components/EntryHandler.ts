@@ -7,6 +7,9 @@ import fg from 'fast-glob';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { FilesOption } from './deriveGlobOptions.js';
+import { deriveURLPath } from './deriveURLPath.js';
+import { contains, isMatch } from 'micromatch';
+import { deriveCommonPatternBase } from './deriveCommonPatternBase.js';
 
 interface BaseEntry {
 	stats?: Stats;
@@ -89,6 +92,10 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	}
 
 	private handleAll(...[event, path, stats]: FSWatcherEventMap['all']): void {
+		if (path === '') path = '/';
+
+		if (!isMatch(path, this.#component.globOptions.source, { ignore: this.#component.globOptions.ignore })) return;
+
 		const absolutePath = join(this.directory, path);
 		const urlPath = deriveURLPath(this.#component, path);
 
@@ -149,25 +156,21 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		await this.#watcher?.close();
 		this.#watcher = undefined;
 
-		return fg(this.#component.globOptions.source, {
-			cwd: this.directory,
-			onlyFiles: this.#component.globOptions.onlyFiles,
-			onlyDirectories: this.#component.globOptions.onlyDirectories,
-			ignore: this.#component.globOptions.ignore,
-		})
-			.then((matches) => {
-				this.#logger.debug(`Watching entries: [${matches.join(', ')}]`);
-				this.#watcher = chokidar
-					.watch(matches, { cwd: this.directory, persistent: false })
-					.on('all', this.handleAll.bind(this))
-					.on('error', this.handleError.bind(this))
-					.on('ready', this.handleReady.bind(this));
+		const allowedBases = this.#component.patternBases.map((base) => join(this.#component.directory, base));
 
-				return this.ready();
+		this.#watcher = chokidar
+			.watch(this.#component.commonPatternBase, {
+				cwd: this.#component.directory,
+				persistent: false,
+				ignored: (path) => {
+					return path !== this.#component.directory && allowedBases.every((base) => !path.startsWith(base));
+				},
 			})
-			.catch((error) => {
-				this.emit('error', error);
-			});
+			.on('all', this.handleAll.bind(this))
+			.on('error', this.handleError.bind(this))
+			.on('ready', this.handleReady.bind(this));
+
+		return this.ready();
 	}
 
 	close(): this {
@@ -193,19 +196,4 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 
 function castConfig(config: FilesOption | FileAndURLPathConfig): FileAndURLPathConfig {
 	return typeof config === 'string' || Array.isArray(config) || !('files' in config) ? { files: config } : config;
-}
-
-function deriveURLPath(component: ComponentV2, path: string): string {
-	let entryPathPart = path;
-
-	if (entryPathPart !== '/') {
-		for (const patternRoot of component.patternRoots) {
-			if (path.startsWith(patternRoot)) {
-				entryPathPart = path.slice(patternRoot.length);
-				break;
-			}
-		}
-	}
-
-	return join(component.baseURLPath, entryPathPart);
 }
