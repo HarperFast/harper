@@ -266,6 +266,7 @@ async function handleRoots(component: Component) {
 
 	for (const rootPath of rootPaths) {
 		if (!rootPath) continue;
+
 		const rootPathAbsolute = join(component.directory, rootPath);
 
 		if (isMainThread && component.module.setupDirectory) {
@@ -312,7 +313,7 @@ export async function processResourceExtensionComponent(component: Component) {
 
 		if (entryPathPart !== '/') {
 			for (const root of component.patternRoots) {
-				if (entry.path.startsWith(root)) {
+				if (entryPathPart !== root && entryPathPart.startsWith(root)) {
 					entryPathPart = entry.path.slice(root.length);
 					break;
 				}
@@ -320,7 +321,6 @@ export async function processResourceExtensionComponent(component: Component) {
 		}
 
 		const urlPath = join(component.baseURLPath, entryPathPart);
-		console.log(component.directory, entry.path);
 		const absolutePath = join(component.directory, entry.path);
 
 		if (entry.dirent.isDirectory()) {

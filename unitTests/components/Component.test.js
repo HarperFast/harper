@@ -99,7 +99,7 @@ describe('Component', () => {
 
 			function assertDirectories(directoryFake, resources) {
 				assert.equal(directoryFake.callCount, 2);
-				assert.deepEqual(directoryFake.getCall(0).args, ['/', join(componentDirPath, '/'), resources]);
+				assert.deepEqual(directoryFake.getCall(0).args, ['/', componentDirPath, resources]);
 				assert.deepEqual(directoryFake.getCall(1).args, ['/web', join(componentDirPath, 'web'), resources]);
 			}
 
@@ -257,7 +257,7 @@ describe('Component', () => {
 
 			function assertDirectories(directoryFake, resources) {
 				assert.equal(directoryFake.callCount, 3);
-				assert.deepEqual(directoryFake.getCall(0).args, ['/', join(componentDirPath, '/'), resources]);
+				assert.deepEqual(directoryFake.getCall(0).args, ['/', componentDirPath, resources]);
 				assert.deepEqual(directoryFake.getCall(1).args, ['/web', join(componentDirPath, 'web'), resources]);
 				assert.deepEqual(directoryFake.getCall(2).args, [
 					'/web/static',
@@ -313,7 +313,7 @@ describe('Component', () => {
 			});
 		});
 
-		it.only("should warn about leading '/' and resolve it relative to root", async () => {
+		it("should warn about leading '/' and resolve it relative to root", async () => {
 			const handleDirectoryFake = fake(),
 				handleFileFake = fake();
 
@@ -340,7 +340,7 @@ describe('Component', () => {
 			// The double call matches the behavior of the original implementation.
 			// Essentially the first call happens from the root path handling, and the second from the actual match operation
 			assert.equal(handleDirectoryFake.callCount, 2);
-			assert.deepEqual(handleDirectoryFake.getCall(0).args, ['/', componentDirPath, resources]);
+			assert.deepEqual(handleDirectoryFake.getCall(0).args, ['/', join(componentDirPath, '/'), resources]);
 			assert.deepEqual(handleDirectoryFake.getCall(1).args, ['/', componentDirPath, resources]);
 		});
 
@@ -567,7 +567,7 @@ describe('Component', () => {
 			]);
 
 			assert.equal(handleDirectoryFake.callCount, 2);
-			assert.deepEqual(handleDirectoryFake.getCall(0).args, ['/', join(componentDirPath, 'web', '/'), resources]);
+			assert.deepEqual(handleDirectoryFake.getCall(0).args, ['/', join(componentDirPath, 'web'), resources]);
 			assert.deepEqual(handleDirectoryFake.getCall(1).args, [
 				'/static',
 				join(componentDirPath, 'web', 'static'),
@@ -677,7 +677,7 @@ describe('Component', () => {
 			]);
 
 			assert.equal(handleDirectoryFake.callCount, 2);
-			assert.deepEqual(handleDirectoryFake.getCall(0).args, ['/', join(componentDirPath, 'web', '/'), resources]);
+			assert.deepEqual(handleDirectoryFake.getCall(0).args, ['/', join(componentDirPath, 'web'), resources]);
 			assert.deepEqual(handleDirectoryFake.getCall(1).args, [
 				'/static',
 				join(componentDirPath, 'web', 'static'),
@@ -739,7 +739,7 @@ describe('Component', () => {
 			assert.equal(handleFileFake.callCount, 0);
 
 			assert.equal(handleDirectoryFake.callCount, 2);
-			assert.deepEqual(handleDirectoryFake.getCall(0).args, ['/', join(componentDirPath, '/'), resources]);
+			assert.deepEqual(handleDirectoryFake.getCall(0).args, ['/', join(componentDirPath, 'web'), resources]);
 			assert.deepEqual(handleDirectoryFake.getCall(1).args, ['/web', join(componentDirPath, 'web'), resources]);
 		});
 
@@ -776,7 +776,7 @@ describe('Component', () => {
 			]);
 
 			assert.equal(handleDirectoryFake.callCount, 1);
-			assert.deepEqual(handleDirectoryFake.getCall(0).args, ['/', join(componentDirPath, 'web', '/'), resources]);
+			assert.deepEqual(handleDirectoryFake.getCall(0).args, ['/', join(componentDirPath, 'web'), resources]);
 		});
 
 		it('should return early if root handleDirectory returns true', async () => {
