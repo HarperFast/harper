@@ -60,7 +60,7 @@ let lastEncoding,
 	metadataInNextEncoding = -1,
 	expiresAtNextEncoding = -1,
 	residencyIdAtNextEncoding = 0;
-let lastMetadata: Entry = null;
+export let lastMetadata: Entry = null;
 export class RecordEncoder extends Encoder {
 	constructor(options) {
 		options.useBigIntExtension = true;
@@ -152,6 +152,7 @@ export class RecordEncoder extends Encoder {
 		};
 	}
 	decode(buffer, options) {
+		lastMetadata = null;
 		const start = options?.start || 0;
 		const end = options > -1 ? options : options?.end || buffer.length;
 		let nextByte = buffer[start];

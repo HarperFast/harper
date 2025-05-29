@@ -100,7 +100,6 @@ async function http(request: Context & Request, nextHandler) {
 				}
 			}
 			request.authorize = true;
-			resourceRequest.checkPermission = request.user?.role?.permission ?? {};
 
 			if (url === OPENAPI_DOMAIN && method === 'GET') {
 				if (request?.user?.role?.permission?.super_user) {
@@ -109,6 +108,7 @@ async function http(request: Context & Request, nextHandler) {
 					throw new ServerError(`Forbidden`, 403);
 				}
 			}
+			resourceRequest.checkPermission = request.user?.role?.permission ?? {};
 
 			switch (method) {
 				case 'GET':
