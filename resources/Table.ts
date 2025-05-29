@@ -946,7 +946,7 @@ export function makeTable(options) {
 			const constructor: Resource = this.constructor;
 			if (typeof target === 'string' && constructor.loadAsInstance !== false) return this.getProperty(target);
 			if (isSearchTarget(target)) return this.search(target);
-			if (!target.id && !target.toString()) {
+			if (target && target.id === undefined && !target.toString()) {
 				const description = {
 					// basically a describe call
 					records: './', // an href to the records themselves
