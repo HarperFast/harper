@@ -706,7 +706,7 @@ describe('Component', () => {
 			assert.equal(handleFileFake.callCount, 1);
 			assert.deepEqual(handleFileFake.getCall(0).args, [
 				Buffer.from('e'),
-				`/web/e`,
+				`/e`,
 				join(componentDirPath, 'web', 'e'),
 				resources,
 			]);
@@ -740,7 +740,7 @@ describe('Component', () => {
 
 			assert.equal(handleDirectoryFake.callCount, 2);
 			assert.deepEqual(handleDirectoryFake.getCall(0).args, ['/', join(componentDirPath, 'web'), resources]);
-			assert.deepEqual(handleDirectoryFake.getCall(1).args, ['/web', join(componentDirPath, 'web'), resources]);
+			assert.deepEqual(handleDirectoryFake.getCall(1).args, ['/', join(componentDirPath, 'web'), resources]);
 		});
 
 		it('should ignore specified files', async () => {

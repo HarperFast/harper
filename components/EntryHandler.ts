@@ -7,6 +7,7 @@ import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { FilesOption } from './deriveGlobOptions.js';
 import { deriveURLPath } from './deriveURLPath.js';
+import { isMatch } from 'micromatch';
 
 interface BaseEntry {
 	stats?: Stats;
@@ -94,11 +95,11 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		if (!isMatch(path, this.#component.globOptions.source, { ignore: this.#component.globOptions.ignore })) return;
 
 		const absolutePath = join(this.directory, path);
-		const urlPath = deriveURLPath(this.#component, path);
 
 		switch (event) {
 			case 'add':
 			case 'change': {
+				const urlPath = deriveURLPath(this.#component, path, 'file');
 				readFile(absolutePath).then((contents) => {
 					const entry: AddFileEvent | ChangeFileEvent = {
 						eventType: event,
@@ -114,6 +115,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 				break;
 			}
 			case 'unlink': {
+				const urlPath = deriveURLPath(this.#component, path, 'file');
 				const entry: UnlinkFileEvent = {
 					eventType: event,
 					entryType: 'file',
@@ -127,6 +129,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			}
 			case 'addDir':
 			case 'unlinkDir': {
+				const urlPath = deriveURLPath(this.#component, path, 'directory');
 				const entry: DirectoryEntryEvent = {
 					eventType: event,
 					entryType: 'directory',

@@ -8,6 +8,7 @@ import { basename, join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { deriveURLPath } from './deriveURLPath.ts';
 import { scan } from 'micromatch';
+import { derivePatternBases } from './derivePatternBases.ts';
 
 interface ComponentConfig {
 	files: string | string[] | FilesOption;
@@ -128,6 +129,7 @@ export class Component {
 			return pattern;
 		});
 		this.patternBases = this.globOptions.source.map((pattern) => scan(pattern).base);
+		// this.patternBases = derivePatternBases(this.globOptions.source);
 		this.baseURLPath = resolveBaseURLPath(this.name, this.config.urlPath);
 	}
 }
@@ -308,10 +310,10 @@ export async function processResourceExtensionComponent(component: Component) {
 	});
 
 	for (const entry of matches) {
-		const urlPath = deriveURLPath(component, entry.path);
 		const absolutePath = join(component.directory, entry.path);
 
 		if (entry.dirent.isDirectory()) {
+			const urlPath = deriveURLPath(component, entry.path, 'directory');
 			if (isMainThread && component.module.setupDirectory) {
 				await component.module.setupDirectory(urlPath, absolutePath, component.resources);
 				hasFunctionality = true;
@@ -321,6 +323,7 @@ export async function processResourceExtensionComponent(component: Component) {
 				hasFunctionality = true;
 			}
 		} else if (entry.dirent.isFile()) {
+			const urlPath = deriveURLPath(component, entry.path, 'file');
 			const contents = await readFile(absolutePath);
 			if (isMainThread && component.module.setupFile) {
 				await component.module.setupFile(contents, urlPath, absolutePath, component.resources);
