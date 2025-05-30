@@ -5,10 +5,10 @@
 // Define status configurations with const assertion for literal types
 export const STATUS_DEFINITIONS = {
 	primary: {
-		allowedValues: null as null, // Any string is valid
+		allowedValues: null, // Any string is valid
 	},
 	maintenance: {
-		allowedValues: null as null, // Any string is valid
+		allowedValues: null, // Any string is valid
 	},
 	availability: {
 		allowedValues: ['Available', 'Unavailable'] as const,
