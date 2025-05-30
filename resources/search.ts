@@ -6,6 +6,7 @@ import { INVALIDATED, EVICTED } from './Table.ts';
 import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { MultiPartId } from './Resource.ts';
 import { RequestTarget } from './RequestTarget.ts';
+import { lastMetadata } from './RecordEncoder';
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;
 const BETWEEN_ESTIMATE = 0.1;
@@ -646,8 +647,18 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 						if (subIdFilter.idFilter) recordFilter.idFilter = subIdFilter.idFilter;
 						return matches;
 					}
-					subEntry = resolver(record, context, entry);
-					subObject = subEntry?.value;
+					if (resolver.returnDirect) {
+						subObject = resolver(record, context, entry);
+						subEntry = lastMetadata;
+					} else {
+						subEntry = resolver(record, context, entry, true);
+						if (Array.isArray(subEntry)) {
+							subObject = subEntry.map((subEntry) => subEntry.value);
+							subEntry = null;
+						} else {
+							subObject = subEntry?.value;
+						}
+					}
 				} else subObject = record[firstAttributeName];
 				if (!subObject) return false;
 				if (!Array.isArray(subObject)) return nextFilter(subObject, subEntry);

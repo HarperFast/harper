@@ -2249,7 +2249,7 @@ export function makeTable(options) {
 									value = filterMap.fromRecord?.(record);
 								}
 							} else {
-								value = resolver(record, context, entry);
+								value = resolver(record, context, entry, true);
 							}
 							const handleResolvedValue = (value: any) => {
 								if (resolver.directReturn) return callback(value, attribute_name);
@@ -2945,18 +2945,23 @@ export function makeTable(options) {
 					hasRelationships = true;
 					if (relationship.to) {
 						if (attribute.elements?.definition) {
-							propertyResolvers[attribute.name] = attribute.resolve = (object, context, directEntry?) => {
+							propertyResolvers[attribute.name] = attribute.resolve = (object, context, entry, returnEntry?) => {
 								// TODO: Get raw record/entry?
 								const id = object[relationship.from ? relationship.from : primaryKey];
 								const relatedTable = attribute.elements.definition.tableClass;
-								if (directEntry) {
+								if (returnEntry) {
 									return searchByIndex(
 										{ attribute: relationship.to, value: id },
 										txnForContext(context).getReadTxn(),
 										false,
 										relatedTable,
 										false
-									).asArray;
+									).map((entry) => {
+										if (entry && entry.key !== undefined) return entry;
+										return relatedTable.primaryStore.getEntry(entry, {
+											transaction: txnForContext(context).getReadTxn(),
+										});
+									}).asArray;
 								}
 								return relatedTable.search([{ attribute: relationship.to, value: id }], context).asArray;
 							};
@@ -2974,17 +2979,15 @@ export function makeTable(options) {
 					} else if (relationship.from) {
 						const definition = attribute.definition || attribute.elements?.definition;
 						if (definition) {
-							propertyResolvers[attribute.name] = attribute.resolve = (object, context, directEntry?) => {
+							propertyResolvers[attribute.name] = attribute.resolve = (object, context, entry, returnEntry?) => {
 								const ids = object[relationship.from];
 								if (ids === undefined) return undefined;
 								if (attribute.elements) {
 									let hasPromises;
 									const results = ids?.map((id) => {
-										const value = directEntry
-											? definition.tableClass.primaryStore.getEntry(id, {
-													transaction: txnForContext(context).getReadTxn(),
-												})
-											: definition.tableClass.get(id, context);
+										const value = definition.tableClass.primaryStore[returnEntry ? 'getEntry' : 'get'](id, {
+											transaction: txnForContext(context).getReadTxn(),
+										});
 										if (value?.then) hasPromises = true;
 										return value;
 									});
@@ -2996,11 +2999,9 @@ export function makeTable(options) {
 											? Promise.all(results)
 											: results;
 								}
-								return directEntry
-									? definition.tableClass.primaryStore.getEntry(ids, {
-											transaction: txnForContext(context).getReadTxn(),
-										})
-									: definition.tableClass.get(ids, context);
+								return definition.tableClass.primaryStore[returnEntry ? 'getEntry' : 'get'](ids, {
+									transaction: txnForContext(context).getReadTxn(),
+								});
 							};
 							attribute.set = (object, related) => {
 								if (Array.isArray(related)) {
@@ -3041,6 +3042,7 @@ export function makeTable(options) {
 							this.userResolvers[attribute.name] = () => {};
 						}
 					};
+					attribute.resolve.directReturn = true;
 				} else if (indices[attribute.name]?.customIndex?.propertyResolver) {
 					const customIndex = indices[attribute.name].customIndex;
 					propertyResolvers[attribute.name] = (object, context, entry) => {
@@ -3480,7 +3482,8 @@ export function makeTable(options) {
 			for (let i = 0, l = attribute_name.length; i < l; i++) {
 				const attribute = attribute_name[i];
 				const resolver = resolvers?.[attribute];
-				value = resolver && value ? resolver(value, context, entry)?.value : value?.[attribute];
+				value = resolver && value ? resolver(value, context, entry) : value?.[attribute];
+				entry = null; // can't use this in the nested object
 				resolvers = resolver?.definition?.tableClass?.propertyResolvers;
 			}
 			return value;
