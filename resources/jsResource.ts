@@ -1,4 +1,3 @@
-import { url } from 'inspector';
 import { secureImport } from '../security/jsLoader.ts';
 import { dirname } from 'path';
 
