@@ -79,8 +79,6 @@ jobs:
     needs:
       - destroyInstances
       - downloadLogs
-      - runUnitTests
-      - runIntegrationTests
       - registerInstances
       - createInstances
       - getNodeVersion
