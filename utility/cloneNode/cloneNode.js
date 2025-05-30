@@ -32,8 +32,7 @@ const { updateConfigCert } = require('../../security/keys.js');
 const { restartWorkers } = require('../../server/threads/manageThreads.js');
 const { databases } = require('../../resources/databases.ts');
 const { clusterStatus } = require('../clustering/clusterStatus.js');
-const { set: setStatus } = require('../../server/status.ts');
-const { ClientError } = require('../errors/hdbError.js');
+const { set: setStatus } = require('../../server/status/index.ts');
 const { HTTP_STATUS_CODES } = require('../errors/commonErrors.js');
 
 // Custom error class for clone node operations
@@ -302,14 +301,7 @@ async function cloneUsingWS() {
 		console.error('Sync monitoring failed:', error.message);
 		
 		// Optionally set availability status to Unavailable if status updates are enabled
-		if (isStatusUpdateEnabled()) {
-			try {
-				await setStatus({ id: 'availability', status: 'Unavailable' });
-				console.log('Set availability status to Unavailable due to sync failure');
-			} catch (statusError) {
-				console.error('Failed to update availability status:', statusError);
-			}
-		}
+		// TODO: (maybe) update availability status to Unavailable if sync fails
 	}
 
 	console.log(`Successfully cloned node: ${leaderUrl} using WebSockets`);
