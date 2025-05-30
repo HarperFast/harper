@@ -8,7 +8,6 @@ import { basename, join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { deriveURLPath } from './deriveURLPath.ts';
 import { scan } from 'micromatch';
-import { derivePatternBases } from './derivePatternBases.ts';
 
 interface ComponentConfig {
 	files: string | string[] | FilesOption;
@@ -129,7 +128,6 @@ export class Component {
 			return pattern;
 		});
 		this.patternBases = this.globOptions.source.map((pattern) => scan(pattern).base);
-		// this.patternBases = derivePatternBases(this.globOptions.source);
 		this.baseURLPath = resolveBaseURLPath(this.name, this.config.urlPath);
 	}
 }
