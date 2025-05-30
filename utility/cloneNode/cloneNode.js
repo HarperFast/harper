@@ -31,6 +31,25 @@ const { sendOperationToNode } = require('../../server/replication/replicator.ts'
 const { updateConfigCert } = require('../../security/keys.js');
 const { restartWorkers } = require('../../server/threads/manageThreads.js');
 const { databases } = require('../../resources/databases.ts');
+const { clusterStatus } = require('../clustering/clusterStatus.js');
+const { set: setStatus } = require('../../server/status/index.ts');
+const { HTTP_STATUS_CODES } = require('../errors/commonErrors.js');
+
+// Custom error class for clone node operations
+class CloneNodeError extends Error {
+	constructor(message, statusCode = HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR) {
+		super(message);
+		this.name = 'CloneNodeError';
+		this.statusCode = statusCode;
+	}
+}
+
+class CloneSyncError extends CloneNodeError {
+	constructor(message) {
+		super(message, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+		this.name = 'CloneSyncError';
+	}
+}
 
 const { SYSTEM_TABLE_NAMES, SYSTEM_SCHEMA_NAME, CONFIG_PARAMS, OPERATIONS_ENUM } = hdbTerms;
 const WAIT_FOR_RESTART_TIME = 10000;
@@ -148,6 +167,10 @@ module.exports = async function cloneNode(background = false, run = false) {
 		console.log('Using default root path', rootPath);
 	}
 
+	// Set the root path in environment manager immediately after determining it
+	// This ensures getHdbBasePath() will work for any subsequent module imports
+	envMgr.setHdbBasePath(rootPath);
+
 	let cloneConfigPath;
 	try {
 		cloneConfigPath = join(rootPath, CLONE_CONFIG_FILE);
@@ -188,7 +211,6 @@ module.exports = async function cloneNode(background = false, run = false) {
 
 	await cloneConfig();
 	envMgr.setCloneVar(false);
-	envMgr.setHdbBasePath(rootPath);
 
 	fs.ensureDir(envMgr.get(hdbTerms.CONFIG_PARAMS.LOGGING_ROOT));
 	hdbLog.initLogSettings();
@@ -259,7 +281,7 @@ async function cloneUsingWS() {
 
 	// Get last updated record timestamps for all DB and write to file
 	// These values can be used for checking when the clone replication has caught up with leader
-	await getLastUpdatedRecord();
+	const lastUpdatedTimestamps = await getLastUpdatedRecord();
 
 	// When cloning with WS we utilize addNode to clone all the DB and setup replication
 	console.log('Adding node to the cluster');
@@ -271,6 +293,16 @@ async function cloneUsingWS() {
 	console.log('Add node response: ', addNodeResponse);
 
 	await cloneKeys();
+
+	// Monitor sync and update status when complete
+	try {
+		await monitorSyncAndUpdateStatus(lastUpdatedTimestamps);
+	} catch (error) {
+		console.error('Sync monitoring failed:', error.message);
+		
+		// Optionally set availability status to Unavailable if status updates are enabled
+		// TODO: (maybe) update availability status to Unavailable if sync fails
+	}
 
 	console.log(`Successfully cloned node: ${leaderUrl} using WebSockets`);
 	configUtils.updateConfigValue(CONFIG_PARAMS.CLONED, true);
@@ -313,6 +345,120 @@ async function getLastUpdatedRecord() {
 	const lastUpdatedFilePath = join(rootPath, 'tmp', 'lastUpdated.json');
 	console.log('Writing last updated database timestamps to:', lastUpdatedFilePath);
 	await fs.outputJson(lastUpdatedFilePath, lastUpdated);
+	
+	return lastUpdated;
+}
+
+/**
+ * Check if status updates are enabled via environment variable
+ * @returns {boolean} - True if status updates are enabled
+ */
+function isStatusUpdateEnabled() {
+	return process.env.CLONE_NODE_UPDATE_STATUS === 'true';
+}
+
+/**
+ * Monitor sync status and optionally update 'availability' status when synchronization is complete
+ * @param {Object} targetTimestamps - Object with database names as keys and timestamps as values
+ * @returns {Promise<void>}
+ * @throws {CloneSyncError} - If sync times out or targetTimestamps is invalid
+ */
+async function monitorSyncAndUpdateStatus(targetTimestamps) {
+	// Validate target timestamps early
+	if (!targetTimestamps || Object.keys(targetTimestamps).length === 0) {
+		throw new CloneSyncError('No target timestamps available to check synchronization status');
+	}
+
+	// Configuration from environment variables
+	const maxWaitTime = Math.max(1, parseInt(process.env.HDB_CLONE_SYNC_TIMEOUT) || 300000); // 5 minutes default, min 1ms
+	const checkInterval = Math.max(1, parseInt(process.env.HDB_CLONE_CHECK_INTERVAL) || 10000); // 10 seconds default, min 1ms
+	const shouldUpdateStatus = isStatusUpdateEnabled();
+
+	console.log('Starting sync monitoring');
+	console.log(`Max wait time: ${maxWaitTime}ms, Check interval: ${checkInterval}ms`);
+
+	const startTime = Date.now();
+	let syncComplete = false;
+
+	while (!syncComplete && (Date.now() - startTime) < maxWaitTime) {
+		try {
+			// Check if all databases are synchronized
+			syncComplete = await checkSyncStatus(targetTimestamps);
+
+			if (syncComplete) {
+				console.log('All databases synchronized');
+				
+				// Only update status if enabled
+				if (shouldUpdateStatus) {
+					try {
+						await setStatus({ id: 'availability', status: 'Available' });
+						console.log('Successfully updated availability status to Available');
+					} catch (error) {
+						console.error('Error updating status:', error);
+						// Don't fail the sync monitoring due to status update failure
+					}
+				}
+			} else {
+				console.log(`Sync not complete, waiting ${checkInterval}ms before next check`);
+				await hdbUtils.asyncSetTimeout(checkInterval);
+			}
+		} catch (error) {
+			console.error('Error checking cluster status:', error);
+			// Continue monitoring on error
+			await hdbUtils.asyncSetTimeout(checkInterval);
+		}
+	}
+
+	if (!syncComplete) {
+		throw new CloneSyncError(`Sync monitoring timed out after ${maxWaitTime}ms`);
+	}
+}
+
+/**
+ * Check if all databases are synchronized by comparing timestamps
+ * @param {Object} clusterResponse - Response from clusterStatus()
+ * @param {Object} targetTimestamps - Target timestamps to check against
+ * @returns {Promise<boolean>} - True if all databases are synchronized
+ */
+async function checkSyncStatus(targetTimestamps) {
+	// Get cluster status
+	const clusterResponse = await clusterStatus();
+
+	// There should always be a response with at least an empty connections []
+	for (const connection of clusterResponse.connections) {
+		// ...but not always database_sockets
+		if (!connection.database_sockets) {
+			continue;
+		}
+
+		for (const socket of connection.database_sockets) {
+			const dbName = socket.database;
+			const targetTime = targetTimestamps[dbName];
+			
+			// Skip if no target time for this database
+			if (!targetTime) continue;
+
+			const receivedTime = socket.lastReceivedRemoteTime;
+			
+			// Check if we have received data and if it's up to date
+			if (!receivedTime) {
+				console.log(`Database ${dbName}: No data received yet`);
+				return false;
+			}
+
+			// Convert timestamps to numbers for comparison
+			const receivedTimeNum = new Date(receivedTime).getTime();
+			
+			if (receivedTimeNum < targetTime) {
+				console.log(`Database ${dbName}: Not synchronized (received: ${receivedTimeNum}, target: ${targetTime})`);
+				return false;
+			}
+
+			console.log(`Database ${dbName}: Synchronized`);
+		}
+	}
+
+	return true;
 }
 
 /**

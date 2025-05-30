@@ -1,7 +1,7 @@
 'use strict';
 
 const assert = require('node:assert');
-const status = require('../../server/status');
+const status = require('../../../server/status/index');
 
 describe('server.status', function () {
 	const clearStatus = async () => Promise.all(['primary', 'test', 'maintenance', 'availability'].map((id) => status.clear({ id })));
