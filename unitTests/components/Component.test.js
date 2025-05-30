@@ -332,7 +332,7 @@ describe('Component', () => {
 			assert.ok(hasFunctionality);
 
 			assert.deepEqual(harperLogger.warn.getCall(0).args, [
-				`Leading '/' in 'files' glob pattern is deprecated. For backwards compatibility purposes, it is currently transformed to the relative path of the component, but in the future will result in an error. Paths are automatically derived from the root of the component directory. Please remove (i.e. '/web/*' -> 'web/*').`,
+				`Leading '/' in 'files' glob pattern is deprecated. For backwards compatibility purposes, it is currently transformed to the relative path of the component, but in the future will result in an error. Paths are automatically derived from the root of the component directory. Please remove (e.g. '/web/*' -> 'web/*').`,
 			]);
 
 			assert.equal(handleFileFake.callCount, 0);
@@ -363,7 +363,7 @@ describe('Component', () => {
 			assert.ok(hasFunctionality);
 
 			assert.deepEqual(harperLogger.warn.getCall(0).args, [
-				`Leading '/' in 'files' glob pattern is deprecated. For backwards compatibility purposes, it is currently transformed to the relative path of the component, but in the future will result in an error. Paths are automatically derived from the root of the component directory. Please remove (i.e. '/web/*' -> 'web/*').`,
+				`Leading '/' in 'files' glob pattern is deprecated. For backwards compatibility purposes, it is currently transformed to the relative path of the component, but in the future will result in an error. Paths are automatically derived from the root of the component directory. Please remove (e.g. '/web/*' -> 'web/*').`,
 			]);
 
 			assert.equal(handleFileFake.callCount, 3);
