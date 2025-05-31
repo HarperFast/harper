@@ -1466,7 +1466,7 @@ export function replicateOverWS(ws, options, authorization) {
 			// if we are connected directly to the node, we start from the last sequence number we received at the top level
 			let startTime = Math.max(
 				sequenceEntry?.seqId ?? 1,
-				(typeof node.start_time === 'string' ? new Date(node.start_time).getTime() : node.start_time) ?? 1
+				(typeof node.startTime === 'string' ? new Date(node.startTime).getTime() : node.startTime) ?? 1
 			);
 			logger.debug?.(
 				'Starting time recorded in db',
@@ -1502,7 +1502,7 @@ export function replicateOverWS(ws, options, authorization) {
 				replicateByDefault,
 				tables: tableSubs, // omitted or included based on flag above
 				startTime,
-				endTime: node.end_time,
+				endTime: node.endTime,
 			};
 		});
 
