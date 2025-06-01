@@ -285,7 +285,7 @@ export function replicateOverWS(ws, options, authorization) {
 		(p ? 's:' + p : 'c:' + options.url?.slice(-4)) +
 		' ' +
 		Math.random().toString().slice(2, 3);
-
+	logger.debug(connectionId, 'Initializing replication connection', authorization);
 	let encodingStart = 0;
 	let encodingBuffer = Buffer.allocUnsafeSlow(1024);
 	let position = 0;

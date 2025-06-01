@@ -66,6 +66,7 @@ export function start(options) {
 	// noinspection JSVoidFunctionReturnValueUsed
 	// @ts-expect-error
 	const wsServers = server.ws(async (ws, request, chainCompletion, next) => {
+		logger.debug('Incoming WS connection received ' + request.url);
 		if (request.headers.get('sec-websocket-protocol') !== 'harperdb-replication-v1') {
 			return next(ws, request, chainCompletion);
 		}
@@ -81,6 +82,7 @@ export function start(options) {
 	// or IP address and then falling back to standard authorization, we set up an http middleware listener
 	server.http((request, nextHandler) => {
 		if (request.isWebSocket && request.headers.get('Sec-WebSocket-Protocol') === 'harperdb-replication-v1') {
+			logger.debug('Incoming replication WS connection received, authorized: ' + request.authorized);
 			if (!request.authorized && request._nodeRequest.socket.authorizationError) {
 				logger.error(
 					`Incoming client connection from ${request.ip} did not have valid certificate, you may need turn on enableRootCAs in the config if you are using a publicly signed certificate, or add the CA to the server's trusted CAs`,
