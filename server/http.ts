@@ -24,6 +24,7 @@ import { server } from './Server.ts';
 import { setPortServerMap, SERVERS } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
 import { WebSocketServer } from 'ws';
+import { logger } from '../../node/test/fixtures/typescript/ts/module-logger';
 
 server.http = httpServer;
 server.request = onRequest;
@@ -532,6 +533,7 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 				const request = new Request(incomingMessage);
 				request.isWebSocket = true;
 				const chainCompletion = httpChain[port](request);
+				harperLogger.debug('Received WS connection, calling listeners', websocketListeners);
 				websocketChains[port](ws, request, chainCompletion);
 			});
 
