@@ -468,6 +468,7 @@ export function replicateOverWS(ws, options, authorization) {
 					case OPERATION_REQUEST:
 						try {
 							const isAuthorizedNode = authorization?.replicates || authorization?.subscribers || authorization?.name;
+							logger.debug?.('Received operation request', data, 'from', remoteNodeName);
 							server.operation(data, { user: authorization }, !isAuthorizedNode).then(
 								(response) => {
 									if (Array.isArray(response)) {

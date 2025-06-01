@@ -380,6 +380,7 @@ export async function sendOperationToNode(node, operation, options) {
 	const session = replicateOverWS(socket, {}, {});
 	return new Promise((resolve, reject) => {
 		socket.on('open', () => {
+			logger.debug('Sending operation connection to ' + node.url + ' opened', operation);
 			resolve(session.sendOperation(operation));
 		});
 		socket.on('error', (error) => {
