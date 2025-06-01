@@ -530,11 +530,15 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			});
 
 			websocketServers[port].on('connection', (ws, incomingMessage) => {
-				const request = new Request(incomingMessage);
-				request.isWebSocket = true;
-				const chainCompletion = httpChain[port](request);
-				harperLogger.debug('Received WS connection, calling listeners', websocketListeners);
-				websocketChains[port](ws, request, chainCompletion);
+				try {
+					const request = new Request(incomingMessage);
+					request.isWebSocket = true;
+					const chainCompletion = httpChain[port](request);
+					harperLogger.debug('Received WS connection, calling listeners', websocketListeners);
+					websocketChains[port](ws, request, chainCompletion);
+				} catch (error) {
+					harperLogger.warn('Error in handling WS connection', error);
+				}
 			});
 
 			// Add the default upgrade handler if it doesn't exist.
