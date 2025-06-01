@@ -74,10 +74,21 @@ function updateLogger(logger, logOptions, name) {
 	if (path) logger.path = path;
 	else console.error('No path for logger', logOptions);
 	logger.level = LOG_LEVEL_HIERARCHY[logOptions.level] ?? mainLogger?.level ?? LOG_LEVEL_HIERARCHY.info;
+	updateConditional(logger);
 	logger.logToStdstreams = logOptions.stdStreams ?? false;
 	// if there is a configured tag or if a component is logging to default/main log path, use the component name as the tag
 	// to differentiate it
 	logger.tag = logOptions.tag ?? (mainLogger.path === logger.path && name);
+}
+function updateConditional(logger) {
+	const conditional = logger.conditional ?? (logger.conditional = {});
+	conditional.notify = LOG_LEVEL_HIERARCHY.notify >= logger.level ? logger.notify.bind(logger) : undefined;
+	conditional.fatal = LOG_LEVEL_HIERARCHY.fatal >= logger.level ? logger.fatal.bind(logger) : undefined;
+	conditional.error = LOG_LEVEL_HIERARCHY.error >= logger.level ? logger.error.bind(logger) : undefined;
+	conditional.warn = LOG_LEVEL_HIERARCHY.warn >= logger.level ? logger.warn.bind(logger) : undefined;
+	conditional.info = LOG_LEVEL_HIERARCHY.info >= logger.level ? logger.info.bind(logger) : undefined;
+	conditional.debug = LOG_LEVEL_HIERARCHY.debug >= logger.level ? logger.debug.bind(logger) : undefined;
+	conditional.trace = LOG_LEVEL_HIERARCHY.trace >= logger.level ? logger.trace.bind(logger) : undefined;
 }
 async function updateLogSettings() {
 	if (!rootConfig) {
@@ -470,6 +481,7 @@ function createLogger({
 				},
 		level
 	);
+	updateConditional(logger);
 	logger.path = logFilePath;
 	Object.defineProperty(logger, 'path', {
 		get() {

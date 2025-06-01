@@ -3,7 +3,7 @@ import { setChildListenerByType } from '../../server/threads/manageThreads.js';
 import { getDatabases, table } from '../databases.ts';
 import type { Databases, Table, Tables } from '../databases.ts';
 import { getLogFilePath } from '../../utility/logging/harper_logger.js';
-import { loggerWithTag } from '../../utility/logging/logger.js';
+import { forComponent } from '../../utility/logging/harper_logger.js';
 import { dirname, join } from 'path';
 import { open } from 'fs/promises';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.js';
@@ -14,7 +14,7 @@ import * as fs from 'node:fs';
 import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts';
 import { METRIC } from './metadata.ts';
 
-const log = loggerWithTag('analytics');
+const log = forComponent('analytics').conditional;
 
 initSync();
 
@@ -231,7 +231,7 @@ function storeMetric(table: Table, metric: Metric) {
 	const hostname = server.hostname;
 	let nodeId = nodeIds.get(hostname);
 	if (nodeId) {
-		log.trace?.('storeMetric cached nodeId:', nodeId)
+		log.trace?.('storeMetric cached nodeId:', nodeId);
 	} else {
 		nodeId = stableNodeId(hostname);
 		log.trace?.('storeMetric new nodeId:', nodeId);
@@ -492,9 +492,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 			}
 			const previousBin = distribution[index > 1 ? index - 2 : 0];
 			if (!bin) bin = distribution[0];
-			percentiles.push(
-				bin.value - ((bin.value - previousBin.value) * (countPosition - nextTargetCount)) / bin.count
-			);
+			percentiles.push(bin.value - ((bin.value - previousBin.value) * (countPosition - nextTargetCount)) / bin.count);
 		}
 		const [p1, p10, p25, median, p75, p90, p95, p99, p999] = percentiles;
 		Object.assign(action, { p1, p10, p25, median, p75, p90, p95, p99, p999 });
