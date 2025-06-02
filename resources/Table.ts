@@ -1447,6 +1447,14 @@ export function makeTable(options) {
 		create(target: RequestTarget, record: any): void | Promise<void> {
 			let allowed = true;
 			const context = this.getContext();
+			if (!record && !(target instanceof URLSearchParams)) {
+				// single argument, shift arguments
+				record = target;
+				target = undefined;
+			}
+			if (!record || typeof record !== 'object' || Array.isArray(record)) {
+				throw new TypeError('Can not create a record without an object');
+			}
 			if (target?.checkPermission) {
 				// requesting authorization verification
 				allowed = this.allowCreate(context.user, record, target);
