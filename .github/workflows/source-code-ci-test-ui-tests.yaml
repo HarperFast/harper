@@ -59,7 +59,7 @@ jobs:
       - name: Checkout repo ui-tests
         uses: actions/checkout@v4
         with:
-          repository: HarperDB/ui-tests
+          repository: HarperDB/ui-tests@main
       - name: List folder and files
         run: |
           pwd
