@@ -1,5 +1,5 @@
 /* eslint-disable sonarjs/no-nested-functions */
-const { ComponentV2, ComponentV2InvalidPatternError } = require('../../components/Component');
+const { Component, ComponentInvalidPatternError } = require('../../components/Component');
 const assert = require('node:assert/strict');
 
 describe('Component', () => {
@@ -10,8 +10,8 @@ describe('Component', () => {
 	const urlPath = 'fizz';
 
 	// Helper function to create and assert ComponentV2 instance
-	function testComponentV2(config, expected) {
-		const actual = new ComponentV2(name, directory, config);
+	function testComponent(config, expected) {
+		const actual = new Component(name, directory, config);
 
 		assert.equal(actual.name, name);
 		assert.equal(actual.directory, directory);
@@ -34,7 +34,7 @@ describe('Component', () => {
 		describe('with files as a string', () => {
 			it('should instantiate without any other options', () => {
 				const config = { files: singlePattern };
-				testComponentV2(config, {
+				testComponent(config, {
 					baseURLPath: '/',
 					globOptions: getExpectedGlobOptions([singlePattern]),
 					patternBases,
@@ -44,7 +44,7 @@ describe('Component', () => {
 
 			it('should instantiate with urlPath option', () => {
 				const config = { files: singlePattern, urlPath };
-				testComponentV2(config, {
+				testComponent(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions([singlePattern]),
 					patternBases,
@@ -56,32 +56,32 @@ describe('Component', () => {
 				const invalidPattern = '..';
 				const config = { files: invalidPattern };
 				assert.throws(() => {
-					testComponentV2(config, {
+					testComponent(config, {
 						baseURLPath: '/',
 						globOptions: getExpectedGlobOptions([invalidPattern]),
 						patternBases,
 						commonPatternBase,
 					});
-				}, new ComponentV2InvalidPatternError(invalidPattern));
+				}, new ComponentInvalidPatternError(invalidPattern));
 			});
 			it('should throw an error if the pattern starts with "/"', () => {
 				const invalidPattern = '/*';
 				const config = { files: invalidPattern };
 				assert.throws(() => {
-					testComponentV2(config, {
+					testComponent(config, {
 						baseURLPath: '/',
 						globOptions: getExpectedGlobOptions([invalidPattern]),
 						patternBases,
 						commonPatternBase,
 					});
-				}, new ComponentV2InvalidPatternError(invalidPattern));
+				}, new ComponentInvalidPatternError(invalidPattern));
 			});
 		});
 
 		describe('with files as an object', () => {
 			it('should instantiate without any other options', () => {
 				const config = { files: { source: singlePattern } };
-				testComponentV2(config, {
+				testComponent(config, {
 					baseURLPath: '/',
 					globOptions: getExpectedGlobOptions([singlePattern]),
 					patternBases,
@@ -91,7 +91,7 @@ describe('Component', () => {
 
 			it('should instantiate with urlPath option', () => {
 				const config = { files: { source: singlePattern }, urlPath };
-				testComponentV2(config, {
+				testComponent(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions([singlePattern]),
 					patternBases,
@@ -101,7 +101,7 @@ describe('Component', () => {
 
 			it('should instantiate with files.only option set to files', () => {
 				const config = { files: { source: singlePattern, only: 'files' }, urlPath };
-				testComponentV2(config, {
+				testComponent(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions([singlePattern], true),
 					patternBases,
@@ -111,7 +111,7 @@ describe('Component', () => {
 
 			it('should instantiate with files.only option set to directories', () => {
 				const config = { files: { source: singlePattern, only: 'directories' }, urlPath };
-				testComponentV2(config, {
+				testComponent(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions([singlePattern], false, true),
 					patternBases,
@@ -121,7 +121,7 @@ describe('Component', () => {
 
 			it('should instantiate with files.ignore option set to a string', () => {
 				const config = { files: { source: singlePattern, ignore: 'buzz' }, urlPath };
-				testComponentV2(config, {
+				testComponent(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions([singlePattern], false, false, ['buzz']),
 					patternBases,
@@ -133,25 +133,25 @@ describe('Component', () => {
 				const invalidPattern = '..';
 				const config = { files: { source: invalidPattern } };
 				assert.throws(() => {
-					testComponentV2(config, {
+					testComponent(config, {
 						baseURLPath: '/',
 						globOptions: getExpectedGlobOptions([invalidPattern]),
 						patternBases,
 						commonPatternBase,
 					});
-				}, new ComponentV2InvalidPatternError(invalidPattern));
+				}, new ComponentInvalidPatternError(invalidPattern));
 			});
 			it('should throw an error if the pattern starts with "/"', () => {
 				const invalidPattern = '/*';
 				const config = { files: { source: invalidPattern } };
 				assert.throws(() => {
-					testComponentV2(config, {
+					testComponent(config, {
 						baseURLPath: '/',
 						globOptions: getExpectedGlobOptions([invalidPattern]),
 						patternBases,
 						commonPatternBase,
 					});
-				}, new ComponentV2InvalidPatternError(invalidPattern));
+				}, new ComponentInvalidPatternError(invalidPattern));
 			});
 		});
 	});
@@ -163,7 +163,7 @@ describe('Component', () => {
 		describe('with files as a string', () => {
 			it('should instantiate without any other options', () => {
 				const config = { files: multiplePatterns };
-				testComponentV2(config, {
+				testComponent(config, {
 					baseURLPath: '/',
 					globOptions: getExpectedGlobOptions(multiplePatterns),
 					patternBases,
@@ -173,7 +173,7 @@ describe('Component', () => {
 
 			it('should instantiate with urlPath option', () => {
 				const config = { files: multiplePatterns, urlPath };
-				testComponentV2(config, {
+				testComponent(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions(multiplePatterns),
 					patternBases,
@@ -185,32 +185,32 @@ describe('Component', () => {
 				const invalidPattern = '..';
 				const config = { files: ['foo/', invalidPattern] };
 				assert.throws(() => {
-					testComponentV2(config, {
+					testComponent(config, {
 						baseURLPath: '/',
 						globOptions: getExpectedGlobOptions([invalidPattern]),
 						patternBases,
 						commonPatternBase,
 					});
-				}, new ComponentV2InvalidPatternError(invalidPattern));
+				}, new ComponentInvalidPatternError(invalidPattern));
 			});
 			it('should throw an error if any pattern starts with "/"', () => {
 				const invalidPattern = '/*';
 				const config = { files: ['foo/', invalidPattern] };
 				assert.throws(() => {
-					testComponentV2(config, {
+					testComponent(config, {
 						baseURLPath: '/',
 						globOptions: getExpectedGlobOptions([invalidPattern]),
 						patternBases,
 						commonPatternBase,
 					});
-				}, new ComponentV2InvalidPatternError(invalidPattern));
+				}, new ComponentInvalidPatternError(invalidPattern));
 			});
 		});
 
 		describe('with files as an object', () => {
 			it('should instantiate without any other options', () => {
 				const config = { files: { source: multiplePatterns } };
-				testComponentV2(config, {
+				testComponent(config, {
 					baseURLPath: '/',
 					globOptions: getExpectedGlobOptions(multiplePatterns),
 					patternBases,
@@ -220,7 +220,7 @@ describe('Component', () => {
 
 			it('should instantiate with urlPath option', () => {
 				const config = { files: { source: multiplePatterns }, urlPath };
-				testComponentV2(config, {
+				testComponent(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions(multiplePatterns),
 					patternBases,
@@ -230,7 +230,7 @@ describe('Component', () => {
 
 			it('should instantiate with files.only option set to files', () => {
 				const config = { files: { source: multiplePatterns, only: 'files' }, urlPath };
-				testComponentV2(config, {
+				testComponent(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions(multiplePatterns, true),
 					patternBases,
@@ -240,7 +240,7 @@ describe('Component', () => {
 
 			it('should instantiate with files.only option set to directories', () => {
 				const config = { files: { source: multiplePatterns, only: 'directories' }, urlPath };
-				testComponentV2(config, {
+				testComponent(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions(multiplePatterns, false, true),
 					patternBases,
@@ -250,7 +250,7 @@ describe('Component', () => {
 
 			it('should instantiate with files.ignore option set to a string', () => {
 				const config = { files: { source: multiplePatterns, ignore: 'buzz' }, urlPath };
-				testComponentV2(config, {
+				testComponent(config, {
 					baseURLPath: '/fizz/',
 					globOptions: getExpectedGlobOptions(multiplePatterns, false, false, ['buzz']),
 					patternBases,
@@ -262,25 +262,25 @@ describe('Component', () => {
 				const invalidPattern = '..';
 				const config = { files: { source: ['foo/', invalidPattern] } };
 				assert.throws(() => {
-					testComponentV2(config, {
+					testComponent(config, {
 						baseURLPath: '/',
 						globOptions: getExpectedGlobOptions([invalidPattern]),
 						patternBases,
 						commonPatternBase,
 					});
-				}, new ComponentV2InvalidPatternError(invalidPattern));
+				}, new ComponentInvalidPatternError(invalidPattern));
 			});
 			it('should throw an error if any pattern starts with "/"', () => {
 				const invalidPattern = '/*';
 				const config = { files: { source: ['foo/', invalidPattern] } };
 				assert.throws(() => {
-					testComponentV2(config, {
+					testComponent(config, {
 						baseURLPath: '/',
 						globOptions: getExpectedGlobOptions([invalidPattern]),
 						patternBases,
 						commonPatternBase,
 					});
-				}, new ComponentV2InvalidPatternError(invalidPattern));
+				}, new ComponentInvalidPatternError(invalidPattern));
 			});
 		});
 	});

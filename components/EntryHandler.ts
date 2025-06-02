@@ -1,6 +1,6 @@
 import type { Stats } from 'node:fs';
 import { EventEmitter, once } from 'node:events';
-import { ComponentV2, FileAndURLPathConfig } from './ComponentV2';
+import { Component, FileAndURLPathConfig } from './Component.js';
 import harperLogger from '../utility/logging/harper_logger.js';
 import chokidar, { FSWatcher, FSWatcherEventMap } from 'chokidar';
 import { join } from 'node:path';
@@ -68,14 +68,14 @@ export type EntryHandlerEventMap = {
 };
 
 export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
-	#component: ComponentV2;
+	#component: Component;
 	#watcher?: FSWatcher;
 	#logger: any;
 
 	constructor(name: string, directory: string, config: FilesOption | FileAndURLPathConfig, logger?: any) {
 		super();
 
-		this.#component = new ComponentV2(name, directory, castConfig(config));
+		this.#component = new Component(name, directory, castConfig(config));
 		this.#logger = logger || harperLogger.loggerWithTag(name);
 
 		this.watch();
@@ -188,7 +188,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	}
 
 	update(config: FilesOption | FileAndURLPathConfig) {
-		this.#component = new ComponentV2(this.name, this.directory, castConfig(config));
+		this.#component = new Component(this.name, this.directory, castConfig(config));
 
 		return this.watch();
 	}
