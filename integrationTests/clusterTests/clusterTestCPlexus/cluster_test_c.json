@@ -14231,6 +14231,69 @@
 					},
 					"response": []
 				},
+
+				{
+					"name": "Cluster status node 2",
+					"event": [
+						{
+							"listen": "test",
+							"script": {
+								"exec": [
+									"    const response = pm.response.json();",
+									"    console.log(response);",
+									""
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						}
+					],
+					"request": {
+						"auth": {
+							"type": "basic",
+							"basic": [
+								{
+									"key": "password",
+									"value": "{{PASSWORD}}",
+									"type": "string"
+								},
+								{
+									"key": "username",
+									"value": "{{USERNAME}}",
+									"type": "string"
+								},
+								{
+									"key": "showPassword",
+									"value": false,
+									"type": "boolean"
+								}
+							]
+						},
+						"method": "POST",
+						"header": [],
+						"body": {
+							"mode": "raw",
+							"raw": "{\n    \"operation\": \"cluster_status\"\n}",
+							"options": {
+								"raw": {
+									"language": "json"
+								}
+							}
+						},
+						"url": {
+							"raw": "https://{{NODE2_HOST}}:{{HDB_PORT}}",
+							"protocol": "https",
+							"host": [
+								"{{NODE2_HOST}}"
+							],
+							"port": "{{HDB_PORT}}"
+						}
+					},
+					"response": []
+				},
+
+
+
 				{
 					"name": "Confirm insert node 2",
 					"event": [

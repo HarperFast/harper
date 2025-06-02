@@ -416,7 +416,7 @@ export function replicateOverWS(ws, options, authorization) {
 							}
 							if (options.connection) options.connection.nodeName = remoteNodeName;
 							//const url = message[3] ?? thisNodeUrl;
-							logger.debug?.(connectionId, 'received node name:', remoteNodeName, 'db:', databaseName);
+							logger.debug?.(connectionId, 'received node name:', remoteNodeName, 'db:', databaseName ?? message[2]);
 							if (!databaseName) {
 								// this means we are the server
 								try {
