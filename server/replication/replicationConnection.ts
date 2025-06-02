@@ -34,7 +34,7 @@ import { getHDBNodeTable, getReplicationSharedStatus } from './knownNodes';
 import * as process from 'node:process';
 import { isIP } from 'node:net';
 import { recordAction } from '../../resources/analytics';
-import { decodeBlobsWithWrites, decodeWithBlobCallback, getFileId } from '../../resources/blob';
+import { decodeBlobsWithWrites, decodeWithBlobCallback, deleteBlob, getFileId } from '../../resources/blob';
 import { PassThrough } from 'node:stream';
 
 // these are the codes we use for the different commands
@@ -671,12 +671,25 @@ export function replicateOverWS(ws, options, authorization) {
 						const entry = message[2];
 						if (entry?.error) reject(new Error(entry.error));
 						else if (entry) {
-							decodeBlobsWithWrites(() => {
-								const record = table_decoders[table_id].decoder.decode(entry.value);
-								entry.value = record;
-								entry.key = key;
-								resolve(entry);
-							}, receiveBlobs);
+							let blobsToDelete: any[];
+							decodeBlobsWithWrites(
+								() => {
+									const record = table_decoders[table_id].decoder.decode(entry.value);
+									entry.value = record;
+									entry.key = key;
+									if (!resolve(entry)) {
+										// if it was not moved locally, clean up any blobs that were written
+										if (blobsToDelete) blobsToDelete.forEach(deleteBlob);
+									}
+								},
+								(remoteBlob) => {
+									const localBlob = receiveBlobs(remoteBlob); // receive the blob;
+									// track the blobs that were written in case we need to delete them if the record is not moved locally
+									if (!blobsToDelete) blobsToDelete = [];
+									blobsToDelete.push(localBlob);
+									return localBlob;
+								}
+							);
 						} else resolve();
 						awaiting_response.delete(message[1]);
 						break;
@@ -1658,7 +1671,7 @@ export function replicateOverWS(ws, options, authorization) {
 						resolve(entry);
 						// However, if we are going to record this locally, we need to record it as a relocation event
 						// and determine new residency information
-						if (entry) table._recordRelocate(existing_entry, entry);
+						if (entry) return table._recordRelocate(existing_entry, entry);
 					},
 					reject,
 				});
