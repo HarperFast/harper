@@ -1443,6 +1443,27 @@ export function makeTable(options) {
 			}
 			// always return undefined
 		}
+		create(target: RequestTarget, record: any): void | Promise<void> {
+			let allowed = true;
+			const context = this.getContext();
+			if (target?.checkPermission) {
+				// requesting authorization verification
+				allowed = this.allowCreate(context.user, record, target);
+			}
+			return when(allowed, (allowed) => {
+				if (!allowed) {
+					throw new AccessViolation(context.user);
+				}
+				let id = requestTargetToId(target) ?? record[primaryKey];
+				if (id === undefined) {
+					id = this.constructor.getNewId();
+				} else {
+					if (primaryStore.get(id)) throw new ClientError('Record already exists', 409);
+				}
+				this._writeUpdate(id, record, true);
+				return record;
+			});
+		}
 		patch(target: RequestTarget, recordUpdate: any): void | Promise<void> {
 			if (recordUpdate === undefined || recordUpdate instanceof URLSearchParams) {
 				// legacy argument position, shift the arguments and go through the update method for back-compat

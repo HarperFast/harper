@@ -139,6 +139,15 @@ export class Resource implements ResourceInterface {
 	static create(idPrefix: Id, record: any, context: Context): Promise<Id>;
 	static create(record: any, context: Context): Promise<Id>;
 	static create(idPrefix: any, record: any, context?: Context): Promise<Id> {
+		if (this.loadAsInstance === false) {
+			return transaction(context, async () => {
+				const resource = new this(idPrefix, context);
+				const record = await resource.create(idPrefix, record, context);
+				context.newLocation = record?.[this.primaryKey];
+				context.createdResource = true;
+				return record;
+			});
+		}
 		let id;
 		if (idPrefix == null) id = record?.[this.primaryKey] ?? this.getNewId();
 		else if (Array.isArray(idPrefix) && typeof idPrefix[0] !== 'object')
