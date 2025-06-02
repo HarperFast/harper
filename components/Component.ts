@@ -3,31 +3,31 @@ import { deriveCommonPatternBase } from './deriveCommonPatternBase';
 import { deriveGlobOptions, FastGlobOptions, FilesOption } from './deriveGlobOptions';
 import { scan } from 'micromatch';
 
-interface ComponentV2Config {
+interface ComponentConfig {
 	files: FilesOption;
 	urlPath?: string;
 	[key: string]: unknown;
 }
 
-export type FileAndURLPathConfig = Pick<ComponentV2Config, 'files' | 'urlPath'>;
+export type FileAndURLPathConfig = Pick<ComponentConfig, 'files' | 'urlPath'>;
 
-export class ComponentV2InvalidPatternError extends Error {
+export class ComponentInvalidPatternError extends Error {
 	constructor(pattern: string) {
 		super(`Config 'files' option glob pattern must not contain '..' or start with '/'. Received: '${pattern}'`);
-		this.name = 'ComponentV2InvalidPatternError';
+		this.name = 'ComponentInvalidPatternError';
 	}
 }
 
-export class ComponentV2 {
+export class Component {
 	readonly globOptions: FastGlobOptions;
 	readonly baseURLPath: string;
 	readonly patternBases: string[];
 	readonly directory: string;
 	readonly name: string;
-	readonly config: ComponentV2Config;
+	readonly config: ComponentConfig;
 	readonly commonPatternBase: string;
 
-	constructor(name: string, directory: string, config: ComponentV2Config) {
+	constructor(name: string, directory: string, config: ComponentConfig) {
 		this.name = name;
 		this.directory = directory;
 		this.config = config;
@@ -37,7 +37,7 @@ export class ComponentV2 {
 		this.globOptions = deriveGlobOptions(this.config.files);
 		this.globOptions.source = this.globOptions.source.map((pattern) => {
 			if (pattern.includes('..') || pattern.startsWith('/')) {
-				throw new ComponentV2InvalidPatternError(pattern);
+				throw new ComponentInvalidPatternError(pattern);
 			}
 
 			if (pattern === '.' || pattern === './') {

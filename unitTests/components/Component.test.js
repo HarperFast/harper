@@ -1,8 +1,8 @@
 /* eslint-disable sonarjs/no-nested-functions */
-const { ComponentV2, ComponentV2InvalidPatternError } = require('../../components/ComponentV2');
+const { ComponentV2, ComponentV2InvalidPatternError } = require('../../components/Component');
 const assert = require('node:assert/strict');
 
-describe('ComponentV2', () => {
+describe('Component', () => {
 	const name = 'test-component';
 	const directory = 'component';
 	const singlePattern = '*';

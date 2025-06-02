@@ -4,7 +4,7 @@
 const { tmpdir } = require('node:os');
 const {
 	processResourceExtensionComponent,
-	Component,
+	ComponentV1,
 	InvalidFilesOptionError,
 	InvalidGlobPattern,
 	InvalidFilesSourceOptionError,
@@ -77,7 +77,7 @@ describe('ComponentV1', () => {
 
 				const resources = new Resources();
 
-				const component = new Component({
+				const component = new ComponentV1({
 					config,
 					name: componentName,
 					directory: componentDirPath,
@@ -158,7 +158,7 @@ describe('ComponentV1', () => {
 				const resources = new Resources();
 				resources.isWorker = false;
 
-				const component = new Component({
+				const component = new ComponentV1({
 					config: { files: source },
 					name: componentName,
 					directory: componentDirPath,
@@ -211,7 +211,7 @@ describe('ComponentV1', () => {
 
 				const resources = new Resources();
 
-				const component = new Component({
+				const component = new ComponentV1({
 					config,
 					name: componentName,
 					directory: componentDirPath,
@@ -319,7 +319,7 @@ describe('ComponentV1', () => {
 
 			const resources = new Resources();
 
-			const component = new Component({
+			const component = new ComponentV1({
 				config: { files: '/' },
 				name: componentName,
 				directory: componentDirPath,
@@ -350,7 +350,7 @@ describe('ComponentV1', () => {
 
 			const resources = new Resources();
 
-			const component = new Component({
+			const component = new ComponentV1({
 				config: { files: '/*' },
 				name: componentName,
 				directory: componentDirPath,
@@ -397,7 +397,7 @@ describe('ComponentV1', () => {
 
 			const resources = new Resources();
 
-			const component = new Component({
+			const component = new ComponentV1({
 				config: { files: './*', urlPath: 'foo' },
 				name: componentName,
 				directory: componentDirPath,
@@ -440,7 +440,7 @@ describe('ComponentV1', () => {
 
 			const resources = new Resources();
 
-			const component = new Component({
+			const component = new ComponentV1({
 				config: { files: './*', path: 'foo' },
 				name: componentName,
 				directory: componentDirPath,
@@ -487,7 +487,7 @@ describe('ComponentV1', () => {
 
 			const resources = new Resources();
 
-			const component = new Component({
+			const component = new ComponentV1({
 				config: { files: 'web/*' },
 				name: componentName,
 				directory: componentDirPath,
@@ -528,7 +528,7 @@ describe('ComponentV1', () => {
 
 			const resources = new Resources();
 
-			const component = new Component({
+			const component = new ComponentV1({
 				config: { files: 'web/**/*' },
 				name: componentName,
 				directory: componentDirPath,
@@ -581,7 +581,7 @@ describe('ComponentV1', () => {
 
 			const resources = new Resources();
 
-			const component = new Component({
+			const component = new ComponentV1({
 				config: { files: 'web/**', root: 'web' },
 				name: componentName,
 				directory: componentDirPath,
@@ -638,7 +638,7 @@ describe('ComponentV1', () => {
 
 			const resources = new Resources();
 
-			const component = new Component({
+			const component = new ComponentV1({
 				config: { files: 'web/**/*' },
 				name: componentName,
 				directory: componentDirPath,
@@ -691,7 +691,7 @@ describe('ComponentV1', () => {
 
 			const resources = new Resources();
 
-			const component = new Component({
+			const component = new ComponentV1({
 				config: { files: 'web/e' },
 				name: componentName,
 				directory: componentDirPath,
@@ -725,7 +725,7 @@ describe('ComponentV1', () => {
 				handleFileFake = fake();
 
 			const resources = new Resources();
-			const component = new Component({
+			const component = new ComponentV1({
 				config: { files: 'web' },
 				name: componentName,
 				directory: componentDirPath,
@@ -749,7 +749,7 @@ describe('ComponentV1', () => {
 
 			const resources = new Resources();
 
-			const component = new Component({
+			const component = new ComponentV1({
 				config: { files: { source: 'web/**/*', ignore: ['**/static/**'] } },
 				name: componentName,
 				directory: componentDirPath,
@@ -785,7 +785,7 @@ describe('ComponentV1', () => {
 
 			const resources = new Resources();
 
-			const component = new Component({
+			const component = new ComponentV1({
 				config: { files: 'web/*' },
 				name: componentName,
 				directory: componentDirPath,
@@ -810,7 +810,7 @@ describe('ComponentV1', () => {
 			const resources = new Resources();
 			resources.isWorker = false;
 
-			const component = new Component({
+			const component = new ComponentV1({
 				config: { files: 'web/*' },
 				name: componentName,
 				directory: componentDirPath,
@@ -839,7 +839,7 @@ describe('ComponentV1', () => {
 					module: {},
 					resources: new Resources(),
 				};
-				assert.throws(() => new Component(componentDetails), new InvalidFilesOptionError(componentDetails));
+				assert.throws(() => new ComponentV1(componentDetails), new InvalidFilesOptionError(componentDetails));
 			}
 		});
 
@@ -852,7 +852,7 @@ describe('ComponentV1', () => {
 					module: {},
 					resources: new Resources(),
 				};
-				assert.throws(() => new Component(componentDetails), new InvalidFilesSourceOptionError(componentDetails));
+				assert.throws(() => new ComponentV1(componentDetails), new InvalidFilesSourceOptionError(componentDetails));
 			}
 		});
 
@@ -865,7 +865,7 @@ describe('ComponentV1', () => {
 					module: {},
 					resources: new Resources(),
 				};
-				assert.throws(() => new Component(componentDetails), new InvalidFilesOnlyOptionError(componentDetails));
+				assert.throws(() => new ComponentV1(componentDetails), new InvalidFilesOnlyOptionError(componentDetails));
 			}
 		});
 
@@ -878,7 +878,7 @@ describe('ComponentV1', () => {
 					module: {},
 					resources: new Resources(),
 				};
-				assert.throws(() => new Component(componentDetails), new InvalidFileIgnoreOptionError(componentDetails));
+				assert.throws(() => new ComponentV1(componentDetails), new InvalidFileIgnoreOptionError(componentDetails));
 			}
 		});
 
@@ -891,7 +891,7 @@ describe('ComponentV1', () => {
 					module: {},
 					resources: new Resources(),
 				};
-				assert.throws(() => new Component(componentDetails), new InvalidRootOptionError(componentDetails));
+				assert.throws(() => new ComponentV1(componentDetails), new InvalidRootOptionError(componentDetails));
 			}
 		});
 
@@ -904,7 +904,7 @@ describe('ComponentV1', () => {
 					module: {},
 					resources: new Resources(),
 				};
-				assert.throws(() => new Component(componentDetails), new InvalidPathOptionError(componentDetails));
+				assert.throws(() => new ComponentV1(componentDetails), new InvalidPathOptionError(componentDetails));
 			}
 		});
 
@@ -917,7 +917,7 @@ describe('ComponentV1', () => {
 					module: {},
 					resources: new Resources(),
 				};
-				assert.throws(() => new Component(componentDetails), new InvalidURLPathOptionError(componentDetails));
+				assert.throws(() => new ComponentV1(componentDetails), new InvalidURLPathOptionError(componentDetails));
 			}
 		});
 
@@ -932,7 +932,7 @@ describe('ComponentV1', () => {
 				};
 				assert.throws(
 					() => {
-						const component = new Component(componentDetails);
+						const component = new ComponentV1(componentDetails);
 						void component.globOptions;
 					},
 					new InvalidGlobPattern(componentDetails, files)
@@ -950,7 +950,7 @@ describe('ComponentV1', () => {
 			};
 			assert.throws(
 				() => {
-					const component = new Component(componentDetails);
+					const component = new ComponentV1(componentDetails);
 					void component.globOptions;
 				},
 				new InvalidGlobPattern(componentDetails, '..')
@@ -967,7 +967,7 @@ describe('ComponentV1', () => {
 			};
 			assert.throws(
 				() => {
-					const component = new Component(componentDetails);
+					const component = new ComponentV1(componentDetails);
 					void component.globOptions;
 				},
 				new InvalidGlobPattern(componentDetails, 'static/../..')
@@ -984,7 +984,7 @@ describe('ComponentV1', () => {
 			};
 			assert.throws(
 				() => {
-					const component = new Component(componentDetails);
+					const component = new ComponentV1(componentDetails);
 					void component.globOptions;
 				},
 				new InvalidGlobPattern(componentDetails, '..')
