@@ -292,14 +292,17 @@ export function replicateOverWS(ws, options, authorization) {
 	let dataView = new DataView(encodingBuffer.buffer, 0, 1024);
 	let databaseName = options.database;
 	const dbSubscriptions = options.databaseSubscriptions || databaseSubscriptions;
-	let auditStore;
+	let auditStore: any;
 	let replicationSharedStatus: Float64Array;
 	// this is the subscription that the local table makes to this replicator, and incoming messages
 	// are sent to this subscription queue:
 	let subscribed = false;
 	let tableSubscriptionToReplicator = options.subscription;
 	if (tableSubscriptionToReplicator?.then)
-		tableSubscriptionToReplicator.then((sub) => (tableSubscriptionToReplicator = sub));
+		tableSubscriptionToReplicator.then((sub) => {
+			tableSubscriptionToReplicator = sub;
+			if (tableSubscriptionToReplicator.auditStore) auditStore = tableSubscriptionToReplicator.auditStore;
+		});
 	let tables = options.tables || (databaseName && getDatabases()[databaseName]);
 	if (!authorization) {
 		logger.error?.('No authorization provided');
@@ -1432,7 +1435,7 @@ export function replicateOverWS(ws, options, authorization) {
 			subscribed = true;
 			options.connection?.on('subscriptions-updated', sendSubscriptionRequestUpdate);
 		}
-		if (!auditStore) auditStore = tableSubscriptionToReplicator.auditStore;
+		if (!auditStore && tableSubscriptionToReplicator) auditStore = tableSubscriptionToReplicator.auditStore;
 		if (options.connection?.isFinished)
 			throw new Error('Can not make a subscription request on a connection that is already closed');
 		const lastTxnTimes = new Map();
