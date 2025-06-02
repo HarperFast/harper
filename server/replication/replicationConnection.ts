@@ -1432,6 +1432,7 @@ export function replicateOverWS(ws, options, authorization) {
 			subscribed = true;
 			options.connection?.on('subscriptions-updated', sendSubscriptionRequestUpdate);
 		}
+		if (!auditStore) auditStore = tableSubscriptionToReplicator.auditStore;
 		if (options.connection?.isFinished)
 			throw new Error('Can not make a subscription request on a connection that is already closed');
 		const lastTxnTimes = new Map();
