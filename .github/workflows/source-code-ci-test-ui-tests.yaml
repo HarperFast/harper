@@ -52,7 +52,7 @@ jobs:
 #    secrets: inherit
   getUItests:
     runs-on: ubuntu-latest
-    needs:
+#    needs:
 #      - createInstances
 #      - registerInstances
     steps:
@@ -66,30 +66,30 @@ jobs:
           pwd
           ls -al
           ls -al ui-tests
-  downloadLogs:
-    if: always()
-    needs:
-      - getUItests
-#      - createInstances
-    uses: ./.github/workflows/download-logs.yaml
-    with:
-      publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
-    secrets: inherit
-  destroyInstances:
-    if: always()
-    needs: downloadLogs
-    uses: ./.github/workflows/destroy-instances.yaml
-    with:
-      instanceCount: '1'
-      callingWorkflow: ${{ github.workflow }}
-    secrets: inherit
-  sendSlackMessage:
-    uses: ./.github/workflows/post-to-slack-channel.yaml
-    if: ${{ failure() && github.event_name == 'schedule' }}
-    secrets: inherit
-    needs:
-      - destroyInstances
-      - downloadLogs
+#  downloadLogs:
+#    if: always()
+#    needs:
+#      - getUItests
+##      - createInstances
+#    uses: ./.github/workflows/download-logs.yaml
+#    with:
+#      publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
+#    secrets: inherit
+#  destroyInstances:
+#    if: always()
+#    needs: downloadLogs
+#    uses: ./.github/workflows/destroy-instances.yaml
+#    with:
+#      instanceCount: '1'
+#      callingWorkflow: ${{ github.workflow }}
+#    secrets: inherit
+#  sendSlackMessage:
+#    uses: ./.github/workflows/post-to-slack-channel.yaml
+#    if: ${{ failure() && github.event_name == 'schedule' }}
+#    secrets: inherit
+#    needs:
+#      - destroyInstances
+#      - downloadLogs
 #      - registerInstances
 #      - createInstances
 #      - getNodeVersion
