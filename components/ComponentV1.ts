@@ -9,7 +9,7 @@ import { readFile } from 'node:fs/promises';
 import { deriveURLPath } from './deriveURLPath.ts';
 import { scan } from 'micromatch';
 
-interface ComponentConfig {
+interface ComponentV1Config {
 	files: string | string[] | FilesOption;
 	/** @deprecated */ path?: string;
 	urlPath?: string;
@@ -17,32 +17,32 @@ interface ComponentConfig {
 	[key: string]: any;
 }
 
-interface ComponentModule {
+interface ComponentV1Module {
 	setupDirectory?: (urlPath: string, absolutePath: string, resources: Resources) => Promise<undefined | boolean>;
 	handleDirectory?: (urlPath: string, absolutePath: string, resources: Resources) => Promise<undefined | boolean>;
 	setupFile?: (contents: Buffer, urlPath: string, absolutePath: string, resources: Resources) => Promise<void>;
 	handleFile?: (contents: Buffer, urlPath: string, absolutePath: string, resources: Resources) => Promise<void>;
 }
 
-interface ComponentDetails {
-	config: ComponentConfig;
+interface ComponentV1Details {
+	config: ComponentV1Config;
 	name: string;
 	directory: string;
-	module: ComponentModule;
+	module: ComponentV1Module;
 	resources: Resources;
 }
 
-export class Component {
-	readonly config: Readonly<ComponentConfig>;
+export class ComponentV1 {
+	readonly config: Readonly<ComponentV1Config>;
 	readonly name: string;
 	readonly directory: string;
-	readonly module: Readonly<ComponentModule>;
+	readonly module: Readonly<ComponentV1Module>;
 	readonly resources: Resources;
 	readonly globOptions: FastGlobOptions;
 	readonly patternBases: string[];
 	readonly baseURLPath: string;
 
-	constructor(options: ComponentDetails) {
+	constructor(options: ComponentV1Details) {
 		// TO DO: Unfortunately `readonly` is a TS only thing and doesn't actually enforce that these properties can't be modified.
 		// Freeze these things so they can't be changed. likely do this at the end of the constructor
 		this.config = options.config;
@@ -132,44 +132,44 @@ export class Component {
 	}
 }
 
-export class ComponentProcessingError extends Error {
-	constructor(message: string, component: ComponentDetails) {
+export class ComponentV1ProcessingError extends Error {
+	constructor(message: string, component: ComponentV1Details) {
 		super(`Component ${component.name} (from ${basename(component.directory)}) ${message}`);
 	}
 }
 
-export class InvalidFilesOptionError extends ComponentProcessingError {
-	constructor(component: ComponentDetails) {
+export class InvalidFilesOptionError extends ComponentV1ProcessingError {
+	constructor(component: ComponentV1Details) {
 		super(`'files' option must be a non-empty string, an array of non-empty strings, or an object.`, component);
 	}
 }
 
-export class InvalidFilesSourceOptionError extends ComponentProcessingError {
-	constructor(component: ComponentDetails) {
+export class InvalidFilesSourceOptionError extends ComponentV1ProcessingError {
+	constructor(component: ComponentV1Details) {
 		super(`'files' object must have a non-empty 'source' property.`, component);
 	}
 }
 
-export class InvalidFilesOnlyOptionError extends ComponentProcessingError {
-	constructor(component: ComponentDetails) {
+export class InvalidFilesOnlyOptionError extends ComponentV1ProcessingError {
+	constructor(component: ComponentV1Details) {
 		super(`'files.only' option must be one of 'all', 'files', or 'directories'.`, component);
 	}
 }
 
-export class InvalidFileIgnoreOptionError extends ComponentProcessingError {
-	constructor(component: ComponentDetails) {
+export class InvalidFileIgnoreOptionError extends ComponentV1ProcessingError {
+	constructor(component: ComponentV1Details) {
 		super(`'files.ignore' option must be a non-empty string or an array of non-empty strings.`, component);
 	}
 }
 
-export class InvalidGlobPattern extends ComponentProcessingError {
-	constructor(component: ComponentDetails, pattern: string) {
+export class InvalidGlobPattern extends ComponentV1ProcessingError {
+	constructor(component: ComponentV1Details, pattern: string) {
 		super(`'files' glob pattern must not contain '..'. Received: '${pattern}'`, component);
 	}
 }
 
-export class InvalidRootOptionError extends ComponentProcessingError {
-	constructor(component: ComponentDetails) {
+export class InvalidRootOptionError extends ComponentV1ProcessingError {
+	constructor(component: ComponentV1Details) {
 		super(
 			`deprecated 'root' option must be a non-empty string. Consider removing and updating 'files' glob pattern instead.`,
 			component
@@ -177,8 +177,8 @@ export class InvalidRootOptionError extends ComponentProcessingError {
 	}
 }
 
-export class InvalidRootOptionUseError extends ComponentProcessingError {
-	constructor(component: ComponentDetails) {
+export class InvalidRootOptionUseError extends ComponentV1ProcessingError {
+	constructor(component: ComponentV1Details) {
 		super(
 			`the 'root' option is deprecated and only supported if 'files' is a singular, non-empty string. Please remove the 'root' option and modify the 'files' glob pattern instead.`,
 			component
@@ -186,14 +186,14 @@ export class InvalidRootOptionUseError extends ComponentProcessingError {
 	}
 }
 
-export class InvalidPathOptionError extends ComponentProcessingError {
-	constructor(component: ComponentDetails) {
+export class InvalidPathOptionError extends ComponentV1ProcessingError {
+	constructor(component: ComponentV1Details) {
 		super(`deprecated 'path' option must be a non-empty string. Consider replacing with 'urlPath'.`, component);
 	}
 }
 
-export class InvalidURLPathOptionError extends ComponentProcessingError {
-	constructor(component: ComponentDetails) {
+export class InvalidURLPathOptionError extends ComponentV1ProcessingError {
+	constructor(component: ComponentV1Details) {
 		super(`'urlPath' option must be a non-empty string that must not contain '..'.`, component);
 	}
 }
@@ -210,7 +210,7 @@ function isObject(value: unknown): value is Record<string, unknown> {
 	return typeof value === 'object' && value !== null && !Array.isArray(value);
 }
 
-async function handleRoots(component: Component) {
+async function handleRoots(component: ComponentV1) {
 	if (component.config.root) {
 		harperLogger.warn(
 			`Resource extension 'root' option is deprecated. Due to backwards compatibility reasons it does not act as assumed. The glob pattern will always be evaluated from the component directory root. The option is only used for the initial root directory handling. Please remove and modify the 'files' glob pattern instead.`
@@ -291,7 +291,7 @@ async function handleRoots(component: Component) {
  * Process a Resource Extension component by evaluating the files glob pattern
  * and then calling the appropriate setup/handle functions.
  */
-export async function processResourceExtensionComponent(component: Component) {
+export async function processResourceExtensionComponent(component: ComponentV1) {
 	let hasFunctionality: boolean | undefined = false;
 
 	hasFunctionality = await handleRoots(component);
