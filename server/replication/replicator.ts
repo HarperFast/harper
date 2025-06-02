@@ -113,7 +113,7 @@ export function start(options) {
 				} else {
 					// technically if there are credentials, we could still allow the connection, but give a warning, because we don't usually do that
 					logger.warn(
-						`No node found for certificate common name ${subject.CN}, available nodes are ${Array.from(
+						`No node found for certificate common name/SANs: ${hostnames}, available nodes are ${Array.from(
 							hdbNodesStore
 								.getRange({})
 								.filter(({ value }) => value)
