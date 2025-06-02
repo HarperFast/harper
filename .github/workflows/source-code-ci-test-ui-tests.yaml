@@ -50,15 +50,25 @@ jobs:
       nodeVersion: ${{ needs.getNodeVersion.outputs.nodeVersion }}
       installType: 'sourceCode'
     secrets: inherit
-  runUiTests:
+  getUItests:
+    runs-on: ubuntu-latest
     needs:
       - createInstances
       - registerInstances
-    uses: HarperDB/ui-tests/.github/workflows/playwright.yml@main
+    steps:
+      - name: Checkout repo ui-tests
+        uses: actions/checkout@v4
+        with:
+          repository: HarperDB/ui-tests
+      - name: List folder and files
+        run: |
+          pwd
+          ls -al
+          ls -al ui-tests
   downloadLogs:
     if: always()
     needs:
-      - runUiTests
+      - getUItests
       - createInstances
     uses: ./.github/workflows/download-logs.yaml
     with:
