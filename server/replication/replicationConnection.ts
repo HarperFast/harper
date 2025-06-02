@@ -40,7 +40,7 @@ import { getHDBNodeTable, getReplicationSharedStatus } from './knownNodes.ts';
 import * as process from 'node:process';
 import { isIP } from 'node:net';
 import { recordAction } from '../../resources/analytics/write.ts';
-import { decodeBlobsWithWrites, decodeWithBlobCallback, getFileId } from '../../resources/blob.ts';
+import { decodeBlobsWithWrites, decodeWithBlobCallback, deleteBlob, getFileId } from '../../resources/blob.ts';
 import { PassThrough } from 'node:stream';
 import { getLastVersion } from 'lmdb';
 
@@ -285,7 +285,7 @@ export function replicateOverWS(ws, options, authorization) {
 		(p ? 's:' + p : 'c:' + options.url?.slice(-4)) +
 		' ' +
 		Math.random().toString().slice(2, 3);
-	logger.debug(connectionId, 'Initializing replication connection', authorization);
+	logger.debug?.(connectionId, 'Initializing replication connection', authorization);
 	let encodingStart = 0;
 	let encodingBuffer = Buffer.allocUnsafeSlow(1024);
 	let position = 0;
@@ -685,12 +685,25 @@ export function replicateOverWS(ws, options, authorization) {
 						const entry = message[2];
 						if (entry?.error) reject(new Error(entry.error));
 						else if (entry) {
-							decodeBlobsWithWrites(() => {
-								const record = tableDecoders[tableId].decoder.decode(entry.value);
-								entry.value = record;
-								entry.key = key;
-								resolve(entry);
-							}, receiveBlobs);
+							let blobsToDelete: any[];
+							decodeBlobsWithWrites(
+								() => {
+									const record = tableDecoders[tableId].decoder.decode(entry.value);
+									entry.value = record;
+									entry.key = key;
+									if (!resolve(entry)) {
+										// if it was not moved locally, clean up any blobs that were written
+										if (blobsToDelete) blobsToDelete.forEach(deleteBlob);
+									}
+								},
+								(remoteBlob) => {
+									const localBlob = receiveBlobs(remoteBlob); // receive the blob;
+									// track the blobs that were written in case we need to delete them if the record is not moved locally
+									if (!blobsToDelete) blobsToDelete = [];
+									blobsToDelete.push(localBlob);
+									return localBlob;
+								}
+							);
 						} else resolve();
 						awaitingResponse.delete(message[1]);
 						break;
@@ -1656,7 +1669,7 @@ export function replicateOverWS(ws, options, authorization) {
 						resolve(entry);
 						// However, if we are going to record this locally, we need to record it as a relocation event
 						// and determine new residency information
-						if (entry) table._recordRelocate(existingEntry, entry);
+						if (entry) return table._recordRelocate(existingEntry, entry);
 					},
 					reject,
 				});

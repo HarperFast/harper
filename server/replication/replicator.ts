@@ -15,7 +15,6 @@ import { IterableEventQueue } from '../../resources/IterableEventQueue.ts';
 import {
 	NodeReplicationConnection,
 	createWebSocket,
-	OPERATION_REQUEST,
 	replicateOverWS,
 	databaseSubscriptions,
 	tableUpdateListeners,
