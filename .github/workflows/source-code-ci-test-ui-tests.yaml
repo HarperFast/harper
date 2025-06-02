@@ -52,6 +52,7 @@ jobs:
 #    secrets: inherit
   getUItests:
     runs-on: ubuntu-latest
+    timeout-minutes: 30
 #    needs:
 #      - createInstances
 #      - registerInstances
@@ -60,8 +61,9 @@ jobs:
         uses: actions/checkout@v4
         with:
           repository: HarperDB/ui-tests
-          token: ${{ secrets.GITHUB_TOKEN }}
           ref: 'main'
+          token: ${{ secrets.GH_PAT_READ_UI_TESTS_REPO }}
+          path: ui-tests
       - name: List folder and files
         run: |
           pwd
