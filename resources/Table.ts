@@ -1176,7 +1176,7 @@ export function makeTable(options) {
 							throw new AccessViolation(context.user);
 						}
 
-						return when(this.get(target), (record) => {
+						return when(primaryStore.get(requestTargetToId(target)), (record) => {
 							const updatable = new Updatable(record);
 							updatable._setChanges(updates);
 							this._writeUpdate(id, updatable.getChanges(), false);
@@ -1569,9 +1569,9 @@ export function makeTable(options) {
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
-					let precedes_existing_version = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
+					let precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
 					let auditRecordToStore: any; // what to store in the audit record. For a full update, this can be left undefined in which case it is the same as full record update and optimized to use a binary copy
-					if (precedes_existing_version <= 0) {
+					if (precedesExisting <= 0) {
 						// This block is to handle the case of saving an update where the transaction timestamp is older than the
 						// existing timestamp, which means that we received updates out of order, and must resequence the application
 						// of the updates to the record to ensure consistency across the cluster
@@ -1590,8 +1590,6 @@ export function makeTable(options) {
 								'local recorded time',
 								new Date(localTime)
 							);
-							// start with existing record and apply the update to it, and then we will reapply newer updates below
-							updateToApply = rebuildUpdateBefore(existingRecord, updateToApply, fullUpdate);
 
 							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
 							while (localTime > txnTime || (auditedVersion >= txnTime && localTime > 0)) {
@@ -1601,15 +1599,15 @@ export function makeTable(options) {
 								auditedVersion = auditRecord.version;
 								if (auditedVersion >= txnTime) {
 									if (auditedVersion === txnTime) {
-										precedes_existing_version = precedesExistingVersion(
+										precedesExisting = precedesExistingVersion(
 											txnTime,
 											{ version: auditedVersion, localTime: localTime },
 											options?.nodeId
 										);
-										if (precedes_existing_version === 0) {
+										if (precedesExisting === 0) {
 											return; // treat a tie as a duplicate and drop it
 										}
-										if (precedes_existing_version > 0) continue; // if the existing version is older, we can skip this update
+										if (precedesExisting > 0) continue; // if the existing version is older, we can skip this update
 									}
 									if (auditRecord.type === 'patch') {
 										// record patches so we can reply in order
@@ -1660,8 +1658,12 @@ export function makeTable(options) {
 					let recordToStore: any;
 					if (fullUpdate) recordToStore = updateToApply;
 					else {
-						this.#record = existingRecord;
-						recordToStore = updateAndFreeze(this, updateToApply);
+						if (this.constructor.loadAsInstance === false)
+							recordToStore = updateAndFreeze(existingRecord, updateToApply);
+						else {
+							this.#record = existingRecord;
+							recordToStore = updateAndFreeze(this, updateToApply);
+						}
 					}
 					this.#record = recordToStore;
 					if (recordToStore && recordToStore.getRecord)
