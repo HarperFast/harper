@@ -8277,6 +8277,7 @@
 									"",
 									"pm.test('pre_con1 data on node 2', () => {",
 									"    const response = pm.response.json();",
+									"    console.log(response);",
 									"    pm.expect(response.record_count).to.equal(1200);",
 									"});"
 								],

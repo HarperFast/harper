@@ -588,7 +588,6 @@ export function table(tableDefinition: TableDefinition) {
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
 	const rootStore = database({ database: databaseName, table: tableName });
 	const tables = databases[databaseName];
-	harperLogger.trace(`Defining ${tableName} in ${databaseName}`, new Error('created from here'));
 	let Table = tables?.[tableName];
 	if (rootStore.status === 'closed') {
 		throw new Error(`Can not use a closed data store for ${tableName}`);
