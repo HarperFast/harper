@@ -1623,6 +1623,16 @@ export function makeTable(options) {
 								}
 								localTime = auditRecord.previousLocalTime;
 							}
+							if (!localTime) {
+								// if we don't have a local time, we can't apply the update, so we need to drop it
+								logger.debug?.(
+									'No further audit history, must drop update',
+									id,
+									'existing version preserved',
+									existingEntry
+								);
+								return;
+							}
 							succeedingUpdates.sort((a, b) => a.version - b.version); // order the patches
 							for (const auditRecord of succeedingUpdates) {
 								const newerUpdate = auditRecord.getValue(primaryStore);
