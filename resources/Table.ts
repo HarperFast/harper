@@ -1583,9 +1583,16 @@ export function makeTable(options) {
 							logger.trace?.(
 								'Applying CRDT update to record with id: ',
 								id,
+								'txn time',
+								new Date(txnTime),
 								'applying later update from:',
-								new Date(auditedVersion)
+								new Date(auditedVersion),
+								'local recorded time',
+								new Date(localTime)
 							);
+							// start with existing record and apply the update to it, and then we will reapply newer updates below
+							updateToApply = rebuildUpdateBefore(existingRecord, updateToApply, fullUpdate);
+
 							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
 							while (localTime > txnTime || (auditedVersion >= txnTime && localTime > 0)) {
 								const auditEntry = auditStore.get(localTime);
