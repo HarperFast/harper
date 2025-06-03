@@ -13,39 +13,39 @@ export class RequestTarget extends URLSearchParams {
 	isCollection?: boolean;
 	// these are query parameters
 	/**	 The conditions to use in the query, that the returned records must satisfy	 */
-	conditions?: Conditions;
+	declare conditions?: Conditions;
 	/**	 The number of records to return	 */
-	limit?: number;
+	declare limit?: number;
 	/**	 The number of records to skip	 */
-	offset?: number;
+	declare offset?: number;
 	/**	 The number of operator to use*/
-	operator?: 'AND' | 'OR';
+	declare operator?: 'AND' | 'OR';
 	/**	 The sort attribute and direction to use */
 	/** @ts-ignore*/
-	sort?: Sort = null; // USP has a sort method, we hide it
+	declare sort?: Sort = null; // USP has a sort method, we hide it
 	/**	 The selected attributes to return	 */
-	select?: Select;
+	declare select?: Select;
 	/**	 Return an explanation of the query order */
-	explain?: boolean;
+	declare explain?: boolean;
 	/**	 Force the query to be executed in the order of conditions */
-	enforceExecutionOrder?: boolean;
-	lazy?: boolean;
+	declare enforceExecutionOrder?: boolean;
+	declare lazy?: boolean;
 
 	// caching directives
-	noCacheStore?: boolean;
-	noCache?: boolean;
-	onlyIfCached?: boolean;
-	staleIfError?: boolean;
-	mustRevalidate?: boolean;
+	declare noCacheStore?: boolean;
+	declare noCache?: boolean;
+	declare onlyIfCached?: boolean;
+	declare staleIfError?: boolean;
+	declare mustRevalidate?: boolean;
 
 	// replication directives
-	replicateTo?: string[];
-	replicateFrom?: boolean;
-	replicatedConfirmation?: number;
-	originatingOperation?: string;
-	previousResidency?: string[];
+	declare replicateTo?: string[];
+	declare replicateFrom?: boolean;
+	declare replicatedConfirmation?: number;
+	declare originatingOperation?: string;
+	declare previousResidency?: string[];
 
-	checkPermission?: Permission | boolean;
+	declare checkPermission?: Permission | boolean;
 
 	constructor(target?: string) {
 		let searchIndex: number | undefined;
