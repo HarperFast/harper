@@ -39,10 +39,10 @@ export function handleComponent(scope) {
 
 /**
  * This component handles data loading from YAML or JSON files into user-defined tables.
-	* @param { contents, absolutePath, stats } - File entry content buffer, absolute path, and stats
-	* @param tablesRef - Reference to tables object (local const for testing)
-	* @param databasesRef - Reference to databases object (local const for testing)
-	*/
+ * @param { contents, absolutePath, stats } - File entry content buffer, absolute path, and stats
+ * @param tablesRef - Reference to tables object (local const for testing)
+ * @param databasesRef - Reference to databases object (local const for testing)
+ */
 
 export async function loadDataFile({ contents, absolutePath, stats }: FileEntry, tablesRef: Tables, databasesRef: Databases) {
 	const fileExt = extname(absolutePath) || 'unknown';
