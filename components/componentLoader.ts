@@ -18,7 +18,6 @@ import harperLogger from '../utility/logging/harper_logger.js';
 import * as dataLoader from '../resources/dataLoader.ts';
 import fg from 'fast-glob';
 import { watchDir, getWorkerIndex } from '../server/threads/manageThreads.js';
-import harperLogger from '../utility/logging/harper_logger.js';
 import { secureImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
 import { Resources } from '../resources/Resources.ts';
@@ -34,7 +33,7 @@ import { getConfigObj, resolvePath } from '../config/configUtils.js';
 import { createReuseportFd } from '../server/serverHelpers/Request.ts';
 import { ErrorResource } from '../resources/ErrorResource.ts';
 import { Scope } from './Scope.ts';
-import { Component, processResourceExtensionComponent } from './Component.ts';
+import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts';
 import * as httpComponent from '../server/http.ts';
 
 const CF_ROUTES_DIR = resolvePath(env.get(CONFIG_PARAMS.COMPONENTSROOT));
@@ -318,7 +317,7 @@ export async function loadComponent(
 						extensionModule.setupDirectory) &&
 					componentConfig.files != undefined
 				) {
-					const component = new Component({
+					const component = new ComponentV1({
 						config: componentConfig,
 						name: componentName,
 						directory: componentDirectory,

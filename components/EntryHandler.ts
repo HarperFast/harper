@@ -1,12 +1,13 @@
 import type { Stats } from 'node:fs';
 import { EventEmitter, once } from 'node:events';
-import { ComponentV2, FileAndURLPathConfig } from './ComponentV2';
+import { Component, FileAndURLPathConfig } from './Component.js';
 import harperLogger from '../utility/logging/harper_logger.js';
 import chokidar, { FSWatcher, FSWatcherEventMap } from 'chokidar';
-import fg from 'fast-glob';
 import { join } from 'node:path';
 import { readFile } from 'node:fs/promises';
 import { FilesOption } from './deriveGlobOptions.js';
+import { deriveURLPath } from './deriveURLPath.js';
+import { isMatch } from 'micromatch';
 
 interface BaseEntry {
 	stats?: Stats;
@@ -67,14 +68,14 @@ export type EntryHandlerEventMap = {
 };
 
 export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
-	#component: ComponentV2;
+	#component: Component;
 	#watcher?: FSWatcher;
 	#logger: any;
 
 	constructor(name: string, directory: string, config: FilesOption | FileAndURLPathConfig, logger?: any) {
 		super();
 
-		this.#component = new ComponentV2(name, directory, castConfig(config));
+		this.#component = new Component(name, directory, castConfig(config));
 		this.#logger = logger || harperLogger.loggerWithTag(name);
 
 		this.watch();
@@ -89,12 +90,16 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	}
 
 	private handleAll(...[event, path, stats]: FSWatcherEventMap['all']): void {
+		if (path === '') path = '/';
+
+		if (!isMatch(path, this.#component.globOptions.source, { ignore: this.#component.globOptions.ignore })) return;
+
 		const absolutePath = join(this.directory, path);
-		const urlPath = deriveURLPath(this.#component, path);
 
 		switch (event) {
 			case 'add':
 			case 'change': {
+				const urlPath = deriveURLPath(this.#component, path, 'file');
 				readFile(absolutePath).then((contents) => {
 					const entry: AddFileEvent | ChangeFileEvent = {
 						eventType: event,
@@ -110,6 +115,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 				break;
 			}
 			case 'unlink': {
+				const urlPath = deriveURLPath(this.#component, path, 'file');
 				const entry: UnlinkFileEvent = {
 					eventType: event,
 					entryType: 'file',
@@ -123,6 +129,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			}
 			case 'addDir':
 			case 'unlinkDir': {
+				const urlPath = deriveURLPath(this.#component, path, 'directory');
 				const entry: DirectoryEntryEvent = {
 					eventType: event,
 					entryType: 'directory',
@@ -149,25 +156,21 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		await this.#watcher?.close();
 		this.#watcher = undefined;
 
-		return fg(this.#component.globOptions.source, {
-			cwd: this.directory,
-			onlyFiles: this.#component.globOptions.onlyFiles,
-			onlyDirectories: this.#component.globOptions.onlyDirectories,
-			ignore: this.#component.globOptions.ignore,
-		})
-			.then((matches) => {
-				this.#logger.debug(`Watching entries: [${matches.join(', ')}]`);
-				this.#watcher = chokidar
-					.watch(matches, { cwd: this.directory, persistent: false })
-					.on('all', this.handleAll.bind(this))
-					.on('error', this.handleError.bind(this))
-					.on('ready', this.handleReady.bind(this));
+		const allowedBases = this.#component.patternBases.map((base) => join(this.#component.directory, base));
 
-				return this.ready();
+		this.#watcher = chokidar
+			.watch(this.#component.commonPatternBase, {
+				cwd: this.#component.directory,
+				persistent: false,
+				ignored: (path) => {
+					return path !== this.#component.directory && allowedBases.every((base) => !path.startsWith(base));
+				},
 			})
-			.catch((error) => {
-				this.emit('error', error);
-			});
+			.on('all', this.handleAll.bind(this))
+			.on('error', this.handleError.bind(this))
+			.on('ready', this.handleReady.bind(this));
+
+		return this.ready();
 	}
 
 	close(): this {
@@ -185,7 +188,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	}
 
 	update(config: FilesOption | FileAndURLPathConfig) {
-		this.#component = new ComponentV2(this.name, this.directory, castConfig(config));
+		this.#component = new Component(this.name, this.directory, castConfig(config));
 
 		return this.watch();
 	}
@@ -193,19 +196,4 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 
 function castConfig(config: FilesOption | FileAndURLPathConfig): FileAndURLPathConfig {
 	return typeof config === 'string' || Array.isArray(config) || !('files' in config) ? { files: config } : config;
-}
-
-function deriveURLPath(component: ComponentV2, path: string): string {
-	let entryPathPart = path;
-
-	if (entryPathPart !== '/') {
-		for (const patternRoot of component.patternRoots) {
-			if (path.startsWith(patternRoot)) {
-				entryPathPart = path.slice(patternRoot.length);
-				break;
-			}
-		}
-	}
-
-	return join(component.baseURLPath, entryPathPart);
 }
