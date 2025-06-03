@@ -1333,6 +1333,7 @@ export function replicateOverWS(ws, options, authorization) {
 
 	function close(code?, reason?) {
 		ws.isFinished = true;
+		logger.debug?.(connectionId, 'closing', remoteNodeName, databaseName, code, reason);
 		ws.close(code, reason);
 		options.connection?.emit('finished'); // we want to synchronously indicate that the connection is finished, so it is not accidently reused
 	}

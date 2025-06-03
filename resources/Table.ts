@@ -1628,6 +1628,7 @@ export function makeTable(options) {
 							updateToApply = rebuildUpdateBefore(updateToApply, existingRecord, fullUpdate);
 							logger.debug?.('Rebuilding update without audit:', updateToApply);
 						}
+						logger.trace?.('Rebuilt record to save:', updateToApply, ' is full update:', fullUpdate);
 					}
 					let recordToStore: any;
 					if (fullUpdate) recordToStore = updateToApply;
