@@ -12,6 +12,7 @@ export class RequestTarget extends URLSearchParams {
 	/** Indicates that this is a request to query for collection of records */
 	isCollection?: boolean;
 	// these are query parameters
+	// we `declare` these properties so we don't create them on every instance, as they are usually not present
 	/**	 The conditions to use in the query, that the returned records must satisfy	 */
 	declare conditions?: Conditions;
 	/**	 The number of records to return	 */

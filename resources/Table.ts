@@ -1013,7 +1013,7 @@ export function makeTable(options) {
 		 * @param user The current, authenticated user
 		 * @param target The parsed query from the search part of the URL
 		 */
-		allowRead(user: any, target: RequestTarget, context: Context): boolean {
+		allowRead(user: any, target: RequestTarget): boolean {
 			const tablePermission = getTablePermissions(user, target);
 			if (tablePermission?.read) {
 				if (tablePermission.isSuperUser) return true;
@@ -1059,7 +1059,7 @@ export function makeTable(options) {
 		 * @param updatedData
 		 * @param fullUpdate
 		 */
-		allowUpdate(user, updatedData: any, target: RequestTarget) {
+		allowUpdate(user: any, updatedData: any, target: RequestTarget) {
 			const tablePermission = getTablePermissions(user, target);
 			if (tablePermission?.update) {
 				const attribute_permissions = tablePermission.attribute_permissions;
@@ -1086,9 +1086,9 @@ export function makeTable(options) {
 		 * @param user The current, authenticated user
 		 * @param newData
 		 */
-		allowCreate(user, newData: {}) {
+		allowCreate(user: any, newData: any, target: RequestTarget) {
 			if (this.isCollection) {
-				const tablePermission = getTablePermissions(user);
+				const tablePermission = getTablePermissions(user, target);
 				if (tablePermission?.insert) {
 					const attribute_permissions = tablePermission.attribute_permissions;
 					if (attribute_permissions?.length > 0) {
@@ -1114,8 +1114,8 @@ export function makeTable(options) {
 		 * Determine if the user is allowed to delete from the current resource
 		 * @param user The current, authenticated user
 		 */
-		allowDelete(user) {
-			const tablePermission = getTablePermissions(user);
+		allowDelete(user: any, target: RequestTarget) {
+			const tablePermission = getTablePermissions(user, target);
 			return tablePermission?.delete && checkContextPermissions(this.getContext());
 		}
 

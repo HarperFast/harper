@@ -394,16 +394,16 @@ export class Resource implements ResourceInterface {
 	}
 
 	// Default permissions (super user only accesss):
-	allowRead(user): boolean | object {
+	allowRead(user: any, target: RequestTarget): boolean {
 		return user?.role.permission.super_user;
 	}
-	allowUpdate(user): boolean | object {
+	allowUpdate(user, updatedData: any, target: RequestTarget): boolean {
 		return user?.role.permission.super_user;
 	}
-	allowCreate(user): boolean | object {
+	allowCreate(user, newData: any, target: RequestTarget): boolean {
 		return user?.role.permission.super_user;
 	}
-	allowDelete(user): boolean | object {
+	allowDelete(user, target: RequestTarget): boolean {
 		return user?.role.permission.super_user;
 	}
 	/**
