@@ -86,7 +86,6 @@ jobs:
       - createInstances
     steps:
       - uses: actions/checkout@v4
-        checkout-depth: 0 # Disabling shallow clones is recommended for improving the relevancy of reporting
       - name: 'Download coverage file'
         env:
           CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
