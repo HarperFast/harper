@@ -241,6 +241,9 @@ export async function startOnMainThread(options) {
 			} else {
 				logger.info('Node no longer should be used, unsubscribing from node', {
 					replicates: node.replicates,
+					databaseName,
+					node,
+					subscriptions: node.subscriptions,
 					hasDatabase: !!databases[databaseName],
 					thisReplicates: getHDBNodeTable().primaryStore.get(getThisNodeName())?.replicates,
 				});
@@ -251,7 +254,8 @@ export async function startOnMainThread(options) {
 					logger.info(
 						'Disabling replication, this node name',
 						getThisNodeName(),
-						getHDBNodeTable().primaryStore.get(getThisNodeName())
+						getHDBNodeTable().primaryStore.get(getThisNodeName()),
+						databaseName
 					);
 				}
 				const request = {

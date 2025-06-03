@@ -305,7 +305,7 @@ export function replicateOverWS(ws, options, authorization) {
 		});
 	let tables = options.tables || (databaseName && getDatabases()[databaseName]);
 	if (!authorization) {
-		logger.error?.('No authorization provided');
+		logger.error?.(connectionId, 'No authorization provided');
 		// don't send disconnect because we want the client to potentially retry
 		close(1008, 'Unauthorized');
 		return;
@@ -1332,10 +1332,14 @@ export function replicateOverWS(ws, options, authorization) {
 	});
 
 	function close(code?, reason?) {
-		ws.isFinished = true;
-		logger.debug?.(connectionId, 'closing', remoteNodeName, databaseName, code, reason);
-		ws.close(code, reason);
-		options.connection?.emit('finished'); // we want to synchronously indicate that the connection is finished, so it is not accidently reused
+		try {
+			ws.isFinished = true;
+			logger.debug?.(connectionId, 'closing', remoteNodeName, databaseName, code, reason);
+			ws.close(code, reason);
+			options.connection?.emit('finished'); // we want to synchronously indicate that the connection is finished, so it is not accidently reused
+		} catch (error) {
+			logger.error?.(connectionId, 'Error closing connection', error);
+		}
 	}
 
 	async function sendBlobs(blob) {
