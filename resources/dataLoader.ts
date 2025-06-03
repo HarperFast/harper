@@ -1,4 +1,4 @@
-import { basename } from 'node:path';
+import { basename, extname } from 'node:path';
 import { parseDocument } from 'yaml';
 import { Databases, databases, table, Tables, tables } from './databases.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads';
@@ -25,14 +25,15 @@ export function handleComponent(scope) {
 	}
 
 	// Handle all files that match the pattern in the config
-	scope.handleEntry(async (entry) => {
+	scope.handleEntry(entry => {
 		// Return early if not adding or updating a file
 		if (entry.entryType !== 'file' || entry.eventType === 'unlink') {
 			return;
 		}
 
-		const result = await loadDataFile(entry, tables, databases);
-		dataLoaderLogger.debug?.('Data loader processed file: %s: %s', basename(entry.absolutePath), result.message);
+		loadDataFile(entry, tables, databases).then(result => {
+			dataLoaderLogger.debug?.('Data loader processed file: %s: %s', basename(entry.absolutePath), result.message);
+		});
 	});
 }
 
@@ -44,14 +45,14 @@ export function handleComponent(scope) {
 	*/
 
 export async function loadDataFile({ contents, absolutePath, stats }: FileEntry, tablesRef: Tables, databasesRef: Databases) {
-	const fileExt = absolutePath.toLowerCase().split('.').pop() || 'unknown';
+	const fileExt = extname(absolutePath) || 'unknown';
 	let data: DataFileFormat;
 
 	// Need to grab the file extension to determine how to parse the content
 	try {
-		if (fileExt === 'yaml' || fileExt === 'yml') {
+		if (fileExt === '.yaml' || fileExt === '.yml') {
 			data = parseDocument(contents.toString()).toJSON();
-		} else if (fileExt === 'json') {
+		} else if (fileExt === '.json') {
 			data = JSON.parse(contents.toString());
 		} else {
 			throw new UnsupportedFileExtensionError(absolutePath, fileExt);
