@@ -1580,7 +1580,12 @@ export function makeTable(options) {
 							// incremental CRDT updates are only available with audit logging on
 							let localTime = existingEntry.localTime;
 							let auditedVersion = existingEntry.version;
-							logger.trace?.('Applying CRDT update to record with id: ', id, 'applying later update:', auditedVersion);
+							logger.trace?.(
+								'Applying CRDT update to record with id: ',
+								id,
+								'applying later update from:',
+								new Date(auditedVersion)
+							);
 							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
 							while (localTime > txnTime || (auditedVersion >= txnTime && localTime > 0)) {
 								const auditEntry = auditStore.get(localTime);
@@ -1614,8 +1619,13 @@ export function makeTable(options) {
 							succeedingUpdates.sort((a, b) => a.version - b.version); // order the patches
 							for (const auditRecord of succeedingUpdates) {
 								const newerUpdate = auditRecord.getValue(primaryStore);
+								logger.debug?.(
+									'Rebuilding update with future patch:',
+									new Date(auditRecord.version),
+									newerUpdate,
+									auditRecord
+								);
 								updateToApply = rebuildUpdateBefore(updateToApply, newerUpdate, fullUpdate);
-								logger.debug?.('Rebuilding update with future patch:', updateToApply);
 								if (!updateToApply) return; // if all changes are overwritten, nothing left to do
 							}
 						} else if (fullUpdate) {
