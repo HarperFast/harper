@@ -304,6 +304,7 @@ export function replicateOverWS(ws, options, authorization) {
 			if (tableSubscriptionToReplicator.auditStore) auditStore = tableSubscriptionToReplicator.auditStore;
 		});
 	let tables = options.tables || (databaseName && getDatabases()[databaseName]);
+	let remoteNodeName: string;
 	if (!authorization) {
 		logger.error?.(connectionId, 'No authorization provided');
 		// don't send disconnect because we want the client to potentially retry
@@ -312,7 +313,7 @@ export function replicateOverWS(ws, options, authorization) {
 	}
 	const awaitingResponse = new Map();
 	let receivingDataFromNodeIds = [];
-	let remoteNodeName = authorization.name;
+	remoteNodeName = authorization.name;
 	if (remoteNodeName && options.connection) options.connection.nodeName = remoteNodeName;
 	let lastSequenceIdReceived, lastSequenceIdCommitted;
 	let sendPingInterval, receivePingTimer, lastPingTime, skippedMessageSequenceUpdateTimer;
