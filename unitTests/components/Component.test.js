@@ -9,7 +9,7 @@ describe('Component', () => {
 	const multiplePatterns = ['foo/*', 'bar/*'];
 	const urlPath = 'fizz';
 
-	// Helper function to create and assert ComponentV2 instance
+	// Helper function to create and assert Component instance
 	function testComponent(config, expected) {
 		const actual = new Component(name, directory, config);
 
