@@ -133,28 +133,28 @@ describe('OptionsWatcher', () => {
 	it('should correctly return the initial configuration', async () => {
 		const { fixture, options } = await setup();
 		const expected = structuredClone(OPTIONS);
-		assert.equal(options.get('nil'), expected.nil, 'should return a top-level null value');
-		assert.equal(options.get('str'), expected.str, 'should return a top-level string value');
-		assert.equal(options.get('bool'), expected.bool, 'should return a top-level boolean value');
-		assert.equal(options.get('num'), expected.num, 'should return a top-level number value');
-		assert.deepEqual(options.get('arr'), expected.arr, 'should return a top-level array value');
-		assert.deepEqual(options.get('obj'), expected.obj, 'should return a top-level object value');
-		assert.equal(options.get('obj.nil'), expected.obj.nil, 'should return a nested null value');
-		assert.equal(options.get('obj.str'), expected.obj.str, 'should return a nested string value');
-		assert.equal(options.get('obj.bool'), expected.obj.bool, 'should return a nested boolean value');
-		assert.equal(options.get('obj.num'), expected.obj.num, 'should return a nested number value');
-		assert.deepEqual(options.get('obj.arr'), expected.obj.arr, 'should return a nested array value');
-		assert.deepEqual(options.get('obj.deep'), expected.obj.deep, 'should return a nested object value');
-		assert.equal(options.get('obj.deep.x'), expected.obj.deep.x, 'should return a deeply nested value');
+		assert.equal(options.get(['nil']), expected.nil, 'should return a top-level null value');
+		assert.equal(options.get(['str']), expected.str, 'should return a top-level string value');
+		assert.equal(options.get(['bool']), expected.bool, 'should return a top-level boolean value');
+		assert.equal(options.get(['num']), expected.num, 'should return a top-level number value');
+		assert.deepEqual(options.get(['arr']), expected.arr, 'should return a top-level array value');
+		assert.deepEqual(options.get(['obj']), expected.obj, 'should return a top-level object value');
+		assert.equal(options.get(['obj', 'nil']), expected.obj.nil, 'should return a nested null value');
+		assert.equal(options.get(['obj', 'str']), expected.obj.str, 'should return a nested string value');
+		assert.equal(options.get(['obj', 'bool']), expected.obj.bool, 'should return a nested boolean value');
+		assert.equal(options.get(['obj', 'num']), expected.obj.num, 'should return a nested number value');
+		assert.deepEqual(options.get(['obj', 'arr']), expected.obj.arr, 'should return a nested array value');
+		assert.deepEqual(options.get(['obj', 'deep']), expected.obj.deep, 'should return a nested object value');
+		assert.equal(options.get(['obj', 'deep', 'x']), expected.obj.deep.x, 'should return a deeply nested value');
 
-		assert.equal(options.get('nonExistent'), undefined, 'should return undefined for a non-existent property');
+		assert.equal(options.get(['nonExistent']), undefined, 'should return undefined for a non-existent property');
 		assert.equal(
-			options.get('obj.nonExistent'),
+			options.get(['obj', 'nonExistent']),
 			undefined,
 			'should return undefined for a non-existent nested property'
 		);
 		assert.equal(
-			options.get('obj.deep.nonExistent'),
+			options.get(['obj', 'deep', 'nonExistent']),
 			undefined,
 			'should return undefined for a non-existent deeply nested property'
 		);

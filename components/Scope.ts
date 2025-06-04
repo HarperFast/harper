@@ -4,7 +4,7 @@ import { EntryHandler, type EntryHandlerEventMap, type onEntryEventHandler } fro
 import { OptionsWatcher, OptionsWatcherEventMap } from './OptionsWatcher.ts';
 import harperLogger from '../utility/logging/harper_logger.js';
 import type { Resources } from '../resources/Resources.ts';
-import type { FileAndURLPathConfig } from './ComponentV2.ts';
+import type { FileAndURLPathConfig } from './Component.ts';
 import { FilesOption } from './deriveGlobOptions.ts';
 import { requestRestart } from './requestRestart.ts';
 
@@ -150,7 +150,7 @@ export class Scope extends EventEmitter {
 	handleEntry(
 		filesOrHandler?: FilesOption | FileAndURLPathConfig | onEntryEventHandler,
 		handler?: onEntryEventHandler
-	): EntryHandler | undefined {
+	): EntryHandler {
 		// No arguments, return default handler
 		if (filesOrHandler === undefined) {
 			if (!this.#entryHandler) {

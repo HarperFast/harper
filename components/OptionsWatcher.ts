@@ -287,8 +287,8 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	 * @param key an array of strings representing the key.
 	 * @returns
 	 */
-	get(key: string): ConfigValue | undefined {
-		return this.#scopedConfig ? this.getValue(key.split('.')) : undefined;
+	get(key: string[]): ConfigValue | undefined {
+		return this.#scopedConfig ? this.getValue(key) : undefined;
 	}
 
 	/**
