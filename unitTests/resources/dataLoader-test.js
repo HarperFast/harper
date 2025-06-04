@@ -12,11 +12,7 @@ const loggerStub = {
 	error: sinon.stub(),
 	debug: sinon.stub()
 };
-// Create a stub that returns an object with withTag method that returns the logger stub
-const componentLoggerStub = {
-	withTag: sinon.stub().returns(loggerStub)
-};
-sinon.stub(harperLogger, 'forComponent').returns(componentLoggerStub);
+sinon.stub(harperLogger, 'forComponent').returns(loggerStub);
 
 // Import the dataLoader module exports after logger is stubbed
 const {

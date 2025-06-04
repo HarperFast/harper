@@ -8,7 +8,7 @@ import harperLogger from '../utility/logging/harper_logger.js';
 import { Attribute } from './Table.ts';
 import { FileEntry } from '../components/EntryHandler.ts';
 
-const dataLoaderLogger = harperLogger.forComponent('dataLoader').withTag('dataLoader');
+const dataLoaderLogger = harperLogger.forComponent('dataLoader');
 
 /**
  * Set up file handlers for data files and loads them into the appropriate tables
