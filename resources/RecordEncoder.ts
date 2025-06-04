@@ -61,7 +61,7 @@ let lastEncoding,
 	expiresAtNextEncoding = -1,
 	residencyIdAtNextEncoding = 0;
 // tracking metadata with a singleton works better than trying to alter response of getEntry/get and coordinating that across caching layers
-export let lastMetadata: Entry = null;
+export let lastMetadata: Entry | null = null;
 export class RecordEncoder extends Encoder {
 	constructor(options) {
 		options.useBigIntExtension = true;
