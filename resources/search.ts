@@ -890,9 +890,13 @@ export function parseQuery(queryToParse: string, query: RequestTarget) {
 			if (lastIndex !== queryString.length) throw new SyntaxError(`Unable to parse query, unexpected end of query`);
 			return query;
 		} catch (error) {
-			error.statusCode = 400;
-			error.message = `Unable to parse query, ${error.message} at position ${lastIndex} in '${queryString}'`;
-			throw error;
+			if (query) {
+				query.parseError = error;
+			} else {
+				error.statusCode = 400;
+				error.message = `Unable to parse query, ${error.message} at position ${lastIndex} in '${queryString}'`;
+				throw error;
+			}
 		}
 	} else {
 		return query ?? new URLSearchParams(queryToParse);
@@ -1067,8 +1071,17 @@ function parseBlock(query, expectedEnd) {
 				}
 				if (query.conditions) {
 					assignOperator(query, lastBinaryOperator);
-					query.conditions.push(entry);
-					attribute = null;
+					if (queryString[lastIndex] === '=') {
+						// handle the case of a query parameter like property[]=value, using the standard equal behavior
+						valueDecoder = decodeURIComponent; // use strict decoding
+						comparator = 'equals'; // strict equals
+						attribute = decodeProperty(value);
+						parser.lastIndex = ++lastIndex;
+						break;
+					} else {
+						query.conditions.push(entry);
+						attribute = null;
+					}
 				} else query.push(entry);
 				if (queryString[lastIndex] === ',') {
 					parser.lastIndex = ++lastIndex;

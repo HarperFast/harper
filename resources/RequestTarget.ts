@@ -31,6 +31,7 @@ export class RequestTarget extends URLSearchParams {
 	/**	 Force the query to be executed in the order of conditions */
 	declare enforceExecutionOrder?: boolean;
 	declare lazy?: boolean;
+	declare parseError?: Error;
 
 	// caching directives
 	declare noCacheStore?: boolean;

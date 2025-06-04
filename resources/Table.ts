@@ -1811,25 +1811,25 @@ export function makeTable(options) {
 			return true;
 		}
 
-		search(request: RequestTarget): AsyncIterable<any> {
+		search(target: RequestTarget): AsyncIterable<any> {
 			const context = this.getContext();
 			const txn = txnForContext(context);
-			if (!request) throw new Error('No query provided');
-			if (request.checkPermission) {
+			if (!target) throw new Error('No query provided');
+			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
+			if (target.checkPermission) {
 				// requesting authorization verification
-				const allowed = this.allowRead(context.user, request, context);
+				const allowed = this.allowRead(context.user, target, context);
 				if (!allowed) {
 					throw new AccessViolation(context.user);
 				}
 			}
 
-			let conditions = request.conditions;
-			if (!conditions)
-				conditions = Array.isArray(request) ? request : request[Symbol.iterator] ? Array.from(request) : [];
+			let conditions = target.conditions;
+			if (!conditions) conditions = Array.isArray(target) ? target : target[Symbol.iterator] ? Array.from(target) : [];
 			else if (conditions.length === undefined) {
 				conditions = conditions[Symbol.iterator] ? Array.from(conditions) : [conditions];
 			}
-			const id = request.id ?? this.getId();
+			const id = target.id ?? this.getId();
 			if (id) {
 				conditions = [
 					{
@@ -1908,7 +1908,7 @@ export function makeTable(options) {
 				return conditions;
 			}
 			function orderConditions(conditions: Condition[], operator: string) {
-				if (request.enforceExecutionOrder) return conditions; // don't rearrange conditions
+				if (target.enforceExecutionOrder) return conditions; // don't rearrange conditions
 				for (const condition of conditions) {
 					if (condition.conditions) condition.conditions = orderConditions(condition.conditions, condition.operator);
 				}
@@ -1924,9 +1924,9 @@ export function makeTable(options) {
 				}
 				return coerceType(value, attribute);
 			}
-			const operator = request.operator;
+			const operator = target.operator;
 			if (conditions.length > 0 || operator) conditions = prepareConditions(conditions, operator);
-			const sort = typeof request.sort === 'object' && request.sort;
+			const sort = typeof target.sort === 'object' && target.sort;
 			let postOrdering;
 			if (sort) {
 				// TODO: Support index-assisted sorts of unions, which will require potentially recursively adding/modifying an order aligned condition and be able to recursively undo it if necessary
@@ -1953,7 +1953,7 @@ export function makeTable(options) {
 							// if it is indexed, we add a pseudo-condition to align with the natural sort order of the index
 							orderAlignedCondition = { ...sort, comparator: 'sort' };
 							conditions.push(orderAlignedCondition);
-						} else if (conditions.length === 0 && !request.allowFullScan)
+						} else if (conditions.length === 0 && !target.allowFullScan)
 							throw handleHDBError(
 								new Error(),
 								`${
@@ -1983,11 +1983,11 @@ export function makeTable(options) {
 					postOrdering = sort;
 				}
 			}
-			const select = request.select;
+			const select = target.select;
 			if (conditions.length === 0) {
 				conditions = [{ attribute: primaryKey, comparator: 'greater_than', value: true }];
 			}
-			if (request.explain) {
+			if (target.explain) {
 				return {
 					conditions,
 					operator,
@@ -2005,12 +2005,12 @@ export function makeTable(options) {
 				operator,
 				TableResource,
 				readTxn,
-				request,
+				target,
 				context,
 				(results: any[], filters: Function[]) => transformToEntries(results, select, context, readTxn, filters),
 				filtered
 			);
-			const ensure_loaded = request.ensureLoaded !== false;
+			const ensure_loaded = target.ensureLoaded !== false;
 			if (!postOrdering) entries = applyOffset(entries); // if there is no post ordering, we can apply the offset now
 			const transformToRecord = TableResource.transformEntryForSelect(
 				select,
@@ -2029,10 +2029,10 @@ export function makeTable(options) {
 				transformToRecord
 			);
 			function applyOffset(entries: any[]) {
-				if (request.offset || request.limit !== undefined)
+				if (target.offset || target.limit !== undefined)
 					return entries.slice(
-						request.offset,
-						request.limit !== undefined ? (request.offset || 0) + request.limit : undefined
+						target.offset,
+						target.limit !== undefined ? (target.offset || 0) + target.limit : undefined
 					);
 				return entries;
 			}
