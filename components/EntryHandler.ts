@@ -78,7 +78,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		this.#component = new Component(name, directory, castConfig(config));
 		this.#logger = logger || harperLogger.loggerWithTag(name);
 
-		this.watch();
+		this.#watch();
 	}
 
 	get name(): string {
@@ -89,7 +89,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		return this.#component.directory;
 	}
 
-	private handleAll(...[event, path, stats]: FSWatcherEventMap['all']): void {
+	#handleAll(...[event, path, stats]: FSWatcherEventMap['all']): void {
 		if (path === '') path = '/';
 
 		if (!isMatch(path, this.#component.globOptions.source, { ignore: this.#component.globOptions.ignore })) return;
@@ -144,15 +144,15 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		}
 	}
 
-	private handleError(error: unknown): void {
+	#handleError(error: unknown): void {
 		this.emit('error', error);
 	}
 
-	private handleReady(): void {
+	#handleReady(): void {
 		this.emit('ready');
 	}
 
-	private async watch() {
+	async #watch() {
 		await this.#watcher?.close();
 		this.#watcher = undefined;
 
@@ -166,9 +166,9 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 					return path !== this.#component.directory && allowedBases.every((base) => !path.startsWith(base));
 				},
 			})
-			.on('all', this.handleAll.bind(this))
-			.on('error', this.handleError.bind(this))
-			.on('ready', this.handleReady.bind(this));
+			.on('all', this.#handleAll.bind(this))
+			.on('error', this.#handleError.bind(this))
+			.on('ready', this.#handleReady.bind(this));
 
 		return this.ready();
 	}
@@ -190,7 +190,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	update(config: FilesOption | FileAndURLPathConfig) {
 		this.#component = new Component(this.name, this.directory, castConfig(config));
 
-		return this.watch();
+		return this.#watch();
 	}
 }
 

@@ -49,23 +49,23 @@ export class Scope extends EventEmitter {
 
 		// Create the options instance for the scope immediately
 		this.options = new OptionsWatcher(name, configFilePath, this.#logger)
-			.on('error', this.handleError.bind(this))
-			.on('change', this.optionsWatcherChangeListener.bind(this)())
-			.on('ready', this.handleOptionsWatcherReady.bind(this));
+			.on('error', this.#handleError.bind(this))
+			.on('change', this.#optionsWatcherChangeListener.bind(this)())
+			.on('ready', this.#handleOptionsWatcherReady.bind(this));
 	}
 
-	private handleOptionsWatcherReady(): void {
+	#handleOptionsWatcherReady(): void {
 		// After options are ready, check if the config contains `files`; create an EntryHandler if it does
 		// This will be the default EntryHandler for the scope
 		const config = this.options.getAll();
 		if (config && typeof config === 'object' && config !== null && !Array.isArray(config) && 'files' in config) {
-			this.#entryHandler = this.createEntryHandler(config as FileAndURLPathConfig);
+			this.#entryHandler = this.#createEntryHandler(config as FileAndURLPathConfig);
 		}
 
 		this.emit('ready');
 	}
 
-	private handleError(error: unknown): void {
+	#handleError(error: unknown): void {
 		this.emit('error', error);
 	}
 
@@ -87,21 +87,21 @@ export class Scope extends EventEmitter {
 		return this;
 	}
 
-	private createEntryHandler(config: FilesOption | FileAndURLPathConfig): EntryHandler {
+	#createEntryHandler(config: FilesOption | FileAndURLPathConfig): EntryHandler {
 		const entryHandler = new EntryHandler(this.#name, this.#directory, config, this.#logger)
-			.on('error', this.handleError.bind(this))
-			.on('add', this.defaultEntryHandlerListener('add'))
-			.on('change', this.defaultEntryHandlerListener('change'))
-			.on('unlink', this.defaultEntryHandlerListener('unlink'))
-			.on('addDir', this.defaultEntryHandlerListener('addDir'))
-			.on('unlinkDir', this.defaultEntryHandlerListener('unlinkDir'));
+			.on('error', this.#handleError.bind(this))
+			.on('add', this.#defaultEntryHandlerListener('add'))
+			.on('change', this.#defaultEntryHandlerListener('change'))
+			.on('unlink', this.#defaultEntryHandlerListener('unlink'))
+			.on('addDir', this.#defaultEntryHandlerListener('addDir'))
+			.on('unlinkDir', this.#defaultEntryHandlerListener('unlinkDir'));
 
 		this.#entryHandlers.push(entryHandler);
 
 		return entryHandler;
 	}
 
-	private defaultEntryHandlerListener(event: keyof EntryHandlerEventMap) {
+	#defaultEntryHandlerListener(event: keyof EntryHandlerEventMap) {
 		const scope = this;
 		return function (this: EntryHandler) {
 			if (this.listenerCount('all') > 0 || this.listenerCount(event) > 1) {
@@ -112,7 +112,7 @@ export class Scope extends EventEmitter {
 		};
 	}
 
-	private optionsWatcherChangeListener() {
+	#optionsWatcherChangeListener() {
 		const scope = this;
 		// eslint-disable-next-line @typescript-eslint/no-unused-vars
 		return function handleOptionsWatcherChange(
@@ -125,7 +125,7 @@ export class Scope extends EventEmitter {
 				// If not entry handler exists then likely the config did not have `files` initially
 				// Now, it does, so create a default entry handler.
 				if (!scope.#entryHandler) {
-					scope.#entryHandler = scope.createEntryHandler(config as FileAndURLPathConfig);
+					scope.#entryHandler = scope.#createEntryHandler(config as FileAndURLPathConfig);
 					return;
 				}
 
@@ -171,7 +171,7 @@ export class Scope extends EventEmitter {
 		}
 
 		// otherwise this is a custom config entry handler
-		const entryHandler = this.createEntryHandler(filesOrHandler);
+		const entryHandler = this.#createEntryHandler(filesOrHandler);
 		return handler ? entryHandler.on('all', handler) : entryHandler;
 	}
 
