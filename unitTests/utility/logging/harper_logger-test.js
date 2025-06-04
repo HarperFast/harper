@@ -840,7 +840,32 @@ describe('Test harper_logger module', () => {
 			expect(result).to.be.false;
 		});
 	});
+	describe('Test global logger', () => {
+		let originalHttpOptions, originalHttpLogOptions, httpLogPath, httpLogger;
+		before(() => {
+			this.externalLogger = harperLoggerModule.forComponent('external');
+			const { path: logPath, level } = this.externalLogger;
+			this.originalExternalOptions = { path: logPath, level };
 
+			this.externalLogPath = path.join(TEST_LOG_DIR, 'external.log');
+			this.externalLogger.path = this.externalLogPath;
+			this.externalLogger.level = 1;
+		});
+		it('Test using the global logger', async () => {
+			harperLoggerModule.externalLogger.warn('Test of the global logger');
+
+			// Wait for the log to be written
+			await new Promise((resolve) => setTimeout(resolve, 100));
+
+			const log = fs.readFileSync(this.externalLogPath, 'utf8');
+			expect(log).to.include('Test of the global logger');
+		});
+		after(() => {
+			fs.unlink(this.externalLogger.path);
+			this.externalLogger.path = this.originalExternalOptions.path;
+			this.externalLogger.level = this.originalExternalOptions.level;
+		});
+	});
 	it('Test suppressLogging function', () => {
 		const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 		const fake_func = sandbox.stub().callsFake(() => {});

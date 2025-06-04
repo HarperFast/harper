@@ -31,7 +31,7 @@ import { HAS_STRUCTURE_UPDATE, lastMetadata, METADATA } from '../../resources/Re
 import { decode, encode, Packr } from 'msgpackr';
 import { WebSocket } from 'ws';
 import { threadId } from 'worker_threads';
-import * as logger from '../../utility/logging/logger.js';
+import { forComponent } from '../../utility/logging/harper_logger.js';
 import { disconnectedFromNode, connectedToNode, ensureNode } from './subscriptionManager.ts';
 import { EventEmitter } from 'events';
 import { createTLSSelector } from '../../security/keys.js';
@@ -43,6 +43,7 @@ import { recordAction } from '../../resources/analytics/write.ts';
 import { decodeBlobsWithWrites, decodeWithBlobCallback, deleteBlob, getFileId } from '../../resources/blob.ts';
 import { PassThrough } from 'node:stream';
 import { getLastVersion } from 'lmdb';
+const logger = forComponent('replication').conditional;
 
 // these are the codes we use for the different commands
 const SUBSCRIPTION_REQUEST = 129;

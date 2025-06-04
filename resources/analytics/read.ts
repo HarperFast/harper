@@ -1,11 +1,11 @@
 import type { Metric } from './write.ts';
-import { loggerWithTag } from '../../utility/logging/harper_logger.js';
+import { forComponent } from '../../utility/logging/harper_logger.js';
 import { getAnalyticsHostnameTable } from './hostnames.ts';
 import type { Resource } from 'harperdb';
 import type { Condition, Conditions } from '../ResourceInterface.ts';
 import { METRIC, type BuiltInMetricName } from './metadata.ts';
 
-const log = loggerWithTag('analytics');
+const log = forComponent('analytics').conditional;
 
 type AnalyticsHostnameResource = Resource & { hostname: string };
 
