@@ -45,7 +45,6 @@ jobs:
       instanceType: c7gn.2xlarge
       tfstateArtifactName: 'tfstate-arm'
     secrets: inherit
-    timeout-minutes: 20
 
   ######################
   #  Register Instances
