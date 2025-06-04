@@ -3,7 +3,7 @@
  * HTTP servers
  */
 import { Scope } from '../components/Scope.ts';
-import { createServer as createSocketServer, Socket } from 'node:net';
+import { Socket } from 'node:net';
 import harperLogger from '../utility/logging/harper_logger.js';
 import { parentPort } from 'node:worker_threads';
 import env from '../utility/environment/environmentManager';
@@ -24,7 +24,6 @@ import { server } from './Server.ts';
 import { setPortServerMap, SERVERS } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
 import { WebSocketServer } from 'ws';
-import { logger } from '../../node/test/fixtures/typescript/ts/module-logger';
 
 server.http = httpServer;
 server.request = onRequest;
