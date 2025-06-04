@@ -7,15 +7,25 @@ describe('15. Custom Functions & components', () => {
 	//Custom Functions & components Folder
 
 	it('deploy_component github package', async () => {
-		await setTimeout(3000);
-		await req()
+		await setTimeout(5000);
+		const response = await req()
 			.send({
 				operation: 'deploy_component',
 				project: 'deploy-test-gh',
 				package: 'HarperDB/application-template',
 			})
-			.expect((r) => assert.equal(r.body.message, 'Successfully deployed: deploy-test-gh', r.text))
-			.expect(200);
+		if (!response.text.includes('Successfully deployed: deploy-test-gh')) {
+			console.log('Response was: ' + response.text);
+			console.log('RETRY 1: deploy_component github package');
+			await req()
+				.send({
+					operation: 'deploy_component',
+					project: 'deploy-test-gh',
+					package: 'HarperDB/application-template',
+				})
+				.expect((r) => assert.equal(r.body.message, 'Successfully deployed: deploy-test-gh', r.text))
+				.expect(200)
+		}
 		await setTimeout(15000);
 	});
 

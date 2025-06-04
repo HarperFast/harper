@@ -46,7 +46,7 @@ const npmUtilities = require('./npmUtilities.js');
 const keys = require('../security/keys.js');
 const setNode = require('../server/replication/setNode.ts');
 const analytics = require('../resources/analytics/read.ts');
-const status = require('../server/status.ts');
+const status = require('../server/status/index.ts');
 
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject.js');
 const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');

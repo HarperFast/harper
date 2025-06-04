@@ -93,14 +93,14 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 
 		this.#watcher = chokidar
 			.watch(filePath, { persistent: false })
-			.on('add', this.handleChange.bind(this))
-			.on('change', this.handleChange.bind(this))
-			.on('error', this.handleError.bind(this))
-			.on('unlink', this.handleUnlink.bind(this))
-			.on('ready', this.handleChange.bind(this));
+			.on('add', this.#handleChange.bind(this))
+			.on('change', this.#handleChange.bind(this))
+			.on('error', this.#handleError.bind(this))
+			.on('unlink', this.#handleUnlink.bind(this))
+			.on('ready', this.#handleChange.bind(this));
 	}
 
-	private handleChange() {
+	#handleChange() {
 		readFile(this.#filePath, 'utf-8')
 			.then((contents) => {
 				this.#rootConfig = yaml.parse(contents);
@@ -114,7 +114,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 						this.emit('ready', this.#scopedConfig);
 					} else {
 						// Otherwise, merge the new config with the old config
-						this.merge(this.#rootConfig[this.#name], this.#scopedConfig);
+						this.#merge(this.#rootConfig[this.#name], this.#scopedConfig);
 					}
 				} else {
 					// Otherwise, if the extension is not in the config file
@@ -140,11 +140,11 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 			});
 	}
 
-	private handleError(error: unknown) {
+	#handleError(error: unknown) {
 		this.emit('error', new OptionsWatcherConfigFileError(this.#filePath, error));
 	}
 
-	private handleUnlink(path: string) {
+	#handleUnlink(path: string) {
 		this.#logger.warn(`Configuration file ${path} was deleted. Recreate it to restore the options watcher.`);
 		this.#scopedConfig = undefined;
 		this.emit('remove');
@@ -158,25 +158,25 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	 *
 	 * All events are considered to be a `change`.
 	 */
-	private merge(newConfigValue: ConfigValue, currentConfigValue: ConfigValue, prevKeys: string[] = []) {
+	#merge(newConfigValue: ConfigValue, currentConfigValue: ConfigValue, prevKeys: string[] = []) {
 		// First, ensure current and new config values are Config objects (not null, undefined, or a primitive)
-		if (!this.isConfig(currentConfigValue) || !this.isConfig(newConfigValue)) {
+		if (!this.#isConfig(currentConfigValue) || !this.#isConfig(newConfigValue)) {
 			// If either is not a config, then just set as there is no need to diff/merge
-			this.setValue(prevKeys, newConfigValue);
+			this.#setValue(prevKeys, newConfigValue);
 			return;
 		}
 
 		// Check for any missing keys (new config has removed keys from current config)
 		for (const key of Object.keys(currentConfigValue)) {
 			if (!(key in newConfigValue)) {
-				this.setValue(prevKeys.concat(key), undefined);
+				this.#setValue(prevKeys.concat(key), undefined);
 			}
 		}
 
 		// Then, iterate of the keys in the new config and check for any changes to the current config
 		for (const [key, newValue] of Object.entries(newConfigValue)) {
 			const keys = prevKeys.concat(key);
-			const currentValue = this.getValue(keys);
+			const currentValue = this.#getValue(keys);
 
 			// If the new value is not the same type as the current value, then no equivalency check is necessary
 			// Just set the value and continue
@@ -187,33 +187,33 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 				(Array.isArray(newValue) && !Array.isArray(currentValue)) ||
 				(!Array.isArray(newValue) && Array.isArray(currentValue))
 			) {
-				this.setValue(keys, newValue);
+				this.#setValue(keys, newValue);
 				continue;
 			}
 
 			// If the new value is an object (non null nor an array), now merge it with the current value
 			if (!Array.isArray(newValue) && typeof newValue === 'object' && newValue !== null) {
-				if (this.isConfig(currentValue)) {
+				if (this.#isConfig(currentValue)) {
 					// Now we're sure currentValue is a Config
-					this.merge(newValue, currentValue, keys);
+					this.#merge(newValue, currentValue, keys);
 				} else {
 					// If currentValue is not a Config, just set newValue
-					this.setValue(keys, newValue);
+					this.#setValue(keys, newValue);
 				}
 				continue;
 			}
 
 			if (!isDeepStrictEqual(newValue, currentValue)) {
-				this.setValue(keys, newValue);
+				this.#setValue(keys, newValue);
 			}
 		}
 	}
 
-	private isConfig(value: ConfigValue): value is Config {
+	#isConfig(value: ConfigValue): value is Config {
 		return typeof value === 'object' && value !== null && value !== undefined && !Array.isArray(value);
 	}
 
-	private getValue(keys: string[]): undefined | ConfigValue {
+	#getValue(keys: string[]): undefined | ConfigValue {
 		let value: ConfigValue = this.#scopedConfig;
 
 		for (const key of keys) {
@@ -225,7 +225,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 		return structuredClone(value);
 	}
 
-	private setValue(keys: string[], value: ConfigValue) {
+	#setValue(keys: string[], value: ConfigValue) {
 		// This method is only called by `merge`, which is only called by `changeHandler` if `this.#config` is defined.
 		// So this should never happen, but just in case, throw an error.
 		// If this ever does get triggered:
@@ -287,8 +287,8 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	 * @param key an array of strings representing the key.
 	 * @returns
 	 */
-	get(key: string): ConfigValue | undefined {
-		return this.#scopedConfig ? this.getValue(key.split('.')) : undefined;
+	get(key: string[]): ConfigValue | undefined {
+		return this.#scopedConfig ? this.#getValue(key) : undefined;
 	}
 
 	/**

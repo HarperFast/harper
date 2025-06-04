@@ -29,14 +29,34 @@ interface GetAnalyticsRequest {
 type GetAnalyticsResponse = Metric[];
 
 export function getOp(req: GetAnalyticsRequest): Promise<GetAnalyticsResponse> {
-	log.trace?.("get_analytics request:", req);
+	log.trace?.('get_analytics request:', req);
 	return get(req.metric, req.get_attributes, req.start_time, req.end_time, req.conditions);
 }
 
-export async function get(metric: string, getAttributes?: string[], startTime?: number, endTime?: number, additionalConditions?: Conditions): Promise<Metric[]> {
+function conformCondition(condition: Condition): Condition {
+	if ('conditions' in condition) {
+		return {
+			...condition,
+			conditions: condition.conditions.map(conformCondition),
+		};
+	}
+	return {
+		attribute: condition.search_attribute ?? condition.attribute,
+		comparator: condition.search_type ?? condition.comparator,
+		value: condition.search_value ?? condition.value,
+	};
+}
+
+export async function get(
+	metric: string,
+	getAttributes?: string[],
+	startTime?: number,
+	endTime?: number,
+	additionalConditions?: Conditions
+): Promise<Metric[]> {
 	const conditions: Conditions = [{ attribute: 'metric', comparator: 'equals', value: metric }];
 	if (additionalConditions) {
-		conditions.push(...additionalConditions);
+		conditions.push(...additionalConditions.map(conformCondition));
 	}
 	const select = getAttributes ?? [];
 
@@ -64,7 +84,7 @@ export async function get(metric: string, getAttributes?: string[], startTime?: 
 	if (select.length > 0) {
 		request['select'] = select;
 	}
-	log.trace?.("get_analytics hdb_analytics.search request:", JSON.stringify(request));
+	log.trace?.('get_analytics hdb_analytics.search request:', JSON.stringify(request));
 	const searchResults = await databases.system.hdb_analytics.search(request);
 
 	return searchResults.map(async (result: Metric) => {
@@ -103,18 +123,18 @@ export async function listMetrics(metricTypes: MetricType[] = ['builtin']): Prom
 	}
 
 	if (metricTypes.includes('custom')) {
-		const conditions = builtins.map(c => {
+		const conditions = builtins.map((c) => {
 			return {
 				attribute: 'metric',
 				comparator: 'not_equal',
 				value: c,
-			}
+			};
 		});
 		const customMetricsSearch = {
 			select: ['metric'],
 			conditions: conditions,
 		};
-		const customMetrics = new Set<string>;
+		const customMetrics = new Set<string>();
 		const searchResults = await databases.system.hdb_analytics.search(customMetricsSearch);
 		for await (const record of searchResults) {
 			customMetrics.add(record.metric);
@@ -140,9 +160,7 @@ export function describeMetricOp(req: DescribeMetricRequest): Promise<DescribeMe
 
 export async function describeMetric(metric: string): Promise<DescribeMetricResponse> {
 	const lastEntrySearch = {
-		conditions: [
-			{ attribute: 'metric', comparator: 'equals', value: metric },
-		],
+		conditions: [{ attribute: 'metric', comparator: 'equals', value: metric }],
 		sort: {
 			attribute: 'id',
 			descending: true,
