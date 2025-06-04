@@ -601,10 +601,7 @@ function transactional(action, options) {
 		let resourceOptions;
 		if (!context) {
 			// try to get the context from the async context if possible
-			context = contextStorage.getStore();
-			if (!context) {
-				context = {};
-			}
+			context = contextStorage.getStore() ?? {};
 		}
 		if (query.ensureLoaded != null || query.async || isCollection) {
 			resourceOptions = { ...options };
