@@ -85,9 +85,7 @@ export class RequestTarget extends URLSearchParams {
 	set(name: string, value: string) {
 		this.delete(name); // clear out any existing conditions and #target
 		super.set(name, value);
-		if (this.conditions) {
-			this.conditions.push({ attribute: name, value });
-		}
+		this.conditions?.push({ attribute: name, value });
 	}
 	append(name: string, value: string) {
 		super.append(name, value);
