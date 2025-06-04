@@ -90,9 +90,7 @@ export class RequestTarget extends URLSearchParams {
 	append(name: string, value: string) {
 		super.append(name, value);
 		this.#target = undefined; // remove this so that we can regenerate string representation based on query params
-		if (this.conditions) {
-			this.conditions.push({ attribute: name, value });
-		}
+		this.conditions?.push({ attribute: name, value });
 	}
 }
 export type RequestTargetOrId = RequestTarget | Id;
