@@ -17,12 +17,13 @@ import { getIndexedValues } from '../utility/lmdb/commonUtility.js';
 import * as signalling from '../utility/signalling.js';
 import { SchemaEventMsg } from '../server/threads/itc.js';
 import { workerData, threadId } from 'worker_threads';
-import * as harperLogger from '../utility/logging/harper_logger.js';
+import { forComponent } from '../utility/logging/harper_logger.js';
 import * as manageThreads from '../server/threads/manageThreads.js';
 import { openAuditStore, transactionKeyEncoder } from './auditStore.ts';
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
 import { deleteRootBlobPathsForDB } from './blob.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
+const logger = forComponent('storage');
 
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
@@ -143,11 +144,11 @@ export function getDatabases(): Databases {
 		const definedTables = definedDatabases.get(dbName);
 		if (definedTables) {
 			const tables = databases[dbName];
-			if (dbName.includes('delete')) harperLogger.trace(`defined tables ${Array.from(definedTables.keys())}`);
+			if (dbName.includes('delete')) logger.trace(`defined tables ${Array.from(definedTables.keys())}`);
 
 			for (const tableName in tables) {
 				if (!definedTables.has(tableName)) {
-					harperLogger.trace(`delete table class ${tableName}`);
+					logger.trace(`delete table class ${tableName}`);
 					delete tables[tableName];
 				}
 			}
@@ -286,7 +287,7 @@ export function readMetaDb(
 					}
 				}
 				if (!primaryAttribute) {
-					harperLogger.warn(
+					logger.warn(
 						`Unable to find a primary key attribute on table ${tableName}, with attributes: ${JSON.stringify(
 							attributes
 						)}`
@@ -317,12 +318,12 @@ export function readMetaDb(
 				if (tableId) {
 					if (tableId >= (dbisStore.get(NEXT_TABLE_ID) || 0)) {
 						dbisStore.putSync(NEXT_TABLE_ID, tableId + 1);
-						harperLogger.info(`Updating next table id (it was out of sync) to ${tableId + 1} for ${tableName}`);
+						logger.info(`Updating next table id (it was out of sync) to ${tableId + 1} for ${tableName}`);
 					}
 				} else {
 					primaryAttribute.tableId = tableId = dbisStore.get(NEXT_TABLE_ID);
 					if (!tableId) tableId = 1;
-					harperLogger.debug(`Table {tableName} missing an id, assigning {tableId}`);
+					logger.debug(`Table {tableName} missing an id, assigning {tableId}`);
 					dbisStore.putSync(NEXT_TABLE_ID, tableId + 1);
 					dbisStore.putSync(primaryAttribute.key, primaryAttribute);
 				}
@@ -357,14 +358,14 @@ export function readMetaDb(
 						attributesUpdated = true;
 					}
 				} catch (error) {
-					harperLogger.error(`Error trying to update attribute`, attribute, existingAttributes, indices, error);
+					logger.error(`Error trying to update attribute`, attribute, existingAttributes, indices, error);
 				}
 			}
 			for (const existingAttribute of existingAttributes) {
 				const attribute = attributes.find((attribute) => attribute.name === existingAttribute.name);
 				if (!attribute) {
 					if (existingAttribute.is_hash_attribute) {
-						harperLogger.error('Unable to remove existing primary key attribute', existingAttribute);
+						logger.error('Unable to remove existing primary key attribute', existingAttribute);
 						continue;
 					}
 					if (existingAttribute.indexed) {
@@ -548,7 +549,7 @@ function openIndex(dbiKey: string, rootStore: Database, attribute: any): Databas
 		if (CustomIndex) {
 			dbi.customIndex = new CustomIndex(dbi, attribute.indexed);
 		} else {
-			harperLogger.error(`The indexing type '${attribute.indexed.type}' is unknown`);
+			logger.error(`The indexing type '${attribute.indexed.type}' is unknown`);
 		}
 	}
 	return dbi;
@@ -588,7 +589,7 @@ export function table(tableDefinition: TableDefinition) {
 	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
 	const rootStore = database({ database: databaseName, table: tableName });
 	const tables = databases[databaseName];
-	harperLogger.trace(`Defining ${tableName} in ${databaseName}`);
+	logger.trace(`Defining ${tableName} in ${databaseName}`);
 	let Table = tables?.[tableName];
 	if (rootStore.status === 'closed') {
 		throw new Error(`Can not use a closed data store for ${tableName}`);
@@ -637,7 +638,7 @@ export function table(tableDefinition: TableDefinition) {
 			if (!primaryKeyAttribute.origins) primaryKeyAttribute.origins = [origin];
 			else if (!primaryKeyAttribute.origins.includes(origin)) primaryKeyAttribute.origins.push(origin);
 		}
-		harperLogger.trace(`${tableName} table loading, opening primary store`);
+		logger.trace(`${tableName} table loading, opening primary store`);
 		const dbiInit = new OpenDBIObject(false, true);
 		dbiInit.compression = primaryKeyAttribute.compression;
 		const dbiName = tableName + '/';
@@ -652,7 +653,7 @@ export function table(tableDefinition: TableDefinition) {
 		const primaryStore = handleLocalTimeForGets(rootStore.openDB(dbiName, dbiInit), rootStore);
 		rootStore.databaseName = databaseName;
 		primaryStore.tableId = attributesDbi.get(NEXT_TABLE_ID);
-		harperLogger.trace(`Assigning new table id ${primaryStore.tableId} for ${tableName}`);
+		logger.trace(`Assigning new table id ${primaryStore.tableId} for ${tableName}`);
 		if (!primaryStore.tableId) primaryStore.tableId = 1;
 		attributesDbi.put(NEXT_TABLE_ID, primaryStore.tableId + 1);
 
@@ -806,7 +807,7 @@ export function table(tableDefinition: TableDefinition) {
 		Table.schemaVersion++;
 		Table.updatedAttributes();
 	}
-	harperLogger.trace(`${tableName} table loading, running index`);
+	logger.trace(`${tableName} table loading, running index`);
 	if (attributesToIndex.length > 0 || indicesToRemove.length > 0) {
 		Table.indexingOperation = runIndexing(Table, attributesToIndex, indicesToRemove);
 	} else if (hasChanges)
@@ -826,7 +827,7 @@ export function table(tableDefinition: TableDefinition) {
 			eviction,
 			scanInterval,
 		});
-	harperLogger.trace(`${tableName} table loaded`);
+	logger.trace(`${tableName} table loaded`);
 
 	return Table;
 	function startTxn() {
@@ -844,7 +845,7 @@ const MAX_OUTSTANDING_INDEXING = 1000;
 const MIN_OUTSTANDING_INDEXING = 10;
 async function runIndexing(Table, attributes, indicesToRemove) {
 	try {
-		harperLogger.info(`Indexing ${Table.tableName} attributes`, attributes);
+		logger.info(`Indexing ${Table.tableName} attributes`, attributes);
 		const schemaVersion = Table.schemaVersion;
 		await signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
@@ -911,7 +912,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 							if (!attributeErrorReported[property]) {
 								// just report an indexing error once per attribute so we don't spam the logs
 								attributeErrorReported[property] = true;
-								harperLogger.error(`Error indexing attribute ${property}`, error);
+								logger.error(`Error indexing attribute ${property}`, error);
 							}
 						}
 					}
@@ -920,7 +921,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					() => outstanding--,
 					(error) => {
 						outstanding--;
-						harperLogger.error(error);
+						logger.error(error);
 					}
 				);
 				if (workerData && workerData.restartNumber !== manageThreads.restartNumber) {
@@ -950,9 +951,9 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 		await signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'indexing-finished', Table.databaseName, Table.tableName)
 		);
-		harperLogger.info(`Finished indexing ${Table.tableName} attributes`, attributes);
+		logger.info(`Finished indexing ${Table.tableName} attributes`, attributes);
 	} catch (error) {
-		harperLogger.error('Error in indexing', error);
+		logger.error('Error in indexing', error);
 	}
 }
 /**

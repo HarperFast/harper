@@ -31,7 +31,7 @@ import { HAS_STRUCTURE_UPDATE, METADATA } from '../../resources/RecordEncoder.ts
 import { decode, encode, Packr } from 'msgpackr';
 import { WebSocket } from 'ws';
 import { threadId } from 'worker_threads';
-import * as logger from '../../utility/logging/logger.js';
+import { forComponent } from '../../utility/logging/harper_logger.js';
 import { disconnectedFromNode, connectedToNode, ensureNode } from './subscriptionManager.ts';
 import { EventEmitter } from 'events';
 import { createTLSSelector } from '../../security/keys.js';
@@ -42,6 +42,7 @@ import { isIP } from 'node:net';
 import { recordAction } from '../../resources/analytics/write.ts';
 import { decodeBlobsWithWrites, decodeWithBlobCallback, getFileId } from '../../resources/blob.ts';
 import { PassThrough } from 'node:stream';
+const logger = forComponent('replication').conditional;
 
 // these are the codes we use for the different commands
 const SUBSCRIPTION_REQUEST = 129;
