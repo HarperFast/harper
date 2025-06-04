@@ -33,6 +33,20 @@ export function getOp(req: GetAnalyticsRequest): Promise<GetAnalyticsResponse> {
 	return get(req.metric, req.get_attributes, req.start_time, req.end_time, req.conditions);
 }
 
+function conformCondition(condition: Condition): Condition {
+	if ('conditions' in condition) {
+		return {
+			...condition,
+			conditions: condition.conditions.map(conformCondition),
+		};
+	}
+	return {
+		attribute: condition.search_attribute ?? condition.attribute,
+		comparator: condition.search_type ?? condition.comparator,
+		value: condition.search_value ?? condition.value,
+	};
+}
+
 export async function get(
 	metric: string,
 	getAttributes?: string[],
@@ -42,7 +56,7 @@ export async function get(
 ): Promise<Metric[]> {
 	const conditions: Conditions = [{ attribute: 'metric', comparator: 'equals', value: metric }];
 	if (additionalConditions) {
-		conditions.push(...additionalConditions);
+		conditions.push(...additionalConditions.map(conformCondition));
 	}
 	const select = getAttributes ?? [];
 

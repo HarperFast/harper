@@ -80,7 +80,7 @@ jobs:
         shell: bash
   runSonarScans:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     needs:
       - runUnitTests
       - createInstances
@@ -98,7 +98,7 @@ jobs:
           public_dns_name="${public_dns_names[0]}"
           scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/coverage/lcov.info" "harperdb/coverage/lcov.info"
       - name: SonarCloud Scan
-        uses: sonarsource/sonarcloud-github-action@master
+        uses: sonarsource/sonarqube-scan-action@5.2.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}

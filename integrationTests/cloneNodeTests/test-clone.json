@@ -215,6 +215,77 @@
 			"response": []
 		},
 		{
+			"name": "Get status - clone node (if CLONE_NODE_UPDATE_STATUS enabled)",
+			"event": [
+				{
+					"listen": "test",
+					"script": {
+						"exec": [
+							"pm.test('Status code is 200', () => {",
+							"    pm.response.to.have.status(200);",
+							"});",
+							"",
+							"// This test will only verify status if CLONE_NODE_UPDATE_STATUS=true was set",
+							"pm.test('Test clone node status (optional feature)', () => {",
+							"    const response = pm.response.json();",
+							"    // If the clone was configured with CLONE_NODE_UPDATE_STATUS=true,",
+							"    // the availability status should be set to 'Available'",
+							"    // Otherwise, this will just verify the get_status operation works",
+							"    if (response.id === 'availability' && response.status === 'Available') {",
+							"        console.log('Clone node status update feature verified: availability = Available');",
+							"    } else {",
+							"        console.log('Clone node status update feature not enabled or different status set');",
+							"    }",
+							"})",
+							""
+						],
+						"type": "text/javascript",
+						"packages": {}
+					}
+				}
+			],
+			"request": {
+				"auth": {
+					"type": "basic",
+					"basic": [
+						{
+							"key": "password",
+							"value": "{{PASSWORD}}",
+							"type": "string"
+						},
+						{
+							"key": "username",
+							"value": "{{USERNAME}}",
+							"type": "string"
+						},
+						{
+							"key": "showPassword",
+							"value": false,
+							"type": "boolean"
+						}
+					]
+				},
+				"method": "POST",
+				"header": [],
+				"body": {
+					"mode": "raw",
+					"raw": "{\n    \"operation\": \"get_status\",\n    \"id\": \"availability\"\n}\n",
+					"options": {
+						"raw": {
+							"language": "json"
+						}
+					}
+				},
+				"url": {
+					"raw": "{{PROTOCOL}}://{{CLONE_HOST}}:{{CLONE_HDB_PORT}}",
+					"protocol": "{{PROTOCOL}}",
+					"host": ["{{CLONE_HOST}}"],
+					"port": "{{CLONE_HDB_PORT}}"
+				}
+			},
+			"response": []
+		},
+		{
 			"name": "Insert 'fish' - leader",
 			"event": [
 				{

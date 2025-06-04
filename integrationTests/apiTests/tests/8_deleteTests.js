@@ -230,8 +230,8 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Create table for drop test',  () => {
-		return req()
+	it('Create table for drop test',  async () => {
+		await req()
 			.send({
 				operation: 'create_table',
 				schema: `${testData.drop_schema}`,
@@ -240,6 +240,7 @@ describe('8. Delete Tests', () => {
 			})
 			.expect((r) => assert.equal(r.body.message, "table 'drop_schema.drop_table' successfully created.", r.text))
 			.expect(200);
+		await setTimeout(2000);
 	});
 
 	it('Insert records for drop test',  () => {
@@ -283,8 +284,8 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Create table again',  () => {
-		return req()
+	it('Create table again',  async () => {
+		await req()
 			.send({
 				operation: 'create_table',
 				schema: `${testData.drop_schema}`,
@@ -293,6 +294,7 @@ describe('8. Delete Tests', () => {
 			})
 			.expect((r) => assert.equal(r.body.message, "table 'drop_schema.drop_table' successfully created.", r.text))
 			.expect(200);
+		await setTimeout(2000);
 	});
 
 	it('Confirm correct attributes',  () => {
@@ -375,11 +377,12 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('create table test',  () => {
-		return req()
+	it('create table test',  async () => {
+		await req()
 			.send({ operation: 'create_table', schema: 'drop_attr', table: 'test', hash_attribute: 'id' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
+		await setTimeout(2000);
 	});
 
 	it('Insert records into test table',  () => {
@@ -711,11 +714,12 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('create table test',  () => {
-		return req()
+	it('create table test',  async () => {
+		await req()
 			.send({ operation: 'create_table', schema: 'drop_attr', table: 'test', hash_attribute: 'id' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
+		await setTimeout(2000);
 	});
 
 	it('Insert records into test table',  () => {
