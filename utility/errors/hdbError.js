@@ -97,20 +97,19 @@ function handleHDBError(
 
 /**
  * Represents a general violation of validation/authorization. This should be used in situations where we are performing
- * expected verification, and we do not need to record a stack trace. This does not extend Error and
- * omitting stace trace capture is several times faster.
+ * expected verification, and we do not need to record a stack trace. This extends Error's prototype, but doesn't
+ * use the native constructor to avoid stack trace capture which is several times faster.
  * @param {Object} user - user object that caused the access violation
  * @constructor
  */
-
-class Violation {
-	constructor(message) {
-		this.message = message;
-	}
-	toString() {
-		return `${this.constructor.name}: ${this.message}`;
-	}
+function Violation(message) {
+	this.message = message;
 }
+Violation.prototype = Object.create(Error.prototype);
+Violation.prototype.constructor = Violation;
+Violation.prototype.toString = function () {
+	return `${this.constructor.name}: ${this.message}`;
+};
 
 /**
  * Represents an access violation. This is used to return a 403 or 401 response to the client. Uses fast Violation class
@@ -141,6 +140,7 @@ module.exports = {
 	ClientError,
 	ServerError,
 	AccessViolation,
+	Violation,
 	//Including common hdbErrors here so that they can be brought into modules on the same line where the handler method is brought in
 	hdbErrors,
 };
