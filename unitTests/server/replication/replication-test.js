@@ -94,13 +94,13 @@ describe('Replication', () => {
 		let retries = 10;
 		do {
 			await new Promise((resolve) => setTimeout(resolve, 200));
-			let result = await test_stores[1].get('1')?.value;
+			let result = await test_stores[1].get('1');
 			if (!result) {
 				assert(--retries > 0);
 				continue;
 			}
 			assert.equal(result.name, name);
-			result = await test_stores[1].get('2')?.value;
+			result = await test_stores[1].get('2');
 			assert.equal(result.name, name);
 			assert.equal(result.extraProperty, true);
 			break;
@@ -116,13 +116,13 @@ describe('Replication', () => {
 		let retries = 10;
 		do {
 			await new Promise((resolve) => setTimeout(resolve, 200));
-			let result = await test_stores[1].get('10')?.value;
+			let result = await test_stores[1].get('10');
 			if (!result) {
 				assert(--retries > 0);
 				continue;
 			}
 			assert.equal(result.name, name);
-			result = await test_stores[1].get('10')?.value;
+			result = await test_stores[1].get('10');
 			assert.equal(result.name, name);
 			assert.equal(await result.blob.text(), 'this is a test'.repeat(100));
 			break;
@@ -171,9 +171,9 @@ describe('Replication', () => {
 				context
 			);
 		});
-		let result = await test_stores[1].get('1')?.value;
+		let result = await test_stores[1].get('1');
 		assert.equal(result.name, name);
-		result = await test_stores[1].get('2')?.value;
+		result = await test_stores[1].get('2');
 		assert.equal(result.name, name);
 		assert.equal(result.extraProperty, true);
 	});
@@ -226,7 +226,7 @@ describe('Replication', () => {
 		await new Promise((resolve) => setTimeout(resolve, 500));
 		let result = await TestTable.get('3');
 		assert.equal(result.name, name2);
-		result = await test_stores[1].get('3')?.value;
+		result = await test_stores[1].get('3');
 		assert.equal(result.name, name2);
 	});
 	it('Can send operation API over WebSocket with replication protocol', async function () {
@@ -256,7 +256,7 @@ describe('Replication', () => {
 		});
 		await new Promise((resolve) => setTimeout(resolve, 500));
 		let node2NewTestTable = test_stores[1].openDB('NewTestTable/', new OpenDBIObject(false, true));
-		let result = await node2NewTestTable.get('4').value;
+		let result = await node2NewTestTable.get('4');
 		assert.equal(result.name, name);
 	});
 	it('read_log should be replicated', async function () {
@@ -294,7 +294,7 @@ describe('Replication', () => {
 			}
 		}
 		await new Promise((resolve) => setTimeout(resolve, 500));
-		let result = await test_stores[1].get('14')?.value;
+		let result = await test_stores[1].get('14');
 		assert.equal(result.name, name);
 	});
 
@@ -320,13 +320,13 @@ describe('Replication', () => {
 			let retries = 10;
 			do {
 				await new Promise((resolve) => setTimeout(resolve, 500));
-				let result = await test_stores[2].get('5')?.value;
+				let result = await test_stores[2].get('5');
 				if (!result) {
 					assert(--retries > 0);
 					continue;
 				}
 				assert.equal(result.name, name);
-				result = await test_stores[2].get('2')?.value;
+				result = await test_stores[2].get('2');
 				assert.equal(result.name, name);
 				assert.equal(result.extraProperty, true);
 				break;
@@ -353,8 +353,8 @@ describe('Replication', () => {
 					continue;
 				}
 				// verify that this is a small partial record, and invalidation entry
-				assert.equal(result.value.name, name);
-				assert(!result.value.id);
+				assert.equal(result.name, name);
+				assert(!result.id);
 				result = test_stores[2].getBinary('8');
 				if (!result) {
 					assert(--retries > 0);
@@ -372,7 +372,7 @@ describe('Replication', () => {
 			await new Promise((resolve) => {
 				child_processes[0].once('message', resolve);
 			});
-			let result = test_stores[1].get('8')?.value;
+			let result = test_stores[1].get('8');
 			assert.equal(result.name, name);
 		});
 		describe('id-based sharding by shard', function () {
@@ -510,14 +510,14 @@ describe('Replication', () => {
 						continue;
 					}
 					// verify that this is a full record
-					assert.equal(result.value.name, name);
-					assert.equal(result.value.id, '10');
+					assert.equal(result.name, name);
+					assert.equal(result.id, '10');
 					result = test_stores[0].get('10');
-					assert.equal(result.value.name, name);
-					assert(!result.value.id); // partial record, so this shouldn't there
+					assert.equal(result.name, name);
+					assert(!result.id); // partial record, so this shouldn't there
 					result = test_stores[2].get('10');
-					assert.equal(result.value.name, name);
-					assert(!result.value.id); // partial record, so this shouldn't there
+					assert.equal(result.name, name);
+					assert(!result.id); // partial record, so this shouldn't there
 					break;
 				} while (true);
 				// now verify that the record can be loaded on-demand here
@@ -539,14 +539,14 @@ describe('Replication', () => {
 						continue;
 					}
 					// verify that this is a full record
-					assert.equal(result.value.name, 'from source');
-					assert.equal(result.value.id, '11');
+					assert.equal(result.name, 'from source');
+					assert.equal(result.id, '11');
 					result = test_stores[0].get('11');
-					assert.equal(result.value.name, 'from source');
-					assert(!result.value.id); // partial record, so this shouldn't there
+					assert.equal(result.name, 'from source');
+					assert(!result.id); // partial record, so this shouldn't there
 					result = test_stores[1].get('11');
-					assert.equal(result.value.name, 'from source');
-					assert(!result.value.id); // partial record, so this shouldn't there
+					assert.equal(result.name, 'from source');
+					assert(!result.id); // partial record, so this shouldn't there
 					break;
 				} while (true);
 			});
@@ -576,13 +576,13 @@ describe('Replication', () => {
 			let retries = 10;
 			do {
 				await new Promise((resolve) => setTimeout(resolve, 100));
-				let result = test_stores[1].get('6')?.value;
+				let result = test_stores[1].get('6');
 				if (!result) {
 					assert(--retries > 0);
 					continue;
 				}
 				assert.equal(result.name, name);
-				result = test_stores[1].get('7')?.value;
+				result = test_stores[1].get('7');
 				assert.equal(result.name, name);
 				assert.equal(result.extraProperty, true);
 				break;
@@ -611,13 +611,13 @@ describe('Replication', () => {
 			let retries = 10;
 			do {
 				await new Promise((resolve) => setTimeout(resolve, 500));
-				let result = test_stores[2].get('16')?.value;
+				let result = test_stores[2].get('16');
 				if (!result) {
 					assert(--retries > 0);
 					continue;
 				}
 				assert.equal(result.name, name);
-				result = test_stores[2].get('17')?.value;
+				result = test_stores[2].get('17');
 				assert.equal(result.name, name);
 				assert.equal(result.extraProperty, true);
 				break;

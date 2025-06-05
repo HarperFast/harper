@@ -231,6 +231,7 @@ module.exports = {
 	// we can start using the RootConfigWatcher
 	start: updateLogSettings,
 	startOnMainThread: updateLogSettings,
+	errorToString,
 };
 function getLogFilePath() {
 	return logFilePath;
@@ -832,6 +833,17 @@ function getDefaultConfig() {
 		console.error('Error accessing default config file for logging');
 		console.error(err);
 	}
+}
+
+/**
+ * This converts an error to a human readable string. This follows the convention of standard console logging
+ * of printing the error as "ErrorClassName: message". Strangely, this is _not_ how Error.prototype.toString
+ * behaves, so this normalizes to match the bevahior of the console rather than default toString.
+ * @param error
+ * @return {string|string}
+ */
+function errorToString(error) {
+	return typeof error.message === 'string' ? `${error.constructor.name}: ${error.message}` : error.toString();
 }
 
 function setMainLogger(logger) {

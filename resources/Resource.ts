@@ -3,7 +3,7 @@ import { randomUUID } from 'crypto';
 import { DatabaseTransaction, Transaction } from './DatabaseTransaction.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { _assignPackageExport } from '../globals.js';
-import { ClientError } from '../utility/errors/hdbError.js';
+import { ClientError, AccessViolation } from '../utility/errors/hdbError.js';
 import { transaction } from './transaction.ts';
 import { parseQuery } from './search.ts';
 import { AsyncLocalStorage } from 'async_hooks';
@@ -81,7 +81,6 @@ export class Resource implements ResourceInterface {
 		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			if (Array.isArray(data) && resource.#isCollection && resource.constructor.loadAsInstance !== false) {
 				const results = [];
-				const authorize = request.authorize;
 				for (const element of data) {
 					const resourceClass = resource.constructor;
 					const id = element[resourceClass.primaryKey];
@@ -140,24 +139,34 @@ export class Resource implements ResourceInterface {
 	static create(idPrefix: Id, record: any, context: Context): Promise<Id>;
 	static create(record: any, context: Context): Promise<Id>;
 	static create(idPrefix: any, record: any, context?: Context): Promise<Id> {
-		let id;
-		if (idPrefix == null) id = record?.[this.primaryKey] ?? this.getNewId();
-		else if (Array.isArray(idPrefix) && typeof idPrefix[0] !== 'object')
-			id = record?.[this.primaryKey] ?? [...idPrefix, this.getNewId()];
-		else if (typeof idPrefix !== 'object') id = record?.[this.primaryKey] ?? [idPrefix, this.getNewId()];
-		else {
-			// two argument form, shift the arguments
-			id = idPrefix?.[this.primaryKey] ?? this.getNewId();
-			context = record || {};
-			record = idPrefix;
+		if (context) {
+			if (context.getContext) context = context.getContext();
+		} else {
+			// try to get the context from the async context if possible
+			context = contextStorage.getStore() ?? {};
 		}
-		if (!context) context = {};
-		return transaction(context, () => {
+
+		let id: Id;
+		if (this.loadAsInstance === false) {
+			id = idPrefix;
+		} else {
+			if (idPrefix == null) id = record?.[this.primaryKey] ?? this.getNewId();
+			else if (Array.isArray(idPrefix) && typeof idPrefix[0] !== 'object')
+				id = record?.[this.primaryKey] ?? [...idPrefix, this.getNewId()];
+			else if (typeof idPrefix !== 'object') id = record?.[this.primaryKey] ?? [idPrefix, this.getNewId()];
+			else {
+				// two argument form, shift the arguments
+				id = idPrefix?.[this.primaryKey] ?? this.getNewId();
+				context = record || {};
+				record = idPrefix;
+			}
+		}
+		return transaction(context, async () => {
 			const resource = new this(id, context);
-			const results = resource.update ? resource.update(record, true) : missingMethod(resource, 'update');
-			context.newLocation = id;
+			const results = (await resource.create) ? resource.create(id, record) : missingMethod(resource, 'create');
+			context.newLocation = id ?? results?.[this.primaryKey];
 			context.createdResource = true;
-			return results?.then ? results.then(() => resource) : resource;
+			return this.loadAsInstance === false ? results : resource;
 		});
 	}
 	static invalidate = transactional(
@@ -386,16 +395,16 @@ export class Resource implements ResourceInterface {
 	}
 
 	// Default permissions (super user only accesss):
-	allowRead(user): boolean | object {
+	allowRead(user: any, target: RequestTarget): boolean {
 		return user?.role.permission.super_user;
 	}
-	allowUpdate(user): boolean | object {
+	allowUpdate(user, updatedData: any, target: RequestTarget): boolean {
 		return user?.role.permission.super_user;
 	}
-	allowCreate(user): boolean | object {
+	allowCreate(user, newData: any, target: RequestTarget): boolean {
 		return user?.role.permission.super_user;
 	}
-	allowDelete(user): boolean | object {
+	allowDelete(user, target: RequestTarget): boolean {
 		return user?.role.permission.super_user;
 	}
 	/**
@@ -423,18 +432,6 @@ export function snakeCase(camelCase: string) {
 	);
 }
 
-class AccessError extends Error {
-	constructor(user) {
-		if (user) {
-			super('Unauthorized access to resource');
-			this.statusCode = 403;
-		} else {
-			super('Must login');
-			this.statusCode = 401;
-			// TODO: Optionally allow a Location header to redirect to
-		}
-	}
-}
 let idWasCollection;
 function pathToId(path, Resource) {
 	idWasCollection = false;
@@ -535,8 +532,11 @@ function transactional(action, options) {
 			if (typeof idOrQuery === 'object' && idOrQuery) {
 				// it is a query
 				query = idOrQuery;
-				id = idOrQuery.target ?? idOrQuery.url; // get the request target (check .url for back-compat), and try to parse
-				if (typeof id === 'string') {
+				id = idOrQuery instanceof URLSearchParams ? idOrQuery.toString() : idOrQuery.url; // get the request target (check .url for back-compat), and try to parse
+				if (idOrQuery.conditions) {
+					// it is already parsed, nothing more to do other than assign the id
+					id = idOrQuery.id;
+				} else if (typeof id === 'string') {
 					if (this.directURLMapping) {
 						id = id.slice(1); // remove the leading slash
 						query.id = id;
@@ -600,15 +600,19 @@ function transactional(action, options) {
 		}
 		if (isCollection) query.isCollection = true;
 		let resourceOptions;
-		if (!context) context = contextStorage.getStore(); // try to get the context from the async context if possible
+		if (!context) {
+			// try to get the context from the async context if possible
+			context = contextStorage.getStore() ?? {};
+		}
 		if (query.ensureLoaded != null || query.async || isCollection) {
 			resourceOptions = { ...options };
 			if (query.ensureLoaded != null) resourceOptions.ensureLoaded = query.ensureLoaded;
 			if (query.async) resourceOptions.async = query.async;
 			if (isCollection) resourceOptions.isCollection = true;
 		} else resourceOptions = options;
+		const loadAsInstance = this.loadAsInstance;
 		let runAction = authorizeActionOnResource;
-		if (this.loadAsInstance === false ? !this.explicitContext : this.explicitContext === false) {
+		if (loadAsInstance === false ? !this.explicitContext : this.explicitContext === false) {
 			// if we are using the newer resource API, we default to doing ALS context tracking, which is also
 			// necessary for accessing relationship properties on the direct frozen records
 			runAction = (resource) => contextStorage.run(context, () => authorizeActionOnResource(resource));
@@ -618,7 +622,6 @@ function transactional(action, options) {
 			const resource = this.getResource(id, context, resourceOptions);
 			return resource.then ? resource.then(runAction) : runAction(resource);
 		} else {
-			if (!context) context = {};
 			// start a transaction
 			return transaction(
 				context,
@@ -630,7 +633,7 @@ function transactional(action, options) {
 			);
 		}
 		function authorizeActionOnResource(resource: ResourceInterface) {
-			if (context.authorize) {
+			if (loadAsInstance !== false && context.authorize) {
 				// do permission checks (and don't require subsequent uses of this request/context to need to do it)
 				context.authorize = false;
 				const allowed =
@@ -646,14 +649,14 @@ function transactional(action, options) {
 				if (allowed?.then) {
 					return allowed.then((allowed) => {
 						if (!allowed) {
-							throw new AccessError(context.user);
+							throw new AccessViolation(context.user);
 						}
 						if (typeof data?.then === 'function') return data.then((data) => action(resource, query, context, data));
 						return action(resource, query, context, data);
 					});
 				}
 				if (!allowed) {
-					throw new AccessError(context.user);
+					throw new AccessViolation(context.user);
 				}
 			}
 			if (typeof data?.then === 'function') return data.then((data) => action(resource, query, context, data));

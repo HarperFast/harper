@@ -395,6 +395,7 @@ const hasOwnProperty = Object.prototype.hasOwnProperty;
  */
 export function updateAndFreeze(target, changes = target.getChanges?.()) {
 	let mergedUpdatedObject: any;
+	if (!target) return changes;
 	if (target.getRecord && target.constructor === Array && !Object.isFrozen(target)) {
 		// a tracked array, by default we can freeze the tracked array itself
 		mergedUpdatedObject = target;
@@ -416,7 +417,7 @@ export function updateAndFreeze(target, changes = target.getChanges?.()) {
 	// copy the changes into the merged updated object
 	for (const key in changes) {
 		// copy the source first so we have properties in the right order and can override them
-		if (!mergedUpdatedObject) mergedUpdatedObject = { ...target.getRecord?.() };
+		if (!mergedUpdatedObject) mergedUpdatedObject = { ...(target.getRecord ? target.getRecord() : target) };
 		let value = changes[key];
 		if (value && typeof value === 'object') {
 			if (value.__op__) {
@@ -429,15 +430,15 @@ export function updateAndFreeze(target, changes = target.getChanges?.()) {
 		mergedUpdatedObject[key] = value;
 	}
 	// now copy any properties on the instances itself to the merged updated object
-	if (!Array.isArray(target)) {
+	if (!Array.isArray(target) && target.getRecord) {
 		for (const key in target) {
 			if (hasOwnProperty.call(target, key)) {
-				if (!mergedUpdatedObject) mergedUpdatedObject = { ...target.getRecord?.() };
+				if (!mergedUpdatedObject) mergedUpdatedObject = { ...target.getRecord() };
 				mergedUpdatedObject[key] = target[key];
 			}
 		}
 	}
-	return mergedUpdatedObject ? Object.freeze(mergedUpdatedObject) : (target.getRecord?.() ?? target);
+	return mergedUpdatedObject ? Object.freeze(mergedUpdatedObject) : target.getRecord ? target.getRecord() : target;
 }
 /**
  * Determine if any changes have been made to this tracked object
