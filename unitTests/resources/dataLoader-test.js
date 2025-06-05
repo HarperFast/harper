@@ -12,7 +12,7 @@ const loggerStub = {
 	error: sinon.stub(),
 	debug: sinon.stub()
 };
-sinon.stub(harperLogger, 'forComponent').returns(loggerStub);
+const forComponentStub = sinon.stub(harperLogger, 'forComponent').returns(loggerStub);
 
 // Import the dataLoader module exports after logger is stubbed
 const {
@@ -28,6 +28,9 @@ const {
 	loadDataFile,
 	handleComponent
 } = require('../../resources/dataLoader.ts');
+
+// Restore the forComponent stub immediately after import to prevent it from affecting other modules
+forComponentStub.restore();
 
 // Helper function to create a mock record with getUpdatedTime method
 function createMockRecord(props) {
@@ -67,6 +70,11 @@ describe('Data Loader', function () {
 	
 	let mockTables;
 	let mockDatabases;
+	
+	// Re-stub the logger for this test suite since we restored it after import
+	before(function() {
+		sinon.stub(harperLogger, 'forComponent').returns(loggerStub);
+	});
 	
 	before(async function () {
 		// Create temp directory
