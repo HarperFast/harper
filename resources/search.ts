@@ -1,4 +1,4 @@
-import { ClientError, ServerError } from '../utility/errors/hdbError.js';
+import { ClientError, ServerError, Violation } from '../utility/errors/hdbError.js';
 import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.js';
 import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
 import { SKIP } from 'lmdb';
@@ -869,10 +869,12 @@ export function estimateCondition(table) {
 	}
 	return estimateConditionForTable;
 }
+class SyntaxViolation extends Violation {}
 const NEEDS_PARSER = /[()[\]|!<>.]|(=\w*=)/;
 const QUERY_PARSER = /([^?&|=<>!([{}\]),]*)([([{}\])|,&]|[=<>!]*)/g;
 const VALUE_PARSER = /([^&|=[\]{}]+)([[\]{}]|[&|=]*)/g;
 let lastIndex;
+let currentQuery;
 let queryString;
 /**
  * This is responsible for taking a query string (from a get()) and merging the parsed elements into a RequestTarget object.
@@ -886,21 +888,33 @@ export function parseQuery(queryToParse: string, query: RequestTarget) {
 	if (NEEDS_PARSER.test(queryToParse)) {
 		try {
 			if (query) query.conditions = [];
-			query = parseBlock(query ?? new Query(), '');
-			if (lastIndex !== queryString.length) throw new SyntaxError(`Unable to parse query, unexpected end of query`);
-			return query;
+			currentQuery = query ?? new Query();
+			parseBlock(currentQuery, '');
+			if (lastIndex !== queryString.length) recordError(`Unable to parse query, unexpected end of query`);
+			if (currentQuery.parseErrorMessage) {
+				currentQuery.parseError = new SyntaxViolation(query.parseErrorMessage);
+				if (!query) throw currentQuery.parseError;
+			}
+			return currentQuery;
 		} catch (error) {
+			error.statusCode = 400;
+			error.message = `Unable to parse query, ${error.message} at position ${lastIndex} in '${queryString}'`;
+			if (currentQuery.parseErrorMessage) error.message += ', ' + currentQuery.parseErrorMessage;
 			if (query) {
 				query.parseError = error;
 			} else {
-				error.statusCode = 400;
-				error.message = `Unable to parse query, ${error.message} at position ${lastIndex} in '${queryString}'`;
 				throw error;
 			}
 		}
 	} else {
 		return query ?? new URLSearchParams(queryToParse);
 	}
+}
+function recordError(message: string) {
+	const errorMessage = `${message} at position ${lastIndex}`;
+	currentQuery.parseErrorMessage = currentQuery.parseErrorMessage
+		? currentQuery.parseErrorMessage + ', ' + errorMessage
+		: errorMessage;
 }
 function parseBlock(query, expectedEnd) {
 	let parser = QUERY_PARSER;
@@ -912,7 +926,7 @@ function parseBlock(query, expectedEnd) {
 		lastIndex = parser.lastIndex;
 		const [, value, operator] = match;
 		if (expectingDelimiter) {
-			if (value) throw new SyntaxError(`expected operator, but encountered '${value}'`);
+			if (value) recordError(`expected operator, but encountered '${value}'`);
 			expectingDelimiter = false;
 			expectingValue = false;
 		} else expectingValue = true;
@@ -922,13 +936,13 @@ function parseBlock(query, expectedEnd) {
 				if (attribute != undefined) {
 					// a FIQL operator like =gt= (and don't allow just any string)
 					if (value.length <= 2) comparator = value;
-					else throw new SyntaxError(`invalid FIQL operator ${value}`);
+					else recordError(`invalid FIQL operator ${value}`);
 					valueDecoder = typedDecoding; // use typed/auto-cast decoding for FIQL operators
 				} else {
 					// standard equal comparison
 					valueDecoder = decodeURIComponent; // use strict decoding
 					comparator = 'equals'; // strict equals
-					if (!value) throw new SyntaxError(`attribute must be specified before equality comparator`);
+					if (!value) recordError(`attribute must be specified before equality comparator`);
 					attribute = decodeProperty(value);
 				}
 				break;
@@ -944,7 +958,7 @@ function parseBlock(query, expectedEnd) {
 			case '!==':
 				comparator = SYMBOL_OPERATORS[operator];
 				valueDecoder = COERCIBLE_OPERATORS[comparator] ? typedDecoding : decodeURIComponent;
-				if (!value) throw new SyntaxError(`attribute must be specified before comparator ${operator}`);
+				if (!value) recordError(`attribute must be specified before comparator ${operator}`);
 				attribute = decodeProperty(value);
 				break;
 			case '&=': // for chaining conditions on to the same attribute
@@ -956,15 +970,13 @@ function parseBlock(query, expectedEnd) {
 				if (attribute == null) {
 					if (attribute === undefined) {
 						if (expectedEnd)
-							throw new SyntaxError(
+							recordError(
 								`expected '${expectedEnd}', but encountered ${operator[0] ? "'" + operator[0] + "'" : 'end of string'}}`
 							);
-						throw new SyntaxError(
-							`no comparison specified before ${operator ? "'" + operator + "'" : 'end of string'}`
-						);
+						recordError(`no comparison specified before ${operator ? "'" + operator + "'" : 'end of string'}`);
 					}
 				} else {
-					if (!query.conditions) throw new SyntaxError('conditions/comparisons are not allowed in a property list');
+					if (!query.conditions) recordError('conditions/comparisons are not allowed in a property list');
 					const condition = {
 						comparator,
 						attribute: attribute || null,
@@ -999,7 +1011,7 @@ function parseBlock(query, expectedEnd) {
 			case ',':
 				if (query.conditions) {
 					// TODO: Add support for a list of values
-					throw new SyntaxError('conditions/comparisons are not allowed in a property list');
+					recordError('conditions/comparisons are not allowed in a property list');
 				} else {
 					query.push(decodeProperty(value));
 				}
@@ -1023,7 +1035,7 @@ function parseBlock(query, expectedEnd) {
 								query.limit = args[1] - query.offset;
 								break;
 							default:
-								throw new SyntaxError('limit must have 1 or 2 arguments');
+								recordError('limit must have 1 or 2 arguments');
 						}
 						break;
 					case 'select':
@@ -1035,12 +1047,12 @@ function parseBlock(query, expectedEnd) {
 						else query.select = args;
 						break;
 					case 'group-by':
-						throw new SyntaxError('group by is not implemented yet');
+						recordError('group by is not implemented yet');
 					case 'sort':
 						query.sort = toSortObject(args);
 						break;
 					default:
-						throw new SyntaxError(`unknown query function call ${value}`);
+						recordError(`unknown query function call ${value}`);
 				}
 				if (queryString[lastIndex] === ',') {
 					parser.lastIndex = ++lastIndex;
@@ -1048,8 +1060,8 @@ function parseBlock(query, expectedEnd) {
 				attribute = null;
 				break;
 			case '{':
-				if (query.conditions) throw new SyntaxError('property sets are not allowed in a queries');
-				if (!value) throw new SyntaxError('property sets must have a defined parent property name');
+				if (query.conditions) recordError('property sets are not allowed in a queries');
+				if (!value) recordError('property sets must have a defined parent property name');
 				// this is interpreted as property{subProperty}
 				QUERY_PARSER.lastIndex = lastIndex;
 				entry = parseBlock([], '}');
@@ -1104,16 +1116,16 @@ function parseBlock(query, expectedEnd) {
 							assignOperator(query, lastBinaryOperator);
 							query.conditions.push(condition);
 						} else if (value) {
-							throw new SyntaxError('no attribute or comparison specified');
+							recordError('no attribute or comparison specified');
 						}
 					} else if (value || (query.length > 0 && expectingValue)) {
 						query.push(decodeProperty(value));
 					}
 					return query;
-				} else if (expectedEnd) throw new SyntaxError(`expected '${expectedEnd}', but encountered '${operator[0]}'`);
-				else throw new SyntaxError(`unexpected token '${operator[0]}'`);
+				} else if (expectedEnd) recordError(`expected '${expectedEnd}', but encountered '${operator[0]}'`);
+				else recordError(`unexpected token '${operator[0]}'`);
 			default:
-				throw new SyntaxError(`unexpected operator '${operator}'`);
+				recordError(`unexpected operator '${operator}'`);
 		}
 		if (expectedEnd !== ')') {
 			parser = attribute ? VALUE_PARSER : QUERY_PARSER;
@@ -1121,13 +1133,12 @@ function parseBlock(query, expectedEnd) {
 		}
 		if (lastIndex === queryString.length) return query;
 	}
-	if (expectedEnd) throw new SyntaxError(`expected '${expectedEnd}', but encountered end of string`);
+	if (expectedEnd) recordError(`expected '${expectedEnd}', but encountered end of string`);
 }
 function assignOperator(query, lastBinaryOperator) {
 	if (query.conditions.length > 0) {
 		if (query.operator) {
-			if (query.operator !== lastBinaryOperator)
-				throw new SyntaxError('Can not mix operators within a condition grouping');
+			if (query.operator !== lastBinaryOperator) recordError('Can not mix operators within a condition grouping');
 		} else query.operator = lastBinaryOperator;
 	}
 }
@@ -1194,7 +1205,7 @@ function toSortEntry(sort) {
 				return { attribute: sort, descending: false };
 		}
 	}
-	throw new SyntaxError(`Unknown sort type ${sort}`);
+	recordError(`Unknown sort type ${sort}`);
 }
 
 class Query {
