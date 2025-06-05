@@ -25,6 +25,7 @@ import { setPortServerMap, SERVERS } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
 import { WebSocketServer } from 'ws';
 
+const { errorToString } = harperLogger;
 server.http = httpServer;
 server.request = onRequest;
 server.ws = onWebSocket;
@@ -386,7 +387,7 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 				const headers = error.headers;
 				const status = error.statusCode || 500;
 				nodeResponse.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
-				nodeResponse.end(error.toString());
+				nodeResponse.end(errorToString(error));
 				logRequest(nodeRequest, status, requestId, performance.now() - startTime);
 				// a status code is interpreted as an expected error, so just info or warn, otherwise log as error
 				if (error.statusCode) {

@@ -16,6 +16,7 @@ import { asyncSetTimeout } from '../../utility/common_utils.js';
 import { transaction } from '../../resources/transaction.ts';
 import type { Condition, Query, Context, Select, Id, DirectCondition } from '../../resources/ResourceInterface.ts';
 import { collapseData } from '../../resources/tracked.ts';
+import { errorToString } from '../../utility/logging/harper_logger.js';
 
 const { HDB_ERROR_MSGS } = hdbErrors;
 const DEFAULT_DATABASE = 'data';
@@ -232,10 +233,7 @@ export class ResourceBridge extends LMDBBridge {
 			for (const record of upsertObj.records) {
 				const id = record[Table.primaryKey];
 				let existingRecord = id != undefined && (await Table.get(id, context));
-				if (
-					(upsertObj.requires_existing && !existingRecord) ||
-					(upsertObj.requires_no_existing && existingRecord)
-				) {
+				if ((upsertObj.requires_existing && !existingRecord) || (upsertObj.requires_no_existing && existingRecord)) {
 					skipped.push(record[Table.primaryKey]);
 					continue;
 				}
@@ -560,7 +558,7 @@ function getRecords(searchObject, returnKeyValue?) {
 							record = record && collapseData(record);
 						} catch (error) {
 							record = {
-								message: error.toString(),
+								message: errorToString(error),
 							};
 						}
 						if (returnKeyValue)

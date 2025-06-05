@@ -31,7 +31,7 @@ import { HAS_STRUCTURE_UPDATE, lastMetadata, METADATA } from '../../resources/Re
 import { decode, encode, Packr } from 'msgpackr';
 import { WebSocket } from 'ws';
 import { threadId } from 'worker_threads';
-import { forComponent } from '../../utility/logging/harper_logger.js';
+import { forComponent, errorToString } from '../../utility/logging/harper_logger.js';
 import { disconnectedFromNode, connectedToNode, ensureNode } from './subscriptionManager.ts';
 import { EventEmitter } from 'events';
 import { createTLSSelector } from '../../security/keys.js';
@@ -489,7 +489,7 @@ export function replicateOverWS(ws, options, authorization) {
 											OPERATION_RESPONSE,
 											{
 												requestId: data.requestId,
-												error: error instanceof Error ? error.toString() : error,
+												error: errorToString(error),
 											},
 										])
 									);
@@ -501,7 +501,7 @@ export function replicateOverWS(ws, options, authorization) {
 									OPERATION_RESPONSE,
 									{
 										requestId: data.requestId,
-										error: error instanceof Error ? error.toString() : error,
+										error: errorToString(error),
 									},
 								])
 							);
@@ -1392,7 +1392,7 @@ export function replicateOverWS(ws, options, authorization) {
 					{
 						fileId: id,
 						finished: true,
-						error: error.toString(),
+						error: errorToString(error),
 					},
 					Buffer.alloc(0),
 				])

@@ -231,6 +231,7 @@ module.exports = {
 	// we can start using the RootConfigWatcher
 	start: updateLogSettings,
 	startOnMainThread: updateLogSettings,
+	errorToString,
 };
 function getLogFilePath() {
 	return logFilePath;
@@ -832,6 +833,10 @@ function getDefaultConfig() {
 		console.error('Error accessing default config file for logging');
 		console.error(err);
 	}
+}
+
+function errorToString(error) {
+	return error.message ? `${error.constructor.name}: ${error.message}` : error.toString();
 }
 
 function setMainLogger(logger) {
