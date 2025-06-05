@@ -9,49 +9,49 @@ import { FilesOption } from './deriveGlobOptions.js';
 import { deriveURLPath } from './deriveURLPath.js';
 import { isMatch } from 'micromatch';
 
-interface BaseEntry {
+export interface BaseEntry {
 	stats?: Stats;
 	urlPath: string;
 	absolutePath: string;
 }
 
-interface FileEntry extends BaseEntry {
+export interface FileEntry extends BaseEntry {
 	contents: Buffer;
 }
 
-interface EntryEvent extends BaseEntry {
+export interface EntryEvent extends BaseEntry {
 	eventType: string;
 	entryType: string;
 }
 
-interface AddFileEvent extends EntryEvent, FileEntry {
+export interface AddFileEvent extends EntryEvent, FileEntry {
 	eventType: 'add';
 	entryType: 'file';
 }
 
-interface ChangeFileEvent extends EntryEvent, FileEntry {
+export interface ChangeFileEvent extends EntryEvent, FileEntry {
 	eventType: 'change';
 	entryType: 'file';
 }
 
-interface UnlinkFileEvent extends EntryEvent {
+export interface UnlinkFileEvent extends EntryEvent {
 	eventType: 'unlink';
 	entryType: 'file';
 }
 
-type FileEntryEvent = AddFileEvent | ChangeFileEvent | UnlinkFileEvent;
+export type FileEntryEvent = AddFileEvent | ChangeFileEvent | UnlinkFileEvent;
 
-interface AddDirectoryEvent extends EntryEvent {
+export interface AddDirectoryEvent extends EntryEvent {
 	eventType: 'addDir';
 	entryType: 'directory';
 }
 
-interface UnlinkDirectoryEvent extends EntryEvent {
+export interface UnlinkDirectoryEvent extends EntryEvent {
 	eventType: 'unlinkDir';
 	entryType: 'directory';
 }
 
-type DirectoryEntryEvent = AddDirectoryEvent | UnlinkDirectoryEvent;
+export type DirectoryEntryEvent = AddDirectoryEvent | UnlinkDirectoryEvent;
 
 export type onEntryEventHandler = (entry: FileEntryEvent | DirectoryEntryEvent) => void;
 
