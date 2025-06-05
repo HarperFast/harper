@@ -1034,7 +1034,9 @@ export function makeTable(options) {
 									if (relatedTable) {
 										// if there is a related table, we need to ensure the user has permission to read from that table and that attributes are properly restricted
 										if (!property.name) property = { name: property };
-										if (!relatedTable.prototype.allowRead.call(null, user, target)) return false;
+										if (!property.checkPermission && target.checkPermission)
+											property.checkPermission = target.checkPermission;
+										if (!relatedTable.prototype.allowRead.call(null, user, property)) return false;
 										if (!property.select) return property.name; // no select was applied, just return the name
 									}
 									return property;

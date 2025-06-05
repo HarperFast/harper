@@ -139,33 +139,34 @@ export class Resource implements ResourceInterface {
 	static create(idPrefix: Id, record: any, context: Context): Promise<Id>;
 	static create(record: any, context: Context): Promise<Id>;
 	static create(idPrefix: any, record: any, context?: Context): Promise<Id> {
+		if (context) {
+			if (context.getContext) context = context.getContext();
+		} else {
+			// try to get the context from the async context if possible
+			context = contextStorage.getStore() ?? {};
+		}
+
+		let id: Id;
 		if (this.loadAsInstance === false) {
-			return transaction(context, async () => {
-				const resource = new this(idPrefix, context);
-				const record = await resource.create(idPrefix, record, context);
-				context.newLocation = record?.[this.primaryKey];
-				context.createdResource = true;
-				return record;
-			});
+			id = idPrefix;
+		} else {
+			if (idPrefix == null) id = record?.[this.primaryKey] ?? this.getNewId();
+			else if (Array.isArray(idPrefix) && typeof idPrefix[0] !== 'object')
+				id = record?.[this.primaryKey] ?? [...idPrefix, this.getNewId()];
+			else if (typeof idPrefix !== 'object') id = record?.[this.primaryKey] ?? [idPrefix, this.getNewId()];
+			else {
+				// two argument form, shift the arguments
+				id = idPrefix?.[this.primaryKey] ?? this.getNewId();
+				context = record || {};
+				record = idPrefix;
+			}
 		}
-		let id;
-		if (idPrefix == null) id = record?.[this.primaryKey] ?? this.getNewId();
-		else if (Array.isArray(idPrefix) && typeof idPrefix[0] !== 'object')
-			id = record?.[this.primaryKey] ?? [...idPrefix, this.getNewId()];
-		else if (typeof idPrefix !== 'object') id = record?.[this.primaryKey] ?? [idPrefix, this.getNewId()];
-		else {
-			// two argument form, shift the arguments
-			id = idPrefix?.[this.primaryKey] ?? this.getNewId();
-			context = record || {};
-			record = idPrefix;
-		}
-		if (!context) context = {};
-		return transaction(context, () => {
+		return transaction(context, async () => {
 			const resource = new this(id, context);
-			const results = resource.update ? resource.update(record, true) : missingMethod(resource, 'update');
-			context.newLocation = id;
+			const results = (await resource.create) ? resource.create(id, record) : missingMethod(resource, 'create');
+			context.newLocation = id ?? results?.[this.primaryKey];
 			context.createdResource = true;
-			return results?.then ? results.then(() => resource) : resource;
+			return this.loadAsInstance === false ? results : resource;
 		});
 	}
 	static invalidate = transactional(
