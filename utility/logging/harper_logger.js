@@ -835,8 +835,15 @@ function getDefaultConfig() {
 	}
 }
 
+/**
+ * This converts an error to a human readable string. This follows the convention of standard console logging
+ * of printing the error as "ErrorClassName: message". Strangely, this is _not_ how Error.prototype.toString
+ * behaves, so this normalizes to match the bevahior of the console rather than default toString.
+ * @param error
+ * @return {string|string}
+ */
 function errorToString(error) {
-	return error.message ? `${error.constructor.name}: ${error.message}` : error.toString();
+	return typeof error.message === 'string' ? `${error.constructor.name}: ${error.message}` : error.toString();
 }
 
 function setMainLogger(logger) {
