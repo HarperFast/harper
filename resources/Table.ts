@@ -978,7 +978,7 @@ export function makeTable(options) {
 				let allowed = true;
 				if (target.checkPermission) {
 					// requesting authorization verification
-					allowed = this.allowRead(context.user, target, context);
+					allowed = this.allowRead(context.user, target);
 				}
 				return when(allowed, (allowed: boolean) => {
 					if (!allowed) {
@@ -1034,7 +1034,7 @@ export function makeTable(options) {
 									if (relatedTable) {
 										// if there is a related table, we need to ensure the user has permission to read from that table and that attributes are properly restricted
 										if (!property.name) property = { name: property };
-										if (!relatedTable.prototype.allowRead.call(null, user, property)) return false;
+										if (!relatedTable.prototype.allowRead.call(null, user, target)) return false;
 										if (!property.select) return property.name; // no select was applied, just return the name
 									}
 									return property;
@@ -1818,7 +1818,7 @@ export function makeTable(options) {
 			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
 			if (target.checkPermission) {
 				// requesting authorization verification
-				const allowed = this.allowRead(context.user, target, context);
+				const allowed = this.allowRead(context.user, target);
 				if (!allowed) {
 					throw new AccessViolation(context.user);
 				}
