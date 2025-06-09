@@ -13,11 +13,11 @@ export function deriveURLPath(component: Component | ComponentV1, path: string, 
 	}
 
 	for (let base of component.patternBases) {
-		if (base === '') continue;
-
 		if (base.startsWith('./')) {
 			base = base.slice(2); // remove leading './'
 		}
+
+		if (base === '') continue;
 
 		// files
 		// path, base -> result
