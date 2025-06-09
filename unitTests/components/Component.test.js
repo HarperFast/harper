@@ -27,6 +27,26 @@ describe('Component', () => {
 		return { source, onlyFiles, onlyDirectories, ignore };
 	}
 
+	it('should handle exact file pattern', () => {
+		testComponent({
+			files: 'dir/file',
+		}, {
+			baseURLPath: '/',
+			globOptions: getExpectedGlobOptions(['dir/file']),
+			patternBases: ['dir/file'],
+			commonPatternBase: 'dir/file',
+		});
+
+		testComponent({
+			files: './dir/file',
+		}, {
+			baseURLPath: '/',
+			globOptions: getExpectedGlobOptions(['./dir/file']),
+			patternBases: ['./dir/file'],
+			commonPatternBase: './dir/file',
+		});
+	});
+
 	describe('with singular pattern', () => {
 		const patternBases = [''];
 		const commonPatternBase = '';
