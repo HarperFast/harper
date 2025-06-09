@@ -127,10 +127,7 @@ export class ComponentV1 {
 
 			return pattern;
 		});
-		this.patternBases = this.globOptions.source.map((pattern) => {
-			const segments = scan(pattern);
-			return segments.prefix + segments.base
-		});
+		this.patternBases = this.globOptions.source.map((pattern) => scan(pattern).base);
 		this.baseURLPath = resolveBaseURLPath(this.name, this.config.urlPath);
 	}
 }

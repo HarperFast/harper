@@ -8,8 +8,17 @@ function pathStartsWithBase(base: string, path: string) {
 }
 
 export function deriveURLPath(component: Component | ComponentV1, path: string, type: 'file' | 'directory'): string {
-	for (const base of component.patternBases) {
+	if (path.startsWith('./')) {
+		path = path.slice(2); // remove leading './'
+	}
+
+	for (let base of component.patternBases) {
 		if (base === '') continue;
+
+		if (base.startsWith('./')) {
+			base = base.slice(2); // remove leading './'
+		}
+
 		// files
 		// path, base -> result
 		// index.html, index.html -> index.html
