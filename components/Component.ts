@@ -47,7 +47,10 @@ export class Component {
 			return pattern;
 		});
 
-		this.patternBases = this.globOptions.source.map((pattern) => scan(pattern).base);
+		this.patternBases = this.globOptions.source.map((pattern) => {
+			const segments = scan(pattern);
+			return segments.prefix + segments.base
+		});
 		this.commonPatternBase = deriveCommonPatternBase(this.patternBases);
 	}
 }
