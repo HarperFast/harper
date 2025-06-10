@@ -8,30 +8,12 @@ updates:
       day: 'monday'
       time: '09:00' # UTC
     open-pull-requests-limit: 10
-    # Group updates to reduce PR noise. Major version updates will fall through to individual PRs.
+    # This configuration groups dependency updates by package ecosystem to reduce the number of pull requests
+    # created by Dependabot. Only minor and patch version updates are grouped together; major version updates
+    # will create individual PRs for easier review due to their potential for breaking changes.
+    # 
+    # Documentation: https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference#groups--
     groups:
-      # Group testing dependencies
-      test-dependencies:
-        patterns:
-          - "mocha*"
-          - "chai*"
-          - "sinon*"
-          - "nyc"
-          - "supertest"
-          - "mock*"
-        update-types:
-          - "minor"
-          - "patch"
-      # Group linting and formatting tools
-      lint-and-format:
-        patterns:
-          - "eslint*"
-          - "prettier*"
-          - "@typescript-eslint/*"
-          - "typescript"
-        update-types:
-          - "minor"
-          - "patch"
       # Group AWS SDK updates
       aws-dependencies:
         patterns:
