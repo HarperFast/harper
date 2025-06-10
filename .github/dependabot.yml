@@ -73,6 +73,12 @@ updates:
           - "*"
         update-types:
           - "minor"
+      # Group major turf updates
+      turf-dependencies:
+        patterns:
+          - "@turf/*"
+        update-types:
+          - "major"
       # What falls through should be individual major updates. Scoped major updates might be better grouped. TBD.
     # Add labels to PRs
     labels:
