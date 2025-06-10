@@ -133,7 +133,7 @@
 		"node-stream-zip": "1.15.0",
 		"node-unix-socket": "0.2.7",
 		"normalize-path": "^3.0.0",
-		"ora": "5.4.1",
+		"ora": "8.2.0",
 		"ordered-binary": "1.5.3",
 		"papaparse": "5.5.3",
 		"passport": "0.7.0",
