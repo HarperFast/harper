@@ -124,7 +124,7 @@ jobs:
           do 
             echo "Starting work on: $public_dns_name"
             ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
-                "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh && /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh"
+                "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh && HDB_ADMIN_USERNAME='${HDB_ADMIN_USERNAME}' HDB_ADMIN_PASSWORD='${HDB_ADMIN_PASSWORD}' S3_KEY='${S3_KEY}' S3_SECRET='${S3_SECRET}' /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh"
             echo "Ending work on: $public_dns_name"
           done
   downloadLogs:
