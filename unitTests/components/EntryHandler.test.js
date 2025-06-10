@@ -312,6 +312,32 @@ describe('EntryHandler', () => {
 		assert.equal(entryHandler.listenerCount('addDir'), 0, 'addDir event listener should be removed');
 	});
 
+	it('should resolve the correct urlPath for files', async () => {
+		const entryHandler = new EntryHandler(this.name, this.directory, 'foo/d');
+
+		await entryHandler.ready();
+
+		const addHandlerSpy = spy();
+		entryHandler.on('add', addHandlerSpy);
+
+		await waitFor(() => addHandlerSpy.callCount === 1);
+
+		assert.equal(addHandlerSpy.getCall(0).args[0].urlPath, '/d', 'urlPath resolution should account for similarities');
+	});
+
+	it('should resolve the correct urlPath for files with `./`', async () => {
+		const entryHandler = new EntryHandler(this.name, this.directory, './foo/d');
+
+		await entryHandler.ready();
+
+		const addHandlerSpy = spy();
+		entryHandler.on('add', addHandlerSpy);
+
+		await waitFor(() => addHandlerSpy.callCount === 1);
+
+		assert.equal(addHandlerSpy.getCall(0).args[0].urlPath, '/d', 'urlPath resolution should account for similarities');
+	});
+
 	it('should avoid matching within an excluded base', async () => {
 		const { directory } = createFixture([
 			['bad', [['web', ['a', 'b', 'c']]]],

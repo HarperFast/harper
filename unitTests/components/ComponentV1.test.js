@@ -720,6 +720,41 @@ describe('ComponentV1', () => {
 			]);
 		});
 
+		it('should resolve a specific file with `./`', async () => {
+			const handleDirectoryFake = fake(),
+				handleFileFake = fake();
+
+			const resources = new Resources();
+
+			const component = new ComponentV1({
+				config: { files: './web/e' },
+				name: componentName,
+				directory: componentDirPath,
+				module: { handleDirectory: handleDirectoryFake, handleFile: handleFileFake },
+				resources,
+			});
+
+			const hasFunctionality = await processResourceExtensionComponent(component);
+
+			assert.ok(hasFunctionality);
+
+			assert.equal(handleFileFake.callCount, 1);
+			assert.deepEqual(handleFileFake.getCall(0).args, [
+				Buffer.from('e'),
+				`/e`,
+				join(componentDirPath, 'web', 'e'),
+				resources,
+			]);
+
+			assert.equal(handleDirectoryFake.callCount, 1);
+			assert.deepEqual(handleDirectoryFake.getCall(0).args, [
+				'/',
+				// The trailing slash is a backwards compat thing related to the `rootPath` handling
+				join(componentDirPath, 'web') + '/',
+				resources,
+			]);
+		});
+
 		it('should resolve a specific directory', async () => {
 			const handleDirectoryFake = fake(),
 				handleFileFake = fake();
