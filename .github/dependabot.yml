@@ -8,20 +8,8 @@ updates:
       day: 'monday'
       time: '09:00' # UTC
     open-pull-requests-limit: 10
-    # Group updates to reduce PR noise
+    # Group updates to reduce PR noise. Major version updates will fall through to individual PRs.
     groups:
-      # Group all patch updates
-      patch:
-        patterns:
-          - "*"
-        update-types:
-          - "patch"
-      # Group all minor updates
-      minor:
-        patterns:
-          - "*"
-        update-types:
-          - "minor"
       # Group testing dependencies
       test-dependencies:
         patterns:
@@ -31,6 +19,9 @@ updates:
           - "nyc"
           - "supertest"
           - "mock*"
+        update-types:
+          - "minor"
+          - "patch"
       # Group linting and formatting tools
       lint-and-format:
         patterns:
@@ -38,10 +29,51 @@ updates:
           - "prettier*"
           - "@typescript-eslint/*"
           - "typescript"
+        update-types:
+          - "minor"
+          - "patch"
       # Group AWS SDK updates
       aws-dependencies:
         patterns:
           - "@aws-sdk/*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group turf updates
+      turf-dependencies:
+        patterns:
+          - "@turf/*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group fastify updates
+      fastify-dependencies:
+        patterns:
+          - "@fastify/*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group all other patch updates
+      patch:
+        patterns:
+          - "*"
+        update-types:
+          - "patch"
+      # Group all production minor updates
+      minor-production:
+        dependency-type: "production"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+      # Group all development minor updates
+      minor-development:
+        dependency-type: "development"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+      # What falls through should be individual major updates. Scoped major updates might be better grouped. TBD.
     # Add labels to PRs
     labels:
       - "dependencies"
