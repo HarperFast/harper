@@ -641,7 +641,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					}
 				} else subObject = record[firstAttributeName];
 				return { subObject, subEntry };
-			}
+			};
 			const recordFilter = (record, entry) => {
 				if (resolver) {
 					if (nextFilter.idFilter) {
@@ -670,15 +670,16 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				const { subObject, subEntry } = getSubObject(record, entry);
 				if (!subObject) return false;
 				if (!Array.isArray(subObject)) return nextFilter(subObject, subEntry);
-				let filterMap = filtered?.[firstAttributeName];
+				const filterMap = filtered?.[firstAttributeName];
 				if (!filterMap && filtered) {
+					// establish a filtering that can preserve this filter for the select of these sub objects
 					filtered[firstAttributeName] = {
 						fromRecord(record) {
 							const value = getSubObject(record).subObject;
-							if (Array.isArray(value)) return value.filter(nextFilter).map(value => value[relatedTable.primaryKey]);
+							if (Array.isArray(value)) return value.filter(nextFilter).map((value) => value[relatedTable.primaryKey]);
 							return value;
-						}
-					}
+						},
+					};
 				}
 				return subObject.some(nextFilter);
 			};
@@ -777,12 +778,16 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					!matches &&
 					!recordFilter.idFilter &&
 					// miss rate x estimated remaining to filter > 10% of estimated incoming
-					(++misses / filteredSoFar) * (estimatedIncomingCount - filteredSoFar) > thresholdRemainingMisses
+					(++misses / filteredSoFar) * estimatedIncomingCount > thresholdRemainingMisses
 				) {
 					// if we have missed too many times, we need to switch to indexed retrieval
-					const matchingIds = searchByIndex(searchCondition, context.transaction.getReadTxn(), false, Table).map(
-						recordFilter.to ? (id => Table.primaryStore.get(id)[recordFilter.to] : flattenKey
-					);
+					const searchResults = searchByIndex(searchCondition, context.transaction.getReadTxn(), false, Table);
+					let matchingIds: Iterable<Id>;
+					if (recordFilter.to) {
+						matchingIds = searchResults.flatMap((id) => Table.primaryStore.get(id)[recordFilter.to]);
+					} else {
+						matchingIds = searchResults.map(flattenKey);
+					}
 					// now generate a hash set that we can efficiently check primary keys against
 					// TODO: Do this asynchronously
 					const idSet = new Set(matchingIds);
