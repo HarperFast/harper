@@ -622,11 +622,12 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				return;
 			}
 			const resolver = Table.propertyResolvers?.[firstAttributeName];
+			if (resolver.to) nextFilter.to = resolver.to;
 			let subIdFilter;
 			const recordFilter = (record, entry) => {
 				let subObject, subEntry;
 				if (resolver) {
-					if (resolver.from && nextFilter.idFilter) {
+					if (nextFilter.idFilter) {
 						// if we are filtering by id, we can use the idFilter to avoid loading the record
 						if (!subIdFilter) {
 							if (nextFilter.idFilter.idSet?.size === 1) {
@@ -635,18 +636,20 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 								// TODO: Eventually we should be able to handle multiple ids by creating a union
 								for (const id of nextFilter.idFilter.idSet) {
 									searchCondition = {
-										attribute: resolver.from,
+										attribute: resolver.from ?? Table.primaryKey,
 										value: id,
 									};
 								}
 								// indicate that we can use an index for this. also we indicate that we allow object matching to allow array ids to directly tested
-								subIdFilter = attributeComparator(resolver.from, nextFilter.idFilter, true, true);
-							} else subIdFilter = attributeComparator(resolver.from, nextFilter.idFilter, false, true);
+								subIdFilter = attributeComparator(resolver.from ?? Table.primaryKey, nextFilter.idFilter, true, true);
+							} else
+								subIdFilter = attributeComparator(resolver.from ?? Table.primaryKey, nextFilter.idFilter, false, true);
 						}
 						const matches = subIdFilter(record);
 						if (subIdFilter.idFilter) recordFilter.idFilter = subIdFilter.idFilter;
 						return matches;
 					}
+
 					if (resolver.returnDirect) {
 						subObject = resolver(record, context, entry);
 						subEntry = lastMetadata;
@@ -763,7 +766,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				) {
 					// if we have missed too many times, we need to switch to indexed retrieval
 					const matchingIds = searchByIndex(searchCondition, context.transaction.getReadTxn(), false, Table).map(
-						flattenKey
+						recordFilter.to ? (id => Table.primaryStore.get(id)[recordFilter.to] : flattenKey
 					);
 					// now generate a hash set that we can efficiently check primary keys against
 					// TODO: Do this asynchronously
