@@ -46,6 +46,8 @@ jobs:
       - name: Run Cluster Test C on Instances
         env:
           CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+          HDB_ADMIN_USERNAME: ${{ secrets.HDB_ADMIN_USERNAME }}
+          HDB_ADMIN_PASSWORD: ${{ secrets.HDB_ADMIN_PASSWORD }}
         run: |
           #!/bin/bash
 
@@ -61,7 +63,7 @@ jobs:
           echo "Starting work on: $public_dns_name"
 
           ssh -i private_key -o ServerAliveInterval=180 -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
-            "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/cluster-test-c.sh && /home/ubuntu/harperdb/test/ci-tests/cluster-test-c.sh ${private_ips[@]} ${public_dns_names[@]}"
+            "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/cluster-test-c.sh && HDB_ADMIN_USERNAME='${HDB_ADMIN_USERNAME}' HDB_ADMIN_PASSWORD='${HDB_ADMIN_PASSWORD}' /home/ubuntu/harperdb/test/ci-tests/cluster-test-c.sh ${private_ips[@]} ${public_dns_names[@]}"
           echo "Ending work on: $public_dns_name"
   downloadLogs:
     if: always()

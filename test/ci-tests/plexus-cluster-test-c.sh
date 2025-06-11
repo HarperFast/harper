@@ -25,4 +25,10 @@ sed -in "s/TEST_C_NODE2_NAME/node-2/" clusterTests/clusterTestCPlexus/cluster_te
 sed -in "s/TEST_C_NODE3_NAME/node-3/" clusterTests/clusterTestCPlexus/cluster_test_c_env.json
 sed -in "s/TEST_C_NODE4_NAME/node-4/" clusterTests/clusterTestCPlexus/cluster_test_c_env.json
 
+# Inject credentials from environment variables
+sed -i "s/\"value\": \"PLACEHOLDER_USERNAME\"/\"value\": \"${HDB_ADMIN_USERNAME}\"/" clusterTests/clusterTestCPlexus/cluster_test_c_env.json
+sed -i "s/\"value\": \"PLACEHOLDER_PASSWORD\"/\"value\": \"${HDB_ADMIN_PASSWORD}\"/" clusterTests/clusterTestCPlexus/cluster_test_c_env.json
+sed -i "s/\"value\": \"PLACEHOLDER_S3_KEY\"/\"value\": \"${S3_KEY}\"/" clusterTests/clusterTestCPlexus/cluster_test_c_env.json
+sed -i "s/\"value\": \"PLACEHOLDER_S3_SECRET\"/\"value\": \"${S3_SECRET}\"/" clusterTests/clusterTestCPlexus/cluster_test_c_env.json
+
 newman run clusterTests/clusterTestCPlexus/cluster_test_c.json -e clusterTests/clusterTestCPlexus/cluster_test_c_env.json --reporters cli,html,htmlextra --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html  --delay-request 1500 --insecure --reporter-cli-show-timestamps

@@ -25,6 +25,10 @@ sed -in "s/ClstrTestBNode2/${private_dns_names[1]%%.*}/" clusterTests/clusterTes
 sed -in "s/ClstrTestBNode3/${private_dns_names[2]%%.*}/" clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json
 sed -in "s/ClstrTestBNode4/${private_dns_names[3]%%.*}/" clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json
 
+# Inject credentials from environment variables
+sed -i "s/\"value\": \"PLACEHOLDER_USERNAME\"/\"value\": \"${HDB_ADMIN_USERNAME}\"/" clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json
+sed -i "s/\"value\": \"PLACEHOLDER_PASSWORD\"/\"value\": \"${HDB_ADMIN_PASSWORD}\"/" clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json
+
 # Increase retry limit
 #sed -in 's/"value": "7",/"value": "100",/' clusterTests/Four_Node_Cluster_Tests_Env_vars.postman_environment.json
 cat clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json

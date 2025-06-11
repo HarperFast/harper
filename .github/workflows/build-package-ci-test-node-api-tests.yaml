@@ -89,6 +89,8 @@ jobs:
           public_dns_names: ${{ matrix.arch == 'amd' && needs.createInstances-amd.outputs.publicDnsNames || needs.createInstances-arm.outputs.publicDnsNames }}
           S3_KEY: ${{ secrets.AWS_S3_INTEGRATION_TEST_DATA_ACCESS_KEY_ID }}
           S3_SECRET: ${{ secrets.AWS_S3_INTEGRATION_TEST_DATA_SECRET_ACCESS_KEY }}
+          HDB_ADMIN_USERNAME: ${{ secrets.HDB_ADMIN_USERNAME }}
+          HDB_ADMIN_PASSWORD: ${{ secrets.HDB_ADMIN_PASSWORD }}
         run: |
           #!/bin/bash
           cd ../
@@ -98,7 +100,7 @@ jobs:
           do 
             echo "Starting work on: $public_dns_name"
             ssh -i private_key -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@"$public_dns_name" \
-                  "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests-node-api-tests.sh && /home/ubuntu/harperdb/test/ci-tests/ci-tests-node-api-tests.sh ${S3_KEY} ${S3_SECRET} true"
+                  "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests-node-api-tests.sh && /home/ubuntu/harperdb/test/ci-tests/ci-tests-node-api-tests.sh ${HDB_ADMIN_USERNAME} ${HDB_ADMIN_PASSWORD} ${S3_KEY} ${S3_SECRET} true"
             echo "Ending work on: $public_dns_name"
           done
         shell: bash

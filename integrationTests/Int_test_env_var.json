@@ -20,12 +20,12 @@
 		},
 		{
 			"key": "username",
-			"value": "admin",
+			"value": "PLACEHOLDER_USERNAME",
 			"enabled": true
 		},
 		{
 			"key": "password",
-			"value": "Abc1234!",
+			"value": "PLACEHOLDER_PASSWORD",
 			"enabled": true
 		},
 		{
@@ -210,12 +210,12 @@
 		},
 		{
 			"key": "s3_key",
-			"value": "AKIA25KWWUK6PJNH7FW3",
+			"value": "PLACEHOLDER_S3_KEY",
 			"enabled": true
 		},
 		{
 			"key": "s3_secret",
-			"value": "1lVX6ECc8hUbVlxToa5rfC+UuH6ZPP4EdFa391nd",
+			"value": "PLACEHOLDER_S3_SECRET",
 			"enabled": true
 		}
 	],
