@@ -556,6 +556,22 @@ describe('Querying through Resource API', () => {
 			assert.equal(related.length, 2);
 			assert.equal(related[0].name, 'name-20');
 		});
+		it('Query by join with one-to-many with relational condition as filter', async function () {
+			let results = [];
+			for await (let record of RelatedTable.search({
+				conditions: [
+					{ attribute: ['name'], comparator: 'greater_than', value: 'related' },
+					{ attribute: ['relatedToMany', 'sparse'], value: null },
+				],
+				select: ['id', 'relatedToMany', 'name'],
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 5);
+			let related = await results[0].relatedToMany;
+			assert.equal(related.length, 17);
+			assert(related.every((r) => r.sparse === null));
+		});
 		it('Query by join with many-to-many (forward)', async function () {
 			let results = [];
 			for await (let record of QueryTable.search({

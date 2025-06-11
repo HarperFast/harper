@@ -624,8 +624,25 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 			const resolver = Table.propertyResolvers?.[firstAttributeName];
 			if (resolver.to) nextFilter.to = resolver.to;
 			let subIdFilter;
-			const recordFilter = (record, entry) => {
+			const getSubObject = (record, entry) => {
 				let subObject, subEntry;
+				if (resolver) {
+					if (resolver.returnDirect) {
+						subObject = resolver(record, context, entry);
+						subEntry = lastMetadata;
+					} else {
+						subEntry = resolver(record, context, entry, true);
+						if (Array.isArray(subEntry)) {
+							subObject = subEntry.map((subEntry) => subEntry.value);
+							subEntry = null;
+						} else {
+							subObject = subEntry?.value;
+						}
+					}
+				} else subObject = record[firstAttributeName];
+				return { subObject, subEntry };
+			}
+			const recordFilter = (record, entry) => {
 				if (resolver) {
 					if (nextFilter.idFilter) {
 						// if we are filtering by id, we can use the idFilter to avoid loading the record
@@ -649,22 +666,20 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 						if (subIdFilter.idFilter) recordFilter.idFilter = subIdFilter.idFilter;
 						return matches;
 					}
-
-					if (resolver.returnDirect) {
-						subObject = resolver(record, context, entry);
-						subEntry = lastMetadata;
-					} else {
-						subEntry = resolver(record, context, entry, true);
-						if (Array.isArray(subEntry)) {
-							subObject = subEntry.map((subEntry) => subEntry.value);
-							subEntry = null;
-						} else {
-							subObject = subEntry?.value;
-						}
-					}
-				} else subObject = record[firstAttributeName];
+				}
+				const { subObject, subEntry } = getSubObject(record, entry);
 				if (!subObject) return false;
 				if (!Array.isArray(subObject)) return nextFilter(subObject, subEntry);
+				let filterMap = filtered?.[firstAttributeName];
+				if (!filterMap && filtered) {
+					filtered[firstAttributeName] = {
+						fromRecord(record) {
+							const value = getSubObject(record).subObject;
+							if (Array.isArray(value)) return value.filter(nextFilter).map(value => value[relatedTable.primaryKey]);
+							return value;
+						}
+					}
+				}
 				return subObject.some(nextFilter);
 			};
 			return recordFilter;
