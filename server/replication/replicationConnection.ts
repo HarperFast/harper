@@ -361,8 +361,12 @@ export function replicateOverWS(ws, options, authorization) {
 		}, PING_INTERVAL * 2).unref();
 	}
 	function getSharedStatus() {
-		if (!replicationSharedStatus)
+		if (!remoteNodeName || !databaseName) {
+			return;
+		}
+		if (!replicationSharedStatus) {
 			replicationSharedStatus = getReplicationSharedStatus(auditStore, databaseName, remoteNodeName);
+		}
 		return replicationSharedStatus;
 	}
 	if (databaseName) {
@@ -1312,7 +1316,9 @@ export function replicateOverWS(ws, options, authorization) {
 			// every pong we can use to update our connection information (and latency)
 			const latency = performance.now() - lastPingTime;
 			options.connection.latency = latency;
-			getSharedStatus()[LATENCY_POSITION] = latency;
+			if (getSharedStatus()) {
+				replicationSharedStatus[LATENCY_POSITION] = latency;
+			}
 			// update the manager with latest connection information
 			connectedToNode({
 				name: remoteNodeName,

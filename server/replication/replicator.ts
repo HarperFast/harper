@@ -319,7 +319,9 @@ export function setReplicator(dbName: string, table: any, options: any) {
 							}
 							// if there are no connections left, throw an error
 							if (!bestConnection)
-								throw firstError || new ServerError('No connection to any other nodes are available', 502);
+								throw (
+									firstError || new ServerError(`No connection to any other nodes are available: ${residency}`, 502)
+								);
 							const request = {
 								requestId: nextId++,
 								table,
