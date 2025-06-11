@@ -46,6 +46,7 @@ exports.renewSelfSigned = renewSelfSigned;
 exports.hostnamesFromCert = hostnamesFromCert;
 exports.getKey = getKey;
 exports.getHostnamesFromCertificate = getHostnamesFromCertificate;
+exports.getPrimaryHostName = getPrimaryHostName;
 
 const {
 	urlToNodeName,
@@ -1123,6 +1124,8 @@ async function removeCertificate(req) {
 }
 
 function getPrimaryHostName(cert /*X509Certificate*/) {
+	const commonName = cert.subject.match(/CN=(.*)/)?.[1];
+	if (commonName) return commonName;
 	return hostnamesFromCert(cert)[0];
 }
 function hostnamesFromCert(cert /*X509Certificate*/) {
