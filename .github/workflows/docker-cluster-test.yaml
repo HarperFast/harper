@@ -80,6 +80,8 @@ jobs:
           CONTAINER_TARBALL: docker-harperdb_${{ inputs.harperdbVersion }}-${{ inputs.dockerArtifactSuffix }}.tar
           HDB_ADMIN_USERNAME: ${{ secrets.HDB_ADMIN_USERNAME }}
           HDB_ADMIN_PASSWORD: ${{ secrets.HDB_ADMIN_PASSWORD }}
+          S3_KEY: ${{ secrets.AWS_S3_INTEGRATION_TEST_DATA_ACCESS_KEY_ID }}
+          S3_SECRET: ${{ secrets.AWS_S3_INTEGRATION_TEST_DATA_SECRET_ACCESS_KEY }}
         run: |
           #!/bin/bash
           echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
@@ -90,7 +92,7 @@ jobs:
           mkdir logs-artifact
 
           ssh -i private_key -o ServerAliveInterval=60 -o TCPKeepAlive=no -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
-            "sudo chmod +x /home/ubuntu/harperdb/${{ inputs.clusterTest }} && HDB_ADMIN_USERNAME='${HDB_ADMIN_USERNAME}' HDB_ADMIN_PASSWORD='${HDB_ADMIN_PASSWORD}' CONTAINER_TARBALL="${CONTAINER_TARBALL}" /home/ubuntu/harperdb/${{ inputs.clusterTest }} ${{ inputs.harperdbVersion }}"
+            "sudo chmod +x /home/ubuntu/harperdb/${{ inputs.clusterTest }} && HDB_ADMIN_USERNAME='${HDB_ADMIN_USERNAME}' HDB_ADMIN_PASSWORD='${HDB_ADMIN_PASSWORD}' S3_KEY='${S3_KEY}' S3_SECRET='${S3_SECRET}' CONTAINER_TARBALL="${CONTAINER_TARBALL}" /home/ubuntu/harperdb/${{ inputs.clusterTest }} ${{ inputs.harperdbVersion }}"
       - name: 'Download Logs'
         if: always()
         run: |

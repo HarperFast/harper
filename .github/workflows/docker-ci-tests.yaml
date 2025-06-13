@@ -93,10 +93,10 @@ jobs:
           cd ./integrationTests/
           
           # Inject credentials from environment variables into the JSON file
-          sed -i "s/\"value\": \"PLACEHOLDER_USERNAME\"/\"value\": \"$HDB_ADMIN_USERNAME\"/" Int_test_env_var.json
-          sed -i "s/\"value\": \"PLACEHOLDER_PASSWORD\"/\"value\": \"$HDB_ADMIN_PASSWORD\"/" Int_test_env_var.json
-          sed -i "s/\"value\": \"PLACEHOLDER_S3_KEY\"/\"value\": \"$S3_KEY\"/" Int_test_env_var.json
-          sed -i "s/\"value\": \"PLACEHOLDER_S3_SECRET\"/\"value\": \"$S3_SECRET\"/" Int_test_env_var.json
+          sed -i "s|\"value\": \"PLACEHOLDER_USERNAME\"|\"value\": \"$HDB_ADMIN_USERNAME\"|" Int_test_env_var.json
+          sed -i "s|\"value\": \"PLACEHOLDER_PASSWORD\"|\"value\": \"$HDB_ADMIN_PASSWORD\"|" Int_test_env_var.json
+          sed -i "s|\"value\": \"PLACEHOLDER_S3_KEY\"|\"value\": \"$S3_KEY\"|" Int_test_env_var.json
+          sed -i "s|\"value\": \"PLACEHOLDER_S3_SECRET\"|\"value\": \"$S3_SECRET\"|" Int_test_env_var.json
           
           newman run HarperDB_Integration_Tests.json -e Int_test_env_var.json --reporters cli,html,htmlextra --reporter-cli-show-timestamps --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --env-var "files_location=/home/harperdb/integrationTestsCsvs/"
 

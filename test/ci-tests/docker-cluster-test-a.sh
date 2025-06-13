@@ -43,6 +43,10 @@ sed -in "s/ClstrTestANode4/ClstrTestA4/" integrationTests/clusterTests/clusterTe
 sed -in "s/ClstrTestANode5/ClstrTestA5/" integrationTests/clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json
 sed -in "s/ubuntu/harperdb/" integrationTests/clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json
 
+# Inject credentials from environment variables
+sed -in "s|\"value\": \"PLACEHOLDER_USERNAME\"|\"value\": \"$HDB_ADMIN_USERNAME\"|" integrationTests/clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json
+sed -in "s|\"value\": \"PLACEHOLDER_PASSWORD\"|\"value\": \"$HDB_ADMIN_PASSWORD\"|" integrationTests/clusterTests/clusterTestA/Five_node_cluster_tests_env_var.postman_environment.json
+
 # Copy integrationTests folder to first container
 sudo docker exec ClstrTestA1 /bin/bash -c 'mkdir /home/harperdb/harperdb/'
 sudo docker cp integrationTests/ ClstrTestA1:/home/harperdb/harperdb/
