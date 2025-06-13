@@ -17,9 +17,8 @@ describe('diffResourceUsage', () => {
 		};
 
 		const resourceUsage = {
-			// Node returns microseconds for these values but diffResourceUsage normalizes them
-			userCPUTime: 1000000,
-			systemCPUTime: 2000000,
+			userCPUTime: 1000,
+			systemCPUTime: 2000,
 			minorPageFault: 3000,
 			majorPageFault: 4000,
 			fsRead: 5000,
@@ -44,9 +43,8 @@ describe('diffResourceUsage', () => {
 
 	it('treats missing params as zeroes', () => {
 		const resourceUsage = {
-			// Node returns microseconds for these values but diffResourceUsage normalizes them
-			userCPUTime: 1000000,
-			systemCPUTime: 2000000,
+			userCPUTime: 1000,
+			systemCPUTime: 2000,
 			minorPageFault: 3000,
 			majorPageFault: 4000,
 			fsRead: 5000,
