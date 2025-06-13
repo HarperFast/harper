@@ -252,8 +252,15 @@ describe('describeMetric', () => {
 		const result = await describeMetric('test-metric');
 
 		expect(result).to.have.property('attributes');
-		expect(result.attributes).to.include.members([
-			'id', 'metric', 'path', 'method', 'type', 'value', 'count'
+		expect(result.attributes).to.deep.include.members([
+			{name: 'node', type: 'string'},
+			{name: 'id', type: 'object'},
+			{name: 'metric', type: 'string'},
+			{name: 'path', type: 'string'},
+			{name: 'method', type: 'string'},
+			{name: 'type', type: 'string'},
+			{name: 'value', type: 'number'},
+			{name: 'count', type: 'number'},
 		]);
 		expect(searchStub.calledOnce).to.be.true;
 	});

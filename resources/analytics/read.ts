@@ -168,8 +168,18 @@ export async function describeMetric(metric: string): Promise<DescribeMetricResp
 		limit: 1,
 	};
 	const results = databases.system.hdb_analytics.search(lastEntrySearch);
+	// node is a synthetic attribute, so make sure it's included
+	const attributes = [{ name: 'node', type: 'string' }];
 	for await (const result of results) {
-		return { attributes: Object.keys(result) };
+		for (const attr in result) {
+			attributes.push({ name: attr, type: typeof result[attr] });
+		}
+		const desc = {
+			attributes,
+		};
+		log.trace?.('describe_metric result:', JSON.stringify(desc));
+		return desc;
 	}
+	// if no results, return empty object
 	return {};
 }
