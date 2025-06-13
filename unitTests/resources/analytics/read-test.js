@@ -252,7 +252,7 @@ describe('describeMetric', () => {
 		const result = await describeMetric('test-metric');
 
 		expect(result).to.have.property('attributes');
-		expect(result.attributes).to.include.members([
+		expect(result.attributes).to.deep.include.members([
 			{name: 'node', type: 'string'},
 			{name: 'id', type: 'object'},
 			{name: 'metric', type: 'string'},
