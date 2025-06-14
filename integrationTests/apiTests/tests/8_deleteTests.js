@@ -6,10 +6,7 @@ import { setTimeout } from 'node:timers/promises';
 import { req } from '../utils/request.js';
 
 describe('8. Delete Tests', () => {
-
-
 	//Delete Tests Folder
-
 
 	//Delete Records Before Tests
 
@@ -28,7 +25,6 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 		await setTimeout(500);
 	});
-
 
 	//Delete Records Before Alias Tests
 
@@ -58,7 +54,7 @@ describe('8. Delete Tests', () => {
 		await setTimeout(1000);
 	});
 
-	it('Insert additional new records',  () => {
+	it('Insert additional new records', () => {
 		testData.insert_timestamp = new Date().toISOString();
 
 		return req()
@@ -79,7 +75,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Delete records before',  async() => {
+	it('Delete records before', async () => {
 		const response = await req()
 			.send({
 				operation: 'delete_files_before',
@@ -94,7 +90,7 @@ describe('8. Delete Tests', () => {
 		assert.ok(jobResponse.body[0].message.includes('records successfully deleted'), jobResponse.text);
 	});
 
-	it('Search by hash confirm',  () => {
+	it('Search by hash confirm', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -152,7 +148,7 @@ describe('8. Delete Tests', () => {
 		await setTimeout(1000);
 	});
 
-	it('Insert additional new records',  () => {
+	it('Insert additional new records', () => {
 		testData.insert_timestamp = new Date().toISOString();
 
 		return req()
@@ -188,7 +184,7 @@ describe('8. Delete Tests', () => {
 		assert.ok(jobResponse.body[0].message.includes('records successfully deleted'), jobResponse.text);
 	});
 
-	it('Search by hash confirm',  () => {
+	it('Search by hash confirm', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -220,17 +216,16 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-
 	//Drop schema tests
 
-	it('Create schema for drop test',  () => {
+	it('Create schema for drop test', () => {
 		return req()
 			.send({ operation: 'create_schema', schema: `${testData.drop_schema}` })
 			.expect((r) => assert.equal(r.body.message, "database 'drop_schema' successfully created", r.text))
 			.expect(200);
 	});
 
-	it('Create table for drop test',  async () => {
+	it('Create table for drop test', async () => {
 		await req()
 			.send({
 				operation: 'create_table',
@@ -243,7 +238,7 @@ describe('8. Delete Tests', () => {
 		await setTimeout(2000);
 	});
 
-	it('Insert records for drop test',  () => {
+	it('Insert records for drop test', () => {
 		return req()
 			.send({
 				operation: 'insert',
@@ -263,28 +258,28 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop schema',  () => {
+	it('Drop schema', () => {
 		return req()
 			.send({ operation: 'drop_schema', schema: `${testData.drop_schema}` })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted 'drop_schema'", r.text))
 			.expect(200);
 	});
 
-	it('Confirm drop schema',  () => {
+	it('Confirm drop schema', () => {
 		return req()
 			.send({ operation: 'describe_schema', schema: `${testData.drop_schema}` })
 			.expect((r) => assert.equal(r.body.error, "database 'drop_schema' does not exist", r.text))
 			.expect(404);
 	});
 
-	it('Create schema again',  () => {
+	it('Create schema again', () => {
 		return req()
 			.send({ operation: 'create_schema', schema: `${testData.drop_schema}` })
 			.expect((r) => assert.equal(r.body.message, "database 'drop_schema' successfully created", r.text))
 			.expect(200);
 	});
 
-	it('Create table again',  async () => {
+	it('Create table again', async () => {
 		await req()
 			.send({
 				operation: 'create_table',
@@ -297,87 +292,91 @@ describe('8. Delete Tests', () => {
 		await setTimeout(2000);
 	});
 
-	it('Confirm correct attributes',  () => {
+	it('Confirm correct attributes', () => {
 		return req()
 			.send({ operation: 'describe_table', schema: `${testData.drop_schema}`, table: `${testData.drop_table}` })
-			.expect((r) => assert.equal(r.body.attributes.length, 3, r.text))
+			.expect((r) => {
+				if (!r.body.attributes) console.log('describe_table response', r.body);
+				assert.equal(r.body.attributes.length, 3, r.text);
+			})
 			.expect(200);
 	});
 
-	it('Clean up after drop schema tests',  () => {
+	it('Clean up after drop schema tests', () => {
 		return req()
 			.send({ operation: 'drop_schema', schema: `${testData.drop_schema}` })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted 'drop_schema'", r.text))
 			.expect(200);
 	});
 
-	it('Create schema for wildcard test',  () => {
+	it('Create schema for wildcard test', () => {
 		return req()
 			.send({ operation: 'create_schema', schema: 'h*rper%1' })
 			.expect((r) => assert.equal(r.body.message, "database 'h*rper%1' successfully created", r.text))
 			.expect(200);
 	});
 
-	it('Drop wildcard schema',  () => {
+	it('Drop wildcard schema', () => {
 		return req()
 			.send({ operation: 'drop_schema', schema: 'h*rper%1' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted 'h*rper%1'", r.text))
 			.expect(200);
 	});
 
-	it('Drop number table',  () => {
+	it('Drop number table', () => {
 		return req()
 			.send({ operation: 'drop_table', schema: '123', table: '4' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted table '123.4'", r.text))
 			.expect(200);
 	});
 
-	it('Drop number as string table',  () => {
+	it('Drop number as string table', () => {
 		return req()
 			.send({ operation: 'drop_table', schema: '1123', table: '1' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted table '1123.1'", r.text))
 			.expect(200);
 	});
 
-	it('Drop number number table',  () => {
+	it('Drop number number table', () => {
 		return req()
 			.send({ operation: 'drop_table', schema: 1123, table: 1 })
-			.expect((r) => assert.ok(JSON.stringify(r.body).includes("'schema' must be a string. 'table' must be a string"), r.text))
+			.expect((r) =>
+				assert.ok(JSON.stringify(r.body).includes("'schema' must be a string. 'table' must be a string"), r.text)
+			)
 			.expect(400);
 	});
 
-	it('Drop number schema',  () => {
+	it('Drop number schema', () => {
 		return req()
 			.send({ operation: 'drop_schema', schema: '123' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted '123'", r.text))
 			.expect(200);
 	});
 
-	it('Drop number as string schema',  () => {
+	it('Drop number as string schema', () => {
 		return req()
 			.send({ operation: 'drop_schema', schema: '1123' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted '1123'", r.text))
 			.expect(200);
 	});
 
-	it('Drop number number schema',  () => {
+	it('Drop number number schema', () => {
 		return req()
 			.send({ operation: 'drop_schema', schema: 1123 })
 			.expect((r) => assert.ok(JSON.stringify(r.body).includes("'schema' must be a string"), r.text))
 			.expect(400);
 	});
 
-
 	//Post drop attribute tests
 
-	it('create schema drop_attr',  () => {
+	it('create schema drop_attr', () => {
 		return req()
 			.send({ operation: 'create_schema', schema: 'drop_attr' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 	});
 
-	it('create table test',  async () => {
+	it('create table test', async () => {
 		await req()
 			.send({ operation: 'create_table', schema: 'drop_attr', table: 'test', hash_attribute: 'id' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
@@ -385,7 +384,7 @@ describe('8. Delete Tests', () => {
 		await setTimeout(2000);
 	});
 
-	it('Insert records into test table',  () => {
+	it('Insert records into test table', () => {
 		return req()
 			.send({
 				operation: 'insert',
@@ -414,14 +413,14 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop attribute lastname',  () => {
+	it('Drop attribute lastname', () => {
 		return req()
 			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'lastname' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'lastname'", r.text))
 			.expect(200);
 	});
 
-	it('Upsert some values',  () => {
+	it('Upsert some values', () => {
 		return req()
 			.send({
 				operation: 'upsert',
@@ -437,7 +436,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Search by hash confirm upsert',  () => {
+	it('Search by hash confirm upsert', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -455,7 +454,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop attribute unitsnnorder',  () => {
+	it('Drop attribute unitsnnorder', () => {
 		return req()
 			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'unitsnnorder' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'unitsnnorder'", r.text))
@@ -471,7 +470,9 @@ describe('8. Delete Tests', () => {
 				records: [{ id: 1, lastname: 'thor' }],
 			})
 			.expect((r) =>
-				assert.equal(r.body.message, 'updated 1 of 1 records',
+				assert.equal(
+					r.body.message,
+					'updated 1 of 1 records',
 					'Expected response message to eql "updated 1 of 1 records"'
 				)
 			)
@@ -499,14 +500,14 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop attribute lastname',  () => {
+	it('Drop attribute lastname', () => {
 		return req()
 			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'lastname' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'lastname'", r.text))
 			.expect(200);
 	});
 
-	it('Delete a record',  () => {
+	it('Delete a record', () => {
 		return req()
 			.send({ operation: 'delete', schema: 'drop_attr', table: 'test', hash_values: [1] })
 			.expect((r) => {
@@ -517,7 +518,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Search by hash confirm delete',  () => {
+	it('Search by hash confirm delete', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -530,7 +531,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop schema drop_attr',  () => {
+	it('Drop schema drop_attr', () => {
 		return req()
 			.send({ operation: 'drop_schema', schema: 'drop_attr' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))
@@ -539,21 +540,21 @@ describe('8. Delete Tests', () => {
 
 	//Post drop attribute tests (second folder)
 
-	it('create schema drop_attr',  () => {
+	it('create schema drop_attr', () => {
 		return req()
 			.send({ operation: 'create_schema', schema: 'drop_attr' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 	});
 
-	it('create table test',  () => {
+	it('create table test', () => {
 		return req()
 			.send({ operation: 'create_table', schema: 'drop_attr', table: 'test', hash_attribute: 'id' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 	});
 
-	it('Insert records into test table',  () => {
+	it('Insert records into test table', () => {
 		return req()
 			.send({
 				operation: 'insert',
@@ -582,14 +583,14 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop attribute lastname',  () => {
+	it('Drop attribute lastname', () => {
 		return req()
 			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'lastname' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'lastname'", r.text))
 			.expect(200);
 	});
 
-	it('Upsert some values',  () => {
+	it('Upsert some values', () => {
 		return req()
 			.send({
 				operation: 'upsert',
@@ -605,7 +606,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Search by hash confirm upsert',  () => {
+	it('Search by hash confirm upsert', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -623,7 +624,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop attribute unitsnnorder',  () => {
+	it('Drop attribute unitsnnorder', () => {
 		return req()
 			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'unitsnnorder' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'unitsnnorder'", r.text))
@@ -639,7 +640,9 @@ describe('8. Delete Tests', () => {
 				records: [{ id: 1, lastname: 'thor' }],
 			})
 			.expect((r) =>
-				assert.equal(r.body.message, 'updated 1 of 1 records',
+				assert.equal(
+					r.body.message,
+					'updated 1 of 1 records',
 					'Expected response message to eql "updated 1 of 1 records"'
 				)
 			)
@@ -667,14 +670,14 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop attribute lastname',  () => {
+	it('Drop attribute lastname', () => {
 		return req()
 			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'lastname' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'lastname'", r.text))
 			.expect(200);
 	});
 
-	it('Delete a record',  () => {
+	it('Delete a record', () => {
 		return req()
 			.send({ operation: 'delete', schema: 'drop_attr', table: 'test', hash_values: [1] })
 			.expect((r) => {
@@ -685,7 +688,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Search by hash confirm delete',  () => {
+	it('Search by hash confirm delete', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -698,7 +701,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop schema drop_attr',  () => {
+	it('Drop schema drop_attr', () => {
 		return req()
 			.send({ operation: 'drop_schema', schema: 'drop_attr' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))
@@ -707,14 +710,14 @@ describe('8. Delete Tests', () => {
 
 	//Post drop attribute tests (third folder)
 
-	it('create schema drop_attr',  () => {
+	it('create schema drop_attr', () => {
 		return req()
 			.send({ operation: 'create_schema', schema: 'drop_attr' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 	});
 
-	it('create table test',  async () => {
+	it('create table test', async () => {
 		await req()
 			.send({ operation: 'create_table', schema: 'drop_attr', table: 'test', hash_attribute: 'id' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
@@ -722,7 +725,7 @@ describe('8. Delete Tests', () => {
 		await setTimeout(2000);
 	});
 
-	it('Insert records into test table',  () => {
+	it('Insert records into test table', () => {
 		return req()
 			.send({
 				operation: 'insert',
@@ -751,14 +754,14 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop attribute lastname',  () => {
+	it('Drop attribute lastname', () => {
 		return req()
 			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'lastname' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'lastname'", r.text))
 			.expect(200);
 	});
 
-	it('Upsert some values',  () => {
+	it('Upsert some values', () => {
 		return req()
 			.send({
 				operation: 'upsert',
@@ -774,7 +777,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Search by hash confirm upsert',  () => {
+	it('Search by hash confirm upsert', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -792,7 +795,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop attribute unitsnnorder',  () => {
+	it('Drop attribute unitsnnorder', () => {
 		return req()
 			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'unitsnnorder' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'unitsnnorder'", r.text))
@@ -808,7 +811,9 @@ describe('8. Delete Tests', () => {
 				records: [{ id: 1, lastname: 'thor' }],
 			})
 			.expect((r) =>
-				assert.equal(r.body.message, 'updated 1 of 1 records',
+				assert.equal(
+					r.body.message,
+					'updated 1 of 1 records',
 					'Expected response message to eql "updated 1 of 1 records"'
 				)
 			)
@@ -836,14 +841,14 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop attribute lastname',  () => {
+	it('Drop attribute lastname', () => {
 		return req()
 			.send({ operation: 'drop_attribute', schema: 'drop_attr', table: 'test', attribute: 'lastname' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted attribute 'lastname'", r.text))
 			.expect(200);
 	});
 
-	it('Delete a record',  () => {
+	it('Delete a record', () => {
 		return req()
 			.send({ operation: 'delete', schema: 'drop_attr', table: 'test', hash_values: [1] })
 			.expect((r) => {
@@ -854,7 +859,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Search by hash confirm delete',  () => {
+	it('Search by hash confirm delete', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -867,17 +872,16 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop schema drop_attr',  () => {
+	it('Drop schema drop_attr', () => {
 		return req()
 			.send({ operation: 'drop_schema', schema: 'drop_attr' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))
 			.expect(200);
 	});
 
-
 	//Delete Tests Main Folder
 
-	it('Insert new Employees',  () => {
+	it('Insert new Employees', () => {
 		return req()
 			.send({
 				operation: 'insert',
@@ -900,7 +904,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Delete records ending in Lane',  () => {
+	it('Delete records ending in Lane', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -909,7 +913,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Verify records are deleted',  () => {
+	it('Verify records are deleted', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -919,7 +923,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL Delete',  () => {
+	it('NoSQL Delete', () => {
 		return req()
 			.send({
 				operation: 'delete',
@@ -938,7 +942,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL Verify records are deleted',  () => {
+	it('NoSQL Verify records are deleted', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -951,7 +955,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Insert records with objects and arrays',  () => {
+	it('Insert records with objects and arrays', () => {
 		return req()
 			.send({
 				operation: 'insert',
@@ -977,7 +981,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Delete records containing objects and arrays',  () => {
+	it('Delete records containing objects and arrays', () => {
 		return req()
 			.send({
 				operation: 'delete',
@@ -996,7 +1000,7 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('Verify object and array records deleted',  () => {
+	it('Verify object and array records deleted', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -1009,19 +1013,23 @@ describe('8. Delete Tests', () => {
 			.expect(200);
 	});
 
-	it('test SQL deleting with numeric hash in single quotes',  () => {
+	it('test SQL deleting with numeric hash in single quotes', () => {
 		return req()
 			.send({ operation: 'sql', sql: "DELETE FROM dev.rando WHERE id IN ('987654321', '987654322')" })
 			.expect((r) => assert.ok(r.body.message.includes('2 of 2 records successfully deleted'), r.text))
-			.expect((r) => assert.ok(r.body.deleted_hashes.includes(987654321) && r.body.deleted_hashes.includes(987654322), r.text))
+			.expect((r) =>
+				assert.ok(r.body.deleted_hashes.includes(987654321) && r.body.deleted_hashes.includes(987654322), r.text)
+			)
 			.expect(200);
 	});
 
-	it('test SQL deleting with numeric no condition',  () => {
+	it('test SQL deleting with numeric no condition', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'DELETE FROM dev.rando' })
 			.expect((r) => assert.ok(r.body.message.includes('2 of 2 records successfully deleted'), r.text))
-			.expect((r) => assert.ok(r.body.deleted_hashes.includes(987654323) && r.body.deleted_hashes.includes(987654324), r.text))
+			.expect((r) =>
+				assert.ok(r.body.deleted_hashes.includes(987654323) && r.body.deleted_hashes.includes(987654324), r.text)
+			)
 			.expect(200);
 	});
 });
