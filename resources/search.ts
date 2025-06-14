@@ -628,11 +628,13 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				let subObject, subEntry;
 				if (resolver) {
 					if (resolver.returnDirect) {
+						// indicates that the resolver will direct return the value instead of an entry
 						subObject = resolver(record, context, entry);
 						subEntry = lastMetadata;
 					} else {
 						subEntry = resolver(record, context, entry, true);
 						if (Array.isArray(subEntry)) {
+							// if any array, map the values
 							subObject = subEntry.map((subEntry) => subEntry.value);
 							subEntry = null;
 						} else {
@@ -653,7 +655,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 								// TODO: Eventually we should be able to handle multiple ids by creating a union
 								for (const id of nextFilter.idFilter.idSet) {
 									searchCondition = {
-										attribute: resolver.from ?? Table.primaryKey,
+										attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
 										value: id,
 									};
 								}
@@ -672,9 +674,10 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				if (!Array.isArray(subObject)) return nextFilter(subObject, subEntry);
 				const filterMap = filtered?.[firstAttributeName];
 				if (!filterMap && filtered) {
-					// establish a filtering that can preserve this filter for the select of these sub objects
+					// establish a filtering that can preserve this filter for the select() results of these sub objects
 					filtered[firstAttributeName] = {
 						fromRecord(record) {
+							// this is called when selecting the fields to include in results
 							const value = getSubObject(record).subObject;
 							if (Array.isArray(value)) return value.filter(nextFilter).map((value) => value[relatedTable.primaryKey]);
 							return value;
@@ -784,6 +787,7 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					const searchResults = searchByIndex(searchCondition, context.transaction.getReadTxn(), false, Table);
 					let matchingIds: Iterable<Id>;
 					if (recordFilter.to) {
+						// the values could be an array of keys, so we flatten the mapping
 						matchingIds = searchResults.flatMap((id) => Table.primaryStore.get(id)[recordFilter.to]);
 					} else {
 						matchingIds = searchResults.map(flattenKey);

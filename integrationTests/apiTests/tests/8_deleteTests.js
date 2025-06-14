@@ -296,6 +296,7 @@ describe('8. Delete Tests', () => {
 		return req()
 			.send({ operation: 'describe_table', schema: `${testData.drop_schema}`, table: `${testData.drop_table}` })
 			.expect((r) => {
+				// try to debug/log intermittent failure here:
 				if (!r.body.attributes) console.log('describe_table response', r.body);
 				assert.equal(r.body.attributes.length, 3, r.text);
 			})
