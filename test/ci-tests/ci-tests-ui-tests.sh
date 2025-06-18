@@ -15,7 +15,7 @@ echo "Install Playwright Browsers"
 npx playwright install --with-deps chromium
 
 echo "Run Playwright tests"
-npx playwright test --reporter=html --reporter-options open=never || exit_code=$?
+npx playwright test || exit_code=$?
 if [ "$exit_code" -eq 255 ]; then
   echo "Got exit code 255 but continuing..."
   exit 0
