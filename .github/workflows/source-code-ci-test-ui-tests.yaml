@@ -78,7 +78,6 @@ jobs:
           pwd
           ls -al
           echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
-#          public_dns_names="${{ inputs.publicDns }}"
           public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
           echo ${public_dns_names[@]}
           
