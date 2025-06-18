@@ -7,55 +7,55 @@ on:
   pull_request:
     types: [ opened, synchronize, reopened ]
   schedule:
-    - cron: '30 5 * * 1-5'
+    - cron: '30 6 * * 1-5'
   workflow_dispatch:
 
 name: Run Source Code - UI Tests
 jobs:
-#  getNodeVersion:
-#    runs-on: ubuntu-latest
-#    outputs:
-#      nodeVersion: ${{ steps.getNode.outputs.NODE_VERSION }}
-#      harperdbVersion: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
-#    steps:
-#      - uses: actions/checkout@v4
-#      - uses: actions/setup-node@v4
-#      - id: getNode
-#        name: Get node version
-#        run: |
-#          pwd
-#          NODE_VERSION="$(node --version)"
-#          NODE_VERSION="${NODE_VERSION:1}"
-#          HARPERDB_VERSION=$(cat package.json | jq -r '.version')
-#          echo "NODE_VERSION=$NODE_VERSION" >> $GITHUB_OUTPUT
-#          echo "HARPERDB_VERSION=$HARPERDB_VERSION" >> $GITHUB_OUTPUT
-#  createInstances:
-#    needs:
-#      - getNodeVersion
-#    uses: ./.github/workflows/create-instances.yaml
-#    with:
-#      instanceCount: '1'
-#      harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
-#      installType: 'sourceCode'
-#      callingWorkflow: ${{ github.workflow }}
-#    secrets: inherit
-#  registerInstances:
-#    needs:
-#      - createInstances
-#      - getNodeVersion
-#    uses: ./.github/workflows/install-and-register.yaml
-#    with:
-#      publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
-#      harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
-#      nodeVersion: ${{ needs.getNodeVersion.outputs.nodeVersion }}
-#      installType: 'sourceCode'
-#    secrets: inherit
-  getUItests:
+  getNodeVersion:
+    runs-on: ubuntu-latest
+    outputs:
+      nodeVersion: ${{ steps.getNode.outputs.NODE_VERSION }}
+      harperdbVersion: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - id: getNode
+        name: Get node version
+        run: |
+          pwd
+          NODE_VERSION="$(node --version)"
+          NODE_VERSION="${NODE_VERSION:1}"
+          HARPERDB_VERSION=$(cat package.json | jq -r '.version')
+          echo "NODE_VERSION=$NODE_VERSION" >> $GITHUB_OUTPUT
+          echo "HARPERDB_VERSION=$HARPERDB_VERSION" >> $GITHUB_OUTPUT
+  createInstances:
+    needs:
+      - getNodeVersion
+    uses: ./.github/workflows/create-instances.yaml
+    with:
+      instanceCount: '1'
+      harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
+      installType: 'sourceCode'
+      callingWorkflow: ${{ github.workflow }}
+    secrets: inherit
+  registerInstances:
+    needs:
+      - createInstances
+      - getNodeVersion
+    uses: ./.github/workflows/install-and-register.yaml
+    with:
+      publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
+      harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
+      nodeVersion: ${{ needs.getNodeVersion.outputs.nodeVersion }}
+      installType: 'sourceCode'
+    secrets: inherit
+  GetAndRunUItests:
     runs-on: ubuntu-latest
     timeout-minutes: 30
-#    needs:
-#      - createInstances
-#      - registerInstances
+    needs:
+      - createInstances
+      - registerInstances
     steps:
       - name: Checkout repo ui-tests
         uses: actions/checkout@v4
@@ -64,35 +64,70 @@ jobs:
           ref: 'main'
           token: ${{ secrets.GH_PAT_READ_UI_TESTS_REPO }}
           path: ui-tests
-      - name: List folder and files
+#      - name: List folder and files
+#        run: |
+#          pwd
+## /home/runner/work/harperdb/harperdb
+#          ls -al
+#          ls -al ui-tests
+      - name: Copy and run ui tests
+        env:
+          CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
         run: |
+          #!/bin/bash
           pwd
           ls -al
-          ls -al ui-tests
-#  downloadLogs:
-#    if: always()
-#    needs:
-#      - getUItests
-##      - createInstances
-#    uses: ./.github/workflows/download-logs.yaml
-#    with:
-#      publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
-#    secrets: inherit
-#  destroyInstances:
-#    if: always()
-#    needs: downloadLogs
-#    uses: ./.github/workflows/destroy-instances.yaml
-#    with:
-#      instanceCount: '1'
-#      callingWorkflow: ${{ github.workflow }}
-#    secrets: inherit
-#  sendSlackMessage:
-#    uses: ./.github/workflows/post-to-slack-channel.yaml
-#    if: ${{ failure() && github.event_name == 'schedule' }}
-#    secrets: inherit
-#    needs:
-#      - destroyInstances
-#      - downloadLogs
-#      - registerInstances
-#      - createInstances
-#      - getNodeVersion
+          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+#          public_dns_names="${{ inputs.publicDns }}"
+          public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
+          echo ${public_dns_names[@]}
+          
+          for public_dns_name in ${public_dns_names[@]}
+          do 
+            echo "Copy tests to: $public_dns_name"
+            scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ui-tests" "ubuntu@$public_dns_name:/home/ubuntu/"
+            echo "Starting work on: $public_dns_name"
+            ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
+              "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests-ui-tests.sh && /home/ubuntu/harperdb/test/ci-tests/ci-tests-ui-tests.sh"
+            echo "Copy back the test report"
+            scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/ui-tests/playwright-report" .
+            pwd
+            ls -al
+            ls -al playwright-report
+          done
+        shell: bash
+      - name: Upload artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report/
+          retention-days: 10
+  downloadLogs:
+    if: always()
+    needs:
+      - GetAndRunUItests
+      - createInstances
+    uses: ./.github/workflows/download-logs.yaml
+    with:
+      publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
+    secrets: inherit
+  destroyInstances:
+    if: always()
+    needs: downloadLogs
+    uses: ./.github/workflows/destroy-instances.yaml
+    with:
+      instanceCount: '1'
+      callingWorkflow: ${{ github.workflow }}
+    secrets: inherit
+  sendSlackMessage:
+    uses: ./.github/workflows/post-to-slack-channel.yaml
+    if: ${{ failure() && github.event_name == 'schedule' }}
+    secrets: inherit
+    needs:
+      - destroyInstances
+      - downloadLogs
+      - registerInstances
+      - createInstances
+      - getNodeVersion
+      - GetAndRunUItests
