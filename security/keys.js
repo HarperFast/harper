@@ -12,7 +12,7 @@ const pki = forge.pki;
 const Joi = require('joi');
 const { v4: uuidv4 } = require('uuid');
 const { validateBySchema } = require('../validation/validationWrapper.js');
-const hdbLogger = require('../utility/logging/harper_logger.js');
+const { forComponent } = require('../utility/logging/harper_logger.js');
 const envManager = require('../utility/environment/environmentManager.js');
 const hdbTerms = require('../utility/hdbTerms.ts');
 const { CONFIG_PARAMS } = hdbTerms;
@@ -25,6 +25,7 @@ const assignCmdenvVars = require('../utility/assignCmdEnvVariables.js');
 const configUtils = require('../config/configUtils.js');
 const { table, getDatabases, databases } = require('../resources/databases.ts');
 const { getJWTRSAKeys } = require('./tokenAuthentication.ts');
+const logger = forComponent('tls');
 
 exports.generateKeys = generateKeys;
 exports.updateConfigCert = updateConfigCert;
@@ -198,12 +199,12 @@ function loadCertificates() {
 								try {
 									certCn = extractCommonName(x509Cert);
 								} catch (err) {
-									hdbLogger.error('error extracting common name from certificate', err);
+									logger.error('error extracting common name from certificate', err);
 									return;
 								}
 
 								if (certCn == null) {
-									hdbLogger.error('error extracting common name from certificate');
+									logger.error('error extracting common name from certificate');
 									return;
 								}
 
@@ -220,7 +221,7 @@ function loadCertificates() {
 										: (certRecord.file_timestamp ?? certRecord.__updatedtime__);
 								if (certRecord && fileTimestamp <= recordTimestamp) {
 									if (fileTimestamp < recordTimestamp)
-										hdbLogger.info(
+										logger.info(
 											`Certificate ${certCn} at ${path} is older (${new Date(
 												fileTimestamp
 											)}) than the certificate in the database (${
@@ -271,16 +272,16 @@ function loadAndWatch(path, loadCert, type) {
 		try {
 			let modified = stats.mtimeMs;
 			if (modified && modified !== lastModified) {
-				if (lastModified && isMainThread) hdbLogger.warn(`Reloading ${type}:`, path);
+				if (lastModified && isMainThread) logger.warn(`Reloading ${type}:`, path);
 				lastModified = modified;
 				loadCert(readPEM(path));
 			}
 		} catch (error) {
-			hdbLogger.error(`Error loading ${type}:`, path, error);
+			logger.error(`Error loading ${type}:`, path, error);
 		}
 	};
 	if (fs.existsSync(path)) loadFile(path, statSync(path));
-	else hdbLogger.error(`${type} file not found:`, path);
+	else logger.error(`${type} file not found:`, path);
 	watch(path, { persistent: false }).on('change', loadFile);
 }
 
@@ -288,7 +289,7 @@ function getHost() {
 	let url = getThisNodeUrl();
 	if (url == null) {
 		const host = CERT_DOMAINS[0];
-		hdbLogger.info('replication url is missing from harperdb-config.yaml, using default host' + host);
+		logger.info('replication url is missing from harperdb-config.yaml, using default host' + host);
 		return host;
 	}
 	return urlToNodeName(url);
@@ -298,7 +299,7 @@ function getCommonName() {
 	let node_name = getThisNodeName();
 	if (node_name == null) {
 		const host = CERT_DOMAINS[0];
-		hdbLogger.info('replication url is missing from harperdb-config.yaml, using default host' + host);
+		logger.info('replication url is missing from harperdb-config.yaml, using default host' + host);
 		return host;
 	}
 	return node_name;
@@ -309,7 +310,7 @@ async function createCsr() {
 	const opsCert = pki.certificateFromPem(rep.options.cert);
 	const opsPrivateKey = pki.privateKeyFromPem(rep.options.key);
 
-	hdbLogger.info('Creating CSR with cert named:', rep.name);
+	logger.info('Creating CSR with cert named:', rep.name);
 
 	const csr = pki.createCertificationRequest();
 	csr.publicKey = opsCert.publicKey;
@@ -320,7 +321,7 @@ async function createCsr() {
 		},
 		...CERT_ATTRIBUTES,
 	];
-	hdbLogger.info('Creating CSR with subject', subject);
+	logger.info('Creating CSR with subject', subject);
 	csr.setSubject(subject);
 
 	const attributes = [
@@ -333,7 +334,7 @@ async function createCsr() {
 			extensions: certExtensions(),
 		},
 	];
-	hdbLogger.info('Creating CSR with attributes', attributes);
+	logger.info('Creating CSR with attributes', attributes);
 	csr.setAttributes(attributes);
 
 	csr.sign(opsPrivateKey);
@@ -413,12 +414,12 @@ async function signCertificate(req) {
 		private_key = pki.privateKeyFromPem(private_key);
 		response.signingCA = cert_auth.certificate;
 		const caAppCert = pki.certificateFromPem(cert_auth.certificate);
-		hdbLogger.info('Signing CSR with cert named', cert_auth.name);
+		logger.info('Signing CSR with cert named', cert_auth.name);
 		const csr = pki.certificationRequestFromPem(req.csr);
 		try {
 			csr.verify();
 		} catch (err) {
-			hdbLogger.error(err);
+			logger.error(err);
 			return new Error(`Error verifying CSR: ` + err.message);
 		}
 
@@ -428,18 +429,18 @@ async function signCertificate(req) {
 		const notAfter = new Date();
 		cert.validity.notAfter = notAfter;
 		cert.validity.notAfter.setDate(notAfter.getDate() + CERT_VALIDITY_DAYS);
-		hdbLogger.info('sign cert setting validity:', cert.validity);
+		logger.info('sign cert setting validity:', cert.validity);
 
 		// subject from CSR
-		hdbLogger.info('sign cert setting subject from CSR:', csr.subject.attributes);
+		logger.info('sign cert setting subject from CSR:', csr.subject.attributes);
 		cert.setSubject(csr.subject.attributes);
 
 		// issuer from CA
-		hdbLogger.info('sign cert setting issuer:', caAppCert.subject.attributes);
+		logger.info('sign cert setting issuer:', caAppCert.subject.attributes);
 		cert.setIssuer(caAppCert.subject.attributes);
 
 		const extensions = csr.getAttribute({ name: 'extensionRequest' }).extensions;
-		hdbLogger.info('sign cert adding extensions from CSR:', extensions);
+		logger.info('sign cert adding extensions from CSR:', extensions);
 		cert.setExtensions(extensions);
 
 		cert.publicKey = csr.publicKey;
@@ -447,7 +448,7 @@ async function signCertificate(req) {
 
 		response.certificate = pki.certificateToPem(cert);
 	} else {
-		hdbLogger.info('Sign cert did not receive a CSR from:', req.url, 'only the CA will be returned');
+		logger.info('Sign cert did not receive a CSR from:', req.url, 'only the CA will be returned');
 	}
 
 	return response;
@@ -550,7 +551,7 @@ async function getCertAuthority() {
 		if (cert.private_key_name && matchingPrivateKey) {
 			const keyCheck = new X509Certificate(cert.certificate).checkPrivateKey(createPrivateKey(matchingPrivateKey));
 			if (keyCheck) {
-				hdbLogger.trace(`CA named: ${cert.name} found with matching private key`);
+				logger.trace(`CA named: ${cert.name} found with matching private key`);
 				match = { ca: cert, private_key: matchingPrivateKey };
 				break;
 			}
@@ -558,7 +559,7 @@ async function getCertAuthority() {
 	}
 
 	if (match) return match;
-	hdbLogger.trace('No CA found with matching private key');
+	logger.trace('No CA found with matching private key');
 }
 
 async function generateCertAuthority(private_key, publicKey, writeKey = true) {
@@ -645,7 +646,7 @@ async function reviewSelfSignedCert() {
 
 	let caAndKey = await getCertAuthority();
 	if (!caAndKey) {
-		hdbLogger.notify(
+		logger.notify(
 			"A matching Certificate Authority and key was not found. A new CA will be created in advance, so it's available if needed."
 		);
 
@@ -656,7 +657,7 @@ async function reviewSelfSignedCert() {
 		try {
 			privateKey = pki.privateKeyFromPem(await fs.readFile(tlsPrivateKey));
 		} catch (err) {
-			hdbLogger.warn(
+			logger.warn(
 				'Unable to parse the TLS key',
 				tlsPrivateKey,
 				'A new key will be generated and used to create Certificate Authority',
@@ -688,9 +689,7 @@ async function reviewSelfSignedCert() {
 	const existingCert = await getReplicationCert();
 	if (!existingCert) {
 		const certName = getThisNodeName();
-		hdbLogger.notify(
-			`A suitable replication certificate was not found, creating new self singed cert named: ${certName}`
-		);
+		logger.notify(`A suitable replication certificate was not found, creating new self singed cert named: ${certName}`);
 
 		caAndKey = caAndKey ?? (await getCertAuthority());
 		const hdbCa = pki.certificateFromPem(caAndKey.ca.certificate);
@@ -1046,7 +1045,7 @@ async function addCertificate(req) {
 		try {
 			certCn = extractCommonName(x509Cert);
 		} catch (err) {
-			hdbLogger.error(err);
+			logger.error(err);
 		}
 
 		if (certCn == null) {
@@ -1114,7 +1113,7 @@ async function removeCertificate(req) {
 		);
 
 		if (matchingKeys.length === 1 && matchingKeys[0].name === name) {
-			hdbLogger.info('Removing private key named', private_key_name);
+			logger.info('Removing private key named', private_key_name);
 			await fs.remove(path.join(envManager.getHdbBasePath(), hdbTerms.LICENSE_KEY_DIR_NAME, private_key_name));
 		}
 	}

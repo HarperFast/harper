@@ -325,7 +325,7 @@ export class HierarchicalNavigableSmallWorld {
 	private getEntryPoint() {
 		// Get entry point
 		const entryPointId = this.indexStore.get(ENTRY_POINT);
-
+		if (entryPointId === undefined) return;
 		const node = this.indexStore.get(entryPointId);
 		return { id: entryPointId, ...node };
 	}
@@ -591,7 +591,7 @@ export class HierarchicalNavigableSmallWorld {
 	 *
 	 * @returns
 	 */
-	estimateCount() {
+	estimateCountAsSort() {
 		return Math.sqrt(this.indexStore.getStats().entryCount * this.efConstructionSearch);
 	}
 

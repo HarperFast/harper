@@ -6,11 +6,13 @@ import { table } from '../resources/databases.ts';
 import { v4 as uuid } from 'uuid';
 import * as env from '../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.ts';
-import { loggerWithTag, AuthAuditLog, debug } from '../utility/logging/harper_logger.js';
+import { AuthAuditLog, forComponent } from '../utility/logging/harper_logger.js';
 import { user } from '../server/itc/serverHandlers.js';
 import { Headers } from '../server/serverHelpers/Headers.ts';
 import { convertToMS } from '../utility/common_utils.js';
-const authEventLog = loggerWithTag('auth-event');
+const authLogger = forComponent('authentication');
+const { debug } = authLogger;
+const authEventLog = authLogger.withTag('auth-event');
 env.initSync();
 
 const appsCorsAccesslist = env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST);
@@ -86,8 +88,7 @@ export async function authentication(request, nextHandler) {
 			// we prefix the cookie name with the origin so that we can partition/separate session/authentications
 			// host, to protect against CSRF
 			if (!origin) origin = headers.host;
-			const cookiePrefix =
-				(origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
+			const cookiePrefix = (origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
 			const cookies = cookie?.split(/;\s+/) || [];
 			for (const cookie of cookies) {
 				if (cookie.startsWith(cookiePrefix)) {

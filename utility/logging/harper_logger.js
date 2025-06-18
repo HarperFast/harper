@@ -50,6 +50,7 @@ let logName;
 let logRoot;
 let logFilePath;
 let mainLogger;
+let externalLogger; // default logger used for the global used by external components
 let mainLogFd;
 let writeToLogFile;
 let logImmediately;
@@ -74,10 +75,25 @@ function updateLogger(logger, logOptions, name) {
 	if (path) logger.path = path;
 	else console.error('No path for logger', logOptions);
 	logger.level = LOG_LEVEL_HIERARCHY[logOptions.level] ?? mainLogger?.level ?? LOG_LEVEL_HIERARCHY.info;
+	updateConditional(logger);
 	logger.logToStdstreams = logOptions.stdStreams ?? false;
 	// if there is a configured tag or if a component is logging to default/main log path, use the component name as the tag
 	// to differentiate it
 	logger.tag = logOptions.tag ?? (mainLogger.path === logger.path && name);
+}
+// creates a logger where the methods are only defined if they are within the log level.
+// Using this conditional logger means that every method call must be optional like log.trace?.('message),
+// but there can be performance benefits to using this since it means that the arguments
+// do not need to be evaluated at all.
+function updateConditional(logger) {
+	const conditional = logger.conditional ?? (logger.conditional = {});
+	conditional.notify = LOG_LEVEL_HIERARCHY.notify >= logger.level ? logger.notify.bind(logger) : undefined;
+	conditional.fatal = LOG_LEVEL_HIERARCHY.fatal >= logger.level ? logger.fatal.bind(logger) : undefined;
+	conditional.error = LOG_LEVEL_HIERARCHY.error >= logger.level ? logger.error.bind(logger) : undefined;
+	conditional.warn = LOG_LEVEL_HIERARCHY.warn >= logger.level ? logger.warn.bind(logger) : undefined;
+	conditional.info = LOG_LEVEL_HIERARCHY.info >= logger.level ? logger.info.bind(logger) : undefined;
+	conditional.debug = LOG_LEVEL_HIERARCHY.debug >= logger.level ? logger.debug.bind(logger) : undefined;
+	conditional.trace = LOG_LEVEL_HIERARCHY.trace >= logger.level ? logger.trace.bind(logger) : undefined;
 }
 async function updateLogSettings() {
 	if (!rootConfig) {
@@ -93,6 +109,9 @@ async function updateLogSettings() {
 	updateLogger(mainLogger, logOptions);
 	logFilePath = mainLogger.path;
 	logConsole = logOptions.console ?? false;
+	if (logOptions.external) {
+		updateLogger(externalLogger, logOptions.external);
+	}
 	for (const name in rootConfigObject) {
 		// we now scan each component to see if it has logging individual configured
 		const component = rootConfigObject[name];
@@ -212,11 +231,38 @@ module.exports = {
 	// we can start using the RootConfigWatcher
 	start: updateLogSettings,
 	startOnMainThread: updateLogSettings,
+	errorToString,
 };
 function getLogFilePath() {
 	return logFilePath;
 }
-_assignPackageExport('logger', module.exports);
+module.exports.externalLogger = {
+	notify(...args) {
+		externalLogger.notify(...args);
+	},
+	fatal(...args) {
+		externalLogger.fatal(...args);
+	},
+	error(...args) {
+		externalLogger.error(...args);
+	},
+	warn(...args) {
+		externalLogger.warn(...args);
+	},
+	info(...args) {
+		externalLogger.info(...args);
+	},
+	debug(...args) {
+		externalLogger.debug(...args);
+	},
+	trace(...args) {
+		externalLogger.trace(...args);
+	},
+	withTag(tag) {
+		return externalLogger.withTag(tag);
+	},
+};
+_assignPackageExport('logger', module.exports.externalLogger);
 let loggedFdErr;
 
 /**
@@ -272,8 +318,10 @@ function initLogSettings(forceInit = false) {
 				level: logLevel,
 				stdStreams: logToStdstreams,
 				rotation,
-				isMainInstance: true,
 			});
+			// setup the external logger
+			externalLogger = mainLogger.forComponent('external');
+			externalLogger.tag = null; // don't tag by default
 			if (isMainThread) {
 				try {
 					const SegfaultHandler = require('segfault-handler');
@@ -309,7 +357,10 @@ function initLogSettings(forceInit = false) {
 
 			logLevel = logLevel === undefined ? defaultLevel : logLevel;
 
-			mainLogger = createLogger({ level: logLevel, isMainInstance: true });
+			mainLogger = createLogger({ level: logLevel });
+			// setup the external logger
+			externalLogger = mainLogger.forComponent('external');
+			externalLogger.tag = null; // don't tag by default
 			return;
 		}
 
@@ -394,7 +445,7 @@ function createLogger({
 	level: logLevel,
 	stdStreams: logToStdstreams,
 	rotation,
-	isMainInstance,
+	isExternalInstance,
 	writeToLog,
 	component,
 }) {
@@ -441,7 +492,7 @@ function createLogger({
 			}
 		} else if (logToStdstreams) process.stderr.write(log);
 	}
-	let logToFile = logFilePath && getFileLogger(logFilePath, rotation, isMainInstance);
+	let logToFile = logFilePath && getFileLogger(logFilePath, rotation, isExternalInstance);
 	function logPrepend(write) {
 		return {
 			write(log) {
@@ -453,23 +504,18 @@ function createLogger({
 			},
 		};
 	}
-	if (isMainInstance) {
+	if (isExternalInstance) {
 		writeToLogFile = logToFile;
 	}
 	logger = new HarperLogger(
-		isMainInstance || writeToLog || !logToFile
-			? {
-					stdout: logPrepend(writeToLog ?? logStdOut),
-					stderr: logPrepend(writeToLog ?? logStdErr),
-					colorMode: logToStdstreams ?? false,
-				}
-			: {
-					stdout: logPrepend(logToFile),
-					stderr: logPrepend(logToFile),
-					colorMode: logToStdstreams ?? false,
-				},
+		{
+			stdout: logPrepend(writeToLog ?? logStdOut),
+			stderr: logPrepend(writeToLog ?? logStdErr),
+			colorMode: logToStdstreams ?? false,
+		},
 		level
 	);
+	updateConditional(logger);
 	logger.path = logFilePath;
 	Object.defineProperty(logger, 'path', {
 		get() {
@@ -477,8 +523,8 @@ function createLogger({
 		},
 		set(path) {
 			logFilePath = path;
-			logToFile = getFileLogger(logFilePath, logger.rotation, isMainInstance);
-			if (isMainInstance) writeToLogFile = logToFile;
+			logToFile = getFileLogger(logFilePath, logger.rotation, isExternalInstance);
+			if (isExternalInstance) writeToLogFile = logToFile;
 		},
 		enumerable: true,
 	});
@@ -493,7 +539,7 @@ function createLogger({
 					path: logFilePath,
 					level: logLevel,
 					stdStreams: logToStdstreams,
-					isMainInstance,
+					isExternalInstance: name === 'external',
 					rotation,
 					writeToLog,
 					component: true,
@@ -512,10 +558,10 @@ const LOG_TIME_USAGE_THRESHOLD = 100;
 /**
  * Get the file logger for the given path. If it doesn't exist, create it.
  * @param path
- * @param isMainInstance
+ * @param isExternalInstance
  * @return {any}
  */
-function getFileLogger(path, rotation, isMainInstance) {
+function getFileLogger(path, rotation, isExternalInstance) {
 	let logger = fileLoggers.get(path);
 	let logFD, loggedFDError, logTimer;
 	let logBuffer;
@@ -588,14 +634,14 @@ function getFileLogger(path, rotation, isMainInstance) {
 			fs.closeSync(logFD);
 		} catch (err) {}
 		logFD = null;
-		if (isMainInstance) mainLogFd = null;
+		if (isExternalInstance) mainLogFd = null;
 	}
 
 	function openLogFile(isRetry) {
 		if (!logFD) {
 			try {
 				logFD = fs.openSync(path, 'a');
-				if (isMainInstance) mainLogFd = logFD;
+				if (isExternalInstance) mainLogFd = logFD;
 			} catch (error) {
 				if (error.code === 'ENOENT' && !isRetry) {
 					// if the directory doesn't exist, create it
@@ -787,6 +833,17 @@ function getDefaultConfig() {
 		console.error('Error accessing default config file for logging');
 		console.error(err);
 	}
+}
+
+/**
+ * This converts an error to a human readable string. This follows the convention of standard console logging
+ * of printing the error as "ErrorClassName: message". Strangely, this is _not_ how Error.prototype.toString
+ * behaves, so this normalizes to match the bevahior of the console rather than default toString.
+ * @param error
+ * @return {string|string}
+ */
+function errorToString(error) {
+	return typeof error.message === 'string' ? `${error.constructor.name}: ${error.message}` : error.toString();
 }
 
 function setMainLogger(logger) {

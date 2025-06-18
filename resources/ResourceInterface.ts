@@ -13,10 +13,10 @@ export interface ResourceInterface<Key = any, Record = any> {
 	delete?(target: RequestTargetOrId): boolean;
 	search?(query: RequestTarget): AsyncIterable<any>;
 	subscribe?(request: SubscriptionRequest): Subscription;
-	allowRead(user: any, target: RequestTarget, context: Context): boolean | Promise<boolean>;
-	allowUpdate(user: any, record: any, fullUpdate?: boolean): boolean | Promise<boolean>;
-	allowCreate(user: any, record: any, context: Context): boolean | Promise<boolean>;
-	allowDelete(user: any, target: RequestTarget, context: Context): boolean | Promise<boolean>;
+	allowRead(user: any, target: RequestTarget): boolean | Promise<boolean>;
+	allowUpdate(user: any, record: any, target: RequestTarget): boolean | Promise<boolean>;
+	allowCreate(user: any, record: any, target: RequestTarget): boolean | Promise<boolean>;
+	allowDelete(user: any, target: RequestTarget): boolean | Promise<boolean>;
 }
 
 export interface User {

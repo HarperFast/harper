@@ -65,7 +65,7 @@ process.on('uncaughtException', (error) => {
 	if (error.isHandled) return;
 	if (error.code === 'ECONNRESET' || error.code === 'ECONNREFUSED') return; // that's what network connections do
 	if (error.message === 'write EIO') return; // that means the terminal is closed
-	console.error('uncaughtException', error);
+	harperLogger.error('uncaughtException', error);
 });
 const { HDB_SETTINGS_NAMES, CONFIG_PARAMS } = terms;
 env.initSync();
@@ -74,6 +74,14 @@ exports.listenOnPorts = listenOnPorts;
 exports.startServers = startServers;
 
 function startServers() {
+	const rootPath = env.get(terms.CONFIG_PARAMS.ROOTPATH);
+	if (rootPath) {
+		try {
+			process.chdir(rootPath);
+		} catch (error) { 
+			// ignore any errors with this; just a best effort for now
+		}
+	}
 	let loaded = require('../loadRootComponents.js')
 		.loadRootComponents(true)
 		.then(() => {

@@ -23,7 +23,7 @@ import { Resource, contextStorage } from './Resource.ts';
 import { DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
 import { addSubscription } from './transactionBroadcast.ts';
-import { handleHDBError, ClientError, ServerError } from '../utility/errors/hdbError.js';
+import { handleHDBError, ClientError, ServerError, AccessViolation } from '../utility/errors/hdbError.js';
 import * as signalling from '../utility/signalling.js';
 import { SchemaEventMsg, UserEventMsg } from '../server/threads/itc.js';
 import { databases, table } from './databases.ts';
@@ -942,11 +942,11 @@ export function makeTable(options) {
 		 * This retrieves the data of this resource. By default, with no argument, just return `this`.
 		 * @param target - If included, is an identifier/query that specifies the requested target to retrieve and query
 		 */
-		get(target?: RequestTarget): Promise<object | void> | object | void {
+		get(target?: RequestTarget): Promise<object | void> {
 			const constructor: Resource = this.constructor;
 			if (typeof target === 'string' && constructor.loadAsInstance !== false) return this.getProperty(target);
 			if (isSearchTarget(target)) return this.search(target);
-			if (target?.target === '') {
+			if (target && target.id === undefined && !target.toString()) {
 				const description = {
 					// basically a describe call
 					records: './', // an href to the records themselves
@@ -973,24 +973,34 @@ export function makeTable(options) {
 				if (readTxn?.isDone) {
 					throw new Error('You can not read from a transaction that has already been committed/aborted');
 				}
-				const ensureLoaded = true;
 				const id = requestTargetToId(target);
 				checkValidId(id);
-				return loadLocalRecord(id, context, { transaction: readTxn, ensureLoaded }, false, (entry) => {
-					if (context.onlyIfCached && context.noCacheStore) {
-						// don't go into the loading from source condition, but HTTP spec says to
-						// return 504 (rather than 404) if there is no content and the cache-control header
-						// dictates not to go to source (and not store new value)
-						if (!entry?.value) throw new ServerError('Entry is not cached', 504);
-					} else if (ensureLoaded) {
-						const loadingFromSource = ensureLoadedFromSource(id, entry, context);
-						if (loadingFromSource) {
-							txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
-							context.loadedFromSource = true;
-							return loadingFromSource.then((entry) => entry?.value);
-						}
+				let allowed = true;
+				if (target.checkPermission) {
+					// requesting authorization verification
+					allowed = this.allowRead(context.user, target);
+				}
+				return when(allowed, (allowed: boolean) => {
+					if (!allowed) {
+						throw new AccessViolation(context.user);
 					}
-					return entry?.value;
+					const ensureLoaded = true;
+					return loadLocalRecord(id, context, { transaction: readTxn, ensureLoaded }, false, (entry) => {
+						if (context.onlyIfCached && context.noCacheStore) {
+							// don't go into the loading from source condition, but HTTP spec says to
+							// return 504 (rather than 404) if there is no content and the cache-control header
+							// dictates not to go to source (and not store new value)
+							if (!entry?.value) throw new ServerError('Entry is not cached', 504);
+						} else if (ensureLoaded) {
+							const loadingFromSource = ensureLoadedFromSource(id, entry, context);
+							if (loadingFromSource) {
+								txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
+								context.loadedFromSource = true;
+								return loadingFromSource.then((entry) => entry?.value);
+							}
+						}
+						return entry?.value;
+					});
 				});
 			}
 			if (target?.property) return this.getProperty(target.property);
@@ -1001,22 +1011,22 @@ export function makeTable(options) {
 		/**
 		 * Determine if the user is allowed to get/read data from the current resource
 		 * @param user The current, authenticated user
-		 * @param query The parsed query from the search part of the URL
+		 * @param target The parsed query from the search part of the URL
 		 */
-		allowRead(user, query) {
-			const tablePermission = getTablePermissions(user);
+		allowRead(user: any, target: RequestTarget): boolean {
+			const tablePermission = getTablePermissions(user, target);
 			if (tablePermission?.read) {
 				if (tablePermission.isSuperUser) return true;
 				const attribute_permissions = tablePermission.attribute_permissions;
-				const select = query?.select;
+				const select = target?.select;
 				if (attribute_permissions?.length > 0 || (hasRelationships && select)) {
 					// If attribute permissions are defined, we need to ensure there is a select that only returns the attributes the user has permission to
 					// or if there are relationships, we need to ensure that the user has permission to read from the related table
 					// Note that if we do not have a select, we do not return any relationships by default.
-					if (!query) query = {};
+					if (!target) target = {};
 					if (select) {
 						const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
-						query.select = select
+						target.select = select
 							.map((property) => {
 								const propertyName = property.name || property;
 								if (!attrsForType || attrsForType[propertyName]) {
@@ -1024,6 +1034,8 @@ export function makeTable(options) {
 									if (relatedTable) {
 										// if there is a related table, we need to ensure the user has permission to read from that table and that attributes are properly restricted
 										if (!property.name) property = { name: property };
+										if (!property.checkPermission && target.checkPermission)
+											property.checkPermission = target.checkPermission;
 										if (!relatedTable.prototype.allowRead.call(null, user, property)) return false;
 										if (!property.select) return property.name; // no select was applied, just return the name
 									}
@@ -1032,11 +1044,11 @@ export function makeTable(options) {
 							})
 							.filter(Boolean);
 					} else {
-						query.select = attribute_permissions
+						target.select = attribute_permissions
 							.filter((attribute) => attribute.read && !propertyResolvers[attribute.attribute_name])
 							.map((attribute) => attribute.attribute_name);
 					}
-					return query;
+					return target;
 				} else {
 					return true;
 				}
@@ -1049,8 +1061,8 @@ export function makeTable(options) {
 		 * @param updatedData
 		 * @param fullUpdate
 		 */
-		allowUpdate(user, updatedData: any) {
-			const tablePermission = getTablePermissions(user);
+		allowUpdate(user: any, updatedData: any, target: RequestTarget) {
+			const tablePermission = getTablePermissions(user, target);
 			if (tablePermission?.update) {
 				const attribute_permissions = tablePermission.attribute_permissions;
 				if (attribute_permissions?.length > 0) {
@@ -1076,9 +1088,9 @@ export function makeTable(options) {
 		 * @param user The current, authenticated user
 		 * @param newData
 		 */
-		allowCreate(user, newData: {}) {
+		allowCreate(user: any, newData: any, target: RequestTarget) {
 			if (this.isCollection) {
-				const tablePermission = getTablePermissions(user);
+				const tablePermission = getTablePermissions(user, target);
 				if (tablePermission?.insert) {
 					const attribute_permissions = tablePermission.attribute_permissions;
 					if (attribute_permissions?.length > 0) {
@@ -1104,8 +1116,8 @@ export function makeTable(options) {
 		 * Determine if the user is allowed to delete from the current resource
 		 * @param user The current, authenticated user
 		 */
-		allowDelete(user) {
-			const tablePermission = getTablePermissions(user);
+		allowDelete(user: any, target: RequestTarget) {
+			const tablePermission = getTablePermissions(user, target);
 			return tablePermission?.delete && checkContextPermissions(this.getContext());
 		}
 
@@ -1132,7 +1144,8 @@ export function makeTable(options) {
 				id = requestTargetToId(target);
 			}
 
-			const envTxn = txnForContext(this.getContext());
+			const context = this.getContext();
+			const envTxn = txnForContext(context);
 			if (!envTxn) throw new Error('Can not update a table resource outside of a transaction');
 			// record in the list of updating records so it can be written to the database when we commit
 			if (updates === false) {
@@ -1154,11 +1167,23 @@ export function makeTable(options) {
 				} else {
 					// standard path, where we retrieve the references record and return an Updatable, initialized with any
 					// updates that were passed into this method
-					return when(this.get(target), (record) => {
-						const updatable = new Updatable(record);
-						updatable._setChanges(updates);
-						this._writeUpdate(id, updatable.getChanges(), false);
-						return updatable;
+					let allowed = true;
+					if (target == undefined) throw new TypeError('Can not put a record without a target');
+					if (target.checkPermission) {
+						// requesting authorization verification
+						allowed = this.allowUpdate(context.user, updates, target);
+					}
+					return when(allowed, (allowed) => {
+						if (!allowed) {
+							throw new AccessViolation(context.user);
+						}
+
+						return when(primaryStore.get(requestTargetToId(target)), (record) => {
+							const updatable = new Updatable(record);
+							updatable._setChanges(updates);
+							this._writeUpdate(id, updatable.getChanges(), false);
+							return updatable;
+						});
 					});
 				}
 			}
@@ -1201,7 +1226,18 @@ export function makeTable(options) {
 		}
 
 		invalidate(target: RequestTargetOrId) {
-			this._writeInvalidate(target ? requestTargetToId(target) : this.getId());
+			let allowed = true;
+			const context = this.getContext();
+			if ((target as RequestTarget)?.checkPermission) {
+				// requesting authorization verification
+				allowed = this.allowDelete(context.user, target, context);
+			}
+			return when(allowed, (allowed: boolean) => {
+				if (!allowed) {
+					throw new AccessViolation(context.user);
+				}
+				this._writeInvalidate(target ? requestTargetToId(target) : this.getId());
+			});
 		}
 		_writeInvalidate(id: Id, partialRecord?: any, options?: any) {
 			const context = this.getContext();
@@ -1292,11 +1328,11 @@ export function makeTable(options) {
 		}
 
 		/**
-		 * Record the relocation of an entry (when a record is moved to a different node)
+		 * Record the relocation of an entry (when a record is moved to a different node), return true if it is now located locally
 		 * @param existingEntry
 		 * @param entry
 		 */
-		static _recordRelocate(existingEntry, entry) {
+		static _recordRelocate(existingEntry, entry): boolean {
 			const context = {
 				previousResidency: this.getResidencyRecord(existingEntry.residencyId),
 				isRelocation: true,
@@ -1304,7 +1340,7 @@ export function makeTable(options) {
 			const residency = residencyFromFunction(this.getResidency(entry.value, context));
 			let residencyId: number;
 			if (residency) {
-				if (!residency.includes(server.hostname)) return; // if we aren't in the residency, we don't need to do anything, we are not responsible for storing this record
+				if (!residency.includes(server.hostname)) return false; // if we aren't in the residency, we don't need to do anything, we are not responsible for storing this record
 				residencyId = getResidencyId(residency);
 			}
 			const metadata = 0;
@@ -1320,6 +1356,7 @@ export function makeTable(options) {
 				false,
 				null // the audit record value should be empty since there are no changes to the actual data
 			);
+			return true;
 		}
 		/**
 		 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
@@ -1375,29 +1412,68 @@ export function makeTable(options) {
 
 		/**
 		 * Store the provided record data into the current resource. This is not written
-		 * until the corresponding transaction is committed. This will either immediately fail (synchronously) or always
-		 * succeed. That doesn't necessarily mean it will "win", another concurrent put could come "after" (monotonically,
-		 * even if not chronologically) this one.
+		 * until the corresponding transaction is committed.
 		 * @param record
 		 * @param options
 		 */
-		put(target: RequestTarget, record: any): void {
+		put(target: RequestTarget, record: any): void | Promise<void> {
 			if (record === undefined || record instanceof URLSearchParams) {
 				// legacy argument position, shift the arguments and go through the update method for back-compat
 				this.update(target, true);
 			} else {
-				// standard path, handle arrays as multiple updates, and otherwise do a direct update
-				if (Array.isArray(record)) {
-					for (const element of record) {
-						const id = element[primaryKey];
-						this._writeUpdate(id, element, true);
-					}
-				} else {
-					const id = requestTargetToId(target);
-					this._writeUpdate(id, record, true);
+				let allowed = true;
+				if (target == undefined) throw new TypeError('Can not put a record without a target');
+				const context = this.getContext();
+				if (target.checkPermission) {
+					// requesting authorization verification
+					allowed = this.allowUpdate(context.user, record, target);
 				}
+				return when(allowed, (allowed) => {
+					if (!allowed) {
+						throw new AccessViolation(context.user);
+					}
+					// standard path, handle arrays as multiple updates, and otherwise do a direct update
+					if (Array.isArray(record)) {
+						for (const element of record) {
+							const id = element[primaryKey];
+							this._writeUpdate(id, element, true);
+						}
+					} else {
+						const id = requestTargetToId(target);
+						this._writeUpdate(id, record, true);
+					}
+				});
 			}
 			// always return undefined
+		}
+		create(target: RequestTarget, record: any): void | Promise<void> {
+			let allowed = true;
+			const context = this.getContext();
+			if (!record && !(target instanceof URLSearchParams)) {
+				// single argument, shift arguments
+				record = target;
+				target = undefined;
+			}
+			if (!record || typeof record !== 'object' || Array.isArray(record)) {
+				throw new TypeError('Can not create a record without an object');
+			}
+			if (target?.checkPermission) {
+				// requesting authorization verification
+				allowed = this.allowCreate(context.user, record, target);
+			}
+			return when(allowed, (allowed) => {
+				if (!allowed) {
+					throw new AccessViolation(context.user);
+				}
+				let id = requestTargetToId(target) ?? record[primaryKey];
+				if (id === undefined) {
+					id = this.constructor.getNewId();
+				} else {
+					if (primaryStore.get(id)) throw new ClientError('Record already exists', 409);
+				}
+				this._writeUpdate(id, record, true);
+				return record;
+			});
 		}
 		patch(target: RequestTarget, recordUpdate: any): void | Promise<void> {
 			if (recordUpdate === undefined || recordUpdate instanceof URLSearchParams) {
@@ -1495,9 +1571,9 @@ export function makeTable(options) {
 					// we use optimistic locking to only commit if the existing record state still holds true.
 					// this is superior to using an async transaction since it doesn't require JS execution
 					//  during the write transaction.
-					let precedes_existing_version = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
+					let precedesExisting = precedesExistingVersion(txnTime, existingEntry, options?.nodeId);
 					let auditRecordToStore: any; // what to store in the audit record. For a full update, this can be left undefined in which case it is the same as full record update and optimized to use a binary copy
-					if (precedes_existing_version <= 0) {
+					if (precedesExisting <= 0) {
 						// This block is to handle the case of saving an update where the transaction timestamp is older than the
 						// existing timestamp, which means that we received updates out of order, and must resequence the application
 						// of the updates to the record to ensure consistency across the cluster
@@ -1506,7 +1582,17 @@ export function makeTable(options) {
 							// incremental CRDT updates are only available with audit logging on
 							let localTime = existingEntry.localTime;
 							let auditedVersion = existingEntry.version;
-							logger.trace?.('Applying CRDT update to record with id: ', id, 'applying later update:', auditedVersion);
+							logger.trace?.(
+								'Applying CRDT update to record with id: ',
+								id,
+								'txn time',
+								new Date(txnTime),
+								'applying later update from:',
+								new Date(auditedVersion),
+								'local recorded time',
+								new Date(localTime)
+							);
+
 							const succeedingUpdates = []; // record the "future" updates, as we need to apply the updates in reverse order
 							while (localTime > txnTime || (auditedVersion >= txnTime && localTime > 0)) {
 								const auditEntry = auditStore.get(localTime);
@@ -1515,15 +1601,15 @@ export function makeTable(options) {
 								auditedVersion = auditRecord.version;
 								if (auditedVersion >= txnTime) {
 									if (auditedVersion === txnTime) {
-										precedes_existing_version = precedesExistingVersion(
+										precedesExisting = precedesExistingVersion(
 											txnTime,
 											{ version: auditedVersion, localTime: localTime },
 											options?.nodeId
 										);
-										if (precedes_existing_version === 0) {
+										if (precedesExisting === 0) {
 											return; // treat a tie as a duplicate and drop it
 										}
-										if (precedes_existing_version > 0) continue; // if the existing version is older, we can skip this update
+										if (precedesExisting > 0) continue; // if the existing version is older, we can skip this update
 									}
 									if (auditRecord.type === 'patch') {
 										// record patches so we can reply in order
@@ -1537,11 +1623,26 @@ export function makeTable(options) {
 								}
 								localTime = auditRecord.previousLocalTime;
 							}
+							if (!localTime) {
+								// if we don't have a local time, we can't apply the update, so we need to drop it
+								logger.debug?.(
+									'No further audit history, must drop update',
+									id,
+									'existing version preserved',
+									existingEntry
+								);
+								return;
+							}
 							succeedingUpdates.sort((a, b) => a.version - b.version); // order the patches
 							for (const auditRecord of succeedingUpdates) {
 								const newerUpdate = auditRecord.getValue(primaryStore);
+								logger.debug?.(
+									'Rebuilding update with future patch:',
+									new Date(auditRecord.version),
+									newerUpdate,
+									auditRecord
+								);
 								updateToApply = rebuildUpdateBefore(updateToApply, newerUpdate, fullUpdate);
-								logger.debug?.('Rebuilding update with future patch:', updateToApply);
 								if (!updateToApply) return; // if all changes are overwritten, nothing left to do
 							}
 						} else if (fullUpdate) {
@@ -1554,12 +1655,17 @@ export function makeTable(options) {
 							updateToApply = rebuildUpdateBefore(updateToApply, existingRecord, fullUpdate);
 							logger.debug?.('Rebuilding update without audit:', updateToApply);
 						}
+						logger.trace?.('Rebuilt record to save:', updateToApply, ' is full update:', fullUpdate);
 					}
 					let recordToStore: any;
 					if (fullUpdate) recordToStore = updateToApply;
 					else {
-						this.#record = existingRecord;
-						recordToStore = updateAndFreeze(this, updateToApply);
+						if (this.constructor.loadAsInstance === false)
+							recordToStore = updateAndFreeze(existingRecord, updateToApply);
+						else {
+							this.#record = existingRecord;
+							recordToStore = updateAndFreeze(this, updateToApply);
+						}
 					}
 					this.#record = recordToStore;
 					if (recordToStore && recordToStore.getRecord)
@@ -1639,7 +1745,7 @@ export function makeTable(options) {
 			transaction.addWrite(write);
 		}
 
-		async delete(target: RequestTarget): Promise<boolean> {
+		async delete(target: RequestTarget): Promise<boolean> | boolean {
 			if (isSearchTarget(target)) {
 				target.select = ['$id']; // just get the primary key of each record so we can delete them
 				for await (const entry of this.search(target)) {
@@ -1647,10 +1753,24 @@ export function makeTable(options) {
 				}
 				return true;
 			}
-
-			const id = requestTargetToId(target);
-			this._writeDelete(id);
-			return this.constructor.loadAsInstance === false ? true : Boolean(this.#record);
+			if (target) {
+				let allowed = true;
+				const context = this.getContext();
+				if (target.checkPermission) {
+					// requesting authorization verification
+					allowed = this.allowDelete(context.user, target, context);
+				}
+				return when(allowed, (allowed: boolean) => {
+					if (!allowed) {
+						throw new AccessViolation(context.user);
+					}
+					const id = requestTargetToId(target);
+					this._writeDelete(id);
+					return true;
+				});
+			}
+			this._writeDelete(this.getId());
+			return Boolean(this.#record);
 		}
 		_writeDelete(id: Id, options?: any) {
 			const transaction = txnForContext(this.getContext());
@@ -1693,17 +1813,25 @@ export function makeTable(options) {
 			return true;
 		}
 
-		search(request: RequestTarget): AsyncIterable<any> {
+		search(target: RequestTarget): AsyncIterable<any> {
 			const context = this.getContext();
 			const txn = txnForContext(context);
-			if (!request) throw new Error('No query provided');
-			let conditions = request.conditions;
-			if (!conditions)
-				conditions = Array.isArray(request) ? request : request[Symbol.iterator] ? Array.from(request) : [];
+			if (!target) throw new Error('No query provided');
+			if (target.parseError) throw target.parseError; // if there was a parse error, we can throw it now
+			if (target.checkPermission) {
+				// requesting authorization verification
+				const allowed = this.allowRead(context.user, target);
+				if (!allowed) {
+					throw new AccessViolation(context.user);
+				}
+			}
+
+			let conditions = target.conditions;
+			if (!conditions) conditions = Array.isArray(target) ? target : target[Symbol.iterator] ? Array.from(target) : [];
 			else if (conditions.length === undefined) {
 				conditions = conditions[Symbol.iterator] ? Array.from(conditions) : [conditions];
 			}
-			const id = request.id ?? this.getId();
+			const id = target.id ?? this.getId();
 			if (id) {
 				conditions = [
 					{
@@ -1782,7 +1910,7 @@ export function makeTable(options) {
 				return conditions;
 			}
 			function orderConditions(conditions: Condition[], operator: string) {
-				if (request.enforceExecutionOrder) return conditions; // don't rearrange conditions
+				if (target.enforceExecutionOrder) return conditions; // don't rearrange conditions
 				for (const condition of conditions) {
 					if (condition.conditions) condition.conditions = orderConditions(condition.conditions, condition.operator);
 				}
@@ -1798,9 +1926,9 @@ export function makeTable(options) {
 				}
 				return coerceType(value, attribute);
 			}
-			const operator = request.operator;
+			const operator = target.operator;
 			if (conditions.length > 0 || operator) conditions = prepareConditions(conditions, operator);
-			const sort = typeof request.sort === 'object' && request.sort;
+			const sort = typeof target.sort === 'object' && target.sort;
 			let postOrdering;
 			if (sort) {
 				// TODO: Support index-assisted sorts of unions, which will require potentially recursively adding/modifying an order aligned condition and be able to recursively undo it if necessary
@@ -1827,7 +1955,7 @@ export function makeTable(options) {
 							// if it is indexed, we add a pseudo-condition to align with the natural sort order of the index
 							orderAlignedCondition = { ...sort, comparator: 'sort' };
 							conditions.push(orderAlignedCondition);
-						} else if (conditions.length === 0 && !request.allowFullScan)
+						} else if (conditions.length === 0 && !target.allowFullScan)
 							throw handleHDBError(
 								new Error(),
 								`${
@@ -1840,7 +1968,6 @@ export function makeTable(options) {
 				}
 			}
 			conditions = orderConditions(conditions, operator);
-
 			if (sort) {
 				if (orderAlignedCondition && conditions[0] === orderAlignedCondition) {
 					// The db index is providing the order for the first sort, may need post ordering next sort order
@@ -1858,11 +1985,11 @@ export function makeTable(options) {
 					postOrdering = sort;
 				}
 			}
-			const select = request.select;
+			const select = target.select;
 			if (conditions.length === 0) {
 				conditions = [{ attribute: primaryKey, comparator: 'greater_than', value: true }];
 			}
-			if (request.explain) {
+			if (target.explain) {
 				return {
 					conditions,
 					operator,
@@ -1880,12 +2007,12 @@ export function makeTable(options) {
 				operator,
 				TableResource,
 				readTxn,
-				request,
+				target,
 				context,
 				(results: any[], filters: Function[]) => transformToEntries(results, select, context, readTxn, filters),
 				filtered
 			);
-			const ensure_loaded = request.ensureLoaded !== false;
+			const ensure_loaded = target.ensureLoaded !== false;
 			if (!postOrdering) entries = applyOffset(entries); // if there is no post ordering, we can apply the offset now
 			const transformToRecord = TableResource.transformEntryForSelect(
 				select,
@@ -1904,10 +2031,10 @@ export function makeTable(options) {
 				transformToRecord
 			);
 			function applyOffset(entries: any[]) {
-				if (request.offset || request.limit !== undefined)
+				if (target.offset || target.limit !== undefined)
 					return entries.slice(
-						request.offset,
-						request.limit !== undefined ? (request.offset || 0) + request.limit : undefined
+						target.offset,
+						target.limit !== undefined ? (target.offset || 0) + target.limit : undefined
 					);
 				return entries;
 			}
@@ -2125,7 +2252,7 @@ export function makeTable(options) {
 				let record;
 				if (context?.transaction?.stale) context.transaction.stale = false;
 				if (entry != undefined) {
-					record = entry.value || entry.deref?.()?.value;
+					record = entry.deref ? entry.deref() : entry.value;
 					if ((!record && (entry.key === undefined || entry.deref)) || entry.metadataFlags & INVALIDATED) {
 						if (entry.metadataFlags & INVALIDATED && context.replicateFrom === false && canSkip && entry.residencyId) {
 							return SKIP;
@@ -2184,7 +2311,7 @@ export function makeTable(options) {
 									value = filterMap.fromRecord?.(record);
 								}
 							} else {
-								value = resolver(record, context, entry);
+								value = resolver(record, context, entry, true);
 							}
 							const handleResolvedValue = (value: any) => {
 								if (resolver.directReturn) return callback(value, attribute_name);
@@ -2502,8 +2629,19 @@ export function makeTable(options) {
 				// legacy arg format, shift the args
 				this._writePublish(this.getId(), target, message);
 			} else {
-				const id = requestTargetToId(target);
-				this._writePublish(id, message, options);
+				let allowed = true;
+				const context = this.getContext();
+				if (target.checkPermission) {
+					// requesting authorization verification
+					allowed = this.allowCreate(context.user, target, context);
+				}
+				return when(allowed, (allowed: boolean) => {
+					if (!allowed) {
+						throw new AccessViolation(context.user);
+					}
+					const id = requestTargetToId(target);
+					this._writePublish(id, message, options);
+				});
 			}
 		}
 		_writePublish(id: Id, message, options?: any) {
@@ -2555,7 +2693,7 @@ export function makeTable(options) {
 				},
 			});
 		}
-		validate(record, patch?) {
+		validate(record: any, patch?: boolean) {
 			let validationErrors;
 			const validateValue = (value, attribute, name) => {
 				if (attribute.type && value != null) {
@@ -2571,6 +2709,14 @@ export function makeTable(options) {
 						const properties = attribute.properties;
 						for (let i = 0, l = properties.length; i < l; i++) {
 							const attribute = properties[i];
+							if (attribute.relationship || attribute.computed) {
+								if (record.hasOwnProperty(attribute.name)) {
+									(validationErrors || (validationErrors = [])).push(
+										`Computed property ${name}.${attribute.name} may not be directly assigned a value`
+									);
+								}
+								continue;
+							}
 							const updated = validateValue(value[attribute.name], attribute, name + '.' + attribute.name);
 							if (updated) value[attribute.name] = updated;
 						}
@@ -2691,10 +2837,17 @@ export function makeTable(options) {
 			};
 			for (let i = 0, l = attributes.length; i < l; i++) {
 				const attribute = attributes[i];
-				if (attribute.relationship || attribute.computed) continue;
+				if (attribute.relationship || attribute.computed) {
+					if (Object.hasOwn(record, attribute.name)) {
+						(validationErrors || (validationErrors = [])).push(
+							`Computed property ${attribute.name} may not be directly assigned a value`
+						);
+					}
+					continue;
+				}
 				if (!patch || attribute.name in record) {
 					const updated = validateValue(record[attribute.name], attribute, attribute.name);
-					if (updated) record[attribute.name] = updated;
+					if (updated !== undefined) record[attribute.name] = updated;
 				}
 			}
 			if (sealed) {
@@ -2854,23 +3007,30 @@ export function makeTable(options) {
 					hasRelationships = true;
 					if (relationship.to) {
 						if (attribute.elements?.definition) {
-							propertyResolvers[attribute.name] = attribute.resolve = (object, context, directEntry?) => {
+							propertyResolvers[attribute.name] = attribute.resolve = (object, context, entry, returnEntry?) => {
 								// TODO: Get raw record/entry?
 								const id = object[relationship.from ? relationship.from : primaryKey];
 								const relatedTable = attribute.elements.definition.tableClass;
-								if (directEntry) {
+								if (returnEntry) {
 									return searchByIndex(
 										{ attribute: relationship.to, value: id },
 										txnForContext(context).getReadTxn(),
 										false,
 										relatedTable,
 										false
-									).asArray;
+									).map((entry) => {
+										if (entry && entry.key !== undefined) return entry;
+										return relatedTable.primaryStore.getEntry(entry, {
+											transaction: txnForContext(context).getReadTxn(),
+										});
+									}).asArray;
 								}
 								return relatedTable.search([{ attribute: relationship.to, value: id }], context).asArray;
 							};
 							attribute.set = () => {
-								throw new Error('Setting a one-to-many relationship property is not supported');
+								// ideally we want to throw an error here, but if the user had (accidently?) set a property into storage
+								// conflicts with this attribute, we don't want to prevent loading
+								// throw new Error('Setting a one-to-many relationship property is not supported');
 							};
 							attribute.resolve.definition = attribute.elements.definition;
 							if (relationship.from) attribute.resolve.from = relationship.from;
@@ -2881,17 +3041,15 @@ export function makeTable(options) {
 					} else if (relationship.from) {
 						const definition = attribute.definition || attribute.elements?.definition;
 						if (definition) {
-							propertyResolvers[attribute.name] = attribute.resolve = (object, context, directEntry?) => {
+							propertyResolvers[attribute.name] = attribute.resolve = (object, context, entry, returnEntry?) => {
 								const ids = object[relationship.from];
 								if (ids === undefined) return undefined;
 								if (attribute.elements) {
 									let hasPromises;
 									const results = ids?.map((id) => {
-										const value = directEntry
-											? definition.tableClass.primaryStore.getEntry(id, {
-													transaction: txnForContext(context).getReadTxn(),
-												})
-											: definition.tableClass.get(id, context);
+										const value = definition.tableClass.primaryStore[returnEntry ? 'getEntry' : 'get'](id, {
+											transaction: txnForContext(context).getReadTxn(),
+										});
 										if (value?.then) hasPromises = true;
 										return value;
 									});
@@ -2903,11 +3061,9 @@ export function makeTable(options) {
 											? Promise.all(results)
 											: results;
 								}
-								return directEntry
-									? definition.tableClass.primaryStore.getEntry(ids, {
-											transaction: txnForContext(context).getReadTxn(),
-										})
-									: definition.tableClass.get(ids, context);
+								return definition.tableClass.primaryStore[returnEntry ? 'getEntry' : 'get'](ids, {
+									transaction: txnForContext(context).getReadTxn(),
+								});
 							};
 							attribute.set = (object, related) => {
 								if (Array.isArray(related)) {
@@ -2948,6 +3104,7 @@ export function makeTable(options) {
 							this.userResolvers[attribute.name] = () => {};
 						}
 					};
+					attribute.resolve.directReturn = true;
 				} else if (indices[attribute.name]?.customIndex?.propertyResolver) {
 					const customIndex = indices[attribute.name].customIndex;
 					propertyResolvers[attribute.name] = (object, context, entry) => {
@@ -3283,9 +3440,12 @@ export function makeTable(options) {
 			}
 		});
 	}
-	function getTablePermissions(user) {
-		if (!user?.role) return;
-		const permission = user.role.permission;
+	function getTablePermissions(user: any, target?: RequestTarget) {
+		let permission = target?.checkPermission; // first check to see the request target specifically provides the permissions to authorize
+		if (typeof permission !== 'object') {
+			if (!user?.role) return;
+			permission = user.role.permission;
+		}
 		if (permission.super_user) return FULL_PERMISSIONS;
 		const dbPermission = permission[databaseName];
 		let table: any;
@@ -3376,7 +3536,7 @@ export function makeTable(options) {
 		if (!entry) {
 			return;
 		}
-		const record = entry.value || primaryStore.getEntry(entry.key)?.value;
+		const record = (entry.deref ? entry.deref() : entry.value) ?? primaryStore.getEntry(entry.key)?.value;
 		if (typeof attribute_name === 'object') {
 			// attribute_name is an array of attributes, pointing to nested attribute
 			let resolvers = propertyResolvers;
@@ -3384,7 +3544,8 @@ export function makeTable(options) {
 			for (let i = 0, l = attribute_name.length; i < l; i++) {
 				const attribute = attribute_name[i];
 				const resolver = resolvers?.[attribute];
-				value = resolver && value ? resolver(value, context, entry)?.value : value?.[attribute];
+				value = resolver && value ? resolver(value, context, entry) : value?.[attribute];
+				entry = null; // can't use this in the nested object
 				resolvers = resolver?.definition?.tableClass?.propertyResolvers;
 			}
 			return value;
@@ -4007,9 +4168,9 @@ function isDescendantId(ancestorId, descendantId): boolean {
 const rest = () => new Promise(setImmediate);
 
 // wait for a promise or plain object to resolve
-function when(value, callback, reject?) {
+function when<T, R>(value: T | Promise<T>, callback: (value: T) => R, reject?: (error: any) => void): R {
 	if (value?.then) return value.then(callback, reject);
-	return callback(value);
+	return callback(value as T);
 }
 // for filtering
 function exists(value) {

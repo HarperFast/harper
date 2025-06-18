@@ -15,7 +15,6 @@ import { IterableEventQueue } from '../../resources/IterableEventQueue.ts';
 import {
 	NodeReplicationConnection,
 	createWebSocket,
-	OPERATION_REQUEST,
 	replicateOverWS,
 	databaseSubscriptions,
 	tableUpdateListeners,
@@ -66,6 +65,7 @@ export function start(options) {
 	// noinspection JSVoidFunctionReturnValueUsed
 	// @ts-expect-error
 	const wsServers = server.ws(async (ws, request, chainCompletion, next) => {
+		logger.debug('Incoming WS connection received ' + request.url);
 		if (request.headers.get('sec-websocket-protocol') !== 'harperdb-replication-v1') {
 			return next(ws, request, chainCompletion);
 		}
@@ -81,6 +81,7 @@ export function start(options) {
 	// or IP address and then falling back to standard authorization, we set up an http middleware listener
 	server.http((request, nextHandler) => {
 		if (request.isWebSocket && request.headers.get('Sec-WebSocket-Protocol') === 'harperdb-replication-v1') {
+			logger.debug('Incoming replication WS connection received, authorized: ' + request.authorized);
 			if (!request.authorized && request._nodeRequest.socket.authorizationError) {
 				logger.error(
 					`Incoming client connection from ${request.ip} did not have valid certificate, you may need turn on enableRootCAs in the config if you are using a publicly signed certificate, or add the CA to the server's trusted CAs`,
@@ -111,7 +112,7 @@ export function start(options) {
 				} else {
 					// technically if there are credentials, we could still allow the connection, but give a warning, because we don't usually do that
 					logger.warn(
-						`No node found for certificate common name ${subject.CN}, available nodes are ${Array.from(
+						`No node found for certificate common name/SANs: ${hostnames}, available nodes are ${Array.from(
 							hdbNodesStore
 								.getRange({})
 								.filter(({ value }) => value)
@@ -380,6 +381,7 @@ export async function sendOperationToNode(node, operation, options) {
 	const session = replicateOverWS(socket, {}, {});
 	return new Promise((resolve, reject) => {
 		socket.on('open', () => {
+			logger.debug('Sending operation connection to ' + node.url + ' opened', operation);
 			resolve(session.sendOperation(operation));
 		});
 		socket.on('error', (error) => {

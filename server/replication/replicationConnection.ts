@@ -27,11 +27,11 @@ import {
 } from './replicator.ts';
 import env from '../../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
-import { HAS_STRUCTURE_UPDATE, METADATA } from '../../resources/RecordEncoder.ts';
+import { HAS_STRUCTURE_UPDATE, lastMetadata, METADATA } from '../../resources/RecordEncoder.ts';
 import { decode, encode, Packr } from 'msgpackr';
 import { WebSocket } from 'ws';
 import { threadId } from 'worker_threads';
-import * as logger from '../../utility/logging/logger.js';
+import { forComponent, errorToString } from '../../utility/logging/harper_logger.js';
 import { disconnectedFromNode, connectedToNode, ensureNode } from './subscriptionManager.ts';
 import { EventEmitter } from 'events';
 import { createTLSSelector } from '../../security/keys.js';
@@ -40,8 +40,10 @@ import { getHDBNodeTable, getReplicationSharedStatus } from './knownNodes.ts';
 import * as process from 'node:process';
 import { isIP } from 'node:net';
 import { recordAction } from '../../resources/analytics/write.ts';
-import { decodeBlobsWithWrites, decodeWithBlobCallback, getFileId } from '../../resources/blob.ts';
+import { decodeBlobsWithWrites, decodeWithBlobCallback, deleteBlob, getFileId } from '../../resources/blob.ts';
 import { PassThrough } from 'node:stream';
+import { getLastVersion } from 'lmdb';
+const logger = forComponent('replication').conditional;
 
 // these are the codes we use for the different commands
 const SUBSCRIPTION_REQUEST = 129;
@@ -284,31 +286,35 @@ export function replicateOverWS(ws, options, authorization) {
 		(p ? 's:' + p : 'c:' + options.url?.slice(-4)) +
 		' ' +
 		Math.random().toString().slice(2, 3);
-
+	logger.debug?.(connectionId, 'Initializing replication connection', authorization);
 	let encodingStart = 0;
 	let encodingBuffer = Buffer.allocUnsafeSlow(1024);
 	let position = 0;
 	let dataView = new DataView(encodingBuffer.buffer, 0, 1024);
 	let databaseName = options.database;
 	const dbSubscriptions = options.databaseSubscriptions || databaseSubscriptions;
-	let auditStore;
+	let auditStore: any;
 	let replicationSharedStatus: Float64Array;
 	// this is the subscription that the local table makes to this replicator, and incoming messages
 	// are sent to this subscription queue:
 	let subscribed = false;
 	let tableSubscriptionToReplicator = options.subscription;
 	if (tableSubscriptionToReplicator?.then)
-		tableSubscriptionToReplicator.then((sub) => (tableSubscriptionToReplicator = sub));
+		tableSubscriptionToReplicator.then((sub) => {
+			tableSubscriptionToReplicator = sub;
+			if (tableSubscriptionToReplicator.auditStore) auditStore = tableSubscriptionToReplicator.auditStore;
+		});
 	let tables = options.tables || (databaseName && getDatabases()[databaseName]);
+	let remoteNodeName: string;
 	if (!authorization) {
-		logger.error?.('No authorization provided');
+		logger.error?.(connectionId, 'No authorization provided');
 		// don't send disconnect because we want the client to potentially retry
 		close(1008, 'Unauthorized');
 		return;
 	}
 	const awaitingResponse = new Map();
 	let receivingDataFromNodeIds = [];
-	let remoteNodeName = authorization.name;
+	remoteNodeName = authorization.name;
 	if (remoteNodeName && options.connection) options.connection.nodeName = remoteNodeName;
 	let lastSequenceIdReceived, lastSequenceIdCommitted;
 	let sendPingInterval, receivePingTimer, lastPingTime, skippedMessageSequenceUpdateTimer;
@@ -412,7 +418,7 @@ export function replicateOverWS(ws, options, authorization) {
 							}
 							if (options.connection) options.connection.nodeName = remoteNodeName;
 							//const url = message[3] ?? thisNodeUrl;
-							logger.debug?.(connectionId, 'received node name:', remoteNodeName, 'db:', databaseName);
+							logger.debug?.(connectionId, 'received node name:', remoteNodeName, 'db:', databaseName ?? message[2]);
 							if (!databaseName) {
 								// this means we are the server
 								try {
@@ -467,6 +473,7 @@ export function replicateOverWS(ws, options, authorization) {
 					case OPERATION_REQUEST:
 						try {
 							const isAuthorizedNode = authorization?.replicates || authorization?.subscribers || authorization?.name;
+							logger.debug?.('Received operation request', data, 'from', remoteNodeName);
 							server.operation(data, { user: authorization }, !isAuthorizedNode).then(
 								(response) => {
 									if (Array.isArray(response)) {
@@ -482,7 +489,7 @@ export function replicateOverWS(ws, options, authorization) {
 											OPERATION_RESPONSE,
 											{
 												requestId: data.requestId,
-												error: error instanceof Error ? error.toString() : error,
+												error: errorToString(error),
 											},
 										])
 									);
@@ -494,7 +501,7 @@ export function replicateOverWS(ws, options, authorization) {
 									OPERATION_RESPONSE,
 									{
 										requestId: data.requestId,
-										error: error instanceof Error ? error.toString() : error,
+										error: errorToString(error),
 									},
 								])
 							);
@@ -637,9 +644,10 @@ export function replicateOverWS(ws, options, authorization) {
 							// we might want to prefetch here
 							const binaryEntry = table.primaryStore.getBinaryFast(recordId);
 							if (binaryEntry) {
-								const entry = table.primaryStore.decoder.decode(binaryEntry, { valueAsBuffer: true });
-								let valueBuffer = entry.value;
-								if (entry[METADATA] & HAS_BLOBS) {
+								let valueBuffer = table.primaryStore.decoder.decode(binaryEntry, { valueAsBuffer: true });
+								const entry: any = lastMetadata || {};
+								entry.version = getLastVersion();
+								if (lastMetadata && lastMetadata[METADATA] & HAS_BLOBS) {
 									// if there are blobs, we need to find them and send their contents
 									// but first, the decoding process can destroy our buffer above, so we need to copy it
 									valueBuffer = Buffer.from(valueBuffer);
@@ -682,12 +690,25 @@ export function replicateOverWS(ws, options, authorization) {
 						const entry = message[2];
 						if (entry?.error) reject(new Error(entry.error));
 						else if (entry) {
-							decodeBlobsWithWrites(() => {
-								const record = tableDecoders[tableId].decoder.decode(entry.value);
-								entry.value = record;
-								entry.key = key;
-								resolve(entry);
-							}, receiveBlobs);
+							let blobsToDelete: any[];
+							decodeBlobsWithWrites(
+								() => {
+									const record = tableDecoders[tableId].decoder.decode(entry.value);
+									entry.value = record;
+									entry.key = key;
+									if (!resolve(entry)) {
+										// if it was not moved locally, clean up any blobs that were written
+										if (blobsToDelete) blobsToDelete.forEach(deleteBlob);
+									}
+								},
+								(remoteBlob) => {
+									const localBlob = receiveBlobs(remoteBlob); // receive the blob;
+									// track the blobs that were written in case we need to delete them if the record is not moved locally
+									if (!blobsToDelete) blobsToDelete = [];
+									blobsToDelete.push(localBlob);
+									return localBlob;
+								}
+							);
 						} else resolve();
 						awaitingResponse.delete(message[1]);
 						break;
@@ -1313,9 +1334,14 @@ export function replicateOverWS(ws, options, authorization) {
 	});
 
 	function close(code?, reason?) {
-		ws.isFinished = true;
-		ws.close(code, reason);
-		options.connection?.emit('finished'); // we want to synchronously indicate that the connection is finished, so it is not accidently reused
+		try {
+			ws.isFinished = true;
+			logger.debug?.(connectionId, 'closing', remoteNodeName, databaseName, code, reason);
+			ws.close(code, reason);
+			options.connection?.emit('finished'); // we want to synchronously indicate that the connection is finished, so it is not accidently reused
+		} catch (error) {
+			logger.error?.(connectionId, 'Error closing connection', error);
+		}
 	}
 
 	async function sendBlobs(blob) {
@@ -1366,7 +1392,7 @@ export function replicateOverWS(ws, options, authorization) {
 					{
 						fileId: id,
 						finished: true,
-						error: error.toString(),
+						error: errorToString(error),
 					},
 					Buffer.alloc(0),
 				])
@@ -1416,6 +1442,7 @@ export function replicateOverWS(ws, options, authorization) {
 			subscribed = true;
 			options.connection?.on('subscriptions-updated', sendSubscriptionRequestUpdate);
 		}
+		if (!auditStore && tableSubscriptionToReplicator) auditStore = tableSubscriptionToReplicator.auditStore;
 		if (options.connection?.isFinished)
 			throw new Error('Can not make a subscription request on a connection that is already closed');
 		const lastTxnTimes = new Map();
@@ -1464,7 +1491,7 @@ export function replicateOverWS(ws, options, authorization) {
 			// if we are connected directly to the node, we start from the last sequence number we received at the top level
 			let startTime = Math.max(
 				sequenceEntry?.seqId ?? 1,
-				(typeof node.start_time === 'string' ? new Date(node.start_time).getTime() : node.start_time) ?? 1
+				(typeof node.startTime === 'string' ? new Date(node.startTime).getTime() : node.startTime) ?? 1
 			);
 			logger.debug?.(
 				'Starting time recorded in db',
@@ -1500,7 +1527,7 @@ export function replicateOverWS(ws, options, authorization) {
 				replicateByDefault,
 				tables: tableSubs, // omitted or included based on flag above
 				startTime,
-				endTime: node.end_time,
+				endTime: node.endTime,
 			};
 		});
 
@@ -1653,7 +1680,7 @@ export function replicateOverWS(ws, options, authorization) {
 						resolve(entry);
 						// However, if we are going to record this locally, we need to record it as a relocation event
 						// and determine new residency information
-						if (entry) table._recordRelocate(existingEntry, entry);
+						if (entry) return table._recordRelocate(existingEntry, entry);
 					},
 					reject,
 				});

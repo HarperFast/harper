@@ -3,7 +3,7 @@ import { setChildListenerByType } from '../../server/threads/manageThreads.js';
 import { getDatabases, table } from '../databases.ts';
 import type { Databases, Table, Tables } from '../databases.ts';
 import { getLogFilePath } from '../../utility/logging/harper_logger.js';
-import { loggerWithTag } from '../../utility/logging/logger.js';
+import { forComponent } from '../../utility/logging/harper_logger.js';
 import { dirname, join } from 'path';
 import { open } from 'fs/promises';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.js';
@@ -14,7 +14,7 @@ import * as fs from 'node:fs';
 import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts';
 import { METRIC } from './metadata.ts';
 
-const log = loggerWithTag('analytics');
+const log = forComponent('analytics').conditional;
 
 initSync();
 
@@ -231,7 +231,7 @@ function storeMetric(table: Table, metric: Metric) {
 	const hostname = server.hostname;
 	let nodeId = nodeIds.get(hostname);
 	if (nodeId) {
-		log.trace?.('storeMetric cached nodeId:', nodeId)
+		log.trace?.('storeMetric cached nodeId:', nodeId);
 	} else {
 		nodeId = stableNodeId(hostname);
 		log.trace?.('storeMetric new nodeId:', nodeId);
@@ -261,6 +261,7 @@ interface ResourceUsage extends Partial<NodeJS.ResourceUsage> {
  */
 export function calculateCPUUtilization(resourceUsage: ResourceUsage, period: number): number {
 	const cpuTime = resourceUsage.userCPUTime + resourceUsage.systemCPUTime;
+	log.trace?.(`calculateCPUUtilization cpuTime: ${cpuTime} period: ${period}`);
 	return Math.round((cpuTime / period) * 100) / 100;
 }
 
@@ -270,12 +271,11 @@ export function calculateCPUUtilization(resourceUsage: ResourceUsage, period: nu
  */
 export function diffResourceUsage(
 	lastResourceUsage: ResourceUsage,
-	resourceUsage: NodeJS.ResourceUsage
+	resourceUsage: ResourceUsage
 ): ResourceUsage {
 	return {
-		// Node returns userCPUTime & systemCPUTime as microseconds, so normalize to milliseconds first
-		userCPUTime: resourceUsage.userCPUTime / 1000 - (lastResourceUsage?.userCPUTime ?? 0),
-		systemCPUTime: resourceUsage.systemCPUTime / 1000 - (lastResourceUsage?.systemCPUTime ?? 0),
+		userCPUTime: resourceUsage.userCPUTime - (lastResourceUsage?.userCPUTime ?? 0),
+		systemCPUTime: resourceUsage.systemCPUTime - (lastResourceUsage?.systemCPUTime ?? 0),
 		minorPageFault: resourceUsage.minorPageFault - (lastResourceUsage?.minorPageFault ?? 0),
 		majorPageFault: resourceUsage.majorPageFault - (lastResourceUsage?.majorPageFault ?? 0),
 		fsRead: resourceUsage.fsRead - (lastResourceUsage?.fsRead ?? 0),
@@ -492,9 +492,7 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 			}
 			const previousBin = distribution[index > 1 ? index - 2 : 0];
 			if (!bin) bin = distribution[0];
-			percentiles.push(
-				bin.value - ((bin.value - previousBin.value) * (countPosition - nextTargetCount)) / bin.count
-			);
+			percentiles.push(bin.value - ((bin.value - previousBin.value) * (countPosition - nextTargetCount)) / bin.count);
 		}
 		const [p1, p10, p25, median, p75, p90, p95, p99, p999] = percentiles;
 		Object.assign(action, { p1, p10, p25, median, p75, p90, p95, p99, p999 });
@@ -523,17 +521,23 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 	lastActive = active;
 
 	// resource-usage metrics
-	const resourceUsage = process.resourceUsage();
+	const resourceUsage = process.resourceUsage() as ResourceUsage;
+	resourceUsage.time = now;
+	// normalize to milliseconds
+	resourceUsage.userCPUTime = resourceUsage.userCPUTime / 1000;
+	resourceUsage.systemCPUTime = resourceUsage.systemCPUTime / 1000;
+	log.trace?.(`process.resourceUsage: ${JSON.stringify(resourceUsage)}`);
 	const currentResourceUsage = diffResourceUsage(lastResourceUsage, resourceUsage);
+	log.trace?.(`diffed resourceUsage: ${JSON.stringify(currentResourceUsage)}`);
 	currentResourceUsage.time = now;
 	currentResourceUsage.period = lastResourceUsage.time ? now - lastResourceUsage.time : toPeriod;
-	currentResourceUsage.cpuUtilization = calculateCPUUtilization(lastResourceUsage, currentResourceUsage.period);
+	currentResourceUsage.cpuUtilization = calculateCPUUtilization(currentResourceUsage, currentResourceUsage.period);
 	const cruMetric = {
 		metric: METRIC.RESOURCE_USAGE,
 		...currentResourceUsage,
 	};
 	storeMetric(analyticsTable, cruMetric);
-	lastResourceUsage = currentResourceUsage;
+	lastResourceUsage = resourceUsage;
 
 	// database-size & table-size metrics
 	const databases = getDatabases();

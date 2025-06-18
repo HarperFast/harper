@@ -78,7 +78,7 @@ jobs:
         shell: bash
   runSonarScans:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 25
     needs:
       - runUnitTests
       - createInstances
@@ -96,7 +96,7 @@ jobs:
           public_dns_name="${public_dns_names[0]}"
           scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/coverage/lcov.info" "harperdb/coverage/lcov.info"
       - name: SonarCloud Scan
-        uses: sonarsource/sonarcloud-github-action@master
+        uses: sonarsource/sonarqube-scan-action@v5.2.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
@@ -110,6 +110,10 @@ jobs:
       - name: Run Integration Tests with Postman on Instances
         env:
           CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+          HDB_ADMIN_USERNAME: ${{ secrets.HDB_ADMIN_USERNAME }}
+          HDB_ADMIN_PASSWORD: ${{ secrets.HDB_ADMIN_PASSWORD }}
+          S3_KEY: ${{ secrets.AWS_S3_INTEGRATION_TEST_DATA_ACCESS_KEY_ID }}
+          S3_SECRET: ${{ secrets.AWS_S3_INTEGRATION_TEST_DATA_SECRET_ACCESS_KEY }}
         run: |
           #!/bin/bash
           cd ../
@@ -120,7 +124,7 @@ jobs:
           do 
             echo "Starting work on: $public_dns_name"
             ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
-                "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh && /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh"
+                "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh && HDB_ADMIN_USERNAME='${HDB_ADMIN_USERNAME}' HDB_ADMIN_PASSWORD='${HDB_ADMIN_PASSWORD}' S3_KEY='${S3_KEY}' S3_SECRET='${S3_SECRET}' /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh"
             echo "Ending work on: $public_dns_name"
           done
   downloadLogs:

@@ -239,16 +239,24 @@ export async function startOnMainThread(options) {
 					} else subscribeToNode(request);
 				}, NODE_SUBSCRIBE_DELAY);
 			} else {
-				logger.info(
-					'Node no longer should be used, unsubscribing from node',
-					node.replicates,
-					!!databases[databaseName],
-					getHDBNodeTable().primaryStore.get(getThisNodeName())?.replicates
-				);
+				logger.info('Node no longer should be used, unsubscribing from node', {
+					replicates: node.replicates,
+					databaseName,
+					node,
+					subscriptions: node.subscriptions,
+					hasDatabase: !!databases[databaseName],
+					thisReplicates: getHDBNodeTable().primaryStore.get(getThisNodeName())?.replicates,
+				});
 				if (!getHDBNodeTable().primaryStore.get(getThisNodeName())?.replicates) {
 					// if we are not fully replicating because it is turned off, make sure we set this
 					// flag so that we actually turn on subscriptions if full replication is turned on
 					isFullyReplicating = false;
+					logger.info(
+						'Disabling replication, this node name',
+						getThisNodeName(),
+						getHDBNodeTable().primaryStore.get(getThisNodeName()),
+						databaseName
+					);
 				}
 				const request = {
 					type: 'unsubscribe-from-node',

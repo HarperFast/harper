@@ -18,6 +18,7 @@ interface Response {
 	data?: any;
 	body?: any;
 }
+const { errorToString } = harperLogger;
 const etagBytes = new Uint8Array(8);
 const etagFloat = new Float64Array(etagBytes.buffer, 0, 1);
 let httpOptions = {};
@@ -108,6 +109,7 @@ async function http(request: Context & Request, nextHandler) {
 					throw new ServerError(`Forbidden`, 403);
 				}
 			}
+			resourceRequest.checkPermission = request.user?.role?.permission ?? {};
 
 			switch (method) {
 				case 'GET':
@@ -226,7 +228,7 @@ async function http(request: Context & Request, nextHandler) {
 			headers,
 			body: undefined,
 		};
-		responseObject.body = serialize(error.contentType ? error : error.toString(), request, responseObject);
+		responseObject.body = serialize(error.contentType ? error : errorToString(error), request, responseObject);
 		return responseObject;
 	}
 }
@@ -307,6 +309,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 				);
 				request.authorize = true;
 				const resourceRequest = new RequestTarget(entry.relativeURL); // TODO: We don't want to have to remove the forward slash and then re-add it
+				resourceRequest.checkPermission = request.user?.role?.permission ?? {};
 				const resource = entry.Resource;
 				const responseStream = await transaction(request, () => {
 					return resource.connect(resourceRequest, incomingMessages, request);
@@ -331,7 +334,7 @@ export function start(options: ServerOptions & { path: string; port: number; ser
 			ws.close(
 				HTTP_TO_WEBSOCKET_CLOSE_CODES[error.statusCode] || // try to return a helpful code
 					1011, // otherwise generic internal error
-				error.toString()
+				errorToString(error)
 			);
 		}
 		ws.close();

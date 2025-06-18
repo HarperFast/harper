@@ -26,8 +26,8 @@ class HdbError extends Error {
 		this.http_resp_msg = httpMsg
 			? httpMsg
 			: hdbErrors.DEFAULT_ERROR_MSGS[httpCode]
-			? hdbErrors.DEFAULT_ERROR_MSGS[httpCode]
-			: hdbErrors.DEFAULT_ERROR_MSGS[hdbErrors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
+				? hdbErrors.DEFAULT_ERROR_MSGS[httpCode]
+				: hdbErrors.DEFAULT_ERROR_MSGS[hdbErrors.HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR];
 		this.message = errOrig.message ? errOrig.message : this.http_resp_msg;
 		this.type = errOrig.name;
 		if (logLevel) this.logLevel = logLevel;
@@ -95,6 +95,41 @@ function handleHDBError(
 	return error;
 }
 
+/**
+ * Represents a general violation of validation/authorization. This should be used in situations where we are performing
+ * expected verification, and we do not need to record a stack trace. This extends Error's prototype, but doesn't
+ * use the native constructor to avoid stack trace capture which is several times faster.
+ * @param {Object} user - user object that caused the access violation
+ * @constructor
+ */
+function Violation(message) {
+	this.message = message;
+}
+Violation.prototype = Object.create(Error.prototype);
+Violation.prototype.constructor = Violation;
+Violation.prototype.toString = function () {
+	return `${this.constructor.name}: ${this.message}`;
+};
+
+/**
+ * Represents an access violation. This is used to return a 403 or 401 response to the client. Uses fast Violation class
+ * to avoid stack trace capture.
+ * @param {Object} user - user object that caused the access violation
+ * @constructor
+ */
+class AccessViolation extends Violation {
+	constructor(user) {
+		if (user) {
+			super('Unauthorized access to resource');
+			this.statusCode = 403;
+		} else {
+			super('Must login');
+			this.statusCode = 401;
+			// TODO: Optionally allow a Location header to redirect to
+		}
+	}
+}
+
 function isHDBError(e) {
 	return e.__proto__.constructor.name === HdbError.name;
 }
@@ -104,6 +139,8 @@ module.exports = {
 	handleHDBError,
 	ClientError,
 	ServerError,
+	AccessViolation,
+	Violation,
 	//Including common hdbErrors here so that they can be brought into modules on the same line where the handler method is brought in
 	hdbErrors,
 };

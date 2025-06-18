@@ -3,7 +3,7 @@
  * HTTP servers
  */
 import { Scope } from '../components/Scope.ts';
-import { createServer as createSocketServer, Socket } from 'node:net';
+import { Socket } from 'node:net';
 import harperLogger from '../utility/logging/harper_logger.js';
 import { parentPort } from 'node:worker_threads';
 import env from '../utility/environment/environmentManager';
@@ -25,6 +25,7 @@ import { setPortServerMap, SERVERS } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
 import { WebSocketServer } from 'ws';
 
+const { errorToString } = harperLogger;
 server.http = httpServer;
 server.request = onRequest;
 server.ws = onWebSocket;
@@ -386,7 +387,7 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 				const headers = error.headers;
 				const status = error.statusCode || 500;
 				nodeResponse.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
-				nodeResponse.end(error.toString());
+				nodeResponse.end(errorToString(error));
 				logRequest(nodeRequest, status, requestId, performance.now() - startTime);
 				// a status code is interpreted as an expected error, so just info or warn, otherwise log as error
 				if (error.statusCode) {
@@ -529,10 +530,15 @@ function onWebSocket(listener: (ws: WebSocket) => void, options: OnWebSocketOpti
 			});
 
 			websocketServers[port].on('connection', (ws, incomingMessage) => {
-				const request = new Request(incomingMessage);
-				request.isWebSocket = true;
-				const chainCompletion = httpChain[port](request);
-				websocketChains[port](ws, request, chainCompletion);
+				try {
+					const request = new Request(incomingMessage);
+					request.isWebSocket = true;
+					const chainCompletion = httpChain[port](request);
+					harperLogger.debug('Received WS connection, calling listeners', websocketListeners);
+					websocketChains[port](ws, request, chainCompletion);
+				} catch (error) {
+					harperLogger.warn('Error in handling WS connection', error);
+				}
 			});
 
 			// Add the default upgrade handler if it doesn't exist.

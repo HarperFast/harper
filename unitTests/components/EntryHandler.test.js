@@ -311,4 +311,152 @@ describe('EntryHandler', () => {
 		assert.equal(entryHandler.listenerCount('add'), 0, 'add event listener should be removed');
 		assert.equal(entryHandler.listenerCount('addDir'), 0, 'addDir event listener should be removed');
 	});
+
+	it('should resolve the correct urlPath for files', async () => {
+		const entryHandler = new EntryHandler(this.name, this.directory, 'foo/d');
+
+		await entryHandler.ready();
+
+		const addHandlerSpy = spy();
+		entryHandler.on('add', addHandlerSpy);
+
+		await waitFor(() => addHandlerSpy.callCount === 1);
+
+		assert.equal(addHandlerSpy.getCall(0).args[0].urlPath, '/d', 'urlPath resolution should account for similarities');
+	});
+
+	it('should resolve the correct urlPath for files with `./`', async () => {
+		const entryHandler = new EntryHandler(this.name, this.directory, './foo/d');
+
+		await entryHandler.ready();
+
+		const addHandlerSpy = spy();
+		entryHandler.on('add', addHandlerSpy);
+
+		await waitFor(() => addHandlerSpy.callCount === 1);
+
+		assert.equal(addHandlerSpy.getCall(0).args[0].urlPath, '/d', 'urlPath resolution should account for similarities');
+	});
+
+	it('should avoid matching within an excluded base', async () => {
+		const { directory } = createFixture([
+			['bad', [['web', ['a', 'b', 'c']]]],
+			['web', ['a', 'b', 'c']],
+			['static', ['a', 'b', 'c']],
+		]);
+
+		// Given this pattern we want to ensure that the matcher isn't going to return the
+		// `bad/web` directory, but will return the `web` and `static` directories even though
+		// the `web/*` could match the `bad/web` directory contents.
+		const entryHandler = new EntryHandler(basename(directory), directory, ['web/*', 'static/*']);
+
+		await entryHandler.ready();
+
+		const allHandlerSpy = spy();
+		entryHandler.on('all', allHandlerSpy);
+
+		const addHandlerSpy = spy();
+		entryHandler.on('add', addHandlerSpy);
+
+		const addDirHandlerSpy = spy();
+		entryHandler.on('addDir', addDirHandlerSpy);
+
+		await waitFor(() => allHandlerSpy.callCount === 6);
+		assert.equal(allHandlerSpy.callCount, 6, 'all event should be triggered for each matching entry');
+		assert.equal(addHandlerSpy.callCount, 6, 'add event should be triggered for each matching file');
+		assert.equal(addDirHandlerSpy.callCount, 0, 'addDir event should be triggered for each matching directory');
+
+		entryHandler.close();
+
+		rmSync(directory, { recursive: true, force: true });
+	});
+
+	it('should correctly resolve similar url paths for directories', async () => {
+		const { directory } = createFixture([
+			[
+				'web',
+				[
+					['static', ['a', 'b']],
+					['static-assets', ['c', 'd']],
+				],
+			],
+		]);
+
+		const entryHandler = new EntryHandler(basename(directory), directory, ['web/static/*', 'web/static-*']);
+
+		const allHandlerSpy = spy();
+		entryHandler.on('all', allHandlerSpy);
+
+		const addHandlerSpy = spy();
+		entryHandler.on('add', addHandlerSpy);
+
+		const addDirHandlerSpy = spy();
+		entryHandler.on('addDir', addDirHandlerSpy);
+
+		await entryHandler.ready();
+
+		await waitFor(() => allHandlerSpy.callCount === 3);
+		assert.equal(allHandlerSpy.callCount, 3, 'all event should be triggered for each matching entry');
+		assert.equal(addHandlerSpy.callCount, 2, 'add event should be triggered for each matching file');
+		assert.equal(addDirHandlerSpy.callCount, 1, 'addDir event should be triggered for each matching directory');
+
+		assert.deepEqual(
+			addHandlerSpy
+				.getCalls()
+				.map((call) => call.args[0].urlPath)
+				.sort(),
+			['/a', '/b']
+		);
+		assert.equal(
+			addDirHandlerSpy.getCall(0).args[0].urlPath,
+			'/static-assets',
+			'urlPath resolution should account for similarities'
+		);
+
+		entryHandler.close();
+
+		rmSync(directory, { recursive: true, force: true });
+	});
+
+	it('should correctly resolve similar url paths for files', async () => {
+		const { directory } = createFixture([
+			[
+				'web',
+				[
+					['static', ['a', 'b']],
+					['static-assets', ['c', 'd']],
+				],
+			],
+		]);
+
+		const entryHandler = new EntryHandler(basename(directory), directory, ['web/static/*', 'web/static-*/*']);
+
+		const allHandlerSpy = spy();
+		entryHandler.on('all', allHandlerSpy);
+
+		const addHandlerSpy = spy();
+		entryHandler.on('add', addHandlerSpy);
+
+		const addDirHandlerSpy = spy();
+		entryHandler.on('addDir', addDirHandlerSpy);
+
+		await entryHandler.ready();
+
+		await waitFor(() => allHandlerSpy.callCount === 4);
+		assert.equal(allHandlerSpy.callCount, 4, 'all event should be triggered for each matching entry');
+		assert.equal(addHandlerSpy.callCount, 4, 'add event should be triggered for each matching file');
+		assert.equal(addDirHandlerSpy.callCount, 0, 'addDir event should be triggered for each matching directory');
+
+		assert.deepEqual(
+			addHandlerSpy
+				.getCalls()
+				.map((call) => call.args[0].urlPath)
+				.sort(),
+			['/a', '/b', '/static-assets/c', '/static-assets/d']
+		);
+
+		entryHandler.close();
+
+		rmSync(directory, { recursive: true, force: true });
+	});
 });

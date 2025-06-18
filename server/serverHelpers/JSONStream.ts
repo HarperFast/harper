@@ -7,6 +7,7 @@ const BIGINT_SERIALIZATION = { message: 'Cannot serialize BigInt to JSON' };
 BigInt.prototype.toJSON = function () {
 	throw BIGINT_SERIALIZATION;
 };
+const { errorToString } = harperLogger;
 export function streamAsJSON(value) {
 	return new JSONStream({ value });
 }
@@ -47,7 +48,8 @@ class JSONStream extends Readable {
 									},
 									(error) => {
 										// try to properly serialize the error, but then finish the iterator
-										iteratorResult = { done: false, value: { error: error.toString() } };
+										harperLogger.warn('Error serializing in stream', error);
+										iteratorResult = { done: false, value: { error: errorToString(error) } };
 										iterator = {
 											next: () => ({ done: true }),
 										};
@@ -56,7 +58,7 @@ class JSONStream extends Readable {
 								);
 							}
 						} catch (error) {
-							iteratorResult = { done: false, value: { error: error.toString() } };
+							iteratorResult = { done: false, value: { error: errorToString(error) } };
 							iterator = {
 								next: () => ({ done: true }),
 							};
@@ -121,7 +123,7 @@ class JSONStream extends Readable {
 			(error) => {
 				console.error(error);
 				this.done = true;
-				this.push(error.toString());
+				this.push(errorToString(error));
 				this.push(null);
 			}
 		);
@@ -189,7 +191,7 @@ class JSONStream extends Readable {
 			} while (this.push(nextString));
 		} catch (error) {
 			console.error(error);
-			this.push(error.toString());
+			this.push(errorToString(error));
 			this.push(null);
 			return true;
 		}
@@ -206,7 +208,7 @@ class JSONStream extends Readable {
 
 function handleError(error) {
 	console.error(error);
-	return JSON.stringify(error.toString());
+	return JSON.stringify(errorToString(error));
 }
 
 function when(promise, callback, errback) {

@@ -148,6 +148,34 @@ describe('CRUD operations with the Resource API', () => {
 			await CRUDTable.delete(target);
 			assert.equal(await CRUDTable.get('two'), undefined);
 		});
+		it('create with auto-id', async function () {
+			let created = await CRUDTable.create({ relatedId: 1, name: 'constructed with auto-id' });
+			let retrieved = await CRUDTable.get(created.id);
+			assert.equal(retrieved.name, 'constructed with auto-id');
+		});
+		it('create with instance', async function () {
+			let context = {};
+			let created;
+			await transaction(context, () => {
+				let crud = CRUDTable.getResource(null, context);
+				created = crud.create({ relatedId: 1, name: 'constructed with auto-id' });
+			});
+			let retrieved = await CRUDTable.get(created.id);
+			assert.equal(retrieved.name, 'constructed with auto-id');
+		});
+		it('create with known id argument', async function () {
+			let created;
+			await CRUDTable.delete('three');
+			if (CRUDTable.loadAsInstance) created = await CRUDTable.create({ id: 'three', relatedId: 1, name: 'Three' });
+			else created = await CRUDTable.create('three', { relatedId: 1, name: 'Three' });
+			assert.equal(created.id, 'three');
+			let retrieved = await CRUDTable.get('three');
+			assert.equal(retrieved.name, 'Three');
+			await assert.rejects(async () => {
+				if (CRUDTable.loadAsInstance) created = await CRUDTable.create({ id: 'three', relatedId: 1, name: 'Three' });
+				else created = await CRUDTable.create('three', { relatedId: 1, name: 'Three' });
+			});
+		});
 	}
 	after(() => {});
 });
