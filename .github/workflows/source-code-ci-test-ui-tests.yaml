@@ -3,6 +3,8 @@ on:
   # a pull request.
   push:
     branches:
+      - main
+      - 'release_*'
       - use-ui-tests-repo
   pull_request:
     types: [ opened, synchronize, reopened ]
@@ -64,12 +66,6 @@ jobs:
           ref: 'main'
           token: ${{ secrets.GH_PAT_READ_UI_TESTS_REPO }}
           path: ui-tests
-#      - name: List folder and files
-#        run: |
-#          pwd
-## /home/runner/work/harperdb/harperdb
-#          ls -al
-#          ls -al ui-tests
       - name: Copy and run ui tests
         env:
           CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
