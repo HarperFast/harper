@@ -12,8 +12,9 @@ echo "npm install..."
 npm install
 
 echo "Install Playwright Browsers"
-npx playwright install --with-deps
+npx playwright install --with-deps chromium
 
 echo "Run Playwright tests"
 npx playwright test
 
+sleep 10

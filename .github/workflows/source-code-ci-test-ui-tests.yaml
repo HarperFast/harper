@@ -88,6 +88,22 @@ jobs:
             echo "Starting work on: $public_dns_name"
             ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
               "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests-ui-tests.sh && /home/ubuntu/harperdb/test/ci-tests/ci-tests-ui-tests.sh"
+          done
+        shell: bash
+      - name: Copy the test report
+        if: ${{ !cancelled() }}
+        env:
+         CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+        run: |
+          #!/bin/bash
+          pwd
+          ls -al
+          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+          public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
+          echo ${public_dns_names[@]}
+         
+          for public_dns_name in ${public_dns_names[@]}
+          do
             echo "Copy back the test report"
             scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/ui-tests/playwright-report" .
             pwd
@@ -100,7 +116,7 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
-          path: playwright-report/
+          path: playwright-report
           retention-days: 10
   downloadLogs:
     if: always()
