@@ -9434,7 +9434,7 @@
 									"}",
 									"",
 									"const record_count = response.record_count;",
-									"if (record_count === expected_record_count) {",
+									"if (record_count < expected_record_count + 10 && record_count > expected_record_count - 10) {",
 									"    pm.environment.set('JOB_STATUS_COUNT', 0);",
 									"    pm.test(`\"${test_name}\" has completed`, () => {",
 									"        pm.expect(record_count).to.equal(expected_record_count);",
@@ -9449,7 +9449,7 @@
 									"} else {",
 									"    pm.environment.set('JOB_STATUS_COUNT', 0);",
 									"    console.error(`\"${test_name}\" response: ${JSON.stringify(response)}`)",
-									"    pm.expect.fail(`\"${test_name}\" receivedbad record_count`);",
+									"    pm.expect.fail(`\"${test_name}\" received bad record_count`);",
 									"}",
 									""
 								],
