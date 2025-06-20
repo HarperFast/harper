@@ -150,8 +150,13 @@ interface DescribeMetricRequest {
 	metric: string;
 }
 
+interface MetricDescription {
+	name: string;
+	type: string;
+}
+
 interface DescribeMetricResponse {
-	attributes?: string[];
+	attributes?: MetricDescription[];
 }
 
 export function describeMetricOp(req: DescribeMetricRequest): Promise<DescribeMetricResponse> {
