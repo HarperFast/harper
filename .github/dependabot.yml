@@ -8,40 +8,60 @@ updates:
       day: 'monday'
       time: '09:00' # UTC
     open-pull-requests-limit: 10
-    # Group updates to reduce PR noise
+    # This configuration groups dependency updates by package ecosystem to reduce the number of pull requests
+    # created by Dependabot. Only minor and patch version updates are grouped together; major version updates
+    # will create individual PRs for easier review due to their potential for breaking changes.
+    # 
+    # Documentation: https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference#groups--
     groups:
-      # Group all patch updates
+      # Group AWS SDK updates
+      aws-dependencies:
+        patterns:
+          - "@aws-sdk/*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group turf updates
+      turf-dependencies:
+        patterns:
+          - "@turf/*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group fastify updates
+      fastify-dependencies:
+        patterns:
+          - "@fastify/*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group all other patch updates
       patch:
         patterns:
           - "*"
         update-types:
           - "patch"
-      # Group all minor updates
-      minor:
+      # Group all production minor updates
+      minor-production:
+        dependency-type: "production"
         patterns:
           - "*"
         update-types:
           - "minor"
-      # Group testing dependencies
-      test-dependencies:
+      # Group all development minor updates
+      minor-development:
+        dependency-type: "development"
         patterns:
-          - "mocha*"
-          - "chai*"
-          - "sinon*"
-          - "nyc"
-          - "supertest"
-          - "mock*"
-      # Group linting and formatting tools
-      lint-and-format:
+          - "*"
+        update-types:
+          - "minor"
+      # Group major turf updates
+      turf-dependencies:
         patterns:
-          - "eslint*"
-          - "prettier*"
-          - "@typescript-eslint/*"
-          - "typescript"
-      # Group AWS SDK updates
-      aws-dependencies:
-        patterns:
-          - "@aws-sdk/*"
+          - "@turf/*"
+        update-types:
+          - "major"
+      # What falls through should be individual major updates. Scoped major updates might be better grouped. TBD.
     # Add labels to PRs
     labels:
       - "dependencies"

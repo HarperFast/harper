@@ -5,14 +5,14 @@ on:
     branches:
       - main
       - 'release_*'
-      - CORE-2498
+      - use-ui-tests-repo
   pull_request:
     types: [ opened, synchronize, reopened ]
   schedule:
-    - cron: '30 5 * * 1-5'
+    - cron: '30 6 * * 1-5'
   workflow_dispatch:
-  
-name: Run Source Code CI Tests and API Tests with Node js
+
+name: Run Source Code - UI Tests
 jobs:
   getNodeVersion:
     runs-on: ubuntu-latest
@@ -52,87 +52,73 @@ jobs:
       nodeVersion: ${{ needs.getNodeVersion.outputs.nodeVersion }}
       installType: 'sourceCode'
     secrets: inherit
-  runUnitTests:
+  GetAndRunUItests:
     runs-on: ubuntu-latest
-    timeout-minutes: 20
+    timeout-minutes: 30
     needs:
       - createInstances
       - registerInstances
-      - getNodeVersion
     steps:
-      - name: Run Unit Tests on Instances
+      - name: Checkout repo ui-tests
+        uses: actions/checkout@v4
+        with:
+          repository: HarperDB/ui-tests
+          ref: 'main'
+          token: ${{ secrets.GH_PAT_READ_UI_TESTS_REPO }}
+          path: ui-tests
+      - name: Copy and run ui tests
         env:
           CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
         run: |
           #!/bin/bash
-
-          cd ../
+          pwd
+          ls -al
           echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
           public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
-
+          echo ${public_dns_names[@]}
+          
           for public_dns_name in ${public_dns_names[@]}
           do 
-            echo "Starting work on: $public_dns_name"
-            ssh -i private_key -o ConnectTimeout=30 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
-              "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/source-code-unit-tests.sh && /home/ubuntu/harperdb/test/ci-tests/source-code-unit-tests.sh"
-            echo "Ending work on: $public_dns_name"
-          done
-        shell: bash
-  runSonarScans:
-    runs-on: ubuntu-latest
-    timeout-minutes: 25
-    needs:
-      - runUnitTests
-      - createInstances
-    steps:
-      - uses: actions/checkout@v4
-      - name: 'Download coverage file'
-        env:
-          CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
-        run: |
-          #!/bin/bash
-          mkdir coverage
-          cd ../
-          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
-          public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
-          public_dns_name="${public_dns_names[0]}"
-          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/coverage/lcov.info" "harperdb/coverage/lcov.info"
-      - name: SonarCloud Scan
-        uses: sonarsource/sonarqube-scan-action@v5.2.0
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-  runIntegrationTests:
-    runs-on: ubuntu-latest
-    timeout-minutes: 20
-    needs:
-      - runUnitTests
-      - createInstances
-    steps:
-      - name: Run Integration Tests with Node js on Instances
-        env:
-          CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
-          S3_KEY : ${{ secrets.AWS_S3_INTEGRATION_TEST_DATA_ACCESS_KEY_ID }}
-          S3_SECRET : ${{ secrets.AWS_S3_INTEGRATION_TEST_DATA_SECRET_ACCESS_KEY }}
-          HDB_ADMIN_USERNAME: ${{ secrets.HDB_ADMIN_USERNAME }}
-          HDB_ADMIN_PASSWORD: ${{ secrets.HDB_ADMIN_PASSWORD }}
-        run: |
-          #!/bin/bash
-          cd ../
-          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
-          public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
-
-          for public_dns_name in ${public_dns_names[@]}
-          do 
+            echo "Copy tests to: $public_dns_name"
+            scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ui-tests" "ubuntu@$public_dns_name:/home/ubuntu/"
             echo "Starting work on: $public_dns_name"
             ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
-                "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests-node-api-tests.sh && /home/ubuntu/harperdb/test/ci-tests/ci-tests-node-api-tests.sh ${HDB_ADMIN_USERNAME} ${HDB_ADMIN_PASSWORD} ${S3_KEY} ${S3_SECRET} false"
-            echo "Ending work on: $public_dns_name"
+              "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests-ui-tests.sh && /home/ubuntu/harperdb/test/ci-tests/ci-tests-ui-tests.sh"
           done
+          sleep 10
+        shell: bash
+      - name: Copy the test report
+        if: ${{ !cancelled() }}
+        env:
+         CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+        run: |
+          #!/bin/bash
+          pwd
+          ls -al
+          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+          public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
+          echo ${public_dns_names[@]}
+         
+          for public_dns_name in ${public_dns_names[@]}
+          do
+            echo "Copy back the test report"
+            scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/ui-tests/playwright-report" .
+            pwd
+            ls -al
+            ls -al playwright-report
+          done
+        shell: bash
+      - name: Upload artifact
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: playwright-report
+          retention-days: 10
   downloadLogs:
     if: always()
     needs:
-      - runIntegrationTests
+      - GetAndRunUItests
       - createInstances
     uses: ./.github/workflows/download-logs.yaml
     with:
@@ -153,8 +139,7 @@ jobs:
     needs:
       - destroyInstances
       - downloadLogs
-      - runUnitTests
-      - runIntegrationTests
       - registerInstances
       - createInstances
       - getNodeVersion
+      - GetAndRunUItests

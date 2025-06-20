@@ -4,13 +4,13 @@
 	"values": [
 		{
 			"key": "USERNAME",
-			"value": "admin",
+			"value": "PLACEHOLDER_USERNAME",
 			"type": "default",
 			"enabled": true
 		},
 		{
 			"key": "PASSWORD",
-			"value": "Abc1234!",
+			"value": "PLACEHOLDER_PASSWORD",
 			"type": "default",
 			"enabled": true
 		},
@@ -130,13 +130,13 @@
 		},
 		{
 			"key": "S3_KEY",
-			"value": "AKIA25KWWUK6PJNH7FW3",
+			"value": "PLACEHOLDER_S3_KEY",
 			"type": "default",
 			"enabled": true
 		},
 		{
 			"key": "S3_SECRET",
-			"value": "1lVX6ECc8hUbVlxToa5rfC+UuH6ZPP4EdFa391nd",
+			"value": "PLACEHOLDER_S3_SECRET",
 			"type": "default",
 			"enabled": true
 		},
