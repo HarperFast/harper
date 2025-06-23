@@ -16,7 +16,6 @@ import * as staticFiles from '../server/static.ts';
 import * as loadEnv from '../resources/loadEnv.ts';
 import harperLogger from '../utility/logging/harper_logger.js';
 import * as dataLoader from '../resources/dataLoader.ts';
-import fg from 'fast-glob';
 import { watchDir, getWorkerIndex } from '../server/threads/manageThreads.js';
 import { secureImport } from '../security/jsLoader.ts';
 import { server } from '../server/Server.ts';
@@ -35,6 +34,7 @@ import { ErrorResource } from '../resources/ErrorResource.ts';
 import { Scope } from './Scope.ts';
 import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts';
 import * as httpComponent from '../server/http.ts';
+import { Status } from '../server/status/index.ts';
 
 const CF_ROUTES_DIR = resolvePath(env.get(CONFIG_PARAMS.COMPONENTSROOT));
 let loadedComponents = new Map<any, any>();
@@ -147,6 +147,32 @@ export function setErrorReporter(reporter) {
 let compName: string;
 export const getComponentName = () => compName;
 
+function symlinkHarperModule(componentDirectory: string, harperModule: string) {
+	return new Promise<void>((resolve, reject) => {
+		const timeout = setTimeout(() => {
+			Status.primaryStore.unlock(componentDirectory, 0);
+			reject(new Error('symlinking harperdb module timed out'));
+		}, 10_000);
+		if (
+			Status.primaryStore.attemptLock(componentDirectory, 0, () => {
+				clearTimeout(timeout);
+				resolve();
+			})
+		) {
+			try {
+				rmSync(harperModule, { recursive: true, force: true });
+				if (!existsSync(join(componentDirectory, 'node_modules'))) {
+					mkdirSync(join(componentDirectory, 'node_modules'));
+				}
+				symlinkSync(PACKAGE_ROOT, harperModule, 'dir');
+				resolve();
+			} finally {
+				Status.primaryStore.unlock(componentDirectory, 0);
+			}
+		}
+	});
+}
+
 /**
  * Load a component from the specified directory
  * @param componentPath
@@ -181,20 +207,14 @@ export async function loadComponent(
 			config = DEFAULT_CONFIG;
 		}
 
-		const harperdbModule = join(componentDirectory, 'node_modules', 'harperdb');
 		try {
+			const harperModule = join(componentDirectory, 'node_modules', 'harperdb');
 			if (
-				isMainThread &&
-				(isRoot ||
-					((existsSync(harperdbModule) || !componentDirectory.startsWith(getHdbBasePath())) &&
-						(!existsSync(harperdbModule) || realpathSync(PACKAGE_ROOT) !== realpathSync(harperdbModule))))
+				isRoot ||
+				((existsSync(harperModule) || !componentDirectory.startsWith(getHdbBasePath())) &&
+					(!existsSync(harperModule) || realpathSync(PACKAGE_ROOT) !== realpathSync(harperModule)))
 			) {
-				// if the app has a harperdb module, we symlink it to the main app so it can be used in the main app (with the running modules)
-				rmSync(harperdbModule, { recursive: true, force: true });
-				if (!existsSync(join(componentDirectory, 'node_modules'))) {
-					mkdirSync(join(componentDirectory, 'node_modules'));
-				}
-				symlinkSync(PACKAGE_ROOT, harperdbModule, 'dir');
+				await symlinkHarperModule(componentDirectory, harperModule);
 			}
 		} catch (error) {
 			harperLogger.error('Error symlinking harperdb module', error);
