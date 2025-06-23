@@ -8,7 +8,7 @@ import { createGzip } from 'node:zlib';
  */
 export function packageDirectory(
 	directory: string,
-	options: { skipNodeModules?: boolean; skipSymlinks?: boolean } = { skipNodeModules: false, skipSymlinks: false }
+	options: { skip_node_modules?: boolean; skip_symlinks?: boolean } = { skip_node_modules: false, skip_symlinks: false }
 ): Promise<Buffer> {
 	return new Promise((resolve, reject) => {
 		// for deployComponent to a remote server, we need to tar the local directory

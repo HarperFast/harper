@@ -305,7 +305,7 @@ async function dropCustomFunctionProject(req) {
 
 /**
  * Will package a component into a temp tar file then output that file as a base64 string.
- * Req can accept a skipNodeModules boolean which will skip the node mods when creating temp tar file.
+ * Req can accept a skip_node_modules boolean which will skip the node mods when creating temp tar file.
  * @param req
  * @returns {Promise<{payload: *, project}>}
  */
@@ -361,7 +361,7 @@ async function deployComponent(req) {
 	}
 
 	const cfDir = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
-	let { project, payload, package: pkg, installCommand } = req;
+	let { project, payload, package: pkg, install_command: installCommand } = req;
 	log.trace(`deploying component`, project);
 
 	if (!payload && !pkg) {
