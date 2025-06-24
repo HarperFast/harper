@@ -270,7 +270,12 @@ export async function loadComponent(
 
 				if (
 					'handleComponent' in extensionModule &&
-					('start' in extensionModule || 'startOnMainThread' in extensionModule || 'handleFile' in extensionModule)
+					('start' in extensionModule ||
+						'startOnMainThread' in extensionModule ||
+						'handleFile' in extensionModule ||
+						'handleDirectory' in extensionModule ||
+						'setupFile' in extensionModule ||
+						'setupDirectory' in extensionModule)
 				) {
 					throw new Error(
 						`Component ${componentName} has both 'handleComponent' and 'start' or 'startOnMainThread' methods. Please use only one of them.`
