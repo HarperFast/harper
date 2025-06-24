@@ -13,6 +13,18 @@ npm --loglevel=error install -g newman-reporter-htmlextra
 
 cd /home/ubuntu/harperdb/integrationTests/
 
+# Validate required environment variables
+echo "Validating environment variables..."
+if [ -z "$HDB_ADMIN_USERNAME" ] || [ -z "$HDB_ADMIN_PASSWORD" ] || [ -z "$S3_KEY" ] || [ -z "$S3_SECRET" ]; then
+    echo "Error: Required environment variables not set"
+    [ -z "$HDB_ADMIN_USERNAME" ] && echo "HDB_ADMIN_USERNAME: (not set)"
+    [ -z "$HDB_ADMIN_PASSWORD" ] && echo "HDB_ADMIN_PASSWORD: (not set)"  
+    [ -z "$S3_KEY" ] && echo "S3_KEY: (not set)"
+    [ -z "$S3_SECRET" ] && echo "S3_SECRET: (not set)"
+    exit 1
+fi
+echo "All required environment variables are set"
+
 # Set node host names in postman env vars file
 sed -in "s/TEST_C_NODE1_HOST/${private_ips[0]}/" clusterTests/clusterTestCPlexus/cluster_test_c_env.json
 sed -in "s/TEST_C_NODE2_HOST/${private_ips[1]}/" clusterTests/clusterTestCPlexus/cluster_test_c_env.json

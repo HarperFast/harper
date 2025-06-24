@@ -17,10 +17,10 @@ cd /home/ubuntu/harperdb/integrationTests
 echo "Validating environment variables..."
 if [ -z "$HDB_ADMIN_USERNAME" ] || [ -z "$HDB_ADMIN_PASSWORD" ] || [ -z "$S3_KEY" ] || [ -z "$S3_SECRET" ]; then
     echo "Error: Required environment variables not set"
-    echo "HDB_ADMIN_USERNAME: ${HDB_ADMIN_USERNAME:-(not set)}"
-    echo "HDB_ADMIN_PASSWORD: ${HDB_ADMIN_PASSWORD:-(not set)}"  
-    echo "S3_KEY: ${S3_KEY:-(not set)}"
-    echo "S3_SECRET: ${S3_SECRET:-(not set)}"
+    [ -z "$HDB_ADMIN_USERNAME" ] && echo "HDB_ADMIN_USERNAME: (not set)"
+    [ -z "$HDB_ADMIN_PASSWORD" ] && echo "HDB_ADMIN_PASSWORD: (not set)"  
+    [ -z "$S3_KEY" ] && echo "S3_KEY: (not set)"
+    [ -z "$S3_SECRET" ] && echo "S3_SECRET: (not set)"
     exit 1
 fi
 echo "All required environment variables are set"
