@@ -622,11 +622,31 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 				return;
 			}
 			const resolver = Table.propertyResolvers?.[firstAttributeName];
+			if (resolver.to) nextFilter.to = resolver.to;
 			let subIdFilter;
-			const recordFilter = (record, entry) => {
+			const getSubObject = (record, entry) => {
 				let subObject, subEntry;
 				if (resolver) {
-					if (resolver.from && nextFilter.idFilter) {
+					if (resolver.returnDirect) {
+						// indicates that the resolver will direct return the value instead of an entry
+						subObject = resolver(record, context, entry);
+						subEntry = lastMetadata;
+					} else {
+						subEntry = resolver(record, context, entry, true);
+						if (Array.isArray(subEntry)) {
+							// if any array, map the values
+							subObject = subEntry.map((subEntry) => subEntry.value);
+							subEntry = null;
+						} else {
+							subObject = subEntry?.value;
+						}
+					}
+				} else subObject = record[firstAttributeName];
+				return { subObject, subEntry };
+			};
+			const recordFilter = (record, entry) => {
+				if (resolver) {
+					if (nextFilter.idFilter) {
 						// if we are filtering by id, we can use the idFilter to avoid loading the record
 						if (!subIdFilter) {
 							if (nextFilter.idFilter.idSet?.size === 1) {
@@ -635,33 +655,35 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 								// TODO: Eventually we should be able to handle multiple ids by creating a union
 								for (const id of nextFilter.idFilter.idSet) {
 									searchCondition = {
-										attribute: resolver.from,
+										attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
 										value: id,
 									};
 								}
 								// indicate that we can use an index for this. also we indicate that we allow object matching to allow array ids to directly tested
-								subIdFilter = attributeComparator(resolver.from, nextFilter.idFilter, true, true);
-							} else subIdFilter = attributeComparator(resolver.from, nextFilter.idFilter, false, true);
+								subIdFilter = attributeComparator(resolver.from ?? Table.primaryKey, nextFilter.idFilter, true, true);
+							} else
+								subIdFilter = attributeComparator(resolver.from ?? Table.primaryKey, nextFilter.idFilter, false, true);
 						}
 						const matches = subIdFilter(record);
 						if (subIdFilter.idFilter) recordFilter.idFilter = subIdFilter.idFilter;
 						return matches;
 					}
-					if (resolver.returnDirect) {
-						subObject = resolver(record, context, entry);
-						subEntry = lastMetadata;
-					} else {
-						subEntry = resolver(record, context, entry, true);
-						if (Array.isArray(subEntry)) {
-							subObject = subEntry.map((subEntry) => subEntry.value);
-							subEntry = null;
-						} else {
-							subObject = subEntry?.value;
-						}
-					}
-				} else subObject = record[firstAttributeName];
+				}
+				const { subObject, subEntry } = getSubObject(record, entry);
 				if (!subObject) return false;
 				if (!Array.isArray(subObject)) return nextFilter(subObject, subEntry);
+				const filterMap = filtered?.[firstAttributeName];
+				if (!filterMap && filtered) {
+					// establish a filtering that can preserve this filter for the select() results of these sub objects
+					filtered[firstAttributeName] = {
+						fromRecord(record) {
+							// this is called when selecting the fields to include in results
+							const value = getSubObject(record).subObject;
+							if (Array.isArray(value)) return value.filter(nextFilter).map((value) => value[relatedTable.primaryKey]);
+							return value;
+						},
+					};
+				}
 				return subObject.some(nextFilter);
 			};
 			return recordFilter;
@@ -759,12 +781,17 @@ export function filterByType(searchCondition, Table, context, filtered, isPrimar
 					!matches &&
 					!recordFilter.idFilter &&
 					// miss rate x estimated remaining to filter > 10% of estimated incoming
-					(++misses / filteredSoFar) * (estimatedIncomingCount - filteredSoFar) > thresholdRemainingMisses
+					(++misses / filteredSoFar) * estimatedIncomingCount > thresholdRemainingMisses
 				) {
 					// if we have missed too many times, we need to switch to indexed retrieval
-					const matchingIds = searchByIndex(searchCondition, context.transaction.getReadTxn(), false, Table).map(
-						flattenKey
-					);
+					const searchResults = searchByIndex(searchCondition, context.transaction.getReadTxn(), false, Table);
+					let matchingIds: Iterable<Id>;
+					if (recordFilter.to) {
+						// the values could be an array of keys, so we flatten the mapping
+						matchingIds = searchResults.flatMap((id) => Table.primaryStore.get(id)[recordFilter.to]);
+					} else {
+						matchingIds = searchResults.map(flattenKey);
+					}
 					// now generate a hash set that we can efficiently check primary keys against
 					// TODO: Do this asynchronously
 					const idSet = new Set(matchingIds);

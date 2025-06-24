@@ -3033,6 +3033,8 @@ export function makeTable(options) {
 								// throw new Error('Setting a one-to-many relationship property is not supported');
 							};
 							attribute.resolve.definition = attribute.elements.definition;
+							// preserve relationship information for searching
+							attribute.resolve.to = relationship.to;
 							if (relationship.from) attribute.resolve.from = relationship.from;
 						} else
 							console.error(
