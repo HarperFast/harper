@@ -56,9 +56,13 @@ describe('ComponentV1', () => {
 	});
 
 	after(() => {
-		// Cleanup temp directories. Comment this line to debug.
-		for (const dir of fg.sync(`${TEMP_DIR_PATH}*`, { onlyDirectories: true })) {
-			rmSync(dir, { recursive: true });
+		try {
+			// Cleanup temp directories. Comment this line to debug.
+			for (const dir of fg.sync(`${TEMP_DIR_PATH}*`, { onlyDirectories: true })) {
+				rmSync(dir, { force: true, recursive: true });
+			}
+		} catch (err) {
+			// Best effort to clean up - but doesn't matter too much since this is a temp directory
 		}
 	});
 

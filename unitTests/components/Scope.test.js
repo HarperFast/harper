@@ -25,7 +25,11 @@ describe('Scope', () => {
 
 	afterEach(() => {
 		resetRestartNeeded();
-		rmSync(this.directory, { recursive: true, force: true });
+		try {
+			rmSync(this.directory, { recursive: true, force: true });
+		} catch (err) {
+			// best effort to clean up - but doesn't matter too much since this is a temp directory
+		}
 	});
 
 	it('should create a default entry handler', async () => {

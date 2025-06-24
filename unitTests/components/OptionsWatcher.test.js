@@ -79,7 +79,11 @@ async function setup() {
 
 async function teardown({ fixture, options }) {
 	await options.close();
-	rmSync(fixture, { force: true, recursive: true });
+	try {
+		rmSync(fixture, { recursive: true, force: true });
+	} catch (err) {
+		// best effort to clean up - but doesn't matter too much since this is a temp directory
+	}
 }
 
 describe('OptionsWatcher', () => {

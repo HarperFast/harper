@@ -36,7 +36,11 @@ describe('EntryHandler', () => {
 	});
 
 	afterEach(() => {
-		rmSync(this.directory, { recursive: true, force: true });
+		try {
+			rmSync(this.directory, { recursive: true, force: true });
+		} catch (err) {
+			// best effort to clean up - but doesn't matter too much since this is a temp directory
+		}
 	});
 
 	it('should instantiate and emit events for adding and removing files and directories', async () => {
