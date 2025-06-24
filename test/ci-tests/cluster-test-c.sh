@@ -25,6 +25,20 @@ sed -in "s/TEST_C_NODE2_NAME/${private_dns_names[1]%%.*}/" clusterTests/clusterT
 sed -in "s/TEST_C_NODE3_NAME/${private_dns_names[2]%%.*}/" clusterTests/clusterTestC/cluster_test_c_env.json
 sed -in "s/TEST_C_NODE4_NAME/${private_dns_names[3]%%.*}/" clusterTests/clusterTestC/cluster_test_c_env.json
 
+# Validate required environment variables
+echo "Verifying environment variables..."
+# Loop through required environment variables to verify their presence and display masked values
+for var in HDB_ADMIN_USERNAME HDB_ADMIN_PASSWORD S3_KEY S3_SECRET; do
+	value=${!var}
+	if [ -n "$value" ]; then
+		# Sanitize and display the first 3 and last 3 characters of the variable for masking sensitive data
+		sanitized_value=$(printf '%q' "${value}")
+		echo "$var: ${sanitized_value:0:3}...${sanitized_value: -3}"
+	else
+		echo "$var: (not set)"
+	fi
+done
+
 # Inject credentials from environment variables
 sed -i "s/\"value\": \"PLACEHOLDER_USERNAME\"/\"value\": \"${HDB_ADMIN_USERNAME}\"/" clusterTests/clusterTestC/cluster_test_c_env.json
 sed -i "s/\"value\": \"PLACEHOLDER_PASSWORD\"/\"value\": \"${HDB_ADMIN_PASSWORD}\"/" clusterTests/clusterTestC/cluster_test_c_env.json
