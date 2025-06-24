@@ -284,8 +284,8 @@ export async function loadComponent(
 
 				// New Extension API (`handleComponent`)
 				if (resources.isWorker && extensionModule.handleComponent) {
-					if (!(componentName in TRUSTED_RESOURCE_LOADERS)) {
-						harperLogger.warn(`Extension ${componentName} is using the experimental handleComponent API.`);
+					if (extensionModule.suppressHandleComponentWarning !== true) {
+						harperLogger.warn(`Extension ${componentName} is using the experimental handleComponent API`);
 					}
 
 					const scope = new Scope(componentName, componentDirectory, configPath, resources, server);

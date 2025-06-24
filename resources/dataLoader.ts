@@ -13,7 +13,7 @@ const dataLoaderLogger = harperLogger.forComponent('dataLoader');
 /**
  * Set up file handlers for data files and loads them into the appropriate tables
  */
-
+export const suppressHandleComponentWarning = true;
 export function handleComponent(scope) {
 
 	// Early return if this isn't worker zero
