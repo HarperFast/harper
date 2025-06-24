@@ -590,10 +590,10 @@ export function makeTable(options) {
 							if (entry) {
 								TableResource._updateResource(resource, entry);
 							} else resource.#record = null;
-							if (request.onlyIfCached && request.noCacheStore) {
+							if (request.onlyIfCached) {
 								// don't go into the loading from source condition, but HTTP spec says to
 								// return 504 (rather than 404) if there is no content and the cache-control header
-								// dictates not to go to source (and not store new value)
+								// dictates not to go to source
 								if (!resource.doesExist()) throw new ServerError('Entry is not cached', 504);
 							} else if (resourceOptions?.ensureLoaded) {
 								const loadingFromSource = ensureLoadedFromSource(id, entry, request, resource);
@@ -986,10 +986,10 @@ export function makeTable(options) {
 					}
 					const ensureLoaded = true;
 					return loadLocalRecord(id, context, { transaction: readTxn, ensureLoaded }, false, (entry) => {
-						if (context.onlyIfCached && context.noCacheStore) {
+						if (context.onlyIfCached) {
 							// don't go into the loading from source condition, but HTTP spec says to
 							// return 504 (rather than 404) if there is no content and the cache-control header
-							// dictates not to go to source (and not store new value)
+							// dictates not to go to source
 							if (!entry?.value) throw new ServerError('Entry is not cached', 504);
 						} else if (ensureLoaded) {
 							const loadingFromSource = ensureLoadedFromSource(id, entry, context);
@@ -2278,7 +2278,7 @@ export function makeTable(options) {
 						(entry?.expiresAt != undefined && entry?.expiresAt < Date.now())
 					) {
 						// should expiration really apply?
-						if (context.onlyIfCached && context.noCacheStore) {
+						if (context.onlyIfCached) {
 							return {
 								[primaryKey]: entry.key,
 								message: 'This entry has expired',
