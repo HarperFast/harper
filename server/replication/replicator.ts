@@ -18,6 +18,7 @@ import {
 	replicateOverWS,
 	databaseSubscriptions,
 	tableUpdateListeners,
+	LATENCY_POSITION,
 } from './replicationConnection.ts';
 import { server } from '../Server.ts';
 import env from '../../utility/environment/environmentManager.js';
@@ -25,7 +26,13 @@ import * as logger from '../../utility/logging/harper_logger.js';
 import { X509Certificate } from 'crypto';
 import { readFileSync } from 'fs';
 export { startOnMainThread } from './subscriptionManager';
-import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes, shouldReplicateToNode } from './knownNodes.ts';
+import {
+	subscribeToNodeUpdates,
+	getHDBNodeTable,
+	iterateRoutes,
+	shouldReplicateToNode,
+	getReplicationSharedStatus,
+} from './knownNodes.ts';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { exportIdMapping } from './nodeIdMapping.ts';
 import * as tls from 'node:tls';
@@ -286,34 +293,42 @@ export function setReplicator(dbName: string, table: any, options: any) {
 			static async load(entry: any) {
 				if (entry) {
 					const residencyId = entry.residencyId;
-					const residency = entry.residency || table.dbisDB.get([Symbol.for('residency_by_id'), residencyId]);
+					const residency: string[] = entry.residency || table.dbisDB.get([Symbol.for('residency_by_id'), residencyId]);
 					if (residency) {
 						let firstError: Error;
-						const attemptedConnections = new Set();
+						const attemptedNodes = new Set<string>();
 						do {
 							// This loop is for trying multiple nodes if the first one fails. With each iteration, we add the node to the attemptedConnections,
 							// so after fails we progressively try the next best node each time.
 							let bestConnection: NodeReplicationConnection;
-							for (const node_name of residency) {
-								const connection = getConnectionByName(node_name, Replicator.subscription, dbName);
+							let bestNode = '';
+							let bestLatency = Infinity;
+							for (const nodeName of residency) {
+								if (attemptedNodes.has(nodeName)) continue;
+								const connection = getConnectionByName(nodeName, Replicator.subscription, dbName);
 								// find a connection, needs to be connected and we haven't tried it yet
-								if (connection?.isConnected && !attemptedConnections.has(connection)) {
+								if (connection?.isConnected) {
+									const latency = getReplicationSharedStatus(table.auditStore, dbName, nodeName)[LATENCY_POSITION];
 									// choose this as the best connection if latency is lower (or hasn't been tested yet)
-									if (!bestConnection || connection.latency < bestConnection.latency) {
+									if (!bestConnection || latency < bestLatency) {
 										bestConnection = connection;
+										bestNode = nodeName;
+										bestLatency = latency;
 									}
 								}
 							}
 							// if there are no connections left, throw an error
 							if (!bestConnection)
-								throw firstError || new ServerError('No connection to any other nodes are available', 502);
+								throw (
+									firstError || new ServerError(`No connection to any other nodes are available: ${residency}`, 502)
+								);
 							const request = {
 								requestId: nextId++,
 								table,
 								entry,
 								id: entry.key,
 							};
-							attemptedConnections.add(bestConnection);
+							attemptedNodes.add(bestNode);
 							try {
 								return await bestConnection.getRecord(request);
 							} catch (error) {
@@ -362,14 +377,15 @@ const nodeNameToDbConnections = new Map();
 /** Get connection by node name, using caching
  *
  * */
-function getConnectionByName(node_name, subscription, dbName) {
-	let connection = nodeNameToDbConnections.get(node_name)?.get(dbName);
+function getConnectionByName(nodeName, subscription, dbName) {
+	const dbConnections = nodeNameToDbConnections.get(nodeName);
+	let connection = dbConnections?.get(dbName);
 	if (connection) return connection;
-	const node = getHDBNodeTable().primaryStore.get(node_name);
+	const node = getHDBNodeTable().primaryStore.get(nodeName);
 	if (node?.url) {
-		connection = getConnection(node.url, subscription, dbName, node_name, node.authorization);
+		connection = getConnection(node.url, subscription, dbName, nodeName, node.authorization);
 		// cache the connection
-		nodeNameToDbConnections.set(node_name, connections.get(node.url));
+		nodeNameToDbConnections.set(nodeName, connections.get(node.url));
 	}
 	return connection;
 }

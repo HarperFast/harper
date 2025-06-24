@@ -46,6 +46,7 @@ exports.renewSelfSigned = renewSelfSigned;
 exports.hostnamesFromCert = hostnamesFromCert;
 exports.getKey = getKey;
 exports.getHostnamesFromCertificate = getHostnamesFromCertificate;
+exports.getPrimaryHostName = getPrimaryHostName;
 
 const {
 	urlToNodeName,
@@ -197,14 +198,14 @@ function loadCertificates() {
 								const x509Cert = new X509Certificate(certificatePem);
 								let certCn;
 								try {
-									certCn = extractCommonName(x509Cert);
+									certCn = getPrimaryHostName(x509Cert);
 								} catch (err) {
-									logger.error('error extracting common name from certificate', err);
+									logger.error('error extracting host name from certificate', err);
 									return;
 								}
 
 								if (certCn == null) {
-									logger.error('error extracting common name from certificate');
+									logger.error('No host name found on certificate');
 									return;
 								}
 
@@ -1043,13 +1044,13 @@ async function addCertificate(req) {
 	let certCn;
 	if (!name) {
 		try {
-			certCn = extractCommonName(x509Cert);
+			certCn = getPrimaryHostName(x509Cert);
 		} catch (err) {
 			logger.error(err);
 		}
 
 		if (certCn == null) {
-			throw new ClientError('Error extracting certificate common name, please provide a name parameter');
+			throw new ClientError('Error extracting certificate host name, please provide a name parameter');
 		}
 	}
 
@@ -1122,36 +1123,40 @@ async function removeCertificate(req) {
 	return 'Successfully removed ' + name;
 }
 
-function extractCommonName(certObj) {
-	return certObj.subject.match(/CN=(.*)/)?.[1];
+function getPrimaryHostName(cert /*X509Certificate*/) {
+	const commonName = cert.subject.match(/CN=(.*)/)?.[1];
+	if (commonName) return commonName;
+	return hostnamesFromCert(cert)[0];
 }
 function hostnamesFromCert(cert /*X509Certificate*/) {
-	return cert.subjectAltName
-		? cert.subjectAltName
-				.split(',')
-				.map((part) => {
-					// the subject alt names looks like 'IP Address:127.0.0.1, DNS:localhost, IP
-					// Address:0:0:0:0:0:0:0:1, DirName:"CN=localhost"'
-					// so we split on commas and then use the part after the colon as the host name
+	if (cert.subjectAltName) {
+		return cert.subjectAltName
+			.split(',')
+			.map((part) => {
+				// the subject alt names looks like 'IP Address:127.0.0.1, DNS:localhost, IP
+				// Address:0:0:0:0:0:0:0:1, DirName:"CN=localhost"'
+				// so we split on commas and then use the part after the colon as the host name
 
-					let colonIndex = part.indexOf(':'); // get the value part
-					part = part.slice(colonIndex + 1);
-					part = part.trim();
-					if (part[0] === '"') {
-						// quoted value
-						try {
-							part = JSON.parse(part);
-						} catch (e) {
-							// ignore
-						}
+				let colonIndex = part.indexOf(':'); // get the value part
+				part = part.slice(colonIndex + 1);
+				part = part.trim();
+				if (part[0] === '"') {
+					// quoted value
+					try {
+						part = JSON.parse(part);
+					} catch (e) {
+						// ignore
 					}
-					// can have name=value inside
-					if (part.indexOf('=') > -1) return part.match(/CN=([^,]*)/)?.[1];
-					return part;
-				})
-				.filter((part) => part) // filter out any empty names
-		: // finally we fall back to the common name
-			[extractCommonName(cert)];
+				}
+				// can have name=value inside
+				if (part.indexOf('=') > -1) return part.match(/CN=([^,]*)/)?.[1];
+				return part;
+			})
+			.filter((part) => part); // filter out any empty names
+	}
+	// finally we fall back to the common name
+	const commonName = certObj.subject.match(/CN=(.*)/)?.[1];
+	return commonName ? [commonName] : [];
 }
 
 async function getKey(req) {

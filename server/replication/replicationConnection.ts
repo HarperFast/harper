@@ -64,6 +64,7 @@ export const CONFIRMATION_STATUS_POSITION = 0;
 export const RECEIVED_VERSION_POSITION = 1;
 export const RECEIVED_TIME_POSITION = 2;
 export const SENDING_TIME_POSITION = 3;
+export const LATENCY_POSITION = 4;
 const runClone = process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL');
 
 export const tableUpdateListeners = new Map();
@@ -360,8 +361,12 @@ export function replicateOverWS(ws, options, authorization) {
 		}, PING_INTERVAL * 2).unref();
 	}
 	function getSharedStatus() {
-		if (!replicationSharedStatus)
+		if (!remoteNodeName || !databaseName) {
+			return;
+		}
+		if (!replicationSharedStatus) {
 			replicationSharedStatus = getReplicationSharedStatus(auditStore, databaseName, remoteNodeName);
+		}
 		return replicationSharedStatus;
 	}
 	if (databaseName) {
@@ -1309,13 +1314,17 @@ export function replicateOverWS(ws, options, authorization) {
 	ws.on('pong', () => {
 		if (options.connection) {
 			// every pong we can use to update our connection information (and latency)
-			options.connection.latency = performance.now() - lastPingTime;
+			const latency = performance.now() - lastPingTime;
+			options.connection.latency = latency;
+			if (getSharedStatus()) {
+				replicationSharedStatus[LATENCY_POSITION] = latency;
+			}
 			// update the manager with latest connection information
 			connectedToNode({
 				name: remoteNodeName,
 				database: databaseName,
 				url: options.url,
-				latency: options.connection.latency,
+				latency,
 			});
 		}
 		lastPingTime = null;

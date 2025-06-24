@@ -217,10 +217,19 @@ describe('Test keys module', () => {
 
 	it('hostnamesFromCert returns the correct hostnames', async () => {
 		const test_cert = {
+			subject: '',
 			subjectAltName: 'DirName:"CN=test-1.name\\u002cO=1999710",' + ' DirName:CN=test-2.org,IP-Address:1.2.3.4',
 		};
 		const hostnames = keys.hostnamesFromCert(test_cert);
 		expect(hostnames).to.eql(['test-1.name', 'test-2.org', '1.2.3.4']);
+		expect(keys.getPrimaryHostName(test_cert)).to.eql('test-1.name');
+	});
+	it('getPrimaryHostName with subject', async () => {
+		const test_cert = {
+			subject: 'CN=test-1.name',
+			subjectAltName: 'DirName:"CN=test-different',
+		};
+		expect(keys.getPrimaryHostName(test_cert)).to.eql('test-1.name');
 	});
 
 	it('test get_key returns JWT and key', async () => {
