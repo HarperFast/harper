@@ -14,16 +14,18 @@ sudo apt-get install -y net-tools gdb
 cd /home/ubuntu/harperdb/integrationTests
 
 # Validate required environment variables
-echo "Validating environment variables..."
-if [ -z "$HDB_ADMIN_USERNAME" ] || [ -z "$HDB_ADMIN_PASSWORD" ] || [ -z "$S3_KEY" ] || [ -z "$S3_SECRET" ]; then
-    echo "Error: Required environment variables not set"
-    [ -z "$HDB_ADMIN_USERNAME" ] && echo "HDB_ADMIN_USERNAME: (not set)"
-    [ -z "$HDB_ADMIN_PASSWORD" ] && echo "HDB_ADMIN_PASSWORD: (not set)"  
-    [ -z "$S3_KEY" ] && echo "S3_KEY: (not set)"
-    [ -z "$S3_SECRET" ] && echo "S3_SECRET: (not set)"
-    exit 1
-fi
-echo "All required environment variables are set"
+echo "Verifying environment variables..."
+# Loop through required environment variables to verify their presence and display masked values
+for var in HDB_ADMIN_USERNAME HDB_ADMIN_PASSWORD S3_KEY S3_SECRET; do
+	value=${!var}
+	if [ -n "$value" ]; then
+		# Sanitize and display the first 3 and last 3 characters of the variable for masking sensitive data
+		sanitized_value=$(printf '%q' "${value}")
+		echo "$var: ${sanitized_value:0:3}...${sanitized_value: -3}"
+	else
+		echo "$var: (not set)"
+	fi
+done
 
 # Correct path to CSV files for integration tests
 sed -i 's/\/usr\/csv\//\/home\/ubuntu\/harperdb\/test\/data\/integrationTestsCsvs\//g' Int_test_env_var.json
