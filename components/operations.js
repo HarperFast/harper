@@ -413,21 +413,17 @@ async function deployComponent(req) {
 
 	// the main thread should never actually load component, just do a deploy
 	if (isMainThread) return;
+
 	// now we attempt to actually load the component in case there is
 	// an error we can immediately detect and report
 	const pseudoResources = new Map();
 	pseudoResources.isWorker = true;
 	const componentLoader = require('./componentLoader.ts');
+
 	let lastError;
 	componentLoader.setErrorReporter((error) => (lastError = error));
-	const componentName = basename(pathToProject);
-	const originalError = componentLoader.componentErrors.get(componentName); // we don't want this to change to preserve
-	// consistency with other threads
-	try {
-		await componentLoader.loadComponent(pathToProject, pseudoResources);
-	} finally {
-		componentLoader.componentErrors.set(componentName, originalError);
-	}
+	await componentLoader.loadComponent(pathToProject, pseudoResources);
+
 	if (lastError) throw lastError;
 	log.info('Installed component');
 
@@ -520,13 +516,31 @@ async function getComponents() {
 		entries: [],
 	});
 
-	const componentLoader = require('./componentLoader.ts');
-	const componentErrors = componentLoader.componentErrors;
+	const { internal: statusInternal } = require('./status/index.ts');
+	let consolidatedStatuses;
+	
+	try {
+		consolidatedStatuses = await statusInternal.ComponentStatusRegistry.getAggregatedFromAllThreads(statusInternal.componentStatusRegistry);
+	} catch (error) {
+		// If we can't get status from threads, continue with unknown statuses
+		log.debug(`Failed to get component status from threads: ${error.message}`);
+	}
+	
 	for (const component of results.entries) {
-		const error = componentErrors.get(component.name);
-		// if it is loaded properly, this should be false
-		if (error) component.error = componentErrors.get(component.name);
-		else if (error === undefined) component.error = 'The component has not been loaded yet (may need a restart)';
+		// Look for this component in the consolidated statuses
+		const componentStatus = consolidatedStatuses?.get(component.name);
+		
+		if (componentStatus) {
+			// Component found - use consolidated status (deep copy to avoid mutation)
+			component.status = structuredClone(componentStatus);
+		} else {
+			// Component not found in any worker or consolidatedStatuses is undefined
+			component.status = {
+				status: 'unknown',
+				message: 'The component has not been loaded yet (may need a restart)',
+				lastChecked: { workers: {} }
+			};
+		}
 	}
 	return results;
 }

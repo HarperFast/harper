@@ -35,13 +35,12 @@ import { Scope } from './Scope.ts';
 import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts';
 import * as httpComponent from '../server/http.ts';
 import { Status } from '../server/status/index.ts';
+import { lifecycle as componentLifecycle } from './status/index.ts';
 
 const CF_ROUTES_DIR = resolvePath(env.get(CONFIG_PARAMS.COMPONENTSROOT));
 let loadedComponents = new Map<any, any>();
 let watchesSetup;
 let resources;
-
-export let componentErrors = new Map();
 
 /**
  * Load all the applications registered in HarperDB, those in the components directory as well as any directly
@@ -116,14 +115,14 @@ const DEFAULT_CONFIG = {
 		files: 'routes/*.js',
 		path: '.', // relative to the app-name, like  http://server/app-name/route-name
 	},
-	// dataLoader: {
-	// 	files: 'data/*.{json,yaml,yml}',
-	// },
-	/*{
+	/*dataLoader: {
+	 	files: 'data/*.{json,yaml,yml}',
+	},
+	{
 		module: 'login',
 		path: '/',
 	},
-	/*{
+	{
 		files: 'static',
 		module: 'fastify_routes',
 		path: '.',
@@ -195,7 +194,6 @@ export async function loadComponent(
 	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
 	try {
 		let config;
-		if (isRoot) componentErrors = new Map();
 		let configPath = join(componentDirectory, 'harperdb-config.yaml'); // look for the specific harperdb-config.yaml first
 		if (existsSync(configPath)) {
 			config = isRoot ? getConfigObj() : parseDocument(readFileSync(configPath, 'utf8')).toJSON();
@@ -229,10 +227,12 @@ export async function loadComponent(
 		const componentFunctionality = {};
 		// iterate through the app handlers so they can each do their own loading process
 		for (const componentName in config) {
+			const componentStatusName = `${basename(componentDirectory)}.${componentName}`;
+
 			compName = componentName;
 			const componentConfig = config[componentName];
-			componentErrors.set(isRoot ? componentName : basename(componentDirectory), false);
 			if (!componentConfig) continue;
+
 			let extensionModule;
 			const pkg = componentConfig.package;
 			try {
@@ -253,9 +253,14 @@ export async function loadComponent(
 						throw new Error(`Unable to find package ${componentName}:${pkg}`);
 					}
 				} else extensionModule = TRUSTED_RESOURCE_LOADERS[componentName];
+
 				if (!extensionModule) continue;
+				
+				// Only initialize loading status for actual components
+				componentLifecycle.loading(componentStatusName);
+				
 				// our own trusted modules can be directly retrieved from our map, otherwise use the (configurable) secure module loader
-				const ensureTable = (options) => {
+				const ensureTable = (options: any) => {
 					options.origin = origin;
 					return table(options);
 				};
@@ -277,9 +282,11 @@ export async function loadComponent(
 						'setupFile' in extensionModule ||
 						'setupDirectory' in extensionModule)
 				) {
-					throw new Error(
+					const error = new Error(
 						`Component ${componentName} has both 'handleComponent' and 'start' or 'startOnMainThread' methods. Please use only one of them.`
 					);
+					componentLifecycle.failed(componentStatusName, error, `Component '${componentStatusName}' failed to load`);
+					throw error;
 				}
 
 				// New Extension API (`handleComponent`)
@@ -293,6 +300,9 @@ export async function loadComponent(
 					await scope.ready();
 
 					await extensionModule.handleComponent(scope);
+
+					// Mark component as loaded after successful handleComponent call
+					componentLifecycle.loaded(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
 
 					continue;
 				}
@@ -356,6 +366,9 @@ export async function loadComponent(
 
 					componentFunctionality[componentName] = await processResourceExtensionComponent(component);
 				}
+				
+				// Mark component as healthy after successful loading
+				componentLifecycle.loaded(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
 			} catch (error) {
 				error.message = `Could not load component '${componentName}' for application '${basename(componentDirectory)}' due to: ${
 					error.message
@@ -363,7 +376,7 @@ export async function loadComponent(
 				errorReporter?.(error);
 				(getWorkerIndex() === 0 ? console : harperLogger).error(error);
 				resources.set(componentConfig.path || '/', new ErrorResource(error), null, true);
-				componentErrors.set(isRoot ? componentName : basename(componentDirectory), error.message);
+				componentLifecycle.failed(componentStatusName, error, `Could not load component '${componentStatusName}'`);
 			}
 		}
 
@@ -388,7 +401,7 @@ export async function loadComponent(
 			const errorMessage = `${componentDirectory} did not load any modules, resources, or files, is this a valid component?`;
 			errorReporter?.(new Error(errorMessage));
 			(getWorkerIndex() === 0 ? console : harperLogger).error(errorMessage);
-			componentErrors.set(basename(componentDirectory), errorMessage);
+			componentLifecycle.failed(basename(componentDirectory), errorMessage);
 		}
 
 		for (const [componentName, functionality] of Object.entries(componentFunctionality)) {

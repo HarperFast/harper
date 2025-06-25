@@ -3,6 +3,9 @@ import { handleHDBError, hdbErrors } from '../../utility/errors/hdbError.js';
 import { loggerWithTag } from '../../utility/logging/logger.js';
 import { validateStatus } from '../../validation/statusValidator.js';
 import { StatusId, StatusValueMap, StatusRecord, DEFAULT_STATUS_ID } from './definitions.js';
+import { internal as statusInternal } from '../../components/status/index.ts';
+import type { AggregatedComponentStatus } from '../../components/status/index.ts';
+import { restartNeeded } from '../../components/requestRestart.ts';
 
 export { clearStatus as clear, getStatus as get, setStatus as set };
 
@@ -73,12 +76,38 @@ function clearStatus({ id }: StatusRequestBody): Promise<boolean> {
 	return getStatusTable().delete(id);
 }
 
-function getAllStatus(): Promise<StatusRecord[]> {
-	statusLogger.debug?.('getAllStatus');
-	return getStatusTable().get({}) as unknown as Promise<StatusRecord[]>;
+interface AggregatedComponentStatusWithName extends AggregatedComponentStatus {
+	name: string;
 }
 
-function getStatus({ id }: Partial<StatusRequestBody>): Promise<StatusRecord | StatusRecord[]> {
+interface AllStatusSummary {
+	systemStatus: Promise<AsyncIterable<StatusRecord>>;
+	componentStatus: AggregatedComponentStatusWithName[];
+	restartRequired: boolean;
+}
+
+async function getAllStatus(): Promise<AllStatusSummary> {
+	statusLogger.debug?.('getAllStatus');
+	const statusRecords = getStatusTable().get({});
+	
+	// Get aggregated component statuses from all threads
+	const aggregatedStatuses = await statusInternal.query.allThreads();
+	const componentStatusArray: AggregatedComponentStatusWithName[] = Array.from(aggregatedStatuses.entries()).map(([name, status]) => ({
+		name,
+		...status
+	}));
+	
+	// Get restart flag status
+	const restartRequired = restartNeeded();
+	
+	return {
+		systemStatus: statusRecords as Promise<AsyncIterable<StatusRecord>>,
+		componentStatus: componentStatusArray,
+		restartRequired
+	};
+}
+
+async function getStatus({ id }: Partial<StatusRequestBody>): Promise<StatusRecord | AllStatusSummary> {
 	if (!id) {
 		statusLogger.debug?.('getStatus', 'all');
 		return getAllStatus();
