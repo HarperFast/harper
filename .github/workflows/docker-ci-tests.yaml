@@ -67,8 +67,8 @@ jobs:
         env:
           HDB_ADMIN_USERNAME: ${{ secrets.HDB_ADMIN_USERNAME }}
           HDB_ADMIN_PASSWORD: ${{ secrets.HDB_ADMIN_PASSWORD }}
-          S3_KEY: ${{ secrets.AWS_S3_INTEGRATION_TEST_DATA_ACCESS_KEY_ID }}
-          S3_SECRET: ${{ secrets.AWS_S3_INTEGRATION_TEST_DATA_SECRET_ACCESS_KEY }}
+          S3_KEY: ${{ secrets.AWS_S3_CI_CLUSTER_KEY }}
+          S3_SECRET: ${{ secrets.AWS_S3_CI_CLUSTER_SECRET }}
         run: |
           pushd utility/Docker
           docker load -i ${{ matrix.tarName }}
