@@ -663,13 +663,13 @@ async function reviewSelfSignedCert() {
 		// TLS config can be an array of cert, so we need to check each one
 		const tlsConfig = env_manager.get(CONFIG_PARAMS.TLS);
 		let privateKey;
-		let tlsPrivateKey;
+		let tlsPrivateKeyPath;
 		if (Array.isArray(tlsConfig)) {
 			for (const config of tlsConfig) {
 				if (config.privateKey) {
 					const result = await tryToParseKey(config.privateKey);
 					privateKey = result.key;
-					tlsPrivateKey = result.keyPath;
+					tlsPrivateKeyPath = result.keyPath;
 					if (result.key) {
 						break; // Found a working key
 					}
@@ -679,15 +679,15 @@ async function reviewSelfSignedCert() {
 			const keyPath = env_manager.get(CONFIG_PARAMS.TLS_PRIVATEKEY);
 			const result = await tryToParseKey(keyPath);
 			privateKey = result.key;
-			tlsPrivateKey = result.keyPath;
+			tlsPrivateKeyPath = result.keyPath;
 		}
 
 		const keysPath = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
-		let keyName = relative(keysPath, tlsPrivateKey);
+		let keyName = relative(keysPath, tlsPrivateKeyPath);
 		if (!privateKey) {
 			hdb_logger.warn(
 				'Unable to parse the TLS key',
-				tlsPrivateKey,
+				tlsPrivateKeyPath,
 				'A new key will be generated and used to create Certificate Authority'
 			);
 			// Currently we can only parse RSA keys, so if it's not an RSA key, we need to generate a new one
