@@ -425,7 +425,7 @@ async function signCertificate(req) {
 		}
 
 		const cert = forge.pki.createCertificate();
-		cert.serialNumber = Math.random().toString().slice(2, 10);
+		cert.serialNumber = '0' + Math.random().toString().slice(2, 9);
 		cert.validity.notBefore = new Date();
 		const notAfter = new Date();
 		cert.validity.notAfter = notAfter;
@@ -521,7 +521,7 @@ async function generateCertificates(caPrivateKey, publicKey, caCert) {
 	}
 
 	publicCert.publicKey = publicKey;
-	publicCert.serialNumber = Math.random().toString().slice(2, 10);
+	publicCert.serialNumber = '0' + Math.random().toString().slice(2, 9);
 	publicCert.validity.notBefore = new Date();
 	const notAfter = new Date();
 	publicCert.validity.notAfter = notAfter;
@@ -567,7 +567,7 @@ async function generateCertAuthority(private_key, publicKey, writeKey = true) {
 	const caCert = pki.createCertificate();
 
 	caCert.publicKey = publicKey;
-	caCert.serialNumber = Math.random().toString().slice(2, 10);
+	caCert.serialNumber = '0' + Math.random().toString().slice(2, 9);
 	caCert.validity.notBefore = new Date();
 	const notAfter = new Date();
 	caCert.validity.notAfter = notAfter;
