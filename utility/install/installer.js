@@ -7,7 +7,7 @@ const PropertiesReader = require('properties-reader');
 const chalk = require('chalk');
 const path = require('path');
 const hri = require('human-readable-ids').hri;
-const ora = require('ora');
+let ora; // Will be loaded dynamically as it's an ES module
 const YAML = require('yaml');
 
 const hdbLogger = require('../logging/harper_logger.js');
@@ -156,6 +156,9 @@ async function install() {
 		process.exit();
 	}
 
+	if (!ora) {
+		ora = (await import('ora')).default;
+	}
 	const spinner = ora({
 		prefixText: HDB_PROMPT_MSG('Installing'),
 		color: 'magenta',
