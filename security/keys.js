@@ -652,7 +652,7 @@ async function reviewSelfSignedCert() {
 
 		const tryToParseKey = async (keyPath) => {
 			try {
-				const key = pki.privateKeyFromPem(await fs.readFile(keyPath));
+				const key = pki.privateKeyFromPem(fs.readFileSync(keyPath));
 				return { key, keyPath };
 			} catch (err) {
 				hdb_logger.warn(`Failed to parse private key from ${keyPath}:`, err.message);
@@ -695,7 +695,7 @@ async function reviewSelfSignedCert() {
 			({ private_key: privateKey } = await generateKeys());
 
 			// If there is an existing private key, we will save the new one with a unique name
-			if (await fs.exists(path.join(keysPath, certificates_terms.PRIVATEKEY_PEM_NAME)))
+			if (fs.existsSync(path.join(keysPath, certificates_terms.PRIVATEKEY_PEM_NAME)))
 				keyName = `privateKey${uuidv4().split('-')[0]}.pem`;
 
 			await fs.writeFile(path.join(keysPath, keyName), pki.privateKeyToPem(privateKey));
