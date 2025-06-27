@@ -650,37 +650,64 @@ async function reviewSelfSignedCert() {
 			"A matching Certificate Authority and key was not found. A new CA will be created in advance, so it's available if needed."
 		);
 
-		const tls_private_key = env_manager.get(CONFIG_PARAMS.TLS_PRIVATEKEY);
-		const keys_path = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
-		let private_key;
-		let key_name = relative(keys_path, tls_private_key);
-		try {
-			private_key = pki.privateKeyFromPem(await fs.readFile(tls_private_key));
-		} catch (err) {
+		const tryToParseKey = (keyPath) => {
+			try {
+				const key = pki.privateKeyFromPem(fs.readFileSync(keyPath));
+				return { key, keyPath };
+			} catch (err) {
+				hdb_logger.warn(`Failed to parse private key from ${keyPath}:`, err.message);
+				return { key: null, keyPath };
+			}
+		};
+
+		// TLS config can be an array of cert, so we need to check each one
+		const tlsConfig = env_manager.get(CONFIG_PARAMS.TLS);
+		let privateKey;
+		let tlsPrivateKeyPath;
+		if (Array.isArray(tlsConfig)) {
+			for (const config of tlsConfig) {
+				if (config.privateKey) {
+					const result = tryToParseKey(config.privateKey);
+					privateKey = result.key;
+					tlsPrivateKeyPath = result.keyPath;
+					if (result.key) {
+						break; // Found a working key
+					}
+				}
+			}
+		} else {
+			const keyPath = env_manager.get(CONFIG_PARAMS.TLS_PRIVATEKEY);
+			const result = tryToParseKey(keyPath);
+			privateKey = result.key;
+			tlsPrivateKeyPath = result.keyPath;
+		}
+
+		const keysPath = path.join(env_manager.getHdbBasePath(), hdb_terms.LICENSE_KEY_DIR_NAME);
+		let keyName = relative(keysPath, tlsPrivateKeyPath);
+		if (!privateKey) {
 			hdb_logger.warn(
 				'Unable to parse the TLS key',
-				tls_private_key,
-				'A new key will be generated and used to create Certificate Authority',
-				err
+				tlsPrivateKeyPath,
+				'A new key will be generated and used to create Certificate Authority'
 			);
 			// Currently we can only parse RSA keys, so if it's not an RSA key, we need to generate a new one
 			// There is a ticket to add support for other key types CORE-2457
-			({ private_key } = await generateKeys());
+			({ private_key: privateKey } = await generateKeys());
 
 			// If there is an existing private key, we will save the new one with a unique name
-			if (await fs.exists(path.join(keys_path, certificates_terms.PRIVATEKEY_PEM_NAME)))
-				key_name = `privateKey${uuidv4().split('-')[0]}.pem`;
+			if (fs.existsSync(path.join(keysPath, certificates_terms.PRIVATEKEY_PEM_NAME)))
+				keyName = `privateKey${uuidv4().split('-')[0]}.pem`;
 
-			await fs.writeFile(path.join(keys_path, key_name), pki.privateKeyToPem(private_key));
+			await fs.writeFile(path.join(keysPath, keyName), pki.privateKeyToPem(privateKey));
 		}
 
-		const hdb_ca = await generateCertAuthority(private_key, pki.setRsaPublicKey(private_key.n, private_key.e), false);
+		const hdb_ca = await generateCertAuthority(privateKey, pki.setRsaPublicKey(privateKey.n, privateKey.e), false);
 
 		await setCertTable({
 			name: hdb_ca.subject.getField('CN').value,
 			uses: ['https'],
 			certificate: pki.certificateToPem(hdb_ca),
-			private_key_name: key_name,
+			private_key_name: keyName,
 			is_authority: true,
 			is_self_signed: true,
 		});
