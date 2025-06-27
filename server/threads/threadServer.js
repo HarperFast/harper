@@ -434,6 +434,7 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 		let http2;
 
 		if (secure) {
+			const tls_config = env.get('tls');
 			// check if we want to enable HTTP/2; operations server doesn't use HTTP/2 because it doesn't allow the
 			// ALPNCallback to work with our custom protocol for replication
 			http2 = env.get(server_prefix + '_http2');
@@ -448,6 +449,7 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 				requestCert: Boolean(mtls || is_mtls),
 				ticketKeys: getTicketKeys(),
 				SNICallback: createTLSSelector(is_operations_server ? 'operations-api' : 'server', mtls),
+				ciphers: tls_config.ciphers ?? tls_config[0]?.ciphers,
 			});
 		}
 		let license_warning = checkMemoryLimit();
@@ -667,6 +669,7 @@ function onSocket(listener, options) {
 	if (options.securePort) {
 		setPortServerMap(options.securePort, { protocol_name: 'TLS', name: getComponentName() });
 		let SNICallback = createTLSSelector('server', options.mtls);
+		const tls_config = env.get('tls');
 		socket_server = createSecureSocketServer(
 			{
 				rejectUnauthorized: Boolean(options.mtls?.required),
@@ -674,6 +677,9 @@ function onSocket(listener, options) {
 				noDelay: true, // don't delay for Nagle's algorithm, it is a relic of the past that slows things down: https://brooker.co.za/blog/2024/05/09/nagle.html
 				keepAlive: true,
 				keepAliveInitialDelay: 600, // 10 minute keep-alive, want to be proactive about closing unused connections
+				// For some reason ciphers doesn't work from the secure context, despite node docs claiming it would. Lost
+				// count of how many node TLS bugs that makes
+				ciphers: tls_config.ciphers ?? tls_config[0]?.ciphers,
 				SNICallback,
 			},
 			listener
