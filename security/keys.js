@@ -1077,6 +1077,8 @@ async function addCertificate(req) {
 		record.private_key_name = existing_private_key_name ?? sani_name + '.pem';
 	}
 
+	if (req.ciphers) record.ciphers = req.ciphers;
+
 	await setCertTable(record);
 
 	return 'Successfully added certificate: ' + sani_name;
