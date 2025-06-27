@@ -650,7 +650,7 @@ async function reviewSelfSignedCert() {
 			"A matching Certificate Authority and key was not found. A new CA will be created in advance, so it's available if needed."
 		);
 
-		const tryToParseKey = async (keyPath) => {
+		const tryToParseKey = (keyPath) => {
 			try {
 				const key = pki.privateKeyFromPem(fs.readFileSync(keyPath));
 				return { key, keyPath };
@@ -667,7 +667,7 @@ async function reviewSelfSignedCert() {
 		if (Array.isArray(tlsConfig)) {
 			for (const config of tlsConfig) {
 				if (config.privateKey) {
-					const result = await tryToParseKey(config.privateKey);
+					const result = tryToParseKey(config.privateKey);
 					privateKey = result.key;
 					tlsPrivateKeyPath = result.keyPath;
 					if (result.key) {
@@ -677,7 +677,7 @@ async function reviewSelfSignedCert() {
 			}
 		} else {
 			const keyPath = env_manager.get(CONFIG_PARAMS.TLS_PRIVATEKEY);
-			const result = await tryToParseKey(keyPath);
+			const result = tryToParseKey(keyPath);
 			privateKey = result.key;
 			tlsPrivateKeyPath = result.keyPath;
 		}
