@@ -170,7 +170,7 @@ export function handleLocalTimeForGets(store) {
 		return iterable.map((entry) => {
 			const record_entry = entry.value;
 			// if we have metadata, move the metadata to the entry
-			const metadata = record_entry[METADATA];
+			const metadata = record_entry?.[METADATA];
 			if (metadata >= 0) {
 				entry.metadataFlags = metadata;
 				entry.localTime = record_entry.localTime;
