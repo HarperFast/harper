@@ -646,6 +646,7 @@ const CONFIG_PARAMS = {
 	STORAGE_COMPRESSION_THRESHOLD: 'storage_compression_threshold',
 	STORAGE_COMPACTONSTART: 'storage_compactOnStart',
 	STORAGE_COMPACTONSTARTKEEPBACKUP: 'storage_compactOnStartKeepBackup',
+	STORAGE_SKIPCOMPACTTABLES: 'storage_skipCompactTables',
 	DATABASES: 'databases',
 	IGNORE_SCRIPTS: 'ignoreScripts',
 	MQTT_NETWORK_PORT: 'mqtt_network_port',

@@ -160,6 +160,9 @@ export async function copyDb(source_database: string, target_database_path: stri
 			}
 			target_dbis_db.put(key, attribute);
 			if (!(is_primary || attribute.indexed)) continue;
+			const skipTables = get(CONFIG_PARAMS.STORAGE_SKIPCOMPACTTABLES);
+			if (skipTables?.includes(key.slice(0, -1))) continue;
+
 			const dbi_init = new OpenDBIObject(!is_primary, is_primary);
 			// we want to directly copy bytes so we don't have the overhead of
 			// encoding and decoding
