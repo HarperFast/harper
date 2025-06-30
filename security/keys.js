@@ -651,25 +651,52 @@ async function reviewSelfSignedCert() {
 			"A matching Certificate Authority and key was not found. A new CA will be created in advance, so it's available if needed."
 		);
 
-		const tlsPrivateKey = envManager.get(CONFIG_PARAMS.TLS_PRIVATEKEY);
-		const keysPath = path.join(envManager.getHdbBasePath(), hdbTerms.LICENSE_KEY_DIR_NAME);
+		const tryToParseKey = (keyPath) => {
+			try {
+				const key = pki.privateKeyFromPem(fs.readFileSync(keyPath));
+				return { key, keyPath };
+			} catch (err) {
+				logger.warn(`Failed to parse private key from ${keyPath}:`, err.message);
+				return { key: null, keyPath };
+			}
+		};
+
+		// TLS config can be an array of cert, so we need to check each one
+		const tlsConfig = envManager.get(CONFIG_PARAMS.TLS);
 		let privateKey;
-		let keyName = relative(keysPath, tlsPrivateKey);
-		try {
-			privateKey = pki.privateKeyFromPem(await fs.readFile(tlsPrivateKey));
-		} catch (err) {
+		let tlsPrivateKeyPath;
+		if (Array.isArray(tlsConfig)) {
+			for (const config of tlsConfig) {
+				if (config.privateKey) {
+					const result = tryToParseKey(config.privateKey);
+					privateKey = result.key;
+					tlsPrivateKeyPath = result.keyPath;
+					if (result.key) {
+						break; // Found a working key
+					}
+				}
+			}
+		} else {
+			const keyPath = envManager.get(CONFIG_PARAMS.TLS_PRIVATEKEY);
+			const result = tryToParseKey(keyPath);
+			privateKey = result.key;
+			tlsPrivateKeyPath = result.keyPath;
+		}
+
+		const keysPath = path.join(envManager.getHdbBasePath(), hdbTerms.LICENSE_KEY_DIR_NAME);
+		let keyName = relative(keysPath, tlsPrivateKeyPath);
+		if (!privateKey) {
 			logger.warn(
 				'Unable to parse the TLS key',
-				tlsPrivateKey,
-				'A new key will be generated and used to create Certificate Authority',
-				err
+				tlsPrivateKeyPath,
+				'A new key will be generated and used to create Certificate Authority'
 			);
 			// Currently we can only parse RSA keys, so if it's not an RSA key, we need to generate a new one
 			// There is a ticket to add support for other key types CORE-2457
 			({ privateKey } = await generateKeys());
 
 			// If there is an existing private key, we will save the new one with a unique name
-			if (await fs.exists(path.join(keysPath, certificatesTerms.PRIVATEKEY_PEM_NAME)))
+			if (fs.existsSync(path.join(keysPath, certificatesTerms.PRIVATEKEY_PEM_NAME)))
 				keyName = `privateKey${uuidv4().split('-')[0]}.pem`;
 
 			await fs.writeFile(path.join(keysPath, keyName), pki.privateKeyToPem(privateKey));
@@ -1074,6 +1101,8 @@ async function addCertificate(req) {
 	if (!is_authority || (is_authority && existingPrivateKeyName) || (is_authority && private_key)) {
 		record.private_key_name = existingPrivateKeyName ?? saniName + '.pem';
 	}
+
+	if (req.ciphers) record.ciphers = req.ciphers;
 
 	await setCertTable(record);
 

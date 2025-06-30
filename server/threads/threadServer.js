@@ -78,7 +78,7 @@ function startServers() {
 	if (rootPath) {
 		try {
 			process.chdir(rootPath);
-		} catch (error) { 
+		} catch (error) {
 			// ignore any errors with this; just a best effort for now
 		}
 	}
@@ -252,6 +252,7 @@ function onSocket(listener, options) {
 	if (options.securePort) {
 		setPortServerMap(options.securePort, { protocol_name: 'TLS', name: getComponentName() });
 		const SNICallback = createTLSSelector('server', options.mtls);
+		const tlsConfig = env.get('tls');
 		socketServer = createSecureSocketServer(
 			{
 				rejectUnauthorized: Boolean(options.mtls?.required),
@@ -259,6 +260,9 @@ function onSocket(listener, options) {
 				noDelay: true, // don't delay for Nagle's algorithm, it is a relic of the past that slows things down: https://brooker.co.za/blog/2024/05/09/nagle.html
 				keepAlive: true,
 				keepAliveInitialDelay: 600, // 10 minute keep-alive, want to be proactive about closing unused connections
+				// For some reason ciphers doesn't work from the secure context, despite node docs claiming it would. Lost
+				// count of how many node TLS bugs that makes
+				ciphers: tlsConfig.ciphers ?? tlsConfig[0]?.ciphers,
 				SNICallback,
 			},
 			listener

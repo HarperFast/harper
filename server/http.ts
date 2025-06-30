@@ -229,6 +229,7 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 		let http2;
 
 		if (secure) {
+			const tlsConfig = env.get('tls');
 			// check if we want to enable HTTP/2; operations server doesn't use HTTP/2 because it doesn't allow the
 			// ALPNCallback to work with our custom protocol for replication
 			http2 = env.get(serverPrefix + '_http2');
@@ -243,6 +244,7 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 				requestCert: Boolean(mtls || isMtls),
 				ticketKeys: getTicketKeys(),
 				SNICallback: createTLSSelector(isOperationsServer ? 'operations-api' : 'server', mtls),
+				ciphers: tlsConfig.ciphers ?? tlsConfig[0]?.ciphers,
 			});
 		}
 		const licenseWarning = checkMemoryLimit();
