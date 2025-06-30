@@ -1,4 +1,4 @@
-import { getDatabases, getDefaultCompression, resetDatabases } from '../resources/databases';
+import { database, getDatabases, getDefaultCompression, resetDatabases } from '../resources/databases';
 import { open } from 'lmdb';
 import { join } from 'path';
 import { move, remove } from 'fs-extra';
@@ -33,6 +33,7 @@ export async function compactOnStart() {
 				console.log("Couldn't find any tables in database", database_name);
 				continue;
 			}
+			if (database_name.includes('-copy')) continue; // don't copy a copy
 
 			const backup_dest = join(root_path, 'backup', database_name + '.mdb');
 			const copy_dest = join(root_path, DATABASES_DIR_NAME, database_name + '-copy.mdb');
@@ -188,17 +189,41 @@ export async function copyDb(source_database: string, target_database_path: stri
 			let bytes_copied = 0;
 			let retries = 10000000;
 			let start = null;
+			for (const key of target_dbi.getKeys({ reverse: true, limit: 2 })) {
+				// if there are any existing keys in the target dbi, that means we are resuming, but try to skip ahead past bad keys
+				if (start === null && (typeof key === 'string' || typeof key === 'number')) {
+					start = key; // this is the last key copied
+					console.log(`Existing data found in target table ${target_dbi.name}, last key`, key);
+				} else if (start && typeof key === 'string') {
+					// this is the second to last key copied. we use it to try to interpolate how far to skip ahead
+					// based on how many characters are differing from key to key
+					let i = 0;
+					for (; i < key.length; i++) {
+						if (key[i] !== start[i]) break; // at this point the keys start differing
+					}
+					// note that we key.slice(0, i) to minimize skipped entries, but we are trying to prioritize aggressively finishing
+					start = key.slice(0, i - 1) + '~';
+					console.log(`Will resume target table ${target_dbi.name} at:`, start);
+					await target_dbi.put(start, Buffer.from([0])); // make a placeholder so we at least get to this point next time
+				}
+			}
 			while (retries-- > 0) {
 				try {
-					for (const key of source_dbi.getKeys({ start, transaction })) {
+					for (const key of source_dbi.getKeys({ start, transaction, exclusiveStart: true })) {
 						try {
 							start = key;
+							/* This is how I have testing/simulating crashes
+							if (Math.random() < 0.000002) {
+								console.log('simulating crash at', typeof key === 'symbol' ? 'symbol' : key);
+								process.exit(1);
+							}*/
 							const { value, version } = source_dbi.getEntry(key, { transaction });
 							written = target_dbi.put(key, value, is_primary ? version : undefined);
 							records_copied++;
 							if (transaction.openTimer) transaction.openTimer = 0; // reset the timer, don't want it to time out
 							bytes_copied += (key?.length || 10) + value.length;
-							if (outstanding_writes++ > 5000) {
+							// for earlier writes, we want to await to ensure they are really there in case we have recently started or came up from a crash
+							if (++outstanding_writes > (records_copied < 1000 ? records_copied >> 2 : 5000)) {
 								await written;
 								console.log('copied', records_copied, 'entries', bytes_copied, 'bytes');
 								outstanding_writes = 0;
