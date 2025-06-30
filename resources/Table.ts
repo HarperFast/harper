@@ -1235,7 +1235,7 @@ export function makeTable(options) {
 			const residency = residencyFromFunction(this.getResidency(entry.value, context));
 			let residency_id: number;
 			if (residency) {
-				if (!residency.includes(server.hostname)) return; // if we aren't in the residency, we don't need to do anything, we are not responsible for storing this record
+				if (!residency.includes(server.hostname)) return false; // if we aren't in the residency, we don't need to do anything, we are not responsible for storing this record
 				residency_id = getResidencyId(residency);
 			}
 			const metadata = 0;
@@ -1251,6 +1251,7 @@ export function makeTable(options) {
 				false,
 				null // the audit record value should be empty since there are no changes to the actual data
 			);
+			return true;
 		}
 		/**
 		 * Evicting a record will remove it from a caching table. This is not considered a canonical data change, and it is assumed that retrieving this record from the source will still yield the same record, this is only removing the local copy of the record.
