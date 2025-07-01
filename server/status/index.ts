@@ -107,7 +107,7 @@ async function getAllStatus(): Promise<AllStatusSummary> {
 	};
 }
 
-async function getStatus({ id }: Partial<StatusRequestBody>): Promise<StatusRecord | AllStatusSummary> {
+function getStatus({ id }: Partial<StatusRequestBody>): Promise<StatusRecord | AllStatusSummary> {
 	if (!id) {
 		statusLogger.debug?.('getStatus', 'all');
 		return getAllStatus();

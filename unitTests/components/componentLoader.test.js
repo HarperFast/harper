@@ -8,7 +8,6 @@ describe('ComponentLoader Status Integration', function() {
 	let componentStatusRegistry;
 	let tempDir;
 	let componentLoader;
-	let originalEnvGet;
 	let lifecycle;
 	
 	before(function() {
@@ -17,7 +16,6 @@ describe('ComponentLoader Status Integration', function() {
 		
 		// Mock environment to use our temp directory
 		const env = require('../../utility/environment/environmentManager.js');
-		originalEnvGet = env.get;
 		sinon.stub(env, 'get').callsFake((key) => {
 			if (key === 'COMPONENTSROOT') {
 				return tempDir;
@@ -233,12 +231,8 @@ describe('ComponentLoader Status Integration', function() {
 				set: sinon.stub()
 			};
 			
-			// Load the component
-			try {
-				await componentLoader.loadComponent(componentDir, mockResources, 'test-origin', false);
-			} catch (error) {
-				// Expected to throw
-			}
+			// Load the component - won't throw, but will handle the error internally
+			await componentLoader.loadComponent(componentDir, mockResources, 'test-origin', false);
 			
 			// Should have initialized the component
 			const expectedStatusName = `${componentDirName}.dataLoader`;
