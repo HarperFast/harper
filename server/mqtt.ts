@@ -11,6 +11,7 @@ import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/h
 import { loggerWithTag, forComponent } from '../utility/logging/logger.js';
 import { forComponent as loggerForComponent } from '../utility/logging/harper_logger.js';
 import { EventEmitter } from 'events';
+import { verifyCertificate } from '../security/certificateVerification.ts';
 const authEventLog = loggerWithTag('auth-event');
 const mqttLog = loggerForComponent('mqtt');
 
@@ -75,6 +76,16 @@ export function start({ server, port, network, webSocket, securePort, requireAut
 					if (mtls) {
 						if (socket.authorized) {
 							try {
+								// Perform certificate verification
+								const peerCertificate = socket.getPeerCertificate();
+								if (peerCertificate && peerCertificate.subject) {
+									const verificationResult = await verifyCertificate(peerCertificate, mtls);
+									if (!verificationResult.valid) {
+										mqttLog.error?.('Certificate verification failed:', verificationResult.status, 'for', peerCertificate.subject.CN);
+										throw new Error('Certificate revoked or verification failed');
+									}
+								}
+								
 								let username = mtls.user;
 								if (username !== null) {
 									// null means no user is defined from certificate, need regular authentication as well
