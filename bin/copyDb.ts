@@ -37,19 +37,10 @@ export async function compactOnStart() {
 
 			const backup_dest = join(root_path, 'backup', database_name + '.mdb');
 			const copy_dest = join(root_path, DATABASES_DIR_NAME, database_name + '-copy.mdb');
-			let record_count = 0;
-			try {
-				record_count = await getTotalDBRecordCount(database_name);
-				console.log('Database', database_name, 'before compact has a total record count of', record_count);
-			} catch (error) {
-				hdb_logger.error('Error getting record count for database', database_name, error);
-				console.error('Error getting record count for database', database_name, error);
-			}
 			compacted_db.set(database_name, {
 				db_path,
 				copy_dest,
 				backup_dest,
-				record_count,
 			});
 
 			await copyDb(database_name, copy_dest);
@@ -97,17 +88,8 @@ export async function compactOnStart() {
 	}
 
 	// Clean up backups
-	for (const [db, { backup_dest, record_count }] of compacted_db) {
+	for (const [db, { backup_dest }] of compacted_db) {
 		let remove_backup = true;
-		const compact_record_count = await getTotalDBRecordCount(db);
-		console.log('Database', db, 'after compact has a total record count of', compact_record_count);
-
-		if (record_count !== compact_record_count) {
-			remove_backup = false;
-			const err_msg = `There is a discrepancy between pre and post compact record count for database ${db}.\nTotal record count before compaction: ${record_count}, total after: ${compact_record_count}.\nDatabase backup has not been removed and can be found here: ${backup_dest}`;
-			hdb_logger.error(err_msg);
-			console.error(err_msg);
-		}
 
 		if (get(CONFIG_PARAMS.STORAGE_COMPACTONSTARTKEEPBACKUP) === true || remove_backup === false) continue;
 		console.log('Removing backup', backup_dest);
@@ -115,16 +97,6 @@ export async function compactOnStart() {
 	}
 
 	updateConfigValue(CONFIG_PARAMS.STORAGE_COMPACTONSTART, false);
-}
-
-async function getTotalDBRecordCount(database: string) {
-	const db_describe = await describeSchema({ database });
-	let total = 0;
-	for (const table in db_describe) {
-		total += db_describe[table].record_count;
-	}
-
-	return total;
 }
 
 export async function copyDb(source_database: string, target_database_path: string) {
