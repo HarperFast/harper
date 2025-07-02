@@ -880,6 +880,8 @@ export const ITC_EVENT_TYPES = {
 	RESTART: 'restart',
 	START_JOB: 'start_job',
 	NATS_CONSUMER_UPDATE: 'nats_consumer_update',
+	COMPONENT_STATUS_REQUEST: 'component_status_request',
+	COMPONENT_STATUS_RESPONSE: 'component_status_response',
 } as const;
 
 /** Supported thread types */

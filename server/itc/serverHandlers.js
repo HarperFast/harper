@@ -1,10 +1,9 @@
 'use strict';
 
+/* global threads */
 const hdbLogger = require('../../utility/logging/harper_logger.js');
 const hdbTerms = require('../../utility/hdbTerms.ts');
 const cleanLmdbMap = require('../../utility/lmdb/cleanLMDBMap.js');
-const globalSchema = require('../../utility/globalSchema.js');
-const schemaDescribe = require('../../dataLayer/schemaDescribe.js');
 const userSchema = require('../../security/user.js');
 const { validateEvent } = require('../threads/itc.js');
 const harperBridge = require('../../dataLayer/harperBridge/harperBridge.js');
@@ -18,6 +17,7 @@ const { resetDatabases } = require('../../resources/databases.ts');
 const serverItcHandlers = {
 	[hdbTerms.ITC_EVENT_TYPES.SCHEMA]: schemaHandler,
 	[hdbTerms.ITC_EVENT_TYPES.USER]: userHandler,
+	[hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST]: componentStatusRequestHandler,
 };
 
 /**
@@ -60,12 +60,6 @@ async function syncSchemaMetadata(msg) {
 	}
 }
 
-function handleErrorCallback(err) {
-	if (err) {
-		hdbLogger.error(err);
-	}
-}
-
 const userListeners = [];
 /**
  * Updates the global hdbUsers object by querying the hdbRole table.
@@ -98,4 +92,70 @@ async function userHandler(event) {
 userHandler.addListener = function (listener) {
 	userListeners.push(listener);
 };
+
+/**
+ * Handles incoming requests for component status from inter-thread communication (ITC).
+ * Validates the event, retrieves the current thread's component statuses, and sends a response
+ * back to the originator thread with the requested information.
+ *
+ * @async
+ * @function componentStatusRequestHandler
+ * @param {Object} event - The event object containing the request details.
+ * @param {Object} event.message - The message object within the event.
+ * @param {string} event.message.originator - The identifier of the thread that originated the request.
+ * @param {string} event.message.requestId - The unique identifier for the request.
+ * @returns {Promise<void>} Sends a response back to the originator thread or logs an error if validation fails.
+ */
+async function componentStatusRequestHandler(event) {
+	try {
+		const validate = validateEvent(event);
+		if (validate) {
+			hdbLogger.error(validate);
+			return;
+		}
+
+		hdbLogger.trace(`ITC componentStatusRequestHandler received request:`, event);
+		
+		// Get current thread's component status
+		const { internal } = require('../../components/status/index.ts');
+		const { getWorkerIndex } = require('../threads/manageThreads.js');
+		const { sendItcEvent } = require('../threads/itc.js');
+		const componentStatuses = internal.componentStatusRegistry.getAllStatuses();
+		
+		// Convert Map to array for serialization
+		const statusArray = Array.from(componentStatuses.entries());
+
+		// Get worker index and determine if this is the main thread
+		const workerIndex = getWorkerIndex();
+		const isMainThread = workerIndex === undefined;
+
+		// Send response directly back to the originating thread
+		const originatorThreadId = event.message.originator;
+		const responseMessage = {
+			type: hdbTerms.ITC_EVENT_TYPES.COMPONENT_STATUS_RESPONSE,
+			message: {
+				requestId: event.message.requestId,
+				statuses: statusArray,
+				workerIndex: workerIndex,
+				isMainThread: isMainThread,
+			},
+		};
+		
+		// Use global threads (connectedPorts) to send directly to originator
+		if (originatorThreadId !== undefined && threads.sendToThread(originatorThreadId, responseMessage)) {
+			hdbLogger.trace(`Sent component status response directly to thread ${originatorThreadId}`);
+		} else {
+			// Fallback to broadcast if direct send fails or originator is missing
+			if (originatorThreadId === undefined) {
+				hdbLogger.debug('No originator threadId, falling back to broadcast');
+			} else {
+				hdbLogger.warn(`Failed to send direct response to thread ${originatorThreadId}, falling back to broadcast`);
+			}
+			await sendItcEvent(responseMessage);
+		}
+	} catch (error) {
+		hdbLogger.error('Error handling component status request:', error);
+	}
+}
+
 module.exports = serverItcHandlers;

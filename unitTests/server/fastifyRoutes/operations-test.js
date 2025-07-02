@@ -143,6 +143,204 @@ describe('Test custom functions operations', () => {
 			expect(result.entries[1].entries[0].name).to.equal('config.yaml');
 		});
 
+		it('Test getComponents includes status information when component status exists', async () => {
+			// Mock getAggregatedFromAllThreads to return aggregated status information
+			const mockComponentStatus = new Map();
+			mockComponentStatus.set('my-cool-component', {
+				componentName: 'my-cool-component',
+				status: 'healthy',
+				message: 'Component loaded successfully',
+				lastChecked: {
+					workers: { 0: new Date('2023-01-01').getTime() }
+				}
+			});
+			mockComponentStatus.set('my-other-component', {
+				componentName: 'my-other-component',
+				status: 'error',
+				latestMessage: 'Failed to load',
+				error: 'Configuration error',
+				lastChecked: {
+					workers: { 1: new Date('2023-01-01').getTime() }
+				}
+			});
+
+			const mockComponentStatusModule = {
+				internal: {
+					ComponentStatusRegistry: {
+						getAggregatedFromAllThreads: async () => mockComponentStatus
+					},
+					componentStatusRegistry: {} // Mock registry object
+				}
+			};
+			
+			// Store original require
+			const originalRequire = operations.__get__('require');
+			operations.__set__('require', (path) => {
+				if (path === './status/index.ts') {
+					return mockComponentStatusModule;
+				}
+				return originalRequire(path);
+			});
+
+			const result = await operations.getComponents();
+			
+			// Check that status is included for healthy component
+			const healthyComponent = result.entries.find(e => e.name === 'my-cool-component');
+			expect(healthyComponent.status).to.exist;
+			expect(healthyComponent.status).to.be.an('object');
+			expect(healthyComponent.status.status).to.equal('healthy');
+			expect(healthyComponent.status.message).to.equal('Component loaded successfully');
+			expect(healthyComponent.status.lastChecked).to.exist;
+			expect(healthyComponent.status.lastChecked.workers).to.exist;
+			expect(healthyComponent.status.lastChecked.workers[0]).to.exist;
+
+			// Check that status and error are included for error component
+			const errorComponent = result.entries.find(e => e.name === 'my-other-component');
+			expect(errorComponent.status).to.exist;
+			expect(errorComponent.status).to.be.an('object');
+			expect(errorComponent.status.status).to.equal('error');
+			expect(errorComponent.status.latestMessage).to.equal('Failed to load');
+			expect(errorComponent.status.error).to.equal('Configuration error');
+			expect(errorComponent.status.lastChecked).to.exist;
+			expect(errorComponent.status.lastChecked.workers).to.exist;
+			expect(errorComponent.status.lastChecked.workers[1]).to.exist;
+			
+			// Restore original require
+			operations.__set__('require', originalRequire);
+		});
+
+		it('Test getComponents shows unknown status when component not in status map', async () => {
+			// Mock getAggregatedFromAllThreads with empty status map
+			const mockComponentStatusModule = {
+				ComponentStatusRegistry: {
+					getAggregatedFromAllThreads: async () => new Map()
+				},
+				componentStatusRegistry: {} // Mock registry object
+			};
+			
+			// Store original require
+			const originalRequire = operations.__get__('require');
+			operations.__set__('require', (path) => {
+				if (path === './status/index.ts') {
+					return mockComponentStatusModule;
+				}
+				return originalRequire(path);
+			});
+
+			const result = await operations.getComponents();
+			
+			// All components should have unknown status
+			for (const component of result.entries) {
+				expect(component.status).to.exist;
+				expect(component.status).to.be.an('object');
+				expect(component.status.status).to.equal('unknown');
+				expect(component.status.message).to.equal('The component has not been loaded yet (may need a restart)');
+				expect(component.status.lastChecked).to.exist;
+				expect(component.status.lastChecked.workers).to.be.an('object');
+				expect(Object.keys(component.status.lastChecked.workers)).to.have.length(0);
+			}
+			
+			// Restore original require
+			operations.__set__('require', originalRequire);
+		});
+
+		it('Test getComponents handles missing componentStatus gracefully', async () => {
+			// Mock require to throw error when loading componentStatus
+			const originalRequire = operations.__get__('require');
+			operations.__set__('require', (path) => {
+				if (path === './status/index.ts') {
+					throw new Error('Module not found');
+				}
+				return originalRequire(path);
+			});
+
+			try {
+				const result = await operations.getComponents();
+				// Should still return components but without status info or with error handling
+				expect(result.entries).to.exist;
+			} catch (error) {
+				// It's acceptable for this to throw an error if componentStatus can't be loaded
+				expect(error.message).to.include('Module not found');
+			} finally {
+				// Restore original require
+				operations.__set__('require', originalRequire);
+			}
+		});
+
+		it('Test getComponents handles error from getAggregatedFromAllThreads gracefully', async () => {
+			// Mock getAggregatedFromAllThreads to throw an error
+			const mockComponentStatusModule = {
+				ComponentStatusRegistry: {
+					getAggregatedFromAllThreads: async () => {
+						throw new Error('Failed to collect status from threads');
+					}
+				},
+				componentStatusRegistry: {} // Mock registry object
+			};
+			
+			// Store original require
+			const originalRequire = operations.__get__('require');
+			operations.__set__('require', (path) => {
+				if (path === './status/index.ts') {
+					return mockComponentStatusModule;
+				}
+				return originalRequire(path);
+			});
+
+			const result = await operations.getComponents();
+			
+			// Should still return components but with unknown status
+			expect(result.entries).to.exist;
+			expect(result.entries.length).to.equal(2);
+			
+			// All components should have unknown status
+			for (const component of result.entries) {
+				expect(component.status).to.exist;
+				expect(component.status.status).to.equal('unknown');
+				expect(component.status.message).to.equal('The component has not been loaded yet (may need a restart)');
+				expect(component.status.lastChecked).to.deep.equal({ workers: {} });
+			}
+			
+			// Restore original require
+			operations.__set__('require', originalRequire);
+		});
+
+		it('Test getComponents handles undefined return from getAggregatedFromAllThreads gracefully', async () => {
+			// Mock getAggregatedFromAllThreads to return undefined
+			const mockComponentStatusModule = {
+				ComponentStatusRegistry: {
+					getAggregatedFromAllThreads: async () => undefined
+				},
+				componentStatusRegistry: {} // Mock registry object
+			};
+			
+			// Store original require
+			const originalRequire = operations.__get__('require');
+			operations.__set__('require', (path) => {
+				if (path === './status/index.ts') {
+					return mockComponentStatusModule;
+				}
+				return originalRequire(path);
+			});
+
+			const result = await operations.getComponents();
+			
+			// Should still return components but with unknown status
+			expect(result.entries).to.exist;
+			expect(result.entries.length).to.equal(2);
+			
+			// All components should have unknown status
+			for (const component of result.entries) {
+				expect(component.status).to.exist;
+				expect(component.status.status).to.equal('unknown');
+				expect(component.status.message).to.equal('The component has not been loaded yet (may need a restart)');
+				expect(component.status.lastChecked).to.deep.equal({ workers: {} });
+			}
+			
+			// Restore original require
+			operations.__set__('require', originalRequire);
+		});
+
 		it('Test getComponentFile happy path', async () => {
 			const result = await operations.getComponentFile({ project: 'my-other-component', file: 'config.yaml' });
 			expect(result.message).to.eql(test_yaml_string);
