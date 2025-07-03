@@ -232,7 +232,6 @@ export function* iterateRoutes(options: { routes: (Route | any)[] }) {
 			routes: route.routes,
 			start_time: route.startTime,
 			revoked_certificates: route.revokedCertificates,
-			shard: route.shard,
 		};
 	}
 }
