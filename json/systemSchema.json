@@ -106,67 +106,68 @@
 				"attribute": "id"
 			},
 			{
-				"attribute": "level"
+				"name": "level"
 			},
 			{
-				"attribute": "region"
+				"name": "region",
+				"indexed": true
 			},
 			{
-				"attribute": "reads"
+				"name": "reads"
 			},
 			{
-				"attribute": "writes"
+				"name": "writes"
 			},
 			{
-				"attribute": "readBytes"
+				"name": "readBytes"
 			},
 			{
-				"attribute": "writeBytes"
+				"name": "writeBytes"
 			},
 			{
-				"attribute": "realTimeMessages"
+				"name": "realTimeMessages"
 			},
 			{
-				"attribute": "realTimeBytes"
+				"name": "realTimeBytes"
 			},
 			{
-				"attribute": "cpuTime"
+				"name": "cpuTime"
 			},
 			{
-				"attribute": "storage"
+				"name": "storage"
 			},
 			{
-				"attribute": "usedReads"
+				"name": "usedReads"
 			},
 			{
-				"attribute": "usedWrites"
+				"name": "usedWrites"
 			},
 			{
-				"attribute": "usedReadBytes"
+				"name": "usedReadBytes"
 			},
 			{
-				"attribute": "usedWriteBytes"
+				"name": "usedWriteBytes"
 			},
 			{
-				"attribute": "usedRealTimeMessages"
+				"name": "usedRealTimeMessages"
 			},
 			{
-				"attribute": "usedRealTimeBytes"
+				"name": "usedRealTimeBytes"
 			},
 			{
-				"attribute": "usedCpuTime"
+				"name": "usedCpuTime"
 			},
 			{
-				"attribute": "usedStorage"
+				"name": "usedStorage"
 			},
 			{
-				"attribute": "expiration"
+				"name": "expiration"
 			},
 			{
-				"attribute": "__createdtime__"
+				"name": "__createdtime__"
 			},
 			{
-				"attribute": "__updatedtime__"
+				"name": "__updatedtime__"
 			}
 		]
 	},
