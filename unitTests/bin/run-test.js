@@ -95,7 +95,6 @@ describe('Test run module', () => {
 	});
 
 	describe('Test run function', () => {
-		const is_hdb_installed_stub = sandbox.stub(hdbUtils, 'isHdbInstalled');
 		const create_log_file_stub = sandbox.stub();
 		const check_jwt_tokens_stub = sandbox.stub();
 		const install_stub = sandbox.stub();
@@ -103,12 +102,14 @@ describe('Test run module', () => {
 		let get_ver_update_info_stub;
 		let upgrade_stub;
 		let run;
+		let is_hdb_installed_stub;
 
 		before(() => {
 			run_rw.__set__('checkJwtTokens', check_jwt_tokens_stub);
 			run_rw.__set__('hdbLogger.createLogFile', create_log_file_stub);
 			install_rw = run_rw.__set__('install', install_stub);
 			get_ver_update_info_stub = sandbox.stub(hdbInfoController, 'getVersionUpdateInfo');
+			is_hdb_installed_stub = sandbox.stub(hdbUtils, 'isHdbInstalled');
 			upgrade_stub = sandbox.stub(upgrade, 'upgrade');
 			run = run_rw.__get__('launch');
 		});

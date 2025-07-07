@@ -20,6 +20,9 @@ const SEP = require('path').sep;
 const sandbox = require('sinon');
 const fs = require('fs-extra');
 const path = require('path');
+const env_mangr = require('../../utility/environment/environmentManager');
+const terms = require('../../utility/hdbTerms');
+const hdb_terms = require('../../utility/hdbTerms');
 
 const USERS = new Map([
 	[
@@ -816,11 +819,18 @@ describe('Test common_utils module', () => {
 
 describe('Test isHdbInstalled function', () => {
 	let fs_stat_stub;
+	let envStub;
+	let loggerStub;
+	let logErrorStub;
 	const TEST_ERROR = 'I am a unit test error test';
-	const log_error_stub = sandbox.stub().callsFake(() => {});
 
 	before(() => {
 		fs_stat_stub = sandbox.stub(fs, 'stat');
+		envStub = sandbox.stub(env_mangr, 'get');
+		envStub.withArgs(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY).returns(`harperdb${path.sep}unitTests${path.sep}settings.test`);
+		loggerStub = {};
+		logErrorStub = sandbox.stub().callsFake(() => {});
+		loggerStub.error = logErrorStub;
 	});
 
 	beforeEach(() => {
@@ -832,7 +842,7 @@ describe('Test isHdbInstalled function', () => {
 	});
 
 	it('Test two calls to fs stat with the correct arguments happy path', async () => {
-		const result = await cu.isHdbInstalled();
+		const result = await cu.isHdbInstalled(env_mangr, loggerStub);
 
 		expect(result).to.be.true;
 		expect(fs_stat_stub.getCall(1).args[0]).to.include(`harperdb${path.sep}unitTests${path.sep}settings.test`);
@@ -842,15 +852,15 @@ describe('Test isHdbInstalled function', () => {
 		let err = new Error(TEST_ERROR);
 		err.code = 'ENOENT';
 		fs_stat_stub.throws(err);
-		const result = await cu.isHdbInstalled();
+		const result = await cu.isHdbInstalled(env_mangr, loggerStub);
 
 		expect(result).to.be.false;
 	});
 
 	it('Test non ENOENT error is handled as expected', async () => {
 		fs_stat_stub.throws(new Error(TEST_ERROR));
-		await test_utils.assertErrorAsync(cu.isHdbInstalled, [], new Error(TEST_ERROR));
-		expect(log_error_stub.getCall(0).firstArg).to.equal(
+		await test_utils.assertErrorAsync(cu.isHdbInstalled, [env_mangr, loggerStub], new Error(TEST_ERROR));
+		expect(logErrorStub.getCall(0).firstArg).to.equal(
 			'Error checking for HDB install - Error: I am a unit test error test'
 		);
 	});
