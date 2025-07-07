@@ -99,7 +99,6 @@ describe('Test run module', () => {
 		const create_log_file_stub = sandbox.stub();
 		const check_jwt_tokens_stub = sandbox.stub();
 		const install_stub = sandbox.stub();
-		let check_audit_log_env_exists_rw;
 		let install_rw;
 		let get_ver_update_info_stub;
 		let upgrade_stub;
