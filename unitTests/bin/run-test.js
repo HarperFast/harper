@@ -22,6 +22,7 @@ let schema_describe;
 let upgrade;
 let stop;
 let run_rw;
+let hdbUtils;
 
 describe('Test run module', () => {
 	const sandbox = sinon.createSandbox();
@@ -65,6 +66,7 @@ describe('Test run module', () => {
 		schema_describe = require('../../dataLayer/schemaDescribe');
 		upgrade = require('../../bin/upgrade');
 		stop = require('../../bin/stop');
+		hdbUtils = require('../../utility/common_utils');
 
 		get_prob_stub = sandbox.stub(env_mangr, 'get');
 		get_prob_stub.withArgs('rootPath').returns('unit-test');
@@ -93,11 +95,10 @@ describe('Test run module', () => {
 	});
 
 	describe('Test run function', () => {
-		const is_hdb_installed_stub = sandbox.stub();
+		const is_hdb_installed_stub = sandbox.stub(hdbUtils, 'isHdbInstalled');
 		const create_log_file_stub = sandbox.stub();
 		const check_jwt_tokens_stub = sandbox.stub();
 		const install_stub = sandbox.stub();
-		let is_hdb_installed_rw;
 		let check_audit_log_env_exists_rw;
 		let install_rw;
 		let get_ver_update_info_stub;
@@ -107,7 +108,6 @@ describe('Test run module', () => {
 		before(() => {
 			run_rw.__set__('checkJwtTokens', check_jwt_tokens_stub);
 			run_rw.__set__('hdbLogger.createLogFile', create_log_file_stub);
-			is_hdb_installed_rw = run_rw.__set__('isHdbInstalled', is_hdb_installed_stub);
 			install_rw = run_rw.__set__('install', install_stub);
 			get_ver_update_info_stub = sandbox.stub(hdbInfoController, 'getVersionUpdateInfo');
 			upgrade_stub = sandbox.stub(upgrade, 'upgrade');
@@ -119,7 +119,6 @@ describe('Test run module', () => {
 		});
 
 		after(() => {
-			is_hdb_installed_rw();
 			install_rw();
 			const service_index = process.argv.indexOf('--service');
 			if (service_index > -1) process.argv.splice(service_index, 1);
@@ -412,49 +411,6 @@ describe('Test run module', () => {
 			);
 			expect(log_error_stub.getCall(0).firstArg).to.equal(
 				'Unable to create the transaction audit environment for unit_tests.are_amazing, due to: I am a unit test error test'
-			);
-		});
-	});
-
-	describe('Test isHdbInstalled function', () => {
-		let isHdbInstalled;
-		let fs_stat_stub;
-
-		before(() => {
-			get_prob_stub.restore();
-			fs_stat_stub = sandbox.stub(fs, 'stat');
-			isHdbInstalled = run_rw.__get__('isHdbInstalled');
-		});
-
-		beforeEach(() => {
-			sandbox.resetHistory();
-		});
-
-		after(() => {
-			fs_stat_stub.restore();
-		});
-
-		it('Test two calls to fs stat with the correct arguments happy path', async () => {
-			const result = await isHdbInstalled();
-
-			expect(result).to.be.true;
-			expect(fs_stat_stub.getCall(1).args[0]).to.include(`harperdb${path.sep}unitTests${path.sep}settings.test`);
-		});
-
-		it('Test ENOENT err code returns false', async () => {
-			let err = new Error(TEST_ERROR);
-			err.code = 'ENOENT';
-			fs_stat_stub.throws(err);
-			const result = await isHdbInstalled();
-
-			expect(result).to.be.false;
-		});
-
-		it('Test non ENOENT error is handled as expected', async () => {
-			fs_stat_stub.throws(new Error(TEST_ERROR));
-			await test_util.assertErrorAsync(isHdbInstalled, [], new Error(TEST_ERROR));
-			expect(log_error_stub.getCall(0).firstArg).to.equal(
-				'Error checking for HDB install - Error: I am a unit test error test'
 			);
 		});
 	});

@@ -17,6 +17,9 @@ const upgrade_directive = require('../../upgrade/UpgradeDirective');
 const { expect } = chai;
 const ALL_SPACES = '     ';
 const SEP = require('path').sep;
+const sandbox = require('sinon');
+const fs = require('fs-extra');
+const path = require('path');
 
 const USERS = new Map([
 	[
@@ -808,6 +811,48 @@ describe('Test common_utils module', () => {
 		expect(b).to.equal('1d 10h 17m 36s');
 		const c = cu_rewire.ms_to_time(1672345634534);
 		expect(c).to.equal('52y 27d 20h 27m 14s');
+	});
+});
+
+describe('Test isHdbInstalled function', () => {
+	let fs_stat_stub;
+	const TEST_ERROR = 'I am a unit test error test';
+	const log_error_stub = sandbox.stub().callsFake(() => {});
+
+	before(() => {
+		fs_stat_stub = sandbox.stub(fs, 'stat');
+	});
+
+	beforeEach(() => {
+		sandbox.resetHistory();
+	});
+
+	after(() => {
+		fs_stat_stub.restore();
+	});
+
+	it('Test two calls to fs stat with the correct arguments happy path', async () => {
+		const result = await cu.isHdbInstalled();
+
+		expect(result).to.be.true;
+		expect(fs_stat_stub.getCall(1).args[0]).to.include(`harperdb${path.sep}unitTests${path.sep}settings.test`);
+	});
+
+	it('Test ENOENT err code returns false', async () => {
+		let err = new Error(TEST_ERROR);
+		err.code = 'ENOENT';
+		fs_stat_stub.throws(err);
+		const result = await cu.isHdbInstalled();
+
+		expect(result).to.be.false;
+	});
+
+	it('Test non ENOENT error is handled as expected', async () => {
+		fs_stat_stub.throws(new Error(TEST_ERROR));
+		await test_utils.assertErrorAsync(cu.isHdbInstalled, [], new Error(TEST_ERROR));
+		expect(log_error_stub.getCall(0).firstArg).to.equal(
+			'Error checking for HDB install - Error: I am a unit test error test'
+		);
 	});
 });
 
