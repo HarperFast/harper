@@ -73,7 +73,7 @@ export function getReplicationSharedStatus(
 		)
 	);
 }
-export function subscribeToNodeUpdates(listener) {
+export function subscribeToNodeUpdates(listener: (node: any, id: string) => void) {
 	getHDBNodeTable()
 		.subscribe({})
 		.then(async (events) => {
