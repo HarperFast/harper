@@ -44,7 +44,7 @@ async function upgrade(upgradeObj) {
 	if (pm2Utils === undefined) pm2Utils = require('../utility/processManagement/processManagement.js');
 
 	//We have to make sure HDB is installed before doing anything else
-	const installed = await installation.isHdbInstalled(env, hdbLogger);
+	const installed = installation.isHdbInstalled(env, hdbLogger);
 	if (!installed) {
 		const hdbNotInstalledMsg = 'Harper is not installed. Harper must be installed before running an upgrade.';
 		printToLogAndConsole(hdbNotInstalledMsg, hdbTerms.LOG_LEVELS.ERROR);

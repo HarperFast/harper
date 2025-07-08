@@ -39,7 +39,7 @@ async function status() {
 		},
 	};
 
-	if (!(await installation.isHdbInstalled(envMgr, hdbLog))) {
+	if (!installation.isHdbInstalled(envMgr, hdbLog)) {
 		status.harperdb.status = STATUSES.NOT_INSTALLED;
 		console.log(YAML.stringify(status));
 		return;

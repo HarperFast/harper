@@ -129,14 +129,14 @@ describe('Test run module', () => {
 		it('Test run happy path all services started, all functions are called as expected', async () => {
 			get_prob_stub.withArgs('CLUSTERING').returns(true);
 			get_prob_stub.withArgs('CUSTOM_FUNCTIONS').returns(true);
-			is_hdb_installed_stub.resolves(true);
+			is_hdb_installed_stub.returns(true);
 			get_ver_update_info_stub.resolves(undefined);
 			await run();
 		});
 
 		it('Test upgrade is called if upgrade version permits', async () => {
 			env_mangr.setProperty(hdb_terms.CONFIG_PARAMS.ROOTPATH, 'unit-test');
-			is_hdb_installed_stub.resolves(true);
+			is_hdb_installed_stub.returns(true);
 			get_ver_update_info_stub.resolves({ upgrade_version: '9.9.9' });
 			await run();
 
@@ -145,7 +145,7 @@ describe('Test run module', () => {
 		});
 
 		it('Test upgrade error with version is handled correctly', async () => {
-			is_hdb_installed_stub.resolves(true);
+			is_hdb_installed_stub.returns(true);
 			get_ver_update_info_stub.resolves({ upgrade_version: '9.9.9' });
 			upgrade_stub.throws(TEST_ERROR);
 			await run();
@@ -158,7 +158,7 @@ describe('Test run module', () => {
 		});
 
 		it('Test upgrade error without version is handled correctly', async () => {
-			is_hdb_installed_stub.resolves(true);
+			is_hdb_installed_stub.returns(true);
 			get_ver_update_info_stub.throws(TEST_ERROR);
 			await run();
 
@@ -171,13 +171,13 @@ describe('Test run module', () => {
 		});
 
 		it('Test install is called if HDB not installed', async () => {
-			is_hdb_installed_stub.resolves(false);
+			is_hdb_installed_stub.returns(false);
 			await run();
 			expect(install_stub).to.have.been.called;
 		});
 
 		it('Test error from install is handled as expected', async () => {
-			is_hdb_installed_stub.resolves(false);
+			is_hdb_installed_stub.returns(false);
 			install_stub.throws(TEST_ERROR);
 			await run();
 
@@ -194,7 +194,7 @@ describe('Test run module', () => {
 			expect(console_error_stub.getCall(0).firstArg.name).to.equal(TEST_ERROR);
 			expect(log_error_stub.getCall(0).firstArg.name).to.equal(TEST_ERROR);
 			expect(process_exit_stub.getCall(0).firstArg).to.equal(1);
-			is_hdb_installed_stub.resolves(true);
+			is_hdb_installed_stub.returns(true);
 		});
 		it('Test that a user thread can access harperdb as a module', async () => {
 			// Unfortunately this test is probably only get to test source version, but problems have occurred built version
