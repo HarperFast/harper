@@ -18,18 +18,18 @@ describe('cloneNode', () => {
 
 		// Rewire the module to access private functions
 		cloneNode = rewire('../../../utility/cloneNode/cloneNode.js');
-		
+
 		// Stub the external dependencies
 		clusterStatusStub = sinon.stub().resolves({
 			node_name: 'test-node',
 			is_enabled: true,
-			connections: []
+			connections: [],
 		});
-		
+
 		setStatusStub = sinon.stub().resolves();
-		
+
 		// Replace the imported functions with our stubs
-		cloneNode.__set__('clusterStatus', clusterStatusStub);
+		cloneNode.__set__('cliOperations', clusterStatusStub);
 		cloneNode.__set__('setStatus', setStatusStub);
 	});
 
@@ -83,21 +83,25 @@ describe('cloneNode', () => {
 		it('should monitor sync but not update status when CLONE_NODE_UPDATE_STATUS is not true', async () => {
 			delete process.env.CLONE_NODE_UPDATE_STATUS;
 			process.env.HDB_CLONE_CHECK_INTERVAL = '100';
-			
+
 			const targetTimestamps = { database1: 1234567890 };
-			
+
 			// Mock cluster status to show sync is complete
 			clusterStatusStub.resolves({
-				connections: [{
-					database_sockets: [{
-						database: 'database1',
-						lastReceivedRemoteTime: new Date(1234567891)
-					}]
-				}]
+				connections: [
+					{
+						database_sockets: [
+							{
+								database: 'database1',
+								lastReceivedRemoteTime: new Date(1234567891),
+							},
+						],
+					},
+				],
 			});
-			
+
 			await monitorSyncAndUpdateStatus(targetTimestamps);
-			
+
 			assert(clusterStatusStub.called);
 			assert(setStatusStub.notCalled); // Should not update status
 			assert(consoleLogStub.calledWith('All databases synchronized'));
@@ -106,57 +110,61 @@ describe('cloneNode', () => {
 		it('should update status when sync is complete', async () => {
 			process.env.CLONE_NODE_UPDATE_STATUS = 'true';
 			process.env.HDB_CLONE_CHECK_INTERVAL = '100'; // 100ms for faster test
-			
+
 			const targetTimestamps = { database1: 1234567890 };
-			
+
 			// Mock cluster status to show sync is complete
 			clusterStatusStub.resolves({
-				connections: [{
-					database_sockets: [{
-						database: 'database1',
-						lastReceivedRemoteTime: new Date(1234567891) // Later than target
-					}]
-				}]
+				connections: [
+					{
+						database_sockets: [
+							{
+								database: 'database1',
+								lastReceivedRemoteTime: new Date(1234567891), // Later than target
+							},
+						],
+					},
+				],
 			});
 
 			await monitorSyncAndUpdateStatus(targetTimestamps);
-			
+
 			assert(clusterStatusStub.called);
 			assert(setStatusStub.calledOnceWith({ id: 'availability', status: 'Available' }));
 			assert(consoleLogStub.calledWith('All databases synchronized'));
 		});
 
-
 		it('should throw error when sync times out', async () => {
 			process.env.CLONE_NODE_UPDATE_STATUS = 'true';
 			process.env.HDB_CLONE_SYNC_TIMEOUT = '200'; // 200ms timeout
 			process.env.HDB_CLONE_CHECK_INTERVAL = '50'; // 50ms interval
-			
+
 			const targetTimestamps = { database1: 1234567890 };
-			
+
 			// Mock cluster status to show sync is never complete
 			clusterStatusStub.resolves({
-				connections: [{
-					database_sockets: [{
-						database: 'database1',
-						lastReceivedRemoteTime: new Date(1234567889) // Earlier than target
-					}]
-				}]
+				connections: [
+					{
+						database_sockets: [
+							{
+								database: 'database1',
+								lastReceivedRemoteTime: new Date(1234567889), // Earlier than target
+							},
+						],
+					},
+				],
 			});
 
 			const promise = monitorSyncAndUpdateStatus(targetTimestamps);
-			
+
 			// Advance time to trigger timeout
 			await clock.tickAsync(250);
-			
-			await assert.rejects(
-				promise,
-				{
-					name: 'CloneSyncError',
-					message: 'Sync monitoring timed out after 200ms'
-				}
-			);
-			
+
+			await assert.rejects(promise, {
+				name: 'CloneSyncError',
+				message: 'Sync monitoring timed out after 200ms',
+			});
+
 			assert(setStatusStub.notCalled);
 		});
 
@@ -164,29 +172,33 @@ describe('cloneNode', () => {
 			process.env.CLONE_NODE_UPDATE_STATUS = 'true';
 			process.env.HDB_CLONE_CHECK_INTERVAL = '50';
 			process.env.HDB_CLONE_SYNC_TIMEOUT = '200';
-			
+
 			const targetTimestamps = { database1: 1234567890 };
-			
+
 			// First call fails, second succeeds
 			clusterStatusStub.onFirstCall().rejects(new Error('Network error'));
 			clusterStatusStub.onSecondCall().resolves({
-				connections: [{
-					database_sockets: [{
-						database: 'database1',
-						lastReceivedRemoteTime: new Date(1234567891)
-					}]
-				}]
+				connections: [
+					{
+						database_sockets: [
+							{
+								database: 'database1',
+								lastReceivedRemoteTime: new Date(1234567891),
+							},
+						],
+					},
+				],
 			});
 
 			const promise = monitorSyncAndUpdateStatus(targetTimestamps);
-			
+
 			// Advance time for first check (error)
 			await clock.tickAsync(50);
 			// Advance time for second check (success)
 			await clock.tickAsync(50);
-			
+
 			await promise;
-			
+
 			assert(clusterStatusStub.calledTwice);
 			assert(setStatusStub.calledOnce);
 			assert(consoleErrorStub.calledWith('Error checking cluster status:', sinon.match.instanceOf(Error)));
@@ -194,25 +206,19 @@ describe('cloneNode', () => {
 
 		it('should throw CloneSyncError when no target timestamps available', async () => {
 			process.env.CLONE_NODE_UPDATE_STATUS = 'true';
-			
+
 			// Test with null timestamps
-			await assert.rejects(
-				async () => await monitorSyncAndUpdateStatus(null),
-				{
-					name: 'CloneSyncError',
-					message: 'No target timestamps available to check synchronization status'
-				}
-			);
-			
+			await assert.rejects(async () => await monitorSyncAndUpdateStatus(null), {
+				name: 'CloneSyncError',
+				message: 'No target timestamps available to check synchronization status',
+			});
+
 			// Test with empty timestamps
-			await assert.rejects(
-				async () => await monitorSyncAndUpdateStatus({}),
-				{
-					name: 'CloneSyncError',
-					message: 'No target timestamps available to check synchronization status'
-				}
-			);
-			
+			await assert.rejects(async () => await monitorSyncAndUpdateStatus({}), {
+				name: 'CloneSyncError',
+				message: 'No target timestamps available to check synchronization status',
+			});
+
 			// Should not have called cluster status since validation fails early
 			assert(clusterStatusStub.notCalled);
 			assert(setStatusStub.notCalled);
@@ -222,25 +228,29 @@ describe('cloneNode', () => {
 			process.env.CLONE_NODE_UPDATE_STATUS = 'true';
 			process.env.HDB_CLONE_SYNC_TIMEOUT = '0'; // Invalid, should become 1
 			process.env.HDB_CLONE_CHECK_INTERVAL = '-100'; // Invalid, should become 1
-			
+
 			const targetTimestamps = { database1: 1234567890 };
-			
+
 			// Mock immediate sync completion
 			clusterStatusStub.resolves({
-				connections: [{
-					database_sockets: [{
-						database: 'database1',
-						lastReceivedRemoteTime: new Date(1234567891)
-					}]
-				}]
+				connections: [
+					{
+						database_sockets: [
+							{
+								database: 'database1',
+								lastReceivedRemoteTime: new Date(1234567891),
+							},
+						],
+					},
+				],
 			});
 
 			await monitorSyncAndUpdateStatus(targetTimestamps);
-			
+
 			// Should complete successfully with minimum values
 			assert(clusterStatusStub.called);
 			assert(setStatusStub.called);
-			
+
 			// Clean up
 			delete process.env.HDB_CLONE_SYNC_TIMEOUT;
 			delete process.env.HDB_CLONE_CHECK_INTERVAL;
@@ -250,25 +260,29 @@ describe('cloneNode', () => {
 			process.env.CLONE_NODE_UPDATE_STATUS = 'true';
 			process.env.HDB_CLONE_SYNC_TIMEOUT = 'not-a-number';
 			process.env.HDB_CLONE_CHECK_INTERVAL = 'invalid';
-			
+
 			const targetTimestamps = { database1: 1234567890 };
-			
+
 			// Mock immediate sync completion
 			clusterStatusStub.resolves({
-				connections: [{
-					database_sockets: [{
-						database: 'database1',
-						lastReceivedRemoteTime: new Date(1234567891)
-					}]
-				}]
+				connections: [
+					{
+						database_sockets: [
+							{
+								database: 'database1',
+								lastReceivedRemoteTime: new Date(1234567891),
+							},
+						],
+					},
+				],
 			});
 
 			await monitorSyncAndUpdateStatus(targetTimestamps);
-			
+
 			// Should complete successfully with default values (300000ms and 10000ms)
 			assert(clusterStatusStub.called);
 			assert(setStatusStub.called);
-			
+
 			// Clean up
 			delete process.env.HDB_CLONE_SYNC_TIMEOUT;
 			delete process.env.HDB_CLONE_CHECK_INTERVAL;
@@ -296,86 +310,98 @@ describe('cloneNode', () => {
 
 		it('should return true when all databases are synchronized', async () => {
 			clusterStatusStub.resolves({
-				connections: [{
-					database_sockets: [
-						{
-							database: 'db1',
-							lastReceivedRemoteTime: new Date('2024-01-01T12:00:00Z')
-						},
-						{
-							database: 'db2',
-							lastReceivedRemoteTime: new Date('2024-01-01T12:00:00Z')
-						}
-					]
-				}]
+				connections: [
+					{
+						database_sockets: [
+							{
+								database: 'db1',
+								lastReceivedRemoteTime: new Date('2024-01-01T12:00:00Z'),
+							},
+							{
+								database: 'db2',
+								lastReceivedRemoteTime: new Date('2024-01-01T12:00:00Z'),
+							},
+						],
+					},
+				],
 			});
-			
+
 			const targetTimestamps = {
 				db1: new Date('2024-01-01T11:59:59Z').getTime(),
-				db2: new Date('2024-01-01T11:59:59Z').getTime()
+				db2: new Date('2024-01-01T11:59:59Z').getTime(),
 			};
-			
+
 			const result = await checkSyncStatus(targetTimestamps);
 			assert.strictEqual(result, true);
 		});
 
 		it('should return false when database has no received time', async () => {
 			clusterStatusStub.resolves({
-				connections: [{
-					database_sockets: [{
-						database: 'db1',
-						lastReceivedRemoteTime: null
-					}]
-				}]
+				connections: [
+					{
+						database_sockets: [
+							{
+								database: 'db1',
+								lastReceivedRemoteTime: null,
+							},
+						],
+					},
+				],
 			});
-			
+
 			const targetTimestamps = {
-				db1: new Date('2024-01-01T12:00:00Z').getTime()
+				db1: new Date('2024-01-01T12:00:00Z').getTime(),
 			};
-			
+
 			const result = await checkSyncStatus(targetTimestamps);
 			assert.strictEqual(result, false);
 		});
 
 		it('should return false when database is not yet synchronized', async () => {
 			clusterStatusStub.resolves({
-				connections: [{
-					database_sockets: [{
-						database: 'db1',
-						lastReceivedRemoteTime: new Date('2024-01-01T11:00:00Z')
-					}]
-				}]
+				connections: [
+					{
+						database_sockets: [
+							{
+								database: 'db1',
+								lastReceivedRemoteTime: new Date('2024-01-01T11:00:00Z'),
+							},
+						],
+					},
+				],
 			});
-			
+
 			const targetTimestamps = {
-				db1: new Date('2024-01-01T12:00:00Z').getTime()
+				db1: new Date('2024-01-01T12:00:00Z').getTime(),
 			};
-			
+
 			const result = await checkSyncStatus(targetTimestamps);
 			assert.strictEqual(result, false);
 		});
 
 		it('should skip databases not in target timestamps', async () => {
 			clusterStatusStub.resolves({
-				connections: [{
-					database_sockets: [
-						{
-							database: 'db1',
-							lastReceivedRemoteTime: new Date('2024-01-01T12:00:00Z')
-						},
-						{
-							database: 'db2',
-							lastReceivedRemoteTime: null // This would normally fail
-						}
-					]
-				}]
+				connections: [
+					{
+						database_sockets: [
+							{
+								database: 'db1',
+								lastReceivedRemoteTime: new Date('2024-01-01T12:00:00Z'),
+							},
+							{
+								database: 'db2',
+								lastReceivedRemoteTime: null, // This would normally fail
+							},
+						],
+					},
+				],
 			});
-			
+
 			const targetTimestamps = {
-				db1: new Date('2024-01-01T11:00:00Z').getTime()
+				db1: new Date('2024-01-01T11:00:00Z').getTime(),
 				// db2 is not included, so it should be skipped
 			};
-			
+
 			const result = await checkSyncStatus(targetTimestamps);
 			assert.strictEqual(result, true);
 		});

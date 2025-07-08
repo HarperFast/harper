@@ -9,6 +9,7 @@ const fs = require('fs-extra');
 const YAML = require('yaml');
 const { packageDirectory } = require('../components/packageComponent.ts');
 const { encode } = require('cbor-x');
+const { initConfig } = require('../config/configUtils.js');
 
 const SUPPORTED_OPS = [
 	'describe_table',
@@ -131,6 +132,7 @@ function buildRequest() {
  * @returns {Promise<void>}
  */
 async function cliOperations(req) {
+	initConfig();
 	if (!req.target) {
 		req.target = process.env.CLI_TARGET;
 	}
@@ -197,6 +199,8 @@ async function cliOperations(req) {
 		} else {
 			console.log(YAML.stringify(responseData).trim());
 		}
+
+		return responseData;
 	} catch (err) {
 		let errMsg = 'Error: ';
 		if (err?.response?.data?.error) {
