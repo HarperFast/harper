@@ -197,6 +197,8 @@ async function cliOperations(req) {
 		} else {
 			console.log(YAML.stringify(responseData).trim());
 		}
+
+		return responseData;
 	} catch (err) {
 		let errMsg = 'Error: ';
 		if (err?.response?.data?.error) {
