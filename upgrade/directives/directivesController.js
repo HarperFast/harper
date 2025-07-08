@@ -14,6 +14,7 @@ const { DATA_VERSION, UPGRADE_VERSION } = hdbTerms.UPGRADE_JSON_FIELD_NAMES_ENUM
 // IMPORT VERSION UPGRADE DIRECTIVES HERE
 const version310 = require('./3-1-0.js');
 const version400 = require('./4-0-0.js');
+const version470 = require('./4-7-0.js');
 
 let versions = new Map();
 
@@ -34,6 +35,12 @@ if (version400) {
 	version400.forEach((version) => {
 		versions.set(version.version, version);
 	});
+}
+
+if (version470) {
+	version470.forEach((version) => {
+		versions.set(version.version, version);
+	})
 }
 
 /**

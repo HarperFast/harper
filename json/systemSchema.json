@@ -98,9 +98,10 @@
 		]
 	},
 	"hdb_license": {
-		"hash_attribute": "id",
-		"name": "hdb_license",
-		"schema": "system",
+		"primaryKey": "id",
+		"table": "hdb_license",
+		"database": "system",
+		"audit": true,
 		"attributes": [
 			{
 				"attribute": "id"
