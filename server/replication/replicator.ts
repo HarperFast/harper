@@ -54,8 +54,11 @@ export const replicationCertificateAuthorities =
  * @param options
  */
 export function start(options) {
-	if (!options.port) options.port = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
-	if (!options.securePort) options.securePort = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT);
+	if (!options.port && !options.securePort) {
+		// if no replication ports are specified at all, default to using operations API ports
+		options.port = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
+		options.securePort = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT);
+	}
 	if (!getThisNodeName()) throw new Error('Can not load replication without a url (see replication.url in the config)');
 	const routeByHostname = new Map();
 	for (const node of iterateRoutes(options)) {
