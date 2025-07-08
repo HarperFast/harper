@@ -36,7 +36,7 @@ jobs:
   #  Build HarperDB
   ####################
   build:
-    if: ${{ inputs.build }}
+    if: ${{ inputs.build || github.event_name == 'push' }}
     uses: ./.github/workflows/build.yaml
 
   generate_and_upload:
