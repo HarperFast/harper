@@ -22,7 +22,7 @@ let schema_describe;
 let upgrade;
 let stop;
 let run_rw;
-let hdbUtils;
+let installation;
 
 describe('Test run module', () => {
 	const sandbox = sinon.createSandbox();
@@ -66,7 +66,7 @@ describe('Test run module', () => {
 		schema_describe = require('../../dataLayer/schemaDescribe');
 		upgrade = require('../../bin/upgrade');
 		stop = require('../../bin/stop');
-		hdbUtils = require('../../utility/common_utils');
+		installation = require('../../utility/installation');
 
 		get_prob_stub = sandbox.stub(env_mangr, 'get');
 		get_prob_stub.withArgs('rootPath').returns('unit-test');
@@ -109,7 +109,7 @@ describe('Test run module', () => {
 			run_rw.__set__('hdbLogger.createLogFile', create_log_file_stub);
 			install_rw = run_rw.__set__('install', install_stub);
 			get_ver_update_info_stub = sandbox.stub(hdbInfoController, 'getVersionUpdateInfo');
-			is_hdb_installed_stub = sandbox.stub(hdbUtils, 'isHdbInstalled');
+			is_hdb_installed_stub = sandbox.stub(installation, 'isHdbInstalled');
 			upgrade_stub = sandbox.stub(upgrade, 'upgrade');
 			run = run_rw.__get__('launch');
 		});

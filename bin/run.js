@@ -15,6 +15,7 @@ const { install } = require('../utility/install/installer.js');
 const chalk = require('chalk');
 const { packageJson, PACKAGE_ROOT } = require('../utility/packageUtils.js');
 const hdbUtils = require('../utility/common_utils.js');
+const installation = require('../utility/installation.ts');
 const configUtils = require('../config/configUtils.js');
 const assignCMDENVVariables = require('../utility/assignCmdEnvVariables.js');
 const natsConfig = require('../server/nats/utility/natsConfig.js');
@@ -79,7 +80,7 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'utility/install/ascii_logo.txt'))));
 	});
 
-	if ((await hdbUtils.isHdbInstalled(env, hdbLogger)) === false) {
+	if ((await installation.isHdbInstalled(env, hdbLogger)) === false) {
 		console.log(HDB_NOT_FOUND_MSG);
 		try {
 			await install();

@@ -14,6 +14,7 @@ const hdbLogger = require('../utility/logging/harper_logger.js');
 const hdbTerms = require('../utility/hdbTerms.ts');
 const directivesManager = require('../upgrade/directivesManager.js');
 const hdbUtils = require('../utility/common_utils.js');
+const installation = require('../utility/installation.ts');
 const hdbInfoController = require('../dataLayer/hdbInfoController.js');
 const upgradePrompt = require('../upgrade/upgradePrompt.js');
 const psList = require('../utility/psList.js');
@@ -43,7 +44,7 @@ async function upgrade(upgradeObj) {
 	if (pm2Utils === undefined) pm2Utils = require('../utility/processManagement/processManagement.js');
 
 	//We have to make sure HDB is installed before doing anything else
-	const installed = await hdbUtils.isHdbInstalled(env, hdbLogger);
+	const installed = await installation.isHdbInstalled(env, hdbLogger);
 	if (!installed) {
 		const hdbNotInstalledMsg = 'Harper is not installed. Harper must be installed before running an upgrade.';
 		printToLogAndConsole(hdbNotInstalledMsg, hdbTerms.LOG_LEVELS.ERROR);

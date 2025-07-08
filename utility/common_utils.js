@@ -62,7 +62,6 @@ exports.getClusterUser = getClusterUser;
 exports.checkGlobalSchemaTable = checkGlobalSchemaTable;
 exports.getHomeDir = getHomeDir;
 exports.getPropsFilePath = getPropsFilePath;
-exports.isHdbInstalled = isHdbInstalled;
 exports.promisifyPapaParse = promisifyPapaParse;
 exports.removeBOM = removeBOM;
 exports.createEventPromise = createEventPromise;
@@ -459,28 +458,6 @@ function getPropsFilePath() {
 		bootPropsFilePath = path.join(__dirname, '../', 'hdb_boot_properties.file');
 	}
 	return bootPropsFilePath;
-}
-
-/**
- *
- * @returns {Promise<boolean>}
- */
-async function isHdbInstalled(env, logger) {
-	try {
-		await fs.stat(getPropsFilePath());
-		await fs.stat(env.get(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
-	} catch (err) {
-		if (noBootFile()) return true;
-		if (err.code === 'ENOENT') {
-			// boot props not found, hdb not installed
-			return false;
-		}
-
-		logger.error(`Error checking for HDB install - ${err}`);
-		throw err;
-	}
-
-	return true;
 }
 
 /**
