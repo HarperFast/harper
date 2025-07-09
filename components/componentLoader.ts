@@ -36,6 +36,8 @@ import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts
 import * as httpComponent from '../server/http.ts';
 import { Status } from '../server/status/index.ts';
 import { lifecycle as componentLifecycle } from './status/index.ts';
+import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
+import { PluginModule } from './PluginModule.ts';
 
 const CF_ROUTES_DIR = resolvePath(env.get(CONFIG_PARAMS.COMPONENTSROOT));
 let loadedComponents = new Map<any, any>();
@@ -98,44 +100,6 @@ const TRUSTED_RESOURCE_LOADERS = {
 	 */
 };
 
-const DEFAULT_CONFIG = {
-	rest: true,
-	graphqlSchema: {
-		files: '*.graphql',
-		//path: '/', // from root path by default, like http://server/query
-	},
-	roles: {
-		files: 'roles.yaml',
-	},
-	jsResource: {
-		files: 'resources.js',
-		//path: '/', // from root path by default, like http://server/resource-name
-	},
-	fastifyRoutes: {
-		files: 'routes/*.js',
-		path: '.', // relative to the app-name, like  http://server/app-name/route-name
-	},
-	/*dataLoader: {
-	 	files: 'data/*.{json,yaml,yml}',
-	},
-	{
-		module: 'login',
-		path: '/',
-	},
-	{
-		files: 'static',
-		module: 'fastify_routes',
-		path: '.',
-	},
-	{
-		module: 'login',
-		path: '/login', // relative to the app-name, like http://server/login
-	},*/
-};
-// make this non-enumerable so we don't load by default, but has a default 'files' so we don't show errors on
-// templates that want to have a default static handler:
-Object.defineProperty(DEFAULT_CONFIG, 'static', { value: { files: 'web/**' } });
-
 const portsStarted = [];
 const loadedPaths = new Map();
 let errorReporter;
@@ -169,6 +133,49 @@ function symlinkHarperModule(componentDirectory: string, harperModule: string) {
 				Status.primaryStore.unlock(componentDirectory, 0);
 			}
 		}
+	});
+}
+
+/**
+ * This function handles the `handleApplication` call for a plugin in a sequential manner.
+ * It ensures the execution of `handleApplication` happens on one thread at a time for a given scope.
+ * If the lock cannot be acquired, it waits for the lock to be released and retries.
+ * If the lock is not acquired within the specified timeout, it rejects with a timeout error.
+ *
+ * @param scope
+ * @param plugin
+ * @returns
+ */
+function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
+	return scope.ready.then(() => {
+		// Timeout priority is user config, plugin default, finally 30 seconds
+		const timeout = scope.options.get(['timeout']) || plugin.defaultTimeout || 30_000; // default 30 second timeout
+		if (typeof timeout !== 'number') {
+			throw new Error(`Invalid timeout value for ${scope.name}. Expected a number, received: ${typeof timeout}`);
+		}
+		let whenResolved, timer;
+		if (
+			!Status.primaryStore.attemptLock(scope.name, 0, () => {
+				clearTimeout(timer);
+				whenResolved(sequentiallyHandleApplication(scope, plugin));
+			})
+		) {
+			return new Promise((resolve, reject) => {
+				whenResolved = resolve;
+				timer = setTimeout(() => {
+					reject(new Error(`Timeout waiting for lock on ${scope.name}`));
+				}, timeout + 5_000); // extra time for lock acquisition
+			});
+		}
+
+		return Promise.race([
+			plugin.handleApplication(scope),
+			new Promise((_, reject) =>
+				setTimeout(() => reject(new Error(`handleApplication timed out after ${timeout}ms for ${scope.name}`)), timeout)
+			),
+		]).finally(() => {
+			Status.primaryStore.unlock(scope.name, 0);
+		});
 	});
 }
 
@@ -255,10 +262,10 @@ export async function loadComponent(
 				} else extensionModule = TRUSTED_RESOURCE_LOADERS[componentName];
 
 				if (!extensionModule) continue;
-				
+
 				// Only initialize loading status for actual components
 				componentLifecycle.loading(componentStatusName);
-				
+
 				// our own trusted modules can be directly retrieved from our map, otherwise use the (configurable) secure module loader
 				const ensureTable = (options: any) => {
 					options.origin = origin;
@@ -274,7 +281,7 @@ export async function loadComponent(
 				const port = !network?.https && network?.port;
 
 				if (
-					'handleComponent' in extensionModule &&
+					'handleApplication' in extensionModule &&
 					('start' in extensionModule ||
 						'startOnMainThread' in extensionModule ||
 						'handleFile' in extensionModule ||
@@ -282,26 +289,22 @@ export async function loadComponent(
 						'setupFile' in extensionModule ||
 						'setupDirectory' in extensionModule)
 				) {
-					const error = new Error(
-						`Component ${componentName} has both 'handleComponent' and 'start' or 'startOnMainThread' methods. Please use only one of them.`
-					);
+					const error = new Error(`Plugin ${componentName} is exporting old extension APIs. Remove them.`);
 					componentLifecycle.failed(componentStatusName, error, `Component '${componentStatusName}' failed to load`);
 					throw error;
 				}
 
-				// New Extension API (`handleComponent`)
-				if (resources.isWorker && extensionModule.handleComponent) {
-					if (extensionModule.suppressHandleComponentWarning !== true) {
-						harperLogger.warn(`Extension ${componentName} is using the experimental handleComponent API`);
+				// New Plugin API (`handleApplication`)
+				if (resources.isWorker && extensionModule.handleApplication) {
+					if (extensionModule.suppressHandleApplicationWarning !== true) {
+						harperLogger.warn(`Plugin ${componentName} is using the experimental handleApplication API`);
 					}
 
 					const scope = new Scope(componentName, componentDirectory, configPath, resources, server);
 
-					await scope.ready();
+					await sequentiallyHandleApplication(scope, extensionModule);
 
-					await extensionModule.handleComponent(scope);
-
-					// Mark component as loaded after successful handleComponent call
+					// Mark component as loaded after successful handleApplication call
 					componentLifecycle.loaded(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
 
 					continue;
@@ -366,7 +369,7 @@ export async function loadComponent(
 
 					componentFunctionality[componentName] = await processResourceExtensionComponent(component);
 				}
-				
+
 				// Mark component as healthy after successful loading
 				componentLifecycle.loaded(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
 			} catch (error) {
@@ -387,8 +390,10 @@ export async function loadComponent(
 				return loadComponentDirectories(); // return the promise
 			});
 		}
-		if (config.extensionModule) {
-			const extensionModule = await secureImport(join(componentDirectory, config.extensionModule));
+		if (config.extensionModule || config.pluginModule) {
+			const extensionModule = await secureImport(
+				join(componentDirectory, config.extensionModule || config.pluginModule)
+			);
 			loadedPaths.set(resolvedFolder, extensionModule);
 			return extensionModule;
 		}

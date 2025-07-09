@@ -1,38 +1,69 @@
+import { Scope } from '../components/Scope.ts';
 import { secureImport } from '../security/jsLoader.ts';
-import { dirname } from 'path';
+import { dirname, join } from 'path';
+
+function isResource(value: unknown) {
+	return typeof value === 'function' && ('get' in value || 'put' in value || 'post' in value || 'delete' in value);
+}
 
 /**
- * This is the handler for JavaScript Resource modules. These are loaded through the standard app configuration, and loads
- * JS modules. The returned exports from modules are then scanned for any exported Resource classes, and if it exported
- * any, they are registered as resources. This provides a convenient file-path based routing mechanism for defining
- * Resources (in JavaScript). This goes through our secure JS loader, so modules are sandboxed if secure sandboxing
- * is enabled.
- * @param js
- * @param urlPath
- * @param filePath
- * @param resources
+ * This plugin loads JavaScript files and registers their exports as resources.
+ * 
+ * The export can be the default export and will be assigned to the root URL path.
+ * 
+ * Otherwise, the name of the export will be used.
+ * 
+ * After loading the JavaScript code using the secure import, it adds it to the global `resources` map.
+ * 
+ * Once a file has been loaded it cannot be unloaded without a restart. 
+ * 
+ * Thus, this plugin only handle files as they are added (`add` event). All other events result in a restart request.
+ *
  */
-export async function handleFile(js, urlPath, filePath, resources) {
-	const handlers = new Map();
-	// use our configurable secure JS import loader
-	const exports = await secureImport(filePath);
-	// allow default to be used as root path handler
-	if (isResource(exports.default)) resources.set(dirname(urlPath), exports.default);
-	recurseForResources(exports, dirname(urlPath));
-	function recurseForResources(exports, prefix) {
-		for (const name in exports) {
-			// check each of the module exports to see if it implements a Resource handler
-			const exported = exports[name];
-			if (isResource(exported)) {
-				// expose as an endpoint
-				resources.set(prefix + '/' + name, exported);
-			} else if (typeof exported === 'object') {
-				recurseForResources(exported, prefix + '/' + name);
-			}
+export async function handleApplication(scope: Scope) {
+	scope.handleEntry((entryEvent) => {
+		if (entryEvent.entryType !== 'file') {
+			scope.logger.warn(
+				`jsResource plugin cannot handle entry type ${entryEvent.entryType}. Modify the 'files' option in ${scope.configFilePath} to only include files.`
+			);
+			return;
+		}
+
+		if (entryEvent.eventType !== 'add') {
+			scope.requestRestart();
+			return;
+		}
+
+		secureImport(entryEvent.absolutePath)
+			.then((resourceModule) => {
+				const root = dirname(entryEvent.urlPath);
+				if (isResource(resourceModule.default)) {
+					// register the resource
+					scope.resources.set(root, resourceModule.default);
+					scope.logger.debug(`Registered root resource: ${root}`);
+				}
+				recurseForResources(scope, resourceModule, root);
+			})
+			.catch((error) => {
+				scope.logger.error(`Failed to load resource module ${entryEvent.absolutePath}: ${error}`);
+				scope.requestRestart();
+			});
+	});
+}
+
+function recurseForResources(scope: Scope, resourceModule: any, prefix: string) {
+	for (const name in resourceModule) {
+		// check each of the module exports to see if it implements a Resource handler
+		const exported = resourceModule[name];
+		const resourcePath = join(prefix, name);
+		if (isResource(exported)) {
+			// expose as an endpoint
+			scope.resources.set(resourcePath, exported);
+			scope.logger.debug(`Registered resource: ${resourcePath}`);
+		} else if (typeof exported === 'object') {
+			recurseForResources(scope, exported, resourcePath);
 		}
 	}
-	function isResource(value) {
-		return typeof value === 'function' && (value.get || value.put || value.post || value.delete);
-	}
-	return handlers;
 }
+
+export const suppressHandleApplicationWarning = true;

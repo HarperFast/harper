@@ -13,9 +13,8 @@ const dataLoaderLogger = harperLogger.forComponent('dataLoader');
 /**
  * Set up file handlers for data files and loads them into the appropriate tables
  */
-export const suppressHandleComponentWarning = true;
-export function handleComponent(scope) {
-
+export const suppressHandleApplicationWarning = true;
+export function handleApplication(scope) {
 	// Early return if this isn't worker zero
 	// Currently using getWorkerIndex() over server.workerIndex to appease ts. The latter defined in manageThreads.js.
 	if (getWorkerIndex() !== 0) {
@@ -25,13 +24,13 @@ export function handleComponent(scope) {
 	}
 
 	// Handle all files that match the pattern in the config
-	scope.handleEntry(entry => {
+	scope.handleEntry((entry) => {
 		// Return early if not adding or updating a file
 		if (entry.entryType !== 'file' || entry.eventType === 'unlink') {
 			return;
 		}
 
-		loadDataFile(entry, tables, databases).then(result => {
+		loadDataFile(entry, tables, databases).then((result) => {
 			dataLoaderLogger.debug?.('Data loader processed file: %s: %s', basename(entry.absolutePath), result.message);
 		});
 	});
@@ -44,7 +43,11 @@ export function handleComponent(scope) {
  * @param databasesRef - Reference to databases object (local const for testing)
  */
 
-export async function loadDataFile({ contents, absolutePath, stats }: FileEntry, tablesRef: Tables, databasesRef: Databases) {
+export async function loadDataFile(
+	{ contents, absolutePath, stats }: FileEntry,
+	tablesRef: Tables,
+	databasesRef: Databases
+) {
 	const fileExt = extname(absolutePath) || 'unknown';
 	let data: DataFileFormat;
 
@@ -101,7 +104,7 @@ export async function loadDataFile({ contents, absolutePath, stats }: FileEntry,
 	try {
 		// Try to get the table from global tables if it exists
 		let tableRef;
-		
+
 		// If a database is specified, check if the table exists in that database
 		if (database && databasesRef[database] && databasesRef[database][tableName]) {
 			dataLoaderLogger.debug?.(`Using existing table ${tableIdentifier} from database tables`);
@@ -119,22 +122,24 @@ export async function loadDataFile({ contents, absolutePath, stats }: FileEntry,
 			const attributes: Attribute[] = [];
 			if (records.length > 0) {
 				const firstRecord = records[0];
-				Object.keys(firstRecord).map(attrName => {
-					const attr: Attribute = { name: attrName, type: typeof firstRecord[attrName] };
-					// If the attribute is 'id', mark it as primary key
-					if (attrName === 'id') {
-						attr.isPrimaryKey = true;
-					}
-					return attr;
-				}).forEach(attr => {
-					attributes.push(attr);
-				});
+				Object.keys(firstRecord)
+					.map((attrName) => {
+						const attr: Attribute = { name: attrName, type: typeof firstRecord[attrName] };
+						// If the attribute is 'id', mark it as primary key
+						if (attrName === 'id') {
+							attr.isPrimaryKey = true;
+						}
+						return attr;
+					})
+					.forEach((attr) => {
+						attributes.push(attr);
+					});
 			}
-			
+
 			tableRef = await table({
 				database,
 				table: tableName,
-				attributes
+				attributes,
 			});
 		}
 
@@ -144,14 +149,14 @@ export async function loadDataFile({ contents, absolutePath, stats }: FileEntry,
 		let newRecords = 0;
 		let updatedRecords = 0;
 		let skippedRecords = 0;
-		
+
 		// Process each record in a batch to avoid excessive memory usage
 		const batchSize = 100; // Process in batches of 100 records
-		
+
 		for (let i = 0; i < records.length; i += batchSize) {
 			const batch = records.slice(i, i + batchSize);
 			const batchPromises: Array<() => Promise<any>> = [];
-			
+
 			for (const newRecord of batch) {
 				// Wrap in an async function to handle errors individually
 				batchPromises.push(async () => {
@@ -198,11 +203,11 @@ export async function loadDataFile({ contents, absolutePath, stats }: FileEntry,
 					}
 				});
 			}
-			
+
 			// Execute batch promises. Currently not doing anything about errors or the put() results.
-			await Promise.all(batchPromises.map(fn => fn()));
+			await Promise.all(batchPromises.map((fn) => fn()));
 		}
-		
+
 		// Return a single result object
 		if (newRecords > 0 || updatedRecords > 0) {
 			let message = `Loaded ${newRecords} new and updated ${updatedRecords} records in ${tableIdentifier}`;
@@ -210,17 +215,17 @@ export async function loadDataFile({ contents, absolutePath, stats }: FileEntry,
 				message += ` (${skippedRecords} records skipped)`;
 			}
 			dataLoaderLogger.info?.(message);
-			
+
 			return new DataLoaderResult(absolutePath, database, tableName, 'success', newRecords + updatedRecords, message);
 		} else if (skippedRecords > 0) {
 			const message = `All ${skippedRecords} records in ${tableIdentifier} already up-to-date`;
 			dataLoaderLogger.info?.(message);
-			
+
 			return new DataLoaderResult(absolutePath, database, tableName, 'skipped', dataFIleRecords, message);
 		} else {
 			const message = `No records to process in ${tableIdentifier}`;
 			dataLoaderLogger.info?.(message);
-			
+
 			return new DataLoaderResult(absolutePath, database, tableName, 'success', 0, message);
 		}
 	} catch (error) {
@@ -254,7 +259,10 @@ export class DataLoaderError extends ClientError {
  */
 export class UnsupportedFileExtensionError extends DataLoaderError {
 	constructor(filePath: string, extension: string) {
-		super(`Unsupported file extension in ${basename(filePath)}: ${extension}. Only YAML and JSON files are supported.`, HTTP_STATUS_CODES.BAD_REQUEST);
+		super(
+			`Unsupported file extension in ${basename(filePath)}: ${extension}. Only YAML and JSON files are supported.`,
+			HTTP_STATUS_CODES.BAD_REQUEST
+		);
 		this.name = 'UnsupportedFileExtensionError';
 	}
 }
@@ -294,7 +302,10 @@ export class MissingRequiredPropertyError extends DataLoaderError {
  */
 export class InvalidPropertyTypeError extends DataLoaderError {
 	constructor(filePath: string, property: string, expectedType: string) {
-		super(`Data file ${basename(filePath)} has invalid "${property}" property, expected ${expectedType}`, HTTP_STATUS_CODES.BAD_REQUEST);
+		super(
+			`Data file ${basename(filePath)} has invalid "${property}" property, expected ${expectedType}`,
+			HTTP_STATUS_CODES.BAD_REQUEST
+		);
 		this.name = 'InvalidPropertyTypeError';
 	}
 }
@@ -314,34 +325,37 @@ export class SystemDatabaseError extends DataLoaderError {
  */
 export class RecordProcessingError extends DataLoaderError {
 	constructor(tableIdentifier: string, originalError: Error) {
-		super(`Failed to process record in ${tableIdentifier}: ${originalError.message}`, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
+		super(
+			`Failed to process record in ${tableIdentifier}: ${originalError.message}`,
+			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
+		);
 		this.name = 'RecordProcessingError';
 	}
 }
 
 // Define the structure of the data file format
 export interface DataFileFormat {
-	database?: string;               // Optional database name
-	table: string;                   // Required table name
-	records: Record<string, any>[];  // Array of records to load
-	mtime: number;                   // Last modified time
+	database?: string; // Optional database name
+	table: string; // Required table name
+	records: Record<string, any>[]; // Array of records to load
+	mtime: number; // Last modified time
 }
 
 // Define the class for data loader results
 export class DataLoaderResult {
-	#filePath: string;  // Path to the data file
-	#database: string;  // Database name
-	#table: string;     // Table name
-	#status: string;    // Status of the operation
-	#count: number;     // Number of records processed
-	#message: string;   // Message about the operation
+	#filePath: string; // Path to the data file
+	#database: string; // Database name
+	#table: string; // Table name
+	#status: string; // Status of the operation
+	#count: number; // Number of records processed
+	#message: string; // Message about the operation
 
 	constructor(
-		filePath: string, 
-		database: string | null | undefined, 
-		table: string | null, 
-		status: string, 
-		count: number, 
+		filePath: string,
+		database: string | null | undefined,
+		table: string | null,
+		status: string,
+		count: number,
 		message: string
 	) {
 		this.#filePath = filePath;
@@ -351,15 +365,27 @@ export class DataLoaderResult {
 		this.#count = count;
 		this.#message = message;
 	}
-	
+
 	// Getters
-	get filePath(): string { return this.#filePath; }
-	get database(): string { return this.#database; }
-	get table(): string { return this.#table; }
-	get status(): string { return this.#status; }
-	get count(): number { return this.#count; }
-	get message(): string { return this.#message; }
-	
+	get filePath(): string {
+		return this.#filePath;
+	}
+	get database(): string {
+		return this.#database;
+	}
+	get table(): string {
+		return this.#table;
+	}
+	get status(): string {
+		return this.#status;
+	}
+	get count(): number {
+		return this.#count;
+	}
+	get message(): string {
+		return this.#message;
+	}
+
 	// Methods to convert to JSON (for serialization)
 	toJSON() {
 		return {
@@ -368,7 +394,7 @@ export class DataLoaderResult {
 			table: this.#table,
 			status: this.#status,
 			count: this.#count,
-			message: this.#message
+			message: this.#message,
 		};
 	}
 }

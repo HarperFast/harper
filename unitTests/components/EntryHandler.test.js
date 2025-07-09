@@ -38,6 +38,7 @@ describe('EntryHandler', () => {
 	afterEach(() => {
 		try {
 			rmSync(this.directory, { recursive: true, force: true });
+			// eslint-disable-next-line sonarjs/no-ignored-exceptions
 		} catch (err) {
 			// best effort to clean up - but doesn't matter too much since this is a temp directory
 		}
@@ -206,12 +207,12 @@ describe('EntryHandler', () => {
 		assert.equal(entryHandler.listenerCount('unlinkDir'), 0, 'unlinkDir event listener should be removed');
 	});
 
-	it('should await ready event via `ready()` method', async () => {
+	it('should await ready event via `ready` property', async () => {
 		const entryHandler = new EntryHandler(this.name, this.directory, './');
 
 		const readyEventSpy = spy();
 		entryHandler.on('ready', readyEventSpy);
-		await entryHandler.ready();
+		await entryHandler.ready;
 		assert.equal(readyEventSpy.callCount, 1, 'ready event should be triggered once');
 
 		entryHandler.close();
@@ -219,7 +220,7 @@ describe('EntryHandler', () => {
 
 	it('should emit file change events', async () => {
 		const entryHandler = new EntryHandler(this.name, this.directory, './a');
-		await entryHandler.ready();
+		await entryHandler.ready;
 
 		const changeHandlerSpy = spy();
 		entryHandler.on('change', changeHandlerSpy);
@@ -319,7 +320,7 @@ describe('EntryHandler', () => {
 	it('should resolve the correct urlPath for files', async () => {
 		const entryHandler = new EntryHandler(this.name, this.directory, 'foo/d');
 
-		await entryHandler.ready();
+		await entryHandler.ready;
 
 		const addHandlerSpy = spy();
 		entryHandler.on('add', addHandlerSpy);
@@ -332,7 +333,7 @@ describe('EntryHandler', () => {
 	it('should resolve the correct urlPath for files with `./`', async () => {
 		const entryHandler = new EntryHandler(this.name, this.directory, './foo/d');
 
-		await entryHandler.ready();
+		await entryHandler.ready;
 
 		const addHandlerSpy = spy();
 		entryHandler.on('add', addHandlerSpy);
@@ -354,7 +355,7 @@ describe('EntryHandler', () => {
 		// the `web/*` could match the `bad/web` directory contents.
 		const entryHandler = new EntryHandler(basename(directory), directory, ['web/*', 'static/*']);
 
-		await entryHandler.ready();
+		await entryHandler.ready;
 
 		const allHandlerSpy = spy();
 		entryHandler.on('all', allHandlerSpy);
@@ -397,7 +398,7 @@ describe('EntryHandler', () => {
 		const addDirHandlerSpy = spy();
 		entryHandler.on('addDir', addDirHandlerSpy);
 
-		await entryHandler.ready();
+		await entryHandler.ready;
 
 		await waitFor(() => allHandlerSpy.callCount === 3);
 		assert.equal(allHandlerSpy.callCount, 3, 'all event should be triggered for each matching entry');
@@ -444,7 +445,7 @@ describe('EntryHandler', () => {
 		const addDirHandlerSpy = spy();
 		entryHandler.on('addDir', addDirHandlerSpy);
 
-		await entryHandler.ready();
+		await entryHandler.ready;
 
 		await waitFor(() => allHandlerSpy.callCount === 4);
 		assert.equal(allHandlerSpy.callCount, 4, 'all event should be triggered for each matching entry');

@@ -35,8 +35,8 @@ const httpServers = {},
 	httpChain = {},
 	httpResponders = [];
 let httpOptions: any = {};
-export const suppressHandleComponentWarning = true;
-export function handleComponent(scope: Scope) {
+export const suppressHandleApplicationWarning = true;
+export function handleApplication(scope: Scope) {
 	httpOptions = scope.options.getAll();
 	scope.options.on('change', (key) => {
 		// TODO: Check to see if the key is something we can or can't handle
