@@ -8,17 +8,17 @@ import type { FileAndURLPathConfig } from './Component.ts';
 import { FilesOption } from './deriveGlobOptions.ts';
 import { requestRestart } from './requestRestart.ts';
 
-export class MissingDefaultEntryHandlerError extends Error {
+export class MissingDefaultFilesOptionError extends Error {
 	constructor() {
-		super('No default entry handler exists. Ensure `files` is specified in config.yaml');
-		this.name = 'MissingDefaultEntryHandlerError';
+		super('No default files option exists. Ensure `files` is specified in config.yaml');
+		this.name = 'MissingDefaultFilesOptionError';
 	}
 }
 
 /**
- * This class is what is passed to the `handleComponent` function of an extension.
+ * This class is what is passed to the `handleApplication` function of an extension.
  *
- * It is imperative that the instance is "ready" before its passed to the `handleComponent` function
+ * It is imperative that the instance is "ready" before its passed to the `handleApplication` function
  * so that the developer can immediately start using `scope.options`, etc.
  *
  */
@@ -33,6 +33,7 @@ export class Scope extends EventEmitter {
 	options: OptionsWatcher;
 	resources: Resources;
 	server: Server;
+	ready: Promise<any[]>;
 
 	constructor(name: string, directory: string, configFilePath: string, resources: Resources, server: Server) {
 		super();
@@ -47,6 +48,8 @@ export class Scope extends EventEmitter {
 
 		this.#entryHandlers = [];
 
+		this.ready = once(this, 'ready');
+
 		// Create the options instance for the scope immediately
 		this.options = new OptionsWatcher(name, configFilePath, this.#logger)
 			.on('error', this.#handleError.bind(this))
@@ -54,23 +57,30 @@ export class Scope extends EventEmitter {
 			.on('ready', this.#handleOptionsWatcherReady.bind(this));
 	}
 
+	get logger(): any {
+		return this.#logger;
+	}
+
+	get name(): string {
+		return this.#name;
+	}
+
+	get directory(): string {
+		return this.#directory;
+	}
+
 	#handleOptionsWatcherReady(): void {
-		// After options are ready, check if the config contains `files`; create an EntryHandler if it does
-		// This will be the default EntryHandler for the scope
-		const config = this.options.getAll();
-		if (config && typeof config === 'object' && config !== null && !Array.isArray(config) && 'files' in config) {
-			this.#entryHandler = this.#createEntryHandler(config as FileAndURLPathConfig);
-		}
+		// This previously created the default entry handler immediately, but now we wait for the user to call `handleEntry`
+		// The issue was that since the component loader was awaiting `scope.ready()` and then calling `pluginModule.handleApplication(scope)`,
+		// the default entry handler could start receiving events before the plugin provided its own handler.
+		// We could make the user call `await scope.ready()` in their `handleApplication` function, but that could lead to the same issue and it'd
+		// be harder for the user to understand why.
 
 		this.emit('ready');
 	}
 
 	#handleError(error: unknown): void {
 		this.emit('error', error);
-	}
-
-	ready() {
-		return once(this, 'ready');
 	}
 
 	close() {
@@ -102,6 +112,7 @@ export class Scope extends EventEmitter {
 	}
 
 	#defaultEntryHandlerListener(event: keyof EntryHandlerEventMap) {
+		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const scope = this;
 		return function (this: EntryHandler) {
 			if (this.listenerCount('all') > 0 || this.listenerCount(event) > 1) {
@@ -113,10 +124,12 @@ export class Scope extends EventEmitter {
 	}
 
 	#optionsWatcherChangeListener() {
+		// eslint-disable-next-line @typescript-eslint/no-this-alias
 		const scope = this;
 		// eslint-disable-next-line @typescript-eslint/no-unused-vars
 		return function handleOptionsWatcherChange(
 			this: OptionsWatcher,
+			// eslint-disable-next-line @typescript-eslint/no-unused-vars
 			...[key, _, config]: OptionsWatcherEventMap['change']
 		) {
 			if (key[0] === 'files' || key[0] === 'urlPath') {
@@ -140,8 +153,18 @@ export class Scope extends EventEmitter {
 				return;
 			}
 
+			scope.#logger.debug(`Options changed: ${key.join('.')}, requesting restart`);
 			scope.requestRestart();
 		};
+	}
+
+	#getFilesOption(): FilesOption | FileAndURLPathConfig | undefined {
+		const config = this.options.getAll();
+		if (config && typeof config === 'object' && config !== null && !Array.isArray(config) && 'files' in config) {
+			// TODO maybe some validation here?
+			return config.files as FilesOption | FileAndURLPathConfig;
+		}
+		return undefined;
 	}
 
 	handleEntry(files: FilesOption | FileAndURLPathConfig, handler: onEntryEventHandler): EntryHandler;
@@ -151,23 +174,41 @@ export class Scope extends EventEmitter {
 		filesOrHandler?: FilesOption | FileAndURLPathConfig | onEntryEventHandler,
 		handler?: onEntryEventHandler
 	): EntryHandler {
-		// No arguments, return default handler
+		// No arguments
 		if (filesOrHandler === undefined) {
-			if (!this.#entryHandler) {
-				this.emit('error', new MissingDefaultEntryHandlerError());
+			// If entry handler already exists, return it
+			if (this.#entryHandler) {
+				return this.#entryHandler;
+			}
+
+			// Otherwise, try to create a default entry handler using the files option
+			const filesOption = this.#getFilesOption();
+			if (filesOption) {
+				this.#entryHandler = this.#createEntryHandler(filesOption);
+				return this.#entryHandler;
+			} else {
+				this.emit('error', new MissingDefaultFilesOptionError());
 				return;
 			}
-			return this.#entryHandler;
 		}
-		// Just a handler, add it to 'all' event (and return reference to handler)
+
+		// Provided a handler function
 		if (typeof filesOrHandler === 'function') {
-			// If its just a function, then we have to check if the default entry handler exists
-			if (!this.#entryHandler) {
-				this.emit('error', new MissingDefaultEntryHandlerError());
+			// If an entry handler already exists, return it with the handler attached
+			if (this.#entryHandler) {
+				return this.#entryHandler.on('all', filesOrHandler);
+			}
+
+			// Otherwise, try to create a default entry handler using the files option
+			const filesOption = this.#getFilesOption();
+			if (filesOption) {
+				this.#entryHandler = this.#createEntryHandler(filesOption);
+				// And attach the handler to it
+				return this.#entryHandler.on('all', filesOrHandler);
+			} else {
+				this.emit('error', new MissingDefaultFilesOptionError());
 				return;
 			}
-			// Ensure we return the entry handler
-			return this.#entryHandler.on('all', filesOrHandler);
 		}
 
 		// otherwise this is a custom config entry handler
@@ -176,7 +217,7 @@ export class Scope extends EventEmitter {
 	}
 
 	requestRestart() {
-		this.#logger.debug('Restart requested!');
+		this.#logger.debug(`Restart requested from ${this.name} scope for ${this.directory}`);
 		requestRestart();
 	}
 }

@@ -71,13 +71,14 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 	#component: Component;
 	#watcher?: FSWatcher;
 	#logger: any;
+	ready: Promise<any[]>;
 
 	constructor(name: string, directory: string, config: FilesOption | FileAndURLPathConfig, logger?: any) {
 		super();
 
 		this.#component = new Component(name, directory, castConfig(config));
 		this.#logger = logger || harperLogger.loggerWithTag(name);
-
+		this.ready = once(this, 'ready');
 		this.#watch();
 	}
 
@@ -170,7 +171,7 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 			.on('error', this.#handleError.bind(this))
 			.on('ready', this.#handleReady.bind(this));
 
-		return this.ready();
+		return this.ready;
 	}
 
 	close(): this {
@@ -181,10 +182,6 @@ export class EntryHandler extends EventEmitter<EntryHandlerEventMap> {
 		this.removeAllListeners();
 
 		return this;
-	}
-
-	ready() {
-		return once(this, 'ready');
 	}
 
 	update(config: FilesOption | FileAndURLPathConfig) {

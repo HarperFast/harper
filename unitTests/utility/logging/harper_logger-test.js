@@ -13,7 +13,7 @@ const YAML = require('yaml');
 const logger = require('../../../utility/logging/logger');
 const harperLoggerModule = require('../../../utility/logging/harper_logger');
 const { createLogger } = harperLoggerModule;
-const { getHttpOptions, handleComponent, logRequest, getRequestId } = require('../../../server/http');
+const { getHttpOptions, handleApplication, logRequest, getRequestId } = require('../../../server/http');
 
 const HARPER_LOGGER_MODULE = '../../../utility/logging/harper_logger';
 const LOG_DIR_TEST = 'testLogger';
@@ -733,7 +733,7 @@ describe('Test harper_logger module', () => {
 				httpLogger.path = httpLogPath;
 				httpLogger.level = 1;
 
-				handleComponent({
+				handleApplication({
 					options: {
 						getAll() {
 							return {
@@ -797,7 +797,7 @@ describe('Test harper_logger module', () => {
 				expect(httpLog).to.include(' 5.13ms');
 			});
 			after(() => {
-				handleComponent({
+				handleApplication({
 					options: {
 						getAll() {
 							return originalHttpOptions;
