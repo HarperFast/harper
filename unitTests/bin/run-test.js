@@ -22,6 +22,7 @@ let schema_describe;
 let upgrade;
 let stop;
 let run_rw;
+let installation;
 
 describe('Test run module', () => {
 	const sandbox = sinon.createSandbox();
@@ -65,6 +66,7 @@ describe('Test run module', () => {
 		schema_describe = require('../../dataLayer/schemaDescribe');
 		upgrade = require('../../bin/upgrade');
 		stop = require('../../bin/stop');
+		installation = require('../../utility/installation');
 
 		get_prob_stub = sandbox.stub(env_mangr, 'get');
 		get_prob_stub.withArgs('rootPath').returns('unit-test');
@@ -93,23 +95,21 @@ describe('Test run module', () => {
 	});
 
 	describe('Test run function', () => {
-		const is_hdb_installed_stub = sandbox.stub();
 		const create_log_file_stub = sandbox.stub();
 		const check_jwt_tokens_stub = sandbox.stub();
 		const install_stub = sandbox.stub();
-		let is_hdb_installed_rw;
-		let check_audit_log_env_exists_rw;
 		let install_rw;
 		let get_ver_update_info_stub;
 		let upgrade_stub;
 		let run;
+		let is_hdb_installed_stub;
 
 		before(() => {
 			run_rw.__set__('checkJwtTokens', check_jwt_tokens_stub);
 			run_rw.__set__('hdbLogger.createLogFile', create_log_file_stub);
-			is_hdb_installed_rw = run_rw.__set__('isHdbInstalled', is_hdb_installed_stub);
 			install_rw = run_rw.__set__('install', install_stub);
 			get_ver_update_info_stub = sandbox.stub(hdbInfoController, 'getVersionUpdateInfo');
+			is_hdb_installed_stub = sandbox.stub(installation, 'isHdbInstalled');
 			upgrade_stub = sandbox.stub(upgrade, 'upgrade');
 			run = run_rw.__get__('launch');
 		});
@@ -119,7 +119,6 @@ describe('Test run module', () => {
 		});
 
 		after(() => {
-			is_hdb_installed_rw();
 			install_rw();
 			const service_index = process.argv.indexOf('--service');
 			if (service_index > -1) process.argv.splice(service_index, 1);
@@ -130,14 +129,14 @@ describe('Test run module', () => {
 		it('Test run happy path all services started, all functions are called as expected', async () => {
 			get_prob_stub.withArgs('CLUSTERING').returns(true);
 			get_prob_stub.withArgs('CUSTOM_FUNCTIONS').returns(true);
-			is_hdb_installed_stub.resolves(true);
+			is_hdb_installed_stub.returns(true);
 			get_ver_update_info_stub.resolves(undefined);
 			await run();
 		});
 
 		it('Test upgrade is called if upgrade version permits', async () => {
 			env_mangr.setProperty(hdb_terms.CONFIG_PARAMS.ROOTPATH, 'unit-test');
-			is_hdb_installed_stub.resolves(true);
+			is_hdb_installed_stub.returns(true);
 			get_ver_update_info_stub.resolves({ upgrade_version: '9.9.9' });
 			await run();
 
@@ -146,7 +145,7 @@ describe('Test run module', () => {
 		});
 
 		it('Test upgrade error with version is handled correctly', async () => {
-			is_hdb_installed_stub.resolves(true);
+			is_hdb_installed_stub.returns(true);
 			get_ver_update_info_stub.resolves({ upgrade_version: '9.9.9' });
 			upgrade_stub.throws(TEST_ERROR);
 			await run();
@@ -159,7 +158,7 @@ describe('Test run module', () => {
 		});
 
 		it('Test upgrade error without version is handled correctly', async () => {
-			is_hdb_installed_stub.resolves(true);
+			is_hdb_installed_stub.returns(true);
 			get_ver_update_info_stub.throws(TEST_ERROR);
 			await run();
 
@@ -172,13 +171,13 @@ describe('Test run module', () => {
 		});
 
 		it('Test install is called if HDB not installed', async () => {
-			is_hdb_installed_stub.resolves(false);
+			is_hdb_installed_stub.returns(false);
 			await run();
 			expect(install_stub).to.have.been.called;
 		});
 
 		it('Test error from install is handled as expected', async () => {
-			is_hdb_installed_stub.resolves(false);
+			is_hdb_installed_stub.returns(false);
 			install_stub.throws(TEST_ERROR);
 			await run();
 
@@ -195,7 +194,7 @@ describe('Test run module', () => {
 			expect(console_error_stub.getCall(0).firstArg.name).to.equal(TEST_ERROR);
 			expect(log_error_stub.getCall(0).firstArg.name).to.equal(TEST_ERROR);
 			expect(process_exit_stub.getCall(0).firstArg).to.equal(1);
-			is_hdb_installed_stub.resolves(true);
+			is_hdb_installed_stub.returns(true);
 		});
 		it('Test that a user thread can access harperdb as a module', async () => {
 			// Unfortunately this test is probably only get to test source version, but problems have occurred built version
@@ -412,49 +411,6 @@ describe('Test run module', () => {
 			);
 			expect(log_error_stub.getCall(0).firstArg).to.equal(
 				'Unable to create the transaction audit environment for unit_tests.are_amazing, due to: I am a unit test error test'
-			);
-		});
-	});
-
-	describe('Test isHdbInstalled function', () => {
-		let isHdbInstalled;
-		let fs_stat_stub;
-
-		before(() => {
-			get_prob_stub.restore();
-			fs_stat_stub = sandbox.stub(fs, 'stat');
-			isHdbInstalled = run_rw.__get__('isHdbInstalled');
-		});
-
-		beforeEach(() => {
-			sandbox.resetHistory();
-		});
-
-		after(() => {
-			fs_stat_stub.restore();
-		});
-
-		it('Test two calls to fs stat with the correct arguments happy path', async () => {
-			const result = await isHdbInstalled();
-
-			expect(result).to.be.true;
-			expect(fs_stat_stub.getCall(1).args[0]).to.include(`harperdb${path.sep}unitTests${path.sep}settings.test`);
-		});
-
-		it('Test ENOENT err code returns false', async () => {
-			let err = new Error(TEST_ERROR);
-			err.code = 'ENOENT';
-			fs_stat_stub.throws(err);
-			const result = await isHdbInstalled();
-
-			expect(result).to.be.false;
-		});
-
-		it('Test non ENOENT error is handled as expected', async () => {
-			fs_stat_stub.throws(new Error(TEST_ERROR));
-			await test_util.assertErrorAsync(isHdbInstalled, [], new Error(TEST_ERROR));
-			expect(log_error_stub.getCall(0).firstArg).to.equal(
-				'Error checking for HDB install - Error: I am a unit test error test'
 			);
 		});
 	});
