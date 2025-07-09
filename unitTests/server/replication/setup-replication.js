@@ -44,13 +44,13 @@ exports.createNode = async function createNode(index, database_path, node_count)
 		routes.push({
 			name: 'node-' + (i + 1),
 			url: 'ws://localhost:' + (9325 + i),
-			shard: i + 1,
 		});
 	}
 	const options = {
 		port: 9325 + index,
 		url: 'ws://localhost:' + (9325 + index),
 		routes,
+		shard: index + 1,
 		databases: ['test'],
 	};
 	server.http((request, next_handler) => {
