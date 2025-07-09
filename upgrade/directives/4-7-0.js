@@ -1,6 +1,7 @@
 const UpgradeDirective = require('../UpgradeDirective.js');
 const { databases, table } = require('../../resources/databases.ts');
 const systemSchema = require('../../json/systemSchema.json');
+const log = require('../../utility/logging/harper_logger.js');
 
 let directive470 = new UpgradeDirective('4.7.0');
 let directives = [];
@@ -9,14 +10,14 @@ async function convertToUsageBlockLicenses() {
 	const licenseTable = databases.system?.hdb_license;
 
 	if (!licenseTable) {
-		console.log('system.hdb_license table not found; no migration necessary');
+		log.debug?.('system.hdb_license table not found; no migration necessary');
 		return;
 	}
 
-	console.log('Dropping existing system.hdb_license table');
+	log.debug?.('Dropping existing system.hdb_license table');
 	await licenseTable.dropTable();
 
-	console.log('Creating new usage block system.hdb_license table');
+	log.debug?.('Creating new usage block system.hdb_license table');
 	return table(systemSchema.hdb_license);
 }
 
