@@ -6,7 +6,7 @@ import { req } from '../utils/request.js';
 describe('11. Alter User Tests', () => {
 	//Alter User Tests Folder
 
-	it('Add non-SU role',  () => {
+	it('Add non-SU role', () => {
 		return req()
 			.send({
 				operation: 'add_role',
@@ -92,7 +92,7 @@ describe('11. Alter User Tests', () => {
 			.expect(200);
 	});
 
-	it('Add User with new Role',  () => {
+	it('Add User with new Role', () => {
 		return req()
 			.send({
 				operation: 'add_user',
@@ -104,7 +104,7 @@ describe('11. Alter User Tests', () => {
 			.expect(200);
 	});
 
-	it('Alter User with empty role',  () => {
+	it('Alter User with empty role', () => {
 		return req()
 			.send({
 				operation: 'alter_user',
@@ -117,11 +117,13 @@ describe('11. Alter User Tests', () => {
 			.expect(500);
 	});
 
-	it('Alter User set active to false.',  () => {
+	it('Alter User set active to false.', () => {
 		return req()
 			.send({ operation: 'alter_user', username: 'test_user', password: `${testData.password}`, active: false })
 			.expect((r) =>
-				assert.equal(r.body.message, 'updated 1 of 1 records',
+				assert.equal(
+					r.body.message,
+					'updated 1 of 1 records',
 					'Expected response message to eql "updated 1 of 1 records"'
 				)
 			)
@@ -129,7 +131,7 @@ describe('11. Alter User Tests', () => {
 			.expect(200);
 	});
 
-	it('Check for active=false',  () => {
+	it('Check for active=false', () => {
 		return req()
 			.send({ operation: 'list_users' })
 			.expect((r) => {
@@ -144,15 +146,11 @@ describe('11. Alter User Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop test user',  () => {
-		return req()
-			.send({ operation: 'drop_user', username: 'test_user' })
-			.expect(200);
+	it('Drop test user', () => {
+		return req().send({ operation: 'drop_user', username: 'test_user' }).expect(200);
 	});
 
-	it('Drop test non-SU role',  () => {
-		return req()
-			.send({ operation: 'drop_role', id: 'developer_test_5' })
-			.expect(200);
+	it('Drop test non-SU role', () => {
+		return req().send({ operation: 'drop_role', id: 'developer_test_5' }).expect(200);
 	});
 });

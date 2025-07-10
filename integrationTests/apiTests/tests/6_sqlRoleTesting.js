@@ -4,11 +4,9 @@ import { testData, headersTestUser } from '../config/envConfig.js';
 import { req, reqAsNonSU } from '../utils/request.js';
 
 describe('6. SQL Role Testing', () => {
-
-
 	//SQL Role Testing Folder
 
-	it('SQL Add non SU role',  () => {
+	it('SQL Add non SU role', () => {
 		return req()
 			.send({
 				operation: 'add_role',
@@ -141,7 +139,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Add User with new Role',  () => {
+	it('SQL Add User with new Role', () => {
 		return req()
 			.send({
 				operation: 'add_user',
@@ -154,7 +152,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Add user that already exists',  () => {
+	it('Add user that already exists', () => {
 		return req()
 			.send({
 				operation: 'add_user',
@@ -167,7 +165,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(409);
 	});
 
-	it('Add user bad role name',  () => {
+	it('Add user bad role name', () => {
 		return req()
 			.send({
 				operation: 'add_user',
@@ -180,7 +178,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(400);
 	});
 
-	it('get user info',  () => {
+	it('get user info', () => {
 		return req()
 			.send({ operation: 'list_users' })
 			.expect((r) => {
@@ -193,14 +191,14 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('try to set bad role to user',  () => {
+	it('try to set bad role to user', () => {
 		return req()
 			.send({ operation: 'alter_user', role: 'blahblah', username: 'test_user' })
 			.expect((r) => assert.equal(r.body.error, "Update failed.  Requested 'blahblah' role not found.", r.text))
 			.expect(404);
 	});
 
-	it('get user info make sure role was not changed',  () => {
+	it('get user info make sure role was not changed', () => {
 		return req()
 			.send({ operation: 'list_users' })
 			.expect((r) => {
@@ -213,7 +211,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to read suppliers table as SU',  () => {
+	it('SQL Try to read suppliers table as SU', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -223,7 +221,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to read FULLY restricted suppliers table as test_user',  () => {
+	it('SQL Try to read FULLY restricted suppliers table as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
@@ -231,7 +229,11 @@ describe('6. SQL Role Testing', () => {
                                   from ${testData.schema}.${testData.supp_tb}`,
 			})
 			.expect((r) => {
-				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				);
 				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
 				assert.equal(r.body.invalid_schema_items[0], "Table 'northnwd.suppliers' does not exist", r.text);
 				assert.equal(r.body.unauthorized_access.length, 0, r.text);
@@ -239,7 +241,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('SQL Try to read region table as SU',  () => {
+	it('SQL Try to read region table as SU', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -249,7 +251,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to read region table as test_user',  () => {
+	it('SQL Try to read region table as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
@@ -268,7 +270,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to insert into region table as SU',  () => {
+	it('SQL Try to insert into region table as SU', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -277,14 +279,18 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to insert into restricted region table as test_user',  () => {
+	it('SQL Try to insert into restricted region table as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: "insert into northnwd.region (regionid, regiondescription) values ('17', 'test description')",
 			})
 			.expect((r) => {
-				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				);
 				assert.equal(r.body.unauthorized_access.length, 1, r.text);
 				assert.equal(r.body.unauthorized_access[0].required_table_permissions.length, 1, r.text);
 				assert.equal(r.body.unauthorized_access[0].required_table_permissions[0], 'insert', r.text);
@@ -295,7 +301,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('SQL Try to insert into territories table as SU',  () => {
+	it('SQL Try to insert into territories table as SU', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -304,22 +310,30 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to insert into territories table with restricted attribute as test_user',  () => {
+	it('SQL Try to insert into territories table with restricted attribute as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: "insert into northnwd.territories (regionid, territoryid, territorydescription) values ('1', '65', 'Im a test')",
 			})
 			.expect((r) => {
-				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				);
 				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
-				assert.equal(r.body.invalid_schema_items[0], "Attribute 'regionid' does not exist on 'northnwd.territories'", r.text);
+				assert.equal(
+					r.body.invalid_schema_items[0],
+					"Attribute 'regionid' does not exist on 'northnwd.territories'",
+					r.text
+				);
 				assert.equal(r.body.unauthorized_access.length, 0, r.text);
 			})
 			.expect(403);
 	});
 
-	it('SQL Try to insert into territories table with allowed attributes as test_user',  () => {
+	it('SQL Try to insert into territories table with allowed attributes as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
@@ -330,7 +344,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to update territories table as SU',  () => {
+	it('SQL Try to update territories table as SU', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -339,14 +353,18 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to update restricted territories table as test_user',  () => {
+	it('SQL Try to update restricted territories table as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: "update northnwd.territories set territorydescription = 'update test' where territoryid = 65",
 			})
 			.expect((r) => {
-				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				);
 				assert.equal(r.body.unauthorized_access.length, 1, r.text);
 				assert.equal(r.body.unauthorized_access[0].required_table_permissions.length, 1, r.text);
 				assert.equal(r.body.unauthorized_access[0].required_table_permissions[0], 'update', r.text);
@@ -357,7 +375,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('SQL Try to update categories table as test_user',  () => {
+	it('SQL Try to update categories table as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
@@ -366,32 +384,42 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to update restricted attr in categories table as test_user',  () => {
+	it('SQL Try to update restricted attr in categories table as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: "update northnwd.categories set description = 'update test', picture = 'test picture' where categoryid = 2",
 			})
 			.expect((r) => {
-				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				);
 				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
-				assert.equal(r.body.invalid_schema_items[0], "Attribute 'picture' does not exist on 'northnwd.categories'", r.text);
+				assert.equal(
+					r.body.invalid_schema_items[0],
+					"Attribute 'picture' does not exist on 'northnwd.categories'",
+					r.text
+				);
 				assert.equal(r.body.unauthorized_access.length, 0, r.text);
 			})
 			.expect(403);
 	});
 
-	it('SQL Try to delete from categories table as SU',  () => {
-		return req()
-			.send({ operation: 'sql', sql: 'delete from northnwd.categories where categoryid = 2' })
-			.expect(200);
+	it('SQL Try to delete from categories table as SU', () => {
+		return req().send({ operation: 'sql', sql: 'delete from northnwd.categories where categoryid = 2' }).expect(200);
 	});
 
-	it('SQL Try to delete from restricted categories table as test_user',  () => {
+	it('SQL Try to delete from restricted categories table as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({ operation: 'sql', sql: 'delete from northnwd.categories where categoryid = 2' })
 			.expect((r) => {
-				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				);
 				assert.equal(r.body.unauthorized_access.length, 1, r.text);
 				assert.equal(r.body.unauthorized_access[0].required_table_permissions.length, 1, r.text);
 				assert.equal(r.body.unauthorized_access[0].required_table_permissions[0], 'delete', r.text);
@@ -402,7 +430,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('SQL Try to read shippers table w/ FULLY restricted attributes as test_user - expect empty array',  () => {
+	it('SQL Try to read shippers table w/ FULLY restricted attributes as test_user - expect empty array', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
@@ -413,7 +441,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to update shippers table restricted attribute as test_user',  () => {
+	it('SQL Try to update shippers table restricted attribute as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
@@ -422,32 +450,53 @@ describe('6. SQL Role Testing', () => {
               where ${testData.ship_id} = 1`,
 			})
 			.expect((r) => {
-				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				);
 				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
-				assert.equal(r.body.invalid_schema_items[0], "Attribute 'companyname' does not exist on 'northnwd.shippers'", r.text);
+				assert.equal(
+					r.body.invalid_schema_items[0],
+					"Attribute 'companyname' does not exist on 'northnwd.shippers'",
+					r.text
+				);
 				assert.equal(r.body.unauthorized_access.length, 0, r.text);
 			})
 			.expect(403);
 	});
 
-	it('SQL Try to insert into shippers table w/ FULLY restricted attributes as test_user',  () => {
+	it('SQL Try to insert into shippers table w/ FULLY restricted attributes as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: "insert into northnwd.shippers (shipperid, companyname, phone) values ('1', 'bad update name', '(503) 555-9831')",
 			})
 			.expect((r) => {
-				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				);
 				assert.equal(r.body.invalid_schema_items.length, 3, r.text);
-				assert.ok(r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'"), r.text);
-				assert.ok(r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'"), r.text);
-				assert.ok(r.body.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'"), r.text);
+				assert.ok(
+					r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'"),
+					r.text
+				);
+				assert.ok(
+					r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'"),
+					r.text
+				);
+				assert.ok(
+					r.body.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'"),
+					r.text
+				);
 				assert.equal(r.body.unauthorized_access.length, 0, r.text);
 			})
 			.expect(403);
 	});
 
-	it('SQL Try to insert categories table unrestricted attributes as test_user',  () => {
+	it('SQL Try to insert categories table unrestricted attributes as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
@@ -456,7 +505,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL Try to read shippers table as test_user with restricted attribute in WHERE',  () => {
+	it('SQL Try to read shippers table as test_user with restricted attribute in WHERE', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
@@ -466,24 +515,41 @@ describe('6. SQL Role Testing', () => {
                  OR companyname IS NOT NULL`,
 			})
 			.expect((r) => {
-				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				);
 				assert.equal(r.body.invalid_schema_items.length, 3, r.text);
-				assert.ok(r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'"), r.text);
-				assert.ok(r.body.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'"), r.text);
-				assert.ok(r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'"), r.text);
+				assert.ok(
+					r.body.invalid_schema_items.includes("Attribute 'shipperid' does not exist on 'northnwd.shippers'"),
+					r.text
+				);
+				assert.ok(
+					r.body.invalid_schema_items.includes("Attribute 'phone' does not exist on 'northnwd.shippers'"),
+					r.text
+				);
+				assert.ok(
+					r.body.invalid_schema_items.includes("Attribute 'companyname' does not exist on 'northnwd.shippers'"),
+					r.text
+				);
 				assert.equal(r.body.unauthorized_access.length, 0, r.text);
 			})
 			.expect(403);
 	});
 
-	it('Select with restricted CROSS SCHEMA JOIN as test_user',  () => {
+	it('Select with restricted CROSS SCHEMA JOIN as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id',
 			})
 			.expect((r) => {
-				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				);
 				assert.equal(r.body.invalid_schema_items.length, 2, r.text);
 				assert.ok(r.body.invalid_schema_items.includes("Attribute 'id' does not exist on 'other.owner'"), r.text);
 				assert.ok(r.body.invalid_schema_items.includes("Attribute 'name' does not exist on 'other.owner'"), r.text);
@@ -492,14 +558,18 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('Select * with restricted CROSS SCHEMA JOIN as test_user',  () => {
+	it('Select * with restricted CROSS SCHEMA JOIN as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.*, o.* FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id ORDER BY o.name, o.id LIMIT 5 OFFSET 1',
 			})
 			.expect((r) => {
-				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				);
 				assert.equal(r.body.invalid_schema_items.length, 2, r.text);
 				assert.ok(r.body.invalid_schema_items.includes("Attribute 'id' does not exist on 'other.owner'"), r.text);
 				assert.ok(r.body.invalid_schema_items.includes("Attribute 'name' does not exist on 'other.owner'"), r.text);
@@ -508,14 +578,18 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('Select restricted attrs in CROSS 3 SCHEMA JOINS as test_user',  () => {
+	it('Select restricted attrs in CROSS 3 SCHEMA JOINS as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.id, d.dog_name, d.age, d.adorable, o.id, o.name, b.id, b.name FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id',
 			})
 			.expect((r) => {
-				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				);
 				assert.equal(r.body.unauthorized_access.length, 1, r.text);
 				assert.equal(r.body.unauthorized_access[0].required_table_permissions.length, 1, r.text);
 				assert.equal(r.body.unauthorized_access[0].required_table_permissions[0], 'read', r.text);
@@ -528,14 +602,18 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('Select with complex CROSS 3 SCHEMA JOINS as test_user',  () => {
+	it('Select with complex CROSS 3 SCHEMA JOINS as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name, b.image FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name',
 			})
 			.expect((r) => {
-				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				);
 				assert.equal(r.body.unauthorized_access.length, 1, r.text);
 				assert.equal(r.body.unauthorized_access[0].required_table_permissions.length, 1, r.text);
 				assert.equal(r.body.unauthorized_access[0].required_table_permissions[0], 'read', r.text);
@@ -548,14 +626,18 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('Select * w/ two table CROSS SCHEMA JOIN on table with FULLY restricted attributes as test_user',  () => {
+	it('Select * w/ two table CROSS SCHEMA JOIN on table with FULLY restricted attributes as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.*, o.* FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id ORDER BY o.name, o.id LIMIT 5 OFFSET 1',
 			})
 			.expect((r) => {
-				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				);
 				assert.equal(r.body.invalid_schema_items.length, 2, r.text);
 				assert.ok(r.body.invalid_schema_items.includes("Attribute 'name' does not exist on 'other.owner'"), r.text);
 				assert.ok(r.body.invalid_schema_items.includes("Attribute 'id' does not exist on 'other.owner'"), r.text);
@@ -564,7 +646,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(403);
 	});
 
-	it('SQL ALTER non SU role',  () => {
+	it('SQL ALTER non SU role', () => {
 		return req()
 			.send({
 				operation: 'alter_role',
@@ -698,7 +780,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Select two table CROSS SCHEMA JOIN as test_user',  () => {
+	it('Select two table CROSS SCHEMA JOIN as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
@@ -723,7 +805,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Select * w/ two table CROSS SCHEMA JOIN as test_user',  () => {
+	it('Select * w/ two table CROSS SCHEMA JOIN as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
@@ -756,7 +838,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Select w/ CROSS 3 SCHEMA JOINS as test_user',  () => {
+	it('Select w/ CROSS 3 SCHEMA JOINS as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
@@ -784,7 +866,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Select with complex CROSS 3 SCHEMA JOINS as test_user',  () => {
+	it('Select with complex CROSS 3 SCHEMA JOINS as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
@@ -812,7 +894,7 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('SQL ALTER non SU role with multi table join restrictions',  () => {
+	it('SQL ALTER non SU role with multi table join restrictions', () => {
 		return req()
 			.send({
 				operation: 'alter_role',
@@ -872,14 +954,18 @@ describe('6. SQL Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Select with ALL RESTRICTED complex CROSS 3 SCHEMA JOINS as test_user',  () => {
+	it('Select with ALL RESTRICTED complex CROSS 3 SCHEMA JOINS as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'sql',
 				sql: 'SELECT d.age AS dog_age, AVG(d.weight_lbs) AS dog_weight, o.name AS owner_name, b.name, b.country FROM dev.dog AS d INNER JOIN other.owner AS o ON d.owner_id = o.id INNER JOIN another.breed AS b ON d.breed_id = b.id GROUP BY o.name, b.name, d.age ORDER BY b.name',
 			})
 			.expect((r) => {
-				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				);
 				assert.equal(r.body.unauthorized_access.length, 1, r.text);
 				assert.equal(r.body.unauthorized_access[0].required_table_permissions.length, 1, r.text);
 				assert.equal(r.body.unauthorized_access[0].required_table_permissions[0], 'read', r.text);
@@ -888,33 +974,36 @@ describe('6. SQL Role Testing', () => {
 				assert.equal(r.body.invalid_schema_items.length, 3, r.text);
 				assert.ok(r.body.invalid_schema_items.includes("Attribute 'id' does not exist on 'other.owner'"), r.text);
 				assert.ok(r.body.invalid_schema_items.includes("Attribute 'name' does not exist on 'other.owner'"), r.text);
-				assert.ok(r.body.invalid_schema_items.includes("Attribute 'country' does not exist on 'another.breed'"), r.text);
+				assert.ok(
+					r.body.invalid_schema_items.includes("Attribute 'country' does not exist on 'another.breed'"),
+					r.text
+				);
 			})
 			.expect(403);
 	});
 
-	it('SQL drop test user',  () => {
+	it('SQL drop test user', () => {
 		return req()
 			.send({ operation: 'drop_user', username: 'test_user' })
 			.expect((r) => assert.equal(r.body.message, 'test_user successfully deleted', r.text))
 			.expect(200);
 	});
 
-	it('Drop non-existent user',  () => {
+	it('Drop non-existent user', () => {
 		return req()
 			.send({ operation: 'drop_user', username: 'test_user' })
 			.expect((r) => assert.equal(r.body.error, 'User test_user does not exist', r.text))
 			.expect(404);
 	});
 
-	it('SQL drop_role',  () => {
+	it('SQL drop_role', () => {
 		return req()
 			.send({ operation: 'drop_role', id: 'developer_test_5' })
 			.expect((r) => assert.equal(r.body.message, 'developer_test_5 successfully deleted', r.text))
 			.expect(200);
 	});
 
-	it('Drop non-existent role',  () => {
+	it('Drop non-existent role', () => {
 		return req()
 			.send({ operation: 'drop_role', id: 'developer_test_5' })
 			.expect((r) => assert.equal(r.body.error, 'Role not found', r.text))

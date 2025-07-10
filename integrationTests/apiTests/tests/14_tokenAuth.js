@@ -12,7 +12,7 @@ describe('14. Token Auth', () => {
 		const r = await request(envUrl)
 			.post('')
 			.set({ 'Content-Type': 'application/json' })
-			.send({ operation: 'create_authentication_tokens' })
+			.send({ operation: 'create_authentication_tokens' });
 
 		if (await isDevEnv()) {
 			assert.equal(r.status, 200, r.text);
@@ -22,16 +22,16 @@ describe('14. Token Auth', () => {
 		}
 	});
 
-	it('Call create_authentication_tokens no pw',  () => {
+	it('Call create_authentication_tokens no pw', () => {
 		return request(envUrl)
 			.post('')
 			.set({ 'Content-Type': 'application/json' })
 			.send({ operation: 'create_authentication_tokens', username: `${testData.username}` })
-			.expect((r) => assert.equal(r.body['error'],  'invalid credentials', r.text))
+			.expect((r) => assert.equal(r.body['error'], 'invalid credentials', r.text))
 			.expect(401);
 	});
 
-	it('Call create_authentication_tokens bad credentials',  () => {
+	it('Call create_authentication_tokens bad credentials', () => {
 		return request(envUrl)
 			.post('')
 			.set({ 'Content-Type': 'application/json' })
@@ -39,13 +39,13 @@ describe('14. Token Auth', () => {
 				operation: 'create_authentication_tokens',
 				username: 'baduser',
 				password: 'bad',
-				bypass_auth: true
+				bypass_auth: true,
 			})
 			.expect((r) => assert.equal(r.body['error'], 'invalid credentials', r.text))
 			.expect(401);
 	});
 
-	it('Call create_authentication_tokens happy path',  () => {
+	it('Call create_authentication_tokens happy path', () => {
 		return request(envUrl)
 			.post('')
 			.set({ 'Content-Type': 'application/json' })
@@ -65,7 +65,7 @@ describe('14. Token Auth', () => {
 			.expect(200);
 	});
 
-	it('test search_by_hash with valid jwt',  () => {
+	it('test search_by_hash with valid jwt', () => {
 		return request(envUrl)
 			.post('')
 			.set('Content-Type', 'application/json')
@@ -83,7 +83,7 @@ describe('14. Token Auth', () => {
 			.expect(200);
 	});
 
-	it('test search_by_hash with invalid jwt',  () => {
+	it('test search_by_hash with invalid jwt', () => {
 		return request(envUrl)
 			.post('')
 			.set('Content-Type', 'application/json')
@@ -100,7 +100,7 @@ describe('14. Token Auth', () => {
 			.expect(401);
 	});
 
-	it('test refresh_operation_token with correct token',  () => {
+	it('test refresh_operation_token with correct token', () => {
 		return request(envUrl)
 			.post('')
 			.set('Content-Type', 'application/json')
@@ -116,7 +116,7 @@ describe('14. Token Auth', () => {
 			.expect(200);
 	});
 
-	it('test refresh_operation_token with incorrect token',  () => {
+	it('test refresh_operation_token with incorrect token', () => {
 		return request(envUrl)
 			.post('')
 			.set('Content-Type', 'application/json')
@@ -126,7 +126,7 @@ describe('14. Token Auth', () => {
 			.expect(401);
 	});
 
-	it('Create token with current user',  () => {
+	it('Create token with current user', () => {
 		return req()
 			.send({ operation: 'create_authentication_tokens' })
 			.expect((r) => {
@@ -137,5 +137,4 @@ describe('14. Token Auth', () => {
 			})
 			.expect(200);
 	});
-
 });

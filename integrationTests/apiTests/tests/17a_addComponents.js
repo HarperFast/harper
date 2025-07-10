@@ -5,15 +5,14 @@ import { restartServiceHttpWorkersWithTimeout } from '../utils/restart.js';
 import { req } from '../utils/request.js';
 
 describe('17a. Add components for computed props, graphQL, and open api', () => {
-
-	it('Add component for computed properties',  () => {
+	it('Add component for computed properties', () => {
 		return req()
 			.send({ operation: 'add_component', project: 'computed' })
 			.expect((r) => assert.ok(r.body.message.includes('Successfully added project: computed'), r.text))
 			.expect(200);
 	});
 
-	it('Set Component File schema.graphql',  () => {
+	it('Set Component File schema.graphql', () => {
 		return req()
 			.send({
 				operation: 'set_component_file',
@@ -26,7 +25,7 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 			.expect(200);
 	});
 
-	it('Set Component File resources.js',  () => {
+	it('Set Component File resources.js', () => {
 		return req()
 			.send({
 				operation: 'set_component_file',
@@ -39,9 +38,7 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 			.expect(200);
 	});
 
-
-
-	it('Add component for graphql and rest tests',  () => {
+	it('Add component for graphql and rest tests', () => {
 		return req()
 			.send({ operation: 'add_component', project: 'appGraphQL' })
 			.expect((r) => {
@@ -50,7 +47,7 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 			});
 	});
 
-	it('Set Component File schema.graphql',  () => {
+	it('Set Component File schema.graphql', () => {
 		return req()
 			.send({
 				operation: 'set_component_file',
@@ -63,7 +60,7 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 			.expect(200);
 	});
 
-	it('Set Component File config.yaml',  () => {
+	it('Set Component File config.yaml', () => {
 		return req()
 			.send({
 				operation: 'set_component_file',
@@ -76,21 +73,22 @@ describe('17a. Add components for computed props, graphQL, and open api', () => 
 			.expect(200);
 	});
 
-
-	it('Add default component for openapi endpoint',  () => {
+	it('Add default component for openapi endpoint', () => {
 		return req()
-			.send({ 'operation': 'add_component', 'project': 'myApp111' })
-			.expect((r) => assert.ok(JSON.stringify(r.body).includes('Successfully added project') ||
-				JSON.stringify(r.body).includes('Project already exists')))
+			.send({ operation: 'add_component', project: 'myApp111' })
+			.expect((r) =>
+				assert.ok(
+					JSON.stringify(r.body).includes('Successfully added project') ||
+						JSON.stringify(r.body).includes('Project already exists')
+				)
+			);
 	});
 
-
-
-	it('Restart Service: http workers and wait',  () => {
+	it('Restart Service: http workers and wait', () => {
 		return restartServiceHttpWorkersWithTimeout(testData.restartTimeout);
 	});
 
-	it('Describe all',  () => {
+	it('Describe all', () => {
 		return req().send({ operation: 'describe_all' }).expect(200);
 	});
 });
