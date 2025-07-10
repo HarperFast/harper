@@ -68,24 +68,20 @@ describe('test runCommand', () => {
 		/**
 		 * runCommand sets the processes `stdin` to `ignore` which essentially disables `stdin`.
 		 *
-		 * `stdin` cannot actually be disabled, it is set to `/dev/null` or `NUL` depending on the OS, and returns `EOF` immediately when read.
+		 * `stdin` cannot actually be disabled, it is set to `/dev/null` or `NUL` depending on the OS, and returns `EOF` immediately when read from.
+		 * When a Readable receives `EOF`, it emits an `end` event.
 		 *
-		 * This script immediately puts the `stdin` Readable into `flowing` mode (with `resume()`).
+		 * The test script below starts a timeout that will fail the test if it runs longer than 1 second.
+		 * Then it listens for an `end` event on `stdin`, which will only fire if `stdin` is closed.
+		 * Then it calls `process.stdin.resume()` which puts the `stdin` Readable into flowing mode.
 		 *
-		 * Then it listens for an `end` event which only fires when the `stdin` Readable closes.
-		 *
-		 * The `setTimeout` call advances the event loop one tick allowing the end event handler to fire if `stdin` has closed.
-		 *
-		 * And thus, the process exits with code `0` if `stdin` has closed, otherwise it exits with code `1`.
-		 *
-		 * ```js
-		 * let end = false;
-		 * process.stdin.resume();
-		 * process.stdin.on('end', () => { end = true; });
-		 * setTimeout(() => {process.exit(end ? 0 : 1)}, 1);
-		 * ```
 		 */
-		const command = `node -e "let end = false; process.stdin.resume(); process.stdin.on('end', () => { end = true; }); setImmediate(() => { process.exit(end ? 0 : 1); });"`;
+		const script = `
+			const timer = setTimeout(() => { process.exit(1); }, 1000);
+			process.stdin.on('end', () => { clearTimeout(timer); process.exit(0); });
+			process.stdin.resume();
+		`;
+		const command = `node -e "${script}"`;
 		const actual = await runCommand(command);
 		assert.equal(actual, undefined);
 		assert.deepEqual(harperLogger.debug.getCall(0).args, [
