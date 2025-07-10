@@ -11,6 +11,8 @@ jobs:
         with:
           node-version: lts/*
           check-latest: true
+      - name: Install Harper Node deps
+        run: npm install
       - name: Get latest license files
         run: .github/scripts/get-license-files.sh
       - name: Resolve dependency licenses
