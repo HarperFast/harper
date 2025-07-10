@@ -9,7 +9,7 @@ MIN_BASH_MINOR=4
 CURRENT_BASH_MAJOR=${BASH_VERSINFO[0]}
 CURRENT_BASH_MINOR=${BASH_VERSINFO[1]}
 
-if (( CURRENT_BASH_MAJOR < MIN_BASH_MAJOR || CURRENT_BASH_MINOR < MIN_BASH_MINOR )); then
+if (( CURRENT_BASH_MAJOR < MIN_BASH_MAJOR || (CURRENT_BASH_MAJOR == MIN_BASH_MAJOR && CURRENT_BASH_MINOR < MIN_BASH_MINOR) )); then
   echo "Error: This script requires a newer version of Bash."
   echo "You have $BASH_VERSION but this script requires Bash version $MIN_BASH_MAJOR.$MIN_BASH_MINOR+"
   exit 1
