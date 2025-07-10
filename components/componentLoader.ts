@@ -101,47 +101,6 @@ const TRUSTED_RESOURCE_LOADERS = {
 	 */
 };
 
-<<<<<<< HEAD
-const DEFAULT_CONFIG = {
-	rest: true,
-	graphqlSchema: {
-		files: '*.graphql',
-		//path: '/', // from root path by default, like http://server/query
-	},
-	roles: {
-		files: 'roles.yaml',
-	},
-	jsResource: {
-		files: 'resources.js',
-		//path: '/', // from root path by default, like http://server/resource-name
-	},
-	fastifyRoutes: {
-		files: 'routes/*.js',
-		path: '.', // relative to the app-name, like  http://server/app-name/route-name
-	},
-	// dataLoader: {
-	// 	files: 'data/*.{json,yaml,yml}',
-	// },
-	/*{
-		module: 'login',
-		path: '/',
-	},
-	/*{
-		files: 'static',
-		module: 'fastify_routes',
-		path: '.',
-	},
-	{
-		module: 'login',
-		path: '/login', // relative to the app-name, like http://server/login
-	},*/
-};
-// make this non-enumerable so we don't load by default, but has a default 'files' so we don't show errors on
-// templates that want to have a default static handler:
-Object.defineProperty(DEFAULT_CONFIG, 'static', { value: { files: 'web/**' } });
-
-=======
->>>>>>> 45f4f86c6 (Plugin API Updates (#2701))
 const portsStarted = [];
 const loadedPaths = new Map();
 let errorReporter;
@@ -402,12 +361,6 @@ export async function loadComponent(
 
 					componentFunctionality[componentName] = await processResourceExtensionComponent(component);
 				}
-<<<<<<< HEAD
-=======
-
-				// Mark component as healthy after successful loading
-				componentLifecycle.loaded(componentStatusName, `Component '${componentStatusName}' loaded successfully`);
->>>>>>> 45f4f86c6 (Plugin API Updates (#2701))
 			} catch (error) {
 				error.message = `Could not load component '${componentName}' for application '${basename(componentDirectory)}' due to: ${
 					error.message
