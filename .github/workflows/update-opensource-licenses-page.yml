@@ -3,6 +3,7 @@ on:
   push:
     branches:
       - release_*
+      - fix/webflow-upload-opensource-license-gha-workflow
   workflow_dispatch:
 
 permissions:
