@@ -87,16 +87,9 @@ jobs:
       ####################################
       #  Get License Files for Container
       ####################################
-      - name: 'Get Latest License Files'
+      - name: 'Generate real license files'
         if: inputs.dummyLicense != true
-        run: .github/scripts/get-license-files.sh
-      - name: 'Generate license files'
-        if: inputs.dummyLicense != true
-        continue-on-error: true
-        uses: apache/skywalking-eyes/dependency@main
-        with:
-          mode: 'resolve'
-          flags: '--output=utility/Docker/licenses/dependencies'
+        uses: ./.github/workflows/generate-licenses.yml
       - name: 'Generate dummy license files'
         if: inputs.dummyLicense == true
         run: |
@@ -104,6 +97,7 @@ jobs:
           mkdir -p utility/Docker/licenses
           touch utility/Docker/licenses/not-for-distribution
       - name: 'Upload Artifact'
+        if: inputs.dummyLicense == true
         uses: actions/upload-artifact@v4
         with:
           name: 'licenses'

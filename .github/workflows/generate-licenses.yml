@@ -1,0 +1,27 @@
+name: generate-licenses.yml
+on:
+  workflow_call:
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          check-latest: true
+      - name: Get latest license files
+        run: .github/scripts/get-license-files.sh
+      - name: Resolve dependency licenses
+        continue-on-error: true
+        uses: apache/skywalking-eyes/dependency@v0.7.0
+        with:
+          mode: resolve
+          flags: '--output=utility/Docker/licenses/dependencies'
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: licenses
+          path: utility/Docker/licenses/
+          retention-days: 1
