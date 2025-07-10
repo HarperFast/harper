@@ -18,6 +18,10 @@ concurrency:
 jobs:
   generate-licenses:
     uses: ./.github/workflows/generate-licenses.yml
+  download-licenses:
+    uses: actions/download-artifact@v4
+    with:
+      name: licenses
   build-pages:
     runs-on: ubuntu-latest
     needs: generate-licenses
