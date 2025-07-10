@@ -1,4 +1,4 @@
-name: generate-licenses.yml
+name: Generate dependency license files
 on:
   workflow_call:
 

@@ -1,4 +1,4 @@
-name: update-opensource-licenses-page.yml
+name: Update open-source licenses page
 on:
   push:
     branches:
