@@ -35,12 +35,8 @@ import { Scope } from './Scope.ts';
 import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts';
 import * as httpComponent from '../server/http.ts';
 import { Status } from '../server/status/index.ts';
-<<<<<<< HEAD
-=======
-import { lifecycle as componentLifecycle } from './status/index.ts';
 import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
 import { PluginModule } from './PluginModule.ts';
->>>>>>> 45f4f86c6 (Plugin API Updates (#2701))
 
 const CF_ROUTES_DIR = resolvePath(env.get(CONFIG_PARAMS.COMPONENTSROOT));
 let loadedComponents = new Map<any, any>();
