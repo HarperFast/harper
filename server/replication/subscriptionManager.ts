@@ -457,7 +457,7 @@ export async function ensureNode(name: string, node) {
 	const existing = table.primaryStore.get(name);
 	logger.debug(`Ensuring node ${name} at ${node.url}, existing record:`, existing, 'new record:', node);
 	if (!existing) {
-		await table.put(node);
+		await table.patch(node);
 	} else {
 		if (node.replicates && !env.get(CONFIG_PARAMS.CLUSTERING_ENABLED)) node.subscriptions = null; // if we are fully replicating without NATS, we don't need to have subscriptions
 		for (const key in node) {

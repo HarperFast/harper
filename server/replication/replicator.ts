@@ -147,6 +147,7 @@ export function start(options) {
 	}, options);
 
 	// we need to keep track of the servers so we can update the secure contexts
+	const contextUpdaters: (() => void)[] = [];
 	// @ts-expect-error
 	for (const wsServer of wsServers) {
 		if (wsServer.secureContexts) {
@@ -174,15 +175,19 @@ export function start(options) {
 			};
 			wsServer.secureContextsListeners.push(updateContexts);
 			// we need to stay up-to-date with any CAs that have been replicated across the cluster
-			monitorNodeCAs(updateContexts);
+			contextUpdaters.push(updateContexts);
 			if (env.get(CONFIG_PARAMS.REPLICATION_ENABLEROOTCAS) !== false) {
 				// if we are using root CAs, then we need to at least update the contexts for this even if none of the nodes have (explicit) CAs
 				updateContexts();
 			}
 		}
 	}
+	// we always need to monitor for node changes, because this also does the essential step of setting up the server.shards
+	monitorNodeCAs(() => {
+		for (const updateContexts of contextUpdaters) updateContexts();
+	});
 }
-export function monitorNodeCAs(listener) {
+export function monitorNodeCAs(listener: () => void) {
 	let lastCaCount = 0;
 	subscribeToNodeUpdates((node) => {
 		if (node?.ca) {
