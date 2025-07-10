@@ -36,8 +36,7 @@ async function createLMDBTables() {
 
 	let tables = Object.keys(systemSchema);
 
-	for (let x = 0; x < tables.length; x++) {
-		let tableName = tables[x];
+	for (const tableName of tables) {
 		let hash_attribute = systemSchema[tableName].hash_attribute;
 		try {
 			initPaths.initSystemSchemaPaths(terms.SYSTEM_SCHEMA_NAME, tableName);
