@@ -132,13 +132,6 @@ function buildRequest() {
  * @returns {Promise<void>}
  */
 async function cliOperations(req) {
-	try {
-		initConfig();
-		// eslint-disable-next-line sonarjs/no-ignored-exceptions
-	} catch (e) {
-		console.info('Unable to initialize Harper configuration, using default settings');
-	}
-
 	if (!req.target) {
 		req.target = process.env.CLI_TARGET;
 	}
@@ -162,6 +155,9 @@ async function cliOperations(req) {
 			rejectUnauthorized: req.rejectUnauthorized,
 		};
 	} else {
+		// if we aren't doing a targeted operation (like deploy), we initialize the config and verify that local harper
+		// is running and that we can communicate with it.
+		initConfig();
 		if (!fs.existsSync(path.join(envMgr.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE))) {
 			console.error('HarperDB must be running to perform this operation');
 			process.exit();
