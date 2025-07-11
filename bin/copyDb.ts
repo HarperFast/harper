@@ -4,7 +4,7 @@ import { join } from 'path';
 import { move, remove } from 'fs-extra';
 import { get } from '../utility/environment/environmentManager.js';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.js';
-import OpenDBIObject from '../utility/lmdb/OpenDBIObject.js';
+import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.js';
 import { INTERNAL_DBIS_NAME, AUDIT_STORE_NAME } from '../utility/lmdb/terms.js';
 import { CONFIG_PARAMS, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
 import { AUDIT_STORE_OPTIONS } from '../resources/auditStore.ts';
