@@ -27,7 +27,7 @@ jobs:
           echo -e "<html>\n<head>\n<title>Harper Open Source Licenses & Notices</title>\n</head>\n<body>\n<h1>Harper Open Source Licenses & Notices</h1>\n</body>\n</html>\n\n" > index.html
           echo -e "<h2>Harper Core</h2>\n\n" >> index.html
           for f in *; do
-            if [[ -f $f ]]; then
+            if [[ -f $f && $f != "index.html" ]]; then
               echo -e "<a href='$f'>$f</a><br /><br />\n" >> index.html
             fi
           done
