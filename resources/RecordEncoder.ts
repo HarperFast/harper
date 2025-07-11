@@ -19,6 +19,7 @@ import {
 import * as harperLogger from '../utility/logging/harper_logger.js';
 import './blob.ts';
 import { blobsWereEncoded, decodeFromDatabase, deleteBlobsInObject, encodeBlobsWithFilePath } from './blob.ts';
+import { recordAction } from './analytics/write';
 export type Entry = {
 	key: any;
 	value: any;
@@ -214,6 +215,7 @@ export class RecordEncoder extends Encoder {
 					[METADATA]: metadataFlags,
 					expiresAt,
 					residencyId,
+					size: end - start,
 				};
 				return value;
 			} // else a normal entry
@@ -407,6 +409,7 @@ export function recordUpdater(store, tableId, auditStore) {
 				if (blobsWereEncoded) {
 					extendedType |= HAS_BLOBS;
 				}
+				recordAction(lastValueEncoding?.length ?? 1, 'db-write', store.name, null);
 			}
 			if (audit) {
 				const username = options?.user?.username;

@@ -3343,6 +3343,7 @@ export function makeTable(options) {
 			// through query results and the iterator ends (abruptly)
 			if (options.transaction?.isDone) return withEntry(null, id);
 			const entry = primaryStore.getEntry(id, options);
+			recordAction(entry.size ?? 100, 'db-read', tableName, null);
 			if (
 				entry?.residencyId &&
 				entry.metadataFlags & INVALIDATED &&

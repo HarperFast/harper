@@ -114,6 +114,7 @@ describe('CRUD operations with the Resource API', () => {
 	});
 	function registerTests() {
 		it('puts', async function () {
+			const start = Date.now();
 			await CRUDTable.put({
 				id: 'one',
 				name: 'One',
@@ -131,6 +132,10 @@ describe('CRUD operations with the Resource API', () => {
 				nestedData: { id: 'some-id', name: 'nested name ' },
 			});
 			assert.equal((await CRUDTable.get('two')).name, 'Two');
+			await new Promise((resolve) => setTimeout(resolve, 1000));
+			const searchResults = await databases.system.hdb_raw_analytics.search({
+				conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],
+			});
 		});
 		it('update', async function () {
 			const context = {};
