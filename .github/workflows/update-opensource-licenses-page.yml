@@ -1,9 +1,8 @@
 name: Update open-source licenses page
 on:
   push:
-    branches:
-      - release_*
-      - fix/webflow-upload-opensource-license-gha-workflow
+    tags:
+      - 'release_*'
   workflow_dispatch:
 
 permissions:
@@ -27,6 +26,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: licenses
+          path: ${{ github.ref_name }}
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload licenses page
