@@ -21,6 +21,14 @@ jobs:
         with:
           mode: resolve
           flags: '--output=utility/Docker/licenses/dependencies'
+      - name: Generate index.html
+        run: |
+          pushd utility/Docker/licenses
+          echo -e "<html>\n<head>\n<title>Harper Open Source Licenses & Notices</title>\n</head>\n<body>\n<h1>Harper Open Source Licenses & Notices</h1>\n</body>\n</html>\n\n" > index.html
+          for f in dependencies/*; do
+            echo -e "<a href=\"$f\">$f</a>\n" >> index.html
+          done
+          popd
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
