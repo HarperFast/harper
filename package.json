@@ -44,6 +44,7 @@
 	},
 	"license": "SEE LICENSE IN LICENSE",
 	"scripts": {
+		"tsc": "tsc -p .",
 		"submodules": "git submodule update --init --recursive",
 		"cover:test": "pm2 kill && rimraf ./.nyc_output/* && node utility/devops/register.js --reset_license && nyc --no-clean --reporter=lcovonly npm run test:replication && nyc --no-clean --reporter=lcovonly npm run test:apitests && nyc --no-clean --reporter=lcovonly npm run test:resources && nyc --no-clean --reporter=lcovonly npm run test:logging && nyc --no-clean --reporter=lcovonly npm run test:upgrade && nyc --no-clean --reporter=lcovonly npm run test:nats && nyc --no-clean --reporter=lcovonly npm run test:cfserver && nyc --no-clean --reporter=lcovonly npm run test:hdbserver && nyc --no-clean --reporter=lcovonly npm run test:bin && nyc --no-clean --reporter=lcovonly npm run test:main && nyc --no-clean --reporter=lcovonly npm run test:security && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license",
 		"test": "pm2 kill && rimraf ./.nyc_output/* && node utility/devops/register.js --reset_license && npm run test:replication && npm run test:apitests && npm run test:resources && npm run test:logging && npm run test:upgrade && npm run test:nats && npm run test:cfserver && npm run test:hdbserver && npm run test:bin && npm run test:main && npm run test:security && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license",
