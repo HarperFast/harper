@@ -6,11 +6,14 @@ const { table } = require('../../resources/databases');
 const { transaction } = require('../../resources/transaction');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
 const { RequestTarget } = require('../../resources/RequestTarget');
+const analytics = require('../../resources/analytics/write');
+const { analyticsDelay } = require('../../resources/analytics/write');
 
 // might want to enable an iteration with NATS being assigned as a source
 describe('CRUD operations with the Resource API', () => {
 	let CRUDTable, CRUDRelatedTable;
 	let long_str = 'testing' + Math.random();
+	let defaultAnalyticsDelay = analytics.analyticsDelay;
 	for (let i = 0; i < 10; i++) {
 		long_str += 'testing';
 	}
@@ -23,6 +26,7 @@ describe('CRUD operations with the Resource API', () => {
 			relationship: { from: 'relatedId' },
 			definition: {},
 		};
+		analytics.analyticsDelay = 50; // let's make this fast
 		CRUDTable = table({
 			table: 'CRUDTable',
 			database: 'test',
@@ -132,10 +136,32 @@ describe('CRUD operations with the Resource API', () => {
 				nestedData: { id: 'some-id', name: 'nested name ' },
 			});
 			assert.equal((await CRUDTable.get('two')).name, 'Two');
-			await new Promise((resolve) => setTimeout(resolve, 1000));
-			const searchResults = await databases.system.hdb_raw_analytics.search({
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const analyticsResults = await databases.system.hdb_raw_analytics.search({
 				conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],
 			});
+			let analyticRecorded;
+			for await (let { metrics } of analyticsResults) {
+				if (metrics.some(({ metric, path }) => metric === 'db-write' && path === 'CRUDTable')) {
+					analyticRecorded = true;
+				}
+			}
+			assert(analyticRecorded, 'db-write was recorded in analytics');
+		});
+		it('get is recorded in analytics', async function () {
+			const start = Date.now();
+			assert.equal((await CRUDTable.get('two')).name, 'Two');
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const analyticsResults = await databases.system.hdb_raw_analytics.search({
+				conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],
+			});
+			let analyticRecorded;
+			for await (let { metrics } of analyticsResults) {
+				if (metrics.some(({ metric, path }) => metric === 'db-read' && path === 'CRUDTable')) {
+					analyticRecorded = true;
+				}
+			}
+			assert(analyticRecorded, 'db-read was recorded in analytics');
 		});
 		it('update', async function () {
 			const context = {};
@@ -182,5 +208,7 @@ describe('CRUD operations with the Resource API', () => {
 			});
 		});
 	}
-	after(() => {});
+	after(() => {
+		analytics.analyticsDelay = defaultAnalyticsDelay;
+	});
 });

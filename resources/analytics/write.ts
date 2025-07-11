@@ -116,7 +116,7 @@ export function recordActionBinary(value, metric, path?, method?, type?) {
 }
 
 let analyticsStart = 0;
-const ANALYTICS_DELAY = 1000;
+export const analyticsDelay = 1000;
 const ANALYTICS_REPORT_TYPE = 'analytics-report';
 const analyticsListeners = [];
 
@@ -202,7 +202,7 @@ function sendAnalytics() {
 				report,
 			});
 		else recordAnalytics({ report });
-	}, ANALYTICS_DELAY).unref();
+	}, analyticsDelay).unref();
 }
 
 export async function recordHostname() {
@@ -268,10 +268,7 @@ export function calculateCPUUtilization(resourceUsage: ResourceUsage, period: nu
  *  process.resourceUsage() return value and normalizes and diffs the two values to return the
  *  new values for this time period.
  */
-export function diffResourceUsage(
-	lastResourceUsage: ResourceUsage,
-	resourceUsage: ResourceUsage
-): ResourceUsage {
+export function diffResourceUsage(lastResourceUsage: ResourceUsage, resourceUsage: ResourceUsage): ResourceUsage {
 	return {
 		userCPUTime: resourceUsage.userCPUTime - (lastResourceUsage?.userCPUTime ?? 0),
 		systemCPUTime: resourceUsage.systemCPUTime - (lastResourceUsage?.systemCPUTime ?? 0),
@@ -630,7 +627,7 @@ function startScheduledTasks() {
 	if (AGGREGATE_PERIOD) {
 		setInterval(
 			async () => {
-				await aggregation(ANALYTICS_DELAY, AGGREGATE_PERIOD);
+				await aggregation(analyticsDelay, AGGREGATE_PERIOD);
 				await cleanup(getRawAnalyticsTable(), RAW_EXPIRATION);
 				await cleanup(getAnalyticsTable(), AGGREGATE_EXPIRATION);
 			},
@@ -660,6 +657,7 @@ function recordAnalytics(message, worker?) {
 		lastUtilizations.set(worker, worker.performance.eventLoopUtilization());
 	}
 	report.id = getNextMonotonicTime();
+	console.log('recording analytics', report);
 	getRawAnalyticsTable().primaryStore.put(report.id, report);
 	if (!scheduledTasksRunning) startScheduledTasks();
 	if (LOG_ANALYTICS) lastAppend = logAnalytics(report);

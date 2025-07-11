@@ -1269,7 +1269,12 @@ export function makeTable(options) {
 						txnTime,
 						INVALIDATED,
 						audit,
-						{ user: context?.user, residencyId: options?.residencyId, nodeId: options?.nodeId },
+						{
+							user: context?.user,
+							residencyId: options?.residencyId,
+							nodeId: options?.nodeId,
+							tableToTrack: tableName,
+						},
 						'invalidate'
 					);
 					// TODO: recordDeletion?
@@ -1734,6 +1739,7 @@ export function makeTable(options) {
 							expiresAt,
 							nodeId: options?.nodeId,
 							originatingOperation: context?.originatingOperation,
+							tableToTrack: tableName,
 						},
 						type,
 						false,
@@ -1801,7 +1807,7 @@ export function makeTable(options) {
 							txnTime,
 							0,
 							audit,
-							{ user: context?.user, nodeId: options?.nodeId },
+							{ user: context?.user, nodeId: options?.nodeId, tableToTrack: tableName },
 							'delete'
 						);
 						if (!audit) scheduleCleanup();
@@ -2685,6 +2691,7 @@ export function makeTable(options) {
 							residencyId: options?.residencyId,
 							expiresAt: context?.expiresAt,
 							nodeId: options?.nodeId,
+							tableToTrack: tableName,
 						},
 						'message',
 						false,
@@ -3835,7 +3842,12 @@ export function makeTable(options) {
 									txnTime,
 									omitLocalRecord ? INVALIDATED : 0,
 									(audit && (hasChanges || omitLocalRecord)) || null,
-									{ user: sourceContext?.user, expiresAt: sourceContext.expiresAt, residencyId },
+									{
+										user: sourceContext?.user,
+										expiresAt: sourceContext.expiresAt,
+										residencyId,
+										tableToTrack: tableName,
+									},
 									'put',
 									Boolean(invalidated),
 									auditRecord
@@ -3853,7 +3865,7 @@ export function makeTable(options) {
 										txnTime,
 										0,
 										(audit && hasChanges) || null,
-										{ user: sourceContext?.user },
+										{ user: sourceContext?.user, tableToTrack: tableName },
 										'delete',
 										Boolean(invalidated)
 									);

@@ -409,7 +409,8 @@ export function recordUpdater(store, tableId, auditStore) {
 				if (blobsWereEncoded) {
 					extendedType |= HAS_BLOBS;
 				}
-				recordAction(lastValueEncoding?.length ?? 1, 'db-write', store.name, null);
+				if (options?.tableToTrack)
+					recordAction(lastValueEncoding?.length ?? 1, 'db-write', options?.tableToTrack, null);
 			}
 			if (audit) {
 				const username = options?.user?.username;
