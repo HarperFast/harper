@@ -61,6 +61,17 @@ export function generateJsonApi(resources) {
 		const queryParamsArray = [];
 		if (attributes) {
 			for (const { type, name, elements, relationship, definition } of attributes) {
+				const def = definition ?? elements?.definition;
+				if (def) {
+					if (!api.components.schemas[def.type]) {
+						const defProps = {};
+						def.properties.forEach((prop) => {
+							defProps[prop.name] = new Type(DATA_TYPES[prop.type], prop.type);
+						});
+						api.components.schemas[def.type] = new ResourceSchema(defProps);
+					}
+				}
+
 				if (relationship) {
 					if (type === 'array') {
 						props[name] = { type: 'array', items: { $ref: SCHEMA_COMP_REF + elements.type } };
@@ -68,17 +79,7 @@ export function generateJsonApi(resources) {
 						props[name] = { $ref: SCHEMA_COMP_REF + type };
 					}
 				} else {
-					const def = definition ?? elements?.definition;
 					if (def) {
-						if (!api.components.schemas[def.type]) {
-							const defProps = {};
-							def.properties.forEach((prop) => {
-								defProps[prop.name] = new Type(DATA_TYPES[prop.type], prop.type);
-							});
-
-							api.components.schemas[def.type] = new ResourceSchema(defProps);
-						}
-
 						if (type === 'array') {
 							props[name] = { type: 'array', items: { $ref: SCHEMA_COMP_REF + def.type } };
 						} else {
