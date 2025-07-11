@@ -26,7 +26,8 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           name: licenses
-          path: ${{ github.ref_name }}
+      - name: Move artifact to version subdir
+        run: mv ${{ steps.download.outputs.download-path }} ${{ steps.download.outputs.download-path }}/${{ github.ref_name }}
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload licenses page
