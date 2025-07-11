@@ -113,6 +113,7 @@ export function generateJsonApi(resources) {
 		const hasPut = typeof prototype.put === 'function';
 		const hasGet = typeof prototype.get === 'function';
 		const hasDelete = typeof prototype.delete === 'function';
+		const hasPatch = typeof prototype.patch === 'function';
 
 		// API for path structure /my-resource/
 		let url = '/' + path + '/';
@@ -130,6 +131,14 @@ export function generateJsonApi(resources) {
 				'search for records by the specified property name and value pairs'
 			);
 		}
+
+		if (!api.paths[url]) api.paths[url] = {};
+		api.paths[url].options = new Options(
+			queryParamsArray,
+			security,
+			{ '200': new ResponseOptions200() },
+			'retrieve information about the communication options available for a target resource or the server as a whole, without performing any resource action'
+		);
 
 		if (hasDelete) {
 			if (!api.paths[url]) api.paths[url] = {};
@@ -162,6 +171,16 @@ export function generateJsonApi(resources) {
 				security,
 				strippedPath,
 				"create or update the record with the URL path that maps to the record's primary key"
+			);
+		}
+
+		if (hasPatch) {
+			if (!api.paths[url]) api.paths[url] = {};
+			api.paths[url].patch = new Patch(
+				[primaryKeyParam],
+				security,
+				strippedPath,
+				"patch the record with the URL path that maps to the record's primary key"
 			);
 		}
 
@@ -235,6 +254,19 @@ function Get(parameters, security, responses, description) {
 	this.responses = responses;
 }
 
+function Options(parameters, security, responses, description) {
+	this.description = description;
+	this.parameters = parameters;
+	this.security = security;
+	this.responses = responses;
+}
+
+function ResponseOptions200() {
+	this.description = DESCRIPTION_200;
+	this.headers = {};
+	this.content = {};
+}
+
 function Response200(schema) {
 	this.description = DESCRIPTION_200;
 	this.content = {
@@ -267,6 +299,27 @@ function Put(parameters, security, path, description) {
 		},
 	};
 }
+
+function Patch(parameters, security, path, description) {
+	this.description = description;
+	this.parameters = parameters;
+	this.security = security;
+	this.requestBody = {
+		content: {
+			'application/json': {
+				schema: {
+					$ref: SCHEMA_COMP_REF + path,
+				},
+			},
+		},
+	};
+	this.responses = {
+		'200': {
+			description: DESCRIPTION_200,
+		},
+	};
+}
+
 function Delete(parameters, security, description, responses) {
 	this.description = description;
 	this.parameters = parameters;
