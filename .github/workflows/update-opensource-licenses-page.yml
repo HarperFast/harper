@@ -28,7 +28,9 @@ jobs:
           name: licenses
           path: licenses/tmp
       - name: Move artifact to version subdir
-        run: mv ${{ steps.download.outputs.download-path }} licenses/${{ github.ref_name }}
+        run: |
+          mkdir -p $(dirname licenses/${{ github.ref_name }})
+          mv ${{ steps.download.outputs.download-path }} licenses/${{ github.ref_name }}
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload licenses page
