@@ -132,7 +132,13 @@ function buildRequest() {
  * @returns {Promise<void>}
  */
 async function cliOperations(req) {
-	initConfig();
+	try {
+		initConfig();
+		// eslint-disable-next-line sonarjs/no-ignored-exceptions
+	} catch (e) {
+		console.info('Unable to initialize Harper configuration, using default settings');
+	}
+
 	if (!req.target) {
 		req.target = process.env.CLI_TARGET;
 	}
