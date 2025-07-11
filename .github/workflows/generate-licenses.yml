@@ -28,12 +28,12 @@ jobs:
           echo -e "<h2>Harper Core</h2>\n\n" >> index.html
           for f in *; do
             if [[ -f $f ]]; then
-              echo -e "<a href=\\"$f\\">$f</a><br /><br />\n" >> index.html
+              echo -e "<a href=\\\"$f\\\">$f</a><br /><br />\n" >> index.html
             fi
           done
           echo -e "\n<h2>Dependencies</h2>\n\n" >> index.html
           for f in dependencies/*; do
-            echo -e "<a href=\\"$f\\">$(basename \\"$f\\")</a><br /><br />\n" >> index.html
+            echo -e "<a href=\\\"$f\\\">$(basename \\\"$f\\\")</a><br /><br />\n" >> index.html
           done
           popd
       - name: Upload artifact
