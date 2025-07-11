@@ -27,13 +27,13 @@ jobs:
         with:
           name: licenses
       - name: Move artifact to version subdir
-        run: mv ${{ steps.download.outputs.download-path }} ${{ github.ref_name }}
+        run: mv ${{ steps.download.outputs.download-path }} ${{ github.workspace }}/${{ github.ref_name }}
       - name: Setup Pages
         uses: actions/configure-pages@v5
       - name: Upload licenses page
         uses: actions/upload-pages-artifact@v3
         with:
-          path: ${{ github.ref_name }}
+          path: ${{ github.workspace }}/${{ github.ref_name }}
   deploy-pages:
     runs-on: ubuntu-latest
     needs: build-pages
