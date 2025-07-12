@@ -27,7 +27,11 @@ if (isMainThread) {
 	process.on('uncaughtException', (error) => {
 		// TODO: Maybe we should try to log the first of each type of error
 		if (error.code === 'ECONNRESET') return; // that's what network connections do
-		if (error.message === 'write EIO') return; // that means the terminal is closed
+		if (error.code === 'EIO') {
+			// that means the terminal is closed
+			harperLogger.disableStdio();
+			return;
+		}
 		console.error('uncaughtException', error);
 	});
 
@@ -41,7 +45,7 @@ if (isMainThread) {
 
 const LICENSE_NAG_PERIOD = 600000; // ten minutes
 export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean) {
-	recordHostname().catch(err => harperLogger.error?.('Error recording hostname for analytics:', err));
+	recordHostname().catch((err) => harperLogger.error?.('Error recording hostname for analytics:', err));
 	try {
 		if (dynamicThreads) {
 			startHTTPWorker(0, 1, true);
@@ -165,8 +169,7 @@ export function startSocketServer(port = 0, sessionAffinityIdentifier?) {
 			workerStrategy(clientHandle, (worker, receivedData) => {
 				if (!worker) {
 					if (directThreadServer) {
-						const socket =
-							clientHandle._socket || new Socket({ handle: clientHandle, writable: true, readable: true });
+						const socket = clientHandle._socket || new Socket({ handle: clientHandle, writable: true, readable: true });
 						directThreadServer.deliverSocket(socket, port, receivedData);
 						socket.resume();
 					} else if (currentThreadCount > 0) {

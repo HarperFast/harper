@@ -1,6 +1,5 @@
 'use strict';
 const hdbErrors = require('./commonErrors.js');
-const logger = require('../logging/harper_logger.js');
 const hdbTerms = require('../hdbTerms.ts');
 
 /**
@@ -38,6 +37,7 @@ class HdbError extends Error {
 		}
 
 		if (logMsg) {
+			const logger = require('../logging/harper_logger.js');
 			logger[logLevel](logMsg);
 		}
 	}

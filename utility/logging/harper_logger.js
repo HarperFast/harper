@@ -232,9 +232,17 @@ module.exports = {
 	start: updateLogSettings,
 	startOnMainThread: updateLogSettings,
 	errorToString,
+	disableStdio,
 };
 function getLogFilePath() {
 	return logFilePath;
+}
+
+/**
+ * We call this if stdio is not functional
+ */
+function disableStdio() {
+	nativeStdWrite = function () {}; // make this a noop
 }
 module.exports.externalLogger = {
 	notify(...args) {

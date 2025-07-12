@@ -53,32 +53,20 @@ if (isMainThread) {
  */
 async function restart(req) {
 	calledFromCli = Object.keys(req).length === 0;
-	pm2Mode = await processMan.isServiceRegistered(hdbTerms.PROCESS_DESCRIPTORS.HDB);
+
 	const cliArgs = minimist(process.argv);
 	if (cliArgs.service) {
 		await restartService(cliArgs);
 		return;
 	}
 
-	if (calledFromCli && !pm2Mode) {
-		console.error(RESTART_NON_PM2_ERR);
-		return;
-	}
-
-	if (calledFromCli) console.log(RESTART_RESPONSE);
-
-	// PM2 Mode is when PM2 was used to start the main HDB process and the two clustering servers.
-	if (pm2Mode) {
-		processMan.enterPM2Mode();
-		hdbLogger.notify(RESTART_RESPONSE);
-		// If restart is called with cmd/env vars we create a backup of config and update config file.
-		const parsedArgs = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
-		if (!hdbUtils.isEmptyOrZeroLength(Object.keys(parsedArgs))) {
-			configUtils.updateConfigValue(undefined, undefined, parsedArgs, true, true);
+	if (calledFromCli) {
+		const isHarperRunning = processMan.isHdbRunning();
+		if (!isHarperRunning) console.error('Harper must be running to restart it');
+		else {
+			console.error('Restarting Harper...');
+			require('./run.js').launch(true);
 		}
-
-		// Await is purposely omitted here so that response is sent before restart process restarts itself (when called through API).
-		restartPM2Mode();
 		return RESTART_RESPONSE;
 	}
 
@@ -94,10 +82,10 @@ async function restart(req) {
 		}
 
 		setTimeout(() => {
-			restartWorkers();
-		}, 50); // can't await this because it would deadlock on waiting for itself to finish
+			require('./run.js').launch(true);
+		}, 50); // can't await this because it is going to do an exit()
 	} else {
-		// Post msg to main parent thread requesting it restart all child threads.
+		// Post msg to main parent thread requesting it restart (on the main thread can process.exit())
 		parentPort.postMessage({
 			type: hdbTerms.ITC_EVENT_TYPES.RESTART,
 		});

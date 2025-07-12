@@ -115,7 +115,7 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 	if (hdbPid && hdbPid !== 1 && isProcessRunning(hdbPid)) {
 		if (!serviceClustering) {
 			console.error(`Error: HarperDB is already running (pid: ${hdbPid})`);
-			process.exit(4);
+			//process.exit(4);
 		} else {
 			isHdbRunning = true;
 		}
@@ -236,11 +236,8 @@ async function launch(exit = true) {
 	skipExitListeners = !exit;
 	try {
 		if (pmUtils === undefined) pmUtils = require('../utility/processManagement/processManagement.js');
-		pmUtils.enterPM2Mode();
 		await initialize();
-		const clusteringEnabled = hdbUtils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));
-		if (clusteringEnabled) await pmUtils.startClusteringProcesses();
-		await pmUtils.startService(terms.PROCESS_DESCRIPTORS.HDB);
+		await pmUtils.startService(terms.PROCESS_DESCRIPTORS.HDB, true);
 		started();
 		if (exit) process.exit(0);
 	} catch (err) {
@@ -327,7 +324,6 @@ exports.launch = launch;
 exports.main = main;
 exports.startupLog = startupLog;
 
-
 /**
  * Logs running services and relevant ports/information.
  * Called by worker thread 1 once all servers have started
@@ -362,9 +358,7 @@ function startupLog(portResolutions) {
 	// Database Log aka Applications API aka http (in config)
 	logMsg += pad('Default:');
 	logMsg += env.get(CONFIG_PARAMS.HTTP_PORT) ? `HTTP (and WS): ${env.get(CONFIG_PARAMS.HTTP_PORT)}, ` : '';
-	logMsg += env.get(CONFIG_PARAMS.HTTP_SECUREPORT)
-		? `HTTPS (and WS): ${env.get(CONFIG_PARAMS.HTTP_SECUREPORT)}, `
-		: '';
+	logMsg += env.get(CONFIG_PARAMS.HTTP_SECUREPORT) ? `HTTPS (and WS): ${env.get(CONFIG_PARAMS.HTTP_SECUREPORT)}, ` : '';
 	logMsg += `CORS: ${
 		env.get(CONFIG_PARAMS.HTTP_CORS) ? `enabled for ${env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST)}` : 'disabled'
 	}\n`;
