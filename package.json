@@ -45,8 +45,8 @@
 	"license": "SEE LICENSE IN LICENSE",
 	"scripts": {
 		"submodules": "git submodule update --init --recursive",
-		"cover:test": "pm2 kill && rimraf ./.nyc_output/* && node utility/devops/register.js --reset_license && nyc --no-clean --reporter=lcovonly npm run test:replication && nyc --no-clean --reporter=lcovonly npm run test:apitests && nyc --no-clean --reporter=lcovonly npm run test:resources && nyc --no-clean --reporter=lcovonly npm run test:logging && nyc --no-clean --reporter=lcovonly npm run test:upgrade && nyc --no-clean --reporter=lcovonly npm run test:nats && nyc --no-clean --reporter=lcovonly npm run test:cfserver && nyc --no-clean --reporter=lcovonly npm run test:hdbserver && nyc --no-clean --reporter=lcovonly npm run test:bin && nyc --no-clean --reporter=lcovonly npm run test:main && nyc --no-clean --reporter=lcovonly npm run test:security && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license",
-		"test": "pm2 kill && rimraf ./.nyc_output/* && node utility/devops/register.js --reset_license && npm run test:replication && npm run test:apitests && npm run test:resources && npm run test:logging && npm run test:upgrade && npm run test:nats && npm run test:cfserver && npm run test:hdbserver && npm run test:bin && npm run test:main && npm run test:security && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license",
+		"cover:test": "node ./bin/harperdb.js stop && rimraf ./.nyc_output/* && node utility/devops/register.js --reset_license && nyc --no-clean --reporter=lcovonly npm run test:replication && nyc --no-clean --reporter=lcovonly npm run test:apitests && nyc --no-clean --reporter=lcovonly npm run test:resources && nyc --no-clean --reporter=lcovonly npm run test:logging && nyc --no-clean --reporter=lcovonly npm run test:upgrade && nyc --no-clean --reporter=lcovonly npm run test:nats && nyc --no-clean --reporter=lcovonly npm run test:cfserver && nyc --no-clean --reporter=lcovonly npm run test:hdbserver && nyc --no-clean --reporter=lcovonly npm run test:bin && nyc --no-clean --reporter=lcovonly npm run test:main && nyc --no-clean --reporter=lcovonly npm run test:security && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license",
+		"test": "node ./bin/harperdb.js stop && rimraf ./.nyc_output/* && node utility/devops/register.js --reset_license && npm run test:replication && npm run test:apitests && npm run test:resources && npm run test:logging && npm run test:upgrade && npm run test:nats && npm run test:cfserver && npm run test:hdbserver && npm run test:bin && npm run test:main && npm run test:security && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license",
 		"test:resources": "node_modules/mocha/bin/_mocha 'unitTests/resources/**/*.js' --config '.mocharc.json'",
 		"test:bin": "node_modules/mocha/bin/_mocha 'unitTests/bin/**/*.js' --config '.mocharc.json'",
 		"test:main": "cd bin/ && node --expose-internals ../node_modules/mocha/bin/_mocha '../unitTests/**/*.js' --config '../unitTests/.mocharc-main.json'",
@@ -138,7 +138,6 @@
 		"passport-http": "0.3.0",
 		"passport-local": "1.0.0",
 		"pino": "8.16.0",
-		"pm2": "5.4.1",
 		"prompt": "1.3.0",
 		"properties-reader": "2.3.0",
 		"recursive-iterator": "3.3.0",

@@ -20,21 +20,17 @@ const { execFile, fork } = childProcess;
 
 module.exports = {
 	start,
-	stop,
-	reload,
 	restart,
 	kill,
 	startAllServices,
 	startService,
-	getUniqueServicesList,
-	restartAllServices,
-	isServiceRegistered,
 	reloadStopStart,
 	restartHdb,
 	startClusteringProcesses,
 	startClusteringThreads,
 	isHdbRestartRunning,
-	isClusteringRunning,
+	isHdbRunning,
+	killChildrenProcesses,
 	stopClustering,
 	reloadClustering,
 	expectedRestartOfChildren,
@@ -54,7 +50,7 @@ let shuttingDown;
  */
 function start(procConfig, noKill = false) {
 	const args = typeof procConfig.args === 'string' ? procConfig.args.split(' ') : procConfig.args;
-	//	procConfig.silent = true;
+	procConfig.silent = true;
 	procConfig.detached = true;
 	let subprocess = procConfig.script
 		? fork(procConfig.script, args, procConfig)
@@ -124,88 +120,28 @@ function start(procConfig, noKill = false) {
 			hdbLogger.logCustomLevel(lastLevel || 'info', output, SERVICE_DEFINITION, log.slice(lastPosition).trim());
 		}
 	}
-	//subprocess.stdout.on('data', extractMessages);
-	//subprocess.stderr.on('data', extractMessages);
-	//subprocess.unref();
+	subprocess.stdout.on('data', extractMessages);
+	subprocess.stderr.on('data', extractMessages);
+	subprocess.unref();
 
 	// if we are running in standard mode, then we want to clean up our child processes when we exit
 	if (!childProcesses) {
 		childProcesses = [];
 		if (!noKill) {
-			const killChildren = () => {
-				shuttingDown = true;
-				if (!childProcesses) return;
-				console.error('killing children');
-				childProcesses.map((proc) => proc.kill());
-				process.exit(0);
-			};
-			process.on('exit', killChildren);
-			process.on('SIGINT', killChildren);
-			process.on('SIGQUIT', killChildren);
-			process.on('SIGTERM', killChildren);
+			process.on('exit', killChildrenProcesses);
+			process.on('SIGINT', killChildrenProcesses);
+			process.on('SIGQUIT', killChildrenProcesses);
+			process.on('SIGTERM', killChildrenProcesses);
 		}
 	}
 	childProcesses.push(subprocess);
-	setTimeout(() => {
-		console.log('a timer');
-	}, 10000);
 }
-
-/**
- * Stops a specific service then deletes it from processManagement
- * @param serviceName
- * @returns {Promise<unknown>}
- */
-function stop(serviceName) {
-	return new Promise(async (resolve, reject) => {
-		try {
-			await connect();
-		} catch (err) {
-			reject(err);
-		}
-		pm2.stop(serviceName, async (err, res) => {
-			if (err) {
-				pm2.disconnect();
-				reject(err);
-			}
-
-			// Once the service has stopped, delete it from processManagement
-			pm2.delete(serviceName, (delErr, delRes) => {
-				if (delErr) {
-					pm2.disconnect();
-					reject(err);
-				}
-
-				pm2.disconnect();
-				resolve(delRes);
-			});
-		});
-	});
-}
-
-/**
- * rolling restart of clustered processes, NOTE this only works for services in cluster mode like HarperDB
- * @param serviceName
- * @returns {Promise<unknown>}
- */
-function reload(serviceName) {
-	return new Promise(async (resolve, reject) => {
-		try {
-			await connect();
-		} catch (err) {
-			reject(err);
-		}
-
-		pm2.reload(serviceName, (err, res) => {
-			if (err) {
-				pm2.disconnect();
-				reject(err);
-			}
-
-			pm2.disconnect();
-			resolve(res);
-		});
-	});
+function killChildrenProcesses(exit = true) {
+	shuttingDown = true;
+	if (!childProcesses) return;
+	console.error('killing children');
+	childProcesses.map((proc) => proc.kill());
+	if (exit) process.exit(0);
 }
 
 /**
@@ -276,18 +212,13 @@ function kill() {
  * @returns {Promise<void>}
  */
 async function startAllServices() {
-	try {
-		// The clustering services are started separately because their config is
-		// removed for security reasons after they are connected.
-		// Also we create the work queue stream when we start clustering
-		await startClusteringProcesses();
-		await startClusteringThreads();
+	// The clustering services are started separately because their config is
+	// removed for security reasons after they are connected.
+	// Also we create the work queue stream when we start clustering
+	await startClusteringProcesses();
+	await startClusteringThreads();
 
-		await start(servicesConfig.generateAllServiceConfigs());
-	} catch (err) {
-		pm2?.disconnect();
-		throw err;
-	}
+	await start(servicesConfig.generateAllServiceConfigs());
 }
 
 /**
@@ -327,70 +258,6 @@ async function startService(serviceName, noKill = false) {
 			throw new Error(`Start service called with unknown service config: ${serviceName}`);
 	}
 	start(startConfig, noKill);
-}
-
-/**
- * gets a unique map of running services
- * @returns {Promise<{}>}
- */
-async function getUniqueServicesList() {
-	try {
-		const processes = await list();
-		let services = {};
-		for (let x = 0, length = processes.length; x < length; x++) {
-			let process = processes[x];
-			if (services[process.name] === undefined) {
-				services[process.name] = {
-					name: process.name,
-					exec_mode: process.pm2_env.exec_mode,
-				};
-			}
-		}
-		return services;
-	} catch (err) {
-		pm2?.disconnect();
-		throw err;
-	}
-}
-
-/**
- * restart all services, without the option to exclude services from restart.
- * @param excluding
- * @returns {Promise<void>}
- */
-async function restartAllServices(excluding = []) {
-	try {
-		let restart_hdb = false;
-		const services = await getUniqueServicesList();
-		for (let x = 0, length = Object.values(services).length; x < length; x++) {
-			let service = Object.values(services)[x];
-			const serviceName = service.name;
-			if (excluding.includes(serviceName)) continue;
-			//if a service is run in cluster mode we want to reload (rolling restart), non-cluster processes must use restart
-			if (serviceName === hdbTerms.PROCESS_DESCRIPTORS.HDB) {
-				restart_hdb = true;
-			} else {
-				await restart(serviceName);
-			}
-		}
-
-		// We need to do the HarperDB restart last.
-		if (restart_hdb) {
-			await reloadStopStart(hdbTerms.PROCESS_DESCRIPTORS.HDB);
-		}
-	} catch (err) {
-		pm2?.disconnect();
-		throw err;
-	}
-}
-
-/**
- * Check to see if a service is currently managed by processManagement
- */
-async function isServiceRegistered(service) {
-	if (childProcesses?.find((childProcess) => childProcess.name === service)) return true;
-	const hdbProcs = await sysInfo.getHDBProcessInfo();
-	return hdbProcs.core.length && hdbProcs.core[0]?.parent === 'PM2';
 }
 
 /**
@@ -473,23 +340,6 @@ async function stopClustering() {
 			await stop(service);
 		}
 	}
-}
-
-/**
- * Checks all the processes that make up clustering to see if they are running.
- * All required processes must be running for function to return true.
- * @returns {Promise<boolean>}
- */
-async function isClusteringRunning() {
-	for (const proc in hdbTerms.CLUSTERING_PROCESSES) {
-		const service = hdbTerms.CLUSTERING_PROCESSES[proc];
-		const isCurrentlyRunning = await isServiceRegistered(service);
-		if (isCurrentlyRunning === false) {
-			return false;
-		}
-	}
-
-	return true;
 }
 
 /**

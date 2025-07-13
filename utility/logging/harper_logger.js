@@ -14,7 +14,12 @@ const { _assignPackageExport } = require('../../globals.js');
 const { Console } = require('console');
 // store the native write function so we can call it after we write to the log file (and store it on process.stdout
 // because unit tests will create multiple instances of this module)
-let nativeStdWrite = process.stdout.nativeWrite || (process.stdout.nativeWrite = process.stdout.write);
+let nativeStdWrite = process.env.IS_SCRIPTED_SERVICE
+	? function () {
+			// if this is a child process started by a start/restart
+			// command, we can't write to stdout/stderr, we make this a noop
+		}
+	: process.stdout.nativeWrite || (process.stdout.nativeWrite = process.stdout.write);
 let fileLoggers = new Map();
 const { join } = pathModule;
 

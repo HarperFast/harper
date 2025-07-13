@@ -79,7 +79,7 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 	hdbLogger.suppressLogging?.(() => {
 		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'utility/install/ascii_logo.txt'))));
 	});
-
+	hdbLogger.debug('Checking to make sure hdb is installed');
 	if (installation.isHdbInstalled(env, hdbLogger) === false) {
 		console.log(HDB_NOT_FOUND_MSG);
 		try {
@@ -107,6 +107,7 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 	let serviceClustering = cmdArgs?.service === 'clustering';
 	if (cmdArgs?.service && !serviceClustering) {
 		console.error('Unrecognized service argument');
+		hdbLogger.debug('Unrecognized service argument');
 		process.exit(1);
 	}
 
@@ -114,8 +115,9 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 	const hdbPid = readPidFile(pidFile);
 	if (hdbPid && hdbPid !== 1 && isProcessRunning(hdbPid)) {
 		if (!serviceClustering) {
+			hdbLogger.debug('Error: HarperDB is already running');
 			console.error(`Error: HarperDB is already running (pid: ${hdbPid})`);
-			//process.exit(4);
+			process.exit(4);
 		} else {
 			isHdbRunning = true;
 		}
@@ -124,7 +126,7 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 	// Requiring the processManagement mod will create the .pm2 dir. This code is here to allow install to set
 	// pm2 env vars before that is done.
 	if (pmUtils === undefined) pmUtils = require('../utility/processManagement/processManagement.js');
-
+	hdbLogger.debug('Checking for service clustering');
 	if (serviceClustering) {
 		if (!isHdbRunning) {
 			console.error('HarperDB must be running to start clustering.');
@@ -203,7 +205,7 @@ async function main(calledByInstall = false) {
 		const isScripted = process.env.IS_SCRIPTED_SERVICE && !cmdArgs.service;
 
 		if (hdbUtils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY))) {
-			if (!isScripted) await pmUtils.startClusteringProcesses();
+			await pmUtils.startClusteringProcesses();
 			await pmUtils.startClusteringThreads();
 		}
 		await startHTTPThreads(
@@ -236,7 +238,10 @@ async function launch(exit = true) {
 	skipExitListeners = !exit;
 	try {
 		if (pmUtils === undefined) pmUtils = require('../utility/processManagement/processManagement.js');
+		hdbLogger.debug('initializing processManagement...');
 		await initialize();
+		hdbLogger.debug('Starting new main process');
+
 		await pmUtils.startService(terms.PROCESS_DESCRIPTORS.HDB, true);
 		started();
 		if (exit) process.exit(0);

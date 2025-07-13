@@ -30,6 +30,7 @@ module.exports = {
 	startWorker,
 	restartWorkers,
 	shutdownWorkers,
+	shutdownWorkersNow,
 	workers,
 	setMonitorListener,
 	onMessageFromWorkers,
@@ -141,7 +142,7 @@ function startWorker(path, options = {}) {
 			'--enable-source-maps',
 
 			// expose Node.js internal utils so jsLoader can use `decorateErrorStack()`
-			'--expose-internals'
+			'--expose-internals',
 		],
 		argv: process.argv.slice(2),
 		// pass these in synchronously to the worker so it has them on startup:
@@ -317,6 +318,9 @@ function setChildListenerByType(type, listener) {
 }
 function shutdownWorkers(name) {
 	return restartWorkers(name, Infinity, false);
+}
+function shutdownWorkersNow(name) {
+	return Promise.all(workers.map((worker) => worker.terminate()));
 }
 
 const messageListeners = [];

@@ -13,12 +13,13 @@ const processMan = require('../utility/processManagement/processManagement.js');
 const sysInfo = require('../utility/environment/systemInformation.js');
 const { compactOnStart } = require('./copyDb.ts');
 const assignCMDENVVariables = require('../utility/assignCmdEnvVariables.js');
-const { restartWorkers, onMessageByType } = require('../server/threads/manageThreads.js');
+const { restartWorkers, onMessageByType, shutdownWorkersNow } = require('../server/threads/manageThreads.js');
 const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
 const { HTTP_STATUS_CODES } = hdbErrors;
 const envMgr = require('../utility/environment/environmentManager.js');
 const { sendOperationToNode, getThisNodeName, monitorNodeCAs } = require('../server/replication/replicator.ts');
-const { getHDBNodeTable } = require('../server/replication/knownNodes.ts');
+const path = require('path');
+const { unlinkSync } = require('node:fs');
 envMgr.initSync();
 
 const RESTART_RESPONSE = `Restarting HarperDB. This may take up to ${hdbTerms.RESTART_TIMEOUT_MS / 1000} seconds.`;
@@ -80,8 +81,19 @@ async function restart(req) {
 			// PM/container/orchestrator.
 			process.exit(0);
 		}
-
-		setTimeout(() => {
+		setTimeout(async () => {
+			// It seems like you should just be able to start the other process and kill this process and everything should
+			// be cleaned up. That's not the works for some reason; the socket listening fds somehow get transferred to the
+			// child process if they are not explicitly closed. And when transferred they are orphaned listening, accepting
+			// connections and hanging. So we need to explicitly close down all the workers and then start the new process
+			// and shut down.
+			hdbLogger.debug('Shutdown workers');
+			await shutdownWorkersNow();
+			processMan.killChildrenProcesses(false);
+			// remove pid file so it doesn't trip up the launch
+			await unlinkSync(path.join(envMgr.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), hdbTerms.HDB_PID_FILE), `${process.pid}`);
+			hdbLogger.debug('Starting new process...');
+			// now launch the new process and exit this process
 			require('./run.js').launch(true);
 		}, 50); // can't await this because it is going to do an exit()
 	} else {

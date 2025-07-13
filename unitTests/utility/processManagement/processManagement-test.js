@@ -125,7 +125,6 @@ describe('Test processManagement utilityFunctions module', () => {
 	let remove_nats_config_stub;
 	let get_all_node_records_stub;
 	let update_node_name_stub;
-	utility_functions.enterPM2Mode();
 
 	before(() => {
 		fs.mkdirpSync(path.resolve(__dirname, '../../envDir/clustering'));
@@ -656,31 +655,6 @@ describe('Test processManagement utilityFunctions module', () => {
 			expect(result).to.be.false;
 			list_rw();
 		});
-	});
-
-	it('Test stopClustering calls stop for all the clustering processes', async () => {
-		const stop_stub = sandbox.stub();
-		const stop_rw = utility_functions.__set__('stop', stop_stub);
-		await utility_functions.stopClustering();
-		expect(stop_stub.getCall(0).args[0]).to.equal('Clustering Hub');
-		expect(stop_stub.getCall(1).args[0]).to.equal('Clustering Leaf');
-		stop_rw();
-	});
-
-	it('Test isClusteringRunning returns true if all clustering services running', async () => {
-		const is_reg_stub = sandbox.stub().resolves(true);
-		const is_reg_rw = utility_functions.__set__('isServiceRegistered', is_reg_stub);
-		const result = await utility_functions.isClusteringRunning();
-		expect(result).to.be.true;
-		is_reg_rw();
-	});
-
-	it('Test isClusteringRunning returns false if all clustering services not running', async () => {
-		const is_reg_stub = sandbox.stub().resolves(false);
-		const is_reg_rw = utility_functions.__set__('isServiceRegistered', is_reg_stub);
-		const result = await utility_functions.isClusteringRunning();
-		expect(result).to.be.false;
-		is_reg_rw();
 	});
 
 	it('Test reloadClustering calls all the functions needed to run happy path', async () => {
