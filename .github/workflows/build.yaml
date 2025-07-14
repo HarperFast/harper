@@ -84,12 +84,17 @@ jobs:
           path: harperdb-${{ inputs.artifactVersionOverride == 'default' && needs.getNodeVersion.outputs.harperdbVersion || inputs.artifactVersionOverride }}.tgz
           retention-days: 1
 
-      ####################################
-      #  Get License Files for Container
-      ####################################
-      - name: 'Generate real license files'
-        if: inputs.dummyLicense != true
-        uses: ./.github/workflows/generate-licenses.yml
+  ####################################
+  #  Get License Files for Container
+  ####################################
+  generate-licenses:
+    if: inputs.dummyLicense != true
+    uses: ./.github/workflows/generate-licenses.yml
+
+  upload-licenses:
+    runs-on: ubuntu-latest
+    needs: generate-licenses
+    steps:
       - name: 'Generate dummy license files'
         if: inputs.dummyLicense == true
         run: |
