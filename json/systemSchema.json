@@ -165,6 +165,9 @@
 				"name": "expiration"
 			},
 			{
+				"name": "autoRenew"
+			},
+			{
 				"name": "__createdtime__"
 			},
 			{
