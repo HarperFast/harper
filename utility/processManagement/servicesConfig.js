@@ -21,9 +21,6 @@ const NATS_SERVER_BINARY_PATH = path.resolve(
 );
 
 function generateMainServerConfig() {
-	const license = hdbLicense.licenseSearch();
-	const maxMemory = license.ram_allocation || hdbTerms.RAM_ALLOCATION_ENUM.DEFAULT;
-	const memValue = hdbTerms.MEM_SETTING_KEY + maxMemory;
 	const envVars = {
 		[hdbTerms.PROCESS_NAME_ENV_PROP]: hdbTerms.PROCESS_DESCRIPTORS.HDB,
 		IS_SCRIPTED_SERVICE: true,
@@ -38,8 +35,7 @@ function generateMainServerConfig() {
 		script: hdbTerms.LAUNCH_SERVICE_SCRIPTS.MAIN,
 		exec_mode: 'fork',
 		env: envVars,
-		args: process.argv.slice(3),
-		node_args: memValue,
+		execArgv: process.execArgv,
 		cwd: PACKAGE_ROOT,
 	};
 }

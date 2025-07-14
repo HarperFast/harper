@@ -2,7 +2,7 @@
 
 const chai = require('chai');
 const rewire = require('rewire');
-const { expect } = chai;
+const { expect, assert } = chai;
 const pm2 = require('pm2');
 const sinon = require('sinon');
 const os = require('os');
@@ -20,7 +20,8 @@ const util = require('util');
 const exec = util.promisify(require('child_process').exec);
 const user = require('../../../security/user');
 const crypto_hash = require('../../../security/cryptoHash');
-const utility_functions = rewire('../../../utility/processManagement/processManagement');
+const utility_functions = require('../../../utility/processManagement/processManagement');
+const stop = require('../../../bin/stop');
 
 const PM2_LOGROTATE = 'pm2-logrotate';
 const PM2_MODULE_LOCATION = path.resolve(__dirname, '../../../node_modules/processManagement/bin/processManagement');
@@ -172,12 +173,11 @@ describe('Test processManagement utilityFunctions module', () => {
 
 		it('Test the HarperDB server is started on multiple processes', async () => {
 			await utility_functions.start(services_config.generateMainServerConfig());
-			const process_meta = await utility_functions.describe('HarperDB');
-			expect(process_meta.length).to.equal(1);
-			expect(process_meta[0].name).to.equal('HarperDB');
-			expect(process_meta[0].pm2_env.status).to.equal('online');
-			expect(process_meta[0].pm2_env.exec_mode).to.equal('fork_mode');
-			expect(process_meta[0].pm2_env.node_args[0]).includes('--max-old-space-size=');
+			await new Promise((resolve) => setTimeout(resolve, 1000));
+			assert(utility_functions.isHdbRunning(), 'Harper is not running');
+			stop();
+			await new Promise((resolve) => setTimeout(resolve, 1000));
+			assert(!utility_functions.isHdbRunning(), 'Harper is running');
 		}).timeout(10000);
 
 		it('Test error is handled as expected', async () => {

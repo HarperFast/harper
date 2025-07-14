@@ -24,14 +24,12 @@ module.exports = {
 	kill,
 	startAllServices,
 	startService,
-	reloadStopStart,
 	restartHdb,
 	startClusteringProcesses,
 	startClusteringThreads,
 	isHdbRestartRunning,
 	isHdbRunning,
 	killChildrenProcesses,
-	stopClustering,
 	reloadClustering,
 	expectedRestartOfChildren,
 };
@@ -117,7 +115,12 @@ function start(procConfig, noKill = false) {
 					? hdbLogger.OUTPUTS.STDERR
 					: hdbLogger.OUTPUTS.STDOUT;
 
-			hdbLogger.logCustomLevel(lastLevel || 'info', output, SERVICE_DEFINITION, log.slice(lastPosition).trim());
+			hdbLogger.logCustomLevel(
+				lastLevel || 'info',
+				output,
+				SERVICE_DEFINITION,
+				log.toString().slice(lastPosition).trim()
+			);
 		}
 	}
 	subprocess.stdout.on('data', extractMessages);
@@ -195,7 +198,7 @@ async function isHdbRestartRunning() {
  * Checks to see if Harper is currently running.
  * @returns {Promise<boolean>}
  */
-async function isHdbRunning() {
+function isHdbRunning() {
 	const harperPath = envMangr.getHdbBasePath();
 	return harperPath && fs.existsSync(path.join(harperPath, terms.HDB_PID_FILE));
 }
