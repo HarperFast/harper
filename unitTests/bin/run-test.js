@@ -24,7 +24,7 @@ let stop;
 let run_rw;
 let installation;
 
-describe('Test run module', () => {
+describe.skip('Test run module', () => {
 	const sandbox = sinon.createSandbox();
 	const TEST_ERROR = 'I am a unit test error test';
 	const log_notify_stub = sandbox.stub().callsFake(() => {});

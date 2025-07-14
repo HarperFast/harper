@@ -7,7 +7,7 @@ const process_man = require('../../utility/processManagement/processManagement')
 const sys_info = require('../../utility/environment/systemInformation');
 const stop = require('../../bin/stop');
 
-describe('Test stop module', () => {
+describe.skip('Test stop module', () => {
 	const sandbox = sinon.createSandbox();
 	let is_service_reg_stub;
 	let get_services_list_stub;

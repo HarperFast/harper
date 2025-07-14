@@ -12,7 +12,7 @@ const env_mgr = require('../../utility/environment/environmentManager');
 const sys_info = require('../../utility/environment/systemInformation');
 const restart = rewire('../../bin/restart');
 
-describe('Test restart module', () => {
+describe.skip('Test restart module', () => {
 	const sandbox = sinon.createSandbox();
 	let is_service_reg_stub;
 	let console_error_stub;

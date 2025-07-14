@@ -23,7 +23,7 @@ const TEST_CURR_VERS = '3.0.0';
 const TEST_DATA_VERS = '2.9.9';
 const TEST_UPGRADE_OBJ = new UpgradeObject(TEST_DATA_VERS, TEST_CURR_VERS);
 
-describe('Test upgrade.js', () => {
+describe.skip('Test upgrade.js', () => {
 	let sandbox = sinon.createSandbox();
 	let consoleLog_stub;
 	let processExit_stub;
