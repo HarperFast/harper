@@ -47,6 +47,7 @@ const keys = require('../security/keys.js');
 const setNode = require('../server/replication/setNode.ts');
 const analytics = require('../resources/analytics/read.ts');
 const status = require('../server/status/index.ts');
+const usageLicensing = require('../resources/usageLicensing.ts');
 
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject.js');
 const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
@@ -178,6 +179,7 @@ requiredPermissions.set(analytics.describeMetricOp.name, new permission(false, [
 requiredPermissions.set(status.clear.name, new permission(true, []));
 requiredPermissions.set(status.get.name, new permission(true, []));
 requiredPermissions.set(status.set.name, new permission(true, []));
+requiredPermissions.set(usageLicensing.installUsageLicenseOp.name, new permission(true, []));
 
 //this operation must be available to all users so they can create authentication tokens and login
 requiredPermissions.set(tokenAuthentication.createTokens.name, new permission(false, []));
@@ -267,11 +269,7 @@ function verifyPermsAst(ast, userObject, operation) {
 
 		// Should not continue if there are no schemas defined and there are table columns defined.
 		// This is defined so we can do calc selects like : SELECT ABS(-12)
-		if (
-			(!schemas || schemas.length === 0) &&
-			parsedAst.affected_attributes &&
-			parsedAst.affected_attributes.size > 0
-		) {
+		if ((!schemas || schemas.length === 0) && parsedAst.affected_attributes && parsedAst.affected_attributes.size > 0) {
 			harperLogger.info(`No schemas defined in verifyPermsAst(), will not continue.`);
 			throw handleHDBError(new Error());
 		}
@@ -460,11 +458,7 @@ function verifyPerms(requestJson, operation) {
 
 	//For a NoSQL search op with `get_attributes: '*'` - as long as the role has READ permissions on the table,
 	//we will convert the * to the specific attributes the user has READ permissions for via their role.
-	if (
-		!isSuperUser &&
-		requestJson.get_attributes &&
-		terms.SEARCH_WILDCARDS.includes(requestJson.get_attributes[0])
-	) {
+	if (!isSuperUser && requestJson.get_attributes && terms.SEARCH_WILDCARDS.includes(requestJson.get_attributes[0])) {
 		let finalGetAttrs = [];
 		const table_perms = fullRolePerms[operationSchema].tables[table];
 
@@ -680,12 +674,7 @@ function checkAttributePerms(
 	const unauthorizedTableAttributes = Object.keys(requiredAttrPerms);
 
 	if (unauthorizedTableAttributes.length > 0) {
-		permsResponse.addUnauthorizedAttributes(
-			unauthorizedTableAttributes,
-			schemaName,
-			tableName,
-			requiredAttrPerms
-		);
+		permsResponse.addUnauthorizedAttributes(unauthorizedTableAttributes, schemaName, tableName, requiredAttrPerms);
 	}
 }
 
