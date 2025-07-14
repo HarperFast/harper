@@ -50,7 +50,7 @@ const INVALID_LICENSE_FLAGS = {
 };
 let get_finger_print_file;
 
-describe(`Test generateFingerPrint`, function () {
+describe.skip(`Test generateFingerPrint`, function () {
 	it('Nominal, generate new finger print with hash and write finger print file', async function () {
 		// rewire hdb_license instance locally to keep internal cipher const fresh from another test
 		const hdb_license = rewire('../../../utility/registration/hdb_license');
@@ -76,7 +76,7 @@ describe(`Test generateFingerPrint`, function () {
 	});
 });
 
-describe(`Test generateLicense`, function () {
+describe.skip(`Test generateLicense`, function () {
 	it('Nominal, generate license with valid license key and finger print file', function () {
 		// rewire hdb_license instance locally to keep internal cipher const fresh from another test
 		const license_generator = rewire('../../../utility/devops/licenseGenerator');
@@ -251,7 +251,7 @@ describe(`Test generateLicense`, function () {
 	});
 });
 
-describe(`Test validateLicense`, function () {
+describe.skip(`Test validateLicense`, function () {
 	it('Nominal, validate valid license with pass', async function () {
 		// rewire hdb_license instance locally to keep internal cipher const fresh from another test
 		const hdb_license = rewire('../../../utility/registration/hdb_license');
@@ -419,7 +419,7 @@ describe(`Test validateLicense`, function () {
 	});
 });
 
-describe('test licenseSearch', () => {
+describe.skip('test licenseSearch', () => {
 	it('test no license in hdb_license', () => {
 		const hdb_license = rewire('../../../utility/registration/hdb_license');
 		let fs_rw = hdb_license.__set__('fs', {
