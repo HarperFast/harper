@@ -994,6 +994,19 @@ export function replicateOverWS(ws, options, authorization) {
 								writeBytes(encoded, start);
 								logger.trace?.('wrote record', audit_record.recordId, 'length:', encoded.length);
 							}
+							// wait if there is back-pressure
+							if (ws._socket.writableNeedDrain) {
+								return new Promise<void>((resolve) => {
+									logger.debug?.(
+										`Waiting for remote node ${remote_node_name} to allow more commits ${ws._socket.writableNeedDrain ? 'due to network backlog' : 'due to requested flow directive'}`
+									);
+									ws._socket.once('drain', resolve);
+								});
+							} else if (outstanding_blobs_being_sent > MAX_OUTSTANDING_BLOBS_BEING_SENT) {
+								return new Promise((resolve) => {
+									blob_sent_callback = resolve;
+								});
+							} else return new Promise(setImmediate); // yield on each turn for fairness and letting other things run
 						};
 						const sendQueuedData = () => {
 							if (position - encoding_start > 8) {
@@ -1102,7 +1115,7 @@ export function replicateOverWS(ws, options, authorization) {
 															last_sequence_id = Math.max(entry.localTime, last_sequence_id);
 															queued_entries = true;
 															getSharedStatus()[SENDING_TIME_POSITION] = 1;
-															sendAuditRecord(
+															await sendAuditRecord(
 																{
 																	// make it look like an audit record
 																	recordId: entry.key,
@@ -1136,20 +1149,7 @@ export function replicateOverWS(ws, options, authorization) {
 										logger.debug?.('sending audit record', new Date(key));
 										getSharedStatus()[SENDING_TIME_POSITION] = key;
 										current_sequence_id = key;
-										sendAuditRecord(audit_record, key);
-										// wait if there is back-pressure
-										if (ws._socket.writableNeedDrain) {
-											await new Promise<void>((resolve) => {
-												logger.debug?.(
-													`Waiting for remote node ${remote_node_name} to allow more commits ${ws._socket.writableNeedDrain ? 'due to network backlog' : 'due to requested flow directive'}`
-												);
-												ws._socket.once('drain', resolve);
-											});
-										} else if (outstanding_blobs_being_sent > MAX_OUTSTANDING_BLOBS_BEING_SENT) {
-											await new Promise((resolve) => {
-												blob_sent_callback = resolve;
-											});
-										} else await new Promise(setImmediate); // yield on each turn for fairness and letting other things run
+										await sendAuditRecord(audit_record, key);
 										audit_subscription.startTime = key; // update so don't double send
 										queued_entries = true;
 									}
