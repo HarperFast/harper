@@ -2,8 +2,7 @@ name: Update open-source licenses page
 on:
   push:
     branches:
-      - release_*
-      - fix/webflow-upload-opensource-license-gha-workflow
+      - main
   workflow_dispatch:
 
 permissions:
