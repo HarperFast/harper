@@ -87,9 +87,9 @@ jobs:
       ####################################
       #  Get License Files for Container
       ####################################
-      - name: 'Generate real license files'
-        if: inputs.dummyLicense != true
-        uses: ./.github/workflows/generate-licenses.yml
+      #- name: 'Generate real license files'
+      #  if: inputs.dummyLicense != true
+      #  uses: ./.github/workflows/generate-licenses.yml
       - name: 'Generate dummy license files'
         if: inputs.dummyLicense == true
         run: |
