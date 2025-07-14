@@ -3,7 +3,6 @@
 const chai = require('chai');
 const rewire = require('rewire');
 const { expect, assert } = chai;
-const pm2 = require('pm2');
 const sinon = require('sinon');
 const os = require('os');
 const path = require('path');
@@ -23,7 +22,6 @@ const crypto_hash = require('../../../security/cryptoHash');
 const utility_functions = require('../../../utility/processManagement/processManagement');
 const stop = require('../../../bin/stop');
 
-const PM2_LOGROTATE = 'pm2-logrotate';
 const PM2_MODULE_LOCATION = path.resolve(__dirname, '../../../node_modules/processManagement/bin/processManagement');
 const LOG_ROTATE_UNINSTALLED = 'Log rotate uninstalled.';
 const LOG_ROTATE_UNINSTALL_ERR = 'Error uninstalling log rotate.';
