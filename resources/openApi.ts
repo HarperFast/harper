@@ -55,9 +55,7 @@ export function generateJsonApi(resources) {
 
 		const { path } = resource;
 		const strippedPath = path.split('/').slice(-1); // strip any namespace from path
-		const { attributes, prototype, sealed } = resource.Resource;
-		let { primaryKey } = resource.Resource;
-		primaryKey = primaryKey ?? 'id';
+		const { attributes, prototype, sealed, primaryKey = 'id' } = resource.Resource;
 		if (!primaryKey) continue;
 		const props = {};
 		const queryParamsArray = [];
