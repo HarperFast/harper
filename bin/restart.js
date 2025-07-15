@@ -28,7 +28,6 @@ const RESTART_NON_PM2_ERR =
 const CLUSTERING_NOT_ENABLED_ERR = 'Clustering is not enabled so cannot be restarted';
 const INVALID_SERVICE_ERR = 'Invalid service';
 
-let pm2Mode;
 let calledFromCli;
 
 module.exports = {
@@ -117,7 +116,6 @@ async function restartService(req) {
 		throw handleHDBError(new Error(), INVALID_SERVICE_ERR, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 	processMan.expectedRestartOfChildren();
-	pm2Mode = await processMan.isServiceRegistered(hdbTerms.PROCESS_DESCRIPTORS.HDB);
 	if (!isMainThread) {
 		if (req.replicated) {
 			monitorNodeCAs(); // get all the CAs from the nodes we know about
@@ -215,11 +213,6 @@ async function restartService(req) {
 		case hdbTerms.HDB_PROCESS_SERVICES.harperdb:
 		case hdbTerms.HDB_PROCESS_SERVICES.http_workers:
 		case hdbTerms.HDB_PROCESS_SERVICES.http:
-			if (calledFromCli && !pm2Mode) {
-				errMsg = `Restart ${service} is not available from the CLI when running in non-pm2 mode. Either call restart ${service} from the API or stop and start HarperDB.`;
-				break;
-			}
-
 			if (calledFromCli) console.log(`Restarting httpWorkers`);
 			hdbLogger.notify('Restarting http_workers');
 
@@ -244,27 +237,6 @@ async function restartService(req) {
 }
 
 /**
- * Will use PM2 module to restart processes its managing.
- * @returns {Promise<void>}
- */
-async function restartPM2Mode() {
-	await restartClustering();
-	await processMan.restart(hdbTerms.PROCESS_DESCRIPTORS.HDB);
-	// Restarting HarperDB will regenerate the nats config, for that reason we remove it below.
-	// The timeout is there to wait for HDB to restart.
-	await hdbUtils.asyncSetTimeout(2000);
-	if (envMgr.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
-		await removeNatsConfig();
-	}
-
-	// Close the connection to the nats-server so that if stop/restart called from CLI process will exit.
-	if (calledFromCli) {
-		await natsUtils.closeConnection();
-		process.exit(0);
-	}
-}
-
-/**
  * Restarts the Hub & Leaf clustering servers. Will also restart ingest and reply threads
  * if restart request is coming through API.
  * @returns {Promise<void>}
@@ -286,17 +258,11 @@ async function restartClustering() {
 	} else {
 		await natsConfig.generateNatsConfig(true);
 
-		if (pm2Mode) {
-			hdbLogger.trace('Restart clustering restarting PM2 managed Hub and Leaf servers');
-			await processMan.restart(hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_HUB);
-			await processMan.restart(hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF);
-		} else {
-			const proc = await sysInfo.getHDBProcessInfo();
-			proc.clustering.forEach((p) => {
-				hdbLogger.trace('Restart clustering killing process pid', p.pid);
-				process.kill(p.pid);
-			});
-		}
+		const proc = await sysInfo.getHDBProcessInfo();
+		proc.clustering.forEach((p) => {
+			hdbLogger.trace('Restart clustering killing process pid', p.pid);
+			process.kill(p.pid);
+		});
 		// Give the clustering servers time to restart before moving on.
 		await hdbUtils.asyncSetTimeout(3000);
 		await removeNatsConfig();

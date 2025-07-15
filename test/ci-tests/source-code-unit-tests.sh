@@ -9,7 +9,7 @@ cd /home/ubuntu/harperdb/bin/
 node harperdb.js stop
 npm run cover:test
 
-npx pm2 kill
+node harperdb.js stop
 
 
 # Re-register HarperDB after unit tests
