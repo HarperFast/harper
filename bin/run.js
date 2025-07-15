@@ -147,8 +147,10 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 
 	addExitListeners();
 
-	// Write HarperDB PID to file for tracking purposes
-	await fs.writeFile(path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), hdbTerms.HDB_PID_FILE), `${process.pid}`);
+	if (calledByMain) {
+		// Write HarperDB PID to file for tracking purposes
+		await fs.writeFile(path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), hdbTerms.HDB_PID_FILE), `${process.pid}`);
+	}
 	hdbLogger.info('HarperDB PID', process.pid);
 
 	// Check to see if an upgrade is needed based on existing hdbInfo data.  If so, we need to force the user to upgrade
