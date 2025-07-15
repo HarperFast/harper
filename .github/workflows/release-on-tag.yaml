@@ -126,6 +126,14 @@ jobs:
             # before we set to latest, we need to make sure that this isn't just a new stable release on an older release train
             repo_data_json=$(curl -sL "${docker_repo_url}")
             current_latest_image_digest=$(echo "${repo_data_json}" | jq -r '.results[] | select(.name == "latest").digest')
+            
+            # Extract the highest semantic version tag that shares the same digest as 'latest'
+            # This filters out commit hash tags and ensures we only compare actual version numbers
+            # To verify locally:
+            #   docker_repo_url='https://hub.docker.com/v2/namespaces/harperdb/repositories/harperdb/tags?page_size=100'
+            #   repo_data_json=$(curl -sL "${docker_repo_url}")
+            #   current_latest_image_digest=$(echo "${repo_data_json}" | jq -r '.results[] | select(.name == "latest").digest')
+            #   echo "${repo_data_json}" | jq -r ".results[] | select(.digest == \"${current_latest_image_digest}\" and .name != \"latest\") | .name" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1
             current_latest_image_tag=$(echo "${repo_data_json}" | jq -r ".results[] | select(.digest == \"${current_latest_image_digest}\" and .name != \"latest\") | .name" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
           
             current_latest_image_tag_major="${current_latest_image_tag%%\.*}"
