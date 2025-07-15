@@ -31,9 +31,9 @@ const { sendOperationToNode } = require('../../server/replication/replicator.ts'
 const { updateConfigCert } = require('../../security/keys.js');
 const { restartWorkers } = require('../../server/threads/manageThreads.js');
 const { databases } = require('../../resources/databases.ts');
-const { clusterStatus } = require('../clustering/clusterStatus.js');
 const { set: setStatus } = require('../../server/status/index.ts');
 const { HTTP_STATUS_CODES } = require('../errors/commonErrors.js');
+const { cliOperations } = require('../../bin/cliOperations.js');
 
 // Custom error class for clone node operations
 class CloneNodeError extends Error {
@@ -299,7 +299,7 @@ async function cloneUsingWS() {
 		await monitorSyncAndUpdateStatus(lastUpdatedTimestamps);
 	} catch (error) {
 		console.error('Sync monitoring failed:', error.message);
-		
+
 		// Optionally set availability status to Unavailable if status updates are enabled
 		// TODO: (maybe) update availability status to Unavailable if sync fails
 	}
@@ -345,7 +345,7 @@ async function getLastUpdatedRecord() {
 	const lastUpdatedFilePath = join(rootPath, 'tmp', 'lastUpdated.json');
 	console.log('Writing last updated database timestamps to:', lastUpdatedFilePath);
 	await fs.outputJson(lastUpdatedFilePath, lastUpdated);
-	
+
 	return lastUpdated;
 }
 
@@ -380,14 +380,14 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 	const startTime = Date.now();
 	let syncComplete = false;
 
-	while (!syncComplete && (Date.now() - startTime) < maxWaitTime) {
+	while (!syncComplete && Date.now() - startTime < maxWaitTime) {
 		try {
 			// Check if all databases are synchronized
 			syncComplete = await checkSyncStatus(targetTimestamps);
 
 			if (syncComplete) {
 				console.log('All databases synchronized');
-				
+
 				// Only update status if enabled
 				if (shouldUpdateStatus) {
 					try {
@@ -422,7 +422,7 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
  */
 async function checkSyncStatus(targetTimestamps) {
 	// Get cluster status
-	const clusterResponse = await clusterStatus();
+	const clusterResponse = await cliOperations({ operation: 'cluster_status' });
 
 	// There should always be a response with at least an empty connections []
 	for (const connection of clusterResponse.connections) {
@@ -434,12 +434,12 @@ async function checkSyncStatus(targetTimestamps) {
 		for (const socket of connection.database_sockets) {
 			const dbName = socket.database;
 			const targetTime = targetTimestamps[dbName];
-			
+
 			// Skip if no target time for this database
 			if (!targetTime) continue;
 
 			const receivedTime = socket.lastReceivedRemoteTime;
-			
+
 			// Check if we have received data and if it's up to date
 			if (!receivedTime) {
 				console.log(`Database ${dbName}: No data received yet`);
@@ -448,7 +448,7 @@ async function checkSyncStatus(targetTimestamps) {
 
 			// Convert timestamps to numbers for comparison
 			const receivedTimeNum = new Date(receivedTime).getTime();
-			
+
 			if (receivedTimeNum < targetTime) {
 				console.log(`Database ${dbName}: Not synchronized (received: ${receivedTimeNum}, target: ${targetTime})`);
 				return false;
@@ -625,9 +625,7 @@ async function installHDB() {
 
 function getDBPath(db) {
 	const dbConfig = envMgr.get(hdbTerms.CONFIG_PARAMS.DATABASES)?.[db];
-	return (
-		dbConfig?.path || envMgr.get(CONFIG_PARAMS.STORAGE_PATH) || path.join(rootPath, hdbTerms.DATABASES_DIR_NAME)
-	);
+	return dbConfig?.path || envMgr.get(CONFIG_PARAMS.STORAGE_PATH) || path.join(rootPath, hdbTerms.DATABASES_DIR_NAME);
 }
 
 async function cloneTablesHttp() {

@@ -190,7 +190,7 @@ export function removeAuditEntry(auditStore: any, key: number, value: any): Prom
 		auditRecord = auditRecord || readAuditEntry(value);
 		const tableId = auditRecord.tableId;
 		const primaryStore = auditStore.tableStores[auditRecord.tableId];
-		if (primaryStore?.getEntry(auditRecord.recordId).version === auditRecord.version)
+		if (primaryStore?.getEntry(auditRecord.recordId)?.version === auditRecord.version)
 			auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, auditRecord.version);
 	}
 	return auditStore.remove(key);
