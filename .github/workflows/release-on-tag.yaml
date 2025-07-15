@@ -126,7 +126,7 @@ jobs:
             # before we set to latest, we need to make sure that this isn't just a new stable release on an older release train
             repo_data_json=$(curl -sL "${docker_repo_url}")
             current_latest_image_digest=$(echo "${repo_data_json}" | jq -r '.results[] | select(.name == "latest").digest')
-            current_latest_image_tag=$(echo "${repo_data_json}" | jq ".results[] | select(.digest == \"${current_latest_image_digest}\")" | jq -r 'select(.name != "latest").name')
+            current_latest_image_tag=$(echo "${repo_data_json}" | jq -r ".results[] | select(.digest == \"${current_latest_image_digest}\" and .name != \"latest\") | .name" | grep -E '^[0-9]+\.[0-9]+\.[0-9]+$' | sort -V | tail -1)
           
             current_latest_image_tag_major="${current_latest_image_tag%%\.*}"
             current_latest_image_tag_minor="${current_latest_image_tag#*.}"
