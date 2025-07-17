@@ -932,6 +932,7 @@ export function replicateOverWS(ws, options, authorization) {
 										}
 									}, SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY).unref();
 								}
+								return new Promise(setImmediate); // we still need to yield (otherwise we might never send a sequence id update)
 							}
 
 							const typed_structs = encoder.typedStructs;
