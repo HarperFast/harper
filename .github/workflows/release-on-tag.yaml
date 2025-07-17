@@ -293,6 +293,7 @@ jobs:
   #############################################################
   build-offline-installer:
     runs-on: ubuntu-latest
+    if: ${{ inputs.forcedVersion != 'no_forced' }}
     needs:
       - meta
       - build
@@ -315,6 +316,7 @@ jobs:
   #  Release to Private NPM harperdb/@harperdb
   ##############################################
   npmPrivateRelease:
+    continue-on-error: true
     needs:
       - meta
       - build
@@ -351,6 +353,7 @@ jobs:
         nodeVersion: [16, 22]
     timeout-minutes: 30
     runs-on: ubuntu-latest
+    continue-on-error: true
     steps:
       - name: checkout repo
         uses: actions/checkout@v4
@@ -451,6 +454,7 @@ jobs:
   ###################################
   publicReleaseNPM:
     environment: ${{ needs.meta.outputs.release_type == 'stable' && 'release-npm' || 'pre-release-npm' }}
+    continue-on-error: true
     needs:
       - build
       - meta
@@ -493,6 +497,7 @@ jobs:
       - meta
       - dockerhubPrivateRelease
     runs-on: ubuntu-latest
+    continue-on-error: true
     timeout-minutes: 30
     strategy:
       matrix:
@@ -507,7 +512,6 @@ jobs:
           - container: 'harpersystems/harper-openshift'
             file: 'utility/Docker/Dockerfile-openshift'
             buildPlatforms: 'linux/amd64,linux/arm64'
-            nodeVersion: 22
           - container: 'harpersystems/harper-chrome'
             file: 'utility/Docker/Dockerfile-chrome'
             buildPlatforms: 'linux/amd64'
