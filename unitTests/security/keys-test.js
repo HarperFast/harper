@@ -300,4 +300,131 @@ describe('Test keys module', () => {
 		});
 		expect(context.options.cert).to.eql(cert2.cert);
 	});*/
+
+	it('Test setCertTable with malformed certificate - illegal ASN.1 padding', async () => {
+		// Test various malformed certificate scenarios that could cause the X509Certificate error
+		const malformedCerts = [
+			// Certificate with corrupted base64 padding
+			{
+				name: 'corrupted-base64-padding',
+				certificate: '-----BEGIN CERTIFICATE-----\nMIIEFzCCAv+gAwIBAgIUBg==\n-----END CERTIFICATE-----',
+			},
+			// Certificate with truncated data
+			{
+				name: 'truncated-cert',
+				certificate: '-----BEGIN CERTIFICATE-----\nMIIEFzCCAv+gAwIBAgIU',
+			},
+			// Certificate with invalid characters
+			{
+				name: 'invalid-chars',
+				certificate: '-----BEGIN CERTIFICATE-----\n!!!INVALID!!!DATA!!!\n-----END CERTIFICATE-----',
+			},
+			// Certificate missing end marker
+			{
+				name: 'missing-end-marker',
+				certificate: '-----BEGIN CERTIFICATE-----\nMIIEFzCCAv+gAwIBAgIUBg==',
+			},
+			// Empty certificate data
+			{
+				name: 'empty-cert',
+				certificate: '-----BEGIN CERTIFICATE-----\n\n-----END CERTIFICATE-----',
+			},
+			// Certificate with extra padding
+			{
+				name: 'extra-padding',
+				certificate: '-----BEGIN CERTIFICATE-----\nMIIEFzCCAv+gAwIBAgIUBg====\n-----END CERTIFICATE-----',
+			},
+			// Certificate with illegal padding (specific case from CI error)
+			{
+				name: 'illegal-padding',
+				certificate: '-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJAKHN\n-----END CERTIFICATE-----',
+			},
+			// Certificate with malformed ASN.1 structure
+			{
+				name: 'malformed-asn1',
+				certificate:
+					'-----BEGIN CERTIFICATE-----\nMIICEjCCAXsCAg36MA0GCSqGSIb3DQEBBQUAMIGbMQswCQYDVQQGEwJKUDEOMAwG\n-----END CERTIFICATE-----',
+			},
+			// Certificate with broken DER encoding
+			{
+				name: 'broken-der',
+				certificate:
+					'-----BEGIN CERTIFICATE-----\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END CERTIFICATE-----',
+			},
+		];
+
+		for (const malformedCert of malformedCerts) {
+			let error;
+			try {
+				await keys.setCertTable(malformedCert);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error).to.exist;
+			// Now expecting our custom error code
+			expect(error.code).to.equal('INVALID_CERTIFICATE_FORMAT');
+
+			// Log the specific error for debugging
+			// console.log(`Test case '${malformedCert.name}' error:`, error.code, error.message.substring(0, 80) + '...');
+		}
+	});
+
+	it('Test setCertTable with valid certificate should work', async () => {
+		// Ensure a valid certificate still works
+		const validCert = {
+			name: 'valid-test-cert',
+			certificate: test_cert,
+			uses: ['https'],
+			is_authority: false,
+			private_key_name: 'test.pem',
+		};
+
+		// This should not throw
+		await keys.setCertTable(validCert);
+
+		// Verify it was added
+		const certs = await keys.listCertificates();
+		const found = certs.find((c) => c.name === 'valid-test-cert');
+		expect(found).to.exist;
+
+		// Clean up
+		await keys.removeCertificate({ name: 'valid-test-cert' });
+	});
+
+	it('Test setCertTable error handling suggestion for cloneNode issue', async () => {
+		// This test demonstrates the need for better error handling in setCertTable
+		// The cloneNode CI error shows that certificates can be corrupted during transfer
+
+		// Simulate what might happen during cloneNode with corrupted cert data
+		const scenarios = [
+			{
+				name: 'cert-corrupted-during-transfer',
+				certificate: test_cert.substring(0, test_cert.length - 100), // Truncated cert
+			},
+			{
+				name: 'cert-with-wrong-line-endings',
+				certificate: test_cert.replace(/\n/g, '\r'), // Wrong line endings
+			},
+			{
+				name: 'cert-with-encoding-issues',
+				certificate: Buffer.from(test_cert).toString('hex'), // Wrong encoding
+			},
+		];
+
+		for (const scenario of scenarios) {
+			let error;
+			try {
+				await keys.setCertTable(scenario);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error).to.exist;
+			// console.log(`Scenario '${scenario.name}' error:`, error.message);
+
+			// The error should be from X509Certificate constructor
+			expect(error.message).to.match(/asn1|certificate|invalid|wrong|PEM|bad/i);
+		}
+	});
 });
