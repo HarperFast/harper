@@ -20,12 +20,12 @@ const certificatesTerms = require('../utility/terms/certificates.js');
 const { ClientError } = require('../utility/errors/hdbError.js');
 const tls = require('node:tls');
 const { relative, join } = require('node:path');
-const { CERT_PREFERENCE_APP, CERTIFICATE_VALUES } = certificatesTerms;
+const { CERTIFICATE_VALUES } = certificatesTerms;
 const assignCmdenvVars = require('../utility/assignCmdEnvVariables.js');
 const configUtils = require('../config/configUtils.js');
 const { table, getDatabases, databases } = require('../resources/databases.ts');
 const { getJWTRSAKeys } = require('./tokenAuthentication.ts');
-const logger = forComponent('tls');
+const logger = forComponent('tls').conditional;
 
 exports.generateKeys = generateKeys;
 exports.updateConfigCert = updateConfigCert;
@@ -57,7 +57,6 @@ const {
 const { readFileSync, statSync } = require('node:fs');
 const env = require('../utility/environment/environmentManager.js');
 const { getTicketKeys, onMessageFromWorkers } = require('../server/threads/manageThreads.js');
-const harperLogger = require('../utility/logging/harper_logger.js');
 const { isMainThread } = require('worker_threads');
 const { TLSSocket, createSecureContext } = require('node:tls');
 
@@ -200,12 +199,12 @@ function loadCertificates() {
 								try {
 									certCn = getPrimaryHostName(x509Cert);
 								} catch (err) {
-									logger.error('error extracting host name from certificate', err);
+									logger.error?.('error extracting host name from certificate', err);
 									return;
 								}
 
 								if (certCn == null) {
-									logger.error('No host name found on certificate');
+									logger.error?.('No host name found on certificate');
 									return;
 								}
 
@@ -222,7 +221,7 @@ function loadCertificates() {
 										: (certRecord.file_timestamp ?? certRecord.__updatedtime__);
 								if (certRecord && fileTimestamp <= recordTimestamp) {
 									if (fileTimestamp < recordTimestamp)
-										logger.info(
+										logger.info?.(
 											`Certificate ${certCn} at ${path} is older (${new Date(
 												fileTimestamp
 											)}) than the certificate in the database (${
@@ -273,16 +272,16 @@ function loadAndWatch(path, loadCert, type) {
 		try {
 			let modified = stats.mtimeMs;
 			if (modified && modified !== lastModified) {
-				if (lastModified && isMainThread) logger.warn(`Reloading ${type}:`, path);
+				if (lastModified && isMainThread) logger.warn?.(`Reloading ${type}:`, path);
 				lastModified = modified;
 				loadCert(readPEM(path));
 			}
 		} catch (error) {
-			logger.error(`Error loading ${type}:`, path, error);
+			logger.error?.(`Error loading ${type}:`, path, error);
 		}
 	};
 	if (fs.existsSync(path)) loadFile(path, statSync(path));
-	else logger.error(`${type} file not found:`, path);
+	else logger.error?.(`${type} file not found:`, path);
 	watch(path, { persistent: false }).on('change', loadFile);
 }
 
@@ -290,7 +289,7 @@ function getHost() {
 	let url = getThisNodeUrl();
 	if (url == null) {
 		const host = CERT_DOMAINS[0];
-		logger.info('replication url is missing from harperdb-config.yaml, using default host' + host);
+		logger.info?.('replication url is missing from harperdb-config.yaml, using default host' + host);
 		return host;
 	}
 	return urlToNodeName(url);
@@ -300,7 +299,7 @@ function getCommonName() {
 	let node_name = getThisNodeName();
 	if (node_name == null) {
 		const host = CERT_DOMAINS[0];
-		logger.info('replication url is missing from harperdb-config.yaml, using default host' + host);
+		logger.info?.('replication url is missing from harperdb-config.yaml, using default host' + host);
 		return host;
 	}
 	return node_name;
@@ -311,7 +310,7 @@ async function createCsr() {
 	const opsCert = pki.certificateFromPem(rep.options.cert);
 	const opsPrivateKey = pki.privateKeyFromPem(rep.options.key);
 
-	logger.info('Creating CSR with cert named:', rep.name);
+	logger.info?.('Creating CSR with cert named:', rep.name);
 
 	const csr = pki.createCertificationRequest();
 	csr.publicKey = opsCert.publicKey;
@@ -322,7 +321,7 @@ async function createCsr() {
 		},
 		...CERT_ATTRIBUTES,
 	];
-	logger.info('Creating CSR with subject', subject);
+	logger.info?.('Creating CSR with subject', subject);
 	csr.setSubject(subject);
 
 	const attributes = [
@@ -335,7 +334,7 @@ async function createCsr() {
 			extensions: certExtensions(),
 		},
 	];
-	logger.info('Creating CSR with attributes', attributes);
+	logger.info?.('Creating CSR with attributes', attributes);
 	csr.setAttributes(attributes);
 
 	csr.sign(opsPrivateKey);
@@ -415,12 +414,12 @@ async function signCertificate(req) {
 		private_key = pki.privateKeyFromPem(private_key);
 		response.signingCA = cert_auth.certificate;
 		const caAppCert = pki.certificateFromPem(cert_auth.certificate);
-		logger.info('Signing CSR with cert named', cert_auth.name);
+		logger.info?.('Signing CSR with cert named', cert_auth.name);
 		const csr = pki.certificationRequestFromPem(req.csr);
 		try {
 			csr.verify();
 		} catch (err) {
-			logger.error(err);
+			logger.error?.(err);
 			return new Error(`Error verifying CSR: ` + err.message);
 		}
 
@@ -430,18 +429,18 @@ async function signCertificate(req) {
 		const notAfter = new Date();
 		cert.validity.notAfter = notAfter;
 		cert.validity.notAfter.setDate(notAfter.getDate() + CERT_VALIDITY_DAYS);
-		logger.info('sign cert setting validity:', cert.validity);
+		logger.info?.('sign cert setting validity:', cert.validity);
 
 		// subject from CSR
-		logger.info('sign cert setting subject from CSR:', csr.subject.attributes);
+		logger.info?.('sign cert setting subject from CSR:', csr.subject.attributes);
 		cert.setSubject(csr.subject.attributes);
 
 		// issuer from CA
-		logger.info('sign cert setting issuer:', caAppCert.subject.attributes);
+		logger.info?.('sign cert setting issuer:', caAppCert.subject.attributes);
 		cert.setIssuer(caAppCert.subject.attributes);
 
 		const extensions = csr.getAttribute({ name: 'extensionRequest' }).extensions;
-		logger.info('sign cert adding extensions from CSR:', extensions);
+		logger.info?.('sign cert adding extensions from CSR:', extensions);
 		cert.setExtensions(extensions);
 
 		cert.publicKey = csr.publicKey;
@@ -449,7 +448,7 @@ async function signCertificate(req) {
 
 		response.certificate = pki.certificateToPem(cert);
 	} else {
-		logger.info('Sign cert did not receive a CSR from:', req.url, 'only the CA will be returned');
+		logger.info?.('Sign cert did not receive a CSR from:', req.url, 'only the CA will be returned');
 	}
 
 	return response;
@@ -476,7 +475,25 @@ async function createCertificateTable(cert, caCert) {
 }
 
 async function setCertTable(certRecord) {
-	const cert = new X509Certificate(certRecord.certificate);
+	let cert;
+	try {
+		cert = new X509Certificate(certRecord.certificate);
+	} catch (error) {
+		// Log the specific error for debugging
+		logger.error?.(`Failed to parse certificate for ${certRecord.name}:`, error.message);
+		// Log the certRecord for context
+		logger.debug?.(`Certificate record details:`, JSON.stringify(certRecord, null, 2));
+
+		// Throw a more descriptive error
+		const certError = new Error(
+			`Invalid certificate format for ${certRecord.name}: ${error.message}. ` +
+				`This may be due to corrupted certificate data during transfer or encoding issues.`
+		);
+		certError.code = 'INVALID_CERTIFICATE_FORMAT';
+		certError.cause = error;
+		throw certError;
+	}
+
 	certRecord.details = {
 		issuer: cert.issuer.replace(/\n/g, ' '),
 		subject: cert.subject.replace(/\n/g, ' '),
@@ -552,7 +569,7 @@ async function getCertAuthority() {
 		if (cert.private_key_name && matchingPrivateKey) {
 			const keyCheck = new X509Certificate(cert.certificate).checkPrivateKey(createPrivateKey(matchingPrivateKey));
 			if (keyCheck) {
-				logger.trace(`CA named: ${cert.name} found with matching private key`);
+				logger.trace?.(`CA named: ${cert.name} found with matching private key`);
 				match = { ca: cert, private_key: matchingPrivateKey };
 				break;
 			}
@@ -560,7 +577,7 @@ async function getCertAuthority() {
 	}
 
 	if (match) return match;
-	logger.trace('No CA found with matching private key');
+	logger.trace?.('No CA found with matching private key');
 }
 
 async function generateCertAuthority(private_key, publicKey, writeKey = true) {
@@ -647,7 +664,7 @@ async function reviewSelfSignedCert() {
 
 	let caAndKey = await getCertAuthority();
 	if (!caAndKey) {
-		logger.notify(
+		logger.notify?.(
 			"A matching Certificate Authority and key was not found. A new CA will be created in advance, so it's available if needed."
 		);
 
@@ -656,7 +673,7 @@ async function reviewSelfSignedCert() {
 				const key = pki.privateKeyFromPem(fs.readFileSync(keyPath));
 				return { key, keyPath };
 			} catch (err) {
-				logger.warn(`Failed to parse private key from ${keyPath}:`, err.message);
+				logger.warn?.(`Failed to parse private key from ${keyPath}:`, err.message);
 				return { key: null, keyPath };
 			}
 		};
@@ -686,7 +703,7 @@ async function reviewSelfSignedCert() {
 		const keysPath = path.join(envManager.getHdbBasePath(), hdbTerms.LICENSE_KEY_DIR_NAME);
 		let keyName = relative(keysPath, tlsPrivateKeyPath);
 		if (!privateKey) {
-			logger.warn(
+			logger.warn?.(
 				'Unable to parse the TLS key',
 				tlsPrivateKeyPath,
 				'A new key will be generated and used to create Certificate Authority'
@@ -717,7 +734,9 @@ async function reviewSelfSignedCert() {
 	const existingCert = await getReplicationCert();
 	if (!existingCert) {
 		const certName = getThisNodeName();
-		logger.notify(`A suitable replication certificate was not found, creating new self singed cert named: ${certName}`);
+		logger.notify?.(
+			`A suitable replication certificate was not found, creating new self singed cert named: ${certName}`
+		);
 
 		caAndKey = caAndKey ?? (await getCertAuthority());
 		const hdbCa = pki.certificateFromPem(caAndKey.ca.certificate);
@@ -913,10 +932,10 @@ function createTLSSelector(type, mtlsOptions) {
 										secureContexts.set(hostname, secureContext);
 									}
 								} else {
-									harperLogger.error('No hostname found for certificate at', tls.certificate);
+									logger.error?.('No hostname found for certificate at', tls.certificate);
 								}
 							}
-							harperLogger.trace(
+							logger.trace?.(
 								'Adding TLS',
 								secureContext.name,
 								'for',
@@ -943,7 +962,7 @@ function createTLSSelector(type, mtlsOptions) {
 								}
 							}
 						} catch (error) {
-							harperLogger.error('Error applying TLS for', cert.name, error);
+							logger.error?.('Error applying TLS for', cert.name, error);
 						}
 					}
 					server?.secureContextsListeners.forEach((listener) => listener());
@@ -962,12 +981,12 @@ function createTLSSelector(type, mtlsOptions) {
 	return SNICallback;
 	function SNICallback(servername, cb) {
 		// find the matching server name, substituting wildcards for each part of the domain to find matches
-		harperLogger.info('TLS requested for', servername || '(no SNI)');
+		logger.info?.('TLS requested for', servername || '(no SNI)');
 		let matchingName = servername;
 		while (true) {
 			let context = secureContexts.get(matchingName);
 			if (context) {
-				harperLogger.debug('Found certificate for', servername, context.certStart);
+				logger.debug?.('Found certificate for', servername, context.certStart);
 				// check if there is a updated context, which is used by replication to replace the context with TLS with
 				// full set of CAs
 				if (context.updatedContext) context = context.updatedContext;
@@ -979,11 +998,11 @@ function createTLSSelector(type, mtlsOptions) {
 				else matchingName = matchingName.slice(nextDot);
 			} else break;
 		}
-		if (servername) harperLogger.debug('No certificate found to match', servername, 'using the default certificate');
-		else harperLogger.debug('No SNI, using the default certificate', defaultContext?.name);
+		if (servername) logger.debug?.('No certificate found to match', servername, 'using the default certificate');
+		else logger.debug?.('No SNI, using the default certificate', defaultContext?.name);
 		// no matches, return the first/default one
 		let context = defaultContext;
-		if (!context) harperLogger.info('No default certificate found');
+		if (!context) logger.info?.('No default certificate found');
 		else if (context.updatedContext) context = context.updatedContext;
 		cb(null, context);
 	}
@@ -1073,7 +1092,7 @@ async function addCertificate(req) {
 		try {
 			certCn = getPrimaryHostName(x509Cert);
 		} catch (err) {
-			logger.error(err);
+			logger.error?.(err);
 		}
 
 		if (certCn == null) {
@@ -1143,7 +1162,7 @@ async function removeCertificate(req) {
 		);
 
 		if (matchingKeys.length === 1 && matchingKeys[0].name === name) {
-			logger.info('Removing private key named', private_key_name);
+			logger.info?.('Removing private key named', private_key_name);
 			await fs.remove(path.join(envManager.getHdbBasePath(), hdbTerms.LICENSE_KEY_DIR_NAME, private_key_name));
 		}
 	}
