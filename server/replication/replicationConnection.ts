@@ -1083,22 +1083,25 @@ export function replicateOverWS(ws, options, authorization) {
 									let queued_entries;
 									if (is_first && !closed) {
 										is_first = false;
-										const last_removed = getLastRemoved(audit_store);
+										const last_removed = undefined; //getLastRemoved(audit_store);
 										// note that last_removed may be undefined, in which case we want the comparison to go into this branch (hence !(<=))
 										if (
 											!(last_removed <= current_sequence_id) &&
 											(env.get(CONFIG_PARAMS.REPLICATION_COPYTABLESTOCATCHUP) ?? run_clone)
 										) {
-											// This means the audit log doesn't extend far enough back, so we need to replicate all the tables
+											// This means the audit log doesn't extend far enough back, so we need to replicate all the tables.
 											// This should only be done on a single node, we don't want full table replication from all the
-											// nodes that are connected to this one:
-											if (server.nodes[0]?.name === remote_node_name) {
-												logger.info?.('Replicating all tables to', remote_node_name);
+											// nodes that are connected to this one. If there are shards, we want to copy from a node that is
+											// in the same shard
+											const nodeToCopyFrom =
+												server.nodes.find((node) => node.shard == options.shard) ?? server.nodes[0];
+											if (nodeToCopyFrom?.name === remote_node_name) {
 												let last_sequence_id = current_sequence_id;
 												const node_id = getThisNodeId(audit_store);
 												for (const table_name in tables) {
 													if (!tableToTableEntry(table_name)) continue; // if we aren't replicating this table, skip it
 													const table = tables[table_name];
+													logger.warn?.(`Fully copying ${table_name} table to ${remote_node_name}`);
 													for (const entry of table.primaryStore.getRange({
 														snapshot: false,
 														// values: false, // TODO: eventually, we don't want to decode, we want to use fast binary transfer
@@ -1137,6 +1140,10 @@ export function replicateOverWS(ws, options, authorization) {
 													}
 												}
 												current_sequence_id = last_sequence_id;
+											} else {
+												// if we are doing a table copy, but not from this node, then we don't want to start at the
+												// beginning of the audit log for the other nodes, we just want to start from now
+												current_sequence_id = Date.now();
 											}
 										}
 									}

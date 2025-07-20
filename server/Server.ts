@@ -23,10 +23,14 @@ interface Server {
 	authenticateUser(username: string, password: string, request: Request): any;
 	operation(operation: any, context: any, authorize?: boolean): Promise<any>;
 	recordAnalytics(value: Value, metric: string, path?: string, method?: string, type?: string): void;
-	nodes: string[];
+	nodes: Node[];
 	shards: Map<number, string[]>;
 	hostname: string;
 	resources: Resources;
+}
+interface Node {
+	name: string;
+	shard: number;
 }
 interface ServerOptions {
 	port?: number;

@@ -180,7 +180,8 @@ export async function setNode(req: object) {
 	}
 	if (req.retain_authorization) node_record.authorization = req.authorization;
 	if (req.revoked_certificates) node_record.revoked_certificates = req.revoked_certificates;
-	if (req.shard !== undefined) node_record.shard = req.shard;
+	if (target_node_response.shard !== undefined) node_record.shard = target_node_response.shard;
+	else if (req.shard !== undefined) node_record.shard = req.shard;
 
 	if (node_record.replicates) {
 		const this_node = {
@@ -251,7 +252,10 @@ export async function addNodeBack(req) {
 			replicates: true,
 			subscriptions: null,
 		};
-		if (get(CONFIG_PARAMS.REPLICATION_SHARD) !== undefined) this_node.shard = get(CONFIG_PARAMS.REPLICATION_SHARD);
+		if (get(CONFIG_PARAMS.REPLICATION_SHARD) !== undefined) {
+			this_node.shard = get(CONFIG_PARAMS.REPLICATION_SHARD);
+			certs.shard = this_node.shard;
+		}
 
 		if (req.start_time) this_node.start_time = req.start_time;
 		if (req.authorization) this_node.authorization = req.authorization;
