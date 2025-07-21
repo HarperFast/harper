@@ -56,7 +56,7 @@ export const CONFIRMATION_STATUS_POSITION = 0;
 export const RECEIVED_VERSION_POSITION = 1;
 export const RECEIVED_TIME_POSITION = 2;
 export const SENDING_TIME_POSITION = 3;
-const run_clone = process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL');
+const leaderUrl: string = process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL');
 
 export const table_update_listeners = new Map();
 // This a map of the database name to the subscription object, for the subscriptions from our tables to the replication module
@@ -1083,68 +1083,53 @@ export function replicateOverWS(ws, options, authorization) {
 									let queued_entries;
 									if (is_first && !closed) {
 										is_first = false;
-										const last_removed = undefined; //getLastRemoved(audit_store);
-										// note that last_removed may be undefined, in which case we want the comparison to go into this branch (hence !(<=))
-										if (
-											!(last_removed <= current_sequence_id) &&
-											(env.get(CONFIG_PARAMS.REPLICATION_COPYTABLESTOCATCHUP) ?? run_clone)
-										) {
-											// This means the audit log doesn't extend far enough back, so we need to replicate all the tables.
-											// This should only be done on a single node, we don't want full table replication from all the
-											// nodes that are connected to this one. If there are shards, we want to copy from a node that is
-											// in the same shard
-											const nodeToCopyFrom =
-												server.nodes.find((node) => node.shard == options.shard) ?? server.nodes[0];
-											if (nodeToCopyFrom?.name === remote_node_name) {
-												let last_sequence_id = current_sequence_id;
-												const node_id = getThisNodeId(audit_store);
-												for (const table_name in tables) {
-													if (!tableToTableEntry(table_name)) continue; // if we aren't replicating this table, skip it
-													const table = tables[table_name];
-													logger.warn?.(`Fully copying ${table_name} table to ${remote_node_name}`);
-													for (const entry of table.primaryStore.getRange({
-														snapshot: false,
-														// values: false, // TODO: eventually, we don't want to decode, we want to use fast binary transfer
-													})) {
-														if (closed) return;
-														if (entry.localTime >= current_sequence_id) {
-															logger.trace?.(
-																connection_id,
-																'Copying record from',
-																database_name,
-																table_name,
-																entry.key,
-																entry.localTime
-															);
-															last_sequence_id = Math.max(entry.localTime, last_sequence_id);
-															queued_entries = true;
-															getSharedStatus()[SENDING_TIME_POSITION] = 1;
-															await sendAuditRecord(
-																{
-																	// make it look like an audit record
-																	recordId: entry.key,
-																	tableId: table.tableId,
-																	type: 'put',
-																	getValue() {
-																		return entry.value;
-																	},
-																	encoded: table.primaryStore.getBinary(entry.key), // directly transfer binary data
-																	version: entry.version,
-																	residencyId: entry.residencyId,
-																	nodeId: node_id,
-																	extendedType: entry.metadataFlags,
+										if (current_sequence_id === 0) {
+											// This means that the other node has specifically requested that we copy the entire tables.
+											// This should have been a request from a node that was performing a clone node
+											let last_sequence_id = current_sequence_id;
+											const node_id = getThisNodeId(audit_store);
+											for (const table_name in tables) {
+												if (!tableToTableEntry(table_name)) continue; // if we aren't replicating this table, skip it
+												const table = tables[table_name];
+												logger.warn?.(`Fully copying ${table_name} table to ${remote_node_name}`);
+												for (const entry of table.primaryStore.getRange({
+													snapshot: false,
+													// values: false, // TODO: eventually, we don't want to decode, we want to use fast binary transfer
+												})) {
+													if (closed) return;
+													if (entry.localTime >= current_sequence_id) {
+														logger.trace?.(
+															connection_id,
+															'Copying record from',
+															database_name,
+															table_name,
+															entry.key,
+															entry.localTime
+														);
+														last_sequence_id = Math.max(entry.localTime, last_sequence_id);
+														queued_entries = true;
+														getSharedStatus()[SENDING_TIME_POSITION] = 1;
+														await sendAuditRecord(
+															{
+																// make it look like an audit record
+																recordId: entry.key,
+																tableId: table.tableId,
+																type: 'put',
+																getValue() {
+																	return entry.value;
 																},
-																entry.localTime
-															);
-														}
+																encoded: table.primaryStore.getBinary(entry.key), // directly transfer binary data
+																version: entry.version,
+																residencyId: entry.residencyId,
+																nodeId: node_id,
+																extendedType: entry.metadataFlags,
+															},
+															entry.localTime
+														);
 													}
 												}
-												current_sequence_id = last_sequence_id;
-											} else {
-												// if we are doing a table copy, but not from this node, then we don't want to start at the
-												// beginning of the audit log for the other nodes, we just want to start from now
-												current_sequence_id = Date.now();
 											}
+											current_sequence_id = last_sequence_id;
 										}
 									}
 									for (const { key, value: audit_entry } of audit_store.getRange({
@@ -1520,6 +1505,15 @@ export function replicateOverWS(ws, options, authorization) {
 			if (last_txn_times.get(node_id) > start_time) {
 				start_time = last_txn_times.get(node_id);
 				logger.debug?.('Updating start time from more recent txn recorded', connected_node.name, start_time);
+			}
+			if (start_time === 1 && leaderUrl) {
+				// if we are starting from scratch and we have a leader URL, we directly ask for a copy from that database
+				if (new URL(leaderUrl).hostname === node.name) {
+					start_time = 0; // use this to indicate that we want to fully copy
+				} else {
+					// for all other nodes, start at right now (minus a minute for overlap)
+					start_time = Date.now() - 60000;
+				}
 			}
 			return {
 				name: node.name,
