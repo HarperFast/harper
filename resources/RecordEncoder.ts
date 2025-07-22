@@ -410,8 +410,6 @@ export function recordUpdater(store, tableId, auditStore) {
 				if (blobsWereEncoded) {
 					extendedType |= HAS_BLOBS;
 				}
-				if (options?.tableToTrack)
-					recordAction(lastValueEncoding?.length ?? 1, 'db-write', options?.tableToTrack, null);
 			}
 			if (audit) {
 				const username = options?.user?.username;
@@ -475,6 +473,18 @@ export function recordUpdater(store, tableId, auditStore) {
 					}
 				);
 			}
+			if (options?.tableToTrack) {
+				switch (type) {
+					case 'put':
+					case 'patch':
+					case 'message':
+						recordAction(lastValueEncoding?.length ?? 1, 'db-write', options?.tableToTrack, null);
+						break;
+					case 'publish':
+						recordAction(lastValueEncoding?.length ?? 1, 'db-publish', options?.tableToTrack, null);
+				}
+			}
+
 			return result;
 		} catch (error) {
 			error.message += ' id: ' + id + ' options: ' + putOptions;

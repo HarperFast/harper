@@ -179,6 +179,34 @@ describe('CRUD operations with the Resource API', () => {
 			await CRUDTable.delete(target);
 			assert.equal(await CRUDTable.get('two'), undefined);
 		});
+		it('publishes and subscribes', async function () {
+			const messages = [];
+			const subscription = await CRUDTable.subscribe('pubsub');
+			subscription.on('data', (message) => {
+				messages.push(message);
+			});
+			await CRUDTable.publish('pubsub', {
+				id: 'pubsub',
+				name: 'A published message',
+			});
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			assert.equal(messages.length, 1);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const analyticsResults = await databases.system.hdb_raw_analytics.search({
+				conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],
+			});
+			let publishRecorded, messageRecorded;
+			for await (let { metrics } of analyticsResults) {
+				if (metrics.some(({ metric, path }) => metric === 'db-publish' && path === 'CRUDTable')) {
+					publishRecorded = true;
+				}
+				if (metrics.some(({ metric, path }) => metric === 'db-publish' && path === 'CRUDTable')) {
+					publishRecorded = true;
+				}
+			}
+			assert(publishRecorded, 'db-publish was recorded in analytics');
+			assert(messageRecorded, 'db-message was recorded in analytics');
+		});
 		it('create with auto-id', async function () {
 			let created = await CRUDTable.create({ relatedId: 1, name: 'constructed with auto-id' });
 			let retrieved = await CRUDTable.get(created.id);
