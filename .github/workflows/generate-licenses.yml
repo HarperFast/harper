@@ -1,0 +1,44 @@
+name: Generate dependency license files
+on:
+  workflow_call:
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: lts/*
+          check-latest: true
+      - name: Install Harper Node deps
+        run: npm install
+      - name: Get latest license files
+        run: .github/scripts/get-license-files.sh
+      - name: Resolve dependency licenses
+        continue-on-error: true
+        uses: apache/skywalking-eyes/dependency@v0.7.0
+        with:
+          mode: resolve
+          flags: '--output=utility/Docker/licenses/dependencies'
+      - name: Generate index.html
+        run: |
+          pushd utility/Docker/licenses
+          echo -e "<html>\n<head>\n<title>Harper Open Source Licenses & Notices</title>\n</head>\n<body>\n<h1>Harper Open Source Licenses & Notices</h1>\n</body>\n</html>\n\n" > index.html
+          echo -e "<h2>Harper Core</h2>\n\n" >> index.html
+          for f in *; do
+            if [[ -f $f && $f != "index.html" ]]; then
+              echo -e "<a href='$f'>$f</a><br /><br />\n" >> index.html
+            fi
+          done
+          echo -e "\n<h2>Dependencies</h2>\n\n" >> index.html
+          for f in dependencies/*; do
+            echo -e "<a href='$f'>$(basename $f)</a><br /><br />\n" >> index.html
+          done
+          popd
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: licenses
+          path: utility/Docker/licenses/
+          retention-days: 1

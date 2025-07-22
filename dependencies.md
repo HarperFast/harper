@@ -113,13 +113,22 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Eventual removal: Yes, once node crypto adds native support for argon2
 
 ## hdd-space
+
 - Need for usage: Used to check for sufficient disk space on Node v16. Runs `df`. Should _only_ run on Node v16.
 - Size: 387KB
 - Security: No known issues.
-- Eventual removal: As soon as we can drop Node v16 support, we should *immediately* remove this dependency. It is not needed on Node v18+.
+- Eventual removal: As soon as we can drop Node v16 support, we should _immediately_ remove this dependency. It is not needed on Node v18+.
 
 ## chokidar
+
 - Need for usage: Reliable file watching. This is the industry standard file watcher and deals with the many edge cases that node.js's watch (file replacement and changing inode for example) and watchFile (nothing but a terrible poller on a timer) don't handle well.
 - 153KB
 - Security: No known issues.
 - Eventual removal: This is a very well maintained package and is the industry standard for file watching. We could remove with very careful usage of `watch`, but would probably require a lot of testing and edge case handling.
+
+## send
+
+- Need for usage: Used to serve static files and automatically handle range requests, headers, and other edge cases.
+- Size: 49.6kB
+- Security: No known issues.
+- Eventual removal: This is a very well maintained package and is the industry standard for serving static files. We could remove with very careful usage of `fs` and `http`, but would probably require a lot of testing and edge case handling.

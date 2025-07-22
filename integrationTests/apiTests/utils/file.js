@@ -8,8 +8,11 @@ export async function verifyFilesDoNotExist(folderPath) {
 		await exec(
 			`docker exec ${process.env.DOCKER_CONTAINER_ID} ls -al /home/harperdb/hdb/blobs/blob/0/0/`,
 			(error, stdout, stderr) => {
-				if (stderr.length > 0){
-					assert.ok(stderr.includes(`cannot access '/home/harperdb/hdb/blobs/blob/0/0/': No such file or directory`), 'Docker container - .../blobs/blob/0/0/ folder should not exist');
+				if (stderr.length > 0) {
+					assert.ok(
+						stderr.includes(`cannot access '/home/harperdb/hdb/blobs/blob/0/0/': No such file or directory`),
+						'Docker container - .../blobs/blob/0/0/ folder should not exist'
+					);
 				} else {
 					const outputLineItems = stdout.split('..');
 					assert.equal(outputLineItems.length, 2);

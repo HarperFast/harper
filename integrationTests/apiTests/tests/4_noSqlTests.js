@@ -5,14 +5,11 @@ import { setTimeout } from 'node:timers/promises';
 import { req } from '../utils/request.js';
 
 describe('4. NoSQL Tests', () => {
-
-
 	//NoSQL Tests Folder
-
 
 	//Invalid Attribute Check
 
-	it('insert invalid attribute name - single row',  () => {
+	it('insert invalid attribute name - single row', () => {
 		return req()
 			.send({
 				operation: 'insert',
@@ -24,7 +21,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(400);
 	});
 
-	it('update single row w/ invalid attribute name',  () => {
+	it('update single row w/ invalid attribute name', () => {
 		return req()
 			.send({
 				operation: 'update',
@@ -36,7 +33,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(400);
 	});
 
-	it('insert all invalid attribute names - multiple rows',  () => {
+	it('insert all invalid attribute names - multiple rows', () => {
 		return req()
 			.send({
 				operation: 'insert',
@@ -91,7 +88,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(400);
 	});
 
-	it('update multiple rows with invalid attribute',  () => {
+	it('update multiple rows with invalid attribute', () => {
 		return req()
 			.send({
 				operation: 'update',
@@ -109,7 +106,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(400);
 	});
 
-	it('upsert multiple rows with invalid attribute key',  () => {
+	it('upsert multiple rows with invalid attribute key', () => {
 		return req()
 			.send({
 				operation: 'upsert',
@@ -127,7 +124,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(400);
 	});
 
-	it('insert some invalid attribute names - multiple rows',  () => {
+	it('insert some invalid attribute names - multiple rows', () => {
 		return req()
 			.send({
 				operation: 'insert',
@@ -182,10 +179,9 @@ describe('4. NoSQL Tests', () => {
 			.expect(400);
 	});
 
-
 	//Search Response Data Type Check
 
-	it('NoSQL search by hash no result',  () => {
+	it('NoSQL search by hash no result', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -199,7 +195,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by hash one result',  () => {
+	it('NoSQL search by hash one result', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -214,7 +210,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by hash multiple results',  () => {
+	it('NoSQL search by hash multiple results', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -232,7 +228,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by value no result',  () => {
+	it('NoSQL search by value no result', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -247,7 +243,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by value one result',  () => {
+	it('NoSQL search by value one result', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -263,7 +259,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by value multiple results',  () => {
+	it('NoSQL search by value multiple results', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -282,10 +278,9 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-
 	//Test desc / offset / limit
 
-	it('NoSQL search by value limit 20',  () => {
+	it('NoSQL search by value limit 20', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -309,7 +304,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by value offset 20',  () => {
+	it('NoSQL search by value offset 20', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -385,7 +380,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by value limit 20 offset 20',  () => {
+	it('NoSQL search by value limit 20 offset 20', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -410,7 +405,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by value reverse',  () => {
+	it('NoSQL search by value reverse', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -488,7 +483,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by value reverse offset 20',  () => {
+	it('NoSQL search by value reverse offset 20', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -565,7 +560,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by value reverse limit 20',  () => {
+	it('NoSQL search by value reverse limit 20', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -590,7 +585,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by value reverse offset 20 limit 20',  () => {
+	it('NoSQL search by value reverse offset 20 limit 20', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -618,7 +613,7 @@ describe('4. NoSQL Tests', () => {
 
 	//NoSQL Tests Main Folder
 
-	it('update NoSQL employee',  () => {
+	it('update NoSQL employee', () => {
 		return req()
 			.send({
 				operation: 'update',
@@ -630,7 +625,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update NoSQL employee confirm',  () => {
+	it('update NoSQL employee confirm', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -645,7 +640,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update NoSQL call.aggr set data to dot & double dot',  () => {
+	it('update NoSQL call.aggr set data to dot & double dot', () => {
 		return req()
 			.send({
 				operation: 'update',
@@ -670,7 +665,7 @@ describe('4. NoSQL Tests', () => {
 		await setTimeout(200);
 	});
 
-	it('Insert with duplicate records to make sure both are not added',  () => {
+	it('Insert with duplicate records to make sure both are not added', () => {
 		return req()
 			.send({
 				operation: 'insert',
@@ -695,7 +690,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Insert with no hash',  () => {
+	it('Insert with no hash', () => {
 		return req()
 			.send({
 				operation: 'insert',
@@ -708,7 +703,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Insert with empty hash',  () => {
+	it('Insert with empty hash', () => {
 		return req()
 			.send({
 				operation: 'insert',
@@ -721,7 +716,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by hash',  () => {
+	it('NoSQL search by hash', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -736,7 +731,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by hash - check dot & double dot',  () => {
+	it('NoSQL search by hash - check dot & double dot', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -750,7 +745,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by hash no schema',  () => {
+	it('NoSQL search by hash no schema', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -763,7 +758,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(404);
 	});
 
-	it('NoSQL search by hash no table',  () => {
+	it('NoSQL search by hash no table', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -776,7 +771,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(404);
 	});
 
-	it('NoSQL search by hash hash_value bad data type',  () => {
+	it('NoSQL search by hash hash_value bad data type', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -789,7 +784,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(500);
 	});
 
-	it('NoSQL search by hash get_attributes bad data type',  () => {
+	it('NoSQL search by hash get_attributes bad data type', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -802,7 +797,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(500);
 	});
 
-	it('update NoSQL employee with falsey attributes',  () => {
+	it('update NoSQL employee with falsey attributes', () => {
 		return req()
 			.send({
 				operation: 'update',
@@ -811,7 +806,9 @@ describe('4. NoSQL Tests', () => {
 				records: [{ [testData.emps_id]: 2, address: 0, hireDate: null, notes: false }],
 			})
 			.expect((r) =>
-				assert.equal(r.body.message, 'updated 1 of 1 records',
+				assert.equal(
+					r.body.message,
+					'updated 1 of 1 records',
 					'Expected response message to eql "updated 1 of 1 records"'
 				)
 			)
@@ -819,7 +816,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by hash to confirm falsey update',  () => {
+	it('NoSQL search by hash to confirm falsey update', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -837,7 +834,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update NoSQL one employee record with no hash attribute',  () => {
+	it('update NoSQL one employee record with no hash attribute', () => {
 		return req()
 			.send({
 				operation: 'update',
@@ -845,11 +842,17 @@ describe('4. NoSQL Tests', () => {
 				table: `${testData.emps_tb}`,
 				records: [{ address: '3000 Dog Place' }],
 			})
-			.expect((r) => assert.equal(r.body.error, 'a valid hash attribute must be provided with update record, check log for more info', r.text))
+			.expect((r) =>
+				assert.equal(
+					r.body.error,
+					'a valid hash attribute must be provided with update record, check log for more info',
+					r.text
+				)
+			)
 			.expect(400);
 	});
 
-	it('update NoSQL one employee record with empty hash attribute',  () => {
+	it('update NoSQL one employee record with empty hash attribute', () => {
 		return req()
 			.send({
 				operation: 'update',
@@ -857,11 +860,17 @@ describe('4. NoSQL Tests', () => {
 				table: `${testData.emps_tb}`,
 				records: [{ [testData.emps_id]: '', address: '123 North Blvd', notes: 'This guy is the real deal' }],
 			})
-			.expect((r) => assert.equal(r.body.error, 'a valid hash attribute must be provided with update record, check log for more info', r.text))
+			.expect((r) =>
+				assert.equal(
+					r.body.error,
+					'a valid hash attribute must be provided with update record, check log for more info',
+					r.text
+				)
+			)
 			.expect(400);
 	});
 
-	it('update NoSQL multiple employee records with no hash attribute',  () => {
+	it('update NoSQL multiple employee records with no hash attribute', () => {
 		return req()
 			.send({
 				operation: 'update',
@@ -881,11 +890,17 @@ describe('4. NoSQL Tests', () => {
 					},
 				],
 			})
-			.expect((r) => assert.equal(r.body.error, 'a valid hash attribute must be provided with update record, check log for more info', r.text))
+			.expect((r) =>
+				assert.equal(
+					r.body.error,
+					'a valid hash attribute must be provided with update record, check log for more info',
+					r.text
+				)
+			)
 			.expect(400);
 	});
 
-	it('update NoSQL employee with valid nonexistent hash',  () => {
+	it('update NoSQL employee with valid nonexistent hash', () => {
 		return req()
 			.send({
 				operation: 'update',
@@ -899,7 +914,9 @@ describe('4. NoSQL Tests', () => {
 					assert.deepEqual(r.body.update_hashes, [], r.text);
 					assert.equal(r.body.skipped_hashes[0], 'There is no way this exists', r.text);
 				} else if (r.body.message === 'updated 1 of 1 records') {
-					assert.equal(r.body.message, 'updated 1 of 1 records',
+					assert.equal(
+						r.body.message,
+						'updated 1 of 1 records',
 						'Expected response message to eql "updated 1 of 1 records"'
 					);
 					assert.equal(r.body.update_hashes[0], 'There is no way this exists', r.text);
@@ -909,7 +926,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by value - * at end',  () => {
+	it('NoSQL search by value - * at end', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -940,7 +957,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by value - * at start',  () => {
+	it('NoSQL search by value - * at start', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -972,7 +989,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by value - * at start and end',  () => {
+	it('NoSQL search by value - * at start and end', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -997,7 +1014,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by value - * as search_value',  () => {
+	it('NoSQL search by value - * as search_value', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -1021,7 +1038,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by value - *** at start',  () => {
+	it('NoSQL search by value - *** at start', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -1053,7 +1070,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by hash on leading_zero, value = 0',  () => {
+	it('NoSQL search by hash on leading_zero, value = 0', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -1073,7 +1090,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by hash on leading_zero, values "011","00011"',  () => {
+	it('NoSQL search by hash on leading_zero, values "011","00011"', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -1097,7 +1114,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by value leading_zero - value = 0',  () => {
+	it('NoSQL search by value leading_zero - value = 0', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -1116,7 +1133,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by value leading_zero - value = "011"',  () => {
+	it('NoSQL search by value leading_zero - value = "011"', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -1135,7 +1152,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('NoSQL search by value leading_zero - value = "0*"',  () => {
+	it('NoSQL search by value leading_zero - value = "0*"', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -1160,7 +1177,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Upsert into products 1 new record & 2 that exist',  () => {
+	it('Upsert into products 1 new record & 2 that exist', () => {
 		return req()
 			.send({
 				operation: 'upsert',
@@ -1214,7 +1231,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Confirm upserted records exist and are updated',  () => {
+	it('Confirm upserted records exist and are updated', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -1234,7 +1251,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Upsert into products 3 new records w/o hash vals',  () => {
+	it('Upsert into products 3 new records w/o hash vals', () => {
 		return req()
 			.send({
 				operation: 'upsert',
@@ -1284,7 +1301,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Remove added record from products',  () => {
+	it('Remove added record from products', () => {
 		return req()
 			.send({ operation: 'delete', schema: `${testData.schema}`, table: `${testData.prod_tb}`, hash_values: [100] })
 			.expect((r) => {
@@ -1297,7 +1314,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Update products 1 existing record & one that does not exist',  () => {
+	it('Update products 1 existing record & one that does not exist', () => {
 		return req()
 			.send({
 				operation: 'update',
@@ -1329,7 +1346,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Restore Product record',  () => {
+	it('Restore Product record', () => {
 		return req()
 			.send({
 				operation: 'update',
@@ -1338,7 +1355,9 @@ describe('4. NoSQL Tests', () => {
 				records: [{ productid: 1, discontinued: 'False' }],
 			})
 			.expect((r) =>
-				assert.equal(r.body.message, 'updated 1 of 1 records',
+				assert.equal(
+					r.body.message,
+					'updated 1 of 1 records',
 					'Expected response message to eql "updated 1 of 1 records"'
 				)
 			)
@@ -1351,7 +1370,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('attempt to update __createdtime__',  () => {
+	it('attempt to update __createdtime__', () => {
 		return req()
 			.send({
 				operation: 'update',
@@ -1363,7 +1382,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('confirm __createdtime__ did not change',  () => {
+	it('confirm __createdtime__ did not change', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -1378,7 +1397,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('insert record with dog_name =  single space value & empty string',  () => {
+	it('insert record with dog_name =  single space value & empty string', () => {
 		return req()
 			.send({
 				operation: 'insert',
@@ -1394,7 +1413,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by value dog_name = single space string',  () => {
+	it('search by value dog_name = single space string', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -1408,7 +1427,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by value dog_name = empty string',  () => {
+	it('search by value dog_name = empty string', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -1422,14 +1441,14 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Delete dev.dog records previously created',  () => {
+	it('Delete dev.dog records previously created', () => {
 		return req()
 			.send({ operation: 'delete', schema: 'dev', table: 'dog', hash_values: [1111, 2222] })
 			.expect((r) => assert.deepEqual(r.body.deleted_hashes, [1111, 2222], r.text))
 			.expect(200);
 	});
 
-	it('Search by value 123.4',  () => {
+	it('Search by value 123.4', () => {
 		return req()
 			.send({
 				operation: 'search_by_value',
@@ -1443,7 +1462,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Search by hash 123.4',  () => {
+	it('Search by hash 123.4', () => {
 		return req()
 			.send({
 				operation: 'search_by_hash',
@@ -1456,14 +1475,14 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Delete 123.4 record',  () => {
+	it('Delete 123.4 record', () => {
 		return req()
 			.send({ operation: 'delete', schema: '123', table: '4', hash_values: [987654321] })
 			.expect((r) => assert.equal(r.body.message, '1 of 1 record successfully deleted', r.text))
 			.expect(200);
 	});
 
-	it('search by conditions - equals',  () => {
+	it('search by conditions - equals', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1481,7 +1500,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - contains',  () => {
+	it('search by conditions - contains', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1499,7 +1518,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - starts_with',  () => {
+	it('search by conditions - starts_with', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1517,7 +1536,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - ends_with',  () => {
+	it('search by conditions - ends_with', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1535,7 +1554,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - greater_than',  () => {
+	it('search by conditions - greater_than', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1553,7 +1572,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - greater_than_equal',  () => {
+	it('search by conditions - greater_than_equal', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1571,7 +1590,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - less_than',  () => {
+	it('search by conditions - less_than', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1589,7 +1608,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - less_than_equal',  () => {
+	it('search by conditions - less_than_equal', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1607,7 +1626,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - between',  () => {
+	it('search by conditions - between', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1625,7 +1644,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - between using same value',  () => {
+	it('search by conditions - between using same value', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1643,7 +1662,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - between w/ alpha',  () => {
+	it('search by conditions - between w/ alpha', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1661,7 +1680,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - equals & equals',  () => {
+	it('search by conditions - equals & equals', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1686,7 +1705,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - equals || equals',  () => {
+	it('search by conditions - equals || equals', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1716,7 +1735,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - equals & contains',  () => {
+	it('search by conditions - equals & contains', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1742,7 +1761,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - equals & ends_with',  () => {
+	it('search by conditions - equals & ends_with', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1768,7 +1787,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - greater_than_equal & starts_with',  () => {
+	it('search by conditions - greater_than_equal & starts_with', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1794,7 +1813,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - less_than_equal ||  greater_than',  () => {
+	it('search by conditions - less_than_equal ||  greater_than', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1820,7 +1839,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - contains || contains',  () => {
+	it('search by conditions - contains || contains', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1846,7 +1865,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - contains & between',  () => {
+	it('search by conditions - contains & between', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1874,7 +1893,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - starts_with "AND" between',  () => {
+	it('search by conditions - starts_with "AND" between', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1904,7 +1923,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - starts_with & between w/ offset',  () => {
+	it('search by conditions - starts_with & between w/ offset', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1934,7 +1953,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - starts_with & between limit',  () => {
+	it('search by conditions - starts_with & between limit', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1964,7 +1983,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - starts_with & between offset, limit',  () => {
+	it('search by conditions - starts_with & between offset, limit', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -1995,7 +2014,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - starts_with condition, offset, limit of 2',  () => {
+	it('search by conditions - starts_with condition, offset, limit of 2', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -2017,7 +2036,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - starts_with condition, offset, limit of 10',  () => {
+	it('search by conditions - starts_with condition, offset, limit of 10', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',
@@ -2039,7 +2058,7 @@ describe('4. NoSQL Tests', () => {
 			.expect(200);
 	});
 
-	it('search by conditions - ends_with condition, offset, limit of 3',  () => {
+	it('search by conditions - ends_with condition, offset, limit of 3', () => {
 		return req()
 			.send({
 				operation: 'search_by_conditions',

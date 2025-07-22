@@ -14,11 +14,8 @@ import { createBlobCustom } from '../utils/blob.js';
 import { exec } from 'node:child_process';
 
 describe('23. Blob', () => {
-
-
 	const blobId = randomInt(1000000);
 	let blobsPath;
-
 
 	it('Add component for blobs', () => {
 		return req()
@@ -168,11 +165,17 @@ describe('23. Blob', () => {
 		await setTimeout(5000);
 
 		if (process.env.DOCKER_CONTAINER_ID) {
-			await exec(`docker exec ${process.env.DOCKER_CONTAINER_ID} ls -al /home/harperdb/hdb/blobs/blob/0/0/ | tail -n 1`, (error, stdout, stderr) => {
-				console.log('stdout: ' + stdout);
-				const outputLineItems = stdout.split(' ');
-				assert.ok(outputLineItems[4] >= 80000 && outputLineItems[4] <= 120000, 'blob file size expected to be between 80KB and 120KB');
-			});
+			await exec(
+				`docker exec ${process.env.DOCKER_CONTAINER_ID} ls -al /home/harperdb/hdb/blobs/blob/0/0/ | tail -n 1`,
+				(error, stdout, stderr) => {
+					console.log('stdout: ' + stdout);
+					const outputLineItems = stdout.split(' ');
+					assert.ok(
+						outputLineItems[4] >= 80000 && outputLineItems[4] <= 120000,
+						'blob file size expected to be between 80KB and 120KB'
+					);
+				}
+			);
 			await setTimeout(9000);
 		} else {
 			blobsPath = path.resolve(path.join(response.body.rootPath, testData.blobsPath));
@@ -218,9 +221,6 @@ describe('23. Blob', () => {
 		await verifyFilesDoNotExist(blobsPath);
 	});
 
-
-
-
 	it('Create another blob', async () => {
 		await setTimeout(5000);
 		const id = randomInt(1000000);
@@ -236,10 +236,6 @@ describe('23. Blob', () => {
 		await verifyFilesDoNotExist(blobsPath);
 	});
 
-
-
-
-
 	it('Restart Service: http workers and wait', () => {
 		return restartServiceHttpWorkersWithTimeout(testData.restartHttpWorkersTimeout);
 	});
@@ -251,7 +247,7 @@ describe('23. Blob', () => {
 		await setTimeout(5000);
 	});
 
-	it('Drop schema \'blob\'', () => {
+	it("Drop schema 'blob'", () => {
 		return dropSchema('blob', true);
 	});
 
@@ -259,5 +255,4 @@ describe('23. Blob', () => {
 		await setTimeout(21000);
 		await verifyFilesDoNotExist(blobsPath);
 	});
-
 });

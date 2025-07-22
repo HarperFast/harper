@@ -6,10 +6,7 @@ import { setTimeout } from 'node:timers/promises';
 import { req } from '../utils/request.js';
 
 describe('9. Transactions', () => {
-
-
 	//Transactions Folder
-
 
 	//Delete Audit Logs Before Tests
 
@@ -52,7 +49,7 @@ describe('9. Transactions', () => {
 		await setTimeout(1000);
 	});
 
-	it('Insert additional new records',  () => {
+	it('Insert additional new records', () => {
 		testData.insert_timestamp = new Date().getTime();
 		return req()
 			.send({
@@ -62,7 +59,7 @@ describe('9. Transactions', () => {
 				records: [
 					{ id: 11, address: '24 South st' },
 					{ id: 12, address: '6 Truck Lane' },
-					{ id: 13, address: '19 Broadway'},
+					{ id: 13, address: '19 Broadway' },
 				],
 			})
 			.expect((r) => assert.equal(r.body.inserted_hashes.length, 3, r.text))
@@ -83,7 +80,6 @@ describe('9. Transactions', () => {
 		const jobResponse = await checkJob(id, 15);
 		assert.ok(jobResponse.body[0].message.includes('Successfully completed'), jobResponse.text);
 	});
-
 
 	//Read Transaction Logs
 
@@ -171,7 +167,7 @@ describe('9. Transactions', () => {
 		await setTimeout(100);
 	});
 
-	it('Delete some records',  async() => {
+	it('Delete some records', async () => {
 		await req()
 			.send({ operation: 'delete', schema: 'test_delete_before', table: 'test_read', hash_values: [3, 1] })
 			.expect((r) => assert.equal(r.body.deleted_hashes.length, 2, r.text))
@@ -192,7 +188,7 @@ describe('9. Transactions', () => {
 		await setTimeout(100);
 	});
 
-	it('Upsert records',  async() => {
+	it('Upsert records', async () => {
 		await req()
 			.send({
 				operation: 'upsert',
@@ -306,9 +302,7 @@ describe('9. Transactions', () => {
 	});
 
 	it('drop test_read table', async () => {
-		await req()
-			.send({ operation: 'drop_table', schema: 'test_delete_before', table: 'test_read' })
-			.expect(200);
+		await req().send({ operation: 'drop_table', schema: 'test_delete_before', table: 'test_read' }).expect(200);
 		await setTimeout(500);
 	});
 });

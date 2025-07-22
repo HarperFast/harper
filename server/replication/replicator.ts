@@ -54,8 +54,11 @@ export const replicationCertificateAuthorities =
  * @param options
  */
 export function start(options) {
-	if (!options.port) options.port = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
-	if (!options.securePort) options.securePort = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT);
+	if (!options.port && !options.securePort) {
+		// if no replication ports are specified at all, default to using operations API ports
+		options.port = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT);
+		options.securePort = env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_SECUREPORT);
+	}
 	if (!getThisNodeName()) throw new Error('Can not load replication without a url (see replication.url in the config)');
 	const routeByHostname = new Map();
 	for (const node of iterateRoutes(options)) {
@@ -63,7 +66,7 @@ export function start(options) {
 	}
 	assignReplicationSource(options);
 	options = {
-		// We generally expect this to use the operations API ports (9925)
+		// We generally expect this to use the same settings as the operations API port
 		mtls: true, // make sure that we request a certificate from the client
 		isOperationsServer: true, // we default to using the operations server ports
 		maxPayload: 10 * 1024 * 1024 * 1024, // 10 GB max payload, primarily to support replicating applications
@@ -147,6 +150,7 @@ export function start(options) {
 	}, options);
 
 	// we need to keep track of the servers so we can update the secure contexts
+	const contextUpdaters: (() => void)[] = [];
 	// @ts-expect-error
 	for (const wsServer of wsServers) {
 		if (wsServer.secureContexts) {
@@ -174,15 +178,19 @@ export function start(options) {
 			};
 			wsServer.secureContextsListeners.push(updateContexts);
 			// we need to stay up-to-date with any CAs that have been replicated across the cluster
-			monitorNodeCAs(updateContexts);
+			contextUpdaters.push(updateContexts);
 			if (env.get(CONFIG_PARAMS.REPLICATION_ENABLEROOTCAS) !== false) {
 				// if we are using root CAs, then we need to at least update the contexts for this even if none of the nodes have (explicit) CAs
 				updateContexts();
 			}
 		}
 	}
+	// we always need to monitor for node changes, because this also does the essential step of setting up the server.shards
+	monitorNodeCAs(() => {
+		for (const updateContexts of contextUpdaters) updateContexts();
+	});
 }
-export function monitorNodeCAs(listener) {
+export function monitorNodeCAs(listener: () => void) {
 	let lastCaCount = 0;
 	subscribeToNodeUpdates((node) => {
 		if (node?.ca) {

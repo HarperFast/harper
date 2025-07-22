@@ -73,7 +73,7 @@ export function getReplicationSharedStatus(
 		)
 	);
 }
-export function subscribeToNodeUpdates(listener) {
+export function subscribeToNodeUpdates(listener: (node: any, id: string) => void) {
 	getHDBNodeTable()
 		.subscribe({})
 		.then(async (events) => {
@@ -232,7 +232,6 @@ export function* iterateRoutes(options: { routes: (Route | any)[] }) {
 			routes: route.routes,
 			startTime: route.startTime,
 			revoked_certificates: route.revokedCertificates,
-			shard: route.shard,
 		};
 	}
 }

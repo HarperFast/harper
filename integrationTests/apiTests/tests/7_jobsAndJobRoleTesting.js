@@ -1,55 +1,44 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
-import {
-	dateTomorrow,
-	dateYesterday,
-	testData,
-	getCsvPath,
-	headersTestUser,
-} from '../config/envConfig.js';
+import { dateTomorrow, dateYesterday, testData, getCsvPath, headersTestUser } from '../config/envConfig.js';
 import { checkJob, checkJobCompleted, getJobId } from '../utils/jobs.js';
 import { setTimeout } from 'node:timers/promises';
 import { req, reqAsNonSU } from '../utils/request.js';
 
 describe('7. Jobs & Job Role Testing', () => {
-
-
 	//Jobs & Job Role Testing Folder
-
 
 	//S3 Operations
 
-	it('Create schema for S3 test',  () => {
-		return req()
-			.send({ operation: 'create_schema', schema: 'S3_DATA' })
-			.expect(200);
+	it('Create schema for S3 test', () => {
+		return req().send({ operation: 'create_schema', schema: 'S3_DATA' }).expect(200);
 	});
 
-	it('Create dogs table for S3 test',  () => {
+	it('Create dogs table for S3 test', () => {
 		return req()
 			.send({ operation: 'create_table', schema: 'S3_DATA', table: 'dogs', hash_attribute: 'id' })
 			.expect(200);
 	});
 
-	it('Create breed table for S3 test',  () => {
+	it('Create breed table for S3 test', () => {
 		return req()
 			.send({ operation: 'create_table', schema: 'S3_DATA', table: 'breed', hash_attribute: 'id' })
 			.expect(200);
 	});
 
-	it('Create owners table for S3 test',  () => {
+	it('Create owners table for S3 test', () => {
 		return req()
 			.send({ operation: 'create_table', schema: 'S3_DATA', table: 'owners', hash_attribute: 'id' })
 			.expect(200);
 	});
 
-	it('Create sensor table for S3 test',  () => {
+	it('Create sensor table for S3 test', () => {
 		return req()
 			.send({ operation: 'create_table', schema: 'S3_DATA', table: 'sensor', hash_attribute: 'id' })
 			.expect(200);
 	});
 
-	it('Import dogs.xlsx from S3 - expect error',  () => {
+	it('Import dogs.xlsx from S3 - expect error', () => {
 		return req()
 			.send({
 				operation: 'import_from_s3',
@@ -64,7 +53,13 @@ describe('7. Jobs & Job Role Testing', () => {
 					region: 'us-east-2',
 				},
 			})
-			.expect((r) => assert.equal(r.body.error, "S3 key must include one of the following valid file extensions - '.csv', '.json'", r.text))
+			.expect((r) =>
+				assert.equal(
+					r.body.error,
+					"S3 key must include one of the following valid file extensions - '.csv', '.json'",
+					r.text
+				)
+			)
 			.expect(400);
 	});
 
@@ -237,7 +232,7 @@ describe('7. Jobs & Job Role Testing', () => {
 		return checkJobCompleted(id, '', 'successfully loaded 20020 of 20020 records');
 	});
 
-	it('Check rows from S3 upsert were updated',  () => {
+	it('Check rows from S3 upsert were updated', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM S3_DATA.sensor' })
 			.expect((r) => {
@@ -347,19 +342,19 @@ describe('7. Jobs & Job Role Testing', () => {
 		assert.equal(jobResponse.body[0].type, 'export_local', jobResponse.text);
 	});
 
-	it('Create S3 test table',  () => {
+	it('Create S3 test table', () => {
 		return req()
 			.send({ operation: 'create_table', schema: 'S3_DATA', table: 's3_test', hash_attribute: 'id' })
 			.expect(200);
 	});
 
-	it('Create S3 CSV import test table',  () => {
+	it('Create S3 CSV import test table', () => {
 		return req()
 			.send({ operation: 'create_table', schema: 'S3_DATA', table: 's3_test_csv_import', hash_attribute: 'id' })
 			.expect(200);
 	});
 
-	it('Create S3 JSON import test table',  () => {
+	it('Create S3 JSON import test table', () => {
 		return req()
 			.send({
 				operation: 'create_table',
@@ -370,7 +365,7 @@ describe('7. Jobs & Job Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Insert records S3 test table',  () => {
+	it('Insert records S3 test table', () => {
 		return req()
 			.send({
 				operation: 'insert',
@@ -444,7 +439,7 @@ describe('7. Jobs & Job Role Testing', () => {
 		assert.ok(jobResponse.body[0].message.includes('successfully loaded'), jobResponse.text);
 	});
 
-	it('Confirm CSV records import',  () => {
+	it('Confirm CSV records import', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -599,15 +594,13 @@ describe('7. Jobs & Job Role Testing', () => {
 		assert.deepEqual(response.body, expected_res, response.text);
 	});
 
-	it('Drop S3 schema',  () => {
-		return req()
-			.send({ operation: 'drop_schema', schema: 'S3_DATA' })
-			.expect(200);
+	it('Drop S3 schema', () => {
+		return req().send({ operation: 'drop_schema', schema: 'S3_DATA' }).expect(200);
 	});
 
 	//Jobs & Job Role Testing Main Folder
 
-	it('Jobs - Add non SU role',  () => {
+	it('Jobs - Add non SU role', () => {
 		return req()
 			.send({
 				operation: 'add_role',
@@ -693,7 +686,7 @@ describe('7. Jobs & Job Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Jobs - Add User with new Role',  () => {
+	it('Jobs - Add User with new Role', () => {
 		return req()
 			.send({
 				operation: 'add_user',
@@ -732,20 +725,28 @@ describe('7. Jobs & Job Role Testing', () => {
 		await setTimeout(200);
 	});
 
-	it('Jobs - Validate 1 entry in runners table',  () => {
+	it('Jobs - Validate 1 entry in runners table', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'select * from test_job.runner' })
 			.expect((r) => assert.equal(r.body.length, 1, r.text))
 			.expect(200);
 	});
 
-	it('Jobs - Test Remove Files Before with test_user',  () => {
+	it('Jobs - Test Remove Files Before with test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({ operation: 'delete_files_before', date: '2018-06-14', schema: 'dog' })
 			.expect((r) => {
-				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				);
 				assert.equal(r.body.unauthorized_access.length, 1, r.text);
-				assert.equal(r.body.unauthorized_access[0], "Operation 'deleteFilesBefore' is restricted to 'super_user' roles", r.text);
+				assert.equal(
+					r.body.unauthorized_access[0],
+					"Operation 'deleteFilesBefore' is restricted to 'super_user' roles",
+					r.text
+				);
 				assert.equal(r.body.invalid_schema_items.length, 0, r.text);
 			})
 			.expect(403);
@@ -767,14 +768,14 @@ describe('7. Jobs & Job Role Testing', () => {
 		testData.job_id = id;
 	});
 
-	it('Jobs - Validate 0 entry in runners table',  () => {
+	it('Jobs - Validate 0 entry in runners table', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'select * from test_job.runner' })
 			.expect((r) => assert.equal(r.body.length, 0, r.text))
 			.expect(200);
 	});
 
-	it('Search Jobs by date',  () => {
+	it('Search Jobs by date', () => {
 		return req()
 			.send({
 				operation: 'search_jobs_by_start_date',
@@ -784,7 +785,7 @@ describe('7. Jobs & Job Role Testing', () => {
 			.expect((r) => assert.ok(r.body.length > 0, r.text));
 	});
 
-	it('Search Jobs by date - non-super user',  () => {
+	it('Search Jobs by date - non-super user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'search_jobs_by_start_date',
@@ -792,29 +793,37 @@ describe('7. Jobs & Job Role Testing', () => {
 				to_date: `${dateTomorrow}`,
 			})
 			.expect((r) => {
-				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				);
 				assert.equal(r.body.unauthorized_access.length, 1, r.text);
-				assert.equal(r.body.unauthorized_access[0], "Operation 'handleGetJobsByStartDate' is restricted to 'super_user' roles", r.text);
+				assert.equal(
+					r.body.unauthorized_access[0],
+					"Operation 'handleGetJobsByStartDate' is restricted to 'super_user' roles",
+					r.text
+				);
 				assert.equal(r.body.invalid_schema_items.length, 0, r.text);
 			})
 			.expect(403);
 	});
 
-	it('Search Jobs by job_id',  () => {
+	it('Search Jobs by job_id', () => {
 		return req()
 			.send({ operation: 'get_job', id: `${testData.job_id}` })
 			.expect((r) => assert.equal(r.body.length, 1, r.text))
 			.expect(200);
 	});
 
-	it('Search Jobs by job_id - non-super user',  () => {
+	it('Search Jobs by job_id - non-super user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({ operation: 'get_job', id: `${testData.job_id}` })
 			.expect((r) => assert.equal(r.body.length, 1, r.text))
 			.expect(200);
 	});
 
-	it('Jobs - Bulk CSV load into restricted region table as test_user',  () => {
+	it('Jobs - Bulk CSV load into restricted region table as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'csv_data_load',
@@ -825,7 +834,7 @@ describe('7. Jobs & Job Role Testing', () => {
 			.expect(403);
 	});
 
-	it('Jobs - Bulk CSV load into restricted region table as su',  () => {
+	it('Jobs - Bulk CSV load into restricted region table as su', () => {
 		return req()
 			.send({
 				operation: 'csv_data_load',
@@ -836,7 +845,7 @@ describe('7. Jobs & Job Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Jobs - Bulk CSV Load - insert suppliers table restricted attribute as test_user',  () => {
+	it('Jobs - Bulk CSV Load - insert suppliers table restricted attribute as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'csv_file_load',
@@ -846,7 +855,11 @@ describe('7. Jobs & Job Role Testing', () => {
 				file_path: `${getCsvPath()}Suppliers.csv`,
 			})
 			.expect((r) => {
-				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				);
 				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
 				assert.equal(r.body.invalid_schema_items[0], "Table 'northnwd.suppliers' does not exist", r.text);
 				assert.equal(r.body.unauthorized_access.length, 0, r.text);
@@ -854,7 +867,7 @@ describe('7. Jobs & Job Role Testing', () => {
 			.expect(403);
 	});
 
-	it('Jobs Test Export To Local using SQL as su',  () => {
+	it('Jobs Test Export To Local using SQL as su', () => {
 		return req()
 			.send({
 				operation: 'export_local',
@@ -870,7 +883,7 @@ describe('7. Jobs & Job Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Jobs Test Export To Local using NoSQL as su',  () => {
+	it('Jobs Test Export To Local using NoSQL as su', () => {
 		return req()
 			.send({
 				operation: 'export_local',
@@ -889,7 +902,7 @@ describe('7. Jobs & Job Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Jobs Test Export To Local using SQL as test_user on table with FULLY restricted attrs',  () => {
+	it('Jobs Test Export To Local using SQL as test_user on table with FULLY restricted attrs', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'export_local',
@@ -905,7 +918,7 @@ describe('7. Jobs & Job Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Jobs Test Export To Local using SQL on RESTRICTED table as test_user',  () => {
+	it('Jobs Test Export To Local using SQL on RESTRICTED table as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'export_local',
@@ -919,7 +932,11 @@ describe('7. Jobs & Job Role Testing', () => {
 				},
 			})
 			.expect((r) => {
-				assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text);
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				);
 				assert.equal(r.body.invalid_schema_items.length, 1, r.text);
 				assert.equal(r.body.invalid_schema_items[0], "Table 'northnwd.suppliers' does not exist", r.text);
 				assert.equal(r.body.unauthorized_access.length, 0, r.text);
@@ -927,7 +944,7 @@ describe('7. Jobs & Job Role Testing', () => {
 			.expect(403);
 	});
 
-	it('Jobs Test Export To Local using SQL as test_user on table w/ two attr perms',  () => {
+	it('Jobs Test Export To Local using SQL as test_user on table w/ two attr perms', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'export_local',
@@ -943,7 +960,7 @@ describe('7. Jobs & Job Role Testing', () => {
 			.expect(200);
 	});
 
-	it('Jobs Test Export To Local using NoSQL as test_user',  () => {
+	it('Jobs Test Export To Local using NoSQL as test_user', () => {
 		return reqAsNonSU(headersTestUser)
 			.send({
 				operation: 'export_local',
@@ -959,24 +976,32 @@ describe('7. Jobs & Job Role Testing', () => {
 					get_attributes: [testData.supp_id],
 				},
 			})
-			.expect((r) => assert.equal(r.body.error, 'This operation is not authorized due to role restrictions and/or invalid database items', r.text))
-			.expect((r) => assert.equal(r.body.unauthorized_access[0], "Operation 'export_local' is restricted to 'super_user' roles", r.text))
+			.expect((r) =>
+				assert.equal(
+					r.body.error,
+					'This operation is not authorized due to role restrictions and/or invalid database items',
+					r.text
+				)
+			)
+			.expect((r) =>
+				assert.equal(
+					r.body.unauthorized_access[0],
+					"Operation 'export_local' is restricted to 'super_user' roles",
+					r.text
+				)
+			)
 			.expect(403);
 	});
 
-	it('Jobs - drop test user',  () => {
-		return req()
-			.send({ operation: 'drop_user', username: 'test_user' })
-			.expect(200);
+	it('Jobs - drop test user', () => {
+		return req().send({ operation: 'drop_user', username: 'test_user' }).expect(200);
 	});
 
-	it('Jobs -  drop_role',  () => {
-		return req()
-			.send({ operation: 'drop_role', id: 'developer_test_5' })
-			.expect(200);
+	it('Jobs -  drop_role', () => {
+		return req().send({ operation: 'drop_role', id: 'developer_test_5' }).expect(200);
 	});
 
-	it('Jobs - Delete Jobs_test schema',  () => {
+	it('Jobs - Delete Jobs_test schema', () => {
 		return req()
 			.send({ operation: 'drop_schema', schema: 'test_job' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully delete'), r.text))

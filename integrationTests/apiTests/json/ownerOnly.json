@@ -1,20 +1,20 @@
 {
-  "records": [
-    {
-      "id": 1,
-      "name": "Sam"
-    },
-    {
-      "id": 2,
-      "name": "Kyle"
-    },
-    {
-      "id": 3,
-      "name": "David"
-    },
-    {
-      "id": 4,
-      "name": "Kaylan"
-    }
-  ]
+	"records": [
+		{
+			"id": 1,
+			"name": "Sam"
+		},
+		{
+			"id": 2,
+			"name": "Kyle"
+		},
+		{
+			"id": 3,
+			"name": "David"
+		},
+		{
+			"id": 4,
+			"name": "Kaylan"
+		}
+	]
 }

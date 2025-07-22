@@ -1,6 +1,6 @@
 {
 	"name": "harperdb",
-	"version": "4.6.0",
+	"version": "4.6.3",
 	"description": "HarperDB is a distributed database, caching service, streaming broker, and application development platform focused on performance and ease of use.",
 	"keywords": [
 		"database",
@@ -44,6 +44,7 @@
 	},
 	"license": "SEE LICENSE IN LICENSE",
 	"scripts": {
+		"tsc": "tsc -p .",
 		"submodules": "git submodule update --init --recursive",
 		"cover:test": "pm2 kill && rimraf ./.nyc_output/* && node utility/devops/register.js --reset_license && nyc --no-clean --reporter=lcovonly npm run test:replication && nyc --no-clean --reporter=lcovonly npm run test:apitests && nyc --no-clean --reporter=lcovonly npm run test:resources && nyc --no-clean --reporter=lcovonly npm run test:logging && nyc --no-clean --reporter=lcovonly npm run test:upgrade && nyc --no-clean --reporter=lcovonly npm run test:nats && nyc --no-clean --reporter=lcovonly npm run test:cfserver && nyc --no-clean --reporter=lcovonly npm run test:hdbserver && nyc --no-clean --reporter=lcovonly npm run test:bin && nyc --no-clean --reporter=lcovonly npm run test:main && nyc --no-clean --reporter=lcovonly npm run test:security && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license",
 		"test": "pm2 kill && rimraf ./.nyc_output/* && node utility/devops/register.js --reset_license && npm run test:replication && npm run test:apitests && npm run test:resources && npm run test:logging && npm run test:upgrade && npm run test:nats && npm run test:cfserver && npm run test:hdbserver && npm run test:bin && npm run test:main && npm run test:security && nyc merge .nyc_output coverage.json && node ./utility/devops/register.js --reset_license",
@@ -61,7 +62,7 @@
 		"test:ci": " node --expose-internals node_modules/mocha/bin/_mocha 'unitTests/**/*.js' --retries 3 --config 'unitTests/.mocharc-main.json' --reporter mocha-teamcity-reporter && node_modules/mocha/bin/_mocha 'unitTests/dataLayer/harperBridge/lmdbBridge/**/*.js' --parallel --retries 3 --config '.mocharc.json' --reporter mocha-teamcity-reporter && node_modules/mocha/bin/_mocha 'unitTests/utility/lmdb/**/*.js' --parallel --retries 3 --config '.mocharc.json' --reporter mocha-teamcity-reporter && node_modules/mocha/bin/_mocha 'unitTests/server/harperdb/hdbServer-test.js' --parallel --retries 3 --config '.mocharc.json' --reporter mocha-teamcity-reporter && node_modules/mocha/bin/_mocha 'unitTests/server/customFunctions/customFunctionsServer-test.js' --parallel --retries 3 --config '.mocharc.json' --reporter mocha-teamcity-reporter && node_modules/mocha/bin/_mocha 'unitTests/upgrade/**/*.js' --parallel --retries 3 --config '.mocharc.json' --reporter mocha-teamcity-reporter && node_modules/mocha/bin/_mocha 'unitTests/server/nats/**/*.js' --config '.mocharc.json' --reporter mocha-teamcity-reporter",
 		"test:security": "node --expose-internals node_modules/mocha/bin/_mocha 'unitTests/security/**/*.js' --config '.mocharc.json'",
 		"test:replication": "node_modules/mocha/bin/_mocha 'unitTests/server/replication/**/*.js' --config '.mocharc.json'",
-		"test:integration": "cd integrationTests/apiTests && node --experimental-default-type='module' --stack-trace-limit=2 --test tests/testSuite.js",
+		"test:integration": "node --experimental-default-type=module --test integrationTests/apiTests/tests/testSuite.js",
 		"hdb-check": "./utility/devops/hdb-check.sh",
 		"download-prebuilds": "node ./utility/devops/build/download-prebuilds.js",
 		"prebuild": "date",
@@ -117,7 +118,7 @@
 		"json2csv": "5.0.7",
 		"jsonata": "1.8.7",
 		"jsonwebtoken": "9.0.2",
-		"lmdb": "3.4.0",
+		"lmdb": "3.4.1",
 		"lodash": "4.17.21",
 		"mathjs": "11.12.0",
 		"micromatch": "^4.0.8",
@@ -143,8 +144,7 @@
 		"properties-reader": "2.3.0",
 		"recursive-iterator": "3.3.0",
 		"semver": "7.7.2",
-		"send": "^1.1.0",
-		"serve-static": "^2.2.0",
+		"send": "^1.2.0",
 		"ses": "1.13.0",
 		"stream-chain": "2.2.5",
 		"stream-json": "1.9.1",

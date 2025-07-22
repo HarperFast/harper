@@ -5,7 +5,7 @@ import { reqRest } from '../utils/request.js';
 describe('22. OpenAPI', () => {
 	//OpenAPI Folder
 
-	it('Get open api',  () => {
+	it('Get open api', () => {
 		return reqRest('/openapi')
 			.expect((r) => {
 				let openapi_text = JSON.stringify(r.body.openapi);

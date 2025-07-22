@@ -6,3 +6,6 @@
 
 # Refactor for camelCase and module extension
 d435372f6f08abdf98f021094fb8b7c1d6485c2f
+
+# Format integrationTests/apiTests/
+cc544768e9a59b44e13ecf5fafa56b6e3d3a944b

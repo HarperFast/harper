@@ -41,7 +41,6 @@ describe('usageLicensing', function () {
 				expiration: '2030-01-01T00:00:00.000Z',
 			};
 			const license = generateTestLicense(payload);
-			console.log('Test license: ', license);
 			const result = ul.validateLicense(license);
 			expect(result).to.deep.equal(payload);
 		});

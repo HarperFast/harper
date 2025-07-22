@@ -240,12 +240,12 @@ let connectionCount = 0;
 
 export function start(options: ServerOptions & { path: string; port: number; server: any; resources: any }) {
 	httpOptions = options;
-	if (started) return;
-	started = true;
 	if (options.includeExpensiveRecordCountEstimates) {
 		// If they really want to enable expensive record count estimates
 		Request.prototype.includeExpensiveRecordCountEstimates = true;
 	}
+	if (started) return;
+	started = true;
 	resources = options.resources;
 	options.server.http(async (request: Request, nextHandler) => {
 		if (request.isWebSocket) return;

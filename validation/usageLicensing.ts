@@ -33,14 +33,14 @@ export interface LicensePayload {
 	id: string;
 	level: string;
 	region: string;
-	reads: number | 'Infinity';
-	writes: number | 'Infinity';
-	readBytes: number | 'Infinity';
-	writeBytes: number | 'Infinity';
-	realTimeMessages: number | 'Infinity';
-	realTimeBytes: number | 'Infinity';
-	cpuTime: number | 'Infinity';
-	storage: number | 'Infinity';
+	reads: number;
+	writes: number;
+	readBytes: number;
+	writeBytes: number;
+	realTimeMessages: number;
+	realTimeBytes: number;
+	cpuTime: number;
+	storage: number;
 	expiration: string;
 	autoRenew?: boolean;
 }
@@ -59,7 +59,10 @@ export class InvalidHeaderError extends InvalidLicenseError {}
 
 export class InvalidPayloadError extends InvalidLicenseError {}
 
-function validateLicenseSignature(encodedLicense: string): void {
+function validateLicenseSignature(encodedLicense: string): DecodedLicense {
+	if (typeof encodedLicense !== 'string') {
+		throw new LicenseEncodingError(`License must be a string; received ${typeof encodedLicense}: ${encodedLicense}`);
+	}
 	let licenseComponents: string[];
 	try {
 		licenseComponents = encodedLicense.split('.');
@@ -82,41 +85,14 @@ function validateLicenseSignature(encodedLicense: string): void {
 	if (!valid) {
 		throw new InvalidLicenseSignatureError('License signature is invalid');
 	}
-}
-
-function decodeLicense(encodedLicense: string): DecodedLicense {
-	if (typeof encodedLicense !== 'string') {
-		throw new LicenseEncodingError(`License must be a string; received ${typeof encodedLicense}: ${encodedLicense}`);
-	}
-
-	let licenseComponents: string[];
-	try {
-		licenseComponents = encodedLicense.split('.');
-		if (licenseComponents.length !== 3) {
-			throw new InvalidLicenseError(`License must have three dot-separated parts; got ${length}`);
-		}
-	} catch (cause) {
-		const error = new LicenseEncodingError(
-			`Unable to split license into components; license must be a string with three dot-separated parts; got: ${encodedLicense}`
-		);
-		error.cause = cause;
-		throw error;
-	}
-
-	const base64UrlRegex = /^[A-Za-z0-9-_]+={0,2}$/;
-	if (!licenseComponents.every((e) => base64UrlRegex.test(e))) {
-		throw new InvalidBase64UrlEncodingError('Invalid base64url characters in license');
-	}
-
-	const [headerJSON, payloadJSON, signature] = licenseComponents.map((e) =>
-		Buffer.from(e, 'base64url').toString('utf8')
-	);
-
 	return {
-		header: headerJSON,
-		payload: payloadJSON,
-		signature: signature,
+		header: toJSON(header),
+		payload: toJSON(payload),
+		signature: toJSON(signature),
 	};
+	function toJSON(str: string): string {
+		return Buffer.from(str, 'base64url').toString('utf8');
+	}
 }
 
 function validateLicenseHeader(header: LicenseHeader): void {
@@ -146,18 +122,14 @@ function validateLicensePayload(payload: LicensePayload): void {
 		}
 	}
 	for (const attr of numberAttrs) {
-		if (typeof payload[attr] !== 'number' && payload[attr] !== 'Infinity') {
-			throw new InvalidPayloadError(
-				`Invalid license payload; ${attr} must be a number or 'Infinity'; got: ${typeof payload[attr]}`
-			);
+		if (typeof payload[attr] !== 'number') {
+			throw new InvalidPayloadError(`Invalid license payload; ${attr} must be a number; got: ${typeof payload[attr]}`);
 		}
 	}
 }
 
 export function validateLicense(encodedLicense: string): ValidatedLicense {
-	validateLicenseSignature(encodedLicense);
-
-	const { header: headerJSON, payload: payloadJSON } = decodeLicense(encodedLicense);
+	const { header: headerJSON, payload: payloadJSON } = validateLicenseSignature(encodedLicense);
 
 	let header: LicenseHeader;
 	try {

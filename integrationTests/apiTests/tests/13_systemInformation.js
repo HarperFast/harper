@@ -5,19 +5,19 @@ import { req } from '../utils/request.js';
 describe('13. System Information', () => {
 	//System Information Folder
 
-	it('Get all System Information',  () => {
+	it('Get all System Information', () => {
 		return req()
 			.send({ operation: 'system_information' })
 			.expect((r) => {
 				let attributes = ['system', 'time', 'cpu', 'memory', 'disk', 'network', 'harperdb_processes', 'table_size'];
 				attributes.forEach((attribute) => {
-					assert.notEqual(r.body[attribute],undefined, r.text);
+					assert.notEqual(r.body[attribute], undefined, r.text);
 				});
 			})
 			.expect(200);
 	});
 
-	it('Get some System Information (time, memory)',  () => {
+	it('Get some System Information (time, memory)', () => {
 		return req()
 			.send({ operation: 'system_information', attributes: ['memory', 'time'] })
 			.expect((r) => {

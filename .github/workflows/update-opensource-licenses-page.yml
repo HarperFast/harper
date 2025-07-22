@@ -1,0 +1,41 @@
+name: Update open-source licenses page
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+concurrency:
+  group: "pages"
+  cancel-in-progress: true
+
+jobs:
+  generate-licenses:
+    uses: ./.github/workflows/generate-licenses.yml
+  build-pages:
+    runs-on: ubuntu-latest
+    needs: generate-licenses
+    steps:
+      - name: Download licenses artifact
+        id: download
+        uses: actions/download-artifact@v4
+        with:
+          name: licenses
+      - name: Setup Pages
+        uses: actions/configure-pages@v5
+      - name: Upload licenses page
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: ${{ steps.download.outputs.download-path }}
+  deploy-pages:
+    runs-on: ubuntu-latest
+    needs: build-pages
+    steps:
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4
