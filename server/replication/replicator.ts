@@ -66,7 +66,7 @@ export function start(options) {
 	}
 	assignReplicationSource(options);
 	options = {
-		// We generally expect this to use the operations API ports (9925)
+		// We generally expect this to use the same settings as the operations API port
 		mtls: true, // make sure that we request a certificate from the client
 		isOperationsServer: true, // we default to using the operations server ports
 		maxPayload: 10 * 1024 * 1024 * 1024, // 10 GB max payload, primarily to support replicating applications

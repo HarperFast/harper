@@ -65,7 +65,7 @@ export const RECEIVED_VERSION_POSITION = 1;
 export const RECEIVED_TIME_POSITION = 2;
 export const SENDING_TIME_POSITION = 3;
 export const LATENCY_POSITION = 4;
-const runClone = process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL');
+const leaderUrl: string = process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL');
 
 export const tableUpdateListeners = new Map();
 // This a map of the database name to the subscription object, for the subscriptions from our tables to the replication module
@@ -949,6 +949,7 @@ export function replicateOverWS(ws, options, authorization) {
 										}
 									}, SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY).unref();
 								}
+								return new Promise(setImmediate); // we still need to yield (otherwise we might never send a sequence id update)
 							}
 
 							const typedStructs = encoder.typedStructs;
@@ -1002,6 +1003,19 @@ export function replicateOverWS(ws, options, authorization) {
 								writeBytes(encoded, start);
 								logger.trace?.('wrote record', auditRecord.recordId, 'length:', encoded.length);
 							}
+							// wait if there is back-pressure
+							if (ws._socket.writableNeedDrain) {
+								return new Promise<void>((resolve) => {
+									logger.debug?.(
+										`Waiting for remote node ${remoteNodeName} to allow more commits ${ws._socket.writableNeedDrain ? 'due to network backlog' : 'due to requested flow directive'}`
+									);
+									ws._socket.once('drain', resolve);
+								});
+							} else if (outstandingBlobsBeingSent > MAX_OUTSTANDING_BLOBS_BEING_SENT) {
+								return new Promise((resolve) => {
+									blobSentCallback = resolve;
+								});
+							} else return new Promise(setImmediate); // yield on each turn for fairness and letting other things run
 						};
 						const sendQueuedData = () => {
 							if (position - encodingStart > 8) {
@@ -1077,61 +1091,51 @@ export function replicateOverWS(ws, options, authorization) {
 									let queuedEntries;
 									if (isFirst && !closed) {
 										isFirst = false;
-										const lastRemoved = getLastRemoved(auditStore);
-										// note that lastRemoved may be undefined, in which case we want the comparison to go into this branch (hence !(<=))
-										if (
-											!(lastRemoved <= currentSequenceId) &&
-											(env.get(CONFIG_PARAMS.REPLICATION_COPYTABLESTOCATCHUP) ?? runClone)
-										) {
-											// This means the audit log doesn't extend far enough back, so we need to replicate all the tables
-											// This should only be done on a single node, we don't want full table replication from all the
-											// nodes that are connected to this one:
-											if (server.nodes[0]?.name === remoteNodeName) {
-												logger.info?.('Replicating all tables to', remoteNodeName);
-												let lastSequenceId = currentSequenceId;
-												const nodeId = getThisNodeId(auditStore);
-												for (const tableName in tables) {
-													if (!tableToTableEntry(tableName)) continue; // if we aren't replicating this table, skip it
-													const table = tables[tableName];
-													for (const entry of table.primaryStore.getRange({
-														snapshot: false,
-														// values: false, // TODO: eventually, we don't want to decode, we want to use fast binary transfer
-													})) {
-														if (closed) return;
-														if (entry.localTime >= currentSequenceId) {
-															logger.trace?.(
-																connectionId,
-																'Copying record from',
-																databaseName,
-																tableName,
-																entry.key,
-																entry.localTime
-															);
-															lastSequenceId = Math.max(entry.localTime, lastSequenceId);
-															queuedEntries = true;
-															getSharedStatus()[SENDING_TIME_POSITION] = 1;
-															sendAuditRecord(
-																{
-																	// make it look like an audit record
-																	recordId: entry.key,
-																	tableId: table.tableId,
-																	type: 'put',
-																	getValue() {
-																		return entry.value;
-																	},
-																	encoded: table.primaryStore.getBinary(entry.key), // directly transfer binary data
-																	version: entry.version,
-																	residencyId: entry.residencyId,
-																	nodeId,
-																	extendedType: entry.metadataFlags,
+										if (currentSequenceId === 0) {
+											logger.info?.('Replicating all tables to', remoteNodeName);
+											let lastSequenceId = currentSequenceId;
+											const nodeId = getThisNodeId(auditStore);
+											for (const tableName in tables) {
+												if (!tableToTableEntry(tableName)) continue; // if we aren't replicating this table, skip it
+												const table = tables[tableName];
+												for (const entry of table.primaryStore.getRange({
+													snapshot: false,
+													// values: false, // TODO: eventually, we don't want to decode, we want to use fast binary transfer
+												})) {
+													if (closed) return;
+													if (entry.localTime >= currentSequenceId) {
+														logger.trace?.(
+															connectionId,
+															'Copying record from',
+															databaseName,
+															tableName,
+															entry.key,
+															entry.localTime
+														);
+														lastSequenceId = Math.max(entry.localTime, lastSequenceId);
+														queuedEntries = true;
+														getSharedStatus()[SENDING_TIME_POSITION] = 1;
+														sendAuditRecord(
+															{
+																// make it look like an audit record
+																recordId: entry.key,
+																tableId: table.tableId,
+																type: 'put',
+																getValue() {
+																	return entry.value;
 																},
-																entry.localTime
-															);
-														}
+																encoded: table.primaryStore.getBinary(entry.key), // directly transfer binary data
+																version: entry.version,
+																residencyId: entry.residencyId,
+																nodeId,
+																extendedType: entry.metadataFlags,
+															},
+															entry.localTime
+														);
 													}
 												}
-												currentSequenceId = lastSequenceId;
 											}
+											currentSequenceId = lastSequenceId;
 										}
 									}
 									for (const { key, value: auditEntry } of auditStore.getRange({
@@ -1144,20 +1148,7 @@ export function replicateOverWS(ws, options, authorization) {
 										logger.debug?.('sending audit record', new Date(key));
 										getSharedStatus()[SENDING_TIME_POSITION] = key;
 										currentSequenceId = key;
-										sendAuditRecord(auditRecord, key);
-										// wait if there is back-pressure
-										if (ws._socket.writableNeedDrain) {
-											await new Promise<void>((resolve) => {
-												logger.debug?.(
-													`Waiting for remote node ${remoteNodeName} to allow more commits ${ws._socket.writableNeedDrain ? 'due to network backlog' : 'due to requested flow directive'}`
-												);
-												ws._socket.once('drain', resolve);
-											});
-										} else if (outstandingBlobsBeingSent > MAX_OUTSTANDING_BLOBS_BEING_SENT) {
-											await new Promise((resolve) => {
-												blobSentCallback = resolve;
-											});
-										} else await new Promise(setImmediate); // yield on each turn for fairness and letting other things run
+										await sendAuditRecord(auditRecord, key);
 										auditSubscription.startTime = key; // update so don't double send
 										queuedEntries = true;
 									}
@@ -1524,12 +1515,23 @@ export function replicateOverWS(ws, options, authorization) {
 					}
 				}
 			}
-			receivingDataFromNodeIds.push(nodeId);
+			if (nodeId === undefined) {
+				logger.warn('Starting subscription request from node', node, 'but no node id found');
+			} else receivingDataFromNodeIds.push(nodeId);
 			// if another node had previously acted as a proxy, it may not have the same sequence ids, but we can use the last
 			// originating txn time, and sequence ids should always be higher than their originating txn time, and starting from them should overlap
 			if (lastTxnTimes.get(nodeId) > startTime) {
 				startTime = lastTxnTimes.get(nodeId);
 				logger.debug?.('Updating start time from more recent txn recorded', connectedNode.name, startTime);
+			}
+			if (startTime === 1 && leaderUrl) {
+				// if we are starting from scratch and we have a leader URL, we directly ask for a copy from that database
+				if (new URL(leaderUrl).hostname === node.name) {
+					startTime = 0; // use this to indicate that we want to fully copy
+				} else {
+					// for all other nodes, start at right now (minus a minute for overlap)
+					startTime = Date.now() - 60000;
+				}
 			}
 			return {
 				name: node.name,
