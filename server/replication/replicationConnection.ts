@@ -1499,7 +1499,9 @@ export function replicateOverWS(ws, options, authorization) {
 					}
 				}
 			}
-			receiving_data_from_node_ids.push(node_id);
+			if (node_id === undefined) {
+				logger.warn('Starting subscription request from node', node, 'but no node id found');
+			} else receiving_data_from_node_ids.push(node_id);
 			// if another node had previously acted as a proxy, it may not have the same sequence ids, but we can use the last
 			// originating txn time, and sequence ids should always be higher than their originating txn time, and starting from them should overlap
 			if (last_txn_times.get(node_id) > start_time) {
