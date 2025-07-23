@@ -567,6 +567,7 @@ export function makeTable(options) {
 		 */
 		static getResource(id: Id, request: Context, resourceOptions?: any): Promise<TableResource> | TableResource {
 			const resource: TableResource = super.getResource(id, request, resourceOptions) as any;
+			if (this.loadAsInstance === false) request._freezeRecords = true;
 			if (id != null && this.loadAsInstance !== false) {
 				checkValidId(id);
 				try {
@@ -3052,6 +3053,8 @@ export function makeTable(options) {
 											transaction: txnForContext(context).getReadTxn(),
 										});
 										if (value?.then) hasPromises = true;
+										// for now, we shouldn't be getting promises until rocksdb
+										if (TableResource.loadAsInstance === false) Object.freeze(returnEntry ? value?.value : value);
 										return value;
 									});
 									return relationship.filterMissing
@@ -3062,9 +3065,12 @@ export function makeTable(options) {
 											? Promise.all(results)
 											: results;
 								}
-								return definition.tableClass.primaryStore[returnEntry ? 'getEntry' : 'get'](ids, {
+								const value = definition.tableClass.primaryStore[returnEntry ? 'getEntry' : 'get'](ids, {
 									transaction: txnForContext(context).getReadTxn(),
 								});
+								// for now, we shouldn't be getting promises until rocksdb
+								if (TableResource.loadAsInstance === false) Object.freeze(returnEntry ? value?.value : value);
+								return value;
 							};
 							attribute.set = (object, related) => {
 								if (Array.isArray(related)) {
@@ -3247,6 +3253,7 @@ export function makeTable(options) {
 			// determine what index values need to be removed and added
 			let valuesToAdd = getIndexedValues(value, indexNulls);
 			let valuesToRemove = getIndexedValues(existingValue, indexNulls);
+			if (tableName === 'OrganizationRole') logger.error?.({ tableName, id, key, valuesToAdd, valuesToRemove });
 			if (valuesToRemove?.length > 0) {
 				// put this in a conditional so we can do a faster version for new records
 				// determine the changes/diff from new values and old values
@@ -3342,6 +3349,10 @@ export function makeTable(options) {
 			// through query results and the iterator ends (abruptly)
 			if (options.transaction?.isDone) return withEntry(null, id);
 			const entry = primaryStore.getEntry(id, options);
+			// we need to freeze entry records to ensure the integrity of the cache;
+			// but we only do this when users have opted into loadAsInstance/freezeRecords to avoid back-compat
+			// issues
+			if (context?._freezeRecords) Object.freeze(entry?.value);
 			if (
 				entry?.residencyId &&
 				entry.metadataFlags & INVALIDATED &&

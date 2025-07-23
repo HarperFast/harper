@@ -53,6 +53,7 @@ export interface Context {
 	loadedFromSource?: boolean;
 	nodeName?: string;
 	resourceCache?: Map<Id, any>;
+	_freezeRecords?: boolean; // until v5, we conditionally freeze records for back-compat
 }
 
 export type Operator = 'and' | 'or';
