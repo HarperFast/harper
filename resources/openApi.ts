@@ -12,7 +12,6 @@ const DATA_TYPES = {
 	Date: 'string',
 	Bytes: 'string',
 	BigInt: 'integer',
-	array: 'array',
 };
 
 const SCHEMA_COMP_REF = '#/components/schemas/';
@@ -62,18 +61,26 @@ export function generateJsonApi(resources) {
 		const resourceRequired: string[] = [];
 
 		const includeDefinitionInSchema = (def) => {
-			if (!api.components.schemas[def.type]) {
-				const defProps = {};
+			if (def.type && !api.components.schemas[def.type]) {
+				// Immediately define the type so we don't get caught in infinite recursions, until...
+				api.components.schemas[def.type] = {};
+				const defProps: Record<string, unknown> = {};
 				const defRequired: string[] = [];
-				def.properties.forEach((prop) => {
-					defProps[prop.name] = new Type(DATA_TYPES[prop.type], prop.type);
+				for (const prop of def.properties) {
+					if (DATA_TYPES[prop.type]) {
+						defProps[prop.name] = new Type(DATA_TYPES[prop.type], prop.type);
+					} else if (prop.properties) {
+						defProps[prop.name] = new Ref(prop.type);
+						includeDefinitionInSchema(prop);
+					} else if (prop.elements?.properties) {
+						defProps[prop.name] = new ArrayRef(prop.elements.type);
+						includeDefinitionInSchema(prop.elements);
+					}
 					if (prop.nullable === false) {
 						defRequired.push(prop.name);
 					}
-					if (prop.properties) {
-						includeDefinitionInSchema(prop);
-					}
-				});
+				}
+				// ... down here we actually define the value for the new type.
 				api.components.schemas[def.type] = new ResourceSchema(defProps, !def.sealed, defRequired);
 			}
 		};
@@ -349,6 +356,15 @@ function Type(type, format) {
 			this.format = format;
 		}
 	}
+}
+
+function Ref(ref: string) {
+	this.$ref = `#/components/schemas/${ref}`;
+}
+
+function ArrayRef(ref: string) {
+	this.type = 'array';
+	this.items = new Ref(ref);
 }
 
 function Parameter(name, i, type) {
