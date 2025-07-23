@@ -61,21 +61,28 @@ export function generateJsonApi(resources) {
 		const queryParamsArray = [];
 		const resourceRequired: string[] = [];
 
+		const includeDefinitionInSchema = (def) => {
+			if (!api.components.schemas[def.type]) {
+				const defProps = {};
+				const defRequired: string[] = [];
+				def.properties.forEach((prop) => {
+					defProps[prop.name] = new Type(DATA_TYPES[prop.type], prop.type);
+					if (prop.nullable === false) {
+						defRequired.push(prop.name);
+					}
+					if (prop.properties) {
+						includeDefinitionInSchema(prop);
+					}
+				});
+				api.components.schemas[def.type] = new ResourceSchema(defProps, !def.sealed, defRequired);
+			}
+		};
+
 		if (attributes) {
 			for (const { type, name, elements, relationship, definition, nullable } of attributes) {
 				const def = definition ?? elements?.definition;
 				if (def) {
-					if (!api.components.schemas[def.type]) {
-						const defProps = {};
-						const defRequired: string[] = [];
-						def.properties.forEach((prop) => {
-							defProps[prop.name] = new Type(DATA_TYPES[prop.type], prop.type);
-							if (prop.nullable === false) {
-								defRequired.push(prop.name);
-							}
-						});
-						api.components.schemas[def.type] = new ResourceSchema(defProps, !def.sealed, defRequired);
-					}
+					includeDefinitionInSchema(def);
 				}
 
 				if (nullable === false) {
