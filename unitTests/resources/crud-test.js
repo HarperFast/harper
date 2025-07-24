@@ -142,11 +142,11 @@ describe('CRUD operations with the Resource API', () => {
 			});
 			let analyticRecorded;
 			for await (let { metrics } of analyticsResults) {
-				if (metrics.some(({ metric, path }) => metric === 'db-write' && path === 'CRUDTable')) {
-					analyticRecorded = true;
-				}
+				analyticRecorded = metrics.find(({ metric, path }) => metric === 'db-write' && path === 'CRUDTable');
+				if (analyticRecorded) break;
 			}
 			assert(analyticRecorded, 'db-write was recorded in analytics');
+			assert(analyticRecorded.mean > 20, 'db-write bytes count were recorded in analytics');
 		});
 		it('get is recorded in analytics', async function () {
 			const start = Date.now();
@@ -157,11 +157,11 @@ describe('CRUD operations with the Resource API', () => {
 			});
 			let analyticRecorded;
 			for await (let { metrics } of analyticsResults) {
-				if (metrics.some(({ metric, path }) => metric === 'db-read' && path === 'CRUDTable')) {
-					analyticRecorded = true;
-				}
+				analyticRecorded = metrics.find(({ metric, path }) => metric === 'db-read' && path === 'CRUDTable');
+				if (analyticRecorded) break;
 			}
 			assert(analyticRecorded, 'db-read was recorded in analytics');
+			assert(analyticRecorded.mean > 20, 'db-read bytes count were recorded in analytics');
 		});
 		it('update', async function () {
 			const context = {};
@@ -180,6 +180,7 @@ describe('CRUD operations with the Resource API', () => {
 			assert.equal(await CRUDTable.get('two'), undefined);
 		});
 		it('publishes and subscribes', async function () {
+			const start = Date.now();
 			const messages = [];
 			const subscription = await CRUDTable.subscribe('pubsub');
 			subscription.on('data', (message) => {
@@ -197,15 +198,14 @@ describe('CRUD operations with the Resource API', () => {
 			});
 			let publishRecorded, messageRecorded;
 			for await (let { metrics } of analyticsResults) {
-				if (metrics.some(({ metric, path }) => metric === 'db-publish' && path === 'CRUDTable')) {
-					publishRecorded = true;
-				}
-				if (metrics.some(({ metric, path }) => metric === 'db-publish' && path === 'CRUDTable')) {
-					publishRecorded = true;
-				}
+				publishRecorded = metrics.find(({ metric, path }) => metric === 'db-publish' && path === 'CRUDTable');
+				messageRecorded = metrics.find(({ metric, path }) => metric === 'db-message' && path === 'CRUDTable');
+				if (publishRecorded) break;
 			}
 			assert(publishRecorded, 'db-publish was recorded in analytics');
+			assert(publishRecorded.mean > 20, 'db-publish recorded the bytes count');
 			assert(messageRecorded, 'db-message was recorded in analytics');
+			assert(messageRecorded.mean > 20, 'db-message recorded the bytes count');
 		});
 		it('create with auto-id', async function () {
 			let created = await CRUDTable.create({ relatedId: 1, name: 'constructed with auto-id' });

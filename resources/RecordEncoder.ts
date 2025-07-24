@@ -477,11 +477,12 @@ export function recordUpdater(store, tableId, auditStore) {
 				switch (type) {
 					case 'put':
 					case 'patch':
-					case 'message':
-						recordAction(lastValueEncoding?.length ?? 1, 'db-write', options?.tableToTrack, null);
+					case 'delete':
+						recordAction(lastValueEncoding?.length ?? 1, 'db-write', options.tableToTrack, null);
 						break;
+					case 'message':
 					case 'publish':
-						recordAction(lastValueEncoding?.length ?? 1, 'db-publish', options?.tableToTrack, null);
+						recordAction(lastValueEncoding?.length ?? 1, 'db-publish', options.tableToTrack, null);
 				}
 			}
 

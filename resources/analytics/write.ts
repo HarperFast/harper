@@ -657,7 +657,6 @@ function recordAnalytics(message, worker?) {
 		lastUtilizations.set(worker, worker.performance.eventLoopUtilization());
 	}
 	report.id = getNextMonotonicTime();
-	console.log('recording analytics', report);
 	getRawAnalyticsTable().primaryStore.put(report.id, report);
 	if (!scheduledTasksRunning) startScheduledTasks();
 	if (LOG_ANALYTICS) lastAppend = logAnalytics(report);

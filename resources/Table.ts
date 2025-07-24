@@ -2438,7 +2438,6 @@ export function makeTable(options) {
 			if (!request) request = {};
 			const getFullRecord = !request.rawEvents;
 			let pendingRealTimeQueue = []; // while we are servicing a loop for older messages, we have to queue up real-time messages and deliver them in order
-			const tableReference = this;
 			const subscription = addSubscription(
 				TableResource,
 				this.getId() ?? null, // treat undefined and null as the root
@@ -2467,7 +2466,10 @@ export function makeTable(options) {
 							beginTxn,
 						};
 						if (pendingRealTimeQueue) pendingRealTimeQueue.push(event);
-						else this.send(event);
+						else {
+							recordAction(auditRecord.size ?? 1, 'db-message', tableName, null);
+							this.send(event);
+						}
 					} catch (error) {
 						logger.error?.(error);
 					}
@@ -2501,12 +2503,13 @@ export function makeTable(options) {
 							const id = auditRecord.recordId;
 							if (thisId == null || isDescendantId(thisId, id)) {
 								const value = auditRecord.getValue(primaryStore, getFullRecord, key);
-								subscription.send({
+								send({
 									id,
 									localTime: key,
 									value,
 									version: auditRecord.version,
 									type: auditRecord.type,
+									size: auditRecord.size,
 								});
 								if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 									// if we have too many messages, we need to pause and let the client catch up
@@ -2537,18 +2540,18 @@ export function makeTable(options) {
 							//await rest(); // yield for fairness
 						}
 						for (let i = history.length; i > 0; ) {
-							subscription.send(history[--i]);
+							send(history[--i]);
 						}
 						if (history[0]) subscription.startTime = history[0].localTime; // update so don't double send
 					} else if (!request.omitCurrent) {
-						for (const { key: id, value, version, localTime } of primaryStore.getRange({
+						for (const { key: id, value, version, localTime, size } of primaryStore.getRange({
 							start: thisId ?? false,
 							end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
 							versions: true,
 							snapshot: false, // no need for a snapshot, just want the latest data
 						})) {
 							if (!value) continue;
-							subscription.send({ id, localTime, value, version, type: 'put' });
+							send({ id, localTime, value, version, type: 'put', size });
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 								// if we have too many messages, we need to pause and let the client catch up
 								if ((await subscription.waitForDrain()) === false) return;
@@ -2580,19 +2583,24 @@ export function makeTable(options) {
 								const auditRecord = readAuditEntry(auditEntry);
 								const value = auditRecord.getValue(primaryStore, getFullRecord, nextTime);
 								if (getFullRecord) auditRecord.type = 'put';
-								history.push({ id: thisId, value, localTime: nextTime, ...auditRecord });
+								history.push({
+									id: thisId,
+									value,
+									localTime: nextTime,
+									...auditRecord,
+								});
 								nextTime = auditRecord.previousLocalTime;
 							} else break;
 							if (count) count--;
 						} while (nextTime > startTime && count !== 0);
 						for (let i = history.length; i > 0; ) {
-							subscription.send(history[--i]);
+							send(history[--i]);
 						}
 						subscription.startTime = localTime; // make sure we don't re-broadcast the current version that we already sent
 					}
 					if (!request.omitCurrent && this.doesExist()) {
 						// if retain and it exists, send the current value first
-						subscription.send({
+						send({
 							id: thisId,
 							localTime,
 							value: this.#record,
@@ -2603,10 +2611,14 @@ export function makeTable(options) {
 				}
 				// now send any queued messages
 				for (const event of pendingRealTimeQueue) {
-					subscription.send(event);
+					send(event);
 				}
 				pendingRealTimeQueue = null;
 			})();
+			function send(event: any) {
+				recordAction(event.size ?? 1, 'db-message', tableName, null);
+				subscription.send(event);
+			}
 			if (request.listener) subscription.on('data', request.listener);
 			return subscription;
 		}
