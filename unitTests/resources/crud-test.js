@@ -198,12 +198,12 @@ describe('CRUD operations with the Resource API', () => {
 			});
 			let publishRecorded, messageRecorded;
 			for await (let { metrics } of analyticsResults) {
-				publishRecorded = metrics.find(({ metric, path }) => metric === 'db-publish' && path === 'CRUDTable');
+				publishRecorded = metrics.find(({ metric, path }) => metric === 'db-write' && path === 'CRUDTable');
 				messageRecorded = metrics.find(({ metric, path }) => metric === 'db-message' && path === 'CRUDTable');
 				if (publishRecorded) break;
 			}
-			assert(publishRecorded, 'db-publish was recorded in analytics');
-			assert(publishRecorded.mean > 20, 'db-publish recorded the bytes count');
+			assert(publishRecorded, 'db-write was recorded in analytics');
+			assert(publishRecorded.mean > 20, 'db-write recorded the bytes count');
 			assert(messageRecorded, 'db-message was recorded in analytics');
 			assert(messageRecorded.mean > 20, 'db-message recorded the bytes count');
 		});
