@@ -518,18 +518,20 @@ async function getComponents() {
 
 	const { internal: statusInternal } = require('./status/index.ts');
 	let consolidatedStatuses;
-	
+
 	try {
-		consolidatedStatuses = await statusInternal.ComponentStatusRegistry.getAggregatedFromAllThreads(statusInternal.componentStatusRegistry);
+		consolidatedStatuses = await statusInternal.ComponentStatusRegistry.getAggregatedFromAllThreads(
+			statusInternal.componentStatusRegistry
+		);
 	} catch (error) {
 		// If we can't get status from threads, continue with unknown statuses
 		log.debug(`Failed to get component status from threads: ${error.message}`);
 	}
-	
+
 	for (const component of results.entries) {
 		// Look for this component in the consolidated statuses
 		const componentStatus = consolidatedStatuses?.get(component.name);
-		
+
 		if (componentStatus) {
 			// Component found - use consolidated status (deep copy to avoid mutation)
 			component.status = structuredClone(componentStatus);
@@ -538,7 +540,7 @@ async function getComponents() {
 			component.status = {
 				status: 'unknown',
 				message: 'The component has not been loaded yet (may need a restart)',
-				lastChecked: { workers: {} }
+				lastChecked: { workers: {} },
 			};
 		}
 	}

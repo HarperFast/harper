@@ -6,6 +6,7 @@ const DATA_TYPES = {
 	Int: 'integer',
 	Float: 'number',
 	Long: 'integer',
+	ID: 'string',
 	String: 'string',
 	Boolean: 'boolean',
 	Date: 'string',
@@ -54,13 +55,32 @@ export function generateJsonApi(resources) {
 
 		const { path } = resource;
 		const strippedPath = path.split('/').slice(-1); // strip any namespace from path
-		let { attributes, primaryKey, prototype } = resource.Resource;
-		primaryKey = primaryKey ?? 'id';
+		const { attributes, prototype, sealed, primaryKey = 'id' } = resource.Resource;
 		if (!primaryKey) continue;
 		const props = {};
 		const queryParamsArray = [];
+		const resourceRequired: string[] = [];
+
 		if (attributes) {
-			for (const { type, name, elements, relationship, definition } of attributes) {
+			for (const { type, name, elements, relationship, definition, nullable } of attributes) {
+				const def = definition ?? elements?.definition;
+				if (def) {
+					if (!api.components.schemas[def.type]) {
+						const defProps = {};
+						const defRequired: string[] = [];
+						def.properties.forEach((prop) => {
+							defProps[prop.name] = new Type(DATA_TYPES[prop.type], prop.type);
+							if (prop.nullable === false) {
+								defRequired.push(prop.name);
+							}
+						});
+						api.components.schemas[def.type] = new ResourceSchema(defProps, !def.sealed, defRequired);
+					}
+				}
+
+				if (nullable === false) {
+					resourceRequired.push(name);
+				}
 				if (relationship) {
 					if (type === 'array') {
 						props[name] = { type: 'array', items: { $ref: SCHEMA_COMP_REF + elements.type } };
@@ -68,29 +88,19 @@ export function generateJsonApi(resources) {
 						props[name] = { $ref: SCHEMA_COMP_REF + type };
 					}
 				} else {
-					const def = definition ?? elements?.definition;
 					if (def) {
-						if (!api.components.schemas[def.type]) {
-							const defProps = {};
-							def.properties.forEach((prop) => {
-								defProps[prop.name] = new Type(DATA_TYPES[prop.type], prop.type);
-							});
-
-							api.components.schemas[def.type] = new ResourceSchema(defProps);
-						}
-
 						if (type === 'array') {
 							props[name] = { type: 'array', items: { $ref: SCHEMA_COMP_REF + def.type } };
 						} else {
 							props[name] = { $ref: SCHEMA_COMP_REF + def.type };
 						}
 					} else if (type === 'array') {
-						if (elements.type === 'Any' || elements.type == 'ID') {
+						if (elements.type === 'Any') {
 							props[name] = { type: 'array', items: { format: elements.type } };
 						} else {
 							props[name] = { type: 'array', items: new Type(DATA_TYPES[elements.type], elements.type) };
 						}
-					} else if (type === 'Any' || type == 'ID') {
+					} else if (type === 'Any') {
 						props[name] = { format: type };
 					} else {
 						props[name] = new Type(DATA_TYPES[type], type);
@@ -101,23 +111,42 @@ export function generateJsonApi(resources) {
 		}
 
 		const propsArray = Object.keys(props);
-		const primaryKeyParam = new Parameter(primaryKey, 'path', { format: 'ID' });
+		const primaryKeyParam = new Parameter(primaryKey, 'path', { type: 'string', format: 'ID' });
 		primaryKeyParam.required = true;
 		primaryKeyParam.description = 'primary key of record';
 		const propertyParamPath = new Parameter('property', 'path', { enum: propsArray });
 		propertyParamPath.required = true;
-		api.components.schemas[strippedPath] = new ResourceSchema(props);
+		api.components.schemas[strippedPath] = new ResourceSchema(props, !sealed, resourceRequired);
 
 		const hasPost = prototype.post !== Resource.prototype.post || prototype.update;
 		const hasPut = typeof prototype.put === 'function';
 		const hasGet = typeof prototype.get === 'function';
 		const hasDelete = typeof prototype.delete === 'function';
+		const hasPatch = typeof prototype.patch === 'function';
 
 		// API for path structure /my-resource/
 		let url = '/' + path + '/';
 		if (hasPost) {
 			api.paths[url] = {};
-			api.paths[url].post = new Post(strippedPath, security, 'create a new record auto-assigning a primary key');
+			api.paths[url].post = new Post(
+				strippedPath,
+				security,
+				{
+					'200': new Response200(
+						{ $ref: SCHEMA_COMP_REF + strippedPath },
+						{
+							Location: {
+								description: 'primary key of new record',
+								schema: {
+									type: 'string',
+									format: 'ID',
+								},
+							},
+						}
+					),
+				},
+				'create a new record auto-assigning a primary key'
+			);
 		}
 
 		if (hasGet) {
@@ -125,10 +154,18 @@ export function generateJsonApi(resources) {
 			api.paths[url].get = new Get(
 				queryParamsArray,
 				security,
-				{ '200': new Response200({ $ref: SCHEMA_COMP_REF + strippedPath }) },
+				{ '200': new Response200({ type: 'array', items: { $ref: SCHEMA_COMP_REF + strippedPath } }) },
 				'search for records by the specified property name and value pairs'
 			);
 		}
+
+		if (!api.paths[url]) api.paths[url] = {};
+		api.paths[url].options = new Options(
+			queryParamsArray,
+			security,
+			{ '200': new ResponseOptions200() },
+			'retrieve information about the communication options available for a target resource or the server as a whole, without performing any resource action'
+		);
 
 		if (hasDelete) {
 			if (!api.paths[url]) api.paths[url] = {};
@@ -160,7 +197,19 @@ export function generateJsonApi(resources) {
 				[primaryKeyParam],
 				security,
 				strippedPath,
+				{ '200': new Response200({ $ref: SCHEMA_COMP_REF + strippedPath }) },
 				"create or update the record with the URL path that maps to the record's primary key"
+			);
+		}
+
+		if (hasPatch) {
+			if (!api.paths[url]) api.paths[url] = {};
+			api.paths[url].patch = new Patch(
+				[primaryKeyParam],
+				security,
+				strippedPath,
+				{ '200': new Response200({ $ref: SCHEMA_COMP_REF + strippedPath }) },
+				"patch the record with the URL path that maps to the record's primary key"
 			);
 		}
 
@@ -190,7 +239,7 @@ export function generateJsonApi(resources) {
 	return api;
 }
 
-function Post(path, security, description) {
+function Post(path, security, responses, description) {
 	this.description = description;
 	this.requestBody = {
 		content: {
@@ -203,28 +252,7 @@ function Post(path, security, description) {
 	};
 
 	this.security = security;
-	this.responses = {
-		'200': {
-			description: DESCRIPTION_200,
-			headers: {
-				Location: {
-					description: 'primary key of new record',
-					schema: {
-						type: 'string',
-						format: 'ID',
-					},
-				},
-			},
-			content: {
-				'application/json': {
-					schema: {
-						type: 'string',
-						format: 'ID',
-					},
-				},
-			},
-		},
-	};
+	this.responses = responses;
 }
 
 function Get(parameters, security, responses, description) {
@@ -234,20 +262,34 @@ function Get(parameters, security, responses, description) {
 	this.responses = responses;
 }
 
-function Response200(schema) {
+function Options(parameters, security, responses, description) {
+	this.description = description;
+	this.parameters = parameters;
+	this.security = security;
+	this.responses = responses;
+}
+
+function ResponseOptions200() {
+	this.description = DESCRIPTION_200;
+	this.headers = {};
+	this.content = {};
+}
+
+function Response200(schema, headers?: any) {
 	this.description = DESCRIPTION_200;
 	this.content = {
 		'application/json': {
 			schema,
 		},
 	};
+	this.headers = headers;
 }
 
 function Response204() {
 	this.description = 'successfully processed request, no content returned to client';
 }
 
-function Put(parameters, security, path, description) {
+function Put(parameters, security, path, responses, description) {
 	this.description = description;
 	this.parameters = parameters;
 	this.security = security;
@@ -260,12 +302,25 @@ function Put(parameters, security, path, description) {
 			},
 		},
 	};
-	this.responses = {
-		'200': {
-			description: DESCRIPTION_200,
+	this.responses = responses;
+}
+
+function Patch(parameters, security, path, responses, description) {
+	this.description = description;
+	this.parameters = parameters;
+	this.security = security;
+	this.requestBody = {
+		content: {
+			'application/json': {
+				schema: {
+					$ref: SCHEMA_COMP_REF + path,
+				},
+			},
 		},
 	};
+	this.responses = responses;
 }
+
 function Delete(parameters, security, description, responses) {
 	this.description = description;
 	this.parameters = parameters;
@@ -273,14 +328,20 @@ function Delete(parameters, security, description, responses) {
 	this.responses = responses;
 }
 
-function ResourceSchema(properties) {
+function ResourceSchema(properties, additionalProperties?: boolean, required?: string[]) {
 	this.type = 'object';
 	this.properties = properties;
+	this.additionalProperties = additionalProperties;
+	this.required = required;
 }
 
 function Type(type, format) {
 	this.type = type;
-	this.format = format;
+	if (type === 'string' || type === 'number' || type === 'integer') {
+		if (format !== 'String') {
+			this.format = format;
+		}
+	}
 }
 
 function Parameter(name, i, type) {

@@ -8,6 +8,7 @@ const { mkdtempSync, writeFileSync, rmSync } = require('node:fs');
 const { writeFile, rm } = require('node:fs/promises');
 const { stringify } = require('yaml');
 const { spy } = require('sinon');
+const { DEFAULT_CONFIG } = require('../../components/DEFAULT_CONFIG');
 
 /**
  * This function asserts that an event is emitted.
@@ -55,8 +56,12 @@ const CONFIG = {
 	[NAME]: OPTIONS,
 };
 
+function getFixtureName() {
+	return join(tmpdir(), 'harper.unit-test.options-watcher-');
+}
+
 function createFixture(config = CONFIG) {
-	const fixture = mkdtempSync(join(tmpdir(), 'harper.unit-test.options-watcher-'));
+	const fixture = mkdtempSync(getFixtureName());
 	const configFilePath = join(fixture, 'config.yaml');
 	writeFileSync(configFilePath, stringify(config), 'utf-8');
 
@@ -68,7 +73,7 @@ async function setup() {
 
 	const options = new OptionsWatcher(NAME, configFilePath);
 
-	await options.ready();
+	await options.ready;
 
 	return {
 		fixture,
@@ -81,6 +86,7 @@ async function teardown({ fixture, options }) {
 	await options.close();
 	try {
 		rmSync(fixture, { recursive: true, force: true });
+		// eslint-disable-next-line sonarjs/no-ignored-exceptions
 	} catch (err) {
 		// best effort to clean up - but doesn't matter too much since this is a temp directory
 	}
@@ -95,7 +101,7 @@ describe('OptionsWatcher', () => {
 		assert.ok(options instanceof EventEmitter, 'OptionsWatcher should be an instance of EventEmitter');
 
 		// The `OptionsWatcher` class emits a `'ready'` event, so assert that using the `assertEvent` utility.
-		// The class also includes a `ready()` method that returns a promise tracking the `'ready'` event, that is tested in the next test.
+		// The class also includes a `ready` property that returns a promise tracking the `'ready'` event, that is tested in the next test.
 		await assertEvent(options, 'ready', undefined, (eventSpy) => {
 			assert.equal(eventSpy.callCount, 1);
 			assert.deepEqual(eventSpy.getCall(0).args, [OPTIONS], 'should emit the initial config');
@@ -128,7 +134,7 @@ describe('OptionsWatcher', () => {
 		// So instead of awaiting the `once(options, 'ready')` promise, await the `ready()` method and ensure the spy is called once.
 		const readySpy = spy();
 		options.on('ready', readySpy);
-		await options.ready();
+		await options.ready;
 		assert.equal(readySpy.callCount, 1);
 
 		await teardown({ fixture, options });
@@ -207,7 +213,7 @@ describe('OptionsWatcher', () => {
 		const { fixture, configFilePath } = createFixture(config);
 
 		const options = new OptionsWatcher('foo', configFilePath);
-		await options.ready();
+		await options.ready;
 
 		const removeSpy = spy();
 		options.on('remove', removeSpy);
@@ -525,5 +531,49 @@ describe('OptionsWatcher', () => {
 					assert.deepEqual(changeSpy.getCall(1).args, [['obj'], this.expected.obj, this.expected]);
 				}
 			));
+	});
+
+	it('should handle default config resolution', async () => {
+		this.timeout = 3000;
+		const { fixture, configFilePath } = createFixture();
+		// Manually remove the config file to test default resolution
+		rmSync(configFilePath, { force: true });
+
+		const name = 'jsResource';
+		const options = new OptionsWatcher(name, join(fixture, 'config.yaml'));
+		await options.ready;
+
+		assert.deepEqual(options.getRoot(), DEFAULT_CONFIG, 'should return the default config if the file does not exist');
+		assert.deepEqual(
+			options.getAll(),
+			DEFAULT_CONFIG[name],
+			'should return the default config if the file does not exist'
+		);
+
+		const expected = { jsResource: { files: 'foo.js' } };
+
+		await assertEvent(
+			options,
+			'change',
+			() => writeFile(configFilePath, stringify(expected), 'utf-8'),
+			(changeSpy) => {
+				assert.equal(changeSpy.callCount, 1);
+				assert.deepEqual(options.getRoot(), expected, 'should return the updated config after writing a new file');
+				assert.deepEqual(options.getAll(), expected[name], 'should return the configuration after file recreation');
+			}
+		);
+
+		await assertEvent(
+			options,
+			'remove',
+			() => rm(configFilePath, { force: true }),
+			(removeSpy) => {
+				assert.equal(removeSpy.callCount, 1);
+				assert.deepEqual(options.getRoot(), DEFAULT_CONFIG, 'should return the default config after file removal');
+				assert.deepEqual(options.getAll(), DEFAULT_CONFIG[name], 'should return the default config after file removal');
+			}
+		);
+
+		await teardown({ fixture, options });
 	});
 });

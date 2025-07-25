@@ -15,6 +15,7 @@ const { install } = require('../utility/install/installer.js');
 const chalk = require('chalk');
 const { packageJson, PACKAGE_ROOT } = require('../utility/packageUtils.js');
 const hdbUtils = require('../utility/common_utils.js');
+const installation = require('../utility/installation.ts');
 const configUtils = require('../config/configUtils.js');
 const assignCMDENVVariables = require('../utility/assignCmdEnvVariables.js');
 const natsConfig = require('../server/nats/utility/natsConfig.js');
@@ -79,7 +80,7 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'utility/install/ascii_logo.txt'))));
 	});
 
-	if ((await isHdbInstalled()) === false) {
+	if (installation.isHdbInstalled(env, hdbLogger) === false) {
 		console.log(HDB_NOT_FOUND_MSG);
 		try {
 			await install();
@@ -324,31 +325,8 @@ async function openCreateAuditEnvironment(schema, tableName) {
 
 exports.launch = launch;
 exports.main = main;
-exports.isHdbInstalled = isHdbInstalled;
 exports.startupLog = startupLog;
 
-
-/**
- *
- * @returns {Promise<boolean>}
- */
-async function isHdbInstalled() {
-	try {
-		await fs.stat(hdbUtils.getPropsFilePath());
-		await fs.stat(env.get(terms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY));
-	} catch (err) {
-		if (hdbUtils.noBootFile()) return true;
-		if (err.code === 'ENOENT') {
-			// boot props not found, hdb not installed
-			return false;
-		}
-
-		hdbLogger.error(`Error checking for HDB install - ${err}`);
-		throw err;
-	}
-
-	return true;
-}
 
 /**
  * Logs running services and relevant ports/information.

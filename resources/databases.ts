@@ -170,7 +170,6 @@ export function getDatabases(): Databases {
 		'hdb_raw_analytics',
 		'hdb_session_will',
 		'hdb_job',
-		'hdb_license',
 		'hdb_info',
 	];
 	if (envGet(CONFIG_PARAMS.ANALYTICS_REPLICATE) === false) {

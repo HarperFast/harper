@@ -98,21 +98,80 @@
 		]
 	},
 	"hdb_license": {
-		"hash_attribute": "license_key",
-		"name": "hdb_license",
-		"schema": "system",
+		"primaryKey": "id",
+		"table": "hdb_license",
+		"database": "system",
+		"audit": true,
 		"attributes": [
 			{
-				"attribute": "license_key"
+				"attribute": "id"
 			},
 			{
-				"attribute": "company"
+				"name": "level"
 			},
 			{
-				"attribute": "__createdtime__"
+				"name": "region",
+				"indexed": true
 			},
 			{
-				"attribute": "__updatedtime__"
+				"name": "reads"
+			},
+			{
+				"name": "writes"
+			},
+			{
+				"name": "readBytes"
+			},
+			{
+				"name": "writeBytes"
+			},
+			{
+				"name": "realTimeMessages"
+			},
+			{
+				"name": "realTimeBytes"
+			},
+			{
+				"name": "cpuTime"
+			},
+			{
+				"name": "storage"
+			},
+			{
+				"name": "usedReads"
+			},
+			{
+				"name": "usedWrites"
+			},
+			{
+				"name": "usedReadBytes"
+			},
+			{
+				"name": "usedWriteBytes"
+			},
+			{
+				"name": "usedRealTimeMessages"
+			},
+			{
+				"name": "usedRealTimeBytes"
+			},
+			{
+				"name": "usedCpuTime"
+			},
+			{
+				"name": "usedStorage"
+			},
+			{
+				"name": "expiration"
+			},
+			{
+				"name": "autoRenew"
+			},
+			{
+				"name": "__createdtime__"
+			},
+			{
+				"name": "__updatedtime__"
 			}
 		]
 	},

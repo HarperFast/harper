@@ -371,6 +371,7 @@ export const OPERATIONS_ENUM = {
 	GET_STATUS: 'get_status',
 	SET_STATUS: 'set_status',
 	CLEAR_STATUS: 'clear_status',
+	INSTALL_USAGE_LICENSE: 'install_usage_license',
 } as const;
 
 /** Defines valid file types that we are able to handle in 'import_from_s3' ops */
@@ -568,6 +569,10 @@ export const CONFIG_PARAMS = {
 	HTTP_MTLS: 'http_mtls',
 	HTTP_MTLS_REQUIRED: 'http_mtls_required',
 	HTTP_MTLS_USER: 'http_mtls_user',
+	HTTP_MTLS_CERTIFICATEVERIFICATION: 'http_mtls_certificateVerification',
+	HTTP_MTLS_CERTIFICATEVERIFICATION_TIMEOUT: 'http_mtls_certificateVerification_timeout',
+	HTTP_MTLS_CERTIFICATEVERIFICATION_CACHETTL: 'http_mtls_certificateVerification_cacheTtl',
+	HTTP_MTLS_CERTIFICATEVERIFICATION_FAILUREMODE: 'http_mtls_certificateVerification_failureMode',
 	HTTP_MAXHEADERSIZE: 'http_maxHeaderSize',
 	HTTP_THREADRANGE: 'http_threadRange',
 	HTTP_HTTP2: 'http_http2',
@@ -615,7 +620,6 @@ export const CONFIG_PARAMS = {
 	REPLICATION_DATABASES: 'replication_databases',
 	REPLICATION_ENABLEROOTCAS: 'replication_enableRootCAs',
 	REPLICATION_SHARD: 'replication_shard',
-	REPLICATION_COPYTABLESTOCATCHUP: 'replication_copyTablesToCatchUp',
 	ROOTPATH: 'rootPath',
 	SERIALIZATION_BIGINT: 'serialization_bigInt',
 	STORAGE_WRITEASYNC: 'storage_writeAsync',

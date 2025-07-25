@@ -35,8 +35,8 @@ const httpServers = {},
 	httpChain = {},
 	httpResponders = [];
 let httpOptions: any = {};
-export const suppressHandleComponentWarning = true;
-export function handleComponent(scope: Scope) {
+export const suppressHandleApplicationWarning = true;
+export function handleApplication(scope: Scope) {
 	httpOptions = scope.options.getAll();
 	scope.options.on('change', (key) => {
 		// TODO: Check to see if the key is something we can or can't handle
@@ -290,6 +290,7 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 					return httpServers[port].emit('unhandled', nodeRequest, nodeResponse);
 				}
 				const status = response.status || 200;
+				nodeResponse.statusCode = status;
 				const endTime = performance.now();
 				const executionTime = endTime - startTime;
 				let body = response.body;
@@ -327,7 +328,7 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 						if (deferWriteHead) {
 							// if we are deferring, we need to set the statusCode and headers, let any other headers be set later
 							// until the first write
-							nodeResponse.statusCode = status;
+
 							if (headers) {
 								if (headers[Symbol.iterator]) {
 									for (const [name, value] of headers) {

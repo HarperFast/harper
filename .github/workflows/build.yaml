@@ -84,19 +84,17 @@ jobs:
           path: harperdb-${{ inputs.artifactVersionOverride == 'default' && needs.getNodeVersion.outputs.harperdbVersion || inputs.artifactVersionOverride }}.tgz
           retention-days: 1
 
-      ####################################
-      #  Get License Files for Container
-      ####################################
-      - name: 'Get Latest License Files'
-        if: inputs.dummyLicense != true
-        run: .github/scripts/get-license-files.sh
-      - name: 'Generate license files'
-        if: inputs.dummyLicense != true
-        continue-on-error: true
-        uses: apache/skywalking-eyes/dependency@main
-        with:
-          mode: 'resolve'
-          flags: '--output=utility/Docker/licenses/dependencies'
+  ####################################
+  #  Get License Files for Container
+  ####################################
+  generate-licenses:
+    if: inputs.dummyLicense != true
+    uses: ./.github/workflows/generate-licenses.yml
+
+  upload-licenses:
+    runs-on: ubuntu-latest
+    needs: generate-licenses
+    steps:
       - name: 'Generate dummy license files'
         if: inputs.dummyLicense == true
         run: |
@@ -104,6 +102,7 @@ jobs:
           mkdir -p utility/Docker/licenses
           touch utility/Docker/licenses/not-for-distribution
       - name: 'Upload Artifact'
+        if: inputs.dummyLicense == true
         uses: actions/upload-artifact@v4
         with:
           name: 'licenses'

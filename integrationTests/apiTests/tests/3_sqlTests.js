@@ -9,7 +9,7 @@ describe('3. SQL Tests', () => {
 
 	//Invalid Attribute Check
 
-	it('insert invalid attribute name - single row',  () => {
+	it('insert invalid attribute name - single row', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -19,7 +19,7 @@ describe('3. SQL Tests', () => {
 			.expect(400);
 	});
 
-	it('update single row w/ invalid attribute name',  () => {
+	it('update single row w/ invalid attribute name', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -29,7 +29,7 @@ describe('3. SQL Tests', () => {
 			.expect(400);
 	});
 
-	it('insert all invalid attribute names - multiple rows',  () => {
+	it('insert all invalid attribute names - multiple rows', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -39,7 +39,7 @@ describe('3. SQL Tests', () => {
 			.expect(400);
 	});
 
-	it('update multiple rows with invalid attribute',  () => {
+	it('update multiple rows with invalid attribute', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -49,7 +49,7 @@ describe('3. SQL Tests', () => {
 			.expect(400);
 	});
 
-	it('insert some invalid attribute names - multiple rows',  () => {
+	it('insert some invalid attribute names - multiple rows', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -61,7 +61,7 @@ describe('3. SQL Tests', () => {
 
 	//Search Response Data Type Check
 
-	it('select by hash no result',  () => {
+	it('select by hash no result', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -73,7 +73,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select by hash one result',  () => {
+	it('select by hash one result', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -86,7 +86,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select by hash multiple results',  () => {
+	it('select by hash multiple results', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -105,7 +105,7 @@ describe('3. SQL Tests', () => {
 
 	//Date Function Check
 
-	it('insert initial date function data into table',  () => {
+	it('insert initial date function data into table', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -116,7 +116,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('check initial date function data in table',  () => {
+	it('check initial date function data in table', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.time_functions' })
 			.expect((r) => {
@@ -137,7 +137,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update w/ date function data to null in table',  () => {
+	it('update w/ date function data to null in table', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -148,7 +148,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('check data set to null in table',  () => {
+	it('check data set to null in table', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.time_functions' })
 			.expect((r) => {
@@ -165,7 +165,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update w/ new date function data in table',  () => {
+	it('update w/ new date function data in table', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -176,7 +176,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('check data updated to correct date values in table',  () => {
+	it('check data updated to correct date values in table', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.time_functions' })
 			.expect((r) => {
@@ -197,7 +197,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update w/ other date functions',  () => {
+	it('update w/ other date functions', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -208,7 +208,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('check other date function updates are correct in table',  () => {
+	it('check other date function updates are correct in table', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.time_functions' })
 			.expect((r) => {
@@ -230,7 +230,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update w/ other date functions',  () => {
+	it('update w/ other date functions', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -241,7 +241,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select with date function in WHERE returns correct rows',  () => {
+	it('select with date function in WHERE returns correct rows', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -259,7 +259,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('delete with date function in WHERE deletes correct rows',  () => {
+	it('delete with date function in WHERE deletes correct rows', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -270,7 +270,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('check that correct rows were deleted based on date function',  () => {
+	it('check that correct rows were deleted based on date function', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.time_functions' })
 			.expect((r) => {
@@ -285,7 +285,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('check that DATE(__createdtime__) returns correct value w/ correct alias',  () => {
+	it('check that DATE(__createdtime__) returns correct value w/ correct alias', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -315,7 +315,7 @@ describe('3. SQL Tests', () => {
 
 	//SEARCH_JSON calls
 
-	it('count movies where movie.keyword starts with super',  () => {
+	it('count movies where movie.keyword starts with super', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -326,7 +326,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('return array of just movie keywords',  () => {
+	it('return array of just movie keywords', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -342,7 +342,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('filter on credits.cast with join to movie',  () => {
+	it('filter on credits.cast with join to movie', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -376,7 +376,7 @@ describe('3. SQL Tests', () => {
 
 	//SQL INSERT/UPDATE with Expressions & Functions
 
-	it('insert values into table dev.sql_function',  () => {
+	it('insert values into table dev.sql_function', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -390,7 +390,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('SELECT inserted values FROM dev.sql_function',  () => {
+	it('SELECT inserted values FROM dev.sql_function', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.sql_function' })
 			.expect((r) => {
@@ -404,7 +404,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update values into table dev.sql_function',  () => {
+	it('update values into table dev.sql_function', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -418,7 +418,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('SELECT updated values FROM dev.sql_function',  () => {
+	it('SELECT updated values FROM dev.sql_function', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.sql_function' })
 			.expect((r) => {
@@ -431,7 +431,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update value in table for non-existent row',  () => {
+	it('update value in table for non-existent row', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -447,14 +447,14 @@ describe('3. SQL Tests', () => {
 
 	//Restricted Keywords
 
-	it('Create table keywords for SQL tests',  () => {
+	it('Create table keywords for SQL tests', () => {
 		return req()
 			.send({ operation: 'create_table', schema: 'dev', table: 'keywords', hash_attribute: 'id' })
 			.expect((r) => assert.ok(r.body.message.includes('successfully created'), r.text))
 			.expect(200);
 	});
 
-	it('Upsert keywords data for SQL tests',  () => {
+	it('Upsert keywords data for SQL tests', () => {
 		return req()
 			.send({
 				operation: 'upsert',
@@ -547,7 +547,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Delete row from table with reserverd word in WHERE clause',  () => {
+	it('Delete row from table with reserverd word in WHERE clause', () => {
 		return req()
 			.send({ operation: 'sql', sql: "DELETE FROM dev.keywords WHERE `group` = 'D'" })
 			.expect((r) => {
@@ -559,7 +559,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Delete row from table with multiple reserverd words in WHERE clause',  () => {
+	it('Delete row from table with multiple reserverd words in WHERE clause', () => {
 		return req()
 			.send({ operation: 'sql', sql: "DELETE FROM dev.keywords WHERE `group` = 'A' AND [Inserted] = true" })
 			.expect((r) => {
@@ -572,7 +572,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('UPDATE rows from table with reserved word in SET and WHERE clause',  () => {
+	it('UPDATE rows from table with reserved word in SET and WHERE clause', () => {
 		return req()
 			.send({ operation: 'sql', sql: "UPDATE dev.keywords SET `group` = 'D' WHERE [ALL] = 'no'" })
 			.expect((r) => {
@@ -583,7 +583,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop table keywords',  () => {
+	it('Drop table keywords', () => {
 		return req()
 			.send({ operation: 'drop_table', schema: 'dev', table: 'keywords' })
 			.expect((r) => assert.ok(r.body.message.includes("successfully deleted table 'dev.keywords'"), r.text))
@@ -600,7 +600,7 @@ describe('3. SQL Tests', () => {
 		await setTimeout(200);
 	});
 
-	it('Insert data into dev.cat',  () => {
+	it('Insert data into dev.cat', () => {
 		return req()
 			.send({
 				operation: 'insert',
@@ -686,11 +686,13 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Update record basic where dev.cat',  () => {
+	it('Update record basic where dev.cat', () => {
 		return req()
 			.send({ operation: 'sql', sql: "UPDATE dev.cat SET cat_name = 'Bobby' WHERE id = 9" })
 			.expect((r) =>
-				assert.equal(r.body.message, 'updated 1 of 1 records',
+				assert.equal(
+					r.body.message,
+					'updated 1 of 1 records',
 					'Expected response message to eql "updated 1 of 1 records"'
 				)
 			)
@@ -698,7 +700,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Confirm update record basic where dev.cat',  () => {
+	it('Confirm update record basic where dev.cat', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT cat_name, weight_lbs, age, id FROM dev.cat WHERE id = 9' })
 			.expect((r) => {
@@ -710,15 +712,20 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Update record "where x != y" dev.cat',  () => {
+	it('Update record "where x != y" dev.cat', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'UPDATE dev.cat SET adorable = false WHERE owner_id != 2' })
 			.expect((r) => assert.equal(r.body.message, 'updated 5 of 5 records', r.text))
-			.expect((r) => assert.ok([3, 4, 6, 7, 8].every((el) => r.body.update_hashes.includes(el)), r.text))
+			.expect((r) =>
+				assert.ok(
+					[3, 4, 6, 7, 8].every((el) => r.body.update_hashes.includes(el)),
+					r.text
+				)
+			)
 			.expect(200);
 	});
 
-	it('Confirm update record "where x != y" dev.cat',  () => {
+	it('Confirm update record "where x != y" dev.cat', () => {
 		const cats = ['Biggie Paws', 'Willow', 'Murph', 'Simba', 'Gemma'];
 		const ids = [3, 4, 6, 7, 8];
 
@@ -743,18 +750,21 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Update record No where dev.cat',  () => {
+	it('Update record No where dev.cat', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'UPDATE dev.cat SET adorable = true' })
 			.expect((r) => {
 				assert.equal(r.body.message, 'updated 9 of 9 records', r.text);
-				assert.ok([1, 2, 3, 4, 5, 6, 7, 8, 9].every((el) => r.body.update_hashes.includes(el)), r.text);
+				assert.ok(
+					[1, 2, 3, 4, 5, 6, 7, 8, 9].every((el) => r.body.update_hashes.includes(el)),
+					r.text
+				);
 				assert.deepEqual(r.body.skipped_hashes, [], r.text);
 			})
 			.expect(200);
 	});
 
-	it('Confirm update record No where dev.cat',  () => {
+	it('Confirm update record No where dev.cat', () => {
 		const cats = ['Sophie', 'George', 'Biggie Paws', 'Willow', 'Bird', 'Murph', 'Simba', 'Gemma', 'Bobby'];
 		const ids = [1, 2, 3, 4, 5, 6, 7, 8, 9];
 		return req()
@@ -777,14 +787,16 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Update record multiple wheres, multiple columns dev.cat',  () => {
+	it('Update record multiple wheres, multiple columns dev.cat', () => {
 		return req()
 			.send({
 				operation: 'sql',
 				sql: "UPDATE dev.cat SET outdoor_privilages = false, weight_lbs = 6 WHERE owner_id = 2 AND cat_name = 'Sophie'",
 			})
 			.expect((r) =>
-				assert.equal(r.body.message, 'updated 1 of 1 records',
+				assert.equal(
+					r.body.message,
+					'updated 1 of 1 records',
 					'Expected response message to eql "updated 1 of 1 records"'
 				)
 			)
@@ -792,7 +804,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Confirm update record multiple wheres, multiple columns dev.cat',  () => {
+	it('Confirm update record multiple wheres, multiple columns dev.cat', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -809,18 +821,23 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Update record "where x is NULL" dev.cat',  () => {
+	it('Update record "where x is NULL" dev.cat', () => {
 		return req()
 			.send({
 				operation: 'sql',
 				sql: 'UPDATE dev.cat SET outdoor_privilages = true WHERE outdoor_privilages IS null',
 			})
 			.expect((r) => assert.equal(r.body.message, 'updated 8 of 8 records', r.text))
-			.expect((r) => assert.ok([2, 3, 4, 5, 6, 7, 8, 9].every((el) => r.body.update_hashes.includes(el)), r.text))
+			.expect((r) =>
+				assert.ok(
+					[2, 3, 4, 5, 6, 7, 8, 9].every((el) => r.body.update_hashes.includes(el)),
+					r.text
+				)
+			)
 			.expect(200);
 	});
 
-	it('Confirm update record "where x is NULL" dev.cat',  () => {
+	it('Confirm update record "where x is NULL" dev.cat', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -830,7 +847,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Update record with nonexistant id dev.cat',  () => {
+	it('Update record with nonexistant id dev.cat', () => {
 		return req()
 			.send({ operation: 'sql', sql: "UPDATE dev.cat SET cat_name = 'Garfield' WHERE id = 75" })
 			.expect((r) => assert.equal(r.body.message, 'updated 0 of 0 records', r.text))
@@ -838,14 +855,14 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Confirm update record with nonexistant id dev.cat',  () => {
+	it('Confirm update record with nonexistant id dev.cat', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT cat_name, weight_lbs, age FROM dev.cat WHERE id = 75' })
 			.expect((r) => assert.equal(r.body.length, 0, r.text))
 			.expect(200);
 	});
 
-	it('Drop table cat from dev.cat',  () => {
+	it('Drop table cat from dev.cat', () => {
 		return req()
 			.send({ operation: 'drop_table', schema: 'dev', table: 'cat' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted table 'dev.cat'", r.text))
@@ -854,14 +871,14 @@ describe('3. SQL Tests', () => {
 
 	//Geospatial
 
-	it('Create table "geo"',  () => {
+	it('Create table "geo"', () => {
 		return req()
 			.send({ operation: 'create_table', table: 'geo', hash_attribute: 'id' })
 			.expect((r) => assert.equal(r.body.message, "table 'data.geo' successfully created.", r.text))
 			.expect(200);
 	});
 
-	it('Insert values into "geo" table',  () => {
+	it('Insert values into "geo" table', () => {
 		return req()
 			.send(
 				'{\n   \n\t"operation":"insert",\n\t"table":"geo",\n\t"records": [\n        {\n            "id": 1,\n            "name": "Wellington",\n            "geo_point" : {\n                "type": "Point",\n                "coordinates": [174.776230, -41.286461]\n            },\n            "geo_poly": {\n                "type": "Polygon",\n                "coordinates": [[ [174.615474867904,-41.34148585702194],\n                    [174.8800567396483,-41.31574371071801],\n                    [174.6896944170223,-41.19759744824616],\n                    [174.615474867904,-41.34148585702194]\n                ]]\n            },\n            "geo_line": {\n                "type": "LineString",\n                "coordinates": [\n                    [174.615474867904,-41.34148585702194],\n                    [174.8800567396483,-41.31574371071801]\n                ]\n            }\n        },\n        {\n            "id": 2,\n            "name": "North Adams",\n            "geo_point" : {\n                "type": "Point",\n                "coordinates": [-73.108704, 42.700539]\n            },\n            "geo_poly": {\n                "type": "Polygon",\n                "coordinates": [[                  [-73.12391499193579,42.70656096680374],\n                    [-73.12255557219314,42.69646774251972],\n                    [-73.09908993001123,42.6984753377431],\n                    [-73.10369107948782,42.70876034407737],\n                    [-73.12391499193579,42.70656096680374]\n                ]]\n            }\n        },\n        {\n            "id": 3,\n            "name": "Denver",\n            "geo_point" : {\n                "type": "Point",\n                "coordinates": [-104.990250, 39.739235]\n            },\n            "geo_poly": {\n                "type": "Polygon",\n                "coordinates": [[          [-105.0487835030464,39.77676227285275],\n                    [-105.0175466672944,39.68744341857906],\n                    [-104.9113967289065,39.74637288224356],\n                    [-105.0487835030464,39.77676227285275]\n                ]]\n            }\n        },\n        {\n            "id": 4,\n            "name": "New York City",\n            "geo_point" : {\n                "type": "Point",\n                "coordinates": [-74.005974, 40.712776]\n            },\n            "geo_poly": {\n                "type": "Polygon",\n                "coordinates": [[             [-74.00852603549784,40.73107908806126],\n                    [-74.03702059033735,40.70472625054263],\n                    [-73.98786450714653,40.70419899758365],\n                    [-74.00852603549784,40.73107908806126]\n                ]]\n            }\n        },\n        {\n            "id": 5,\n            "name": "Salt Lake City",\n            "geo_point" : {\n                "type": "Point",\n                "coordinates": [-111.920485, 40.7766079]\n            },\n            "geo_poly": {\n                "type": "Polygon",\n                "coordinates": [[           [-112.8291507578281,40.88206673094385],\n                    [-112.8956858211181,40.30332102898777],\n                    [-111.6032172200158,40.02757615254776],\n                    [-111.1456265349256,40.95908300700454],\n                    [-111.9047878338339,41.3291504973315],\n                    [-112.8291507578281,40.88206673094385]\n                ]]\n            },\n            "geo_line": {\n                "type": "LineString",\n                "coordinates": [        [-112.8291507578281,40.88206673094385],\n                    [-112.8956858211181,40.30332102898777],\n                    [-111.6032172200158,40.02757615254776],\n                    [-111.1456265349256,40.95908300700454],\n                    [-111.9047878338339,41.3291504973315],\n                    [-112.8291507578281,40.88206673094385]\n                ]\n            }\n        },\n        {\n            "id": 6,\n            "name": "Null Island",\n            "geo_point" : {\n                "type": "Point",\n                "coordinates": [null, null]\n            },\n            "geo_poly": null,\n            "geo_line": {\n                "type": "LineString",\n                "coordinates": [\n                    [-112.8291507578281,40.88206673094385],\n                    [null, null]\n                ]\n            }\n        },\n        {\n            "id": 7\n        },\n        {\n            "id": 8,\n            "name": "Hobbiton",\n            "geo_point" : [174.776230, -41.286461],\n            "geo_poly": "Somewhere in the shire",\n            "geo_line": {\n                "type": "LineString"\n            }\n        }\n    ]\n}\n'
@@ -870,7 +887,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoArea test 1',  () => {
+	it('geoArea test 1', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT id, name, geoArea(geo_poly) as area FROM data.geo ORDER BY area ASC' })
 			.expect((r) =>
@@ -917,7 +934,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoArea test 2',  () => {
+	it('geoArea test 2', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT id, name FROM data.geo where geoArea(geo_poly) > 53950986.64863106' })
 			.expect((r) =>
@@ -935,7 +952,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoArea test 3',  () => {
+	it('geoArea test 3', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -951,7 +968,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoLength test 1',  () => {
+	it('geoLength test 1', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -967,7 +984,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoLength test 2',  () => {
+	it('geoLength test 2', () => {
 		return req()
 			.send({ operation: 'sql', sql: "SELECT id, name, geoLength(geo_line, 'miles') FROM data.geo" })
 			.expect((r) =>
@@ -1012,7 +1029,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoLength test 3',  () => {
+	it('geoLength test 3', () => {
 		return req()
 			.send({ operation: 'sql', sql: "SELECT id, name FROM data.geo WHERE geoLength(geo_line, 'miles') < 100" })
 			.expect((r) =>
@@ -1026,7 +1043,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoDifference test 1',  () => {
+	it('geoDifference test 1', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1069,7 +1086,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoDifference test 2',  () => {
+	it('geoDifference test 2', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1079,7 +1096,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoDistance test 1',  () => {
+	it('geoDistance test 1', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1095,7 +1112,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoDistance test 2',  () => {
+	it('geoDistance test 2', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1113,7 +1130,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoDistance test 3',  () => {
+	it('geoDistance test 3', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1165,7 +1182,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoNear test 1',  () => {
+	it('geoNear test 1', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1182,7 +1199,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoNear test 2',  () => {
+	it('geoNear test 2', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1205,7 +1222,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoContains test 1',  () => {
+	it('geoContains test 1', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1222,7 +1239,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoContains test 2',  () => {
+	it('geoContains test 2', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1239,7 +1256,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoEqual test 1',  () => {
+	it('geoEqual test 1', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1249,7 +1266,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoCrosses test 1',  () => {
+	it('geoCrosses test 1', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1259,7 +1276,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('geoConvert test 1',  () => {
+	it('geoConvert test 1', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1282,7 +1299,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Drop table "geo"',  () => {
+	it('Drop table "geo"', () => {
 		return req()
 			.send({ operation: 'drop_table', schema: 'data', table: 'geo' })
 			.expect((r) => assert.equal(r.body.message, "successfully deleted table 'data.geo'", r.text))
@@ -1291,7 +1308,7 @@ describe('3. SQL Tests', () => {
 
 	//SQL Tests Main Folder
 
-	it('insert value into table',  () => {
+	it('insert value into table', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1302,7 +1319,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('insert value into table confirm',  () => {
+	it('insert value into table confirm', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1316,14 +1333,16 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update value in table',  () => {
+	it('update value in table', () => {
 		return req()
 			.send({
 				operation: 'sql',
 				sql: "UPDATE northnwd.customers SET companyname = 'Google' WHERE customerid = 'TEST3'",
 			})
 			.expect((r) =>
-				assert.equal(r.body.message, 'updated 1 of 1 records',
+				assert.equal(
+					r.body.message,
+					'updated 1 of 1 records',
 					'Expected response message to eql "updated 1 of 1 records"'
 				)
 			)
@@ -1331,7 +1350,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update value in table confirm',  () => {
+	it('update value in table confirm', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1345,14 +1364,16 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('attempt to update __createdtime__ in table',  () => {
+	it('attempt to update __createdtime__ in table', () => {
 		return req()
 			.send({
 				operation: 'sql',
 				sql: "UPDATE northnwd.customers SET __createdtime__ = 'bad value' WHERE customerid = 'TEST3'",
 			})
 			.expect((r) =>
-				assert.equal(r.body.message, 'updated 1 of 1 records',
+				assert.equal(
+					r.body.message,
+					'updated 1 of 1 records',
 					'Expected response message to eql "updated 1 of 1 records"'
 				)
 			)
@@ -1360,21 +1381,21 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Confirm __createdtime__ did not get changed',  () => {
+	it('Confirm __createdtime__ did not get changed', () => {
 		return req()
 			.send({ operation: 'sql', sql: "SELECT __createdtime__ FROM northnwd.customers WHERE customerid = 'TEST3'" })
 			.expect((r) => assert.notEqual(r.body[0].__createdtime__, 'bad value', r.text))
 			.expect(200);
 	});
 
-	it('delete value from table',  () => {
+	it('delete value from table', () => {
 		return req()
 			.send({ operation: 'sql', sql: "DELETE FROM northnwd.customers WHERE customerid = 'TEST3'" })
 			.expect((r) => assert.ok(r.body.message.includes('successfully deleted'), r.text))
 			.expect(200);
 	});
 
-	it('delete value from table confirm',  () => {
+	it('delete value from table confirm', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1384,7 +1405,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ where in numeric values as strings',  () => {
+	it('select w/ where in numeric values as strings', () => {
 		return req()
 			.send({ operation: 'sql', sql: "select * from dev.books WHERE id IN('1','2','3') ORDER BY id" })
 			.expect((r) => assert.equal(r.body.length, 3, r.text))
@@ -1396,7 +1417,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ where between',  () => {
+	it('select w/ where between', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'select * from dev.books WHERE id BETWEEN 1 AND 3 ORDER BY id' })
 			.expect((r) => assert.equal(r.body.length, 3, r.text))
@@ -1408,7 +1429,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ where not between',  () => {
+	it('select w/ where not between', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'select * from dev.books WHERE id NOT BETWEEN 1 AND 3 ORDER BY id' })
 			.expect((r) => {
@@ -1420,7 +1441,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ where value equals 0',  () => {
+	it('select w/ where value equals 0', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'select * from dev.books WHERE books_count = 0 ' })
 			.expect((r) => assert.equal(r.body.length, 4, r.text))
@@ -1432,7 +1453,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ where value equals "false"',  () => {
+	it('select w/ where value equals "false"', () => {
 		return req()
 			.send({ operation: 'sql', sql: "select * from dev.books WHERE nytimes_best_seller = 'false' " })
 			.expect((r) => assert.equal(r.body.length, 25, r.text))
@@ -1444,7 +1465,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select employees orderby id asc',  () => {
+	it('select employees orderby id asc', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1462,27 +1483,25 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select 2 + 2',  () => {
+	it('select 2 + 2', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'select 2 + 2 ' })
 			.expect((r) => assert.equal(r.body[0]['2 + 2'], 4, r.text))
 			.expect(200);
 	});
 
-	it('select * FROM orders - test no schema',  () => {
+	it('select * FROM orders - test no schema', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'select * FROM orders' })
 			.expect((r) => assert.equal(r.body.error, 'schema not defined for table orders', r.text))
 			.expect(500);
 	});
 
-	it('select * from call.aggr - reserved words',  () => {
-		return req()
-			.send({ operation: 'sql', sql: 'select * from call.aggr' })
-			.expect(400);
+	it('select * from call.aggr - reserved words', () => {
+		return req().send({ operation: 'sql', sql: 'select * from call.aggr' }).expect(400);
 	});
 
-	it('select * from `call`.`aggr` - reserved words',  () => {
+	it('select * from `call`.`aggr` - reserved words', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1492,7 +1511,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * from call.aggr where id = 11 - select dot & double dot',  () => {
+	it('select * from call.aggr where id = 11 - select dot & double dot', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'select * from `call`.`aggr` where `all` = 11' })
 			.expect((r) => {
@@ -1503,21 +1522,21 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * from invalid schema - expect fail',  () => {
+	it('select * from invalid schema - expect fail', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'select * from `braaah`.`aggr`' })
 			.expect((r) => assert.equal(r.body.error, "database 'braaah' does not exist", r.text))
 			.expect(404);
 	});
 
-	it('select * from invalid table - expect fail',  () => {
+	it('select * from invalid table - expect fail', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'select * from `call`.`braaaah`' })
 			.expect((r) => assert.equal(r.body.error, "Table 'call.braaaah' does not exist", r.text))
 			.expect(404);
 	});
 
-	it('select orders orderby id desc',  () => {
+	it('select orders orderby id desc', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1529,7 +1548,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select count(*) orders where shipregion is null',  () => {
+	it('select count(*) orders where shipregion is null', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1541,7 +1560,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select count(*) orders where shipregion is not null',  () => {
+	it('select count(*) orders where shipregion is not null', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1553,7 +1572,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select most buyer orderby price asc',  () => {
+	it('select most buyer orderby price asc', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1577,7 +1596,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select most buyer orderby price asc & companyname alias',  () => {
+	it('select most buyer orderby price asc & companyname alias', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1601,7 +1620,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select most buyer orderby order_id asc & product_id desc',  () => {
+	it('select most buyer orderby order_id asc & product_id desc', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1633,7 +1652,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select product orderby id asc',  () => {
+	it('select product orderby id asc', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1645,7 +1664,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select customers orderby id asc',  () => {
+	it('select customers orderby id asc', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1657,7 +1676,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select all details join 5 table where customername',  () => {
+	it('select all details join 5 table where customername', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1685,7 +1704,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * with LEFT OUTER JOIN',  () => {
+	it('select * with LEFT OUTER JOIN', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.breed b LEFT JOIN dev.dog d ON b.id = d.breed_id' })
 			.expect((r) => assert.equal(r.body.length, 351, r.text))
@@ -1701,7 +1720,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select specific columns with LEFT OUTER JOIN Copy',  () => {
+	it('select specific columns with LEFT OUTER JOIN Copy', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1720,7 +1739,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select order details',  () => {
+	it('select order details', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1732,7 +1751,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select count groupby country',  () => {
+	it('select count groupby country', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1745,7 +1764,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select most have the extension employees',  () => {
+	it('select most have the extension employees', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1757,7 +1776,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select top 10 most price of product',  () => {
+	it('select top 10 most price of product', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1769,7 +1788,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select count min max avg sum price of products',  () => {
+	it('select count min max avg sum price of products', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1784,7 +1803,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select round unit price using alias',  () => {
+	it('select round unit price using alias', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1799,7 +1818,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select where (like)and(<=>)',  () => {
+	it('select where (like)and(<=>)', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1812,7 +1831,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select - where attr < comparator',  () => {
+	it('select - where attr < comparator', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1828,7 +1847,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select - where attr <= comparator',  () => {
+	it('select - where attr <= comparator', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1844,7 +1863,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select - where attr > comparator',  () => {
+	it('select - where attr > comparator', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1860,7 +1879,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select - where attr >= comparator',  () => {
+	it('select - where attr >= comparator', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1876,7 +1895,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select - where attr w/ multiple comparators',  () => {
+	it('select - where attr w/ multiple comparators', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1894,7 +1913,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select - where w/ multiple attr comparators',  () => {
+	it('select - where w/ multiple attr comparators', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1914,7 +1933,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select - where w/ multiple comparators for multiple attrs',  () => {
+	it('select - where w/ multiple comparators for multiple attrs', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1934,7 +1953,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select - where w/ IN() and multiple of comparators for multiple attrs',  () => {
+	it('select - where w/ IN() and multiple of comparators for multiple attrs', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1956,7 +1975,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update SQL employee',  () => {
+	it('update SQL employee', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1968,7 +1987,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select verify SQL update',  () => {
+	it('select verify SQL update', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -1980,7 +1999,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * dev.long_text',  () => {
+	it('select * dev.long_text', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'select * FROM dev.long_text' })
 			.expect((r) => assert.equal(r.body.length, 25, r.text))
@@ -1992,7 +2011,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * dev.long_text regexp',  () => {
+	it('select * dev.long_text regexp', () => {
 		return req()
 			.send({ operation: 'sql', sql: "select * FROM dev.long_text where remarks regexp 'dock'" })
 			.expect((r) => assert.equal(r.body.length, 3, r.text))
@@ -2004,7 +2023,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('update employee with falsey data',  () => {
+	it('update employee with falsey data', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2019,7 +2038,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select employee to confirm falsey update',  () => {
+	it('select employee to confirm falsey update', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2036,7 +2055,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('setup for next test - insert array',  () => {
+	it('setup for next test - insert array', () => {
 		return req()
 			.send({
 				operation: 'insert',
@@ -2049,7 +2068,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select array from table',  () => {
+	it('select array from table', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2062,7 +2081,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('setup for next test - insert object',  () => {
+	it('setup for next test - insert object', () => {
 		return req()
 			.send({
 				operation: 'insert',
@@ -2075,7 +2094,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select object from table',  () => {
+	it('select object from table', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2088,7 +2107,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select without sql parameter',  () => {
+	it('select without sql parameter', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2099,7 +2118,7 @@ describe('3. SQL Tests', () => {
 			.expect(400);
 	});
 
-	it('select * dev.remarks_blob like w/ special chars pt1',  () => {
+	it('select * dev.remarks_blob like w/ special chars pt1', () => {
 		return req()
 			.send({ operation: 'sql', sql: "select * FROM dev.remarks_blob where remarks like '%4 Bedroom/2.5+ bath%'" })
 			.expect((r) => assert.equal(r.body.length, 3, r.text))
@@ -2117,7 +2136,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * dev.remarks_blob like w/ special chars pt2',  () => {
+	it('select * dev.remarks_blob like w/ special chars pt2', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2143,7 +2162,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * dev.remarks_blob like w/ special chars pt3',  () => {
+	it('select * dev.remarks_blob like w/ special chars pt3', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2169,7 +2188,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * dev.remarks_blob like w/ special chars pt4',  () => {
+	it('select * dev.remarks_blob like w/ special chars pt4', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2196,7 +2215,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * dev.remarks_blob like w/ special chars pt5',  () => {
+	it('select * dev.remarks_blob like w/ special chars pt5', () => {
 		return req()
 			.send({ operation: 'sql', sql: "select * FROM dev.remarks_blob where remarks like '%'" })
 			.expect((r) => assert.equal(r.body.length, 11, r.text))
@@ -2213,7 +2232,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * FROM schema.ords_tb LIMIT 100 OFFSET 0',  () => {
+	it('select * FROM schema.ords_tb LIMIT 100 OFFSET 0', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2229,7 +2248,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select * FROM schema.ords_tb LIMIT 100 OFFSET 0 Copy',  () => {
+	it('select * FROM schema.ords_tb LIMIT 100 OFFSET 0 Copy', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2245,7 +2264,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select AVE(rating) w/ join, group by and order by (1 of 2)',  () => {
+	it('select AVE(rating) w/ join, group by and order by (1 of 2)', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2263,7 +2282,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select AVE(rating) w/ join, group by and order by (2 of 2)',  () => {
+	it('select AVE(rating) w/ join, group by and order by (2 of 2)', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2283,7 +2302,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select AVE(rating) w/ join and group by (1 of 2)',  () => {
+	it('select AVE(rating) w/ join and group by (1 of 2)', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2297,7 +2316,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select AVE(rating) w/ join, gb, ob, and LIMIT',  () => {
+	it('select AVE(rating) w/ join, gb, ob, and LIMIT', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2313,7 +2332,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select COUNT(rating) w/ join, gb, ob, limit, and OFFSET',  () => {
+	it('select COUNT(rating) w/ join, gb, ob, limit, and OFFSET', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2330,7 +2349,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ function alias in ORDER BY and LIMIT',  () => {
+	it('select w/ function alias in ORDER BY and LIMIT', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2359,7 +2378,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ inconsistent table refs & ORDER BY column not in SELECT',  () => {
+	it('select w/ inconsistent table refs & ORDER BY column not in SELECT', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2382,7 +2401,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ inconsistent table refs, ORDER BY column not in SELECT & LIMIT/OFFSET',  () => {
+	it('select w/ inconsistent table refs, ORDER BY column not in SELECT & LIMIT/OFFSET', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2406,7 +2425,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ inconsistent table refs & second ORDER BY column not included in SELECT',  () => {
+	it('select w/ inconsistent table refs & second ORDER BY column not included in SELECT', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2429,7 +2448,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('select w/ inconsistent table refs, second ORDER BY column not included in SELECT & LIMIT/OFFSETS',  () => {
+	it('select w/ inconsistent table refs, second ORDER BY column not included in SELECT & LIMIT/OFFSETS', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2453,7 +2472,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select * on 3 table INNER JOIN',  () => {
+	it('Select * on 3 table INNER JOIN', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2477,7 +2496,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select with basic CROSS SCHEMA JOIN',  () => {
+	it('Select with basic CROSS SCHEMA JOIN', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2501,7 +2520,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select with complex CROSS SCHEMA JOIN',  () => {
+	it('Select with complex CROSS SCHEMA JOIN', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2528,7 +2547,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select with basic CROSS 3 SCHEMA JOINS',  () => {
+	it('Select with basic CROSS 3 SCHEMA JOINS', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2556,7 +2575,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select with complex CROSS 3 SCHEMA JOINS',  () => {
+	it('Select with complex CROSS 3 SCHEMA JOINS', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2584,7 +2603,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select - simple full table query',  () => {
+	it('Select - simple full table query', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.dog' })
 			.expect((r) => assert.equal(r.body.length, 9, r.text))
@@ -2596,7 +2615,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select - simple full table query w/ * and alias',  () => {
+	it('Select - simple full table query w/ * and alias', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT *, dog_name as dname FROM dev.dog' })
 			.expect((r) => assert.equal(r.body.length, 9, r.text))
@@ -2610,7 +2629,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select - simple full table query w/ single alias',  () => {
+	it('Select - simple full table query w/ single alias', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT dog_name as dname FROM dev.dog' })
 			.expect((r) => assert.equal(r.body.length, 9, r.text))
@@ -2624,7 +2643,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select - simple full table query w/ multiple aliases',  () => {
+	it('Select - simple full table query w/ multiple aliases', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT id as dog_id, dog_name as dname, age as dog_age FROM dev.dog' })
 			.expect((r) => assert.equal(r.body.length, 9, r.text))
@@ -2642,7 +2661,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select - simple full table query from leading_zero',  () => {
+	it('Select - simple full table query from leading_zero', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.leading_zero' })
 			.expect((r) => assert.equal(r.body.length, 3, r.text))
@@ -2657,7 +2676,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select - basic self JOIN',  () => {
+	it('Select - basic self JOIN', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2668,7 +2687,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('Select - basic self JOIN - reverse scenario',  () => {
+	it('Select - basic self JOIN - reverse scenario', () => {
 		return req()
 			.send({
 				operation: 'sql',
@@ -2679,7 +2698,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('query from leading_zero where id = 0',  () => {
+	it('query from leading_zero where id = 0', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.leading_zero where id = 0' })
 			.expect((r) => {
@@ -2691,7 +2710,7 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it("query from leading_zero where id = '011'",  () => {
+	it("query from leading_zero where id = '011'", () => {
 		return req()
 			.send({ operation: 'sql', sql: "SELECT * FROM dev.leading_zero where id = '011'" })
 			.expect((r) => {
@@ -2703,14 +2722,14 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('query from leading_zero where id = 011',  () => {
+	it('query from leading_zero where id = 011', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'SELECT * FROM dev.leading_zero where id = 011' })
 			.expect((r) => assert.equal(r.body.length, 0, r.text))
 			.expect(200);
 	});
 
-	it('insert record with dog_name =  single space value & empty string',  () => {
+	it('insert record with dog_name =  single space value & empty string', () => {
 		return req()
 			.send({ operation: 'sql', sql: "INSERT INTO dev.dog (id, dog_name) VALUES (1111, ' '), (2222, '')" })
 			.expect((r) => assert.equal(r.body.message, 'inserted 2 of 2 records', r.text))
@@ -2718,21 +2737,21 @@ describe('3. SQL Tests', () => {
 			.expect(200);
 	});
 
-	it('SELECT record with dog_name = single space and validate value',  () => {
+	it('SELECT record with dog_name = single space and validate value', () => {
 		return req()
 			.send({ operation: 'sql', sql: "SELECT id, dog_name FROM dev.dog  WHERE dog_name = ' '" })
 			.expect((r) => assert.deepEqual(r.body, [{ id: 1111, dog_name: ' ' }], r.text))
 			.expect(200);
 	});
 
-	it('SELECT record with dog_name = empty string and validate value',  () => {
+	it('SELECT record with dog_name = empty string and validate value', () => {
 		return req()
 			.send({ operation: 'sql', sql: "SELECT id, dog_name FROM dev.dog  WHERE dog_name = ''" })
 			.expect((r) => assert.deepEqual(r.body, [{ id: 2222, dog_name: '' }], r.text))
 			.expect(200);
 	});
 
-	it('Delete dev.dog records previously created',  () => {
+	it('Delete dev.dog records previously created', () => {
 		return req()
 			.send({ operation: 'sql', sql: 'DELETE FROM dev.dog WHERE id IN (1111, 2222)' })
 			.expect((r) => assert.deepEqual(r.body.deleted_hashes, [1111, 2222], r.text))

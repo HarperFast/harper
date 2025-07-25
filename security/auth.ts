@@ -10,6 +10,8 @@ import { AuthAuditLog, forComponent } from '../utility/logging/harper_logger.js'
 import { user } from '../server/itc/serverHandlers.js';
 import { Headers } from '../server/serverHelpers/Headers.ts';
 import { convertToMS } from '../utility/common_utils.js';
+import { verifyCertificate } from './certificateVerification.ts';
+import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
 const authLogger = forComponent('authentication');
 const { debug } = authLogger;
 const authEventLog = authLogger.withTag('auth-event');
@@ -128,6 +130,27 @@ export async function authentication(request, nextHandler) {
 			authEventLog.error('Authorization error:', request._nodeRequest.socket.authorizationError);
 
 		if (request.mtlsConfig && request.authorized && request.peerCertificate.subject) {
+			const verificationResult = await verifyCertificate(request.peerCertificate, request.mtlsConfig);
+			if (!verificationResult.valid) {
+				authEventLog.error(
+					'Certificate verification failed:',
+					verificationResult.status,
+					'for',
+					request.peerCertificate.subject.CN
+				);
+				return applyResponseHeaders({
+					status: 401,
+					body: serializeMessage({ error: 'Certificate revoked or verification failed' }, request),
+				});
+			}
+
+			// Alternative behavior: Instead of returning 401 above, we could just not set the user
+			// and let authentication fall through to other methods (Basic auth, etc.):
+			// if (verificationResult.valid) {
+			//     // Only extract user from certificate if verification passed
+			//     let username = ...
+			// }
+
 			let username = request.mtlsConfig.user;
 			if (username !== null) {
 				// null means no user is defined from certificate, need regular authentication as well
@@ -212,6 +235,11 @@ export async function authentication(request, nextHandler) {
 		if (ENABLE_SESSIONS) {
 			request.session.update = function (updatedSession) {
 				const expires = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_EXPIRES);
+				const useSecure =
+					request.protocol === 'https' ||
+					headers.host?.startsWith('localhost:') ||
+					headers.host?.startsWith('127.0.0.1:') ||
+					headers.host?.startsWith('::1');
 				if (!sessionId) {
 					sessionId = uuid();
 					const domains = env.get(CONFIG_PARAMS.AUTHENTICATION_COOKIE_DOMAINS);
@@ -221,16 +249,23 @@ export async function authentication(request, nextHandler) {
 					const domain = domains?.find((domain) => headers.host?.endsWith(domain));
 					const cookiePrefix =
 						(origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
-					const cookie = `${cookiePrefix}${sessionId}; Path=/; Expires=${expiresString}; ${domain ? 'Domain=' + domain + '; ' : ''}HttpOnly${
-						request.protocol === 'https' ? '; SameSite=None; Secure' : ''
-					}`;
+					// "Secure" can work with localhost/127.0.0.1 in certain browsers.
+					// https://github.com/httpwg/http-extensions/issues/2605
+					let cookie = `${cookiePrefix}${sessionId}; Path=/; Expires=${expiresString}; HttpOnly`;
+					if (domain) {
+						cookie += `; Domain=${domain}`;
+					}
+					
+					if (useSecure) {
+						cookie += `; SameSite=None; Secure`;
+					}
 					if (responseHeaders) {
 						responseHeaders.push('Set-Cookie', cookie);
 					} else if (response?.headers?.set) {
 						response.headers.set('Set-Cookie', cookie);
 					}
 				}
-				if (request.protocol === 'https') {
+				if (useSecure) {
 					// Indicate that we have successfully updated a session
 					// We make sure this is allowed by CORS so that a client can determine if it has
 					// a valid cookie-authenticated session (studio needs this)
@@ -314,4 +349,3 @@ export async function logout(logoutObject) {
 	await logoutObject.baseRequest.session.update({ user: null });
 	return 'Logout successful';
 }
-import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';

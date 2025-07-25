@@ -11,7 +11,7 @@ const hdb_terms = require('../../utility/hdbTerms');
 const nats_utils = require('../../server/nats/utility/natsUtils');
 const user = require('../../security/user');
 const cluster_status = require('../../utility/clustering/clusterStatus');
-const run = require('../../bin/run');
+const installation = require('../../utility/installation');
 const hdb_utils = require('../../utility/common_utils');
 const status = rewire('../../bin/status');
 
@@ -158,7 +158,7 @@ describe('Test status module', () => {
 		status.__set__('clusterNetwork', network_stub);
 		sandbox.stub(cluster_status, 'clusterStatus').resolves(fake_cluster_status);
 		sandbox.stub(nats_utils, 'closeConnection').resolves();
-		sandbox.stub(run, 'isHdbInstalled').resolves(true);
+		sandbox.stub(installation, 'isHdbInstalled').returns(true);
 		http_request_stub = sandbox
 			.stub(hdb_utils, 'httpRequest')
 			.resolves({ body: JSON.stringify(fake_replication_status) });

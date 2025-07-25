@@ -4,6 +4,7 @@ import chokidar, { type FSWatcher } from 'chokidar';
 import { readFile } from 'node:fs/promises';
 import { isDeepStrictEqual } from 'util';
 import harperLogger from '../utility/logging/harper_logger.js';
+import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.js';
 
 export interface Config {
 	[key: string]: ConfigValue;
@@ -84,13 +85,14 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	#rootConfig?: Config;
 	#name: string;
 	#logger: any;
+	ready: Promise<any[]>;
 
 	constructor(name: string, filePath: string, logger?: any) {
 		super();
 		this.#name = name;
 		this.#filePath = filePath;
 		this.#logger = logger || harperLogger.loggerWithTag(name);
-
+		this.ready = once(this, 'ready');
 		this.#watcher = chokidar
 			.watch(filePath, { persistent: false })
 			.on('add', this.#handleChange.bind(this))
@@ -118,6 +120,7 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 					}
 				} else {
 					// Otherwise, if the extension is not in the config file
+					// This means the plugin was removed from the config file
 					if (this.#scopedConfig) {
 						// and a config exists, remove it
 						this.#scopedConfig = undefined;
@@ -127,11 +130,15 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 				}
 			})
 			.catch((error) => {
+				// If the config file does not exist
 				if (error instanceof Error && 'code' in error && error.code === 'ENOENT') {
-					if (this.#scopedConfig) {
-						this.#scopedConfig = undefined;
+					// And a config already exists, reset it to the default
+					if (this.#rootConfig) {
+						this.#resetConfig();
 						this.emit('remove');
 					} else {
+						// Otherwise, if no config exists, then just set to default and emit ready
+						this.#resetConfig();
 						this.emit('ready');
 					}
 					return;
@@ -145,9 +152,16 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	}
 
 	#handleUnlink(path: string) {
-		this.#logger.warn(`Configuration file ${path} was deleted. Recreate it to restore the options watcher.`);
-		this.#scopedConfig = undefined;
+		this.#logger.warn(
+			`Configuration file ${path} was deleted. Reverting to default configuration. Recreate it to restore the options watcher.`
+		);
+		this.#resetConfig();
 		this.emit('remove');
+	}
+
+	#resetConfig() {
+		this.#rootConfig = DEFAULT_CONFIG;
+		this.#scopedConfig = this.#rootConfig[this.#name];
 	}
 
 	/**
@@ -305,17 +319,6 @@ export class OptionsWatcher extends EventEmitter<OptionsWatcherEventMap> {
 	 */
 	getRoot(): Config | undefined {
 		return this.#rootConfig;
-	}
-
-	/**
-	 * A shortcut to the `ready` event.
-	 *
-	 * Equivalent to awaiting for the `ready` event to be emitted i.e. `await once(optionsWatcher, 'ready')`
-	 *
-	 * @returns A promise that resolves when the watcher is ready.
-	 */
-	ready() {
-		return once(this, 'ready');
 	}
 
 	// Not sure if we want to enable runtime changes to the config - any changes to the config should be done in the config file.

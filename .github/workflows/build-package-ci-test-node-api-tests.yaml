@@ -65,6 +65,7 @@ jobs:
       publicDns: ${{ matrix.arch == 'amd' && needs.createInstances-amd.outputs.publicDnsNames || needs.createInstances-arm.outputs.publicDnsNames }}
       harperdbVersion: ${{ needs.build.outputs.harperdbVersion }}
       nodeVersion: ${{ needs.build.outputs.nodeVersion }}
+      httpsAlso: true
     secrets: inherit
 
   ##########################

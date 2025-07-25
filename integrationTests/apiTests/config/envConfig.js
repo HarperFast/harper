@@ -1,11 +1,27 @@
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
-import 'dotenv/config';
+import { config } from 'dotenv';
+
+config({ path: new URL('../.env', import.meta.url) });
+
+if (!process.env.HDB_ADMIN_USERNAME || !process.env.HDB_ADMIN_PASSWORD) {
+	console.error('❌ Environment variables HDB_ADMIN_USERNAME and HDB_ADMIN_PASSWORD must be set.');
+	process.exit(1);
+}
+
+if (!process.env.S3_KEY || !process.env.S3_SECRET) {
+	console.warn(
+		'⚠️ Environment variables S3_KEY and S3_SECRET are missing. Tests that require S3 functionality will fail.'
+	);
+}
 
 export let testData = {
 	'host': 'http://localhost',
 	'port': '9925',
 	'portRest': '9926',
+	'secureHost': 'https://localhost',
+	'securePort': '9943',
+	'securePortRest': '9953',
 	'username': process.env.HDB_ADMIN_USERNAME,
 	'password': process.env.HDB_ADMIN_PASSWORD,
 	'schema': 'northnwd',
@@ -57,11 +73,13 @@ export let testData = {
 	'restartTimeout': 45000,
 	'restartHttpWorkersTimeout': 15000,
 	'jobErrorMessage': '',
-	'blobsPath' : '/blobs/blob/0/0/',
+	'blobsPath': '/blobs/blob/0/0/',
 };
 
 export const envUrl = `${testData.host}:${testData.port}`;
 export const envUrlRest = `${testData.host}:${testData.portRest}`;
+export const envUrlSecure = `${testData.secureHost}:${testData.securePort}`;
+export const envUrlSecureRest = `${testData.secureHost}:${testData.securePortRest}`;
 
 export const headers = createHeaders(testData.username, testData.password);
 export const headersBulkLoadUser = createHeaders('bulk_load_user', testData.password);
@@ -86,7 +104,9 @@ export function getCsvPath() {
 	if (process.env.FILES_LOCATION) {
 		return process.env.FILES_LOCATION;
 	}
+
 	const __filename = fileURLToPath(import.meta.url);
 	const __dirname = path.dirname(__filename);
+
 	return path.resolve(path.join(__dirname, '/../../../test/data/integrationTestsCsvs/')) + '/';
 }

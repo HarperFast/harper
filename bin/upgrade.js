@@ -10,11 +10,11 @@ const env = require('../utility/environment/environmentManager.js');
 env.initSync();
 
 const chalk = require('chalk');
-const fs = require('fs-extra');
 const hdbLogger = require('../utility/logging/harper_logger.js');
 const hdbTerms = require('../utility/hdbTerms.ts');
 const directivesManager = require('../upgrade/directivesManager.js');
 const hdbUtils = require('../utility/common_utils.js');
+const installation = require('../utility/installation.ts');
 const hdbInfoController = require('../dataLayer/hdbInfoController.js');
 const upgradePrompt = require('../upgrade/upgradePrompt.js');
 const psList = require('../utility/psList.js');
@@ -44,14 +44,9 @@ async function upgrade(upgradeObj) {
 	if (pm2Utils === undefined) pm2Utils = require('../utility/processManagement/processManagement.js');
 
 	//We have to make sure HDB is installed before doing anything else
-	if (!fs.existsSync(env.get(env.BOOT_PROPS_FILE_PATH))) {
-		const hdbNotFoundMsg = 'The hdb_boot_properties file was not found. Please install HDB.';
-		printToLogAndConsole(hdbNotFoundMsg, hdbTerms.LOG_LEVELS.ERROR);
-		process.exit(1);
-	}
-
-	if (!fs.existsSync(env.get(hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY))) {
-		const hdbNotInstalledMsg = 'The hdb settings file was not found. Please make sure HDB is installed.';
+	const installed = installation.isHdbInstalled(env, hdbLogger);
+	if (!installed) {
+		const hdbNotInstalledMsg = 'Harper is not installed. Harper must be installed before running an upgrade.';
 		printToLogAndConsole(hdbNotInstalledMsg, hdbTerms.LOG_LEVELS.ERROR);
 		process.exit(1);
 	}

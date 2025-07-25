@@ -8,12 +8,11 @@ describe('15. Custom Functions & components', () => {
 
 	it('deploy_component github package', async () => {
 		await setTimeout(5000);
-		const response = await req()
-			.send({
-				operation: 'deploy_component',
-				project: 'deploy-test-gh',
-				package: 'HarperDB/application-template',
-			})
+		const response = await req().send({
+			operation: 'deploy_component',
+			project: 'deploy-test-gh',
+			package: 'HarperDB/application-template',
+		});
 		if (!response.text.includes('Successfully deployed: deploy-test-gh')) {
 			console.log('Response was: ' + response.text);
 			console.log('RETRY 1: deploy_component github package');
@@ -24,12 +23,12 @@ describe('15. Custom Functions & components', () => {
 					package: 'HarperDB/application-template',
 				})
 				.expect((r) => assert.equal(r.body.message, 'Successfully deployed: deploy-test-gh', r.text))
-				.expect(200)
+				.expect(200);
 		}
 		await setTimeout(15000);
 	});
 
-	it('deploy_component using tar payload',  () => {
+	it('deploy_component using tar payload', () => {
 		return req()
 			.send({
 				operation: 'deploy_component',
@@ -50,24 +49,28 @@ describe('15. Custom Functions & components', () => {
 				payload:
 					'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',
 			})
-			.expect((r) => assert.equal(r.body.message, 'Successfully deployed: deploy-test-payload-tar-gz, restarting HarperDB', r.text))
+			.expect((r) =>
+				assert.equal(r.body.message, 'Successfully deployed: deploy-test-payload-tar-gz, restarting HarperDB', r.text)
+			)
 			.expect(200);
 		await setTimeout(30000);
 	});
 
-	it('call component tar payload',  () => {
+	it('call component tar payload', () => {
 		return reqRest('/GreetingTar')
-			.expect((r) => assert.equal(r.body.greeting, 'Hello world from a test for deploying a component with tar payload', r.text))
+			.expect((r) =>
+				assert.equal(r.body.greeting, 'Hello world from a test for deploying a component with tar payload', r.text)
+			)
 			.expect(200);
 	});
 
-	it('call component tar.gz payload',  () => {
+	it('call component tar.gz payload', () => {
 		return reqRest('/GreetingTarGz')
 			.expect((r) => assert.equal(r.body.greeting, 'Hello world from deploy test payload tar gz', r.text))
 			.expect(200);
 	});
 
-	it('set_component_file',  () => {
+	it('set_component_file', () => {
 		return req()
 			.send({
 				operation: 'set_component_file',
@@ -80,21 +83,21 @@ describe('15. Custom Functions & components', () => {
 			.expect(200);
 	});
 
-	it('get_component_file',  () => {
+	it('get_component_file', () => {
 		return req()
 			.send({ operation: 'get_component_file', project: 'set-test', file: 'utils/test.js', encoding: 'utf8' })
 			.expect((r) => assert.equal(r.body.message, 'I am from inside a JS file', r.text))
 			.expect(200);
 	});
 
-	it('add_component',  () => {
+	it('add_component', () => {
 		return req()
 			.send({ operation: 'add_component', project: 'add-test' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully added project: add-test', r.text))
 			.expect(200);
 	});
 
-	it('package_component',  () => {
+	it('package_component', () => {
 		return req()
 			.send({ operation: 'package_component', project: 'add-test' })
 			.expect((r) => assert.ok(r.body.hasOwnProperty('project'), r.text))
@@ -102,7 +105,7 @@ describe('15. Custom Functions & components', () => {
 			.expect(200);
 	});
 
-	it('get_components',  () => {
+	it('get_components', () => {
 		return req()
 			.send({ operation: 'get_components' })
 			.expect((r) => {
@@ -125,14 +128,14 @@ describe('15. Custom Functions & components', () => {
 			.expect(200);
 	});
 
-	it('drop_component',  () => {
+	it('drop_component', () => {
 		return req()
 			.send({ operation: 'drop_component', project: 'add-test' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully dropped: add-test', r.text))
 			.expect(200);
 	});
 
-	it('get_components after drop',  () => {
+	it('get_components after drop', () => {
 		return req()
 			.send({ operation: 'get_components' })
 			.expect((r) => {
@@ -151,21 +154,21 @@ describe('15. Custom Functions & components', () => {
 			.expect(200);
 	});
 
-	it('drop_component set-test',  () => {
+	it('drop_component set-test', () => {
 		return req()
 			.send({ operation: 'drop_component', project: 'set-test' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully dropped: set-test', r.text))
 			.expect(200);
 	});
 
-	it('add custom function project',  () => {
+	it('add custom function project', () => {
 		return req()
 			.send({ operation: 'add_custom_function_project', project: 'test_project' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully added project: test_project', r.text))
 			.expect(200);
 	});
 
-	it('get custom function status',  () => {
+	it('get custom function status', () => {
 		return req()
 			.send({ operation: 'custom_functions_status' })
 			.expect((r) => assert.ok(r.body.hasOwnProperty('port'), r.text))
@@ -173,13 +176,13 @@ describe('15. Custom Functions & components', () => {
 			.expect(200);
 	});
 
-	it('call custom function',  () => {
+	it('call custom function', () => {
 		return reqRest('/Greeting')
 			.expect((r) => assert.ok(r.body.hasOwnProperty('greeting'), r.text))
 			.expect(200);
 	});
 
-	it('set custom function',  () => {
+	it('set custom function', () => {
 		return req()
 			.send({
 				operation: 'set_custom_function',
@@ -192,42 +195,42 @@ describe('15. Custom Functions & components', () => {
 			.expect(200);
 	});
 
-	it('get custom function',  () => {
+	it('get custom function', () => {
 		return req()
 			.send({ operation: 'get_custom_function', project: 'test_project', type: 'routes', file: 'test2' })
 			.expect((r) => assert.equal(r.body.message, 'hello world', r.text))
 			.expect(200);
 	});
 
-	it('drop custom function',  () => {
+	it('drop custom function', () => {
 		return req()
 			.send({ operation: 'drop_custom_function', project: 'test_project', type: 'routes', file: 'test2' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully deleted custom function: test2.js', r.text))
 			.expect(200);
 	});
 
-	it('confirm function was dropped',  () => {
+	it('confirm function was dropped', () => {
 		return req()
 			.send({ operation: 'get_custom_function', project: 'test_project', type: 'routes', file: 'test2' })
 			.expect((r) => assert.equal(r.body.error, 'File does not exist', r.text))
 			.expect(400);
 	});
 
-	it('get custom functions',  () => {
+	it('get custom functions', () => {
 		return req()
 			.send({ operation: 'get_custom_functions' })
 			.expect((r) => assert.ok(r.body.hasOwnProperty('test_project'), r.text))
 			.expect(200);
 	});
 
-	it('drop custom functions project',  () => {
+	it('drop custom functions project', () => {
 		return req()
 			.send({ operation: 'drop_custom_function_project', project: 'test_project' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully deleted project: test_project', r.text))
 			.expect(200);
 	});
 
-	it('confirm project was dropped',  () => {
+	it('confirm project was dropped', () => {
 		const expected_obj = {
 			'deploy-test-gh': {
 				routes: [],
@@ -263,7 +266,7 @@ describe('15. Custom Functions & components', () => {
 		await setTimeout(22000);
 	});
 
-	it('confirm deploy worked',  () => {
+	it('confirm deploy worked', () => {
 		return req()
 			.send({ operation: 'get_custom_functions' })
 			.expect((r) => {
@@ -276,35 +279,35 @@ describe('15. Custom Functions & components', () => {
 			.expect(200);
 	});
 
-	it('drop custom functions project deploy',  () => {
+	it('drop custom functions project deploy', () => {
 		return req()
 			.send({ operation: 'drop_custom_function_project', project: 'test-deploy' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully deleted project: test-deploy', r.text))
 			.expect(200);
 	});
 
-	it('drop deploy-test-payload',  () => {
+	it('drop deploy-test-payload', () => {
 		return req()
 			.send({ operation: 'drop_component', project: 'deploy-test-payload' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully dropped: deploy-test-payload', r.text))
 			.expect(200);
 	});
 
-	it('drop test-deploy from config',  () => {
+	it('drop test-deploy from config', () => {
 		return req()
 			.send({ operation: 'drop_component', project: 'test-deploy' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully dropped: test-deploy', r.text))
 			.expect(200);
 	});
 
-	it('drop deploy-test-gh',  () => {
+	it('drop deploy-test-gh', () => {
 		return req()
 			.send({ operation: 'drop_component', project: 'deploy-test-gh' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully dropped: deploy-test-gh', r.text))
 			.expect(200);
 	});
 
-	it('drop deploy-test-payload-tar-gz',  () => {
+	it('drop deploy-test-payload-tar-gz', () => {
 		return req()
 			.send({ operation: 'drop_component', project: 'deploy-test-payload-tar-gz' })
 			.expect((r) => assert.equal(r.body.message, 'Successfully dropped: deploy-test-payload-tar-gz', r.text))

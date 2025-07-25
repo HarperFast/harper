@@ -49,6 +49,7 @@ import type { OperationRequest, OperationRequestBody, OperationResult } from '..
 import { transactToClusteringUtils } from '../../utility/clustering/transactToClusteringUtilities.js';
 import type { Context } from '../../resources/ResourceInterface.ts';
 import * as status from '../status/index.ts';
+import * as usageLicensing from '../../resources/usageLicensing.ts';
 
 const pSearchSearch = util.promisify(search.search);
 const pSqlEvaluateSql = util.promisify(sql.evaluateSQL);
@@ -290,7 +291,7 @@ export async function executeJob(json: OperationRequestBody): Promise<JobResult>
 		}
 	} catch (err) {
 		const error = err instanceof Error ? err : null;
-		const message = `There was an error executing job: ${(error && 'http_resp_msg' in error) ? error.http_resp_msg : err}`;
+		const message = `There was an error executing job: ${error && 'http_resp_msg' in error ? error.http_resp_msg : err}`;
 		operationLog.error(message);
 		throw handleHDBError(err, message);
 	}
@@ -482,10 +483,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		terms.OPERATIONS_ENUM.DELETE_SSH_KEY,
 		new OperationFunctionObject(customFunctionOperations.deleteSSHKey)
 	);
-	opFuncMap.set(
-		terms.OPERATIONS_ENUM.LIST_SSH_KEYS,
-		new OperationFunctionObject(customFunctionOperations.listSSHKeys)
-	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.LIST_SSH_KEYS, new OperationFunctionObject(customFunctionOperations.listSSHKeys));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.SET_SSH_KNOWN_HOSTS,
 		new OperationFunctionObject(customFunctionOperations.setSSHKnownHosts)
@@ -497,11 +495,16 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_ANALYTICS, new OperationFunctionObject(analytics.getOp));
 	opFuncMap.set(terms.OPERATIONS_ENUM.LIST_METRICS, new OperationFunctionObject(analytics.listMetricsOp));
 	opFuncMap.set(terms.OPERATIONS_ENUM.DESCRIBE_METRIC, new OperationFunctionObject(analytics.describeMetricOp));
-	
+
 	// set status operations
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_STATUS, new OperationFunctionObject(status.get));
 	opFuncMap.set(terms.OPERATIONS_ENUM.SET_STATUS, new OperationFunctionObject(status.set));
 	opFuncMap.set(terms.OPERATIONS_ENUM.CLEAR_STATUS, new OperationFunctionObject(status.clear));
+
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.INSTALL_USAGE_LICENSE,
+		new OperationFunctionObject(usageLicensing.installUsageLicenseOp)
+	);
 
 	return opFuncMap;
 }

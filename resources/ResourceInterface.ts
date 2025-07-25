@@ -1,6 +1,7 @@
 import { DatabaseTransaction } from './DatabaseTransaction.ts';
 import { OperationFunctionName } from '../server/serverHelpers/serverUtilities.ts';
 import { RequestTarget } from './RequestTarget';
+import { Entry } from './RecordEncoder.ts';
 
 export interface ResourceInterface<Key = any, Record = any> {
 	get?(id: Id): Promise<UpdatableRecord<Record>>;
@@ -24,25 +25,25 @@ export interface User {
 }
 
 export interface Context {
-	/**	 The user making the request	 */
+	/**	 The user making the request */
 	user?: User;
-	/**	 The database transaction object	 */
+	/**	 The database transaction object */
 	transaction?: DatabaseTransaction;
-	/**	 If the operation that will be performed with this context should check user authorization	 */
+	/**	 If the operation that will be performed with this context should check user authorization */
 	authorize?: number;
-	/**	 The last modification time of any data that has been accessed with this context	 */
+	/**	 The last modification time of any data that has been accessed with this context */
 	lastModified?: number;
 	/**	 The time	at which a saved record should expire */
 	expiresAt?: number;
-	/**	 Indicates that caching should not be applied	 */
+	/**	 Indicates that caching should not be applied */
 	noCache?: boolean;
-	/**	 Indicates that values from the source data should be stored as a cached value	 */
+	/**	 Indicates that values from the source data should be stored as a cached value */
 	noCacheStore?: boolean;
 	/**	 Only return values from the table, and don't use data from the source */
 	onlyIfCached?: boolean;
 	/**	 Allows data from a caching table to be used if there is an error retrieving data from the source */
 	staleIfError?: boolean;
-	/**	 Indicates any cached data must be revalidated	 */
+	/**	 Indicates any cached data must be revalidated */
 	mustRevalidate?: boolean;
 	/**	 An array of nodes to replicate to */
 	replicateTo?: string[];
@@ -53,6 +54,29 @@ export interface Context {
 	loadedFromSource?: boolean;
 	nodeName?: string;
 	resourceCache?: Map<Id, any>;
+}
+
+export interface SourceContext<TRequestContext = Context> {
+	/** The original request context passed from the caching layer */
+	requestContext: TRequestContext;
+	/** The existing record, from the existing entry (if any) */
+	replacingRecord?: any;
+	/** The existing database entry (if any) */
+	replacingEntry?: Entry;
+	/** The version/timestamp of the existing record */
+	replacingVersion?: number;
+	/** Indicates that values from the source data should NOT be stored as a cached value */
+	noCacheStore?: boolean;
+	/** Reference to the source Resource instance */
+	source?: ResourceInterface;
+	/** Shared resource cache from parent context for visibility of modifications */
+	resourceCache?: Map<Id, any>;
+	/** Database transaction for the context */
+	transaction?: DatabaseTransaction;
+	/** The time at which the cached entry should expire (ms since epoch) */
+	expiresAt?: number;
+	/** The last modification time of any data accessed with this context */
+	lastModified?: number;
 }
 
 export type Operator = 'and' | 'or';
