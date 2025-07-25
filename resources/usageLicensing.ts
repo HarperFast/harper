@@ -18,7 +18,7 @@ export async function installUsageLicenseOp(req: InstallLicenseRequest): Promise
 	return 'Successfully installed usage license';
 }
 
-async function installUsageLicense(license: string): Promise<void> {
+function installUsageLicense(license: string): Promise<void> {
 	const validatedLicense = validateLicense(license);
 	const { id, ...licenseRecord } = validatedLicense;
 	return databases.system.hdb_license.patch(id, licenseRecord);
