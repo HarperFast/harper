@@ -1,4 +1,4 @@
-import type { ResourceInterface, SubscriptionRequest, Id, Context, Query } from './ResourceInterface.ts';
+import type { ResourceInterface, SubscriptionRequest, Id, Context, Query, SourceContext } from './ResourceInterface.ts';
 import { randomUUID } from 'crypto';
 import { DatabaseTransaction, Transaction } from './DatabaseTransaction.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
@@ -325,7 +325,7 @@ export class Resource implements ResourceInterface {
 	 * @param options
 	 * @returns
 	 */
-	static getResource(id: Id, request: Context, options?: any): Resource | Promise<Resource> {
+	static getResource(id: Id, request: Context | SourceContext, options?: any): Resource | Promise<Resource> {
 		let resource;
 		let context = request.getContext?.();
 		let isCollection;
@@ -418,7 +418,7 @@ export class Resource implements ResourceInterface {
 	 * Get the context for this resource
 	 * @returns context object with information about the current transaction, user, and more
 	 */
-	getContext(): Context {
+	getContext(): Context | SourceContext {
 		return this.#context;
 	}
 }

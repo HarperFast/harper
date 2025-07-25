@@ -24,6 +24,7 @@ import { server } from '../Server.ts';
 import env from '../../utility/environment/environmentManager.js';
 import * as logger from '../../utility/logging/harper_logger.js';
 import { X509Certificate } from 'crypto';
+import { verifyCertificate } from '../../security/certificateVerification.ts';
 import { readFileSync } from 'fs';
 export { startOnMainThread } from './subscriptionManager';
 import {
@@ -89,7 +90,7 @@ export function start(options) {
 	options.runFirst = true;
 	// now setup authentication for the replication server, authorizing by certificate
 	// or IP address and then falling back to standard authorization, we set up an http middleware listener
-	server.http((request, nextHandler) => {
+	server.http(async (request, nextHandler) => {
 		if (request.isWebSocket && request.headers.get('Sec-WebSocket-Protocol') === 'harperdb-replication-v1') {
 			logger.debug('Incoming replication WS connection received, authorized: ' + request.authorized);
 			if (!request.authorized && request._nodeRequest.socket.authorizationError) {
@@ -108,6 +109,22 @@ export function start(options) {
 					if (node) break;
 				}
 				if (node) {
+					// Perform certificate verification using OCSP
+					// Pass the full options object which contains mtls config - verifyCertificate will handle extraction
+					const verificationResult = await verifyCertificate(request.peerCertificate, options);
+					if (!verificationResult.valid) {
+						logger.warn(
+							'Certificate verification failed:',
+							verificationResult.status,
+							'for node',
+							node.name,
+							'certificate serial number',
+							request.peerCertificate.serialNumber
+						);
+						return;
+					}
+
+					// Keep manual revocation check as a fallback
 					if (node?.revoked_certificates?.includes(request.peerCertificate.serialNumber)) {
 						logger.warn(
 							'Revoked certificate used in attempt to connect to node',

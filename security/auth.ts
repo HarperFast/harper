@@ -10,6 +10,8 @@ import { AuthAuditLog, forComponent } from '../utility/logging/harper_logger.js'
 import { user } from '../server/itc/serverHandlers.js';
 import { Headers } from '../server/serverHelpers/Headers.ts';
 import { convertToMS } from '../utility/common_utils.js';
+import { verifyCertificate } from './certificateVerification.ts';
+import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
 const authLogger = forComponent('authentication');
 const { debug } = authLogger;
 const authEventLog = authLogger.withTag('auth-event');
@@ -128,6 +130,27 @@ export async function authentication(request, nextHandler) {
 			authEventLog.error('Authorization error:', request._nodeRequest.socket.authorizationError);
 
 		if (request.mtlsConfig && request.authorized && request.peerCertificate.subject) {
+			const verificationResult = await verifyCertificate(request.peerCertificate, request.mtlsConfig);
+			if (!verificationResult.valid) {
+				authEventLog.error(
+					'Certificate verification failed:',
+					verificationResult.status,
+					'for',
+					request.peerCertificate.subject.CN
+				);
+				return applyResponseHeaders({
+					status: 401,
+					body: serializeMessage({ error: 'Certificate revoked or verification failed' }, request),
+				});
+			}
+
+			// Alternative behavior: Instead of returning 401 above, we could just not set the user
+			// and let authentication fall through to other methods (Basic auth, etc.):
+			// if (verificationResult.valid) {
+			//     // Only extract user from certificate if verification passed
+			//     let username = ...
+			// }
+
 			let username = request.mtlsConfig.user;
 			if (username !== null) {
 				// null means no user is defined from certificate, need regular authentication as well
@@ -326,4 +349,3 @@ export async function logout(logoutObject) {
 	await logoutObject.baseRequest.session.update({ user: null });
 	return 'Logout successful';
 }
-import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';

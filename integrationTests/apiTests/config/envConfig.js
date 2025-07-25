@@ -19,6 +19,9 @@ export let testData = {
 	'host': 'http://localhost',
 	'port': '9925',
 	'portRest': '9926',
+	'secureHost': 'https://localhost',
+	'securePort': '9943',
+	'securePortRest': '9953',
 	'username': process.env.HDB_ADMIN_USERNAME,
 	'password': process.env.HDB_ADMIN_PASSWORD,
 	'schema': 'northnwd',
@@ -75,6 +78,8 @@ export let testData = {
 
 export const envUrl = `${testData.host}:${testData.port}`;
 export const envUrlRest = `${testData.host}:${testData.portRest}`;
+export const envUrlSecure = `${testData.secureHost}:${testData.securePort}`;
+export const envUrlSecureRest = `${testData.secureHost}:${testData.securePortRest}`;
 
 export const headers = createHeaders(testData.username, testData.password);
 export const headersBulkLoadUser = createHeaders('bulk_load_user', testData.password);

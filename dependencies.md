@@ -132,3 +132,14 @@ Generally, dependencies are added by simply adding them to the dependencies list
 - Size: 49.6kB
 - Security: No known issues.
 - Eventual removal: This is a very well maintained package and is the industry standard for serving static files. We could remove with very careful usage of `fs` and `http`, but would probably require a lot of testing and edge case handling.
+
+## easy-ocsp
+
+- Need for usage: Provides OCSP (Online Certificate Status Protocol) verification for TLS certificates to check if certificates have been revoked.
+- Size/memory cost: Approximately 15KB
+- Security: No reported vulnerabilities
+- Environment interaction: None
+- Overlap: None
+- Can be deferred: Yes, only loaded when OCSP verification is enabled
+- Binary compilation: No
+- Eventual removal: OCSP functionality could potentially be implemented directly if needed, replaced when Node.js adds native OCSP support, or might be replaced by something like pkijs if we add CRL support
