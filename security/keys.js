@@ -606,6 +606,9 @@ async function generateCertAuthority(private_key, publicKey, writeKey = true) {
 	caCert.setExtensions([
 		{ name: 'basicConstraints', cA: true, critical: true },
 		{ name: 'keyUsage', keyCertSign: true, critical: true },
+		// Subject Key Identifier is required for OCSP validation - helps OCSP responders
+		// efficiently identify certificates in the chain and match them to their issuing CAs
+		{ name: 'subjectKeyIdentifier' },
 	]);
 
 	caCert.sign(private_key, forge.md.sha256.create());
@@ -1203,7 +1206,7 @@ function hostnamesFromCert(cert /*X509Certificate*/) {
 			.filter((part) => part); // filter out any empty names
 	}
 	// finally we fall back to the common name
-	const commonName = certObj.subject.match(/CN=(.*)/)?.[1];
+	const commonName = cert.subject.match(/CN=(.*)/)?.[1];
 	return commonName ? [commonName] : [];
 }
 

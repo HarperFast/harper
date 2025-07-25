@@ -130,15 +130,26 @@ export async function authentication(request, nextHandler) {
 			authEventLog.error('Authorization error:', request._nodeRequest.socket.authorizationError);
 
 		if (request.mtlsConfig && request.authorized && request.peerCertificate.subject) {
-			// Perform certificate verification (config is handled internally)
 			const verificationResult = await verifyCertificate(request.peerCertificate, request.mtlsConfig);
 			if (!verificationResult.valid) {
-				authEventLog.error('Certificate verification failed:', verificationResult.status, 'for', request.peerCertificate.subject.CN);
+				authEventLog.error(
+					'Certificate verification failed:',
+					verificationResult.status,
+					'for',
+					request.peerCertificate.subject.CN
+				);
 				return applyResponseHeaders({
 					status: 401,
 					body: serializeMessage({ error: 'Certificate revoked or verification failed' }, request),
 				});
 			}
+
+			// Alternative behavior: Instead of returning 401 above, we could just not set the user
+			// and let authentication fall through to other methods (Basic auth, etc.):
+			// if (verificationResult.valid) {
+			//     // Only extract user from certificate if verification passed
+			//     let username = ...
+			// }
 
 			let username = request.mtlsConfig.user;
 			if (username !== null) {

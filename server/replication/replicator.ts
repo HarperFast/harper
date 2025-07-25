@@ -110,8 +110,8 @@ export function start(options) {
 				}
 				if (node) {
 					// Perform certificate verification using OCSP
-					// Get mtls config from the server (true for replication since it uses mTLS)
-					const verificationResult = await verifyCertificate(request.peerCertificate, true);
+					// Pass the full options object which contains mtls config - verifyCertificate will handle extraction
+					const verificationResult = await verifyCertificate(request.peerCertificate, options);
 					if (!verificationResult.valid) {
 						logger.warn(
 							'Certificate verification failed:',
@@ -123,7 +123,7 @@ export function start(options) {
 						);
 						return;
 					}
-					
+
 					// Keep manual revocation check as a fallback
 					if (node?.revoked_certificates?.includes(request.peerCertificate.serialNumber)) {
 						logger.warn(
