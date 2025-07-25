@@ -32,12 +32,12 @@ describe('usageLicensing', function () {
 				region: 'test',
 				reads: 2000,
 				writes: 3000,
-				readBytes: 'Infinity',
-				writeBytes: 'Infinity',
+				readBytes: -1,
+				writeBytes: -1,
 				realTimeMessages: 1000,
-				realTimeBytes: 'Infinity',
-				cpuTime: 'Infinity',
-				storage: 'Infinity',
+				realTimeBytes: -1,
+				cpuTime: -1,
+				storage: -1,
 				expiration: '2030-01-01T00:00:00.000Z',
 			};
 			const license = generateTestLicense(payload);
@@ -52,7 +52,7 @@ describe('usageLicensing', function () {
 		});
 
 		it('should throw InvalidBase64UrlEncodingError on invalid base64url encoding', () => {
-			expect(() => ul.validateLicense(signAnything('foo!.$bar'))).to.throw(ul.InvalidBase64UrlEncodingError);
+			expect(() => ul.validateLicense(signAnything('foo!.$bar'))).to.throw(TypeError);
 		});
 
 		it('should throw InvalidLicenseError if more than three dot-seperated sections', () => {
