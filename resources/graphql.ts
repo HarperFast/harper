@@ -54,6 +54,7 @@ export function start({ ensureTable }) {
 					const properties = [];
 					const typeDef = { table: null, database: null, properties };
 					types.set(typeName, typeDef);
+					resources.allTypes.set(typeName, typeDef);
 					for (const directive of definition.directives) {
 						const directiveName = directive.name.value;
 						if (directiveName === 'table') {

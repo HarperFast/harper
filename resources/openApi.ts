@@ -48,42 +48,48 @@ export function generateJsonApi(resources) {
 		},
 	];
 
+	const includeDefinitionInSchema = (def) => {
+		if (def.type && !api.components.schemas[def.type]) {
+			// Immediately define the type so we don't get caught in infinite recursions, until...
+			api.components.schemas[def.type] = {};
+			const defProps: Record<string, unknown> = {};
+			const defRequired: string[] = [];
+			for (const prop of def.properties) {
+				if (DATA_TYPES[prop.type]) {
+					defProps[prop.name] = new Type(DATA_TYPES[prop.type], prop.type);
+				} else if (prop.properties) {
+					defProps[prop.name] = new Ref(prop.type);
+					includeDefinitionInSchema(prop);
+				} else if (prop.elements?.properties) {
+					defProps[prop.name] = new ArrayRef(prop.elements.type);
+					includeDefinitionInSchema(prop.elements);
+				}
+				if (prop.nullable === false) {
+					defRequired.push(prop.name);
+				}
+			}
+			// ... down here we actually define the value for the new type.
+			api.components.schemas[def.type] = new ResourceSchema(defProps, !def.sealed, defRequired);
+		}
+	};
+
 	for (const [, resource] of resources) {
 		// skip invalid and error resources
 		if (!resource.path || resource.Resource.isError) continue;
 
 		const { path } = resource;
-		const strippedPath = path.split('/').slice(-1); // strip any namespace from path
-		const { attributes, prototype, sealed, primaryKey = 'id' } = resource.Resource;
+		const strippedPath = path.split('/').pop(); // strip any namespace from path
+		let { attributes, sealed } = resource.Resource;
+		const { prototype, primaryKey = 'id' } = resource.Resource;
+		if (!attributes && resources.allTypes.has(resource.path)) {
+			const possibleType = resources.allTypes.get(resource.path);
+			sealed = possibleType.sealed;
+			attributes = possibleType.properties;
+		}
 		if (!primaryKey) continue;
 		const props = {};
 		const queryParamsArray = [];
 		const resourceRequired: string[] = [];
-
-		const includeDefinitionInSchema = (def) => {
-			if (def.type && !api.components.schemas[def.type]) {
-				// Immediately define the type so we don't get caught in infinite recursions, until...
-				api.components.schemas[def.type] = {};
-				const defProps: Record<string, unknown> = {};
-				const defRequired: string[] = [];
-				for (const prop of def.properties) {
-					if (DATA_TYPES[prop.type]) {
-						defProps[prop.name] = new Type(DATA_TYPES[prop.type], prop.type);
-					} else if (prop.properties) {
-						defProps[prop.name] = new Ref(prop.type);
-						includeDefinitionInSchema(prop);
-					} else if (prop.elements?.properties) {
-						defProps[prop.name] = new ArrayRef(prop.elements.type);
-						includeDefinitionInSchema(prop.elements);
-					}
-					if (prop.nullable === false) {
-						defRequired.push(prop.name);
-					}
-				}
-				// ... down here we actually define the value for the new type.
-				api.components.schemas[def.type] = new ResourceSchema(defProps, !def.sealed, defRequired);
-			}
-		};
 
 		if (attributes) {
 			for (const { type, name, elements, relationship, definition, nullable } of attributes) {
@@ -247,6 +253,13 @@ export function generateJsonApi(resources) {
 
 				'used to retrieve the specified property of the specified record'
 			);
+		}
+	}
+
+	for (const [, value] of resources.allTypes) {
+		includeDefinitionInSchema(value);
+		if (value.sealed && api.components.schemas[value.type].additionalProperties) {
+			api.components.schemas[value.type].additionalProperties = false;
 		}
 	}
 
