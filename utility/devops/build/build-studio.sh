@@ -41,8 +41,8 @@ cat <<EOF > ./studio/public/manifest.json
 EOF
 
 cd studio
-npm install --force
-npm run lint-prod
 npm install -g yarn
+yarn
+yarn lint-prod
 yarn build:local
 cd ..
