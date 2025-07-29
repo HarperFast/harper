@@ -20,15 +20,18 @@ import { req, secureReq, secureReqRest } from '../utils/request.js';
  * Example Harper configuration:
  * ```yaml
  * http:
- *   securePort: 9943
- *   mtls:
- *     certificateVerification:
- *       timeout: 5000
- *       cacheTtl: 3600000
- *       failureMode: fail-open
+ * 	portRest: 9926
+ * 	securePortRest: 9953
+ * 	mtls: true
+ * operationsApi:
+ * 	network:
+ * 		port: 9925
+ * 		securePort: 9943
  * ```
  */
+
 describe('24. OCSP Certificate Verification Tests', () => {
+	let httpsAvailable = true;
 	let ocspResponder;
 	let ocspPort = 8888;
 	// Use relative path from current test file location
@@ -37,11 +40,14 @@ describe('24. OCSP Certificate Verification Tests', () => {
 	const certsPath = join(ocspUtilsPath, 'generated');
 	let certificatesGenerated = false;
 
-	const httpsPort = parseInt(testData.securePort); // HTTPS port from config
-
 	// Out of order test just to emphasize the initial state
 	// This test checks if the certificate cache is empty before any OCSP tests run
-	it('should start with empty certificate cache', async () => {
+	it('should start with empty certificate cache', async (t) => {
+		if (!httpsAvailable) {
+			t.skip('HTTPS not available');
+			return;
+		}
+
 		// Check if certificate cache table exists
 		const schemaResponse = await req().send({
 			operation: 'describe_schema',
@@ -65,31 +71,35 @@ describe('24. OCSP Certificate Verification Tests', () => {
 	});
 
 	before(async function () {
-		// Check if HTTPS is available
+		// Check if HTTPS is available on both endpoints
 		try {
-			// Try to make a request to the secure endpoint - no auth required for this check
+			// Check operations endpoint (used for certificate management)
 			await secureReq().send({ operation: 'describe_all' }).timeout(2000);
-			// Success means HTTPS is running
+			// Check REST endpoint (used for certificate verification tests)
+			await secureReqRest('/').timeout(2000);
 		} catch (error) {
-			// Check if it's a connection refused error
 			if (error.code === 'ECONNREFUSED' || error.message.includes('ECONNREFUSED')) {
-				throw new Error(`
-OCSP tests require Harper to be configured with HTTPS/mTLS.
+				httpsAvailable = false;
+				console.log(`
+OCSP tests are being skipped because HTTPS is not available.
 
-Please add this to your harperdb-config.yaml and restart Harper:
+To run these tests, add this to your harperdb-config.yaml and restart Harper:
 
 http:
-  port: ${testData.port}
-  securePort: ${testData.securePort}
-  mtls: true
-
-The OCSP test requires HTTPS to be already configured as it cannot
-dynamically open new ports during testing.`);
+	portRest: ${testData.portRest}
+	securePortRest: ${testData.securePortRest}
+	mtls: true
+operationsApi:
+	network:
+		port: ${testData.port}
+		securePort: ${testData.securePort}
+`);
+				return;
 			}
-			// Other errors (cert errors, etc) mean HTTPS is at least running
 		}
 
-		console.log('HTTPS detected on port', httpsPort);
+		if (!httpsAvailable) return;
+
 		console.log('Generating test certificates...');
 
 		// Ensure directory exists
@@ -260,7 +270,12 @@ dynamically open new ports during testing.`);
 		}
 	});
 
-	it('should reject revoked certificate with OCSP check', async () => {
+	it('should reject revoked certificate with OCSP check', async (t) => {
+		if (!httpsAvailable) {
+			t.skip('HTTPS not available');
+			return;
+		}
+
 		// Read the revoked certificate and key
 		const cert = readFileSync(join(certsPath, 'client-revoked-chain.crt'));
 		const key = readFileSync(join(certsPath, 'client-revoked.key'));
@@ -284,7 +299,12 @@ dynamically open new ports during testing.`);
 		}
 	});
 
-	it('should accept valid certificate with OCSP check', async () => {
+	it('should accept valid certificate with OCSP check', async (t) => {
+		if (!httpsAvailable) {
+			t.skip('HTTPS not available');
+			return;
+		}
+
 		// Read the valid certificate and key
 		const cert = readFileSync(join(certsPath, 'client-valid-chain.crt'));
 		const key = readFileSync(join(certsPath, 'client-valid.key'));
@@ -310,7 +330,12 @@ dynamically open new ports during testing.`);
 		}
 	});
 
-	it('should cache OCSP responses', async () => {
+	it('should cache OCSP responses', async (t) => {
+		if (!httpsAvailable) {
+			t.skip('HTTPS not available');
+			return;
+		}
+
 		// After the previous tests, we should have cached entries for both valid and revoked certificates
 		const schemaResponse = await req().send({
 			operation: 'describe_schema',
