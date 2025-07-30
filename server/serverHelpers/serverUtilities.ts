@@ -36,7 +36,6 @@ import * as auth from '../../security/auth.ts';
 import configUtils from '../../config/configUtils.js';
 import transactionLog from '../../utility/logging/transactionLog.js';
 import npmUtilities from '../../utility/npmUtilities.js';
-import { setServerUtilities } from '../../resources/Table.ts';
 import { _assignPackageExport } from '../../globals.js';
 import { transformReq } from '../../utility/common_utils.js';
 import { server } from '../Server.ts';
@@ -111,7 +110,6 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 
 const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
 
-setServerUtilities(exports);
 server.operation = operation;
 
 export function chooseOperation(json: OperationRequestBody) {
