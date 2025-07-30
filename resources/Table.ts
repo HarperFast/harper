@@ -65,7 +65,6 @@ export type Attribute = {
 
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
-let serverUtilities;
 let node_name: string;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
 const DELETED_RECORD_EXPIRATION = 86400000; // one day for non-audit records that have been deleted
@@ -1407,7 +1406,7 @@ export function makeTable(options) {
 		static operation(operation, context) {
 			operation.table ||= tableName;
 			operation.schema ||= databaseName;
-			return serverUtilities.operation(operation, context);
+			return global.operation(operation, context);
 		}
 
 		/**
@@ -4087,9 +4086,7 @@ function attributesAsObject(attribute_permissions, type) {
 function noop() {
 	// prefetch callback
 }
-export function setServerUtilities(utilities) {
-	serverUtilities = utilities;
-}
+
 const ENDS_WITH_TIMEZONE = /[+-][0-9]{2}:[0-9]{2}|[a-zA-Z]$/;
 /**
  * Coerce a string to the type defined by the attribute
@@ -4196,4 +4193,3 @@ function hasOtherProcesses(store) {
 			return +line.match(/\d+/)?.[0] != pid;
 		});
 }
-export { clearStatus as clear, getStatus as get, setStatus as set };
