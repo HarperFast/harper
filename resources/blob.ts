@@ -183,7 +183,6 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 						if (
 							store.attemptLock(lockKey, 0, () => {
 								writeFinished = true;
-								store.unlock(lockKey, 0);
 								return resolve(readContents());
 							})
 						) {
@@ -408,7 +407,6 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 				const lockKey = storageInfo.fileId + ':blob';
 				isBeingWritten = !store.attemptLock(lockKey, 0, () => {
 					isBeingWritten = false;
-					store.unlock(lockKey, 0);
 				});
 				if (!isBeingWritten) store.unlock(lockKey, 0);
 			}
