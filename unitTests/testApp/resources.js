@@ -1,4 +1,5 @@
 import assert from 'node:assert';
+const { createECDH } = await import('node:crypto');
 export class Echo extends Resource {
 	async connect(incoming_messages, query) {
 		if (incoming_messages) {
@@ -104,11 +105,20 @@ export class SimpleCache extends tables.SimpleCache {
 				data: { property: 'custom response' },
 			};
 		}
+		if (data.doExpensiveComputation) {
+			for (let i = 0; i < 1000; i++) {
+				expensiveThing();
+			}
+		}
 	}
 	async delete(query) {
 		tables.SimpleCache.lastDeleteData = await this.getContext()?.data;
 		return super.delete(query);
 	}
+}
+function expensiveThing() {
+	const ecdh = createECDH('secp256k1');
+	ecdh.generateKeys();
 }
 export class SimpleCacheLoadAsInstance extends tables.SimpleCache {
 	static loadAsInstance = true;

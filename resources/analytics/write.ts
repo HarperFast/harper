@@ -119,6 +119,7 @@ let analyticsStart = 0;
 export const analyticsDelay = 1000;
 const ANALYTICS_REPORT_TYPE = 'analytics-report';
 const analyticsListeners = [];
+const analyticsAggregateListeners = [];
 
 export function addAnalyticsListener(callback) {
 	analyticsListeners.push(callback);
@@ -499,6 +500,11 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 		storeMetric(analyticsTable, value);
 		hasUpdates = true;
 	}
+	if (hasUpdates) {
+		for (const listener of analyticsAggregateListeners) {
+			listener(aggregateActions.values());
+		}
+	}
 	const now = Date.now();
 	const { idle, active } = performance.eventLoopUtilization();
 	// don't record boring entries
@@ -686,6 +692,11 @@ async function logAnalytics(report) {
 	await analyticsLog.write(JSON.stringify(report) + '\n', position);
 }
 
+export function onAnalyticsAggregate(callback) {
+	if (callback) {
+		analyticsAggregateListeners.push(callback);
+	}
+}
 /**
  * This section contains a possible/experimental approach to bucketing values as they come instead of pushing all into an array and sorting.
  *

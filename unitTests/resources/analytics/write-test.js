@@ -2,6 +2,8 @@ require('../../test_utils');
 const chai = require('chai');
 const expect = chai.expect;
 const { diffResourceUsage, calculateCPUUtilization } = require('../../../resources/analytics/write');
+const analytics = require('../../../resources/analytics/write');
+const { profile } = require('../../../resources/analytics/profile');
 
 describe('diffResourceUsage', () => {
 	it('diffs all counters', () => {
@@ -59,7 +61,7 @@ describe('diffResourceUsage', () => {
 			...resourceUsage,
 			userCPUTime: 1000,
 			systemCPUTime: 2000,
-		})
+		});
 	});
 });
 

@@ -1,5 +1,7 @@
 import { validateLicense } from '../validation/usageLicensing.ts';
 import { ClientError } from '../utility/errors/hdbError.js';
+import * as harperLogger from '../utility/logging/harper_logger';
+import { onAnalyticsAggregate } from './analytics/write';
 
 interface InstallLicenseRequest {
 	operation: 'install_usage_license';
@@ -22,4 +24,49 @@ function installUsageLicense(license: string): Promise<void> {
 	const validatedLicense = validateLicense(license);
 	const { id, ...licenseRecord } = validatedLicense;
 	return databases.system.hdb_license.patch(id, licenseRecord);
+}
+
+onAnalyticsAggregate((analytics) => {
+	let updatableActiveLicense;
+	let hasLicenses = false;
+	for (const license of databases.system.hdb_license.search({ sort: '__created__' })) {
+		hasLicenses = true;
+		if (new Date(license.expiration) < new Date()) continue; // skip past expired entries
+		if (
+			license.usedReads >= license.reads ||
+			license.usedReadBytes >= license.readBytes ||
+			license.usedWrites >= license.writes ||
+			license.usedWriteBytes >= license.writeBytes ||
+			license.usedRealTimeMessages >= license.realTimeMessages ||
+			license.usedRealTimeBytes >= license.realTimeBytes ||
+			license.usedCpuTime >= license.cpuTime
+		)
+			continue;
+		updatableActiveLicense = databases.system.hdb_license.update(license.id);
+	}
+	if (updatableActiveLicense) {
+		for (let analyticsRecord of analytics) {
+			switch	(analyticsRecord.type) {
+				case 'db-read':
+					updatableActiveLicense.addTo('usedReads', analyticsRecord.count);
+					updatableActiveLicense.addTo('usedReadBytes', analyticsRecord.mean * analyticsRecord.count);
+				case 'db-write':
+					updatableActiveLicense.addTo('usedWrites', analyticsRecord.count);
+					updatableActiveLicense.addTo('usedWriteBytes', analyticsRecord.mean * analyticsRecord.count);
+				case 'db-message':
+					updatableActiveLicense.addTo('usedRealTimeMessage', analyticsRecord.count);
+					updatableActiveLicense.addTo('usedRealTimeBytes', analyticsRecord.mean * analyticsRecord.count);
+			}
+		}
+	} else {
+		if (!process.env.DEV_MODE) {
+			console.error(
+				'This server does not have valid usage licenses, this should only be used for educational and development purposes.`;'
+			);
+			licenseWarningIntervalId = setInterval(() => {
+				harperLogger.notify(license_warning);
+			}, LICENSE_NAG_PERIOD).unref();
+		}
+	}
+})
 }
