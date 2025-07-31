@@ -13,7 +13,6 @@ const { analyticsDelay } = require('../../resources/analytics/write');
 describe('CRUD operations with the Resource API', () => {
 	let CRUDTable, CRUDRelatedTable;
 	let long_str = 'testing' + Math.random();
-	let defaultAnalyticsDelay = analytics.analyticsDelay;
 	for (let i = 0; i < 10; i++) {
 		long_str += 'testing';
 	}
@@ -27,6 +26,7 @@ describe('CRUD operations with the Resource API', () => {
 			definition: {},
 		};
 		analytics.analyticsDelay = 50; // let's make this fast
+		analytics.setAnalyticsEnabled(true);
 		CRUDTable = table({
 			table: 'CRUDTable',
 			database: 'test',
@@ -238,6 +238,6 @@ describe('CRUD operations with the Resource API', () => {
 		});
 	}
 	after(() => {
-		analytics.analyticsDelay = defaultAnalyticsDelay;
+		analytics.setAnalyticsEnabled(false); // restore to normal unit test behavior
 	});
 });
