@@ -1739,7 +1739,7 @@ export function makeTable(options) {
 							expiresAt,
 							nodeId: options?.nodeId,
 							originatingOperation: context?.originatingOperation,
-							tableToTrack: tableName,
+							tableToTrack: databaseName === 'system' ? null : tableName, // don't track analytics on system tables
 						},
 						type,
 						false,
@@ -3362,7 +3362,7 @@ export function makeTable(options) {
 			// through query results and the iterator ends (abruptly)
 			if (options.transaction?.isDone) return withEntry(null, id);
 			const entry = primaryStore.getEntry(id, options);
-			recordAction(entry?.size ?? 1, 'db-read', tableName, null);
+			if (databaseName !== 'system') recordAction(entry?.size ?? 1, 'db-read', tableName, null);
 			if (
 				entry?.residencyId &&
 				entry.metadataFlags & INVALIDATED &&

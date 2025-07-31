@@ -2,7 +2,7 @@ require('../test_utils');
 const assert = require('assert');
 const { getMockLMDBPath } = require('../test_utils');
 const { parseQuery } = require('../../resources/search');
-const { table } = require('../../resources/databases');
+const { table, databases } = require('../../resources/databases');
 const { transaction } = require('../../resources/transaction');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
 const { RequestTarget } = require('../../resources/RequestTarget');
@@ -180,6 +180,7 @@ describe('CRUD operations with the Resource API', () => {
 			assert.equal(await CRUDTable.get('two'), undefined);
 		});
 		it('publishes and subscribes', async function () {
+			await new Promise((resolve) => setTimeout(resolve, 100)); // let previous analytics get written
 			const start = Date.now();
 			const messages = [];
 			const subscription = await CRUDTable.subscribe('pubsub');
@@ -197,7 +198,7 @@ describe('CRUD operations with the Resource API', () => {
 				conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],
 			});
 			let publishRecorded, messageRecorded;
-			for await (let { metrics } of analyticsResults) {
+			for await (let { id, metrics } of analyticsResults) {
 				publishRecorded = metrics.find(({ metric, path }) => metric === 'db-write' && path === 'CRUDTable');
 				messageRecorded = metrics.find(({ metric, path }) => metric === 'db-message' && path === 'CRUDTable');
 				if (publishRecorded) break;
