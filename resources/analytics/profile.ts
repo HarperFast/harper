@@ -11,15 +11,20 @@ import { pathToFileURL } from 'node:url';
 
 const session = new Session();
 // We create an inspector session with ourself
-// TODO: This Running
+// TODO: Running this on the thread itself can be problematic because the profiler snapshots are expensive
+//  (calling Profiler.stop and getting the large block of JSON and parsing it). This can take a 20ms or more
+//  which can have a noticeable impact on latency for users. I would like to move this all to the main thread
+//  and we would probably need to connect to all the child threads with WebSockets.
 session.connect();
 (async () => {
+	// start the profiler
 	await session.post('Profiler.enable');
 	await session.post('Profiler.setSamplingInterval', { interval: 1000 });
 	await session.post('Profiler.start');
 	const PROFILE_PERIOD = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1000;
 	setInterval(profile, PROFILE_PERIOD).unref();
 })();
+// TODO: If a user starts with harperdb run ., we should add that path/url to the userCodeFolders
 export const userCodeFolders = [pathToFileURL(getHdbBasePath()).toString()];
 export async function profile() {
 	const HARPER_URL = pathToFileURL(PACKAGE_ROOT).toString();
