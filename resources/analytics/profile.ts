@@ -14,9 +14,9 @@ session.connect();
 	const PROFILE_PERIOD = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1000;
 	setInterval(profile, PROFILE_PERIOD).unref();
 })();
+export const userCodeFolders = [pathToFileURL(getHdbBasePath()).toString()];
 export async function profile() {
 	const HARPER_URL = pathToFileURL(PACKAGE_ROOT).toString();
-	const HDB_URL = pathToFileURL(getHdbBasePath()).toString();
 	const { profile } = await session.post('Profiler.stop');
 	const hitCountThreshold = 100;
 	const nodeById = new Map();
@@ -46,7 +46,8 @@ export async function profile() {
 				recordAction(unassignedCount, 'cpu-usage', node.callFrame.url);
 			}
 			// assigned/attributed counts, nothing to return
-			return (node.unassignedCount = 0);
+			node.unassignedCount = 0;
+			return 0;
 		}
 		if (isHarperCode(node)) {
 			totalHarperCount += unassignedCount;
@@ -54,7 +55,8 @@ export async function profile() {
 				recordAction(unassignedCount, 'cpu-usage', node.callFrame.url);
 			}
 			// assigned/attributed counts, nothing to return
-			return (node.unassignedCount = 0);
+			node.unassignedCount = 0;
+			return 0;
 		}
 		node.unassignedCount = unassignedCount;
 		return unassignedCount;
@@ -63,7 +65,7 @@ export async function profile() {
 		if (node.callFrame?.url.startsWith(HARPER_URL)) return true;
 	}
 	function isUserCode(node: any) {
-		if (node.callFrame?.url.startsWith(HDB_URL)) return true;
+		if (userCodeFolders.some((userCodeFolder) => node.callFrame?.url.startsWith(userCodeFolder))) return true;
 	}
 	recordAction(totalHarperCount, 'cpu-usage', 'harper');
 	recordAction(totalUserCount, 'cpu-usage', 'user');
