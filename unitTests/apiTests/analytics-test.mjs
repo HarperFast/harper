@@ -26,7 +26,6 @@ describe('Analytics profiling user code', () => {
 		});
 		let userUsageRecorded, harperUsageRecorded;
 		for await (let { metrics } of analyticsResults) {
-			console.log(metrics);
 			userUsageRecorded ??= metrics.find(({ metric, path }) => metric === 'cpu-usage' && path === 'user');
 			harperUsageRecorded ??= metrics.find(({ metric, path }) => metric === 'cpu-usage' && path === 'harper');
 		}

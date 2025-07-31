@@ -1,3 +1,7 @@
+/**
+ * This module is responsible for profiling threads so we can determine how much CPU usage can be attributed
+ * to user code, harper code, and individual "hot" functions
+ */
 import { Session } from 'node:inspector/promises';
 import { recordAction } from './write.ts';
 import { get as envGet, getHdbBasePath } from '../../utility/environment/environmentManager.js';
@@ -6,6 +10,8 @@ import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 import { pathToFileURL } from 'node:url';
 
 const session = new Session();
+// We create an inspector session with ourself
+// TODO: This Running
 session.connect();
 (async () => {
 	await session.post('Profiler.enable');

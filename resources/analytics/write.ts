@@ -34,9 +34,12 @@ interface Action {
 
 let activeActions = new Map<string, Action>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
+let sendAnalyticsTimeout: NodeJS.Timeout;
 
 export function setAnalyticsEnabled(enabled: boolean) {
 	analyticsEnabled = enabled;
+	clearTimeout(sendAnalyticsTimeout); // reset this
+	sendAnalyticsTimeout = null;
 }
 
 function recordExistingAction(value: Value, action: Action) {
@@ -106,7 +109,7 @@ export function recordAction(value: Value, metric: string, path?: string, method
 	} else {
 		recordNewAction(key, value, metric, path, method, type);
 	}
-	if (!analyticsStart) sendAnalytics();
+	if (!sendAnalyticsTimeout) sendAnalytics();
 }
 
 server.recordAnalytics = recordAction;
@@ -131,8 +134,9 @@ const IDEAL_PERCENTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999, 1
  * Periodically send analytics data back to the main thread for storage
  */
 function sendAnalytics() {
-	analyticsStart = performance.now();
-	setTimeout(async () => {
+	analyticsStart ||= performance.now();
+	sendAnalyticsTimeout = setTimeout(async () => {
+		sendAnalyticsTimeout = null;
 		const period = performance.now() - analyticsStart;
 		analyticsStart = 0;
 		const metrics = [];
