@@ -30,9 +30,7 @@ let licenseWarningIntervalId: NodeJS.Timeout;
 const LICENSE_NAG_PERIOD = 600000; // ten minutes
 onAnalyticsAggregate((analytics) => {
 	let updatableActiveLicense: UpdatableRecord;
-	let hasLicenses = false;
 	for (const license of databases.system.hdb_license.search({ sort: '__created__' })) {
-		hasLicenses = true;
 		if (new Date(license.expiration) < new Date()) continue; // skip past expired entries
 		if (
 			license.usedReads >= license.reads ||
