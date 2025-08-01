@@ -347,18 +347,38 @@ export async function startOnMainThread(options) {
 		main_worker_entry.connected = true;
 		main_worker_entry.latency = connection.latency;
 		if (main_worker_entry.redirectingTo) {
-			const { worker, nodes } = main_worker_entry.redirectingTo;
-			const subscription_to_remove = nodes.find((node) => node.name === connection.name);
-			main_worker_entry.redirectingTo = null;
-			if (subscription_to_remove) {
-				nodes.splice(nodes.indexOf(subscription_to_remove), 1);
-				if (worker) {
-					worker.postMessage({
-						type: 'subscribe-to-node',
-						database: connection.database,
-						nodes,
-					});
-				} else subscribeToNode({ database: connection.database, nodes });
+			const { worker: failOverWorker, nodes: failOverNodes } = main_worker_entry.redirectingTo;
+			let changedFailedOverNode = false;
+			let changedReconnectedNode = false;
+			main_worker_entry.nodes = main_worker_entry.nodes.filter((reconnectedNode) => {
+				const subscription_to_remove = failOverNodes.find((node) => node.name === reconnectedNode.name);
+				if (failOverNodes.indexOf(subscription_to_remove) > 0) {
+					// if we found it and it is not the first/main node
+					failOverNodes.splice(failOverNodes.indexOf(subscription_to_remove), 1);
+					changedFailedOverNode = true;
+					return true; // we removed from the fail over so keep this in our list of nodes
+				} else if (reconnectedNode.name === connection.name) {
+					// if it is ourselves, make sure to keep that
+					return true;
+				} // else it has been removed from failover before we got it back
+				changedReconnectedNode = true;
+				return false;
+			});
+			if (changedFailedOverNode && failOverWorker) {
+				// if the fail-over node changed subscriptions reissue the subscriptions
+				failOverWorker.postMessage({
+					type: 'subscribe-to-node',
+					database: connection.database,
+					nodes: failOverNodes,
+				});
+			}
+			if (changedReconnectedNode && main_worker_entry.worker) {
+				// if the reconnected node changed subscriptions reissue the subscriptions
+				main_worker_entry.worker.postMessage({
+					type: 'subscribe-to-node',
+					database: connection.database,
+					nodes: main_worker_entry.nodes,
+				});
 			}
 		}
 	};
@@ -387,7 +407,7 @@ export function requestClusterStatus(message, port) {
 						connected,
 						latency,
 						thread_id: worker?.threadId,
-						nodes: nodes.map((node) => node.name),
+						nodes: nodes.filter((node) => !(node.end_time < Date.now())).map((node) => node.name),
 					});
 				}
 

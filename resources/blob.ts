@@ -762,11 +762,23 @@ function getNextStorageIndex(blobStoragePaths: string[], fileId: number) {
  * and can be assigned quickly and consistently across threads (all threads will usually incrementally assign ids to the same alternating set of storage paths)
  * @param blobStoragePaths
  */
-async function createFrequencyTableForStoragePaths(blobStoragePaths) {
+async function createFrequencyTableForStoragePaths(blobStoragePaths: string[]) {
 	if (!statfs) return; // statfs is not available on all older node versions
 	const availableSpaces = await Promise.all(
 		blobStoragePaths.map(async (path, index) => {
-			const stats = await statfs(path);
+			let stats: any;
+			try {
+				stats = await statfs(path);
+			} catch (error) {
+				if (error.code !== 'ENOENT') throw error;
+				try {
+					// if the path doesn't exist, go ahead and create it
+					ensureDirSync(path);
+					// eslint-disable-next-line sonarjs/no-ignored-exceptions
+				} catch (dirError) {}
+				// try again after the path is created
+				stats = await statfs(path);
+			}
 			const availableSpace = stats.bavail * stats.bsize;
 			return Math.pow(availableSpace, 0.8); // we don't want this to be quite linear, so we use a power function to reduce the impact of large differences in available space
 		})

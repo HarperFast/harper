@@ -310,6 +310,7 @@ export function replicateOverWS(ws, options, authorization) {
 	// track bytes read and written so we can verify if a connection is really dead on pings
 	let bytes_read = 0;
 	let bytes_written = 0;
+	const blobTimeout = env.get(CONFIG_PARAMS.REPLICATION_BLOBTIMEOUT) ?? 120000;
 	const blobs_in_flight = new Map();
 	const outstanding_blobs_to_finish: Promise<void>[] = [];
 	let outstanding_blobs_being_sent = 0;
@@ -683,7 +684,7 @@ export function replicateOverWS(ws, options, authorization) {
 									}
 								},
 								(remoteBlob) => {
-									const localBlob = receiveBlobs(remoteBlob); // receive the blob;
+									const localBlob = receiveBlobs(remoteBlob, key); // receive the blob;
 									// track the blobs that were written in case we need to delete them if the record is not moved locally
 									if (!blobsToDelete) blobsToDelete = [];
 									blobsToDelete.push(localBlob);
@@ -1094,6 +1095,7 @@ export function replicateOverWS(ws, options, authorization) {
 												logger.warn?.(`Fully copying ${table_name} table to ${remote_node_name}`);
 												for (const entry of table.primaryStore.getRange({
 													snapshot: false,
+													versions: true,
 													// values: false, // TODO: eventually, we don't want to decode, we want to use fast binary transfer
 												})) {
 													if (closed) return;
@@ -1109,6 +1111,20 @@ export function replicateOverWS(ws, options, authorization) {
 														last_sequence_id = Math.max(entry.localTime, last_sequence_id);
 														queued_entries = true;
 														getSharedStatus()[SENDING_TIME_POSITION] = 1;
+														const encoded = createAuditEntry(
+															entry.version,
+															table.tableId,
+															entry.key,
+															null,
+															node_id,
+															null,
+															'put',
+															table.primaryStore.encoder.encode(entry.value),
+															entry.metadataFlags,
+															entry.residencyId,
+															null,
+															entry.expiresAt
+														);
 														await sendAuditRecord(
 															{
 																// make it look like an audit record
@@ -1118,7 +1134,7 @@ export function replicateOverWS(ws, options, authorization) {
 																getValue() {
 																	return entry.value;
 																},
-																encoded: table.primaryStore.getBinary(entry.key), // directly transfer binary data
+																encoded,
 																version: entry.version,
 																residencyId: entry.residencyId,
 																nodeId: node_id,
@@ -1129,6 +1145,14 @@ export function replicateOverWS(ws, options, authorization) {
 													}
 												}
 											}
+											if (queued_entries)
+												sendAuditRecord(
+													{
+														type: 'end_txn',
+													},
+													current_sequence_id
+												);
+											getSharedStatus()[SENDING_TIME_POSITION] = 0;
 											current_sequence_id = last_sequence_id;
 										}
 									}
@@ -1202,20 +1226,24 @@ export function replicateOverWS(ws, options, authorization) {
 					);
 				}
 				try {
-					decodeBlobsWithWrites(() => {
-						event = {
-							table: table_decoder.name,
-							id: audit_record.recordId,
-							type: audit_record.type,
-							nodeId: remote_short_id_to_local_id.get(audit_record.nodeId),
-							residencyList: residency_list,
-							timestamp: audit_record.version,
-							value: audit_record.getValue(table_decoder),
-							user: audit_record.user,
-							beginTxn: begin_txn,
-							expiresAt: audit_record.expiresAt,
-						};
-					}, receiveBlobs);
+					const id = audit_record.recordId;
+					decodeBlobsWithWrites(
+						() => {
+							event = {
+								table: table_decoder.name,
+								id,
+								type: audit_record.type,
+								nodeId: remote_short_id_to_local_id.get(audit_record.nodeId),
+								residencyList: residency_list,
+								timestamp: audit_record.version,
+								value: audit_record.getValue(table_decoder),
+								user: audit_record.user,
+								beginTxn: begin_txn,
+								expiresAt: audit_record.expiresAt,
+							};
+						},
+						(blob) => receiveBlobs(blob, id)
+					);
 				} catch (error) {
 					error.message += 'typed structures for current decoder' + JSON.stringify(table_decoder.decoder.typedStructs);
 					throw error;
@@ -1387,7 +1415,7 @@ export function replicateOverWS(ws, options, authorization) {
 			if (outstanding_blobs_being_sent < MAX_OUTSTANDING_BLOBS_BEING_SENT) blob_sent_callback?.();
 		}
 	}
-	function receiveBlobs(remote_blob: Blob) {
+	function receiveBlobs(remote_blob: Blob, id: string | number) {
 		// write the blob to the blob store
 		const blob_id = getFileId(remote_blob);
 		let stream = blobs_in_flight.get(blob_id);
@@ -1402,6 +1430,7 @@ export function replicateOverWS(ws, options, authorization) {
 		}
 		stream.connectedToBlob = true;
 		stream.lastChunk = Date.now();
+		stream.recordId = id;
 		if (remote_blob.size === undefined && stream.expectedSize) remote_blob.size = stream.expectedSize;
 		const local_blob = createBlob(stream, remote_blob);
 
@@ -1639,13 +1668,15 @@ export function replicateOverWS(ws, options, authorization) {
 	}
 	blobs_timer = setInterval(() => {
 		for (const [blob_id, stream] of blobs_in_flight) {
-			if (stream.lastChunk + 30000 < Date.now()) {
-				logger.warn?.(`Timeout waiting for blob stream to finish ${blob_id} from ${remote_node_name}`);
+			if (stream.lastChunk + blobTimeout < Date.now()) {
+				logger.warn?.(
+					`Timeout waiting for blob stream to finish ${blob_id} for record ${stream.recordId ?? 'unknown'} from ${remote_node_name}`
+				);
 				blobs_in_flight.delete(blob_id);
 				stream.end();
 			}
 		}
-	}, 30000).unref();
+	}, blobTimeout).unref();
 
 	let next_id = 1;
 	const sent_table_names = [];
