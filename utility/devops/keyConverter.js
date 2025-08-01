@@ -1,6 +1,6 @@
 #!/usr/bin/env node
 
-const crypto = require('crypto');
+const crypto = require('node:crypto');
 
 // Check if stdin is a terminal (no input piped)
 if (process.stdin.isTTY) {
