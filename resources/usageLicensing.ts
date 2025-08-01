@@ -26,10 +26,32 @@ function installUsageLicense(license: string): Promise<void> {
 	const { id, ...licenseRecord } = validatedLicense;
 	return databases.system.hdb_license.patch(id, licenseRecord);
 }
+
 let licenseWarningIntervalId: NodeJS.Timeout;
 const LICENSE_NAG_PERIOD = 600000; // ten minutes
-onAnalyticsAggregate((analytics) => {
-	let updatableActiveLicense: UpdatableRecord;
+
+interface UsageLicenseRecord {
+	id: string;
+	expiration: number;
+	reads: number;
+	readBytes: number;
+	writes: number;
+	writeBytes: number;
+	realTimeMessages: number;
+	realTimeBytes: number;
+	cpuTime: number;
+	usedReads: number;
+	usedReadBytes: number;
+	usedWrites: number;
+	usedWriteBytes: number;
+	usedRealTimeMessages: number;
+	usedRealTimeBytes: number;
+	usedCpuTime: number;
+	addTo: (field: string, value: number) => void;
+}
+
+onAnalyticsAggregate((analytics: any) => {
+	let updatableActiveLicense: UpdatableRecord<UsageLicenseRecord>;
 	const now = new Date().toISOString();
 	const licenseQuery = {
 		sort: '__created__',
