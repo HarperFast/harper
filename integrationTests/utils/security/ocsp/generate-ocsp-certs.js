@@ -4,10 +4,10 @@
  * Generate test certificates for OCSP testing using Harper's existing CA
  */
 
-const fs = require('fs');
-const path = require('path');
-const { execSync } = require('child_process');
-const http = require('http');
+const fs = require('node:fs');
+const path = require('node:path');
+const { execSync } = require('node:child_process');
+const http = require('node:http');
 
 const OUTPUT_DIR = path.join(__dirname, 'generated');
 const OCSP_PORT = process.env.OCSP_PORT || 8888;
@@ -112,7 +112,7 @@ async function generateOCSPCerts() {
     const ocspKeyPath = path.join(OUTPUT_DIR, 'ocsp.key');
     const ocspCertPath = path.join(OUTPUT_DIR, 'ocsp.crt');
     
-    execSync(`openssl genrsa -out ${ocspKeyPath} 2048`);
+    execSync(`openssl genpkey -algorithm ED25519 -out ${ocspKeyPath}`);
     execSync(`openssl req -new -key ${ocspKeyPath} -out ${OUTPUT_DIR}/ocsp.csr -subj "/CN=OCSP Responder/O=Harper OCSP Test"`);
     
     // First, extract the Subject Key Identifier from the CA certificate
@@ -139,7 +139,7 @@ subjectKeyIdentifier = hash`;
     const serverKeyPath = path.join(OUTPUT_DIR, 'server.key');
     const serverCertPath = path.join(OUTPUT_DIR, 'server.crt');
     
-    execSync(`openssl genrsa -out ${serverKeyPath} 2048`);
+    execSync(`openssl genpkey -algorithm ED25519 -out ${serverKeyPath}`);
     
     // Server extensions with OCSP URL and CA issuer URL
     const serverExt = `[v3_server]
@@ -165,7 +165,7 @@ authorityInfoAccess = OCSP;URI:http://localhost:${OCSP_PORT},caIssuers;URI:http:
       const keyPath = path.join(OUTPUT_DIR, `${client.name}.key`);
       const certPath = path.join(OUTPUT_DIR, `${client.name}.crt`);
       
-      execSync(`openssl genrsa -out ${keyPath} 2048`);
+      execSync(`openssl genpkey -algorithm ED25519 -out ${keyPath}`);
       
       // Client extensions with OCSP URL and CA issuer URL
       const clientExt = `[v3_client]
@@ -207,7 +207,7 @@ authorityInfoAccess = OCSP;URI:http://localhost:${OCSP_PORT},caIssuers;URI:http:
     fs.writeFileSync(serialPath, '01\n');
     
     // Add certificate entries to index
-    const { X509Certificate } = require('crypto');
+    const { X509Certificate } = require('node:crypto');
     const validCert = new X509Certificate(fs.readFileSync(path.join(OUTPUT_DIR, 'client-valid.crt')));
     const revokedCert = new X509Certificate(fs.readFileSync(path.join(OUTPUT_DIR, 'client-revoked.crt')));
     
