@@ -26,6 +26,7 @@ import {
 	watch,
 	write,
 } from 'node:fs';
+import type { StatsFs } from 'node:fs';
 import { createDeflate, deflate } from 'node:zlib';
 import { Readable } from 'node:stream';
 import { ensureDirSync } from 'fs-extra';
@@ -771,11 +772,8 @@ async function createFrequencyTableForStoragePaths(blobStoragePaths: string[]) {
 				stats = await statfs(path);
 			} catch (error) {
 				if (error.code !== 'ENOENT') throw error;
-				try {
-					// if the path doesn't exist, go ahead and create it
-					ensureDirSync(path);
-					// eslint-disable-next-line sonarjs/no-ignored-exceptions
-				} catch (dirError) {}
+				// if the path doesn't exist, go ahead and create it
+				ensureDirSync(path);
 				// try again after the path is created
 				stats = await statfs(path);
 			}
