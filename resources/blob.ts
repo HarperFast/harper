@@ -766,7 +766,7 @@ async function createFrequencyTableForStoragePaths(blobStoragePaths: string[]) {
 	if (!statfs) return; // statfs is not available on all older node versions
 	const availableSpaces = await Promise.all(
 		blobStoragePaths.map(async (path, index) => {
-			let stats: any;
+			let stats: StatsFs;
 			try {
 				stats = await statfs(path);
 			} catch (error) {
