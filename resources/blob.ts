@@ -978,6 +978,10 @@ addExtension({
 			return pack([options, storageInfo.storageIndex, storageInfo.fileId]);
 		}
 		if (storageInfo) {
+			if (currentBlobCallback) {
+				currentBlobCallback(blob);
+				return pack([options, storageInfo.storageIndex, storageInfo.fileId]);
+			}
 			// if we want to encode as binary (necessary for replication), we need to encode as a buffer, not sure if we should always do that
 			// also, for replication, we would presume that this is most likely in OS cache, and sync will be fast. For other situations, a large sync call could be
 			// unpleasant
