@@ -296,7 +296,7 @@ export async function startOnMainThread(options) {
 				const next_node = node_map.get(next_node_name);
 				db_replication_workers = connection_replication_map.get(next_node.url);
 				const failover_worker_entry = db_replication_workers?.get(connection.database);
-				if (!failover_worker_entry) {
+				if (!failover_worker_entry || failover_worker_entry.redirectingTo) {
 					next_index = (next_index + 1) % node_names.length;
 					continue;
 				}
@@ -308,14 +308,15 @@ export async function startOnMainThread(options) {
 						logger.info(`Disconnected node is already failing over to ${next_node_name} for ${connection.database}`);
 						continue;
 					}
+					if (node.end_time < Date.now()) continue; // already expired
 					nodes.push(node);
 					has_moved_nodes = true;
 				}
+				existing_worker_entry.redirectingTo = failover_worker_entry;
 				if (!has_moved_nodes) {
 					logger.info(`Disconnected node ${connection.name} has no nodes to fail over to ${next_node_name}`);
 					return;
 				}
-				existing_worker_entry.redirectingTo = failover_worker_entry;
 				logger.info(`Failing over ${connection.database} from ${connection.name} to ${next_node_name}`);
 				if (worker) {
 					worker.postMessage({
@@ -350,20 +351,21 @@ export async function startOnMainThread(options) {
 			const { worker: failOverWorker, nodes: failOverNodes } = main_worker_entry.redirectingTo;
 			let changedFailedOverNode = false;
 			let changedReconnectedNode = false;
-			main_worker_entry.nodes = main_worker_entry.nodes.filter((reconnectedNode) => {
+			main_worker_entry.nodes = main_worker_entry.nodes.filter((reconnectedNode: any, index: number) => {
 				const subscription_to_remove = failOverNodes.find((node) => node.name === reconnectedNode.name);
 				if (failOverNodes.indexOf(subscription_to_remove) > 0) {
 					// if we found it and it is not the first/main node
 					failOverNodes.splice(failOverNodes.indexOf(subscription_to_remove), 1);
 					changedFailedOverNode = true;
 					return true; // we removed from the fail over so keep this in our list of nodes
-				} else if (reconnectedNode.name === connection.name) {
+				} else if (index === 0) {
 					// if it is ourselves, make sure to keep that
 					return true;
 				} // else it has been removed from failover before we got it back
 				changedReconnectedNode = true;
 				return false;
 			});
+			main_worker_entry.redirectingTo = null;
 			if (changedFailedOverNode && failOverWorker) {
 				// if the fail-over node changed subscriptions reissue the subscriptions
 				failOverWorker.postMessage({

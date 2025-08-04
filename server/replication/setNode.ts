@@ -180,7 +180,7 @@ export async function setNode(req: object) {
 	}
 	if (req.retain_authorization) node_record.authorization = req.authorization;
 	if (req.revoked_certificates) node_record.revoked_certificates = req.revoked_certificates;
-	if (target_node_response.shard !== undefined) node_record.shard = target_node_response.shard;
+	if (target_node_response?.shard !== undefined) node_record.shard = target_node_response.shard;
 	else if (req.shard !== undefined) node_record.shard = req.shard;
 
 	if (node_record.replicates) {
