@@ -25,8 +25,8 @@
 	],
 	"main": "harperdb.js",
 	"bin": {
-		"harperdb": "./bin/harperdb.js",
-		"harper": "./bin/harperdb.js"
+		"harperdb": "bin/harperdb.js",
+		"harper": "bin/harperdb.js"
 	},
 	"engines": {
 		"minimum-node": "16.0.0",
