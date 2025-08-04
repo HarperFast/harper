@@ -36,6 +36,8 @@ import { isIP } from 'node:net';
 import { recordAction } from '../../resources/analytics';
 import { decodeBlobsWithWrites, decodeWithBlobCallback, deleteBlob, getFileId } from '../../resources/blob';
 import { PassThrough } from 'node:stream';
+import minimist from 'minimist';
+
 
 // these are the codes we use for the different commands
 const SUBSCRIPTION_REQUEST = 129;
@@ -56,7 +58,8 @@ export const CONFIRMATION_STATUS_POSITION = 0;
 export const RECEIVED_VERSION_POSITION = 1;
 export const RECEIVED_TIME_POSITION = 2;
 export const SENDING_TIME_POSITION = 3;
-const leaderUrl: string = process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL');
+const cli_args = minimist(process.argv);
+const leaderUrl: string = cli_args.HDB_LEADER_URL ?? process.env.HDB_LEADER_URL;
 
 export const table_update_listeners = new Map();
 // This a map of the database name to the subscription object, for the subscriptions from our tables to the replication module
@@ -128,7 +131,7 @@ export async function createWebSocket(
 	return new WebSocket(url, 'harperdb-replication-v1', ws_options);
 }
 
-const INITIAL_RETRY_TIME = 1000;
+const INITIAL_RETRY_TIME = 500;
 /**
  * This represents a persistent connection to a node for replication, which handles
  * sockets that may be disconnected and reconnected
@@ -237,7 +240,7 @@ export class NodeReplicationConnection extends EventEmitter {
 			setTimeout(() => {
 				this.connect();
 			}, this.retryTime).unref();
-			this.retryTime += this.retryTime >> 3; // increase by 12% each time
+			this.retryTime += this.retryTime >> 8; // increase by 0.4% each time
 		});
 	}
 	resetSession() {
@@ -585,13 +588,19 @@ export function replicateOverWS(ws, options, authorization) {
 							blobs_in_flight.set(fileId, stream);
 						}
 						stream.lastChunk = Date.now();
-						if (finished) {
-							if (error) {
-								stream.on('error', () => {}); // don't treat this as an uncaught error
-								stream.destroy(new Error('Blob error: ' + error));
-							} else stream.end(message[2]);
-							if (stream.connectedToBlob) blobs_in_flight.delete(fileId);
-						} else stream.write(message[2]);
+						try {
+							if (finished) {
+								if (error) {
+									stream.on('error', () => {
+									}); // don't treat this as an uncaught error
+									stream.destroy(new Error('Blob error: ' + error));
+								} else stream.end(message[2]);
+								if (stream.connectedToBlob) blobs_in_flight.delete(fileId);
+							} else stream.write(message[2]);
+						} catch (error) {
+							logger.error?.(`Error receiving blob for ${stream.recordId} from ${remote_node_name} and streaming to storage`, error);
+							blobs_in_flight.delete(fileId);
+						}
 						break;
 					}
 					case GET_RECORD: {
@@ -1119,7 +1128,7 @@ export function replicateOverWS(ws, options, authorization) {
 															node_id,
 															null,
 															'put',
-															table.primaryStore.encoder.encode(entry.value),
+															decodeWithBlobCallback(() => table.primaryStore.encoder.encode(entry.value), sendBlobs),
 															entry.metadataFlags & ~0xff, // exclude the lower bits that define the type
 															entry.residencyId,
 															null,
@@ -1459,6 +1468,8 @@ export function replicateOverWS(ws, options, authorization) {
 		if (options.connection?.isFinished)
 			throw new Error('Can not make a subscription request on a connection that is already closed');
 		const last_txn_times = new Map();
+		if (!audit_store) // if it hasn't been set yet, do so now
+			audit_store = table_subscription_to_replicator?.auditStore;
 		// iterate through all the sequence entries and find the newest txn time for each node
 		try {
 			for (const entry of table_subscription_to_replicator?.dbisDB?.getRange({
@@ -1540,7 +1551,8 @@ export function replicateOverWS(ws, options, authorization) {
 			if (start_time === 1 && leaderUrl) {
 				// if we are starting from scratch and we have a leader URL, we directly ask for a copy from that database
 				try {
-					if (new URL(leaderUrl).hostname === node.name) {
+					if (new URL(leaderUrl).hostname === node.name && remote_node_name === node.name) {
+						logger.warn?.(`Requesting full copy of database ${database_name} from ${leaderUrl}`);
 						start_time = 0; // use this to indicate that we want to fully copy
 					} else {
 						// for all other nodes, start at right now (minus a minute for overlap)
