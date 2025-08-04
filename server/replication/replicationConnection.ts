@@ -1120,7 +1120,7 @@ export function replicateOverWS(ws, options, authorization) {
 															null,
 															'put',
 															table.primaryStore.encoder.encode(entry.value),
-															entry.metadataFlags,
+															entry.metadataFlags & ~0xff, // exclude the lower bits that define the type
 															entry.residencyId,
 															null,
 															entry.expiresAt
