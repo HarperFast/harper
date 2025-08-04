@@ -39,8 +39,9 @@ then
 else
   if [[ "${EXTRA_TAGS}" == "none" ]]
   then
-    # don't add a tag to npm publish
-    npm publish ./package/ "${NPM_ACCESS}" --dry-run="${NPM_DRYRUN}"
+    # Publish with a "temp" tag then remove the tag to avoid publishing with "latest" or "next"
+    npm publish ./package/ "${NPM_ACCESS}" --tag="temp" --dry-run="${NPM_DRYRUN}"
+    npm dist-tag rm "${NPM_PACKAGE_NAME}" temp
   else
     # tag defaults to next if not specified otherwise
     NPM_TAG="next"
