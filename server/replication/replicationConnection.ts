@@ -1539,11 +1539,15 @@ export function replicateOverWS(ws, options, authorization) {
 			}
 			if (start_time === 1 && leaderUrl) {
 				// if we are starting from scratch and we have a leader URL, we directly ask for a copy from that database
-				if (new URL(leaderUrl).hostname === node.name) {
-					start_time = 0; // use this to indicate that we want to fully copy
-				} else {
-					// for all other nodes, start at right now (minus a minute for overlap)
-					start_time = Date.now() - 60000;
+				try {
+					if (new URL(leaderUrl).hostname === node.name) {
+						start_time = 0; // use this to indicate that we want to fully copy
+					} else {
+						// for all other nodes, start at right now (minus a minute for overlap)
+						start_time = Date.now() - 60000;
+					}
+				} catch(error) {
+					logger.error?.('Error parsing leader URL', leaderUrl, error);
 				}
 			}
 			return {
