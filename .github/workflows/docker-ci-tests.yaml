@@ -5,8 +5,8 @@ on:
     branches:
       - main
       - 'release_*'
-  #pull_request:
-  # types: [opened, synchronize, reopened]
+  pull_request:
+    types: [opened, synchronize, reopened]
   # paths:
   #   - 'utility/Docker/Dockerfile'
   schedule:
@@ -117,7 +117,7 @@ jobs:
           # Capture newman reports
           cp integrationTests/newman/report.html artifact
           cp integrationTests/newman/extra_report.html artifact
-          
+
       - name: 'Upload Artifact'
         if: always()
         uses: actions/upload-artifact@v4

@@ -316,6 +316,7 @@ export async function startOnMainThread(options) {
 						logger.info(`Disconnected node is already failing over to ${nextNodeName} for ${connection.database}`);
 						continue;
 					}
+					if (node.end_time < Date.now()) continue; // already expired
 					nodes.push(node);
 					hasMovedNodes = true;
 				}
@@ -323,7 +324,6 @@ export async function startOnMainThread(options) {
 					logger.info(`Disconnected node ${connection.name} has no nodes to fail over to ${nextNodeName}`);
 					return;
 				}
-				existingWorkerEntry.redirectingTo = failoverWorkerEntry;
 				logger.info(`Failing over ${connection.database} from ${connection.name} to ${nextNodeName}`);
 				if (worker) {
 					worker.postMessage({
@@ -352,6 +352,7 @@ export async function startOnMainThread(options) {
 			);
 			return;
 		}
+<<<<<<< HEAD
 		mainWorkerEntry.connected = true;
 		mainWorkerEntry.latency = connection.latency;
 		if (mainWorkerEntry.redirectingTo) {
@@ -367,6 +368,44 @@ export async function startOnMainThread(options) {
 						nodes,
 					});
 				} else subscribeToNode({ database: connection.database, nodes });
+=======
+		main_worker_entry.connected = true;
+		main_worker_entry.latency = connection.latency;
+		if (main_worker_entry.redirectingTo) {
+			const { worker: failOverWorker, nodes: failOverNodes } = main_worker_entry.redirectingTo;
+			let changedFailedOverNode = false;
+			let changedReconnectedNode = false;
+			main_worker_entry.nodes = main_worker_entry.nodes.filter((reconnectedNode: any, index: number) => {
+				const subscription_to_remove = failOverNodes.find((node) => node.name === reconnectedNode.name);
+				if (failOverNodes.indexOf(subscription_to_remove) > 0) {
+					// if we found it and it is not the first/main node
+					failOverNodes.splice(failOverNodes.indexOf(subscription_to_remove), 1);
+					changedFailedOverNode = true;
+					return true; // we removed from the fail over so keep this in our list of nodes
+				} else if (index === 0) {
+					// if it is ourselves, make sure to keep that
+					return true;
+				} // else it has been removed from failover before we got it back
+				changedReconnectedNode = true;
+				return false;
+			});
+			main_worker_entry.redirectingTo = null;
+			if (changedFailedOverNode && failOverWorker) {
+				// if the fail-over node changed subscriptions reissue the subscriptions
+				failOverWorker.postMessage({
+					type: 'subscribe-to-node',
+					database: connection.database,
+					nodes: failOverNodes,
+				});
+			}
+			if (changedReconnectedNode && main_worker_entry.worker) {
+				// if the reconnected node changed subscriptions reissue the subscriptions
+				main_worker_entry.worker.postMessage({
+					type: 'subscribe-to-node',
+					database: connection.database,
+					nodes: main_worker_entry.nodes,
+				});
+>>>>>>> release_4.5
 			}
 		}
 	};
@@ -394,8 +433,13 @@ export function requestClusterStatus(message, port) {
 						database,
 						connected,
 						latency,
+<<<<<<< HEAD
 						threadId: worker?.threadId,
 						nodes: nodes.map((node) => node.name),
+=======
+						thread_id: worker?.threadId,
+						nodes: nodes.filter((node) => !(node.end_time < Date.now())).map((node) => node.name),
+>>>>>>> release_4.5
 					});
 				}
 

@@ -295,7 +295,9 @@ export function createAuditEntry(
 		position = 9;
 	}
 	if (extendedType) {
-		if (extendedType & 0xff) throw new Error('Illegal extended type');
+		if (extendedType & 0xff) {
+			throw new Error('Illegal extended type');
+		}
 		position += 3;
 	}
 

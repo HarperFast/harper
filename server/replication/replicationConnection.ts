@@ -43,6 +43,7 @@ import { recordAction } from '../../resources/analytics/write.ts';
 import { decodeBlobsWithWrites, decodeWithBlobCallback, deleteBlob, getFileId } from '../../resources/blob.ts';
 import { PassThrough } from 'node:stream';
 import { getLastVersion } from 'lmdb';
+import minimist from 'minimist';
 const logger = forComponent('replication').conditional;
 
 // these are the codes we use for the different commands
@@ -65,7 +66,8 @@ export const RECEIVED_VERSION_POSITION = 1;
 export const RECEIVED_TIME_POSITION = 2;
 export const SENDING_TIME_POSITION = 3;
 export const LATENCY_POSITION = 4;
-const leaderUrl: string = process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL');
+const cli_args = minimist(process.argv);
+const leaderUrl: string = cli_args.HDB_LEADER_URL ?? process.env.HDB_LEADER_URL;
 
 export const tableUpdateListeners = new Map();
 // This a map of the database name to the subscription object, for the subscriptions from our tables to the replication module
@@ -137,7 +139,7 @@ export async function createWebSocket(
 	return new WebSocket(url, 'harperdb-replication-v1', wsOptions);
 }
 
-const INITIAL_RETRY_TIME = 1000;
+const INITIAL_RETRY_TIME = 500;
 /**
  * This represents a persistent connection to a node for replication, which handles
  * sockets that may be disconnected and reconnected
@@ -249,7 +251,7 @@ export class NodeReplicationConnection extends EventEmitter {
 			setTimeout(() => {
 				this.connect();
 			}, this.retryTime).unref();
-			this.retryTime += this.retryTime >> 3; // increase by 12% each time
+			this.retryTime += this.retryTime >> 8; // increase by 0.4% each time
 		});
 	}
 	resetSession() {
@@ -326,6 +328,7 @@ export function replicateOverWS(ws, options, authorization) {
 	// track bytes read and written so we can verify if a connection is really dead on pings
 	let bytesRead = 0;
 	let bytesWritten = 0;
+	const blobTimeout = env.get(CONFIG_PARAMS.REPLICATION_BLOBTIMEOUT) ?? 120000;
 	const blobsInFlight = new Map();
 	const outstandingBlobsToFinish: Promise<void>[] = [];
 	let outstandingBlobsBeingSent = 0;
@@ -607,13 +610,21 @@ export function replicateOverWS(ws, options, authorization) {
 							blobsInFlight.set(fileId, stream);
 						}
 						stream.lastChunk = Date.now();
-						if (finished) {
-							if (error) {
-								stream.on('error', () => {}); // don't treat this as an uncaught error
-								stream.destroy(new Error('Blob error: ' + error));
-							} else stream.end(message[2]);
-							if (stream.connectedToBlob) blobsInFlight.delete(fileId);
-						} else stream.write(message[2]);
+						try {
+							if (finished) {
+								if (error) {
+									stream.on('error', () => {}); // don't treat this as an uncaught error
+									stream.destroy(new Error('Blob error: ' + error));
+								} else stream.end(message[2]);
+								if (stream.connectedToBlob) blobsInFlight.delete(fileId);
+							} else stream.write(message[2]);
+						} catch (error) {
+							logger.error?.(
+								`Error receiving blob for ${stream.recordId} from ${remoteNodeName} and streaming to storage`,
+								error
+							);
+							blobsInFlight.delete(fileId);
+						}
 						break;
 					}
 					case GET_RECORD: {
@@ -707,7 +718,7 @@ export function replicateOverWS(ws, options, authorization) {
 									}
 								},
 								(remoteBlob) => {
-									const localBlob = receiveBlobs(remoteBlob); // receive the blob;
+									const localBlob = receiveBlobs(remoteBlob, key); // receive the blob;
 									// track the blobs that were written in case we need to delete them if the record is not moved locally
 									if (!blobsToDelete) blobsToDelete = [];
 									blobsToDelete.push(localBlob);
@@ -1100,6 +1111,7 @@ export function replicateOverWS(ws, options, authorization) {
 												const table = tables[tableName];
 												for (const entry of table.primaryStore.getRange({
 													snapshot: false,
+													versions: true,
 													// values: false, // TODO: eventually, we don't want to decode, we want to use fast binary transfer
 												})) {
 													if (closed) return;
@@ -1115,7 +1127,21 @@ export function replicateOverWS(ws, options, authorization) {
 														lastSequenceId = Math.max(entry.localTime, lastSequenceId);
 														queuedEntries = true;
 														getSharedStatus()[SENDING_TIME_POSITION] = 1;
-														sendAuditRecord(
+														const encoded = createAuditEntry(
+															entry.version,
+															table.tableId,
+															entry.key,
+															null,
+															nodeId,
+															null,
+															'put',
+															decodeWithBlobCallback(() => table.primaryStore.encoder.encode(entry.value), sendBlobs),
+															entry.metadataFlags & ~0xff, // exclude the lower bits that define the type
+															entry.residencyId,
+															null,
+															entry.expiresAt
+														);
+														await sendAuditRecord(
 															{
 																// make it look like an audit record
 																recordId: entry.key,
@@ -1124,7 +1150,7 @@ export function replicateOverWS(ws, options, authorization) {
 																getValue() {
 																	return entry.value;
 																},
-																encoded: table.primaryStore.getBinary(entry.key), // directly transfer binary data
+																encoded,
 																version: entry.version,
 																residencyId: entry.residencyId,
 																nodeId,
@@ -1135,6 +1161,14 @@ export function replicateOverWS(ws, options, authorization) {
 													}
 												}
 											}
+											if (queuedEntries)
+												sendAuditRecord(
+													{
+														type: 'end_txn',
+													},
+													currentSequenceId
+												);
+											getSharedStatus()[SENDING_TIME_POSITION] = 0;
 											currentSequenceId = lastSequenceId;
 										}
 									}
@@ -1208,20 +1242,24 @@ export function replicateOverWS(ws, options, authorization) {
 					);
 				}
 				try {
-					decodeBlobsWithWrites(() => {
-						event = {
-							table: tableDecoder.name,
-							id: auditRecord.recordId,
-							type: auditRecord.type,
-							nodeId: remoteShortIdToLocalId.get(auditRecord.nodeId),
-							residencyList,
-							timestamp: auditRecord.version,
-							value: auditRecord.getValue(tableDecoder),
-							user: auditRecord.user,
-							beginTxn,
-							expiresAt: auditRecord.expiresAt,
-						};
-					}, receiveBlobs);
+					const id = auditRecord.recordId;
+					decodeBlobsWithWrites(
+						() => {
+							event = {
+								table: tableDecoder.name,
+								id: auditRecord.recordId,
+								type: auditRecord.type,
+								nodeId: remoteShortIdToLocalId.get(auditRecord.nodeId),
+								residencyList,
+								timestamp: auditRecord.version,
+								value: auditRecord.getValue(tableDecoder),
+								user: auditRecord.user,
+								beginTxn,
+								expiresAt: auditRecord.expiresAt,
+							};
+						},
+						(blob) => receiveBlobs(blob, id)
+					);
 				} catch (error) {
 					error.message += 'typed structures for current decoder' + JSON.stringify(tableDecoder.decoder.typedStructs);
 					throw error;
@@ -1402,7 +1440,7 @@ export function replicateOverWS(ws, options, authorization) {
 			if (outstandingBlobsBeingSent < MAX_OUTSTANDING_BLOBS_BEING_SENT) blobSentCallback?.();
 		}
 	}
-	function receiveBlobs(remoteBlob: Blob) {
+	function receiveBlobs(remoteBlob: Blob, id: string | number) {
 		// write the blob to the blob store
 		const blobId = getFileId(remoteBlob);
 		let stream = blobsInFlight.get(blobId);
@@ -1417,6 +1455,7 @@ export function replicateOverWS(ws, options, authorization) {
 		}
 		stream.connectedToBlob = true;
 		stream.lastChunk = Date.now();
+		stream.recordId = id;
 		if (remoteBlob.size === undefined && stream.expectedSize) remoteBlob.size = stream.expectedSize;
 		const localBlob = createBlob(stream, remoteBlob);
 
@@ -1446,6 +1485,9 @@ export function replicateOverWS(ws, options, authorization) {
 		if (options.connection?.isFinished)
 			throw new Error('Can not make a subscription request on a connection that is already closed');
 		const lastTxnTimes = new Map();
+		if (!auditStore)
+			// if it hasn't been set yet, do so now
+			auditStore = tableSubscriptionToReplicator?.auditStore;
 		// iterate through all the sequence entries and find the newest txn time for each node
 		try {
 			for (const entry of tableSubscriptionToReplicator?.dbisDB?.getRange({
@@ -1526,11 +1568,16 @@ export function replicateOverWS(ws, options, authorization) {
 			}
 			if (startTime === 1 && leaderUrl) {
 				// if we are starting from scratch and we have a leader URL, we directly ask for a copy from that database
-				if (new URL(leaderUrl).hostname === node.name) {
-					startTime = 0; // use this to indicate that we want to fully copy
-				} else {
-					// for all other nodes, start at right now (minus a minute for overlap)
-					startTime = Date.now() - 60000;
+				try {
+					if (new URL(leaderUrl).hostname === node.name) {
+						logger.warn?.(`Requesting full copy of database ${databaseName} from ${leaderUrl}`);
+						startTime = 0; // use this to indicate that we want to fully copy
+					} else {
+						// for all other nodes, start at right now (minus a minute for overlap)
+						startTime = Date.now() - 60000;
+					}
+				} catch (error) {
+					logger.error?.('Error parsing leader URL', leaderUrl, error);
 				}
 			}
 			return {
@@ -1655,13 +1702,15 @@ export function replicateOverWS(ws, options, authorization) {
 	}
 	blobsTimer = setInterval(() => {
 		for (const [blobId, stream] of blobsInFlight) {
-			if (stream.lastChunk + 30000 < Date.now()) {
-				logger.warn?.(`Timeout waiting for blob stream to finish ${blobId} from ${remoteNodeName}`);
+			if (stream.lastChunk + blobTimeout < Date.now()) {
+				logger.warn?.(
+					`Timeout waiting for blob stream to finish ${blobId} for record ${stream.recordId ?? 'unknown'} from ${remoteNodeName}`
+				);
 				blobsInFlight.delete(blobId);
 				stream.end();
 			}
 		}
-	}, 30000).unref();
+	}, blobTimeout).unref();
 
 	let nextId = 1;
 	const sentTableNames = [];

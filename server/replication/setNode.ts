@@ -176,7 +176,7 @@ export async function setNode(req: object) {
 	}
 	if (req.retain_authorization) nodeRecord.authorization = req.authorization;
 	if (req.revoked_certificates) nodeRecord.revoked_certificates = req.revoked_certificates;
-	if (targetNodeResponse.shard !== undefined) nodeRecord.shard = targetNodeResponse.shard;
+	if (targetNodeResponse?.shard !== undefined) nodeRecord.shard = targetNodeResponse.shard;
 	else if (req.shard !== undefined) nodeRecord.shard = req.shard;
 
 	if (nodeRecord.replicates) {

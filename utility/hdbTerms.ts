@@ -615,6 +615,7 @@ export const CONFIG_PARAMS = {
 	REPLICATION_DATABASES: 'replication_databases',
 	REPLICATION_ENABLEROOTCAS: 'replication_enableRootCAs',
 	REPLICATION_SHARD: 'replication_shard',
+	REPLICATION_BLOBTIMEOUT: 'replication_blobTimeout',
 	ROOTPATH: 'rootPath',
 	SERIALIZATION_BIGINT: 'serialization_bigInt',
 	STORAGE_WRITEASYNC: 'storage_writeAsync',
