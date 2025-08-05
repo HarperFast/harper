@@ -690,7 +690,12 @@ export function replicateOverWS(ws, options, authorization) {
 									entry.key = key;
 									if (!resolve(entry)) {
 										// if it was not moved locally, clean up any blobs that were written
-										if (blobsToDelete) blobsToDelete.forEach(deleteBlob);
+										if (blobsToDelete) {
+											// The blobs are asynchronously used, and it is very difficult to actually know
+											// when they can be safely deleted (we might be able to use a WeakRef with CleanupRegistry).
+											// For now, this should give us plenty of time and provide adequate cleanup measures
+											setTimeout(() => blobsToDelete.forEach(deleteBlob), 60000).unref();
+										}
 									}
 								},
 								(remoteBlob) => {
