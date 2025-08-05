@@ -38,7 +38,6 @@ import { decodeBlobsWithWrites, decodeWithBlobCallback, deleteBlob, getFileId } 
 import { PassThrough } from 'node:stream';
 import minimist from 'minimist';
 
-
 // these are the codes we use for the different commands
 const SUBSCRIPTION_REQUEST = 129;
 const NODE_NAME = 140;
@@ -591,14 +590,16 @@ export function replicateOverWS(ws, options, authorization) {
 						try {
 							if (finished) {
 								if (error) {
-									stream.on('error', () => {
-									}); // don't treat this as an uncaught error
+									stream.on('error', () => {}); // don't treat this as an uncaught error
 									stream.destroy(new Error('Blob error: ' + error));
 								} else stream.end(message[2]);
 								if (stream.connectedToBlob) blobs_in_flight.delete(fileId);
 							} else stream.write(message[2]);
 						} catch (error) {
-							logger.error?.(`Error receiving blob for ${stream.recordId} from ${remote_node_name} and streaming to storage`, error);
+							logger.error?.(
+								`Error receiving blob for ${stream.recordId} from ${remote_node_name} and streaming to storage`,
+								error
+							);
 							blobs_in_flight.delete(fileId);
 						}
 						break;
@@ -1468,7 +1469,8 @@ export function replicateOverWS(ws, options, authorization) {
 		if (options.connection?.isFinished)
 			throw new Error('Can not make a subscription request on a connection that is already closed');
 		const last_txn_times = new Map();
-		if (!audit_store) // if it hasn't been set yet, do so now
+		if (!audit_store)
+			// if it hasn't been set yet, do so now
 			audit_store = table_subscription_to_replicator?.auditStore;
 		// iterate through all the sequence entries and find the newest txn time for each node
 		try {
@@ -1558,10 +1560,11 @@ export function replicateOverWS(ws, options, authorization) {
 						// for all other nodes, start at right now (minus a minute for overlap)
 						start_time = Date.now() - 60000;
 					}
-				} catch(error) {
+				} catch (error) {
 					logger.error?.('Error parsing leader URL', leaderUrl, error);
 				}
 			}
+			logger.error?.(connection_id, 'defining subscription request', node.name, database_name, new Date(start_time));
 			return {
 				name: node.name,
 				replicateByDefault: replicate_by_default,
