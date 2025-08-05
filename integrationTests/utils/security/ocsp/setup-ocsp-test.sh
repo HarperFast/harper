@@ -2,6 +2,7 @@
 
 # OCSP Test Setup Script
 # This script sets up everything needed to test OCSP certificate verification
+# with Ed25519 certificates
 
 set -e
 
