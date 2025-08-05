@@ -26,6 +26,7 @@ import {
 	watch,
 	write,
 } from 'node:fs';
+import type { StatsFs } from 'node:fs';
 import { createDeflate, deflate } from 'node:zlib';
 import { Readable } from 'node:stream';
 import { ensureDirSync } from 'fs-extra';
@@ -183,7 +184,6 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 						if (
 							store.attemptLock(lockKey, 0, () => {
 								writeFinished = true;
-								store.unlock(lockKey, 0);
 								return resolve(readContents());
 							})
 						) {
@@ -408,7 +408,6 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 				const lockKey = storageInfo.fileId + ':blob';
 				isBeingWritten = !store.attemptLock(lockKey, 0, () => {
 					isBeingWritten = false;
-					store.unlock(lockKey, 0);
 				});
 				if (!isBeingWritten) store.unlock(lockKey, 0);
 			}
@@ -764,11 +763,20 @@ function getNextStorageIndex(blobStoragePaths: string[], fileId: number) {
  * and can be assigned quickly and consistently across threads (all threads will usually incrementally assign ids to the same alternating set of storage paths)
  * @param blobStoragePaths
  */
-async function createFrequencyTableForStoragePaths(blobStoragePaths) {
+async function createFrequencyTableForStoragePaths(blobStoragePaths: string[]) {
 	if (!statfs) return; // statfs is not available on all older node versions
 	const availableSpaces = await Promise.all(
 		blobStoragePaths.map(async (path, index) => {
-			const stats = await statfs(path);
+			let stats: StatsFs;
+			try {
+				stats = await statfs(path);
+			} catch (error) {
+				if (error.code !== 'ENOENT') throw error;
+				// if the path doesn't exist, go ahead and create it
+				ensureDirSync(path);
+				// try again after the path is created
+				stats = await statfs(path);
+			}
 			const availableSpace = stats.bavail * stats.bsize;
 			return Math.pow(availableSpace, 0.8); // we don't want this to be quite linear, so we use a power function to reduce the impact of large differences in available space
 		})
@@ -970,6 +978,10 @@ addExtension({
 			return pack([options, storageInfo.storageIndex, storageInfo.fileId]);
 		}
 		if (storageInfo) {
+			if (currentBlobCallback) {
+				currentBlobCallback(blob);
+				return pack([options, storageInfo.storageIndex, storageInfo.fileId]);
+			}
 			// if we want to encode as binary (necessary for replication), we need to encode as a buffer, not sure if we should always do that
 			// also, for replication, we would presume that this is most likely in OS cache, and sync will be fast. For other situations, a large sync call could be
 			// unpleasant
