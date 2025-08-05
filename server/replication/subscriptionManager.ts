@@ -290,13 +290,19 @@ export async function startOnMainThread(options) {
 				// no replication, so just return
 				return;
 			}
+			const shard = main_node.shard;
 			let next_index = (existing_index + 1) % node_names.length;
 			while (existing_index !== next_index) {
 				const next_node_name = node_names[next_index];
 				const next_node = node_map.get(next_node_name);
 				db_replication_workers = connection_replication_map.get(next_node.url);
 				const failover_worker_entry = db_replication_workers?.get(connection.database);
-				if (!failover_worker_entry || failover_worker_entry.redirectingTo) {
+				if (
+					!failover_worker_entry ||
+					failover_worker_entry.connected === false ||
+					failover_worker_entry.nodes[0].shard !== shard
+				) {
+					// try the next node if this isn't connected or isn't in the same shard
 					next_index = (next_index + 1) % node_names.length;
 					continue;
 				}
@@ -312,7 +318,8 @@ export async function startOnMainThread(options) {
 					nodes.push(node);
 					has_moved_nodes = true;
 				}
-				existing_worker_entry.redirectingTo = failover_worker_entry;
+				existing_worker_entry.nodes = [existing_worker_entry.nodes[0]]; // only keep our own subscription
+
 				if (!has_moved_nodes) {
 					logger.info(`Disconnected node ${connection.name} has no nodes to fail over to ${next_node_name}`);
 					return;
@@ -347,41 +354,38 @@ export async function startOnMainThread(options) {
 		}
 		main_worker_entry.connected = true;
 		main_worker_entry.latency = connection.latency;
-		if (main_worker_entry.redirectingTo) {
-			const { worker: failOverWorker, nodes: failOverNodes } = main_worker_entry.redirectingTo;
-			let changedFailedOverNode = false;
-			let changedReconnectedNode = false;
-			main_worker_entry.nodes = main_worker_entry.nodes.filter((reconnectedNode: any, index: number) => {
-				const subscription_to_remove = failOverNodes.find((node) => node.name === reconnectedNode.name);
-				if (failOverNodes.indexOf(subscription_to_remove) > 0) {
-					// if we found it and it is not the first/main node
-					failOverNodes.splice(failOverNodes.indexOf(subscription_to_remove), 1);
-					changedFailedOverNode = true;
-					return true; // we removed from the fail over so keep this in our list of nodes
-				} else if (index === 0) {
-					// if it is ourselves, make sure to keep that
-					return true;
-				} // else it has been removed from failover before we got it back
-				changedReconnectedNode = true;
-				return false;
+		const restored_node = main_worker_entry.nodes[0];
+		main_worker_entry.nodes = [restored_node]; // restart with just our own connection
+		let hasChanges = false;
+		for (const nodeWorkers of connection_replication_map.values()) {
+			const failOverConnections = nodeWorkers.get(connection.database);
+			if (!failOverConnections || failOverConnections == main_worker_entry) continue;
+			const { worker: failOverWorker, nodes: failOverNodes, connected } = failOverConnections;
+			if (connected === false && failOverNodes[0].shard === restored_node.shard) {
+				// if it is not connected and has extra nodes, grab them
+				hasChanges = true;
+				main_worker_entry.nodes.push(failOverNodes[0]);
+			} else {
+				// remove the restored node from any other connections list of node
+				const filtered = failOverNodes.filter((node) => node.name !== restored_node.name);
+				if (filtered.length < failOverNodes.length) {
+					// if we were in the list, reset the subscription
+					failOverConnections.nodes = filtered;
+					failOverWorker.postMessage({
+						type: 'subscribe-to-node',
+						database: connection.database,
+						nodes: failOverNodes,
+					});
+				}
+			}
+		}
+		if (hasChanges && main_worker_entry.worker) {
+			// if the reconnected node changed subscriptions reissue the subscriptions
+			main_worker_entry.worker.postMessage({
+				type: 'subscribe-to-node',
+				database: connection.database,
+				nodes: main_worker_entry.nodes,
 			});
-			main_worker_entry.redirectingTo = null;
-			if (changedFailedOverNode && failOverWorker) {
-				// if the fail-over node changed subscriptions reissue the subscriptions
-				failOverWorker.postMessage({
-					type: 'subscribe-to-node',
-					database: connection.database,
-					nodes: failOverNodes,
-				});
-			}
-			if (changedReconnectedNode && main_worker_entry.worker) {
-				// if the reconnected node changed subscriptions reissue the subscriptions
-				main_worker_entry.worker.postMessage({
-					type: 'subscribe-to-node',
-					database: connection.database,
-					nodes: main_worker_entry.nodes,
-				});
-			}
 		}
 	};
 	onMessageByType('disconnected-from-node', disconnectedFromNode);
