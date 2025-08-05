@@ -298,13 +298,19 @@ export async function startOnMainThread(options) {
 				// no replication, so just return
 				return;
 			}
+			const shard = mainNode.shard;
 			let nextIndex = (existingIndex + 1) % nodeNames.length;
 			while (existingIndex !== nextIndex) {
 				const nextNodeName = nodeNames[nextIndex];
 				const nextNode = nodeMap.get(nextNodeName);
 				dbReplicationWorkers = connectionReplicationMap.get(nextNode.url);
 				const failoverWorkerEntry = dbReplicationWorkers?.get(connection.database);
-				if (!failoverWorkerEntry) {
+				if (
+					!failoverWorkerEntry ||
+					failoverWorkerEntry.connected === false ||
+					failoverWorkerEntry.nodes[0].shard !== shard
+				) {
+					// try the next node if this isn't connected or isn't in the same shard
 					nextIndex = (nextIndex + 1) % nodeNames.length;
 					continue;
 				}
@@ -316,10 +322,11 @@ export async function startOnMainThread(options) {
 						logger.info(`Disconnected node is already failing over to ${nextNodeName} for ${connection.database}`);
 						continue;
 					}
-					if (node.end_time < Date.now()) continue; // already expired
+					if (node.endTime < Date.now()) continue; // already expired
 					nodes.push(node);
 					hasMovedNodes = true;
 				}
+				existingWorkerEntry.nodes = [existingWorkerEntry.nodes[0]]; // only keep our own subscription
 				if (!hasMovedNodes) {
 					logger.info(`Disconnected node ${connection.name} has no nodes to fail over to ${nextNodeName}`);
 					return;
@@ -352,61 +359,40 @@ export async function startOnMainThread(options) {
 			);
 			return;
 		}
-<<<<<<< HEAD
 		mainWorkerEntry.connected = true;
 		mainWorkerEntry.latency = connection.latency;
-		if (mainWorkerEntry.redirectingTo) {
-			const { worker, nodes } = mainWorkerEntry.redirectingTo;
-			const subscriptionToRemove = nodes.find((node) => node.name === connection.name);
-			mainWorkerEntry.redirectingTo = null;
-			if (subscriptionToRemove) {
-				nodes.splice(nodes.indexOf(subscriptionToRemove), 1);
-				if (worker) {
-					worker.postMessage({
+		const restoredNode = mainWorkerEntry.nodes[0];
+		mainWorkerEntry.nodes = [restoredNode]; // restart with just our own connection
+		let hasChanges = false;
+		for (const nodeWorkers of connectionReplicationMap.values()) {
+			const failOverConnections = nodeWorkers.get(connection.database);
+			if (!failOverConnections || failOverConnections == mainWorkerEntry) continue;
+			const { worker: failOverWorker, nodes: failOverNodes, connected } = failOverConnections;
+			if (connected === false && failOverNodes[0].shard === restoredNode.shard) {
+				// if it is not connected and has extra nodes, grab them
+				hasChanges = true;
+				mainWorkerEntry.nodes.push(failOverNodes[0]);
+			} else {
+				// remove the restored node from any other connections list of node
+				const filtered = failOverNodes.filter((node) => node.name !== restoredNode.name);
+				if (filtered.length < failOverNodes.length) {
+					// if we were in the list, reset the subscription
+					failOverConnections.nodes = filtered;
+					failOverWorker.postMessage({
 						type: 'subscribe-to-node',
 						database: connection.database,
-						nodes,
+						nodes: failOverNodes,
 					});
-				} else subscribeToNode({ database: connection.database, nodes });
-=======
-		main_worker_entry.connected = true;
-		main_worker_entry.latency = connection.latency;
-		if (main_worker_entry.redirectingTo) {
-			const { worker: failOverWorker, nodes: failOverNodes } = main_worker_entry.redirectingTo;
-			let changedFailedOverNode = false;
-			let changedReconnectedNode = false;
-			main_worker_entry.nodes = main_worker_entry.nodes.filter((reconnectedNode: any, index: number) => {
-				const subscription_to_remove = failOverNodes.find((node) => node.name === reconnectedNode.name);
-				if (failOverNodes.indexOf(subscription_to_remove) > 0) {
-					// if we found it and it is not the first/main node
-					failOverNodes.splice(failOverNodes.indexOf(subscription_to_remove), 1);
-					changedFailedOverNode = true;
-					return true; // we removed from the fail over so keep this in our list of nodes
-				} else if (index === 0) {
-					// if it is ourselves, make sure to keep that
-					return true;
-				} // else it has been removed from failover before we got it back
-				changedReconnectedNode = true;
-				return false;
+				}
+			}
+		}
+		if (hasChanges && mainWorkerEntry.worker) {
+			// if the reconnected node changed subscriptions reissue the subscriptions
+			mainWorkerEntry.worker.postMessage({
+				type: 'subscribe-to-node',
+				database: connection.database,
+				nodes: mainWorkerEntry.nodes,
 			});
-			main_worker_entry.redirectingTo = null;
-			if (changedFailedOverNode && failOverWorker) {
-				// if the fail-over node changed subscriptions reissue the subscriptions
-				failOverWorker.postMessage({
-					type: 'subscribe-to-node',
-					database: connection.database,
-					nodes: failOverNodes,
-				});
-			}
-			if (changedReconnectedNode && main_worker_entry.worker) {
-				// if the reconnected node changed subscriptions reissue the subscriptions
-				main_worker_entry.worker.postMessage({
-					type: 'subscribe-to-node',
-					database: connection.database,
-					nodes: main_worker_entry.nodes,
-				});
->>>>>>> release_4.5
-			}
 		}
 	};
 	onMessageByType('disconnected-from-node', disconnectedFromNode);
@@ -433,13 +419,8 @@ export function requestClusterStatus(message, port) {
 						database,
 						connected,
 						latency,
-<<<<<<< HEAD
 						threadId: worker?.threadId,
-						nodes: nodes.map((node) => node.name),
-=======
-						thread_id: worker?.threadId,
-						nodes: nodes.filter((node) => !(node.end_time < Date.now())).map((node) => node.name),
->>>>>>> release_4.5
+						nodes: nodes.filter((node) => !(node.endTime < Date.now())).map((node) => node.name),
 					});
 				}
 

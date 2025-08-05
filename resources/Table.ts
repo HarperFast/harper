@@ -448,7 +448,9 @@ export function makeTable(options) {
 											logger.trace?.(
 												'Received txn',
 												databaseName,
+												seqId,
 												new Date(seqId),
+												event.localTime,
 												new Date(event.localTime),
 												event.remoteNodeIds
 											);
