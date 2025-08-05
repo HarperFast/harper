@@ -1569,7 +1569,7 @@ export function replicateOverWS(ws, options, authorization) {
 					logger.error?.('Error parsing leader URL', leaderUrl, error);
 				}
 			}
-			logger.error?.(connection_id, 'defining subscription request', node.name, database_name, new Date(start_time));
+			logger.trace?.(connection_id, 'defining subscription request', node.name, database_name, new Date(start_time));
 			return {
 				name: node.name,
 				replicateByDefault: replicate_by_default,
