@@ -1827,9 +1827,9 @@ export function replicateOverWS(ws, options, authorization) {
 				if (wasSchemaDefined) {
 					// if the schema is defined, we will not change, we will honor our local definition, as it is just going to cause a battle between nodes if there are differences that we try to propagate
 					logger.error?.(
-						`Schema for '${database_name}.${table_definition.table}' is defined locally, but attribute '${ensure_attribute.name}: ${ensure_attribute.type}' from '${
+						`Schema for '${databaseName}.${tableDefinition.table}' is defined locally, but attribute '${ensureAttribute.name}: ${ensureAttribute.type}' from '${
 							remoteNodeName
-						}' does not match local attribute ${existing_attribute ? "'" + existingAttribute.name + ': ' + existingAttribute.type + "'" : 'which does not exist'}`
+						}' does not match local attribute ${existingAttribute ? "'" + existingAttribute.name + ': ' + existingAttribute.type + "'" : 'which does not exist'}`
 					);
 				} else {
 					hasChanges = true;
