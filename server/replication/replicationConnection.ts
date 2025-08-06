@@ -587,14 +587,22 @@ export function replicateOverWS(ws, options, authorization) {
 							blobs_in_flight.set(fileId, stream);
 						}
 						stream.lastChunk = Date.now();
+						const blobBody = message[2];
+						recordAction(
+							blobBody.byteLength,
+							'bytes-received',
+							`${remote_node_name}.${database_name}`,
+							'replication',
+							'blob-ingest'
+						);
 						try {
 							if (finished) {
 								if (error) {
 									stream.on('error', () => {}); // don't treat this as an uncaught error
 									stream.destroy(new Error('Blob error: ' + error));
-								} else stream.end(message[2]);
+								} else stream.end(blobBody);
 								if (stream.connectedToBlob) blobs_in_flight.delete(fileId);
-							} else stream.write(message[2]);
+							} else stream.write(blobBody);
 						} catch (error) {
 							logger.error?.(
 								`Error receiving blob for ${stream.recordId} from ${remote_node_name} and streaming to storage`,
