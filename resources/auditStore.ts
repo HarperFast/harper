@@ -446,7 +446,7 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined) {
 				return start ? buffer.subarray(start, end) : buffer;
 			},
 			get size() {
-				return start ? end - start : buffer.byteLength;
+				return start !== undefined && end !== undefined ? end - start : buffer.byteLength;
 			},
 			getValue(store, fullRecord?, auditTime?) {
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !fullRecord)) {
