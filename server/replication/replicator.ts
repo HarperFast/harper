@@ -293,13 +293,10 @@ export function setReplicator(db_name: string, table: any, options: any) {
 							// so after fails we progressively try the next best node each time.
 							let best_connection: NodeReplicationConnection;
 							for (const node_name of residency) {
+								if (node_name === server.hostname) continue; // don't both connecting to ourselves
 								const connection = getConnectionByName(node_name, Replicator.subscription, db_name);
 								// find a connection, needs to be connected and we haven't tried it yet
-								if (
-									connection?.isConnected &&
-									!attempted_connections.has(connection) &&
-									node_name !== server.hostname // not ourselves
-								) {
+								if (connection?.isConnected && !attempted_connections.has(connection)) {
 									// choose this as the best connection if latency is lower (or hasn't been tested yet)
 									if (!best_connection || connection.latency < best_connection.latency) {
 										best_connection = connection;
