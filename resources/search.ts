@@ -6,7 +6,7 @@ import { INVALIDATED, EVICTED } from './Table.ts';
 import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { MultiPartId } from './Resource.ts';
 import { RequestTarget } from './RequestTarget.ts';
-import { lastMetadata } from './RecordEncoder';
+import { lastMetadata } from './RecordEncoder.ts';
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;
 const BETWEEN_ESTIMATE = 0.1;

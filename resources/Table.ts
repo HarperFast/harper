@@ -4221,4 +4221,3 @@ function hasOtherProcesses(store) {
 			return +line.match(/\d+/)?.[0] != pid;
 		});
 }
-export { clearStatus as clear, getStatus as get, setStatus as set };

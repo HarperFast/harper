@@ -17,8 +17,8 @@
 import { getCertStatus } from 'easy-ocsp';
 import { createHash } from 'node:crypto';
 import { loggerWithTag } from '../utility/logging/logger.js';
-import { table } from '../resources/databases.js';
-import { Resource } from '../resources/Resource.js';
+import { table } from '../resources/databases.ts';
+import { Resource } from '../resources/Resource.ts';
 import type { SourceContext, Context } from '../resources/ResourceInterface.ts';
 
 const logger = loggerWithTag('cert-verification');

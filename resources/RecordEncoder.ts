@@ -19,7 +19,7 @@ import {
 import * as harperLogger from '../utility/logging/harper_logger.js';
 import './blob.ts';
 import { blobsWereEncoded, decodeFromDatabase, deleteBlobsInObject, encodeBlobsWithFilePath } from './blob.ts';
-import { recordAction } from './analytics/write';
+import { recordAction } from './analytics/write.ts';
 export type Entry = {
 	key: any;
 	value: any;

@@ -1,13 +1,11 @@
 require('../test_utils');
 const assert = require('assert');
 const { getMockLMDBPath } = require('../test_utils');
-const { parseQuery } = require('../../resources/search');
 const { table, databases } = require('../../resources/databases');
 const { transaction } = require('../../resources/transaction');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
 const { RequestTarget } = require('../../resources/RequestTarget');
 const analytics = require('../../resources/analytics/write');
-const { analyticsDelay } = require('../../resources/analytics/write');
 
 // might want to enable an iteration with NATS being assigned as a source
 describe('CRUD operations with the Resource API', () => {
