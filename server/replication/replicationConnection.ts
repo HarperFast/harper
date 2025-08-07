@@ -66,6 +66,9 @@ export const RECEIVED_VERSION_POSITION = 1;
 export const RECEIVED_TIME_POSITION = 2;
 export const SENDING_TIME_POSITION = 3;
 export const LATENCY_POSITION = 4;
+export const RECEIVING_STATUS_POSITION = 5;
+export const RECEIVING_STATUS_WAITING = 0;
+export const RECEIVING_STATUS_RECEIVING = 1;
 const cli_args = minimist(process.argv);
 const leaderUrl: string = cli_args.HDB_LEADER_URL ?? process.env.HDB_LEADER_URL;
 
@@ -610,14 +613,22 @@ export function replicateOverWS(ws, options, authorization) {
 							blobsInFlight.set(fileId, stream);
 						}
 						stream.lastChunk = Date.now();
+						const blobBody = message[2];
+						recordAction(
+							blobBody.byteLength,
+							'bytes-received',
+							`${remoteNodeName}.${databaseName}`,
+							'replication',
+							'blob'
+						);
 						try {
 							if (finished) {
 								if (error) {
 									stream.on('error', () => {}); // don't treat this as an uncaught error
 									stream.destroy(new Error('Blob error: ' + error));
-								} else stream.end(message[2]);
+								} else stream.end(blobBody);
 								if (stream.connectedToBlob) blobsInFlight.delete(fileId);
-							} else stream.write(message[2]);
+							} else stream.write(blobBody);
 						} catch (error) {
 							logger.error?.(
 								`Error receiving blob for ${stream.recordId} from ${remoteNodeName} and streaming to storage`,
@@ -1038,6 +1049,13 @@ export function replicateOverWS(ws, options, authorization) {
 								// if we have more than just a txn time, send it
 								ws.send(encodingBuffer.subarray(encodingStart, position));
 								logger.debug?.(connectionId, 'Sent message, size:', position - encodingStart);
+								recordAction(
+									position - encodingStart,
+									'bytes-sent',
+									`${remoteNodeName}.${databaseName}`,
+									'replication',
+									'egress'
+								);
 							} else logger.debug?.(connectionId, 'skipping empty transaction');
 						};
 
@@ -1226,6 +1244,7 @@ export function replicateOverWS(ws, options, authorization) {
 					lastSequenceIdReceived = sequenceIdReceived = decoder.readFloat64();
 					replicationSharedStatus[RECEIVED_VERSION_POSITION] = lastSequenceIdReceived;
 					replicationSharedStatus[RECEIVED_TIME_POSITION] = Date.now();
+					replicationSharedStatus[RECEIVING_STATUS_POSITION] = RECEIVING_STATUS_WAITING;
 					logger.trace?.('received remote sequence update', lastSequenceIdReceived, databaseName);
 					break;
 				}
@@ -1284,6 +1303,7 @@ export function replicateOverWS(ws, options, authorization) {
 				);
 				replicationSharedStatus[RECEIVED_VERSION_POSITION] = auditRecord.version;
 				replicationSharedStatus[RECEIVED_TIME_POSITION] = Date.now();
+				replicationSharedStatus[RECEIVING_STATUS_POSITION] = RECEIVING_STATUS_RECEIVING;
 
 				tableSubscriptionToReplicator.send(event);
 				decoder.position = start + eventLength;
@@ -1386,10 +1406,18 @@ export function replicateOverWS(ws, options, authorization) {
 			logger.error?.(connectionId, 'Error closing connection', error);
 		}
 	}
-
+	// Track the blobs being sent, so we can wait for them to finish before sending the next blob.
+	// The same blobs can't be sent concurrently of the packets will get mixed up. The receiving
+	// end should handle aggregated the results of the same blob for separate record requests.
+	const blobsBeingSent = new Set();
 	async function sendBlobs(blob) {
 		// found a blob, start sending it
 		const id = getFileId(blob);
+		if (blobsBeingSent.has(id)) {
+			logger.debug?.('Blob already being sent', id);
+			return;
+		}
+		blobsBeingSent.add(id);
 		try {
 			let lastBuffer: Buffer;
 			outstandingBlobsBeingSent++;
@@ -1414,6 +1442,7 @@ export function replicateOverWS(ws, options, authorization) {
 					await new Promise((resolve) => ws._socket.once('drain', resolve));
 					logger.debug?.('drained', id);
 				}
+				recordAction(buffer.length, 'bytes-sent', `${remoteNodeName}.${databaseName}`, 'replication', 'blob');
 			}
 			logger.debug?.('Sending final blob chunk', id, 'length', lastBuffer.length);
 			ws.send(
@@ -1441,6 +1470,7 @@ export function replicateOverWS(ws, options, authorization) {
 				])
 			);
 		} finally {
+			blobsBeingSent.delete(id);
 			outstandingBlobsBeingSent--;
 			if (outstandingBlobsBeingSent < MAX_OUTSTANDING_BLOBS_BEING_SENT) blobSentCallback?.();
 		}
@@ -1462,7 +1492,8 @@ export function replicateOverWS(ws, options, authorization) {
 		stream.lastChunk = Date.now();
 		stream.recordId = id;
 		if (remoteBlob.size === undefined && stream.expectedSize) remoteBlob.size = stream.expectedSize;
-		const localBlob = createBlob(stream, remoteBlob);
+		const localBlob = stream.blob ?? createBlob(stream, remoteBlob);
+		stream.blob = localBlob; // record the blob so we can reuse it if another request uses the same blob
 
 		// start the save immediately
 		const finished = localBlob.save({
@@ -1585,7 +1616,7 @@ export function replicateOverWS(ws, options, authorization) {
 					logger.error?.('Error parsing leader URL', leaderUrl, error);
 				}
 			}
-			logger.trace?.(connection_id, 'defining subscription request', node.name, database_name, new Date(start_time));
+			logger.trace?.(connectionId, 'defining subscription request', node.name, databaseName, new Date(startTime));
 			return {
 				name: node.name,
 				replicateByDefault,
@@ -1827,9 +1858,9 @@ export function replicateOverWS(ws, options, authorization) {
 				if (wasSchemaDefined) {
 					// if the schema is defined, we will not change, we will honor our local definition, as it is just going to cause a battle between nodes if there are differences that we try to propagate
 					logger.error?.(
-						`Schema for '${database_name}.${table_definition.table}' is defined locally, but attribute '${ensure_attribute.name}: ${ensure_attribute.type}' from '${
+						`Schema for '${databaseName}.${tableDefinition.table}' is defined locally, but attribute '${ensureAttribute.name}: ${ensureAttribute.type}' from '${
 							remoteNodeName
-						}' does not match local attribute ${existing_attribute ? "'" + existingAttribute.name + ': ' + existingAttribute.type + "'" : 'which does not exist'}`
+						}' does not match local attribute ${existingAttribute ? "'" + existingAttribute.name + ': ' + existingAttribute.type + "'" : 'which does not exist'}`
 					);
 				} else {
 					hasChanges = true;
