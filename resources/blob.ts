@@ -11,7 +11,7 @@
  *   - Note that for compressed data, the size is the uncompressed size, and the compressed size in the file
  */
 
-import { addExtension, pack, unpack } from 'msgpackr';
+import { addExtension, pack, Packr } from 'msgpackr';
 import { readFile, statfs, readdir, rmdir, unlink as unlinkPromised } from 'node:fs/promises';
 import {
 	close,
@@ -926,11 +926,13 @@ export function findBlobsInObject(object: any, callback: (blob: Blob) => void) {
 	}
 }
 
+const copyingUnpacker = new Packr({ copyBuffers: true });
+
 addExtension({
 	Class: Blob,
 	type: 11,
 	unpack: function (buffer) {
-		const blobInfo = unpack(buffer);
+		const blobInfo = copyingUnpacker.unpack(buffer);
 		const blob = new FileBackedBlob();
 		Object.assign(blob, blobInfo[0]); // copy any properties
 		if (typeof blobInfo[1] !== 'object') {
