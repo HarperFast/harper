@@ -76,6 +76,7 @@ describe('CRUD operations with the Resource API', () => {
 			],
 		});
 		CRUDRelatedTable.loadAsInstance = false;
+		relationship_attribute.definition.tableClass = CRUDRelatedTable;
 		children_of_self_attribute.elements.definition.tableClass = CRUDRelatedTable;
 		parent_of_self_attribute.definition.tableClass = CRUDRelatedTable;
 
@@ -160,6 +161,21 @@ describe('CRUD operations with the Resource API', () => {
 			}
 			assert(analyticRecorded, 'db-read was recorded in analytics');
 			assert(analyticRecorded.mean > 20, 'db-read bytes count were recorded in analytics');
+		});
+		it('gets', async function () {
+			if (CRUDTable.loadAsInstance === false) {
+				const context = {};
+				let record = await CRUDTable.get('one', context);
+				assert(Object.isFrozen(record));
+				assert(Object.isFrozen(record.nestedData));
+				assert(Object.isFrozen(record.related));
+				assert.equal(record.name, 'One');
+				for await (let record of CRUDTable.search([])) {
+					assert(Object.isFrozen(record));
+					assert(Object.isFrozen(record.nestedData));
+					assert(Object.isFrozen(record.related));
+				}
+			}
 		});
 		it('update', async function () {
 			const context = {};

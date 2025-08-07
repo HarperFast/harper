@@ -5,9 +5,9 @@
  * This script generates a complete test CA and certificates for OCSP testing
  */
 
-const fs = require('fs');
-const path = require('path');
-const { execSync } = require('child_process');
+const fs = require('node:fs');
+const path = require('node:path');
+const { execSync } = require('node:child_process');
 
 const OUTPUT_DIR = path.join(__dirname, 'generated');
 const OCSP_PORT = process.env.OCSP_PORT || 8888;
@@ -20,7 +20,7 @@ function generateTestCA() {
   const caCertPath = path.join(OUTPUT_DIR, 'harper-ca.crt');
   
   // Generate CA key
-  execSync(`openssl genrsa -out ${caKeyPath} 2048`);
+  execSync(`openssl genpkey -algorithm ED25519 -out ${caKeyPath}`);
   
   // Generate CA certificate
   execSync(`openssl req -new -x509 -key ${caKeyPath} -out ${caCertPath} -days 365 -subj "/CN=Harper Test CA/O=Harper OCSP Test"`);
@@ -44,7 +44,7 @@ function generateOCSPCerts() {
     const ocspKeyPath = path.join(OUTPUT_DIR, 'ocsp.key');
     const ocspCertPath = path.join(OUTPUT_DIR, 'ocsp.crt');
     
-    execSync(`openssl genrsa -out ${ocspKeyPath} 2048`);
+    execSync(`openssl genpkey -algorithm ED25519 -out ${ocspKeyPath}`);
     execSync(`openssl req -new -key ${ocspKeyPath} -out ${OUTPUT_DIR}/ocsp.csr -subj "/CN=OCSP Responder/O=Harper OCSP Test"`);
     
     // OCSP responder extensions
@@ -70,7 +70,7 @@ authorityKeyIdentifier = keyid,issuer`;
     const validKeyPath = path.join(OUTPUT_DIR, 'client-valid.key');
     const validCertPath = path.join(OUTPUT_DIR, 'client-valid.crt');
     
-    execSync(`openssl genrsa -out ${validKeyPath} 2048`);
+    execSync(`openssl genpkey -algorithm ED25519 -out ${validKeyPath}`);
     
     const clientExt = `[v3_client]
 basicConstraints = CA:FALSE
@@ -91,7 +91,7 @@ authorityInfoAccess = OCSP;URI:http://${OCSP_HOST}:${OCSP_PORT},caIssuers;URI:ht
     const revokedKeyPath = path.join(OUTPUT_DIR, 'client-revoked.key');
     const revokedCertPath = path.join(OUTPUT_DIR, 'client-revoked.crt');
     
-    execSync(`openssl genrsa -out ${revokedKeyPath} 2048`);
+    execSync(`openssl genpkey -algorithm ED25519 -out ${revokedKeyPath}`);
     execSync(`openssl req -new -key ${revokedKeyPath} -out ${OUTPUT_DIR}/client-revoked.csr -subj "/CN=Revoked Client/O=Harper OCSP Test"`);
     execSync(`openssl x509 -req -in ${OUTPUT_DIR}/client-revoked.csr -CA ${caCertPath} -CAkey ${caKeyPath} -CAcreateserial -out ${revokedCertPath} -days 365 -extensions v3_client -extfile ${OUTPUT_DIR}/client.ext`);
     

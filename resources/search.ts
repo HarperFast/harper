@@ -338,6 +338,7 @@ export function searchByIndex(
 					}
 				: (entry) => {
 						if (entry.value == null && !(entry.metadataFlags & (INVALIDATED | EVICTED))) return SKIP;
+						if (context?._freezeRecords) Object.freeze(entry.value);
 						return entry;
 					}
 		);
@@ -350,6 +351,7 @@ export function searchByIndex(
 				if (typeof entry === 'object' && entry) {
 					const { key, ...otherProps } = entry;
 					const loadedEntry = Table.primaryStore.getEntry(key);
+					if (context?._freezeRecords) Object.freeze(loadedEntry?.value);
 					return { ...otherProps, ...loadedEntry };
 				}
 				return entry;

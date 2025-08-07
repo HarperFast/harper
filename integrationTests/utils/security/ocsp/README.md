@@ -71,8 +71,10 @@ Harper must be configured with mTLS enabled. Example configuration:
 3. **Test OCSP verification:**
 
    ```bash
-   bash test-ocsp.sh
+   node test-ocsp-manual.js
    ```
+
+   Note: Use `test-ocsp-manual.js` for Ed25519 certificates. The `test-ocsp.sh` script may not work properly with Ed25519 keys depending on your curl/OpenSSL version.
 
 ## Expected Results
 
@@ -112,11 +114,13 @@ http:
 
 ## Generated Files
 
+All certificates are generated using Ed25519 keys for improved security and performance.
+
 - `harper-ca.crt` - Certificate Authority
-- `server.crt/key` - Harper server certificate
-- `client-valid.crt` - Valid client certificate  
-- `client-revoked.crt` - Revoked client certificate
-- `ocsp.crt` - OCSP responder certificate
+- `server.crt/key` - Harper server certificate (Ed25519)
+- `client-valid.crt` - Valid client certificate (Ed25519)
+- `client-revoked.crt` - Revoked client certificate (Ed25519)
+- `ocsp.crt` - OCSP responder certificate (Ed25519)
 - `index.txt` - Certificate database for OCSP responder
 
 ## Troubleshooting

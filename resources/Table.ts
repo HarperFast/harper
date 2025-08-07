@@ -65,7 +65,6 @@ export type Attribute = {
 
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
-let serverUtilities;
 let node_name: string;
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
 const DELETED_RECORD_EXPIRATION = 86400000; // one day for non-audit records that have been deleted
@@ -449,7 +448,9 @@ export function makeTable(options) {
 											logger.trace?.(
 												'Received txn',
 												databaseName,
+												seqId,
 												new Date(seqId),
+												event.localTime,
 												new Date(event.localTime),
 												event.remoteNodeIds
 											);
@@ -568,6 +569,7 @@ export function makeTable(options) {
 		 */
 		static getResource(id: Id, request: Context, resourceOptions?: any): Promise<TableResource> | TableResource {
 			const resource: TableResource = super.getResource(id, request, resourceOptions) as any;
+			if (this.loadAsInstance === false) request._freezeRecords = true;
 			if (id != null && this.loadAsInstance !== false) {
 				checkValidId(id);
 				try {
@@ -1412,7 +1414,7 @@ export function makeTable(options) {
 		static operation(operation, context) {
 			operation.table ||= tableName;
 			operation.schema ||= databaseName;
-			return serverUtilities.operation(operation, context);
+			return global.operation(operation, context);
 		}
 
 		/**
@@ -3072,6 +3074,8 @@ export function makeTable(options) {
 											transaction: txnForContext(context).getReadTxn(),
 										});
 										if (value?.then) hasPromises = true;
+										// for now, we shouldn't be getting promises until rocksdb
+										if (TableResource.loadAsInstance === false) Object.freeze(returnEntry ? value?.value : value);
 										return value;
 									});
 									return relationship.filterMissing
@@ -3082,9 +3086,12 @@ export function makeTable(options) {
 											? Promise.all(results)
 											: results;
 								}
-								return definition.tableClass.primaryStore[returnEntry ? 'getEntry' : 'get'](ids, {
+								const value = definition.tableClass.primaryStore[returnEntry ? 'getEntry' : 'get'](ids, {
 									transaction: txnForContext(context).getReadTxn(),
 								});
+								// for now, we shouldn't be getting promises until rocksdb
+								if (TableResource.loadAsInstance === false) Object.freeze(returnEntry ? value?.value : value);
+								return value;
 							};
 							attribute.set = (object, related) => {
 								if (Array.isArray(related)) {
@@ -3267,6 +3274,7 @@ export function makeTable(options) {
 			// determine what index values need to be removed and added
 			let valuesToAdd = getIndexedValues(value, indexNulls);
 			let valuesToRemove = getIndexedValues(existingValue, indexNulls);
+			if (tableName === 'OrganizationRole') logger.error?.({ tableName, id, key, valuesToAdd, valuesToRemove });
 			if (valuesToRemove?.length > 0) {
 				// put this in a conditional so we can do a faster version for new records
 				// determine the changes/diff from new values and old values
@@ -3362,7 +3370,15 @@ export function makeTable(options) {
 			// through query results and the iterator ends (abruptly)
 			if (options.transaction?.isDone) return withEntry(null, id);
 			const entry = primaryStore.getEntry(id, options);
-			if (databaseName !== 'system') recordAction(entry?.size ?? 1, 'db-read', tableName, null);
+			
+      if (databaseName !== 'system') {
+        recordAction(entry?.size ?? 1, 'db-read', tableName, null);
+      }
+			
+      // we need to freeze entry records to ensure the integrity of the cache;
+			// but we only do this when users have opted into loadAsInstance/freezeRecords to avoid back-compat
+			// issues
+			if (context?._freezeRecords) Object.freeze(entry?.value);
 			if (
 				entry?.residencyId &&
 				entry.metadataFlags & INVALIDATED &&
@@ -4112,9 +4128,7 @@ function attributesAsObject(attribute_permissions, type) {
 function noop() {
 	// prefetch callback
 }
-export function setServerUtilities(utilities) {
-	serverUtilities = utilities;
-}
+
 const ENDS_WITH_TIMEZONE = /[+-][0-9]{2}:[0-9]{2}|[a-zA-Z]$/;
 /**
  * Coerce a string to the type defined by the attribute
