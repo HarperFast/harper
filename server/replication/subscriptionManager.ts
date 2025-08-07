@@ -362,6 +362,10 @@ export async function startOnMainThread(options) {
 		mainWorkerEntry.connected = true;
 		mainWorkerEntry.latency = connection.latency;
 		const restoredNode = mainWorkerEntry.nodes[0];
+		if (!restoredNode) {
+			logger.warn('Newly connected node has no node subscriptions', connection.database, mainWorkerEntry);
+			return;
+		}
 		mainWorkerEntry.nodes = [restoredNode]; // restart with just our own connection
 		let hasChanges = false;
 		for (const nodeWorkers of connectionReplicationMap.values()) {
@@ -374,7 +378,7 @@ export async function startOnMainThread(options) {
 				mainWorkerEntry.nodes.push(failOverNodes[0]);
 			} else {
 				// remove the restored node from any other connections list of node
-				const filtered = failOverNodes.filter((node) => node.name !== restoredNode.name);
+				const filtered = failOverNodes.filter((node) => node && node.name !== restoredNode.name);
 				if (filtered.length < failOverNodes.length) {
 					// if we were in the list, reset the subscription
 					failOverConnections.nodes = filtered;
