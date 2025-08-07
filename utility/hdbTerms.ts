@@ -372,6 +372,7 @@ export const OPERATIONS_ENUM = {
 	SET_STATUS: 'set_status',
 	CLEAR_STATUS: 'clear_status',
 	INSTALL_USAGE_LICENSE: 'install_usage_license',
+	GET_USAGE_LICENSES: 'get_usage_licenses',
 } as const;
 
 /** Defines valid file types that we are able to handle in 'import_from_s3' ops */

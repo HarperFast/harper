@@ -106,3 +106,15 @@ onAnalyticsAggregate((analytics: any) => {
 		}
 	}
 });
+
+interface GetUsageLicensesReq {
+	operation: 'get_usage_licenses';
+}
+
+export function getUsageLicensesOp(req: GetUsageLicensesReq): Promise<UsageLicenseRecord[]> {
+	return getUsageLicenses();
+}
+
+async function getUsageLicenses(): Promise<UsageLicenseRecord[]> {
+	return databases.system.hdb_license.search({ sort: '__created__' });
+}

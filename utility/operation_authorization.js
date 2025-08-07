@@ -180,6 +180,7 @@ requiredPermissions.set(status.clear.name, new permission(true, []));
 requiredPermissions.set(status.get.name, new permission(true, []));
 requiredPermissions.set(status.set.name, new permission(true, []));
 requiredPermissions.set(usageLicensing.installUsageLicenseOp.name, new permission(true, []));
+requiredPermissions.set(usageLicensing.getUsageLicensesOp.name, new permission(true, []));
 
 //this operation must be available to all users so they can create authentication tokens and login
 requiredPermissions.set(tokenAuthentication.createTokens.name, new permission(false, []));
