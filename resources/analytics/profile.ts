@@ -31,8 +31,8 @@ export async function profile() {
 	const { profile } = await session.post('Profiler.stop');
 	const hitCountThreshold = 100;
 	const nodeById = new Map();
-	let totalUserCount = 0,
-		totalHarperCount = 0;
+	let totalUserCount = 0;
+	let totalHarperCount = 0;
 	for (const node of profile.nodes) {
 		nodeById.set(node.id, node);
 	}
