@@ -47,6 +47,10 @@ sed -in "s/TEST_C_NODE4_NAME/ClstrTestC4/" integrationTests/clusterTests/cluster
 
 sed -in "s/ubuntu/harperdb/" integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json
 
+# Escape special characters
+S3_KEY=$(printf '%s\n' "$S3_KEY" | sed 's/[[\.*^$()+?{|]/\\&/g')
+S3_SECRET=$(printf '%s\n' "$S3_SECRET" | sed 's/[[\.*^$()+?{|]/\\&/g')
+
 # Inject credentials from environment variables
 sed -in "s|\"value\": \"PLACEHOLDER_USERNAME\"|\"value\": \"$HDB_ADMIN_USERNAME\"|" integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json
 sed -in "s|\"value\": \"PLACEHOLDER_PASSWORD\"|\"value\": \"$HDB_ADMIN_PASSWORD\"|" integrationTests/clusterTests/clusterTestC/cluster_test_c_env.json
