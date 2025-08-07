@@ -313,9 +313,10 @@ export function setReplicator(dbName: string, table: any, options: any) {
 							let bestLatency = Infinity;
 							for (const nodeName of residency) {
 								if (attemptedNodes.has(nodeName)) continue;
+								if (nodeName === server.hostname) continue; // don't both connecting to ourselves
 								const connection = getConnectionByName(nodeName, Replicator.subscription, dbName);
 								// find a connection, needs to be connected and we haven't tried it yet
-								if (connection?.isConnected && nodeName !== server.hostname) {
+								if (connection?.isConnected) {
 									// is connected and not ourselves
 									const latency = getReplicationSharedStatus(table.auditStore, dbName, nodeName)[LATENCY_POSITION];
 									// choose this as the best connection if latency is lower (or hasn't been tested yet)
