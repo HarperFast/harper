@@ -57,6 +57,9 @@ export const CONFIRMATION_STATUS_POSITION = 0;
 export const RECEIVED_VERSION_POSITION = 1;
 export const RECEIVED_TIME_POSITION = 2;
 export const SENDING_TIME_POSITION = 3;
+export const RECEIVING_STATUS_POSITION = 4;
+export const RECEIVING_STATUS_WAITING = 0;
+export const RECEIVING_STATUS_RECEIVING = 1;
 const cli_args = minimist(process.argv);
 const leaderUrl: string = cli_args.HDB_LEADER_URL ?? process.env.HDB_LEADER_URL;
 
@@ -1236,6 +1239,7 @@ export function replicateOverWS(ws, options, authorization) {
 					last_sequence_id_received = sequence_id_received = decoder.readFloat64();
 					replication_shared_status[RECEIVED_VERSION_POSITION] = last_sequence_id_received;
 					replication_shared_status[RECEIVED_TIME_POSITION] = Date.now();
+					replication_shared_status[RECEIVING_STATUS_POSITION] = RECEIVING_STATUS_WAITING;
 					logger.trace?.('received remote sequence update', last_sequence_id_received, database_name);
 					break;
 				}
@@ -1294,6 +1298,7 @@ export function replicateOverWS(ws, options, authorization) {
 				);
 				replication_shared_status[RECEIVED_VERSION_POSITION] = audit_record.version;
 				replication_shared_status[RECEIVED_TIME_POSITION] = Date.now();
+				replication_shared_status[RECEIVING_STATUS_POSITION] = RECEIVING_STATUS_RECEIVING;
 
 				table_subscription_to_replicator.send(event);
 				decoder.position = start + event_length;

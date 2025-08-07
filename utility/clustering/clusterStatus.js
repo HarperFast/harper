@@ -19,6 +19,8 @@ const {
 	RECEIVED_VERSION_POSITION,
 	RECEIVED_TIME_POSITION,
 	SENDING_TIME_POSITION,
+	RECEIVING_STATUS_POSITION,
+	RECEIVING_STATUS_RECEIVING,
 } = require('../../server/replication/replicationConnection');
 
 const clustering_enabled = env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
@@ -65,6 +67,10 @@ async function clusterStatus() {
 					socket.lastReceivedRemoteTime = asDate(replication_shared_status[RECEIVED_VERSION_POSITION]);
 					socket.lastReceivedLocalTime = asDate(replication_shared_status[RECEIVED_TIME_POSITION]);
 					socket.sendingMessage = asDate(replication_shared_status[SENDING_TIME_POSITION]);
+					socket.lastReceivedStatus =
+						replication_shared_status[RECEIVING_STATUS_POSITION] === RECEIVING_STATUS_RECEIVING
+							? 'Receiving'
+							: 'Waiting';
 				}
 			}
 		} else {
