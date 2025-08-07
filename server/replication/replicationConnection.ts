@@ -619,7 +619,7 @@ export function replicateOverWS(ws, options, authorization) {
 							'bytes-received',
 							`${remoteNodeName}.${databaseName}`,
 							'replication',
-							'blob-ingest'
+							'blob'
 						);
 						try {
 							if (finished) {
@@ -1442,7 +1442,7 @@ export function replicateOverWS(ws, options, authorization) {
 					await new Promise((resolve) => ws._socket.once('drain', resolve));
 					logger.debug?.('drained', id);
 				}
-				recordAction(buffer.length, 'bytes-sent', `${remoteNodeName}.${databaseName}`, 'replication', 'blob-ingest');
+				recordAction(buffer.length, 'bytes-sent', `${remoteNodeName}.${databaseName}`, 'replication', 'blob');
 			}
 			logger.debug?.('Sending final blob chunk', id, 'length', lastBuffer.length);
 			ws.send(
