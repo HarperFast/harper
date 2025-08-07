@@ -179,7 +179,9 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 					// the file is not finished being written, wait for the write lock to complete
 					const store = storageInfo.store;
 					const lockKey = storageInfo.fileId + ':blob';
-					if (writeFinished) throw new Error('Incomplete blob');
+					if (writeFinished) {
+						throw new Error(`Incomplete blob for ${filePath}`);
+					}
 					return new Promise((resolve, reject) => {
 						if (
 							store.attemptLock(lockKey, 0, () => {
@@ -328,7 +330,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 										if (watcher) {
 											// already watching, but add a timer to make sure we don't wait forever
 											timer = setTimeout(() => {
-												onError(new Error('File read timed out'));
+												onError(new Error(`File read timed out reading from ${filePath}`));
 											}, FILE_READ_TIMEOUT).unref();
 										} else {
 											// set up a watcher to be notified of file changes
@@ -503,14 +505,17 @@ function saveBlob(blob: FileBackedBlob) {
 		storageInfo = { storageIndex: 0, fileId: null, store: currentStore };
 		storageInfoForBlob.set(blob, storageInfo);
 	} else {
-		if (storageInfo.saving) return storageInfo;
+		if (storageInfo.fileId) return storageInfo; // if there is any file id, we are already saving and can return the info
 		storageInfo.store = currentStore;
 	}
 
 	generateFilePath(storageInfo);
 	if (storageInfo.source) writeBlobWithStream(blob, storageInfo.source, storageInfo);
 	else if (storageInfo.contentBuffer) writeBlobWithBuffer(blob, storageInfo);
-	else writeBlobWithStream(blob, Readable.from(blob.stream()), storageInfo); // for native blobs, we have to read them from the stream
+	else {
+		// for native blobs, we have to read them from the stream
+		writeBlobWithStream(blob, Readable.from(blob.stream()), storageInfo);
+	}
 	return storageInfo;
 }
 
@@ -529,7 +534,8 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 		if (stream.errored) {
 			// if starts in an error state, record that immediately
 			const error = Buffer.from(stream.errored.toString());
-			writeStream.end(Buffer.concat([createHeader(BigInt(error.length) + 0xff000000000000n), error]));
+			writeStream.write(Buffer.concat([createHeader(BigInt(error.length) + 0xff000000000000n), error]));
+			finished(stream.errored);
 			return;
 		}
 		let wroteSize = false;

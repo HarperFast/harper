@@ -568,7 +568,7 @@ export function replicateOverWS(ws, options, authorization) {
 						const blob_info = message[1];
 						const { fileId, size, finished, error } = blob_info;
 						let stream = blobs_in_flight.get(fileId);
-						logger.debug?.(
+						logger.warn?.(
 							'Received blob',
 							fileId,
 							'has stream',
@@ -651,11 +651,12 @@ export function replicateOverWS(ws, options, authorization) {
 									// if there are blobs, we need to find them and send their contents
 									// but first, the decoding process can destroy our buffer above, so we need to copy it
 									valueBuffer = Buffer.from(valueBuffer);
-									decodeWithBlobCallback(
+									const value = decodeWithBlobCallback(
 										() => table.primaryStore.decoder.decode(binary_entry),
 										sendBlobs,
 										table.primaryStore.rootStore
 									);
+									logger.warn?.('retrieving value', value.value);
 								}
 								response_data = encode([
 									GET_RECORD_RESPONSE,
@@ -1038,6 +1039,13 @@ export function replicateOverWS(ws, options, authorization) {
 								// if we have more than just a txn time, send it
 								ws.send(encoding_buffer.subarray(encoding_start, position));
 								logger.debug?.(connection_id, 'Sent message, size:', position - encoding_start);
+								recordAction(
+									position - encoding_start,
+									'bytes-sent',
+									`${remote_node_name}.${database_name}`,
+									'replication',
+									'egress'
+								);
 							} else logger.debug?.(connection_id, 'skipping empty transaction');
 						};
 
@@ -1379,10 +1387,15 @@ export function replicateOverWS(ws, options, authorization) {
 		ws.close(code, reason);
 		options.connection?.emit('finished'); // we want to synchronously indicate that the connection is finished, so it is not accidently reused
 	}
-
+	const blobsBeingSent = new Set();
 	async function sendBlobs(blob) {
 		// found a blob, start sending it
 		const id = getFileId(blob);
+		if (blobsBeingSent.has(id)) {
+			logger.warn?.('Blob already being sent', id);
+			return;
+		}
+		blobsBeingSent.add(id);
 		try {
 			let last_buffer: Buffer;
 			outstanding_blobs_being_sent++;
@@ -1407,6 +1420,7 @@ export function replicateOverWS(ws, options, authorization) {
 					await new Promise((resolve) => ws._socket.once('drain', resolve));
 					logger.debug?.('drained', id);
 				}
+				recordAction(buffer.length, 'bytes-sent', `${remote_node_name}.${database_name}`, 'replication', 'blob-ingest');
 			}
 			logger.debug?.('Sending final blob chunk', id, 'length', last_buffer.length);
 			ws.send(
@@ -1434,6 +1448,7 @@ export function replicateOverWS(ws, options, authorization) {
 				])
 			);
 		} finally {
+			blobsBeingSent.delete(id);
 			outstanding_blobs_being_sent--;
 			if (outstanding_blobs_being_sent < MAX_OUTSTANDING_BLOBS_BEING_SENT) blob_sent_callback?.();
 		}
@@ -1442,7 +1457,16 @@ export function replicateOverWS(ws, options, authorization) {
 		// write the blob to the blob store
 		const blob_id = getFileId(remote_blob);
 		let stream = blobs_in_flight.get(blob_id);
-		logger.debug?.('Received transaction with blob', blob_id, 'has stream', !!stream, 'ended', !!stream?.writableEnded);
+		logger.warn?.(
+			'Received transaction for record',
+			id,
+			'with blob',
+			blob_id,
+			'has stream',
+			!!stream,
+			'ended',
+			!!stream?.writableEnded
+		);
 		if (stream) {
 			if (stream.writableEnded) {
 				blobs_in_flight.delete(blob_id);
@@ -1455,8 +1479,8 @@ export function replicateOverWS(ws, options, authorization) {
 		stream.lastChunk = Date.now();
 		stream.recordId = id;
 		if (remote_blob.size === undefined && stream.expectedSize) remote_blob.size = stream.expectedSize;
-		const local_blob = createBlob(stream, remote_blob);
-
+		const local_blob = stream.blob ?? createBlob(stream, remote_blob);
+		stream.blob = local_blob;
 		// start the save immediately
 		const finished = local_blob.save({
 			// need to pass in the table, but this is table-like enough for it to get the root store
@@ -1466,7 +1490,7 @@ export function replicateOverWS(ws, options, authorization) {
 			finished.blobId = blob_id;
 			outstanding_blobs_to_finish.push(finished);
 			finished.finally(() => {
-				logger.debug?.(`Finished receiving blob stream ${blob_id}`);
+				logger.warn?.(`Finished receiving blob stream ${blob_id}`);
 				outstanding_blobs_to_finish.splice(outstanding_blobs_to_finish.indexOf(finished), 1);
 			});
 		}

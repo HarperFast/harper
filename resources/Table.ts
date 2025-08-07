@@ -1194,7 +1194,7 @@ export function makeTable(options) {
 						for (const name in indices) {
 							if (!new_record) new_record = {};
 							// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-							new_record[name] = existing_record(name);
+							new_record[name] = existing_record[name];
 						}
 						metadata = INVALIDATED;
 					} else {
@@ -1241,6 +1241,7 @@ export function makeTable(options) {
 				residency_id = getResidencyId(residency);
 			}
 			const metadata = 0;
+			logger.error?.('Performing a relocate of an entry', existing_entry.key, entry.value, residency);
 			const record = updateRecord(
 				existing_entry.key,
 				entry.value, // store the record we downloaded
