@@ -596,7 +596,7 @@ export function replicateOverWS(ws, options, authorization) {
 							'bytes-received',
 							`${remote_node_name}.${database_name}`,
 							'replication',
-							'blob-ingest'
+							'blob'
 						);
 						try {
 							if (finished) {
@@ -654,12 +654,11 @@ export function replicateOverWS(ws, options, authorization) {
 									// if there are blobs, we need to find them and send their contents
 									// but first, the decoding process can destroy our buffer above, so we need to copy it
 									valueBuffer = Buffer.from(valueBuffer);
-									const value = decodeWithBlobCallback(
+									decodeWithBlobCallback(
 										() => table.primaryStore.decoder.decode(binary_entry),
 										sendBlobs,
 										table.primaryStore.rootStore
 									);
-									logger.warn?.('retrieving value', value.value);
 								}
 								response_data = encode([
 									GET_RECORD_RESPONSE,
@@ -1428,7 +1427,7 @@ export function replicateOverWS(ws, options, authorization) {
 					await new Promise((resolve) => ws._socket.once('drain', resolve));
 					logger.debug?.('drained', id);
 				}
-				recordAction(buffer.length, 'bytes-sent', `${remote_node_name}.${database_name}`, 'replication', 'blob-ingest');
+				recordAction(buffer.length, 'bytes-sent', `${remote_node_name}.${database_name}`, 'replication', 'blob');
 			}
 			logger.debug?.('Sending final blob chunk', id, 'length', last_buffer.length);
 			ws.send(
