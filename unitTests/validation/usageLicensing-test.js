@@ -1,7 +1,7 @@
-import { describe, it } from 'mocha';
-import { expect } from 'chai';
-import * as ul from '../../validation/usageLicensing.ts';
-import { signTestLicense, signAnything } from '../testLicenseUtils.mjs';
+const { describe, it } = require('mocha');
+const { expect } = require('chai');
+const ul = require('../../validation/usageLicensing.ts');
+const { signTestLicense, signAnything } = require('../testLicenseUtils.js');
 
 describe('usageLicensing', function () {
 	describe('validateLicense', () => {
