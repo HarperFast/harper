@@ -568,7 +568,7 @@ export function replicateOverWS(ws, options, authorization) {
 						const blob_info = message[1];
 						const { fileId, size, finished, error } = blob_info;
 						let stream = blobs_in_flight.get(fileId);
-						logger.warn?.(
+						logger.debug?.(
 							'Received blob',
 							fileId,
 							'has stream',
@@ -1387,12 +1387,15 @@ export function replicateOverWS(ws, options, authorization) {
 		ws.close(code, reason);
 		options.connection?.emit('finished'); // we want to synchronously indicate that the connection is finished, so it is not accidently reused
 	}
+	// Track the blobs being sent, so we can wait for them to finish before sending the next blob.
+	// The same blobs can't be sent concurrently of the packets will get mixed up. The receiving
+	// end should handle aggregated the results of the same blob for separate record requests.
 	const blobsBeingSent = new Set();
 	async function sendBlobs(blob) {
 		// found a blob, start sending it
 		const id = getFileId(blob);
 		if (blobsBeingSent.has(id)) {
-			logger.warn?.('Blob already being sent', id);
+			logger.debug?.('Blob already being sent', id);
 			return;
 		}
 		blobsBeingSent.add(id);
@@ -1457,7 +1460,7 @@ export function replicateOverWS(ws, options, authorization) {
 		// write the blob to the blob store
 		const blob_id = getFileId(remote_blob);
 		let stream = blobs_in_flight.get(blob_id);
-		logger.warn?.(
+		logger.debug?.(
 			'Received transaction for record',
 			id,
 			'with blob',
@@ -1480,7 +1483,7 @@ export function replicateOverWS(ws, options, authorization) {
 		stream.recordId = id;
 		if (remote_blob.size === undefined && stream.expectedSize) remote_blob.size = stream.expectedSize;
 		const local_blob = stream.blob ?? createBlob(stream, remote_blob);
-		stream.blob = local_blob;
+		stream.blob = local_blob; // record the blob so we can reuse it if another request uses the same blob
 		// start the save immediately
 		const finished = local_blob.save({
 			// need to pass in the table, but this is table-like enough for it to get the root store
@@ -1490,7 +1493,7 @@ export function replicateOverWS(ws, options, authorization) {
 			finished.blobId = blob_id;
 			outstanding_blobs_to_finish.push(finished);
 			finished.finally(() => {
-				logger.warn?.(`Finished receiving blob stream ${blob_id}`);
+				logger.debug?.(`Finished receiving blob stream ${blob_id}`);
 				outstanding_blobs_to_finish.splice(outstanding_blobs_to_finish.indexOf(finished), 1);
 			});
 		}

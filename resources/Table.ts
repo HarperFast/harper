@@ -1241,7 +1241,7 @@ export function makeTable(options) {
 				residency_id = getResidencyId(residency);
 			}
 			const metadata = 0;
-			logger.error?.('Performing a relocate of an entry', existing_entry.key, entry.value, residency);
+			logger.debug?.('Performing a relocate of an entry', existing_entry.key, entry.value, residency);
 			const record = updateRecord(
 				existing_entry.key,
 				entry.value, // store the record we downloaded
