@@ -361,6 +361,7 @@ export async function startOnMainThread(options) {
 			const failOverConnections = nodeWorkers.get(connection.database);
 			if (!failOverConnections || failOverConnections == main_worker_entry) continue;
 			const { worker: failOverWorker, nodes: failOverNodes, connected } = failOverConnections;
+			if (!failOverNodes) continue;
 			if (connected === false && failOverNodes[0].shard === restored_node.shard) {
 				// if it is not connected and has extra nodes, grab them
 				hasChanges = true;
