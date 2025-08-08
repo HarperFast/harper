@@ -926,7 +926,7 @@ export function findBlobsInObject(object: any, callback: (blob: Blob) => void) {
 	}
 }
 
-const copyingUnpacker = new Packr({ copyBuffers: true });
+const copyingUnpacker = new Packr({ copyBuffers: true, mapsAsObjects: true });
 
 addExtension({
 	Class: Blob,
