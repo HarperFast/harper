@@ -1,6 +1,6 @@
 services:
   harper:
-    image: harperdb/harperdb
+    image: harpersystems/harper
     build:
       dockerfile: utility/dev/Dockerfile
       context: ../..
