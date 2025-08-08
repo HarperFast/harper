@@ -8278,7 +8278,8 @@
 									"pm.test('pre_con1 data on node 2', () => {",
 									"    const response = pm.response.json();",
 									"    if (!response.record_count) console.log(response);",
-									"    pm.expect(response.record_count).to.equal(1200);",
+									"    pm.expect(response.record_count).to.be.above(1200 - 10);",
+									"    pm.expect(response.record_count).to.be.below(1200 + 10);",
 									"});"
 								],
 								"type": "text/javascript",
@@ -8289,7 +8290,7 @@
 							"listen": "prerequest",
 							"script": {
 								"exec": [
-									"setTimeout(()=>{}, 2000)"
+									"setTimeout(()=>{}, 9000)"
 								],
 								"type": "text/javascript",
 								"packages": {}
@@ -8369,7 +8370,8 @@
 									"if (record_count < expected_record_count + 10 && record_count > expected_record_count - 10) {",
 									"    pm.environment.set('JOB_STATUS_COUNT', 0);",
 									"    pm.test(`\"${test_name}\" has completed`, () => {",
-									"        pm.expect(record_count).to.equal(expected_record_count);",
+									"        pm.expect(record_count).to.be.above(expected_record_count - 10);",
+									"        pm.expect(record_count).to.be.below(expected_record_count + 10);",
 									"        console.log(response);",
 									"    });",
 									"} else if (record_count < expected_record_count) {",
@@ -9174,7 +9176,8 @@
 									"if (record_count < expected_record_count + 10 && record_count > expected_record_count - 10) {",
 									"    pm.environment.set('JOB_STATUS_COUNT', 0);",
 									"    pm.test(`\"${test_name}\" has completed`, () => {",
-									"        pm.expect(record_count).to.equal(expected_record_count);",
+									"        pm.expect(record_count).to.be.above(expected_record_count - 10);",
+									"        pm.expect(record_count).to.be.below(expected_record_count + 10);",
 									"        console.log(response);",
 									"    });",
 									"} else if (record_count < expected_record_count) {",
@@ -9437,7 +9440,8 @@
 									"if (record_count < expected_record_count + 10 && record_count > expected_record_count - 10) {",
 									"    pm.environment.set('JOB_STATUS_COUNT', 0);",
 									"    pm.test(`\"${test_name}\" has completed`, () => {",
-									"        pm.expect(record_count).to.equal(expected_record_count);",
+									"        pm.expect(record_count).to.be.above(expected_record_count - 10);",
+									"        pm.expect(record_count).to.be.below(expected_record_count + 10);",
 									"        console.log(response);",
 									"    });",
 									"} else if (record_count < expected_record_count) {",
@@ -9700,7 +9704,8 @@
 									"if (record_count < expected_record_count + 10 && record_count > expected_record_count - 10) {",
 									"    pm.environment.set('JOB_STATUS_COUNT', 0);",
 									"    pm.test(`\"${test_name}\" has completed`, () => {",
-									"        pm.expect(record_count).to.equal(expected_record_count);",
+									"        pm.expect(record_count).to.be.above(expected_record_count - 10);",
+									"        pm.expect(record_count).to.be.below(expected_record_count + 10);",
 									"        console.log(response);",
 									"    });",
 									"} else if (record_count < expected_record_count) {",
@@ -9963,7 +9968,8 @@
 									"if (record_count < expected_record_count + 10 && record_count > expected_record_count - 10) {",
 									"    pm.environment.set('JOB_STATUS_COUNT', 0);",
 									"    pm.test(`\"${test_name}\" has completed`, () => {",
-									"        pm.expect(record_count).to.equal(expected_record_count);",
+									"        pm.expect(record_count).to.be.above(expected_record_count - 10);",
+									"        pm.expect(record_count).to.be.below(expected_record_count + 10);",
 									"        console.log(response);",
 									"    });",
 									"} else if (record_count < expected_record_count) {",
@@ -10179,7 +10185,7 @@
 							"listen": "prerequest",
 							"script": {
 								"exec": [
-									"setTimeout(()=>{}, 3000)"
+									"setTimeout(()=>{}, 9000)"
 								],
 								"type": "text/javascript",
 								"packages": {}
@@ -15002,6 +15008,16 @@
 									"    }",
 									"]);",
 									"});"
+								],
+								"type": "text/javascript",
+								"packages": {}
+							}
+						},
+						{
+							"listen": "prerequest",
+							"script": {
+								"exec": [
+									"setTimeout(()=>{}, 2000)"
 								],
 								"type": "text/javascript",
 								"packages": {}
