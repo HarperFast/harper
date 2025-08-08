@@ -294,7 +294,7 @@ export function setReplicator(db_name: string, table: any, options: any) {
 							let best_connection: NodeReplicationConnection;
 							for (const node_name of residency) {
 								if (node_name === server.hostname) continue; // don't both connecting to ourselves
-								const connection = getConnectionByName(node_name, Replicator.subscription, db_name);
+								const connection = getRetrievalConnectionByName(node_name, Replicator.subscription, db_name);
 								// find a connection, needs to be connected and we haven't tried it yet
 								if (connection?.isConnected && !attempted_connections.has(connection)) {
 									// choose this as the best connection if latency is lower (or hasn't been tested yet)
@@ -340,10 +340,17 @@ const connections = new Map();
  * @param subscription
  * @param db_name
  */
-function getConnection(url: string, subscription: any, db_name: string, node_name?: string, authorization?: string) {
+function getSubscriptionConnection(
+	url: string,
+	subscription: any,
+	db_name: string,
+	node_name?: string,
+	authorization?: string
+): NodeReplicationConnection {
 	let db_connections = connections.get(url);
 	if (!db_connections) {
-		connections.set(url, (db_connections = new Map()));
+		db_connections = new Map();
+		connections.set(url, db_connections);
 	}
 	let connection = db_connections.get(db_name);
 	if (connection) return connection;
@@ -357,18 +364,25 @@ function getConnection(url: string, subscription: any, db_name: string, node_nam
 		return connection;
 	}
 }
-const node_name_to_db_connections = new Map();
-/** Get connection by node name, using caching
- *
+const nodeNameToRetrievalConnections = new Map<string, Map<string, NodeReplicationConnection>>();
+/**
+ * Get connection by node name, using caching
  * */
-function getConnectionByName(node_name, subscription, db_name) {
-	let connection = node_name_to_db_connections.get(node_name)?.get(db_name);
+function getRetrievalConnectionByName(node_name, subscription, db_name): NodeReplicationConnection {
+	let dbConnections = nodeNameToRetrievalConnections.get(node_name);
+	if (!dbConnections) {
+		dbConnections = new Map();
+		nodeNameToRetrievalConnections.set(node_name, dbConnections);
+	}
+	let connection = dbConnections.get(db_name);
 	if (connection) return connection;
 	const node = getHDBNodeTable().primaryStore.get(node_name);
 	if (node?.url) {
-		connection = getConnection(node.url, subscription, db_name, node_name, node.authorization);
+		connection = new NodeReplicationConnection(node.url, subscription, db_name, node_name, node.authorization);
 		// cache the connection
-		node_name_to_db_connections.set(node_name, connections.get(node.url));
+		dbConnections.set(node_name, connection);
+		connection.connect();
+		connection.once('finished', () => dbConnections.delete(db_name));
 	}
 	return connection;
 }
@@ -417,7 +431,7 @@ export function subscribeToNode(request) {
 			subscription_to_table.ready = ready;
 			database_subscriptions.set(request.database, subscription_to_table);
 		}
-		const connection = getConnection(
+		const connection = getSubscriptionConnection(
 			request.nodes[0].url,
 			subscription_to_table,
 			request.database,

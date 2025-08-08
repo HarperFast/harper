@@ -81,6 +81,14 @@ let secure_contexts: Map<string, tls.SecureContext>;
  * Handles reconnection, and requesting catch-up
  */
 
+type NodeSubscription = {
+	name: string;
+	replicateByDefault: boolean;
+	tables: string[];
+	startTime: number;
+	endTime: number;
+};
+
 export async function createWebSocket(
 	url: string,
 	options: { authorization?: string; rejectUnauthorized?: boolean; serverName?: string }
@@ -145,7 +153,7 @@ export class NodeReplicationConnection extends EventEmitter {
 	retries = 0;
 	isConnected = true; // we start out assuming we will be connected
 	isFinished = false;
-	nodeSubscriptions = [];
+	nodeSubscriptions?: NodeSubscription[];
 	latency = 0;
 	replicateTablesByDefault: boolean;
 	session: any; // this is a promise that resolves to the session object, which is the object that handles the replication
@@ -177,11 +185,13 @@ export class NodeReplicationConnection extends EventEmitter {
 			this.retries = 0;
 			this.retryTime = INITIAL_RETRY_TIME;
 			// if we have already connected, we need to send a reconnected event
-			connectedToNode({
-				name: this.nodeName,
-				database: this.databaseName,
-				url: this.url,
-			});
+			if (this.nodeSubscriptions) {
+				connectedToNode({
+					name: this.nodeName,
+					database: this.databaseName,
+					url: this.url,
+				});
+			}
 			this.isConnected = true;
 			session = replicateOverWS(
 				this.socket,
@@ -190,6 +200,7 @@ export class NodeReplicationConnection extends EventEmitter {
 					subscription: this.subscription,
 					url: this.url,
 					connection: this,
+					isSubscriptionConnection: this.nodeSubscriptions !== undefined,
 				},
 				{ replicates: true } // pre-authorized, but should only make publish: true if we are allowing reverse subscriptions
 			);
@@ -213,12 +224,14 @@ export class NodeReplicationConnection extends EventEmitter {
 		this.socket.on('close', (code, reason_buffer) => {
 			// if we get disconnected, notify subscriptions manager so we can reroute through another node
 			if (this.isConnected) {
-				disconnectedFromNode({
-					name: this.nodeName,
-					database: this.databaseName,
-					url: this.url,
-					finished: this.socket.isFinished,
-				});
+				if (this.nodeSubscriptions) {
+					disconnectedFromNode({
+						name: this.nodeName,
+						database: this.databaseName,
+						url: this.url,
+						finished: this.socket.isFinished,
+					});
+				}
 				this.isConnected = false;
 			}
 
@@ -629,8 +642,8 @@ export function replicateOverWS(ws, options, authorization) {
 							// receiving side can properly decode it. We only need to send this once until it changes again, so we can check if the structure
 							// has changed. It will only grow, so we can just check the length.
 							const structures_binary = table.primaryStore.getBinaryFast(Symbol.for('structures'));
-							const structure_length = structures_binary.length;
-							if (structure_length !== last_structure_length) {
+							const structure_length = structures_binary?.length;
+							if (structure_length > 0 && structure_length !== last_structure_length) {
 								last_structure_length = structure_length;
 								const structure = decode(structures_binary);
 								ws.send(
@@ -1364,12 +1377,14 @@ export function replicateOverWS(ws, options, authorization) {
 			// every pong we can use to update our connection information (and latency)
 			options.connection.latency = performance.now() - last_ping_time;
 			// update the manager with latest connection information
-			connectedToNode({
-				name: remote_node_name,
-				database: database_name,
-				url: options.url,
-				latency: options.connection.latency,
-			});
+			if (options.isSubscriptionConnection) {
+				connectedToNode({
+					name: remote_node_name,
+					database: database_name,
+					url: options.url,
+					latency: options.connection.latency,
+				});
+			}
 		}
 		last_ping_time = null;
 	});
@@ -1532,7 +1547,7 @@ export function replicateOverWS(ws, options, authorization) {
 		}
 		const connected_node = options.connection?.nodeSubscriptions?.[0];
 		receiving_data_from_node_ids = [];
-		const node_subscriptions = options.connection?.nodeSubscriptions.map((node: any, index: number) => {
+		const node_subscriptions = options.connection?.nodeSubscriptions?.map((node: any, index: number) => {
 			const table_subs = [];
 			let { replicateByDefault: replicate_by_default } = node;
 			if (node.subscriptions) {
