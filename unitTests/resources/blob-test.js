@@ -344,7 +344,7 @@ describe('Blob test', () => {
 				})
 			);
 		}
-		let records = await Promise.all(promises);
+		await Promise.all(promises);
 	});
 	afterEach(function () {
 		setAuditRetention(60000);
