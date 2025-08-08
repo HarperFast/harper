@@ -1,5 +1,6 @@
 import assert from 'node:assert';
-const { createECDH } = await import('node:crypto');
+import { createECDH } from 'node:crypto';
+
 export class Echo extends Resource {
 	async connect(incoming_messages, query) {
 		if (incoming_messages) {
