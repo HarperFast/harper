@@ -117,7 +117,7 @@ export async function authentication(request, nextHandler) {
 			if (headers['referer']) log.referer = headers['referer'];
 			if (headers['origin']) log.origin = headers['origin'];
 
-			if (status === AUTH_AUDIT_STATUS.SUCCESS) authEventLog.notify(log);
+			if (status === AUTH_AUDIT_STATUS.SUCCESS) authEventLog.info(log);
 			else authEventLog.error(log);
 		};
 
@@ -255,7 +255,7 @@ export async function authentication(request, nextHandler) {
 					if (domain) {
 						cookie += `; Domain=${domain}`;
 					}
-					
+
 					if (useSecure) {
 						cookie += `; SameSite=None; Secure`;
 					}
