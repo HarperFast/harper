@@ -73,7 +73,7 @@ export async function profile() {
 		return unassignedCount;
 	}
 	function isHarperCode(node: any) {
-		return node.callFrame?.url.startsWith(HARPER_URL));
+		return node.callFrame?.url.startsWith(HARPER_URL);
 	}
 	function isUserCode(node: any) {
 		if (userCodeFolders.some((userCodeFolder) => node.callFrame?.url.startsWith(userCodeFolder))) return true;
