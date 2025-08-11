@@ -49,8 +49,6 @@ export type ValidatedLicense = LicensePayload;
 
 export class LicenseEncodingError extends TypeError {}
 
-export class InvalidBase64UrlEncodingError extends LicenseEncodingError {}
-
 export class InvalidLicenseError extends TypeError {}
 
 export class InvalidLicenseSignatureError extends InvalidLicenseError {}
