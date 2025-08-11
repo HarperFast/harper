@@ -366,10 +366,17 @@ const connections = new Map();
  * @param subscription
  * @param dbName
  */
-function getSubscriptionConnection(url: string, subscription: any, dbName: string, node_name?: string, authorization?: string) {
+function getSubscriptionConnection(
+	url: string,
+	subscription: any,
+	dbName: string,
+	node_name?: string,
+	authorization?: string
+) {
 	let dbConnections = connections.get(url);
 	if (!dbConnections) {
 		connections.set(url, (dbConnections = new Map()));
+	}
 	let connection = dbConnections.get(dbName);
 	if (connection) return connection;
 	if (subscription) {
@@ -383,9 +390,9 @@ function getSubscriptionConnection(url: string, subscription: any, dbName: strin
 	}
 }
 const nodeNameToRetrievalConnections = new Map<string, Map<string, NodeReplicationConnection>>();
-	/**
-	 * Get connection by node name, using caching
-	 * */
+/**
+ * Get connection by node name, using caching
+ * */
 function getRetrievalConnectionByName(nodeName, subscription, dbName): NodeReplicationConnection {
 	let dbConnections = nodeNameToRetrievalConnections.get(node_name);
 	if (!dbConnections) {
