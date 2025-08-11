@@ -77,6 +77,7 @@ function addExitListeners() {
 /**
  * Do the initial checks and potential upgrades/installation
  * @param calledByInstall
+ * @param calledByMain
  * @returns {Promise<void>}
  */
 async function initialize(calledByInstall = false, calledByMain = false) {
