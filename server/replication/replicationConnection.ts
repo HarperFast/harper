@@ -325,12 +325,6 @@ export function replicateOverWS(ws, options, authorization) {
 		});
 	let tables = options.tables || (databaseName && getDatabases()[databaseName]);
 	let remoteNodeName: string;
-	if (!authorization) {
-		logger.error?.(connectionId, 'No authorization provided');
-		// don't send disconnect because we want the client to potentially retry
-		close(1008, 'Unauthorized');
-		return;
-	}
 	const awaitingResponse = new Map();
 	let receivingDataFromNodeIds = [];
 	remoteNodeName = authorization.name;
@@ -406,7 +400,22 @@ export function replicateOverWS(ws, options, authorization) {
 	let subscriptionRequest, auditSubscription;
 	let nodeSubscriptions;
 	let remoteShortIdToLocalId: Map<number, number>;
-	ws.on('message', (body) => {
+	ws.on('message', onWSMessageWhenAuthorized);
+	// handle messages that we receive before authorization is complete/resolved
+	async function onWSMessageWhenAuthorized(body: Buffer) {
+		authorization = await authorization;
+		if (!authorization) {
+			logger.error?.(connectionId, 'No authorization provided');
+			// don't send disconnect because we want the client to potentially retry
+			close(1008, 'Unauthorized');
+			return;
+		}
+		onWSMessage(body);
+		// once resolved, we can skip this whole function and go directly to the message handler
+		ws.off('message', onWSMessageWhenAuthorized);
+		ws.on('message', onWSMessage);
+	});
+	function onWSMessage(body: Buffer) {
 		// A replication header should begin with either a transaction timestamp or messagepack message of
 		// of an array that begins with the command code
 		lastMessageTime = performance.now();
@@ -1385,7 +1394,7 @@ export function replicateOverWS(ws, options, authorization) {
 		} catch (error) {
 			logger.error?.(connectionId, 'Error handling incoming replication message', error);
 		}
-	});
+	}
 	ws.on('ping', resetPingTimer);
 	ws.on('pong', () => {
 		if (options.connection) {
