@@ -52,14 +52,15 @@ interface UsageLicenseRecord {
 	addTo: (field: string, value: number) => void;
 }
 
-onAnalyticsAggregate((analytics: any) => {
+onAnalyticsAggregate(async (analytics: any) => {
 	let updatableActiveLicense: UpdatableRecord<UsageLicenseRecord>;
 	const now = new Date().toISOString();
 	const licenseQuery = {
 		sort: '__created__',
 		conditions: [{ attribute: 'expiration', operator: 'greater_than', value: now }],
 	};
-	for (const license of databases.system.hdb_license.search(licenseQuery)) {
+	const results = await databases.system.hdb_license.search(licenseQuery);
+	for await (const license of results) {
 		if (
 			license.usedReads >= license.reads ||
 			license.usedReadBytes >= license.readBytes ||
