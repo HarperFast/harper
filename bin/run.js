@@ -337,7 +337,6 @@ exports.launch = launch;
 exports.main = main;
 exports.startupLog = startupLog;
 
-
 /**
  * Logs running services and relevant ports/information.
  * Called by worker thread 1 once all servers have started
@@ -372,9 +371,7 @@ function startupLog(portResolutions) {
 	// Database Log aka Applications API aka http (in config)
 	logMsg += pad('Default:');
 	logMsg += env.get(CONFIG_PARAMS.HTTP_PORT) ? `HTTP (and WS): ${env.get(CONFIG_PARAMS.HTTP_PORT)}, ` : '';
-	logMsg += env.get(CONFIG_PARAMS.HTTP_SECUREPORT)
-		? `HTTPS (and WS): ${env.get(CONFIG_PARAMS.HTTP_SECUREPORT)}, `
-		: '';
+	logMsg += env.get(CONFIG_PARAMS.HTTP_SECUREPORT) ? `HTTPS (and WS): ${env.get(CONFIG_PARAMS.HTTP_SECUREPORT)}, ` : '';
 	logMsg += `CORS: ${
 		env.get(CONFIG_PARAMS.HTTP_CORS) ? `enabled for ${env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST)}` : 'disabled'
 	}\n`;
