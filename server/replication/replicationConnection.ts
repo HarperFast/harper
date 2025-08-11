@@ -474,19 +474,25 @@ export function replicateOverWS(ws, options, authorization) {
 							data.map((t) => t.table)
 						);
 						for (const tableDefinition of data) {
-							const databaseName = message[2];
-							tableDefinition.database = databaseName;
+							const newDatabaseName = message[2];
+							tableDefinition.database = newDatabaseName;
 							let table: any;
-							if (checkDatabaseAccess(databaseName)) {
+							if (checkDatabaseAccess(newDatabaseName)) {
 								if (databaseName === 'system') {
-									// for system connection, we only update new tables
-									if (!databases[databaseName]?.[tableDefinition.table])
-										table = ensureTableIfChanged(tableDefinition, databases[databaseName]?.[tableDefinition.table]);
+									// the system connection allows us to create new databases (which wouldn't otherwise have an existing connection)
+									if (!databases[newDatabaseName]?.[tableDefinition.table]) {
+										table = ensureTableIfChanged(tableDefinition, databases[newDatabaseName]?.[tableDefinition.table]);
+									}
 								} else {
-									table = ensureTableIfChanged(tableDefinition, databases[databaseName]?.[tableDefinition.table]);
+									// a database connection is not allowed to create new databases, so we need to check if the database exists
+									if (newDatabaseName !== 'data' && !databases[newDatabaseName]) {
+										logger.warn?.('Database not found', newDatabaseName);
+										return;
+									}
+									table = ensureTableIfChanged(tableDefinition, databases[newDatabaseName]?.[tableDefinition.table]);
 								}
 								if (!auditStore) auditStore = table?.auditStore;
-								if (!tables) tables = getDatabases()?.[databaseName];
+								if (!tables) tables = getDatabases()?.[newDatabaseName];
 							}
 						}
 						break;
@@ -1856,10 +1862,6 @@ export function replicateOverWS(ws, options, authorization) {
 	// Check the attributes in the msg vs the table and if they dont match call ensureTable to create them
 	function ensureTableIfChanged(tableDefinition: any, existingTable: any) {
 		const dbName = tableDefinition.database ?? 'data';
-		if (dbName !== 'data' && !databases[dbName]) {
-			logger.warn?.('Database not found', tableDefinition.database);
-			return;
-		}
 		if (!existingTable) existingTable = {};
 		const wasSchemaDefined = existingTable.schemaDefined;
 		let hasChanges = false;
