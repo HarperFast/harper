@@ -90,6 +90,14 @@ let secureContexts: Map<string, tls.SecureContext>;
  * Handles reconnection, and requesting catch-up
  */
 
+type NodeSubscription = {
+	name: string;
+	replicateByDefault: boolean;
+	tables: string[];
+	startTime: number;
+	endTime: number;
+};
+
 export async function createWebSocket(
 	url: string,
 	options: { authorization?: string; rejectUnauthorized?: boolean; serverName?: string }
@@ -154,7 +162,7 @@ export class NodeReplicationConnection extends EventEmitter {
 	retries = 0;
 	isConnected = true; // we start out assuming we will be connected
 	isFinished = false;
-	nodeSubscriptions = [];
+	nodeSubscriptions?: NodeSubscription[];
 	latency = 0;
 	replicateTablesByDefault: boolean;
 	session: any; // this is a promise that resolves to the session object, which is the object that handles the replication
@@ -189,11 +197,13 @@ export class NodeReplicationConnection extends EventEmitter {
 			this.retries = 0;
 			this.retryTime = INITIAL_RETRY_TIME;
 			// if we have already connected, we need to send a reconnected event
-			connectedToNode({
-				name: this.nodeName,
-				database: this.databaseName,
-				url: this.url,
-			});
+			if (this.nodeSubscriptions) {
+				connectedToNode({
+					name: this.nodeName,
+					database: this.databaseName,
+					url: this.url,
+				});
+			}
 			this.isConnected = true;
 			session = replicateOverWS(
 				this.socket,
@@ -202,6 +212,7 @@ export class NodeReplicationConnection extends EventEmitter {
 					subscription: this.subscription,
 					url: this.url,
 					connection: this,
+					isSubscriptionConnection: this.nodeSubscriptions !== undefined,
 				},
 				{ replicates: true } // pre-authorized, but should only make publish: true if we are allowing reverse subscriptions
 			);
@@ -225,12 +236,14 @@ export class NodeReplicationConnection extends EventEmitter {
 		this.socket.on('close', (code, reasonBuffer) => {
 			// if we get disconnected, notify subscriptions manager so we can reroute through another node
 			if (this.isConnected) {
-				disconnectedFromNode({
-					name: this.nodeName,
-					database: this.databaseName,
-					url: this.url,
-					finished: this.socket.isFinished,
-				});
+				if (this.nodeSubscriptions) {
+					disconnectedFromNode({
+						name: this.nodeName,
+						database: this.databaseName,
+						url: this.url,
+						finished: this.socket.isFinished,
+					});
+				}
 				this.isConnected = false;
 			}
 
@@ -653,7 +666,7 @@ export function replicateOverWS(ws, options, authorization) {
 							// has changed. It will only grow, so we can just check the length.
 							const structuresBinary = table.primaryStore.getBinaryFast(Symbol.for('structures'));
 							const structureLength = structuresBinary?.length ?? 0;
-							if (structureLength !== lastStructureLength) {
+							if (structureLength > 0 && structureLength !== lastStructureLength) {
 								lastStructureLength = structureLength;
 								const structure = decode(structuresBinary);
 								ws.send(
@@ -1374,12 +1387,14 @@ export function replicateOverWS(ws, options, authorization) {
 				replicationSharedStatus[LATENCY_POSITION] = latency;
 			}
 			// update the manager with latest connection information
-			connectedToNode({
-				name: remoteNodeName,
-				database: databaseName,
-				url: options.url,
-				latency,
-			});
+			if (options.isSubscriptionConnection) {
+				connectedToNode({
+					name: remoteNodeName,
+					database: databaseName,
+					url: options.url,
+					latency,
+				});
+			}
 		}
 		lastPingTime = null;
 	});

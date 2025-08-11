@@ -331,7 +331,7 @@ export function setReplicator(dbName: string, table: any, options: any) {
 							for (const nodeName of residency) {
 								if (attemptedNodes.has(nodeName)) continue;
 								if (nodeName === server.hostname) continue; // don't both connecting to ourselves
-								const connection = getConnectionByName(nodeName, Replicator.subscription, dbName);
+								const connection = getRetrievalConnectionByName(nodeName, Replicator.subscription, dbName);
 								// find a connection, needs to be connected and we haven't tried it yet
 								if (connection?.isConnected) {
 									// is connected and not ourselves
@@ -383,11 +383,10 @@ const connections = new Map();
  * @param subscription
  * @param dbName
  */
-function getConnection(url: string, subscription: any, dbName: string, node_name?: string, authorization?: string) {
+function getSubscriptionConnection(url: string, subscription: any, dbName: string, node_name?: string, authorization?: string) {
 	let dbConnections = connections.get(url);
 	if (!dbConnections) {
 		connections.set(url, (dbConnections = new Map()));
-	}
 	let connection = dbConnections.get(dbName);
 	if (connection) return connection;
 	if (subscription) {
@@ -400,19 +399,25 @@ function getConnection(url: string, subscription: any, dbName: string, node_name
 		return connection;
 	}
 }
-const nodeNameToDbConnections = new Map();
-/** Get connection by node name, using caching
- *
- * */
-function getConnectionByName(nodeName, subscription, dbName) {
-	const dbConnections = nodeNameToDbConnections.get(nodeName);
-	let connection = dbConnections?.get(dbName);
+const nodeNameToRetrievalConnections = new Map<string, Map<string, NodeReplicationConnection>>();
+	/**
+	 * Get connection by node name, using caching
+	 * */
+function getRetrievalConnectionByName(nodeName, subscription, dbName): NodeReplicationConnection {
+	let dbConnections = nodeNameToRetrievalConnections.get(node_name);
+	if (!dbConnections) {
+		dbConnections = new Map();
+		nodeNameToRetrievalConnections.set(node_name, dbConnections);
+	}
+	let connection = dbConnections.get(dbName);
 	if (connection) return connection;
 	const node = getHDBNodeTable().primaryStore.get(nodeName);
 	if (node?.url) {
-		connection = getConnection(node.url, subscription, dbName, nodeName, node.authorization);
+		connection = new NodeReplicationConnection(node.url, subscription, dbName, node_name, node.authorization);
 		// cache the connection
-		nodeNameToDbConnections.set(nodeName, connections.get(node.url));
+		dbConnections.set(nodeName, connection);
+		connection.connect();
+		connection.once('finished', () => dbConnections.delete(dbName));
 	}
 	return connection;
 }
@@ -462,7 +467,7 @@ export function subscribeToNode(request) {
 			subscriptionToTable.ready = ready;
 			databaseSubscriptions.set(request.database, subscriptionToTable);
 		}
-		const connection = getConnection(
+		const connection = getSubscriptionConnection(
 			request.nodes[0].url,
 			subscriptionToTable,
 			request.database,
