@@ -117,8 +117,8 @@ export async function authentication(request, nextHandler) {
 			if (headers['referer']) log.referer = headers['referer'];
 			if (headers['origin']) log.origin = headers['origin'];
 
-			if (status === AUTH_AUDIT_STATUS.SUCCESS) authEventLog.info(log);
-			else authEventLog.error(log);
+			if (status === AUTH_AUDIT_STATUS.SUCCESS) authEventLog.info?.(log);
+			else authEventLog.error?.(log);
 		};
 
 		if (
@@ -127,12 +127,12 @@ export async function authentication(request, nextHandler) {
 			request.peerCertificate.subject &&
 			request?._nodeRequest?.socket?.authorizationError
 		)
-			authEventLog.error('Authorization error:', request._nodeRequest.socket.authorizationError);
+			authEventLog.error?.('Authorization error:', request._nodeRequest.socket.authorizationError);
 
 		if (request.mtlsConfig && request.authorized && request.peerCertificate.subject) {
 			const verificationResult = await verifyCertificate(request.peerCertificate, request.mtlsConfig);
 			if (!verificationResult.valid) {
-				authEventLog.error(
+				authEventLog.error?.(
 					'Certificate verification failed:',
 					verificationResult.status,
 					'for',
