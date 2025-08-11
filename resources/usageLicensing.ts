@@ -98,7 +98,8 @@ onAnalyticsAggregate(async (analytics: any) => {
 	} else {
 		if (!process.env.DEV_MODE) {
 			// TODO: Adjust the message based on if there are used licenses or not
-			const msg = 'This server does not have valid usage licenses, this should only be used for educational and development purposes.';
+			const msg =
+				'This server does not have valid usage licenses, this should only be used for educational and development purposes.';
 			console.error(msg);
 			licenseWarningIntervalId = setInterval(() => {
 				harperLogger.notify(msg);
