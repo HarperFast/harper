@@ -14,7 +14,7 @@ export class IterableEventQueue extends EventEmitter {
 	push(message) {
 		this.send(message);
 	}
-	send(message) {
+	send(message: any) {
 		if (this.resolveNext) {
 			this.resolveNext({ value: message });
 			this.resolveNext = null;

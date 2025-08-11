@@ -1,11 +1,11 @@
 require('../test_utils');
 const assert = require('assert');
 const { getMockLMDBPath } = require('../test_utils');
-const { parseQuery } = require('../../resources/search');
-const { table } = require('../../resources/databases');
+const { table, databases } = require('../../resources/databases');
 const { transaction } = require('../../resources/transaction');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
 const { RequestTarget } = require('../../resources/RequestTarget');
+const analytics = require('../../resources/analytics/write');
 
 // might want to enable an iteration with NATS being assigned as a source
 describe('CRUD operations with the Resource API', () => {
@@ -23,6 +23,8 @@ describe('CRUD operations with the Resource API', () => {
 			relationship: { from: 'relatedId' },
 			definition: {},
 		};
+		analytics.analyticsDelay = 50; // let's make this fast
+		analytics.setAnalyticsEnabled(true);
 		CRUDTable = table({
 			table: 'CRUDTable',
 			database: 'test',
@@ -115,6 +117,7 @@ describe('CRUD operations with the Resource API', () => {
 	});
 	function registerTests() {
 		it('puts', async function () {
+			const start = Date.now();
 			await CRUDTable.put({
 				id: 'one',
 				name: 'One',
@@ -132,6 +135,32 @@ describe('CRUD operations with the Resource API', () => {
 				nestedData: { id: 'some-id', name: 'nested name ' },
 			});
 			assert.equal((await CRUDTable.get('two')).name, 'Two');
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const analyticsResults = await databases.system.hdb_raw_analytics.search({
+				conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],
+			});
+			let analyticRecorded;
+			for await (let { metrics } of analyticsResults) {
+				analyticRecorded = metrics.find(({ metric, path }) => metric === 'db-write' && path === 'CRUDTable');
+				if (analyticRecorded) break;
+			}
+			assert(analyticRecorded, 'db-write was recorded in analytics');
+			assert(analyticRecorded.mean > 20, 'db-write bytes count were recorded in analytics');
+		});
+		it('get is recorded in analytics', async function () {
+			const start = Date.now();
+			assert.equal((await CRUDTable.get('two')).name, 'Two');
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const analyticsResults = await databases.system.hdb_raw_analytics.search({
+				conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],
+			});
+			let analyticRecorded;
+			for await (let { metrics } of analyticsResults) {
+				analyticRecorded = metrics.find(({ metric, path }) => metric === 'db-read' && path === 'CRUDTable');
+				if (analyticRecorded) break;
+			}
+			assert(analyticRecorded, 'db-read was recorded in analytics');
+			assert(analyticRecorded.mean > 20, 'db-read bytes count were recorded in analytics');
 		});
 		it('gets', async function () {
 			if (CRUDTable.loadAsInstance === false) {
@@ -164,6 +193,35 @@ describe('CRUD operations with the Resource API', () => {
 			await CRUDTable.delete(target);
 			assert.equal(await CRUDTable.get('two'), undefined);
 		});
+		it('publishes and subscribes', async function () {
+			await new Promise((resolve) => setTimeout(resolve, 100)); // let previous analytics get written
+			const start = Date.now();
+			const messages = [];
+			const subscription = await CRUDTable.subscribe('pubsub');
+			subscription.on('data', (message) => {
+				messages.push(message);
+			});
+			await CRUDTable.publish('pubsub', {
+				id: 'pubsub',
+				name: 'A published message',
+			});
+			await new Promise((resolve) => setTimeout(resolve, 10));
+			assert.equal(messages.length, 1);
+			await new Promise((resolve) => setTimeout(resolve, 100));
+			const analyticsResults = await databases.system.hdb_raw_analytics.search({
+				conditions: [{ attribute: 'id', comparator: 'greater_than_equal', value: start }],
+			});
+			let publishRecorded, messageRecorded;
+			for await (let { id, metrics } of analyticsResults) {
+				publishRecorded = metrics.find(({ metric, path }) => metric === 'db-write' && path === 'CRUDTable');
+				messageRecorded = metrics.find(({ metric, path }) => metric === 'db-message' && path === 'CRUDTable');
+				if (publishRecorded) break;
+			}
+			assert(publishRecorded, 'db-write was recorded in analytics');
+			assert(publishRecorded.mean > 20, 'db-write recorded the bytes count');
+			assert(messageRecorded, 'db-message was recorded in analytics');
+			assert(messageRecorded.mean > 20, 'db-message recorded the bytes count');
+		});
 		it('create with auto-id', async function () {
 			let created = await CRUDTable.create({ relatedId: 1, name: 'constructed with auto-id' });
 			let retrieved = await CRUDTable.get(created.id);
@@ -193,5 +251,7 @@ describe('CRUD operations with the Resource API', () => {
 			});
 		});
 	}
-	after(() => {});
+	after(() => {
+		analytics.setAnalyticsEnabled(false); // restore to normal unit test behavior
+	});
 });

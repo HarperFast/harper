@@ -1,27 +1,7 @@
 const { describe, it } = require('mocha');
 const { expect } = require('chai');
-const ul = require('../../validation/usageLicensing');
-const { createPrivateKey, sign } = require('node:crypto');
-
-const LICENSE_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
-MC4CAQAwBQYDK2VwBCIEIAAe+bdBWCbmzgPgfzf5L7L1npsgi+Wkz+uNb9lgcA/w
------END PRIVATE KEY-----
-`;
-
-function generateTestLicense(payload) {
-	const header = { typ: 'Harper-License', alg: 'EdDSA' };
-	const license = [JSON.stringify(header), JSON.stringify(payload)]
-		.map((e) => Buffer.from(e).toString('base64url'))
-		.join('.');
-	const privateKey = createPrivateKey(LICENSE_PRIVATE_KEY);
-	return license + '.' + sign(null, Buffer.from(license, 'utf8'), privateKey).toString('base64url');
-}
-
-// for testing errors that get past signature verification
-function signAnything(anything) {
-	const privateKey = createPrivateKey(LICENSE_PRIVATE_KEY);
-	return anything + '.' + sign(null, Buffer.from(anything, 'utf8'), privateKey).toString('base64url');
-}
+const ul = require('../../validation/usageLicensing.ts');
+const { signTestLicense, signAnything } = require('../testLicenseUtils.js');
 
 describe('usageLicensing', function () {
 	describe('validateLicense', () => {
@@ -40,7 +20,7 @@ describe('usageLicensing', function () {
 				storage: -1,
 				expiration: '2030-01-01T00:00:00.000Z',
 			};
-			const license = generateTestLicense(payload);
+			const license = signTestLicense(payload);
 			const result = ul.validateLicense(license);
 			expect(result).to.deep.equal(payload);
 		});

@@ -17,7 +17,7 @@ const { open } = require('lmdb');
 const { transaction } = require('../../../resources/transaction');
 const readLog = require('../../../utility/logging/readLog');
 const { AUDIT_STORE_OPTIONS, readAuditEntry } = require('../../../resources/auditStore');
-OpenDBIObject = require('../../../utility/lmdb/OpenDBIObject');
+const { OpenDBIObject } = require('../../../utility/lmdb/OpenDBIObject');
 
 describe('Replication', () => {
 	let TestTable;

@@ -503,6 +503,10 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		terms.OPERATIONS_ENUM.INSTALL_USAGE_LICENSE,
 		new OperationFunctionObject(usageLicensing.installUsageLicenseOp)
 	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.GET_USAGE_LICENSES,
+		new OperationFunctionObject(usageLicensing.getUsageLicensesOp)
+	);
 
 	return opFuncMap;
 }

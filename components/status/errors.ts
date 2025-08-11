@@ -1,6 +1,6 @@
 /**
  * Component Status Error Types
- * 
+ *
  * This module defines specific error types for the component status system,
  * providing better diagnostics and error handling capabilities.
  */
@@ -34,7 +34,7 @@ export class CrossThreadTimeoutError extends ComponentStatusError {
 	constructor(requestId: number, timeoutMs: number, collectedCount: number) {
 		super(
 			`Component status collection timeout after ${timeoutMs}ms. ` +
-			`Collected ${collectedCount} responses for request ${requestId}.`,
+				`Collected ${collectedCount} responses for request ${requestId}.`,
 			HTTP_STATUS_CODES.GATEWAY_TIMEOUT
 		);
 		this.name = 'CrossThreadTimeoutError';
@@ -88,10 +88,7 @@ export class ComponentStatusOperationError extends ComponentStatusError {
 	public readonly operation: string;
 
 	constructor(componentName: string, operation: string, message: string) {
-		super(
-			`Component '${componentName}' ${operation} failed: ${message}`,
-			HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR
-		);
+		super(`Component '${componentName}' ${operation} failed: ${message}`, HTTP_STATUS_CODES.INTERNAL_SERVER_ERROR);
 		this.name = 'ComponentStatusOperationError';
 		this.componentName = componentName;
 		this.operation = operation;
@@ -118,8 +115,8 @@ export class CrossThreadCollectionError extends ComponentStatusError {
 	constructor(result: CrossThreadCollectionResult) {
 		const message = result.success
 			? `Partial collection success: ${result.collectedFromThreads} threads responded` +
-			  (result.timedOutThreads.length > 0 ? `, ${result.timedOutThreads.length} timed out` : '')
-			: `Collection failed: ${result.errors.map(e => e.message).join(', ')}`;
+				(result.timedOutThreads.length > 0 ? `, ${result.timedOutThreads.length} timed out` : '')
+			: `Collection failed: ${result.errors.map((e) => e.message).join(', ')}`;
 
 		super(message, HTTP_STATUS_CODES.OK); // 200 - partial success is still success
 		this.name = 'CrossThreadCollectionError';

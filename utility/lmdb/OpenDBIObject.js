@@ -28,4 +28,4 @@ class OpenDBIObject {
 	}
 }
 
-module.exports = OpenDBIObject;
+exports.OpenDBIObject = OpenDBIObject;

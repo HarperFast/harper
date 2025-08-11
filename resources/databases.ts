@@ -8,7 +8,7 @@ import {
 	getTransactionAuditStoreBasePath,
 } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
 import { makeTable } from './Table.ts';
-import OpenDBIObject from '../utility/lmdb/OpenDBIObject.js';
+import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.js';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.js';
 import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
 import * as fs from 'fs-extra';

@@ -1,10 +1,10 @@
 import { DatabaseTransaction } from './DatabaseTransaction.ts';
 import { OperationFunctionName } from '../server/serverHelpers/serverUtilities.ts';
-import { RequestTarget } from './RequestTarget';
+import { RequestTarget } from './RequestTarget.ts';
 import { Entry } from './RecordEncoder.ts';
 
 export interface ResourceInterface<Key = any, Record = any> {
-	get?(id: Id): Promise<UpdatableRecord<Record>>;
+	get?(id: Id): Promise<Record>;
 	get?(query: RequestTargetOrId): Promise<AsyncIterable<Record>>;
 	put?(target: RequestTargetOrId, record: any): void;
 	post?(target: RequestTargetOrId, record: any): void;
@@ -135,5 +135,5 @@ export type Query = RequestTarget; // for back-compat
 export type RequestTargetOrId = RequestTarget | Id;
 
 export type Id = number | string | (number | string | null)[] | null;
-type UpdatableRecord<T> = T;
+export type UpdatableRecord<T> = T;
 interface Subscription {}

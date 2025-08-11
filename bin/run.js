@@ -47,6 +47,12 @@ const HDB_NOT_FOUND_MSG = 'HarperDB not found, starting install process.';
 const INSTALL_ERR = 'There was an error during install, check install_log.log for more details.  Exiting.';
 const HDB_STARTED = 'HarperDB successfully started.';
 
+function addUnhandleRejectionListener() {
+	process.on('unhandledRejection', (reason, promise) => {
+		hdbLogger.error('Unhandled promise rejection: Promise', promise, 'reason:', reason);
+	});
+}
+
 function addExitListeners() {
 	if (!skipExitListeners) {
 		const removeHdbPid = () => {
@@ -71,11 +77,15 @@ function addExitListeners() {
 /**
  * Do the initial checks and potential upgrades/installation
  * @param calledByInstall
+ * @param calledByMain
  * @returns {Promise<void>}
  */
 async function initialize(calledByInstall = false, calledByMain = false) {
 	// Check to see if HDB is installed, if it isn't we call install.
 	console.log(chalk.magenta('Starting HarperDB...'));
+
+	addUnhandleRejectionListener();
+
 	hdbLogger.suppressLogging?.(() => {
 		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'utility/install/ascii_logo.txt'))));
 	});
@@ -327,7 +337,6 @@ exports.launch = launch;
 exports.main = main;
 exports.startupLog = startupLog;
 
-
 /**
  * Logs running services and relevant ports/information.
  * Called by worker thread 1 once all servers have started
@@ -362,9 +371,7 @@ function startupLog(portResolutions) {
 	// Database Log aka Applications API aka http (in config)
 	logMsg += pad('Default:');
 	logMsg += env.get(CONFIG_PARAMS.HTTP_PORT) ? `HTTP (and WS): ${env.get(CONFIG_PARAMS.HTTP_PORT)}, ` : '';
-	logMsg += env.get(CONFIG_PARAMS.HTTP_SECUREPORT)
-		? `HTTPS (and WS): ${env.get(CONFIG_PARAMS.HTTP_SECUREPORT)}, `
-		: '';
+	logMsg += env.get(CONFIG_PARAMS.HTTP_SECUREPORT) ? `HTTPS (and WS): ${env.get(CONFIG_PARAMS.HTTP_SECUREPORT)}, ` : '';
 	logMsg += `CORS: ${
 		env.get(CONFIG_PARAMS.HTTP_CORS) ? `enabled for ${env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST)}` : 'disabled'
 	}\n`;

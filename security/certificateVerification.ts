@@ -19,8 +19,8 @@ import './pkijs-ed25519-patch.ts';
 import { getCertStatus } from 'easy-ocsp';
 import { createHash } from 'node:crypto';
 import { loggerWithTag } from '../utility/logging/logger.js';
-import { table } from '../resources/databases.js';
-import { Resource } from '../resources/Resource.js';
+import { table } from '../resources/databases.ts';
+import { Resource } from '../resources/Resource.ts';
 import type { SourceContext, Context } from '../resources/ResourceInterface.ts';
 
 const logger = loggerWithTag('cert-verification');
@@ -42,7 +42,7 @@ interface CertificateVerificationContext extends Context {
 class CertificateVerificationSource extends Resource {
 	async get(id: string) {
 		logger.debug?.('CertificateVerificationSource.get called for:', id);
-		
+
 		// Get the certificate data from requestContext
 		const context = this.getContext() as SourceContext<CertificateVerificationContext>;
 		const requestContext = context?.requestContext;
@@ -61,7 +61,7 @@ class CertificateVerificationSource extends Resource {
 				performOCSPCheck(certPem, issuerPem, timeout),
 				new Promise<never>((_, reject) => setTimeout(() => reject(new Error('OCSP timeout')), timeout)),
 			]);
-			
+
 			logger.debug?.('OCSP check result:', result);
 
 			const ttl = config?.cacheTtl ?? VERIFICATION_DEFAULTS.cacheTtl;
@@ -203,7 +203,7 @@ export function getCertificateVerificationConfig(
 	mtlsConfig: boolean | Record<string, any> | null | undefined
 ): false | CertificateVerificationConfig {
 	logger.trace?.('getCertificateVerificationConfig called with:', { mtlsConfig });
-	
+
 	if (!mtlsConfig) return false;
 	if (mtlsConfig === true) {
 		logger.debug?.('mTLS enabled with default certificate verification');
@@ -212,7 +212,7 @@ export function getCertificateVerificationConfig(
 
 	const verificationConfig = mtlsConfig.certificateVerification;
 	logger.trace?.('Certificate verification config:', { verificationConfig });
-	
+
 	if (verificationConfig == null) return {}; // Default to enabled
 	if (verificationConfig === false) return false;
 
@@ -231,7 +231,7 @@ export async function verifyCertificate(
 	mtlsConfig?: boolean | Record<string, any> | null
 ): Promise<CertificateVerificationResult> {
 	logger.debug?.('verifyCertificate called for:', peerCertificate.subject?.CN || 'unknown');
-	
+
 	// Get the verification configuration from mtlsConfig
 	const config = getCertificateVerificationConfig(mtlsConfig);
 
@@ -272,7 +272,7 @@ export async function verifyOCSP(
 	config?: CertificateVerificationConfig
 ): Promise<CertificateVerificationResult> {
 	logger.debug?.('verifyOCSP called');
-	
+
 	try {
 		// Convert buffers to PEM strings if needed
 		if (Buffer.isBuffer(certPem)) {
@@ -345,11 +345,7 @@ export async function verifyOCSP(
 /**
  * Perform the actual OCSP check using easy-ocsp
  */
-async function performOCSPCheck(
-	certPem: string,
-	issuerPem: string,
-	timeout: number
-): Promise<OCSPCheckResult> {
+async function performOCSPCheck(certPem: string, issuerPem: string, timeout: number): Promise<OCSPCheckResult> {
 	logger.trace?.('Calling getCertStatus with timeout:', timeout);
 	const response = await getCertStatus(certPem, {
 		ca: issuerPem,
@@ -359,7 +355,7 @@ async function performOCSPCheck(
 	logger.debug?.('OCSP response from easy-ocsp:', {
 		status: response.status,
 		revocationReason: response.revocationReason,
-		responseData: response
+		responseData: response,
 	});
 
 	// Map the response to our internal format
@@ -435,4 +431,3 @@ export function extractCertificateChain(peerCertificate: PeerCertificate): Certi
 
 	return chain;
 }
-
