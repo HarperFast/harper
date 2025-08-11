@@ -506,6 +506,7 @@ export function replicateOverWS(ws, options, authorization) {
 							logger.debug?.('Received operation request', data, 'from', remoteNodeName);
 							server.operation(data, { user: authorization }, !isAuthorizedNode).then(
 								(response) => {
+									logger.debug?.('Requested request from finished', remoteNodeName, response);
 									if (Array.isArray(response)) {
 										// convert an array to an object so we can have a top-level requestId properly serialized
 										response = { results: response };
@@ -514,6 +515,7 @@ export function replicateOverWS(ws, options, authorization) {
 									ws.send(encode([OPERATION_RESPONSE, response]));
 								},
 								(error) => {
+									logger.debug?.('Failed requested operation from', remoteNodeName, error);
 									ws.send(
 										encode([
 											OPERATION_RESPONSE,
@@ -539,6 +541,7 @@ export function replicateOverWS(ws, options, authorization) {
 						break;
 					case OPERATION_RESPONSE:
 						const { resolve, reject } = awaitingResponse.get(data.requestId);
+						logger.debug?.('Received completed operation request', remoteNodeName, data);
 						if (data.error) reject(new Error(data.error));
 						else resolve(data);
 						awaitingResponse.delete(data.requestId);
