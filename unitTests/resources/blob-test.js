@@ -328,6 +328,24 @@ describe('Blob test', () => {
 			});
 		}
 	});
+	it('sequential embedded blob reads', async () => {
+		for (let i = 0; i < 10; i++) {
+			let bytes = new Uint8Array(1000).fill(0);
+			bytes[0] = i;
+			const blob = createBlob(bytes);
+			await BlobTest.put({ id: i, blob });
+		}
+		let promises = [];
+		for (let i = 0; i < 10; i++) {
+			promises.push(
+				Promise.resolve(BlobTest.get(i)).then(async (record) => {
+					let bytes = await record.blob.bytes();
+					assert.equal(bytes[0], i);
+				})
+			);
+		}
+		await Promise.all(promises);
+	});
 	afterEach(function () {
 		setAuditRetention(60000);
 		setDeletionDelay(500);

@@ -47,7 +47,7 @@ async function createLMDBTables() {
 			primaryKeyAttribute.isPrimaryKey = true;
 
 			// Array of tables to enable audit store, config file doesn't exist yet so we need to manually set which tables to audit
-			if (['hdb_user', 'hdb_role'].includes(tableName)) createTable.audit = true;
+			if (['hdb_user', 'hdb_role', 'hdb_nodes'].includes(tableName)) createTable.audit = true;
 			await bridge.createTable(tableName, createTable);
 		} catch (e) {
 			hdbLogger.error(`issue creating environment for ${terms.SYSTEM_SCHEMA_NAME}.${tableName}: ${e}`);
