@@ -33,6 +33,7 @@ const LICENSE_NAG_PERIOD = 600000; // ten minutes
 interface UsageLicenseRecord {
 	id: string;
 	level: number;
+	region: string;
 	expiration: number;
 	reads: number;
 	readBytes: number;
