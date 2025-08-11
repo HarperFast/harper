@@ -89,7 +89,7 @@ jobs:
           docker cp test/data/integrationTestsCsvs/ $containerId:/home/harperdb/
           cd ./integrationTests/apiTests
           npm install
-          HDB_ADMIN_USERNAME=${HDB_ADMIN_USERNAME} HDB_ADMIN_PASSWORD=${HDB_ADMIN_PASSWORD} DOCKER_CONTAINER_ID=$containerId FILES_LOCATION=/home/harperdb/integrationTestsCsvs/ S3_KEY=${S3_KEY} S3_SECRET=${S3_SECRET} node --test-reporter spec --test-reporter-destination report.txt --test-reporter spec --test-reporter-destination stdout --experimental-default-type="module" tests/testSuite.js
+          HDB_ADMIN_USERNAME=${HDB_ADMIN_USERNAME} HDB_ADMIN_PASSWORD=${HDB_ADMIN_PASSWORD} DOCKER_CONTAINER_ID=$containerId FILES_LOCATION=/home/harperdb/integrationTestsCsvs/ S3_KEY=${S3_KEY} S3_SECRET=${S3_SECRET} node --test-reporter spec --test-reporter-destination report.txt --test-reporter spec --test-reporter-destination stdout tests/testSuite.mjs
 
       - name: Create artifact
         if: always()
