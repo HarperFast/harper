@@ -31,7 +31,7 @@ export interface LicenseHeader {
 
 export interface LicensePayload {
 	id: string;
-	level: string;
+	level: number;
 	region: string;
 	reads: number;
 	writes: number;
@@ -105,8 +105,9 @@ function validateLicenseHeader(header: LicenseHeader): void {
 }
 
 function validateLicensePayload(payload: LicensePayload): void {
-	const stringAttrs = ['id', 'level', 'region', 'expiration'];
+	const stringAttrs = ['id', 'region', 'expiration'];
 	const numberAttrs = [
+		'level',
 		'reads',
 		'writes',
 		'readBytes',
