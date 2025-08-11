@@ -8,6 +8,7 @@ import { get as envGet, getHdbBasePath } from '../../utility/environment/environ
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.js';
 import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 import { pathToFileURL } from 'node:url';
+import * as log from '../../utility/logging/harper_logger.js';
 
 const session = new Session();
 // We create an inspector session with ourself
@@ -22,8 +23,15 @@ session.connect();
 	await session.post('Profiler.setSamplingInterval', { interval: 1000 });
 	await session.post('Profiler.start');
 	const PROFILE_PERIOD = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1000;
-	setInterval(profile, PROFILE_PERIOD).unref();
+	setInterval(() => {
+		try {
+			profile();
+		} catch (error) {
+			log.error?.('analytics profiler error:', error);
+		}
+	}, PROFILE_PERIOD).unref();
 })();
+
 // TODO: If a user starts with harperdb run ., we should add that path/url to the userCodeFolders
 export const userCodeFolders = [pathToFileURL(getHdbBasePath()).toString()];
 export async function profile() {
