@@ -14538,6 +14538,7 @@
 									"",
 									"pm.test('Four records in hdb_nodes node-2', () => {",
 									"    const response = pm.response.json();",
+									"    console.log(response)",
 									"    pm.expect(response.length).to.equal(4)",
 									"",
 									"});"
