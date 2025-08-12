@@ -414,7 +414,7 @@ export function replicateOverWS(ws, options, authorization) {
 		// once resolved, we can skip this whole function and go directly to the message handler
 		ws.off('message', onWSMessageWhenAuthorized);
 		ws.on('message', onWSMessage);
-	});
+	}
 	function onWSMessage(body: Buffer) {
 		// A replication header should begin with either a transaction timestamp or messagepack message of
 		// of an array that begins with the command code
