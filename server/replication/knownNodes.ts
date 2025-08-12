@@ -107,7 +107,7 @@ export function subscribeToNodeUpdates(listener: (node: any, id: string) => void
 		});
 }
 
-export function shouldReplicateToNode(node, databaseName) {
+export function shouldReplicateToNode(node: Node, databaseName: string) {
 	return (
 		((node.replicates === true || node.replicates?.sends) &&
 			databases[databaseName] &&
@@ -190,6 +190,14 @@ type Route = {
 	host?: string;
 	port?: any;
 	routes?: any[];
+};
+export type Node = {
+	name: string;
+	subscriptions: { database: string; schema: string; subscribe: boolean }[];
+	replicates: boolean;
+	url: string;
+	startTime: number;
+	revoked_certificates: string[];
 };
 
 export function* iterateRoutes(options: { routes: (Route | any)[] }) {

@@ -36,7 +36,7 @@ import { disconnectedFromNode, connectedToNode, ensureNode } from './subscriptio
 import { EventEmitter } from 'events';
 import { createTLSSelector } from '../../security/keys.js';
 import * as tls from 'node:tls';
-import { getHDBNodeTable, getReplicationSharedStatus } from './knownNodes.ts';
+import { getHDBNodeTable, getReplicationSharedStatus, type Node } from './knownNodes.ts';
 import * as process from 'node:process';
 import { isIP } from 'node:net';
 import { recordAction } from '../../resources/analytics/write.ts';
@@ -296,7 +296,7 @@ export class NodeReplicationConnection extends EventEmitter {
 /**
  * This handles both incoming and outgoing WS allowing either one to issue a subscription and get replication and/or handle subscription requests
  */
-export function replicateOverWS(ws, options, authorization) {
+export function replicateOverWS(ws: WebSocket, options: any, authorization: Promise<Node | undefined>) {
 	const p = options.port || options.securePort;
 	const connectionId =
 		(process.pid % 1000) +
