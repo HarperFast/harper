@@ -8,7 +8,6 @@ import {
 	getTransactionAuditStoreBasePath,
 } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
 import { makeTable } from './Table.ts';
-import { OpenDBIObject } from '../utility/lmdb/OpenDBIObject.js';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.js';
 import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
 import * as fs from 'fs-extra';
@@ -23,6 +22,12 @@ import { openAuditStore, transactionKeyEncoder } from './auditStore.ts';
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
 import { deleteRootBlobPathsForDB } from './blob.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
+import * as OpenDBIObjectModule from '../utility/lmdb/OpenDBIObject.js';
+function OpenDBIObject(dupSort, isPrimary) {
+	// what is going on with esbuild, it suddenly is randomly flip-flopping the module record for OpenDBIObject, sometimes return the correct exports object and sometimes returning the exports as the `default`.
+	let OpenDBIObject = OpenDBIObjectModule.OpenDBIObject ?? OpenDBIObjectModule.default.OpenDBIObject;
+	return new OpenDBIObject(dupSort, isPrimary);
+}
 const logger = forComponent('storage');
 
 const DEFAULT_DATABASE_NAME = 'data';
