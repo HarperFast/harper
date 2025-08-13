@@ -65,7 +65,7 @@ export type Attribute = {
 
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
-let node_name: string;
+const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
 const DELETED_RECORD_EXPIRATION = 86400000; // one day for non-audit records that have been deleted
 envMngr.initSync();
@@ -1833,6 +1833,7 @@ export function makeTable(options) {
 					throw new AccessViolation(context.user);
 				}
 			}
+			context.lastModified = UNCACHEABLE_TIMESTAMP;
 
 			let conditions = target.conditions;
 			if (!conditions) conditions = Array.isArray(target) ? target : target[Symbol.iterator] ? Array.from(target) : [];
@@ -3370,12 +3371,12 @@ export function makeTable(options) {
 			// through query results and the iterator ends (abruptly)
 			if (options.transaction?.isDone) return withEntry(null, id);
 			const entry = primaryStore.getEntry(id, options);
-			
-      if (databaseName !== 'system') {
-        recordAction(entry?.size ?? 1, 'db-read', tableName, null);
-      }
-			
-      // we need to freeze entry records to ensure the integrity of the cache;
+
+			if (databaseName !== 'system') {
+				recordAction(entry?.size ?? 1, 'db-read', tableName, null);
+			}
+
+			// we need to freeze entry records to ensure the integrity of the cache;
 			// but we only do this when users have opted into loadAsInstance/freezeRecords to avoid back-compat
 			// issues
 			if (context?._freezeRecords) Object.freeze(entry?.value);
