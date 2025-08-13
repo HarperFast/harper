@@ -355,6 +355,14 @@ export async function startOnMainThread(options) {
 		main_worker_entry.connected = true;
 		main_worker_entry.latency = connection.latency;
 		const restored_node = main_worker_entry.nodes[0];
+		if (!restored_node) {
+			logger.info('Connected node has no nodes', connection.database, main_worker_entry);
+			return;
+		}
+		if (!restored_node.name) {
+			logger.debug('Connected node is not named yet', connection.database, main_worker_entry);
+			return;
+		}
 		main_worker_entry.nodes = [restored_node]; // restart with just our own connection
 		let hasChanges = false;
 		for (const nodeWorkers of connection_replication_map.values()) {

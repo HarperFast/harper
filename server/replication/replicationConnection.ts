@@ -234,6 +234,7 @@ export class NodeReplicationConnection extends EventEmitter {
 				}
 				this.isConnected = false;
 			}
+			this.removeAllListeners('subscriptions-updated');
 
 			if (this.socket.isFinished) {
 				this.isFinished = true;
