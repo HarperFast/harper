@@ -89,6 +89,8 @@ type NodeSubscription = {
 	endTime: number;
 };
 
+let replicationSecureContext: tls.SecureContext & { caCount?: number };
+
 export async function createWebSocket(
 	url: string,
 	options: { authorization?: string; rejectUnauthorized?: boolean; serverName?: string }
@@ -133,10 +135,16 @@ export async function createWebSocket(
 		secureContext: undefined,
 	};
 	if (secure_context) {
-		ws_options.secureContext = tls.createSecureContext({
-			...secure_context.options,
-			ca: [...replication_certificate_authorities, ...secure_context.options.availableCAs.values()], // add CA if secure context had one
-		});
+		// check to see if our cached secure context is still valid
+		if (replicationSecureContext?.caCount !== replication_certificate_authorities.size) {
+			// create a secure context and cache by the number of replication CAs (if that changes, we need to create a new secure context)
+			replicationSecureContext = tls.createSecureContext({
+				...secure_context.options,
+				ca: [...replication_certificate_authorities, ...secure_context.options.availableCAs.values()], // add CA if secure context had one
+			});
+			replicationSecureContext.caCount = replication_certificate_authorities.size;
+		}
+		ws_options.secureContext = replicationSecureContext;
 	}
 	return new WebSocket(url, 'harperdb-replication-v1', ws_options);
 }
