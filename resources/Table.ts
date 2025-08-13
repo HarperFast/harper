@@ -1833,7 +1833,7 @@ export function makeTable(options) {
 					throw new AccessViolation(context.user);
 				}
 			}
-			context.lastModified = UNCACHEABLE_TIMESTAMP;
+			if (context) context.lastModified = UNCACHEABLE_TIMESTAMP;
 
 			let conditions = target.conditions;
 			if (!conditions) conditions = Array.isArray(target) ? target : target[Symbol.iterator] ? Array.from(target) : [];
