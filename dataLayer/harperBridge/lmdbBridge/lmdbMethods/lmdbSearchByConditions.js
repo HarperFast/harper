@@ -46,7 +46,7 @@ async function lmdbSearchByConditions(searchObject) {
 
 	// make sure the dbis have been opened prior to the read transaction starting
 	for (let condition of searchObject.conditions) {
-		environmentUtility.openDBI(env, condition.search_attribute);
+		environmentUtility.openDBI(env, condition.attribute);
 	}
 	// Sort the conditions by narrowest to broadest. Note that we want to do this both for intersection where
 	// it allows us to do minimal filtering, and for union where we can return the fastest results first
@@ -54,10 +54,10 @@ async function lmdbSearchByConditions(searchObject) {
 	let sortedConditions = _.sortBy(searchObject.conditions, (condition) => {
 		if (condition.estimated_count === undefined) {
 			// skip if it is cached
-			let searchType = condition.search_type;
+			let searchType = condition.comparator;
 			if (searchType === lmdbTerms.SEARCH_TYPES.EQUALS)
 				// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
-				condition.estimated_count = searchUtility.count(env, condition.search_attribute, condition.search_value);
+				condition.estimated_count = searchUtility.count(env, condition.attribute, condition.value);
 			else if (searchType === lmdbTerms.SEARCH_TYPES.CONTAINS || searchType === lmdbTerms.SEARCH_TYPES.ENDS_WITH)
 				condition.estimated_count = Infinity;
 			// this search types can't/doesn't use indices, so try do them last
@@ -115,12 +115,7 @@ async function lmdbSearchByConditions(searchObject) {
 				return true;
 			})
 			.slice(offset, searchObject.limit && searchObject.limit + offset);
-		records = searchUtility.batchSearchByHash(
-			transaction,
-			tableInfo.hash_attribute,
-			searchObject.get_attributes,
-			ids
-		);
+		records = searchUtility.batchSearchByHash(transaction, tableInfo.hash_attribute, searchObject.get_attributes, ids);
 	}
 	records.onDone = () => {
 		transaction.done(); // need to complete the transaction once iteration is complete
@@ -151,6 +146,7 @@ function sorter(a, b) {
  *
  * @param transaction
  * @param {SearchByConditionsObject} searchObject
+ * @param condition
  * @param {String} hash_attribute
  * @returns {Promise<unknown[]>}
  */
@@ -167,14 +163,14 @@ async function executeConditionSearch(transaction, searchObject, condition, hash
 	);
 
 	//execute conditional search
-	let searchType = condition.search_type;
-	search.search_attribute = condition.search_attribute;
+	let comparator = condition.comparator;
+	search.attribute = condition.attribute;
 
-	if (searchType === lmdbTerms.SEARCH_TYPES.BETWEEN) {
-		search.search_value = condition.search_value[0];
-		search.end_value = condition.search_value[1];
+	if (comparator === lmdbTerms.SEARCH_TYPES.BETWEEN) {
+		search.value = condition.value[0];
+		search.end_value = condition.value[1];
 	} else {
-		search.search_value = condition.search_value;
+		search.value = condition.value;
 	}
-	return lmdb_search.searchByType(transaction, search, searchType, hash_attribute).map((e) => e.value);
+	return lmdb_search.searchByType(transaction, search, comparator, hash_attribute).map((e) => e.value);
 }

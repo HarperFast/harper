@@ -694,12 +694,12 @@ function getRecordAttributes(json) {
 		}
 		if (json.operation === terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS) {
 			json.conditions.forEach((condition) => {
-				affectedAttributes.add(condition.search_attribute);
+				affectedAttributes.add(condition.attribute);
 			});
 		}
 
-		if (json && json.search_attribute) {
-			affectedAttributes.add(json.search_attribute);
+		if (json && json.attribute) {
+			affectedAttributes.add(json.attribute);
 		}
 
 		if (!json.records || json.records.length === 0) {

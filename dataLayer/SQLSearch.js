@@ -250,7 +250,7 @@ class SQLSearch {
 						this.comparator_search_values[attributeKey].comparators.push({
 							attribute: node.left.columnid,
 							operation: node.op,
-							search_value: node.right.value,
+							value: node.right.value,
 						});
 					}
 					continue;
@@ -677,7 +677,7 @@ class SQLSearch {
 					for (let i = 0, len = searchValueComparators.length; i < len; i++) {
 						const comp = searchValueComparators[i];
 						searchObject.search_attribute = comp.attribute;
-						searchObject.search_value = comp.search_value;
+						searchObject.search_value = comp.value;
 						const matchingData = await harperBridge.getDataByValue(searchObject, comp.operation);
 
 						if (isHash) {

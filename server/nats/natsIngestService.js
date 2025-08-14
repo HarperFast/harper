@@ -99,8 +99,8 @@ async function accessConsumers() {
 	let connections = await search.searchByValue({
 		database: 'system',
 		table: 'hdb_nodes',
-		search_attribute: 'name',
-		search_value: '*',
+		attribute: 'name',
+		value: '*',
 	});
 
 	for await (const connection of connections) {

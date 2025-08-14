@@ -29,14 +29,14 @@ class SearchByConditionsObject {
 class SearchCondition {
 	/**
 	 *
-	 * @param {String|Number} searchAttribute
-	 * @param {lmdbTerms.SEARCH_TYPES} searchType
-	 * @param {*} searchValue
+	 * @param {String|Number} attribute
+	 * @param {lmdbTerms.SEARCH_TYPES} comparator
+	 * @param {*} value
 	 */
-	constructor(searchAttribute, searchType, searchValue) {
-		this.search_attribute = searchAttribute;
-		this.search_type = searchType;
-		this.search_value = searchValue;
+	constructor(attribute, comparator, value) {
+		this.attribute = attribute;
+		this.comparator = comparator;
+		this.value = value;
 	}
 }
 
