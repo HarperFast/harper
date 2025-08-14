@@ -366,6 +366,10 @@ export async function startOnMainThread(options) {
 			logger.warn('Newly connected node has no node subscriptions', connection.database, mainWorkerEntry);
 			return;
 		}
+		if (!restoredNode.name) {
+			logger.debug('Connected node is not named yet', connection.database, mainWorkerEntry);
+			return;
+		}
 		mainWorkerEntry.nodes = [restoredNode]; // restart with just our own connection
 		let hasChanges = false;
 		for (const nodeWorkers of connectionReplicationMap.values()) {
