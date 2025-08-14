@@ -39,21 +39,13 @@ export type SearchByConditionsRequest = Query &
 export class ResourceBridge extends LMDBBridge {
 	async searchByConditions(searchObject: SearchByConditionsRequest) {
 		if (searchObject.select !== undefined) searchObject.get_attributes = searchObject.select;
-		for (const condition of searchObject.conditions || []) {
-			if (condition?.search_attribute !== undefined) condition.attribute = condition.search_attribute;
-			if (condition?.search_type !== undefined) condition.comparator = condition.search_type;
-			if (condition?.search_value !== undefined) condition.value = condition.search_value;
-		}
-		const validationError = searchValidator(searchObject, 'conditions');
-		if (validationError) {
-			throw handleHDBError(validationError, validationError.message, 400, undefined, undefined, true);
-		}
+
 		const table = getTable(searchObject);
 		if (!table) {
 			throw new ClientError(`Table ${searchObject.table} not found`);
 		}
 
-		const conditions = searchObject.conditions.map(mapCondition);
+		searchObject.conditions = searchObject.conditions.map(mapCondition);
 		function mapCondition(condition: Condition) {
 			if ('conditions' in condition && condition.conditions) {
 				condition.conditions = condition.conditions.map(mapCondition);
@@ -68,9 +60,14 @@ export class ResourceBridge extends LMDBBridge {
 			}
 		}
 
+		const validationError = searchValidator(searchObject, 'conditions');
+		if (validationError) {
+			throw handleHDBError(validationError, validationError.message, 400, undefined, undefined, true);
+		}
+
 		return table.search(
 			{
-				conditions,
+				conditions: searchObject.conditions,
 				//set the operator to always be lowercase for later evaluations
 				operator: searchObject.operator ? searchObject.operator.toLowerCase() : undefined,
 				limit: searchObject.limit,
