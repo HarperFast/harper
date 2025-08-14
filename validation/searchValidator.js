@@ -124,8 +124,7 @@ module.exports = function (searchObject, type) {
 		//if search type is conditions add conditions fields to see if the fields exist
 		const addConditions = (searchObject) => {
 			//this is used to validate condition attributes exist in the schema
-			for (let x = 0, length = searchObject.conditions.length; x < length; x++) {
-				let condition = searchObject.conditions[x];
+			for (const condition of searchObject.conditions) {
 				if (condition.conditions) addConditions(condition);
 				else checkAttributes.push(condition.attribute);
 			}
