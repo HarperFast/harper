@@ -7,7 +7,6 @@ import { getVariables } from './utility.js';
 import { setupTestApp } from './setupTestApp.mjs';
 import { request } from 'http';
 import why_is_node_running from 'why-is-node-still-running';
-const { authorization, url } = getVariables();
 
 describe('test REST with property updates', () => {
 	let available_records;
