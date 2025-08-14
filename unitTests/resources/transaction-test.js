@@ -181,6 +181,19 @@ describe('Transactions', () => {
 			assert.equal(published_messages.length, 4);
 			assert(entity.getUpdatedTime() > 1);
 		});
+		it('Can use update and get with different arguments', async function () {
+			const context = {};
+			await transaction(context, () => {
+				TxnTest.put(45, { name: 'a counter', count: 1, countInt: 100, countBigInt: 4611686018427388000n }, context);
+			});
+			await transaction(async (txn) => {
+				let updatable = await TxnTest.update(45, txn);
+				updatable.count = 4;
+			});
+			await transaction(async (txn) => {
+				assert.equal((await TxnTest.get(45, {}, txn)).count, 4);
+			});
+		});
 
 		it('Apply out of order patch', async function () {
 			const context = {};
@@ -308,6 +321,19 @@ describe('Transactions', () => {
 			assert.equal(entity['new prop 0'], 'new value 0');
 			assert.equal(entity['new prop 1'], 'new value 1');
 			assert.equal(entity['new prop 2'], 'new value 2');
+		});
+		it('Can use update and get with different arguments', async function () {
+			const context = {};
+			await transaction(context, () => {
+				TxnTest.put(45, { name: 'a counter', count: 1, countInt: 100, countBigInt: 4611686018427388000n }, context);
+			});
+			await transaction(async (txn) => {
+				let updatable = await TxnTest.update(45, txn);
+				updatable.count = 4;
+			});
+			await transaction(async (txn) => {
+				assert.equal((await TxnTest.get(45, {}, txn)).count, 4);
+			});
 		});
 		it('Can update with patch', async function () {
 			const context = {};
