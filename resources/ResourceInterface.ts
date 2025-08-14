@@ -102,10 +102,10 @@ export interface DirectCondition {
 	search_value?: any;
 }
 interface ConditionGroup {
-	conditions: Conditions;
+	conditions?: Conditions;
 	operator?: Operator;
 }
-export type Condition = DirectCondition | ConditionGroup;
+export type Condition = DirectCondition & ConditionGroup;
 export type Conditions = Condition[];
 
 export interface Sort {
