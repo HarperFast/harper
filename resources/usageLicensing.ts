@@ -112,10 +112,10 @@ interface GetUsageLicensesReq {
 	operation: 'get_usage_licenses';
 }
 
-export function getUsageLicensesOp(req: GetUsageLicensesReq): Promise<UsageLicenseRecord[]> {
+export function getUsageLicensesOp(req: GetUsageLicensesReq): AsyncIterable<UsageLicenseRecord> {
 	return getUsageLicenses();
 }
 
-async function getUsageLicenses(): Promise<UsageLicenseRecord[]> {
-	return databases.system.hdb_license.search({ sort: '__created__' });
+function getUsageLicenses(): AsyncIterable<UsageLicenseRecord> {
+	return databases.system.hdb_license.search({ sort: { attribute: '__updatedtime__' } });
 }
