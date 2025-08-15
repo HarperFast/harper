@@ -1,8 +1,11 @@
-import { validateLicense } from '../validation/usageLicensing.ts';
+import { ValidatedLicense, validateLicense } from '../validation/usageLicensing.ts';
 import { ClientError } from '../utility/errors/hdbError.js';
 import * as harperLogger from '../utility/logging/harper_logger.js';
 import { onAnalyticsAggregate } from './analytics/write.ts';
 import { UpdatableRecord } from './ResourceInterface.ts';
+import { transaction } from './transaction';
+
+class ExistingLicenseError extends Error {}
 
 interface InstallLicenseRequest {
 	operation: 'install_usage_license';
@@ -21,27 +24,20 @@ export async function installUsageLicenseOp(req: InstallLicenseRequest): Promise
 	return 'Successfully installed usage license';
 }
 
-function installUsageLicense(license: string): Promise<void> {
+async function installUsageLicense(license: string): Promise<void> {
 	const validatedLicense = validateLicense(license);
-	const { id, ...licenseRecord } = validatedLicense;
-	return databases.system.hdb_license.patch(id, licenseRecord);
+	const { id } = validatedLicense;
+	const existingLicense = await databases.system.hdb_license.get(id);
+	if (existingLicense) {
+		throw new ExistingLicenseError(`A usage license with ${id} already exists`);
+	}
+	return databases.system.hdb_license.patch(id, validatedLicense);
 }
 
 let licenseWarningIntervalId: NodeJS.Timeout;
 const LICENSE_NAG_PERIOD = 600000; // ten minutes
 
-interface UsageLicenseRecord {
-	id: string;
-	level: number;
-	region: string;
-	expiration: number;
-	reads: number;
-	readBytes: number;
-	writes: number;
-	writeBytes: number;
-	realTimeMessages: number;
-	realTimeBytes: number;
-	cpuTime: number;
+interface UsageLicense extends ValidatedLicense {
 	usedReads: number;
 	usedReadBytes: number;
 	usedWrites: number;
@@ -49,18 +45,24 @@ interface UsageLicenseRecord {
 	usedRealTimeMessages: number;
 	usedRealTimeBytes: number;
 	usedCpuTime: number;
+}
+
+interface UsageLicenseRecord extends UsageLicense {
 	addTo: (field: string, value: number) => void;
 }
 
 onAnalyticsAggregate(async (analytics: any) => {
+	harperLogger.trace?.('Recording usage into license from analytics');
 	let updatableActiveLicense: UpdatableRecord<UsageLicenseRecord>;
 	const now = new Date().toISOString();
 	const licenseQuery = {
-		sort: '__created__',
-		conditions: [{ attribute: 'expiration', operator: 'greater_than', value: now }],
+		sort: { attribute: '__updatedtime__' },
+		conditions: [{ attribute: 'expiration', comparator: 'greater_than', value: now }],
 	};
 	const results = databases.system.hdb_license.search(licenseQuery);
+	let activeLicenseId: string;
 	for await (const license of results) {
+		harperLogger.trace?.('Checking usage license:', license);
 		if (
 			license.usedReads >= license.reads ||
 			license.usedReadBytes >= license.readBytes ||
@@ -71,40 +73,50 @@ onAnalyticsAggregate(async (analytics: any) => {
 			license.usedCpuTime >= license.cpuTime
 		)
 			continue;
-		updatableActiveLicense = databases.system.hdb_license.update(license.id);
+		activeLicenseId = license.id;
 	}
-	if (updatableActiveLicense) {
-		for (const analyticsRecord of analytics) {
-			switch (analyticsRecord.type) {
-				case 'db-read':
-					updatableActiveLicense.addTo('usedReads', analyticsRecord.count);
-					updatableActiveLicense.addTo('usedReadBytes', analyticsRecord.mean * analyticsRecord.count);
-					break;
-				case 'db-write':
-					updatableActiveLicense.addTo('usedWrites', analyticsRecord.count);
-					updatableActiveLicense.addTo('usedWriteBytes', analyticsRecord.mean * analyticsRecord.count);
-					break;
-				case 'db-message':
-					updatableActiveLicense.addTo('usedRealTimeMessage', analyticsRecord.count);
-					updatableActiveLicense.addTo('usedRealTimeBytes', analyticsRecord.mean * analyticsRecord.count);
-					break;
-				case 'cpu-usage':
-					if (analyticsRecord.path === 'user') {
-						updatableActiveLicense.addTo('usedCpuTime', analyticsRecord.mean * analyticsRecord.count);
-					}
-					break;
+	if (activeLicenseId) {
+		harperLogger.trace?.('Found license to record usage into:', updatableActiveLicense);
+		const context = {};
+		transaction(context, () => {
+			updatableActiveLicense = databases.system.hdb_license.update(activeLicenseId, context);
+			for (const analyticsRecord of analytics) {
+				harperLogger.trace?.('Processing analytics record:', analyticsRecord);
+				switch (analyticsRecord.metric) {
+					case 'db-read':
+						harperLogger.trace?.('Recording read usage into license');
+						updatableActiveLicense.addTo('usedReads', analyticsRecord.count);
+						updatableActiveLicense.addTo('usedReadBytes', analyticsRecord.mean * analyticsRecord.count);
+						break;
+					case 'db-write':
+						harperLogger.trace?.('Recording write usage into license');
+						updatableActiveLicense.addTo('usedWrites', analyticsRecord.count);
+						updatableActiveLicense.addTo('usedWriteBytes', analyticsRecord.mean * analyticsRecord.count);
+						break;
+					case 'db-message':
+						harperLogger.trace?.('Recording message usage into license');
+						updatableActiveLicense.addTo('usedRealTimeMessage', analyticsRecord.count);
+						updatableActiveLicense.addTo('usedRealTimeBytes', analyticsRecord.mean * analyticsRecord.count);
+						break;
+					case 'cpu-usage':
+						if (analyticsRecord.path === 'user') {
+							harperLogger.trace?.('Recording CPU usage into license');
+							updatableActiveLicense.addTo('usedCpuTime', analyticsRecord.mean * analyticsRecord.count);
+						}
+						break;
+					default:
+						harperLogger.trace?.('Skipping metric:', analyticsRecord.metric);
+				}
 			}
-		}
-	} else {
-		if (!process.env.DEV_MODE) {
-			// TODO: Adjust the message based on if there are used licenses or not
-			const msg =
-				'This server does not have valid usage licenses, this should only be used for educational and development purposes.';
-			console.error(msg);
-			licenseWarningIntervalId = setInterval(() => {
-				harperLogger.notify(msg);
-			}, LICENSE_NAG_PERIOD).unref();
-		}
+		});
+	} else if (!process.env.DEV_MODE) {
+		// TODO: Adjust the message based on if there are used licenses or not
+		const msg =
+			'This server does not have valid usage licenses, this should only be used for educational and development purposes.';
+		console.error(msg);
+		licenseWarningIntervalId = setInterval(() => {
+			harperLogger.notify(msg);
+		}, LICENSE_NAG_PERIOD).unref();
 	}
 });
 

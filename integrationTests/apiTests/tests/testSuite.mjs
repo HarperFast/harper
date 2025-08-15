@@ -28,4 +28,5 @@ describe('Main Test Suite', async () => {
 	await import('./22_openApi.mjs');
 	await import('./23_blob.mjs');
 	await import('./24_ocspVerification.mjs');
+	await import('./25_usageLicensingTest.mjs');
 });
