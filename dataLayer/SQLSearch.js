@@ -224,9 +224,7 @@ class SQLSearch {
 					continue;
 				}
 				//Specifically a slash delimited string for consistency
-				let attributeKey = [foundColumn.table.databaseid, foundColumn.table.tableid, foundColumn.attribute].join(
-					'/'
-				);
+				let attributeKey = [foundColumn.table.databaseid, foundColumn.table.tableid, foundColumn.attribute].join('/');
 
 				// Check for value range search first
 				if (!commonUtils.isEmpty(hdbTerms.VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[node.op])) {
@@ -631,30 +629,20 @@ class SQLSearch {
 					}
 				} else {
 					try {
-						searchObject.search_attribute = attribute.attribute;
+						searchObject.attribute = attribute.attribute;
 						await Promise.all(
 							Array.from(this.exact_search_values[objectPath].values).map(async (value) => {
 								let exactSearchObject = { ...searchObject };
-								exactSearchObject.search_value = value;
+								exactSearchObject.value = value;
 								const attributeValues = await harperBridge.getDataByValue(exactSearchObject);
 
 								for (const [hashVal, record] of attributeValues) {
 									if (!this.data[schemaTable].__mergedData[hashVal]) {
 										this.data[schemaTable].__mergedData[hashVal] = [...fetchAttrRowTemplates[schemaTable]];
-										this._updateMergedAttribute(
-											schemaTable,
-											hashVal,
-											attribute.attribute,
-											record[attribute.attribute]
-										);
+										this._updateMergedAttribute(schemaTable, hashVal, attribute.attribute, record[attribute.attribute]);
 										this._setMergedHashAttribute(schemaTable, hashVal);
 									} else {
-										this._updateMergedAttribute(
-											schemaTable,
-											hashVal,
-											attribute.attribute,
-											record[attribute.attribute]
-										);
+										this._updateMergedAttribute(schemaTable, hashVal, attribute.attribute, record[attribute.attribute]);
 									}
 								}
 							})
@@ -676,8 +664,8 @@ class SQLSearch {
 					const searchValueComparators = this.comparator_search_values[objectPath].comparators;
 					for (let i = 0, len = searchValueComparators.length; i < len; i++) {
 						const comp = searchValueComparators[i];
-						searchObject.search_attribute = comp.attribute;
-						searchObject.search_value = comp.value;
+						searchObject.attribute = comp.attribute;
+						searchObject.value = comp.value;
 						const matchingData = await harperBridge.getDataByValue(searchObject, comp.operation);
 
 						if (isHash) {
@@ -708,8 +696,8 @@ class SQLSearch {
 				}
 			} else {
 				try {
-					searchObject.search_attribute = attribute.attribute;
-					searchObject.search_value = '*';
+					searchObject.attribute = attribute.attribute;
+					searchObject.value = '*';
 					const matchingData = await harperBridge.getDataByValue(searchObject);
 
 					if (isHash) {
@@ -873,9 +861,7 @@ class SQLSearch {
 		tableData.push(
 			Object.values(
 				this.data[
-					`${fromStatement.databaseid_orig}_${
-						fromStatement.as ? fromStatement.as_orig : fromStatement.tableid_orig
-					}`
+					`${fromStatement.databaseid_orig}_${fromStatement.as ? fromStatement.as_orig : fromStatement.tableid_orig}`
 				].__mergedData
 			)
 		);
@@ -1119,9 +1105,7 @@ class SQLSearch {
 		tableData.push(
 			Object.values(
 				this.data[
-					`${fromStatement.databaseid_orig}_${
-						fromStatement.as ? fromStatement.as_orig : fromStatement.tableid_orig
-					}`
+					`${fromStatement.databaseid_orig}_${fromStatement.as ? fromStatement.as_orig : fromStatement.tableid_orig}`
 				].__mergedData
 			)
 		);
@@ -1326,8 +1310,8 @@ class SQLSearch {
 			};
 
 			try {
-				searchObject.search_attribute = attribute.attribute;
-				searchObject.search_value = '*';
+				searchObject.attribute = attribute.attribute;
+				searchObject.value = '*';
 				const matchingData = await harperBridge.getDataByValue(searchObject);
 
 				for (const [hashVal, record] of matchingData) {
