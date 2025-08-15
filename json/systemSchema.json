@@ -168,10 +168,12 @@
 				"name": "autoRenew"
 			},
 			{
-				"name": "__createdtime__"
+				"name": "__createdtime__",
+				"indexed": true
 			},
 			{
-				"name": "__updatedtime__"
+				"name": "__updatedtime__",
+				"indexed": true
 			}
 		]
 	},
