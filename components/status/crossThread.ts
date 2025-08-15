@@ -1,6 +1,6 @@
 /**
  * Cross-Thread Component Status Collection
- * 
+ *
  * This module handles collecting component status information from all worker threads
  * and aggregating it into a unified view.
  */
@@ -10,17 +10,15 @@ import { getWorkerIndex, onMessageByType, getWorkerCount } from '../../server/th
 import { ITC_EVENT_TYPES } from '../../utility/hdbTerms.ts';
 import { loggerWithTag } from '../../utility/logging/logger.js';
 import { ComponentStatusRegistry } from './ComponentStatusRegistry.ts';
-import { 
-	ComponentStatusSummary,
-	WorkerComponentStatuses,
-	AggregatedComponentStatus,
-	ComponentStatusLevel,
+import {
+	type ComponentStatusSummary,
+	type WorkerComponentStatuses,
+	type AggregatedComponentStatus,
+	type ComponentStatusLevel,
 	COMPONENT_STATUS_LEVELS,
-	ComponentStatusAbnormality
+	type ComponentStatusAbnormality,
 } from './types.ts';
-import { 
-	ITCError
-} from './errors.ts';
+import { ITCError } from './errors.ts';
 
 const logger = loggerWithTag('componentStatus.crossThread');
 
@@ -59,7 +57,7 @@ export class CrossThreadStatusCollector {
 				pendingResponses.push({
 					workerIndex: message.workerIndex,
 					isMainThread: message.isMainThread || false,
-					statuses: message.statuses || []
+					statuses: message.statuses || [],
 				});
 
 				// Check if we've received all expected responses
@@ -140,7 +138,9 @@ export class CrossThreadStatusCollector {
 						const collectedResponses = this.awaitingResponses.get(requestId) || [];
 						this.awaitingResponses.delete(requestId);
 						// Log timeout with diagnostic info
-						logger.debug?.(`Collection timeout for request ${requestId}: collected ${collectedResponses.length}/${expectedResponses} responses`);
+						logger.debug?.(
+							`Collection timeout for request ${requestId}: collected ${collectedResponses.length}/${expectedResponses} responses`
+						);
 						// Resolve with whatever we've collected so far
 						resolve(collectedResponses);
 					}
@@ -158,16 +158,18 @@ export class CrossThreadStatusCollector {
 				// Broadcast to ALL threads
 				sendItcEvent({
 					type: ITC_EVENT_TYPES.COMPONENT_STATUS_REQUEST,
-					message: { requestId }
-				}).then(() => {
-					// Request sent successfully, check if we already have all responses
-					checkComplete();
-				}).catch((error: Error) => {
-					resolved = true;
-					cleanup();
-					this.responseCheckers.delete(requestId);
-					reject(new ITCError('sendItcEvent', error));
-				});
+					message: { requestId },
+				})
+					.then(() => {
+						// Request sent successfully, check if we already have all responses
+						checkComplete();
+					})
+					.catch((error: Error) => {
+						resolved = true;
+						cleanup();
+						this.responseCheckers.delete(requestId);
+						reject(new ITCError('sendItcEvent', error));
+					});
 			});
 
 			// Get the collected responses for this request
@@ -187,7 +189,7 @@ export class CrossThreadStatusCollector {
 			for (const [name, status] of localStatuses) {
 				aggregatedStatuses.set(`${name}@${localThreadLabel}`, {
 					...status,
-					workerIndex: localWorkerIndex
+					workerIndex: localWorkerIndex,
 				});
 			}
 
@@ -197,14 +199,13 @@ export class CrossThreadStatusCollector {
 					const threadLabel = response.isMainThread ? 'main' : `worker-${response.workerIndex}`;
 					aggregatedStatuses.set(`${name}@${threadLabel}`, {
 						...status,
-						workerIndex: response.workerIndex
+						workerIndex: response.workerIndex,
 					});
 				}
 			}
 
 			logger.debug?.(`Collected component status from ${collectedResponses.length + 1} threads (including local)`);
 			return aggregatedStatuses;
-
 		} catch (error) {
 			if (error instanceof ITCError) {
 				logger.error?.(`ITC failure during component status collection: ${error.message}`);
@@ -213,8 +214,10 @@ export class CrossThreadStatusCollector {
 			}
 
 			// Log diagnostic information
-			logger.debug?.(`Collection failed for request. Error: ${error instanceof Error ? error.message : 'Unknown error'}`);
-			
+			logger.debug?.(
+				`Collection failed for request. Error: ${error instanceof Error ? error.message : 'Unknown error'}`
+			);
+
 			// Fallback to local status only
 			return this.getLocalStatusOnly(registry);
 		}
@@ -232,7 +235,7 @@ export class CrossThreadStatusCollector {
 		for (const [name, status] of localStatuses) {
 			fallbackStatuses.set(`${name}@${localThreadLabel}`, {
 				...status,
-				workerIndex: localWorkerIndex
+				workerIndex: localWorkerIndex,
 			});
 		}
 		return fallbackStatuses;
@@ -295,7 +298,7 @@ export class StatusAggregator {
 		statusEntries: Array<[string, ComponentStatusSummary]>
 	): AggregatedComponentStatus {
 		const lastCheckedTimes: AggregatedComponentStatus['lastChecked'] = {
-			workers: {}
+			workers: {},
 		};
 		let mostRecentCheckTime = 0;
 		let latestMessage: string | undefined;
@@ -309,9 +312,8 @@ export class StatusAggregator {
 			const threadLabel = atIndex !== -1 ? nameWithThread.substring(atIndex + 1) : '';
 
 			// Convert lastChecked to ms since epoch
-			const checkTime = status.lastChecked instanceof Date 
-				? status.lastChecked.getTime() 
-				: new Date(status.lastChecked).getTime();
+			const checkTime =
+				status.lastChecked instanceof Date ? status.lastChecked.getTime() : new Date(status.lastChecked).getTime();
 
 			// Store the last checked time based on thread label
 			if (threadLabel === 'main') {
@@ -353,7 +355,7 @@ export class StatusAggregator {
 						workerIndex: status.workerIndex !== undefined ? status.workerIndex : -1,
 						status: status.status,
 						message: status.message,
-						error: status.error
+						error: status.error,
 					});
 				}
 			}
@@ -365,7 +367,7 @@ export class StatusAggregator {
 			status: determinedStatus,
 			lastChecked: lastCheckedTimes,
 			latestMessage,
-			error
+			error,
 		};
 
 		// Only add abnormalities if there are any
@@ -385,7 +387,7 @@ export class StatusAggregator {
 			COMPONENT_STATUS_LEVELS.WARNING,
 			COMPONENT_STATUS_LEVELS.LOADING,
 			COMPONENT_STATUS_LEVELS.UNKNOWN,
-			COMPONENT_STATUS_LEVELS.HEALTHY
+			COMPONENT_STATUS_LEVELS.HEALTHY,
 		];
 
 		for (const priorityStatus of statusPriority) {

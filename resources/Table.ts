@@ -42,7 +42,14 @@ import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { HAS_BLOBS, readAuditEntry, removeAuditEntry } from './auditStore.ts';
 import { autoCast, convertToMS } from '../utility/common_utils.js';
-import { recordUpdater, removeEntry, PENDING_LOCAL_TIME, RecordObject, type Entry, entryMap } from './RecordEncoder.ts';
+import {
+	recordUpdater,
+	removeEntry,
+	PENDING_LOCAL_TIME,
+	type RecordObject,
+	type Entry,
+	entryMap,
+} from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
@@ -50,6 +57,7 @@ import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject } from './blob.ts';
 import { onStorageReclamation } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
+import harperLogger from '../utility/logging/harper_logger.js';
 
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
@@ -3371,12 +3379,13 @@ export function makeTable(options) {
 			// through query results and the iterator ends (abruptly)
 			if (options.transaction?.isDone) return withEntry(null, id);
 			const entry = primaryStore.getEntry(id, options);
-			
-      if (databaseName !== 'system') {
-        recordAction(entry?.size ?? 1, 'db-read', tableName, null);
-      }
-			
-      // we need to freeze entry records to ensure the integrity of the cache;
+
+			if (databaseName !== 'system') {
+				harperLogger.trace?.('Recording db-read action for', tableName);
+				recordAction(entry?.size ?? 1, 'db-read', tableName, null);
+			}
+
+			// we need to freeze entry records to ensure the integrity of the cache;
 			// but we only do this when users have opted into loadAsInstance/freezeRecords to avoid back-compat
 			// issues
 			if (context?._freezeRecords) Object.freeze(entry?.value);

@@ -10,7 +10,6 @@ const {
 	publishToStream,
 	setSubscription,
 } = require('../../server/nats/natsReplicator');
-const { resolve } = require('path');
 
 // might want to enable an iteration with NATS being assigned as a source
 describe('Transactions', () => {
