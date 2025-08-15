@@ -4,6 +4,8 @@ import * as harperLogger from '../utility/logging/harper_logger.js';
 import { onAnalyticsAggregate } from './analytics/write.ts';
 import { UpdatableRecord } from './ResourceInterface.ts';
 
+class ExistingLicenseError extends Error {}
+
 interface InstallLicenseRequest {
 	operation: 'install_usage_license';
 	license: string;
@@ -21,9 +23,13 @@ export async function installUsageLicenseOp(req: InstallLicenseRequest): Promise
 	return 'Successfully installed usage license';
 }
 
-function installUsageLicense(license: string): Promise<void> {
+async function installUsageLicense(license: string): Promise<void> {
 	const validatedLicense = validateLicense(license);
 	const { id } = validatedLicense;
+	const existingLicense = await databases.system.hdb_license.get(id);
+	if (existingLicense) {
+		throw new ExistingLicenseError(`A usage license with ${id} already exists`);
+	}
 	return databases.system.hdb_license.patch(id, validatedLicense);
 }
 
