@@ -1,4 +1,4 @@
-import { validateLicense } from '../validation/usageLicensing.ts';
+import { ValidatedLicense, validateLicense } from '../validation/usageLicensing.ts';
 import { ClientError } from '../utility/errors/hdbError.js';
 import * as harperLogger from '../utility/logging/harper_logger.js';
 import { onAnalyticsAggregate } from './analytics/write.ts';
@@ -36,18 +36,7 @@ async function installUsageLicense(license: string): Promise<void> {
 let licenseWarningIntervalId: NodeJS.Timeout;
 const LICENSE_NAG_PERIOD = 600000; // ten minutes
 
-interface UsageLicenseRecord {
-	id: string;
-	level: number;
-	region: string;
-	expiration: number;
-	reads: number;
-	readBytes: number;
-	writes: number;
-	writeBytes: number;
-	realTimeMessages: number;
-	realTimeBytes: number;
-	cpuTime: number;
+interface UsageLicense extends ValidatedLicense {
 	usedReads: number;
 	usedReadBytes: number;
 	usedWrites: number;
@@ -55,6 +44,9 @@ interface UsageLicenseRecord {
 	usedRealTimeMessages: number;
 	usedRealTimeBytes: number;
 	usedCpuTime: number;
+}
+
+interface UsageLicenseRecord extends UsageLicense {
 	addTo: (field: string, value: number) => void;
 }
 
