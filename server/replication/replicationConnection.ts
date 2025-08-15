@@ -36,7 +36,7 @@ import { disconnectedFromNode, connectedToNode, ensureNode } from './subscriptio
 import { EventEmitter } from 'events';
 import { createTLSSelector } from '../../security/keys.js';
 import * as tls from 'node:tls';
-import { getHDBNodeTable, getReplicationSharedStatus } from './knownNodes.ts';
+import { getHDBNodeTable, getReplicationSharedStatus, type Node } from './knownNodes.ts';
 import * as process from 'node:process';
 import { isIP } from 'node:net';
 import { recordAction } from '../../resources/analytics/write.ts';
@@ -98,6 +98,8 @@ type NodeSubscription = {
 	endTime: number;
 };
 
+let replicationSecureContext: tls.SecureContext & { caCount?: number };
+
 export async function createWebSocket(
 	url: string,
 	options: { authorization?: string; rejectUnauthorized?: boolean; serverName?: string }
@@ -142,10 +144,16 @@ export async function createWebSocket(
 		secureContext: undefined,
 	};
 	if (secureContext) {
-		wsOptions.secureContext = tls.createSecureContext({
-			...secureContext.options,
-			ca: [...replicationCertificateAuthorities, ...secureContext.options.availableCAs.values()], // add CA if secure context had one
-		});
+		// check to see if our cached secure context is still valid
+		if (replicationSecureContext?.caCount !== replicationCertificateAuthorities.size) {
+			// create a secure context and cache by the number of replication CAs (if that changes, we need to create a new secure context)
+			replicationSecureContext = tls.createSecureContext({
+				...secureContext.options,
+				ca: [...replicationCertificateAuthorities, ...secureContext.options.availableCAs.values()], // add CA if secure context had one
+			});
+			replicationSecureContext.caCount = replicationCertificateAuthorities.size;
+		}
+		wsOptions.secureContext = replicationSecureContext;
 	}
 	return new WebSocket(url, 'harperdb-replication-v1', wsOptions);
 }
@@ -246,6 +254,7 @@ export class NodeReplicationConnection extends EventEmitter {
 				}
 				this.isConnected = false;
 			}
+			this.removeAllListeners('subscriptions-updated');
 
 			if (this.socket.isFinished) {
 				this.isFinished = true;
@@ -296,7 +305,7 @@ export class NodeReplicationConnection extends EventEmitter {
 /**
  * This handles both incoming and outgoing WS allowing either one to issue a subscription and get replication and/or handle subscription requests
  */
-export function replicateOverWS(ws, options, authorization) {
+export function replicateOverWS(ws: WebSocket, options: any, authorization: Promise<Node | undefined>) {
 	const p = options.port || options.securePort;
 	const connectionId =
 		(process.pid % 1000) +
@@ -325,12 +334,6 @@ export function replicateOverWS(ws, options, authorization) {
 		});
 	let tables = options.tables || (databaseName && getDatabases()[databaseName]);
 	let remoteNodeName: string;
-	if (!authorization) {
-		logger.error?.(connectionId, 'No authorization provided');
-		// don't send disconnect because we want the client to potentially retry
-		close(1008, 'Unauthorized');
-		return;
-	}
 	const awaitingResponse = new Map();
 	let receivingDataFromNodeIds = [];
 	remoteNodeName = authorization.name;
@@ -406,7 +409,22 @@ export function replicateOverWS(ws, options, authorization) {
 	let subscriptionRequest, auditSubscription;
 	let nodeSubscriptions;
 	let remoteShortIdToLocalId: Map<number, number>;
-	ws.on('message', (body) => {
+	ws.on('message', onWSMessageWhenAuthorized);
+	// handle messages that we receive before authorization is complete/resolved
+	async function onWSMessageWhenAuthorized(body: Buffer) {
+		authorization = await authorization;
+		if (!authorization) {
+			logger.error?.(connectionId, 'No authorization provided');
+			// don't send disconnect because we want the client to potentially retry
+			close(1008, 'Unauthorized');
+			return;
+		}
+		onWSMessage(body);
+		// once resolved, we can skip this whole function and go directly to the message handler
+		ws.off('message', onWSMessageWhenAuthorized);
+		ws.on('message', onWSMessage);
+	}
+	function onWSMessage(body: Buffer) {
 		// A replication header should begin with either a transaction timestamp or messagepack message of
 		// of an array that begins with the command code
 		lastMessageTime = performance.now();
@@ -474,19 +492,25 @@ export function replicateOverWS(ws, options, authorization) {
 							data.map((t) => t.table)
 						);
 						for (const tableDefinition of data) {
-							const databaseName = message[2];
-							tableDefinition.database = databaseName;
+							const newDatabaseName = message[2];
+							tableDefinition.database = newDatabaseName;
 							let table: any;
-							if (checkDatabaseAccess(databaseName)) {
+							if (checkDatabaseAccess(newDatabaseName)) {
 								if (databaseName === 'system') {
-									// for system connection, we only update new tables
-									if (!databases[databaseName]?.[tableDefinition.table])
-										table = ensureTableIfChanged(tableDefinition, databases[databaseName]?.[tableDefinition.table]);
+									// the system connection allows us to create new databases (which wouldn't otherwise have an existing connection)
+									if (!databases[newDatabaseName]?.[tableDefinition.table]) {
+										table = ensureTableIfChanged(tableDefinition, databases[newDatabaseName]?.[tableDefinition.table]);
+									}
 								} else {
-									table = ensureTableIfChanged(tableDefinition, databases[databaseName]?.[tableDefinition.table]);
+									// a database connection is not allowed to create new databases, so we need to check if the database exists
+									if (newDatabaseName !== 'data' && !databases[newDatabaseName]) {
+										logger.warn?.('Database not found', newDatabaseName);
+										return;
+									}
+									table = ensureTableIfChanged(tableDefinition, databases[newDatabaseName]?.[tableDefinition.table]);
 								}
 								if (!auditStore) auditStore = table?.auditStore;
-								if (!tables) tables = getDatabases()?.[databaseName];
+								if (!tables) tables = getDatabases()?.[newDatabaseName];
 							}
 						}
 						break;
@@ -500,6 +524,7 @@ export function replicateOverWS(ws, options, authorization) {
 							logger.debug?.('Received operation request', data, 'from', remoteNodeName);
 							server.operation(data, { user: authorization }, !isAuthorizedNode).then(
 								(response) => {
+									logger.debug?.('Requested request from finished', remoteNodeName, response);
 									if (Array.isArray(response)) {
 										// convert an array to an object so we can have a top-level requestId properly serialized
 										response = { results: response };
@@ -508,6 +533,7 @@ export function replicateOverWS(ws, options, authorization) {
 									ws.send(encode([OPERATION_RESPONSE, response]));
 								},
 								(error) => {
+									logger.debug?.('Failed requested operation from', remoteNodeName, error);
 									ws.send(
 										encode([
 											OPERATION_RESPONSE,
@@ -533,6 +559,7 @@ export function replicateOverWS(ws, options, authorization) {
 						break;
 					case OPERATION_RESPONSE:
 						const { resolve, reject } = awaitingResponse.get(data.requestId);
+						logger.debug?.('Received completed operation request', remoteNodeName, data);
 						if (data.error) reject(new Error(data.error));
 						else resolve(data);
 						awaitingResponse.delete(data.requestId);
@@ -1376,7 +1403,7 @@ export function replicateOverWS(ws, options, authorization) {
 		} catch (error) {
 			logger.error?.(connectionId, 'Error handling incoming replication message', error);
 		}
-	});
+	}
 	ws.on('ping', resetPingTimer);
 	ws.on('pong', () => {
 		if (options.connection) {
@@ -1856,10 +1883,6 @@ export function replicateOverWS(ws, options, authorization) {
 	// Check the attributes in the msg vs the table and if they dont match call ensureTable to create them
 	function ensureTableIfChanged(tableDefinition: any, existingTable: any) {
 		const dbName = tableDefinition.database ?? 'data';
-		if (dbName !== 'data' && !databases[dbName]) {
-			logger.warn?.('Database not found', tableDefinition.database);
-			return;
-		}
 		if (!existingTable) existingTable = {};
 		const wasSchemaDefined = existingTable.schemaDefined;
 		let hasChanges = false;

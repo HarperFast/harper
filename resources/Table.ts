@@ -73,7 +73,7 @@ export type Attribute = {
 
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
-let node_name: string;
+const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
 const DELETED_RECORD_EXPIRATION = 86400000; // one day for non-audit records that have been deleted
 envMngr.initSync();
@@ -1640,14 +1640,13 @@ export function makeTable(options) {
 								localTime = auditRecord.previousLocalTime;
 							}
 							if (!localTime) {
-								// if we don't have a local time, we can't apply the update, so we need to drop it
+								// if we reached the end of the audit trail, we can just apply the update
 								logger.debug?.(
-									'No further audit history, must drop update',
+									'No further audit history, applying incremental updates based on available history',
 									id,
 									'existing version preserved',
 									existingEntry
 								);
-								return;
 							}
 							succeedingUpdates.sort((a, b) => a.version - b.version); // order the patches
 							for (const auditRecord of succeedingUpdates) {
@@ -1842,6 +1841,7 @@ export function makeTable(options) {
 					throw new AccessViolation(context.user);
 				}
 			}
+			if (context) context.lastModified = UNCACHEABLE_TIMESTAMP;
 
 			let conditions = target.conditions;
 			if (!conditions) conditions = Array.isArray(target) ? target : target[Symbol.iterator] ? Array.from(target) : [];

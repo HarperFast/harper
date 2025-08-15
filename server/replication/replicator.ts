@@ -80,9 +80,12 @@ export function start(options) {
 		if (request.headers.get('sec-websocket-protocol') !== 'harperdb-replication-v1') {
 			return next(ws, request, chainCompletion);
 		}
-		await chainCompletion;
 		ws._socket.unref(); // we don't want the socket to keep the thread alive
-		replicateOverWS(ws, options, request?.user);
+		replicateOverWS(
+			ws,
+			options,
+			chainCompletion.then(() => request?.user)
+		);
 		ws.on('error', (error) => {
 			if (error.code !== 'ECONNREFUSED') logger.error('Error in connection to ' + this.url, error.message);
 		});

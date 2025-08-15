@@ -29,6 +29,7 @@ const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
 const rootDir = env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH);
 const sshDir = path.join(rootDir, 'ssh');
 const knownHostsFile = path.join(sshDir, 'known_hosts');
+const { Resources } = require('../resources/Resources.ts');
 
 /**
  * Read the settings.js file and return the
@@ -416,7 +417,7 @@ async function deployComponent(req) {
 
 	// now we attempt to actually load the component in case there is
 	// an error we can immediately detect and report
-	const pseudoResources = new Map();
+	const pseudoResources = new Resources();
 	pseudoResources.isWorker = true;
 	const componentLoader = require('./componentLoader.ts');
 

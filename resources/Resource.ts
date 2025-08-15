@@ -188,7 +188,7 @@ export class Resource implements ResourceInterface {
 		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			return resource.update(query, data);
 		},
-		{ hasContent: true, type: 'create' }
+		{ hasContent: false, type: 'update' }
 	);
 
 	static connect = transactional(
@@ -522,8 +522,14 @@ function transactional(action, options) {
 			// otherwise handle methods for get, delete, etc.
 			// first, check to see if it is two argument
 		} else if (dataOrContext) {
-			// (id, context), preferred form used for methods without a body
-			context = dataOrContext.getContext?.() || dataOrContext;
+			if (context) {
+				// (id, data, context), this a method that doesn't normally have a body/data, but with the three arguments, we have explicit data
+				data = dataOrContext;
+				context = context.getContext?.() || context;
+			} else {
+				// (id, context), preferred form used for methods without a body
+				context = dataOrContext.getContext?.() || dataOrContext;
+			}
 		} else if (idOrQuery && typeof idOrQuery === 'object' && !Array.isArray(idOrQuery)) {
 			// (request) a structured id/query, which we will use as the context
 			context = idOrQuery;

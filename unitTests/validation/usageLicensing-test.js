@@ -8,7 +8,7 @@ describe('usageLicensing', function () {
 		it('should return license payload on valid license', () => {
 			const payload = {
 				id: 'test',
-				level: 'test',
+				level: 42,
 				region: 'test',
 				reads: 2000,
 				writes: 3000,

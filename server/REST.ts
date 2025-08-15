@@ -144,12 +144,12 @@ async function http(request: Context & Request, nextHandler) {
 			}
 		});
 		let status = 200;
-		let lastModification;
+		let lastModification = request.lastModified;
 		if (responseData == undefined) {
 			status = method === 'GET' || method === 'HEAD' ? 404 : 204;
 			// deleted entries can have a timestamp of when they were deleted
-			if (httpOptions.lastModified && request.lastModified)
-				headers.setIfNone('Last-Modified', new Date(request.lastModified).toUTCString());
+			if (httpOptions.lastModified && isFinite(lastModification))
+				headers.setIfNone('Last-Modified', new Date(lastModification).toUTCString());
 		} else if (responseData.status > 0 && responseData.headers) {
 			// if response is a Response object, use it as the response
 			// merge headers from response
@@ -161,7 +161,7 @@ async function http(request: Context & Request, nextHandler) {
 			// if data is provided, serialize it
 			if (responseData.data !== undefined) responseData.body = serialize(responseData.data, request, responseData);
 			return responseData;
-		} else if ((lastModification = request.lastModified)) {
+		} else if (isFinite(lastModification)) {
 			etagFloat[0] = lastModification;
 			// base64 encoding of the 64-bit float encoding of the date in ms (with quotes)
 			// very fast and efficient
@@ -201,7 +201,7 @@ async function http(request: Context & Request, nextHandler) {
 		if (loadedFromSource !== undefined) {
 			// this appears to be a caching table with a source
 			responseObject.wasCacheMiss = loadedFromSource; // indicate if it was a missed cache
-			if (!loadedFromSource && lastModification) {
+			if (!loadedFromSource && isFinite(lastModification)) {
 				headers.setIfNone('Age', Math.round((Date.now() - (request.lastRefreshed || lastModification)) / 1000));
 			}
 		}

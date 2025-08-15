@@ -32,7 +32,7 @@ describe('RootConfigWatcher', () => {
 		);
 		assert.equal(configWatcher.config, undefined, 'RootConfigWatcher should not have a config property yet');
 
-		const [actual] = await configWatcher.ready();
+		const [actual] = await configWatcher.ready;
 
 		assert.deepEqual(expected, actual, 'RootConfigWatcher should have a config property after ready() is called');
 
