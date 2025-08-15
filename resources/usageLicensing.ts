@@ -23,8 +23,8 @@ export async function installUsageLicenseOp(req: InstallLicenseRequest): Promise
 
 function installUsageLicense(license: string): Promise<void> {
 	const validatedLicense = validateLicense(license);
-	const { id, ...licenseRecord } = validatedLicense;
-	return databases.system.hdb_license.patch(id, licenseRecord);
+	const { id } = validatedLicense;
+	return databases.system.hdb_license.patch(id, validatedLicense);
 }
 
 let licenseWarningIntervalId: NodeJS.Timeout;
