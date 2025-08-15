@@ -11,7 +11,7 @@ function generateValidLicensePayload() {
 	const uuid = randomUUID();
 	return {
 		id: 'test-' + uuid,
-		level: 'test',
+		level: 0,
 		region: 'test',
 		expiration,
 		reads: 10000,

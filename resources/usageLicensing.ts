@@ -32,6 +32,8 @@ const LICENSE_NAG_PERIOD = 600000; // ten minutes
 
 interface UsageLicenseRecord {
 	id: string;
+	level: number;
+	region: string;
 	expiration: number;
 	reads: number;
 	readBytes: number;
@@ -50,14 +52,15 @@ interface UsageLicenseRecord {
 	addTo: (field: string, value: number) => void;
 }
 
-onAnalyticsAggregate((analytics: any) => {
+onAnalyticsAggregate(async (analytics: any) => {
 	let updatableActiveLicense: UpdatableRecord<UsageLicenseRecord>;
 	const now = new Date().toISOString();
 	const licenseQuery = {
 		sort: '__created__',
 		conditions: [{ attribute: 'expiration', operator: 'greater_than', value: now }],
 	};
-	for (const license of databases.system.hdb_license.search(licenseQuery)) {
+	const results = databases.system.hdb_license.search(licenseQuery);
+	for await (const license of results) {
 		if (
 			license.usedReads >= license.reads ||
 			license.usedReadBytes >= license.readBytes ||
@@ -95,7 +98,8 @@ onAnalyticsAggregate((analytics: any) => {
 	} else {
 		if (!process.env.DEV_MODE) {
 			// TODO: Adjust the message based on if there are used licenses or not
-			const msg = 'This server does not have valid usage licenses, this should only be used for educational and development purposes.';
+			const msg =
+				'This server does not have valid usage licenses, this should only be used for educational and development purposes.';
 			console.error(msg);
 			licenseWarningIntervalId = setInterval(() => {
 				harperLogger.notify(msg);
@@ -108,10 +112,10 @@ interface GetUsageLicensesReq {
 	operation: 'get_usage_licenses';
 }
 
-export function getUsageLicensesOp(req: GetUsageLicensesReq): Promise<UsageLicenseRecord[]> {
+export function getUsageLicensesOp(req: GetUsageLicensesReq): AsyncIterable<UsageLicenseRecord> {
 	return getUsageLicenses();
 }
 
-async function getUsageLicenses(): Promise<UsageLicenseRecord[]> {
-	return databases.system.hdb_license.search({ sort: '__created__' });
+function getUsageLicenses(): AsyncIterable<UsageLicenseRecord> {
+	return databases.system.hdb_license.search({ sort: { attribute: '__updatedtime__' } });
 }
