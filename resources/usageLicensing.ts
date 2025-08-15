@@ -3,6 +3,7 @@ import { ClientError } from '../utility/errors/hdbError.js';
 import * as harperLogger from '../utility/logging/harper_logger.js';
 import { onAnalyticsAggregate } from './analytics/write.ts';
 import { UpdatableRecord } from './ResourceInterface.ts';
+import { transaction } from './transaction';
 
 class ExistingLicenseError extends Error {}
 
@@ -51,6 +52,7 @@ interface UsageLicenseRecord extends UsageLicense {
 }
 
 onAnalyticsAggregate(async (analytics: any) => {
+	harperLogger.trace?.('Recording usage into license from analytics');
 	let updatableActiveLicense: UpdatableRecord<UsageLicenseRecord>;
 	const now = new Date().toISOString();
 	const licenseQuery = {
@@ -58,7 +60,9 @@ onAnalyticsAggregate(async (analytics: any) => {
 		conditions: [{ attribute: 'expiration', comparator: 'greater_than', value: now }],
 	};
 	const results = databases.system.hdb_license.search(licenseQuery);
+	let activeLicenseId: string;
 	for await (const license of results) {
+		harperLogger.trace?.('Checking usage license:', license);
 		if (
 			license.usedReads >= license.reads ||
 			license.usedReadBytes >= license.readBytes ||
@@ -69,28 +73,40 @@ onAnalyticsAggregate(async (analytics: any) => {
 			license.usedCpuTime >= license.cpuTime
 		)
 			continue;
-		updatableActiveLicense = databases.system.hdb_license.update(license.id);
+		activeLicenseId = license.id;
 	}
-	if (updatableActiveLicense) {
-		for (const analyticsRecord of analytics) {
-			switch (analyticsRecord.type) {
-				case 'db-read':
-					updatableActiveLicense.addTo('usedReads', analyticsRecord.count);
-					updatableActiveLicense.addTo('usedReadBytes', analyticsRecord.mean * analyticsRecord.count);
-					break;
-				case 'db-write':
-					updatableActiveLicense.addTo('usedWrites', analyticsRecord.count);
-					updatableActiveLicense.addTo('usedWriteBytes', analyticsRecord.mean * analyticsRecord.count);
-					break;
-				case 'db-message':
-					updatableActiveLicense.addTo('usedRealTimeMessage', analyticsRecord.count);
-					updatableActiveLicense.addTo('usedRealTimeBytes', analyticsRecord.mean * analyticsRecord.count);
-					break;
-				case 'cpu-usage':
-					if (analyticsRecord.path === 'user') {
-						updatableActiveLicense.addTo('usedCpuTime', analyticsRecord.mean * analyticsRecord.count);
-					}
-					break;
+	if (activeLicenseId) {
+		harperLogger.trace?.('Found license to record usage into:', updatableActiveLicense);
+		const context = {};
+		transaction(context, () => {
+			updatableActiveLicense = databases.system.hdb_license.update(activeLicenseId, context);
+			for (const analyticsRecord of analytics) {
+				harperLogger.trace?.('Processing analytics record:', analyticsRecord);
+				switch (analyticsRecord.metric) {
+					case 'db-read':
+						harperLogger.trace?.('Recording read usage into license');
+						updatableActiveLicense.addTo('usedReads', analyticsRecord.count);
+						updatableActiveLicense.addTo('usedReadBytes', analyticsRecord.mean * analyticsRecord.count);
+						break;
+					case 'db-write':
+						harperLogger.trace?.('Recording write usage into license');
+						updatableActiveLicense.addTo('usedWrites', analyticsRecord.count);
+						updatableActiveLicense.addTo('usedWriteBytes', analyticsRecord.mean * analyticsRecord.count);
+						break;
+					case 'db-message':
+						harperLogger.trace?.('Recording message usage into license');
+						updatableActiveLicense.addTo('usedRealTimeMessage', analyticsRecord.count);
+						updatableActiveLicense.addTo('usedRealTimeBytes', analyticsRecord.mean * analyticsRecord.count);
+						break;
+					case 'cpu-usage':
+						if (analyticsRecord.path === 'user') {
+							harperLogger.trace?.('Recording CPU usage into license');
+							updatableActiveLicense.addTo('usedCpuTime', analyticsRecord.mean * analyticsRecord.count);
+						}
+						break;
+					default:
+						harperLogger.trace?.('Skipping metric:', analyticsRecord.metric);
+				}
 			}
 		}
 	} else {
