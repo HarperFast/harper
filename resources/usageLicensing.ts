@@ -59,7 +59,7 @@ onAnalyticsAggregate(async (analytics: any) => {
 		sort: '__created__',
 		conditions: [{ attribute: 'expiration', operator: 'greater_than', value: now }],
 	};
-	const results = await databases.system.hdb_license.search(licenseQuery);
+	const results = databases.system.hdb_license.search(licenseQuery);
 	for await (const license of results) {
 		if (
 			license.usedReads >= license.reads ||
