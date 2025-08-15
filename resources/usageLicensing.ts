@@ -54,8 +54,8 @@ onAnalyticsAggregate(async (analytics: any) => {
 	let updatableActiveLicense: UpdatableRecord<UsageLicenseRecord>;
 	const now = new Date().toISOString();
 	const licenseQuery = {
-		sort: '__created__',
-		conditions: [{ attribute: 'expiration', operator: 'greater_than', value: now }],
+		sort: { attribute: '__updatedtime__' },
+		conditions: [{ attribute: 'expiration', comparator: 'greater_than', value: now }],
 	};
 	const results = databases.system.hdb_license.search(licenseQuery);
 	for await (const license of results) {
