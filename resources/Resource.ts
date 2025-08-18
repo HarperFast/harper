@@ -1,6 +1,6 @@
 import type { ResourceInterface, SubscriptionRequest, Id, Context, Query, SourceContext } from './ResourceInterface.ts';
 import { randomUUID } from 'crypto';
-import { DatabaseTransaction, Transaction } from './DatabaseTransaction.ts';
+import { DatabaseTransaction, type Transaction } from './DatabaseTransaction.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { _assignPackageExport } from '../globals.js';
 import { ClientError, AccessViolation } from '../utility/errors/hdbError.js';

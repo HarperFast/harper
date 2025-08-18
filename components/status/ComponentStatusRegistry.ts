@@ -1,16 +1,12 @@
 /**
  * ComponentStatusRegistry Class
- * 
+ *
  * This module contains the ComponentStatusRegistry class which provides
  * centralized management of component health status.
  */
 
 import { ComponentStatus } from './ComponentStatus.ts';
-import { 
-	ComponentStatusLevel, 
-	COMPONENT_STATUS_LEVELS,
-	AggregatedComponentStatus
-} from './types.ts';
+import { type ComponentStatusLevel, COMPONENT_STATUS_LEVELS, type AggregatedComponentStatus } from './types.ts';
 import { crossThreadCollector, StatusAggregator } from './crossThread.ts';
 import { ComponentStatusOperationError } from './errors.ts';
 
@@ -39,15 +35,15 @@ export class ComponentStatusRegistry {
 	 * This function allows components to report their own health status
 	 */
 	public setStatus(
-		componentName: string, 
-		status: ComponentStatusLevel, 
-		message?: string, 
+		componentName: string,
+		status: ComponentStatusLevel,
+		message?: string,
 		error?: Error | string
 	): void {
 		if (!componentName || typeof componentName !== 'string') {
 			throw new ComponentStatusOperationError(
-				String(componentName), 
-				'setStatus', 
+				String(componentName),
+				'setStatus',
 				'Component name must be a non-empty string'
 			);
 		}
@@ -123,7 +119,6 @@ export class ComponentStatusRegistry {
 		this.setStatus(componentName, COMPONENT_STATUS_LEVELS.ERROR, message, error);
 	}
 
-
 	/**
 	 * Get all components with a specific status level
 	 */
@@ -146,7 +141,7 @@ export class ComponentStatusRegistry {
 			[COMPONENT_STATUS_LEVELS.ERROR]: 0,
 			[COMPONENT_STATUS_LEVELS.WARNING]: 0,
 			[COMPONENT_STATUS_LEVELS.LOADING]: 0,
-			[COMPONENT_STATUS_LEVELS.UNKNOWN]: 0
+			[COMPONENT_STATUS_LEVELS.UNKNOWN]: 0,
 		};
 
 		for (const status of this.statusMap.values()) {
@@ -156,13 +151,13 @@ export class ComponentStatusRegistry {
 		return summary;
 	}
 
-
-
 	/**
 	 * Static method to get aggregated component statuses from all threads
 	 * Returns a Map with one entry per component showing overall status and thread distribution
 	 */
-	public static async getAggregatedFromAllThreads(registry: ComponentStatusRegistry): Promise<Map<string, AggregatedComponentStatus>> {
+	public static async getAggregatedFromAllThreads(
+		registry: ComponentStatusRegistry
+	): Promise<Map<string, AggregatedComponentStatus>> {
 		const allStatuses = await crossThreadCollector.collect(registry);
 		return StatusAggregator.aggregate(allStatuses);
 	}

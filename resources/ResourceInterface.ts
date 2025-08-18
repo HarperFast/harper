@@ -1,7 +1,7 @@
 import { DatabaseTransaction } from './DatabaseTransaction.ts';
-import { OperationFunctionName } from '../server/serverHelpers/serverUtilities.ts';
+import type { OperationFunctionName } from '../server/serverHelpers/serverUtilities.ts';
 import { RequestTarget } from './RequestTarget.ts';
-import { Entry } from './RecordEncoder.ts';
+import type { Entry } from './RecordEncoder.ts';
 
 export interface ResourceInterface<Key = any, Record = any> {
 	get?(id: Id): Promise<Record>;

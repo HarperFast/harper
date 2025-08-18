@@ -18,7 +18,8 @@ import {
 import { parentPort } from 'worker_threads';
 import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes, shouldReplicateToNode } from './knownNodes.ts';
 import * as logger from '../../utility/logging/harper_logger.js';
-import { cloneDeep } from 'lodash';
+import lodash from 'lodash';
+const { cloneDeep } = lodash;
 import env from '../../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { X509Certificate } from 'crypto';

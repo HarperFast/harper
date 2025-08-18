@@ -1,6 +1,6 @@
-import { Conditions, DirectCondition, Id, Select, Sort } from './ResourceInterface.ts';
+import type { Conditions, DirectCondition, Id, Select, Sort } from './ResourceInterface.ts';
 import { _assignPackageExport } from '../globals.js';
-import { Resource } from './Resource.ts';
+import type { Resource } from './Resource.ts';
 
 export class RequestTarget extends URLSearchParams {
 	#target?: string;

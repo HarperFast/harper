@@ -26,7 +26,7 @@ import * as logger from '../../utility/logging/harper_logger.js';
 import { X509Certificate } from 'crypto';
 import { verifyCertificate } from '../../security/certificateVerification.ts';
 import { readFileSync } from 'fs';
-export { startOnMainThread } from './subscriptionManager';
+export { startOnMainThread } from './subscriptionManager.ts';
 import {
 	subscribeToNodeUpdates,
 	getHDBNodeTable,
@@ -39,7 +39,7 @@ import { exportIdMapping } from './nodeIdMapping.ts';
 import * as tls from 'node:tls';
 import { ServerError } from '../../utility/errors/hdbError.js';
 import { isMainThread } from 'worker_threads';
-import { Database } from 'lmdb';
+import type { Database } from 'lmdb';
 import { getHostnamesFromCertificate } from '../../security/keys.js';
 
 let replicationDisabled;

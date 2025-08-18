@@ -8,7 +8,6 @@ import {
 import {
 	createAuditEntry,
 	Decoder,
-	getLastRemoved,
 	HAS_CURRENT_RESIDENCY_ID,
 	HAS_PREVIOUS_RESIDENCY_ID,
 	REMOTE_SEQUENCE_UPDATE,
@@ -31,7 +30,8 @@ import { HAS_STRUCTURE_UPDATE, lastMetadata, METADATA } from '../../resources/Re
 import { decode, encode, Packr } from 'msgpackr';
 import { WebSocket } from 'ws';
 import { threadId } from 'worker_threads';
-import { forComponent, errorToString } from '../../utility/logging/harper_logger.js';
+import harperLogger from '../../utility/logging/harper_logger.js';
+const { forComponent, errorToString } = harperLogger;
 import { disconnectedFromNode, connectedToNode, ensureNode } from './subscriptionManager.ts';
 import { EventEmitter } from 'events';
 import { createTLSSelector } from '../../security/keys.js';
