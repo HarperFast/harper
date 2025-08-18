@@ -1,6 +1,6 @@
 'use strict';
 
-const SearchByConditionsObject = require('../../../SearchByConditionsObject.js').SearchByConditionsObject;
+const { SearchByConditionsObject, SearchCondition } = require('../../../SearchByConditionsObject.js');
 const SearchObject = require('../../../SearchObject.js');
 const searchValidator = require('../../../../validation/searchValidator.js');
 const searchUtility = require('../../../../utility/lmdb/searchUtility.js');
@@ -142,11 +142,12 @@ function sorter(a, b) {
 	}
 	return 0;
 }
+
 /**
  *
  * @param transaction
  * @param {SearchByConditionsObject} searchObject
- * @param condition
+ * @param {SearchCondition} condition
  * @param {String} hash_attribute
  * @returns {Promise<unknown[]>}
  */
