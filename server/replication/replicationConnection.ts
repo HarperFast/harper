@@ -331,7 +331,7 @@ export function replicateOverWS(ws, options, authorization) {
 	let last_sequence_id_received, last_sequence_id_committed;
 	let send_ping_interval, receive_ping_timer, last_ping_time, skipped_message_sequence_update_timer;
 	let blobs_timer;
-	const DELAY_CLOSE_TIME = 5000;
+	const DELAY_CLOSE_TIME = 60000; // amount of time to wait before closing the connection if we haven't any activity and there are no subscriptions
 	let delayed_close: NodeJS.Timeout;
 	let last_message_time = 0;
 	// track bytes read and written so we can verify if a connection is really dead on pings
