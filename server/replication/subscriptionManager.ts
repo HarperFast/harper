@@ -269,6 +269,10 @@ export async function startOnMainThread(options) {
 		// a node that may have more recent updates, so we try to go to the next node in the list, using
 		// a sorted list of node names that all nodes should have and use.
 		try {
+			if (env.get(CONFIG_PARAMS.REPLICATION_FAILOVER) === false) {
+				// if failover is disabled, immediately return
+				return;
+			}
 			logger.info('Disconnected from node', connection.name, connection.url, 'finished', !!connection.finished);
 			const node_map_keys = Array.from(node_map.keys());
 			const node_names = node_map_keys.sort();
