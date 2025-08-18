@@ -711,7 +711,7 @@ function getRecordAttributes(json) {
 		}
 
 		if (!json.records || json.records.length === 0) {
-			if (!json.get_attributes || !json.get_attributes.length === 0) {
+			if (!json.get_attributes || json.get_attributes.length === 0) {
 				return affectedAttributes;
 			}
 
