@@ -380,7 +380,7 @@ function getRetrievalConnectionByName(node_name, subscription, db_name): NodeRep
 	if (node?.url) {
 		connection = new NodeReplicationConnection(node.url, subscription, db_name, node_name, node.authorization);
 		// cache the connection
-		dbConnections.set(node_name, connection);
+		dbConnections.set(db_name, connection);
 		connection.connect();
 		connection.once('finished', () => dbConnections.delete(db_name));
 	}
