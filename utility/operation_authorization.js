@@ -715,15 +715,15 @@ function getRecordAttributes(json) {
 				return affectedAttributes;
 			}
 
-			for (let record = 0; record < json.get_attributes.length; record++) {
-				affectedAttributes.add(json.get_attributes[record]);
+			for (const attr of json.get_attributes) {
+				affectedAttributes.add(attr);
 			}
 		} else {
 			// get unique affectedAttributes
-			for (let record = 0; record < json.records.length; record++) {
-				let keys = Object.keys(json.records[record]);
-				for (let att = 0; att < keys.length; att++) {
-					affectedAttributes.add(keys[att]);
+			for (const record of json.records) {
+				let keys = Object.keys(record);
+				for (const key of keys) {
+					affectedAttributes.add(key);
 				}
 			}
 		}
