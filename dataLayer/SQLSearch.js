@@ -224,7 +224,11 @@ class SQLSearch {
 					continue;
 				}
 				//Specifically a slash delimited string for consistency
-				let attributeKey = [foundColumn.table.databaseid, foundColumn.table.tableid, foundColumn.attribute].join('/');
+				let attributeKey = [
+					foundColumn.table.databaseid,
+					foundColumn.table.tableid,
+					foundColumn.attribute
+				].join('/');
 
 				// Check for value range search first
 				if (!commonUtils.isEmpty(hdbTerms.VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[node.op])) {
