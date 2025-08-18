@@ -624,7 +624,16 @@ export function replicateOverWS(ws, options, authorization) {
 							if (finished) {
 								if (error) {
 									stream.on('error', () => {}); // don't treat this as an uncaught error
-									stream.destroy(new Error('Blob error: ' + error));
+									stream.destroy(
+										new Error(
+											'Blob error: ' +
+												error +
+												' for record ' +
+												(stream.recordId ?? 'unknown') +
+												' from ' +
+												remote_node_name
+										)
+									);
 								} else stream.end(blobBody);
 								if (stream.connectedToBlob) blobs_in_flight.delete(fileId);
 							} else stream.write(blobBody);
@@ -678,7 +687,7 @@ export function replicateOverWS(ws, options, authorization) {
 									valueBuffer = Buffer.from(valueBuffer);
 									decodeWithBlobCallback(
 										() => table.primaryStore.decoder.decode(binary_entry),
-										sendBlobs,
+										(blob) => sendBlobs(blob, record_id),
 										table.primaryStore.rootStore
 									);
 								}
@@ -1034,7 +1043,7 @@ export function replicateOverWS(ws, options, authorization) {
 									// if there are blobs, we need to find them and send their contents
 									decodeWithBlobCallback(
 										() => audit_record.getValue(primary_store),
-										sendBlobs,
+										(blob) => sendBlobs(blob, audit_record.recordId),
 										primary_store.rootStore
 									);
 								}
@@ -1174,7 +1183,10 @@ export function replicateOverWS(ws, options, authorization) {
 															node_id,
 															null,
 															'put',
-															decodeWithBlobCallback(() => table.primaryStore.encoder.encode(entry.value), sendBlobs),
+															decodeWithBlobCallback(
+																() => table.primaryStore.encoder.encode(entry.value),
+																(blob) => sendBlobs(blob, entry.key)
+															),
 															entry.metadataFlags & ~0xff, // exclude the lower bits that define the type
 															entry.residencyId,
 															null,
@@ -1419,7 +1431,7 @@ export function replicateOverWS(ws, options, authorization) {
 	// The same blobs can't be sent concurrently of the packets will get mixed up. The receiving
 	// end should handle aggregated the results of the same blob for separate record requests.
 	const blobsBeingSent = new Set();
-	async function sendBlobs(blob) {
+	async function sendBlobs(blob: Blob, recordId: any) {
 		// found a blob, start sending it
 		const id = getFileId(blob);
 		if (blobsBeingSent.has(id)) {
@@ -1466,7 +1478,7 @@ export function replicateOverWS(ws, options, authorization) {
 				])
 			);
 		} catch (error) {
-			logger.debug?.('Error sending blob', error);
+			logger.warn?.('Error sending blob', error, 'blob id', id, 'for record', recordId);
 			ws.send(
 				encode([
 					BLOB_CHUNK,
