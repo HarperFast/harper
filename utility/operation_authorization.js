@@ -694,12 +694,20 @@ function getRecordAttributes(json) {
 		}
 		if (json.operation === terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS) {
 			json.conditions.forEach((condition) => {
-				affectedAttributes.add(condition.attribute);
+				let attribute = condition.attribute;
+				if (condition.search_attribute !== undefined) {
+					attribute = condition.search_attribute;
+				}
+				affectedAttributes.add(attribute);
 			});
 		}
 
-		if (json && json.attribute) {
-			affectedAttributes.add(json.attribute);
+		if (json && (json.attribute || json.search_attribute)) {
+			let attribute = json.attribute;
+			if (json.search_attribute !== undefined) {
+				attribute = json.search_attribute;
+			}
+			affectedAttributes.add(attribute);
 		}
 
 		if (!json.records || json.records.length === 0) {
