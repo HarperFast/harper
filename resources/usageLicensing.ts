@@ -6,6 +6,7 @@ import { UpdatableRecord } from './ResourceInterface.ts';
 import { transaction } from './transaction.ts';
 import * as env from '../utility/environment/environmentManager.js';
 import * as terms from '../utility/hdbTerms.ts';
+import { databases } from './databases.ts';
 
 class ExistingLicenseError extends Error {}
 
