@@ -347,7 +347,7 @@ export function replicateOverWS(ws, options, authorization) {
 	let lastSequenceIdReceived, lastSequenceIdCommitted;
 	let sendPingInterval, receivePingTimer, lastPingTime, skippedMessageSequenceUpdateTimer;
 	let blobsTimer;
-	const DELAY_CLOSE_TIME = 5000;
+	const DELAY_CLOSE_TIME = 60000; // amount of time to wait before closing the connection if we haven't any activity and there are no subscriptions
 	let delayedClose: NodeJS.Timeout;
 	let lastMessageTime = 0;
 	// track bytes read and written so we can verify if a connection is really dead on pings
@@ -647,7 +647,16 @@ export function replicateOverWS(ws, options, authorization) {
 							if (finished) {
 								if (error) {
 									stream.on('error', () => {}); // don't treat this as an uncaught error
-									stream.destroy(new Error('Blob error: ' + error));
+									stream.destroy(
+										new Error(
+											'Blob error: ' +
+												error +
+												' for record ' +
+												(stream.recordId ?? 'unknown') +
+												' from ' +
+												remote_node_name
+										)
+									);
 								} else stream.end(blobBody);
 								if (stream.connectedToBlob) blobsInFlight.delete(fileId);
 							} else stream.write(blobBody);
@@ -702,7 +711,7 @@ export function replicateOverWS(ws, options, authorization) {
 									valueBuffer = Buffer.from(valueBuffer);
 									decodeWithBlobCallback(
 										() => table.primaryStore.decoder.decode(binaryEntry),
-										sendBlobs,
+										(blob) => sendBlobs(blob, recordId),
 										table.primaryStore.rootStore
 									);
 								}
@@ -1044,7 +1053,11 @@ export function replicateOverWS(ws, options, authorization) {
 								const encoded = auditRecord.encoded;
 								if (auditRecord.extendedType & HAS_BLOBS) {
 									// if there are blobs, we need to find them and send their contents
-									decodeWithBlobCallback(() => auditRecord.getValue(primaryStore), sendBlobs, primaryStore.rootStore);
+									decodeWithBlobCallback(
+										() => auditRecord.getValue(primaryStore),
+										(blob) => sendBlobs(blob, auditRecord.recordId),
+										primaryStore.rootStore
+									);
 								}
 								// If it starts with the previous local time, we omit that
 								const start = encoded[0] === 66 ? 8 : 0;
@@ -1180,7 +1193,10 @@ export function replicateOverWS(ws, options, authorization) {
 															nodeId,
 															null,
 															'put',
-															decodeWithBlobCallback(() => table.primaryStore.encoder.encode(entry.value), sendBlobs),
+															decodeWithBlobCallback(
+																() => table.primaryStore.encoder.encode(entry.value),
+																(blob) => sendBlobs(blob, entry.key)
+															),
 															entry.metadataFlags & ~0xff, // exclude the lower bits that define the type
 															entry.residencyId,
 															null,
@@ -1434,7 +1450,7 @@ export function replicateOverWS(ws, options, authorization) {
 	// The same blobs can't be sent concurrently of the packets will get mixed up. The receiving
 	// end should handle aggregated the results of the same blob for separate record requests.
 	const blobsBeingSent = new Set();
-	async function sendBlobs(blob) {
+	async function sendBlobs(blob: Blob, recordId: any) {
 		// found a blob, start sending it
 		const id = getFileId(blob);
 		if (blobsBeingSent.has(id)) {
@@ -1481,7 +1497,7 @@ export function replicateOverWS(ws, options, authorization) {
 				])
 			);
 		} catch (error) {
-			logger.debug?.('Error sending blob', error);
+			logger.warn?.('Error sending blob', error, 'blob id', id, 'for record', recordId);
 			ws.send(
 				encode([
 					BLOB_CHUNK,
