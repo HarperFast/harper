@@ -577,6 +577,7 @@ export const CONFIG_PARAMS = {
 	HTTP_MAXHEADERSIZE: 'http_maxHeaderSize',
 	HTTP_THREADRANGE: 'http_threadRange',
 	HTTP_HTTP2: 'http_http2',
+	LICENSE_REGION: 'license_region',
 	LOCALSTUDIO_ENABLED: 'localStudio_enabled',
 	LOGGING_CONSOLE: 'logging_console',
 	LOGGING_FILE: 'logging_file',
