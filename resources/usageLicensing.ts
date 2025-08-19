@@ -4,6 +4,8 @@ import * as harperLogger from '../utility/logging/harper_logger.js';
 import { onAnalyticsAggregate } from './analytics/write.ts';
 import { UpdatableRecord } from './ResourceInterface.ts';
 import { transaction } from './transaction';
+import * as env from '../utility/environment/environmentManager.js';
+import * as terms from '../utility/hdbTerms.ts';
 
 class ExistingLicenseError extends Error {}
 
@@ -59,6 +61,12 @@ onAnalyticsAggregate(async (analytics: any) => {
 		sort: { attribute: '__updatedtime__' },
 		conditions: [{ attribute: 'expiration', comparator: 'greater_than', value: now }],
 	};
+	const region = env.get(terms.CONFIG_PARAMS.LICENSE_REGION);
+	if (region !== undefined) {
+		licenseQuery.conditions.push({ attribute: 'region', comparator: 'equals', value: region });
+	} else {
+		harperLogger.warn?.('No region specified for usage license, selecting any valid license');
+	}
 	const results = databases.system.hdb_license.search(licenseQuery);
 	let activeLicenseId: string;
 	for await (const license of results) {
