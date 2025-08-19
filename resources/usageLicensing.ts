@@ -54,7 +54,7 @@ interface UsageLicenseRecord extends UsageLicense {
 	addTo: (field: string, value: number) => void;
 }
 
-onAnalyticsAggregate(async (analytics: any) => {
+export async function recordUsage(analytics: any) {
 	harperLogger.trace?.('Recording usage into license from analytics');
 	let updatableActiveLicense: UpdatableRecord<UsageLicenseRecord>;
 	const now = new Date().toISOString();
@@ -132,7 +132,9 @@ onAnalyticsAggregate(async (analytics: any) => {
 			}, LICENSE_NAG_PERIOD).unref();
 		}
 	}
-});
+}
+
+onAnalyticsAggregate(recordUsage);
 
 interface GetUsageLicensesReq {
 	operation: 'get_usage_licenses';
