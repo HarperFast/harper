@@ -11,8 +11,8 @@ const searchByValueSchema = Joi.object({
 	database: hdbDatabase,
 	schema: hdbDatabase,
 	table: hdbTable,
-	search_attribute: hdbSchemaTable,
-	search_value: Joi.any().required(),
+	attribute: hdbSchemaTable,
+	value: Joi.any().required(),
 	get_attributes: Joi.array().min(1).items(Joi.alternatives(hdbSchemaTable, Joi.object())).optional(),
 	desc: Joi.bool(),
 	limit: Joi.number().integer().min(1),
@@ -37,8 +37,8 @@ const searchByConditionsSchema = Joi.object({
 			Joi.alternatives(
 				Joi.object({ operator: Joi.string().valid('and', 'or').default('and').lowercase(), conditions: Joi.array() }),
 				Joi.object({
-					search_attribute: Joi.alternatives(hdbSchemaTable, Joi.array().min(1)),
-					search_type: Joi.string()
+					attribute: Joi.alternatives(hdbSchemaTable, Joi.array().min(1)),
+					comparator: Joi.string()
 						.valid(
 							'equals',
 							'contains',
@@ -52,7 +52,7 @@ const searchByConditionsSchema = Joi.object({
 							'not_equal'
 						)
 						.optional(),
-					search_value: Joi.when('search_type', {
+					value: Joi.when('comparator', {
 						switch: [
 							{ is: 'equals', then: Joi.any() },
 							{
@@ -118,16 +118,15 @@ module.exports = function (searchObject, type) {
 		let checkAttributes = searchObject.get_attributes ? [...searchObject.get_attributes] : [];
 
 		if (type === 'value') {
-			checkAttributes.push(searchObject.search_attribute);
+			checkAttributes.push(searchObject.attribute);
 		}
 
 		//if search type is conditions add conditions fields to see if the fields exist
 		const addConditions = (searchObject) => {
 			//this is used to validate condition attributes exist in the schema
-			for (let x = 0, length = searchObject.conditions.length; x < length; x++) {
-				let condition = searchObject.conditions[x];
+			for (const condition of searchObject.conditions) {
 				if (condition.conditions) addConditions(condition);
-				else checkAttributes.push(condition.search_attribute);
+				else checkAttributes.push(condition.attribute);
 			}
 		};
 		if (type === 'conditions') {
@@ -139,7 +138,7 @@ module.exports = function (searchObject, type) {
 			(attribute) =>
 				attribute !== '*' &&
 				!attribute.startsWith?.('$') && // meta attributes
-				attribute.attribute !== '*' && // skip check for asterik attribute
+				attribute.attribute !== '*' && // skip check for asterisk attribute
 				!Array.isArray(attribute) &&
 				!attribute.name && // nested attribute
 				!_.some(

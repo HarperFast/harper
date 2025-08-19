@@ -54,6 +54,7 @@ function checkValidTable(propertyName, value) {
 	if (!schemaRegex.test(value)) return `'${property_name}' has illegal characters`;
 	return '';
 }
+
 function validateSchemaExists(value, helpers) {
 	if (!hdbUtils.doesSchemaExist(value)) {
 		return helpers.message(`Database '${value}' does not exist`);

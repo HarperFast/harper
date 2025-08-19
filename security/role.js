@@ -56,8 +56,8 @@ async function addRole(role) {
 	let searchObj = {
 		schema: 'system',
 		table: 'hdb_role',
-		search_attribute: 'role',
-		search_value: role.role,
+		attribute: 'role',
+		value: role.role,
 		hash_attribute: 'id',
 		get_attributes: ['*'],
 	};
@@ -201,8 +201,8 @@ async function listRoles() {
 		table: 'hdb_role',
 		schema: 'system',
 		hash_attribute: 'id',
-		search_attribute: 'id',
-		search_value: '*',
+		attribute: 'id',
+		value: '*',
 		get_attributes: ['*'],
 	};
 

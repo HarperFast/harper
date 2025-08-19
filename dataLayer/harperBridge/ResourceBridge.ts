@@ -39,21 +39,13 @@ export type SearchByConditionsRequest = Query &
 export class ResourceBridge extends LMDBBridge {
 	async searchByConditions(searchObject: SearchByConditionsRequest) {
 		if (searchObject.select !== undefined) searchObject.get_attributes = searchObject.select;
-		for (const condition of searchObject.conditions || []) {
-			if (condition?.attribute !== undefined) condition.search_attribute = condition.attribute;
-			if (condition?.comparator !== undefined) condition.search_type = condition.comparator;
-			if (condition?.value !== undefined) condition.search_value = condition.value;
-		}
-		const validationError = searchValidator(searchObject, 'conditions');
-		if (validationError) {
-			throw handleHDBError(validationError, validationError.message, 400, undefined, undefined, true);
-		}
+
 		const table = getTable(searchObject);
 		if (!table) {
 			throw new ClientError(`Table ${searchObject.table} not found`);
 		}
 
-		const conditions = searchObject.conditions.map(mapCondition);
+		searchObject.conditions = searchObject.conditions.map(mapCondition);
 		function mapCondition(condition: Condition) {
 			if ('conditions' in condition && condition.conditions) {
 				condition.conditions = condition.conditions.map(mapCondition);
@@ -61,16 +53,21 @@ export class ResourceBridge extends LMDBBridge {
 			} else {
 				const c = condition as DirectCondition;
 				return {
-					attribute: c.search_attribute ?? c.attribute,
-					comparator: c.search_type ?? c.comparator,
-					value: c.search_value !== undefined ? c.search_value : c.value, // null is valid value
+					attribute: c.attribute ?? c.search_attribute,
+					comparator: c.comparator ?? c.search_type,
+					value: c.value !== undefined ? c.value : c.search_value, // null is valid value
 				};
 			}
 		}
 
+		const validationError = searchValidator(searchObject, 'conditions');
+		if (validationError) {
+			throw handleHDBError(validationError, validationError.message, 400, undefined, undefined, true);
+		}
+
 		return table.search(
 			{
-				conditions,
+				conditions: searchObject.conditions,
 				//set the operator to always be lowercase for later evaluations
 				operator: searchObject.operator ? searchObject.operator.toLowerCase() : undefined,
 				limit: searchObject.limit,
@@ -385,8 +382,8 @@ export class ResourceBridge extends LMDBBridge {
 			throw new Error(`Value search comparator - ${comparator} - is not valid`);
 		}
 		if (searchObject.select !== undefined) searchObject.get_attributes = searchObject.select;
-		if (searchObject.attribute !== undefined) searchObject.search_attribute = searchObject.attribute;
-		if (searchObject.value !== undefined) searchObject.search_value = searchObject.value;
+		if (searchObject.search_attribute !== undefined) searchObject.attribute = searchObject.search_attribute;
+		if (searchObject.search_value !== undefined) searchObject.value = searchObject.search_value;
 
 		const validationError = searchValidator(searchObject, 'value');
 		if (validationError) {
@@ -397,7 +394,7 @@ export class ResourceBridge extends LMDBBridge {
 		if (!table) {
 			throw new ClientError(`Table ${searchObject.table} not found`);
 		}
-		let value = searchObject.search_value;
+		let value = searchObject.value;
 		if (value.includes?.('*')) {
 			if (value.startsWith('*')) {
 				if (value.endsWith('*')) {
@@ -420,7 +417,7 @@ export class ResourceBridge extends LMDBBridge {
 				? []
 				: [
 						{
-							attribute: searchObject.search_attribute,
+							attribute: searchObject.attribute,
 							value,
 							comparator,
 						},

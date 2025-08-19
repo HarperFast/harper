@@ -694,28 +694,36 @@ function getRecordAttributes(json) {
 		}
 		if (json.operation === terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS) {
 			json.conditions.forEach((condition) => {
-				affectedAttributes.add(condition.search_attribute);
+				let attribute = condition.attribute;
+				if (condition.search_attribute !== undefined) {
+					attribute = condition.search_attribute;
+				}
+				affectedAttributes.add(attribute);
 			});
 		}
 
-		if (json && json.search_attribute) {
-			affectedAttributes.add(json.search_attribute);
+		if (json && (json.attribute || json.search_attribute)) {
+			let attribute = json.attribute;
+			if (json.search_attribute !== undefined) {
+				attribute = json.search_attribute;
+			}
+			affectedAttributes.add(attribute);
 		}
 
 		if (!json.records || json.records.length === 0) {
-			if (!json.get_attributes || !json.get_attributes.length === 0) {
+			if (!json.get_attributes || json.get_attributes.length === 0) {
 				return affectedAttributes;
 			}
 
-			for (let record = 0; record < json.get_attributes.length; record++) {
-				affectedAttributes.add(json.get_attributes[record]);
+			for (const attr of json.get_attributes) {
+				affectedAttributes.add(attr);
 			}
 		} else {
 			// get unique affectedAttributes
-			for (let record = 0; record < json.records.length; record++) {
-				let keys = Object.keys(json.records[record]);
-				for (let att = 0; att < keys.length; att++) {
-					affectedAttributes.add(keys[att]);
+			for (const record of json.records) {
+				let keys = Object.keys(record);
+				for (const key of keys) {
+					affectedAttributes.add(key);
 				}
 			}
 		}

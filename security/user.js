@@ -74,8 +74,8 @@ async function addUser(user) {
 	let searchRole = await search.searchByValue({
 		schema: 'system',
 		table: 'hdb_role',
-		search_attribute: 'role',
-		search_value: cleanUser.role,
+		attribute: 'role',
+		value: cleanUser.role,
 		get_attributes: ['id', 'permission', 'role'],
 	});
 
@@ -153,8 +153,8 @@ async function alterUser(jsonMessage) {
 		const roleData = await search.searchByValue({
 			schema: 'system',
 			table: 'hdb_role',
-			search_attribute: 'role',
-			search_value: cleanUser.role,
+			attribute: 'role',
+			value: cleanUser.role,
 			get_attributes: ['*'],
 		});
 
@@ -258,8 +258,8 @@ async function listUsers() {
 	const roles = await search.searchByValue({
 		schema: 'system',
 		table: 'hdb_role',
-		search_value: '*',
-		search_attribute: 'role',
+		value: '*',
+		attribute: 'role',
 		get_attributes: ['*'],
 	});
 
@@ -272,8 +272,8 @@ async function listUsers() {
 	const users = await search.searchByValue({
 		schema: 'system',
 		table: 'hdb_user',
-		search_value: '*',
-		search_attribute: 'username',
+		value: '*',
+		attribute: 'username',
 		get_attributes: ['*'],
 	});
 

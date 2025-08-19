@@ -4,7 +4,7 @@ const sinon = require('sinon');
 const ul = require('../../validation/usageLicensing.ts');
 const utils = require('../testLicenseUtils.js');
 
-describe('usageLicensing', function () {
+describe('usageLicensing', () => {
 	before(() => {
 		sinon.replace(ul, 'publicKey', new ul.PublicKey('test'));
 	});
