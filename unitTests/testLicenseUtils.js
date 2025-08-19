@@ -1,6 +1,6 @@
 const { createPrivateKey, sign, randomUUID } = require('node:crypto');
 
-const LICENSE_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
+const TEST_LICENSE_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIAAe+bdBWCbmzgPgfzf5L7L1npsgi+Wkz+uNb9lgcA/w
 -----END PRIVATE KEY-----
 `;
@@ -30,7 +30,7 @@ function signTestLicense(payload) {
 	const license = [JSON.stringify(header), JSON.stringify(payload)]
 		.map((e) => Buffer.from(e).toString('base64url'))
 		.join('.');
-	const privateKey = createPrivateKey(LICENSE_PRIVATE_KEY);
+	const privateKey = createPrivateKey(TEST_LICENSE_PRIVATE_KEY);
 	return license + '.' + sign(null, Buffer.from(license, 'utf8'), privateKey).toString('base64url');
 }
 
@@ -41,7 +41,7 @@ function generateTestLicense(overrides) {
 
 // for testing errors that get past signature verification
 function signAnything(anything) {
-	const privateKey = createPrivateKey(LICENSE_PRIVATE_KEY);
+	const privateKey = createPrivateKey(TEST_LICENSE_PRIVATE_KEY);
 	return anything + '.' + sign(null, Buffer.from(anything, 'utf8'), privateKey).toString('base64url');
 }
 

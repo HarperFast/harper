@@ -1,19 +1,32 @@
 import { createPublicKey, verify } from 'node:crypto';
+import * as env from '../utility/environment/environmentManager.js';
+import * as terms from '../utility/hdbTerms.ts';
 
-const LICENSE_PUBLIC_KEYS = {
-	production: `-----BEGIN PUBLIC KEY-----
+export class PublicKey {
+	pem: string;
+
+	constructor(mode?: string) {
+		if (mode && (mode === 'test' || mode === 'development')) {
+			this.pem = `-----BEGIN PUBLIC KEY-----
+MCowBQYDK2VwAyEAO301jvpO12znGdK/Izrre518pgmQNk9hSMXf4wDMucM=
+-----END PUBLIC KEY-----
+`;
+		} else {
+			this.pem = `-----BEGIN PUBLIC KEY-----
 MCowBQYDK2VwAyEAMtpzMn9YfS0fGaDLcAmYQx2OH8kVevwbNyQ1RIj5cvw=
 -----END PUBLIC KEY-----
-`,
-	development: `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAO301jvpO12znGdK/Izrre518pgmQNk9hSMXf4wDMucM=
------END PUBLIC KEY-----
-`,
-	test: `-----BEGIN PUBLIC KEY-----
-MCowBQYDK2VwAyEAO301jvpO12znGdK/Izrre518pgmQNk9hSMXf4wDMucM=
------END PUBLIC KEY-----
-`,
-} as const;
+`;
+		}
+	}
+
+	getKey() {
+		return createPublicKey(this.pem);
+	}
+
+	toString() {
+		return this.pem;
+	}
+}
 
 interface DecodedLicense {
 	header: string;
@@ -57,6 +70,8 @@ export class InvalidHeaderError extends InvalidLicenseError {}
 
 export class InvalidPayloadError extends InvalidLicenseError {}
 
+export const publicKey = new PublicKey(env.get(terms.CONFIG_PARAMS.LICENSE_MODE));
+
 function validateLicenseSignature(encodedLicense: string): DecodedLicense {
 	if (typeof encodedLicense !== 'string') {
 		throw new LicenseEncodingError(`License must be a string; received ${typeof encodedLicense}: ${encodedLicense}`);
@@ -78,7 +93,7 @@ function validateLicenseSignature(encodedLicense: string): DecodedLicense {
 
 	const [header, payload, signature] = licenseComponents;
 
-	const pubKey = createPublicKey(LICENSE_PUBLIC_KEYS[process.env.NODE_ENV ?? 'development']);
+	const pubKey = publicKey.getKey();
 	const valid = verify(null, Buffer.from(header + '.' + payload, 'utf8'), pubKey, Buffer.from(signature, 'base64url'));
 	if (!valid) {
 		throw new InvalidLicenseSignatureError('License signature is invalid');

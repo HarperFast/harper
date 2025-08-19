@@ -12,7 +12,7 @@ These tests primarily use [supertest](https://www.npmjs.com/package/supertest) f
 > [!Note]
 > The tests are not currently independent or idempotent. Until the entire suite is updated, it is recommended to run them via the `tests/testSuite.mjs` file (which runs them in the correct order). Furthermore, we recommend a clean Harper instance as sometimes existing artifacts can cause failures.
 
-1. Run Harper: `harperdb start`
+1. Run Harper: `env LICENSE_MODE=test harperdb start`
 2. Ensure the environment variables `HDB_ADMIN_USERNAME`, `HDB_ADMIN_PASSWORD`, `S3_KEY`, and `S3_SECRET` are set
    1. They can be set in the path directly, or via a `.env` file in the `integrationTests/apiTests/` directory. For an example, see the `.env.test.example` file.
    2. Values set in the path take precedence over those in a `.env` file.
