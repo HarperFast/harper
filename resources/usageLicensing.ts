@@ -104,7 +104,7 @@ onAnalyticsAggregate(async (analytics: any) => {
 						break;
 					case 'db-message':
 						harperLogger.trace?.('Recording message usage into license');
-						updatableActiveLicense.addTo('usedRealTimeMessage', analyticsRecord.count);
+						updatableActiveLicense.addTo('usedRealTimeMessages', analyticsRecord.count);
 						updatableActiveLicense.addTo('usedRealTimeBytes', analyticsRecord.mean * analyticsRecord.count);
 						break;
 					case 'cpu-usage':
