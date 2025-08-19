@@ -34,6 +34,7 @@ async function installUsageLicense(license: string): Promise<void> {
 	return databases.system.hdb_license.patch(id, validatedLicense);
 }
 
+let licenseConsoleErrorPrinted = false;
 let licenseWarningIntervalId: NodeJS.Timeout;
 const LICENSE_NAG_PERIOD = 600000; // ten minutes
 
@@ -113,10 +114,15 @@ onAnalyticsAggregate(async (analytics: any) => {
 		// TODO: Adjust the message based on if there are used licenses or not
 		const msg =
 			'This server does not have valid usage licenses, this should only be used for educational and development purposes.';
-		console.error(msg);
-		licenseWarningIntervalId = setInterval(() => {
-			harperLogger.notify(msg);
-		}, LICENSE_NAG_PERIOD).unref();
+		if (!licenseConsoleErrorPrinted) {
+			console.error(msg);
+			licenseConsoleErrorPrinted = true;
+		}
+		if (licenseWarningIntervalId === undefined) {
+			licenseWarningIntervalId = setInterval(() => {
+				harperLogger.notify(msg);
+			}, LICENSE_NAG_PERIOD).unref();
+		}
 	}
 });
 
