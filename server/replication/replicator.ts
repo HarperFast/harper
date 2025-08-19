@@ -425,7 +425,7 @@ function getRetrievalConnectionByName(nodeName, subscription, dbName): NodeRepli
 	if (node?.url) {
 		connection = new NodeReplicationConnection(node.url, subscription, dbName, node_name, node.authorization);
 		// cache the connection
-		dbConnections.set(nodeName, connection);
+		dbConnections.set(dbName, connection);
 		connection.connect();
 		connection.once('finished', () => dbConnections.delete(dbName));
 	}
