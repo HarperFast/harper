@@ -85,7 +85,7 @@ onAnalyticsAggregate(async (analytics: any) => {
 		activeLicenseId = license.id;
 	}
 	if (activeLicenseId) {
-		harperLogger.trace?.('Found license to record usage into:', updatableActiveLicense);
+		harperLogger.trace?.('Found license to record usage into:', activeLicenseId);
 		const context = {};
 		transaction(context, () => {
 			updatableActiveLicense = databases.system.hdb_license.update(activeLicenseId, context);
