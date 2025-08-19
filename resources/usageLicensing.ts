@@ -1,11 +1,12 @@
-import { ValidatedLicense, validateLicense } from '../validation/usageLicensing.ts';
+import { type ValidatedLicense, validateLicense } from '../validation/usageLicensing.ts';
 import { ClientError } from '../utility/errors/hdbError.js';
 import * as harperLogger from '../utility/logging/harper_logger.js';
 import { onAnalyticsAggregate } from './analytics/write.ts';
 import { UpdatableRecord } from './ResourceInterface.ts';
-import { transaction } from './transaction';
+import { transaction } from './transaction.ts';
 import * as env from '../utility/environment/environmentManager.js';
 import * as terms from '../utility/hdbTerms.ts';
+import { databases } from './databases.ts';
 
 class ExistingLicenseError extends Error {}
 
@@ -54,7 +55,7 @@ interface UsageLicenseRecord extends UsageLicense {
 	addTo: (field: string, value: number) => void;
 }
 
-onAnalyticsAggregate(async (analytics: any) => {
+export async function recordUsage(analytics: any) {
 	harperLogger.trace?.('Recording usage into license from analytics');
 	let updatableActiveLicense: UpdatableRecord<UsageLicenseRecord>;
 	const now = new Date().toISOString();
@@ -85,7 +86,7 @@ onAnalyticsAggregate(async (analytics: any) => {
 		activeLicenseId = license.id;
 	}
 	if (activeLicenseId) {
-		harperLogger.trace?.('Found license to record usage into:', updatableActiveLicense);
+		harperLogger.trace?.('Found license to record usage into:', activeLicenseId);
 		const context = {};
 		transaction(context, () => {
 			updatableActiveLicense = databases.system.hdb_license.update(activeLicenseId, context);
@@ -104,7 +105,7 @@ onAnalyticsAggregate(async (analytics: any) => {
 						break;
 					case 'db-message':
 						harperLogger.trace?.('Recording message usage into license');
-						updatableActiveLicense.addTo('usedRealTimeMessage', analyticsRecord.count);
+						updatableActiveLicense.addTo('usedRealTimeMessages', analyticsRecord.count);
 						updatableActiveLicense.addTo('usedRealTimeBytes', analyticsRecord.mean * analyticsRecord.count);
 						break;
 					case 'cpu-usage':
@@ -132,7 +133,9 @@ onAnalyticsAggregate(async (analytics: any) => {
 			}, LICENSE_NAG_PERIOD).unref();
 		}
 	}
-});
+}
+
+onAnalyticsAggregate(recordUsage);
 
 interface GetUsageLicensesReq {
 	operation: 'get_usage_licenses';
