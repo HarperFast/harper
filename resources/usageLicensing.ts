@@ -1,9 +1,9 @@
-import { ValidatedLicense, validateLicense } from '../validation/usageLicensing.ts';
+import { type ValidatedLicense, validateLicense } from '../validation/usageLicensing.ts';
 import { ClientError } from '../utility/errors/hdbError.js';
 import * as harperLogger from '../utility/logging/harper_logger.js';
 import { onAnalyticsAggregate } from './analytics/write.ts';
 import { UpdatableRecord } from './ResourceInterface.ts';
-import { transaction } from './transaction';
+import { transaction } from './transaction.ts';
 import * as env from '../utility/environment/environmentManager.js';
 import * as terms from '../utility/hdbTerms.ts';
 
