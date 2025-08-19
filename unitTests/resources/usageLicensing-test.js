@@ -5,10 +5,12 @@ const { generateValidLicensePayload, signTestLicense } = require('../testLicense
 const { getMockLMDBPath } = require('../test_utils.js');
 const env = require('../../utility/environment/environmentManager.js');
 const terms = require('../../utility/hdbTerms.ts');
+const { setMainIsWorker } = require('../../server/threads/manageThreads');
 
 describe('recordUsage', () => {
 	before(() => {
 		getMockLMDBPath();
+		setMainIsWorker(true);
 		env.setProperty(terms.CONFIG_PARAMS.LICENSE_REGION, 'test');
 	});
 
