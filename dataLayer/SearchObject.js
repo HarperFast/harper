@@ -8,8 +8,8 @@ class SearchObject {
 	 *
 	 * @param {String} schema
 	 * @param {String} table
-	 * @param {String} searchAttribute
-	 * @param {String|Number} searchValue
+	 * @param {String} attribute
+	 * @param {String|Number} value
 	 * @param {String} hash_attribute
 	 * @param {[]} get_attributes
 	 * @param {String|Number} [endValue] - optional
@@ -20,8 +20,8 @@ class SearchObject {
 	constructor(
 		schema,
 		table,
-		searchAttribute,
-		searchValue,
+		attribute,
+		value,
 		hash_attribute,
 		get_attributes,
 		endValue,
@@ -31,8 +31,8 @@ class SearchObject {
 	) {
 		this.schema = schema;
 		this.table = table;
-		this.search_attribute = searchAttribute;
-		this.search_value = searchValue;
+		this.attribute = attribute;
+		this.value = value;
 		this.hash_attribute = hash_attribute;
 		this.get_attributes = get_attributes;
 		this.end_value = endValue;

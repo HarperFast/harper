@@ -82,7 +82,7 @@ export interface SourceContext<TRequestContext = Context> {
 
 export type Operator = 'and' | 'or';
 
-type SearchType =
+type Comparator =
 	| 'equals'
 	| 'contains'
 	| 'starts_with'
@@ -96,16 +96,16 @@ type SearchType =
 export interface DirectCondition {
 	attribute?: string;
 	search_attribute?: string;
-	comparator?: SearchType;
-	search_type?: SearchType;
+	comparator?: Comparator;
+	search_type?: Comparator;
 	value?: any;
 	search_value?: any;
 }
 interface ConditionGroup {
-	conditions: Conditions;
+	conditions?: Conditions;
 	operator?: Operator;
 }
-export type Condition = DirectCondition | ConditionGroup;
+export type Condition = DirectCondition & ConditionGroup;
 export type Conditions = Condition[];
 
 export interface Sort {

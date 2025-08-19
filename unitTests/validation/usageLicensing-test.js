@@ -3,7 +3,7 @@ const { expect } = require('chai');
 const ul = require('../../validation/usageLicensing.ts');
 const { signTestLicense, signAnything } = require('../testLicenseUtils.js');
 
-describe('usageLicensing', function () {
+describe('usageLicensing', () => {
 	describe('validateLicense', () => {
 		it('should return license payload on valid license', () => {
 			const payload = {

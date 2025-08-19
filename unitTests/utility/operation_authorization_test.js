@@ -190,6 +190,35 @@ let TEST_ACTION_JSON = {
 
 let TEST_CONDITIONS_JSON = {
 	operation: 'search_by_conditions',
+	database: 'dev',
+	table: 'dog',
+	get_attributes: ['id', 'age', 'name', 'adorable', 'location'],
+	conditions: [
+		{
+			attribute: 'location',
+			comparator: 'contains',
+			value: 'NC',
+		},
+		{
+			attribute: 'location',
+			comparator: 'contains',
+			value: 'CO',
+		},
+		{
+			attribute: 'age',
+			comparator: 'contains',
+			value: 'CO',
+		},
+		{
+			attribute: 'owner_name',
+			comparator: 'contains',
+			value: 'CO',
+		},
+	],
+};
+
+let TEST_CONDITIONS_DEPRECATED_PROPS_JSON = {
+	operation: 'search_by_conditions',
 	schema: 'dev',
 	table: 'dog',
 	get_attributes: ['id', 'age', 'name', 'adorable', 'location'],
@@ -218,6 +247,15 @@ let TEST_CONDITIONS_JSON = {
 };
 
 let TEST_SEARCH_BY_VAL_JSON = {
+	operation: 'search_by_value',
+	database: 'dev',
+	table: 'dog',
+	get_attributes: ['id', 'name', 'adorable', 'location'],
+	attribute: 'age',
+	value: 10,
+};
+
+let TEST_SEARCH_BY_VAL_DEPRECATED_PROPS_JSON = {
 	operation: 'search_by_value',
 	schema: 'dev',
 	table: 'dog',
@@ -1170,10 +1208,32 @@ describe('Test operation_authorization', function () {
 			});
 		});
 
+		it('Nominal case, valid JSON for search_by_conditions w/ deprecated property names', function () {
+			let expected_attrs = ['id', 'age', 'name', 'adorable', 'location', 'owner_name'];
+			let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
+			let req_json = clone(TEST_CONDITIONS_DEPRECATED_PROPS_JSON);
+			let result = getRecordAttributes(req_json);
+			assert.equal(result.size, expected_attrs.length);
+			expected_attrs.forEach((attr) => {
+				assert.ok(result.has(attr));
+			});
+		});
+
 		it('Nominal case, valid JSON for search_by_value', function () {
 			let expected_attrs = ['id', 'age', 'name', 'adorable', 'location'];
 			let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
 			let req_json = clone(TEST_SEARCH_BY_VAL_JSON);
+			let result = getRecordAttributes(req_json);
+			assert.equal(result.size, expected_attrs.length);
+			expected_attrs.forEach((attr) => {
+				assert.ok(result.has(attr));
+			});
+		});
+
+		it('Nominal case, valid JSON for search_by_value w/ deprecated property names', function () {
+			let expected_attrs = ['id', 'age', 'name', 'adorable', 'location'];
+			let getRecordAttributes = op_auth_rewire.__get__('getRecordAttributes');
+			let req_json = clone(TEST_SEARCH_BY_VAL_DEPRECATED_PROPS_JSON);
 			let result = getRecordAttributes(req_json);
 			assert.equal(result.size, expected_attrs.length);
 			expected_attrs.forEach((attr) => {

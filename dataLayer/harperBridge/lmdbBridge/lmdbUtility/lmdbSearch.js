@@ -59,7 +59,7 @@ async function executeSearch(searchObject, searchType, hash_attribute, returnMap
 	let fetchMore = checkToFetchMore(searchObject, hash_attribute);
 
 	if (fetchMore === false) {
-		let attribute = searchObject.search_attribute;
+		let attribute = searchObject.attribute;
 		if (attribute === hash_attribute) {
 			if (returnMap) return createMapFromIterable(searchResults, () => true);
 			return searchResults.map((entry) => ({ [hash_attribute]: entry.key }));
@@ -73,7 +73,7 @@ async function executeSearch(searchObject, searchType, hash_attribute, returnMap
 	}
 
 	let ids =
-		searchObject.search_attribute === hash_attribute
+		searchObject.attribute === hash_attribute
 			? searchResults.map((entry) => entry.key)
 			: searchResults.map((entry) => entry.value);
 	if (returnMap === true) {
@@ -110,8 +110,8 @@ function searchByType(transactionOrEnv, searchObject, searchType, hash_attribute
 			searchResults = searchUtility.equals(
 				transactionOrEnv,
 				hashAttributeName,
-				searchObject.search_attribute,
-				searchObject.search_value,
+				searchObject.attribute,
+				searchObject.value,
 				reverse,
 				limit,
 				offset
@@ -121,8 +121,8 @@ function searchByType(transactionOrEnv, searchObject, searchType, hash_attribute
 			searchResults = searchUtility.contains(
 				transactionOrEnv,
 				hashAttributeName,
-				searchObject.search_attribute,
-				searchObject.search_value,
+				searchObject.attribute,
+				searchObject.value,
 				reverse,
 				limit,
 				offset
@@ -133,8 +133,8 @@ function searchByType(transactionOrEnv, searchObject, searchType, hash_attribute
 			searchResults = searchUtility.endsWith(
 				transactionOrEnv,
 				hashAttributeName,
-				searchObject.search_attribute,
-				searchObject.search_value,
+				searchObject.attribute,
+				searchObject.value,
 				reverse,
 				limit,
 				offset
@@ -145,26 +145,23 @@ function searchByType(transactionOrEnv, searchObject, searchType, hash_attribute
 			searchResults = searchUtility.startsWith(
 				transactionOrEnv,
 				hashAttributeName,
-				searchObject.search_attribute,
-				searchObject.search_value,
+				searchObject.attribute,
+				searchObject.value,
 				reverse,
 				limit,
 				offset
 			);
 			break;
 		case lmdbTerms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH:
-			return searchUtility.batchSearchByHash(
-				transactionOrEnv,
-				searchObject.search_attribute,
-				searchObject.get_attributes,
-				[searchObject.search_value]
-			);
+			return searchUtility.batchSearchByHash(transactionOrEnv, searchObject.attribute, searchObject.get_attributes, [
+				searchObject.value,
+			]);
 		case lmdbTerms.SEARCH_TYPES.BATCH_SEARCH_BY_HASH_TO_MAP:
 			return searchUtility.batchSearchByHashToMap(
 				transactionOrEnv,
-				searchObject.search_attribute,
+				searchObject.attribute,
 				searchObject.get_attributes,
-				[searchObject.search_value]
+				[searchObject.value]
 			);
 		case lmdbTerms.SEARCH_TYPES.SEARCH_ALL:
 			return searchUtility.searchAll(
@@ -188,8 +185,8 @@ function searchByType(transactionOrEnv, searchObject, searchType, hash_attribute
 			searchResults = searchUtility.between(
 				transactionOrEnv,
 				hashAttributeName,
-				searchObject.search_attribute,
-				searchObject.search_value,
+				searchObject.attribute,
+				searchObject.value,
 				searchObject.end_value,
 				reverse,
 				limit,
@@ -201,8 +198,8 @@ function searchByType(transactionOrEnv, searchObject, searchType, hash_attribute
 			searchResults = searchUtility.greaterThan(
 				transactionOrEnv,
 				hashAttributeName,
-				searchObject.search_attribute,
-				searchObject.search_value,
+				searchObject.attribute,
+				searchObject.value,
 				reverse,
 				limit,
 				offset
@@ -213,8 +210,8 @@ function searchByType(transactionOrEnv, searchObject, searchType, hash_attribute
 			searchResults = searchUtility.greaterThanEqual(
 				transactionOrEnv,
 				hashAttributeName,
-				searchObject.search_attribute,
-				searchObject.search_value,
+				searchObject.attribute,
+				searchObject.value,
 				reverse,
 				limit,
 				offset
@@ -225,8 +222,8 @@ function searchByType(transactionOrEnv, searchObject, searchType, hash_attribute
 			searchResults = searchUtility.lessThan(
 				transactionOrEnv,
 				hashAttributeName,
-				searchObject.search_attribute,
-				searchObject.search_value,
+				searchObject.attribute,
+				searchObject.value,
 				reverse,
 				limit,
 				offset
@@ -237,8 +234,8 @@ function searchByType(transactionOrEnv, searchObject, searchType, hash_attribute
 			searchResults = searchUtility.lessThanEqual(
 				transactionOrEnv,
 				hashAttributeName,
-				searchObject.search_attribute,
-				searchObject.search_value,
+				searchObject.attribute,
+				searchObject.value,
 				reverse,
 				limit,
 				offset
@@ -272,7 +269,7 @@ function checkToFetchMore(searchObject, hash_attribute) {
 	if (searchObject.get_attributes.length === 1 && searchObject.get_attributes[0] === '*') {
 		return true;
 	}
-	let alreadyFetchedAttributes = [searchObject.search_attribute];
+	let alreadyFetchedAttributes = [searchObject.attribute];
 	if (searchObject.get_attributes.indexOf(hash_attribute) >= 0) {
 		alreadyFetchedAttributes.push(hash_attribute);
 	}
@@ -298,7 +295,7 @@ function checkToFetchMore(searchObject, hash_attribute) {
  */
 function createSearchTypeFromSearchObject(searchObject, hash_attribute, returnMap, comparator) {
 	if (commonUtils.isEmpty(comparator)) {
-		let searchValue = searchObject.search_value;
+		let searchValue = searchObject.value;
 		if (typeof searchValue === 'object') {
 			searchValue = JSON.stringify(searchValue);
 		} else {
@@ -308,7 +305,7 @@ function createSearchTypeFromSearchObject(searchObject, hash_attribute, returnMa
 		let firstSearchCharacter = searchValue.charAt(0);
 		let lastSearchCharacter = searchValue.charAt(searchValue.length - 1);
 		let hashSearch = false;
-		if (searchObject.search_attribute === hash_attribute) {
+		if (searchObject.attribute === hash_attribute) {
 			hashSearch = true;
 		}
 
@@ -328,17 +325,17 @@ function createSearchTypeFromSearchObject(searchObject, hash_attribute, returnMa
 
 		if (WILDCARDS.indexOf(firstSearchCharacter) >= 0 && WILDCARDS.indexOf(lastSearchCharacter) >= 0) {
 			//this removes the first  & last character from the search value
-			searchObject.search_value = searchObject.search_value.slice(1, -1);
+			searchObject.value = searchObject.value.slice(1, -1);
 			return lmdbTerms.SEARCH_TYPES.CONTAINS;
 		}
 
 		if (WILDCARDS.indexOf(firstSearchCharacter) >= 0) {
-			searchObject.search_value = searchObject.search_value.substr(1);
+			searchObject.value = searchObject.value.substr(1);
 			return lmdbTerms.SEARCH_TYPES.ENDS_WITH;
 		}
 
 		if (WILDCARDS.indexOf(lastSearchCharacter) >= 0) {
-			searchObject.search_value = searchObject.search_value.slice(0, -1);
+			searchObject.value = searchObject.value.slice(0, -1);
 			return lmdbTerms.SEARCH_TYPES.STARTS_WITH;
 		}
 
