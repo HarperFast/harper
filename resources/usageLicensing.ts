@@ -42,17 +42,37 @@ let licenseWarningIntervalId: NodeJS.Timeout;
 const LICENSE_NAG_PERIOD = 600000; // ten minutes
 
 interface UsageLicense extends ValidatedLicense {
-	usedReads: number;
-	usedReadBytes: number;
-	usedWrites: number;
-	usedWriteBytes: number;
-	usedRealTimeMessages: number;
-	usedRealTimeBytes: number;
-	usedCpuTime: number;
+	usedReads?: number;
+	usedReadBytes?: number;
+	usedWrites?: number;
+	usedWriteBytes?: number;
+	usedRealTimeMessages?: number;
+	usedRealTimeBytes?: number;
+	usedCpuTime?: number;
 }
 
 interface UsageLicenseRecord extends UsageLicense {
 	addTo: (field: string, value: number) => void;
+}
+
+export function isActiveLicense(license: UsageLicense): boolean {
+	return (
+		((license.usedReads ?? 0) < license.reads &&
+			(license.usedReadBytes ?? 0) < license.readBytes &&
+			(license.usedWrites ?? 0) < license.writes &&
+			(license.usedWriteBytes ?? 0) < license.writeBytes &&
+			(license.usedRealTimeMessages ?? 0) < license.realTimeMessages &&
+			(license.usedRealTimeBytes ?? 0) < license.realTimeBytes &&
+			(license.usedCpuTime ?? 0) < license.cpuTime) ||
+		// check for unlimited license
+		(license.reads === -1 &&
+			license.readBytes === -1 &&
+			license.writes === -1 &&
+			license.writeBytes === -1 &&
+			license.realTimeMessages === -1 &&
+			license.realTimeBytes === -1 &&
+			license.cpuTime === -1)
+	);
 }
 
 export async function recordUsage(analytics: any) {
@@ -70,21 +90,7 @@ export async function recordUsage(analytics: any) {
 		harperLogger.warn?.('No region specified for usage license, selecting any valid license');
 	}
 	const results = databases.system.hdb_license.search(licenseQuery);
-	let activeLicenseId: string;
-	for await (const license of results) {
-		harperLogger.trace?.('Checking usage license:', license);
-		if (
-			license.usedReads >= license.reads ||
-			license.usedReadBytes >= license.readBytes ||
-			license.usedWrites >= license.writes ||
-			license.usedWriteBytes >= license.writeBytes ||
-			license.usedRealTimeMessages >= license.realTimeMessages ||
-			license.usedRealTimeBytes >= license.realTimeBytes ||
-			license.usedCpuTime >= license.cpuTime
-		)
-			continue;
-		activeLicenseId = license.id;
-	}
+	const activeLicenseId = results.find((license: UsageLicense) => isActiveLicense(license))?.id;
 	if (activeLicenseId) {
 		harperLogger.trace?.('Found license to record usage into:', activeLicenseId);
 		const context = {};
