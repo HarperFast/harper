@@ -242,7 +242,7 @@ function loadCertificates() {
 									fileTimestamp,
 									details: {
 										issuer: x509Cert.issuer.replace(/\n/g, ' '),
-										subject: x509Cert.subject.replace(/\n/g, ' '),
+										subject: x509Cert.subject?.replace(/\n/g, ' '),
 										subject_alt_name: x509Cert.subjectAltName,
 										serial_number: x509Cert.serialNumber,
 										valid_from: x509Cert.validFrom,
@@ -496,7 +496,7 @@ async function setCertTable(certRecord) {
 
 	certRecord.details = {
 		issuer: cert.issuer.replace(/\n/g, ' '),
-		subject: cert.subject.replace(/\n/g, ' '),
+		subject: cert.subject?.replace(/\n/g, ' '),
 		subject_alt_name: cert.subjectAltName,
 		serial_number: cert.serialNumber,
 		valid_from: cert.validFrom,
@@ -1175,7 +1175,7 @@ async function removeCertificate(req) {
 }
 
 function getPrimaryHostName(cert /*X509Certificate*/) {
-	const commonName = cert.subject.match(/CN=(.*)/)?.[1];
+	const commonName = cert.subject?.match(/CN=(.*)/)?.[1];
 	if (commonName) return commonName;
 	return hostnamesFromCert(cert)[0];
 }
@@ -1206,7 +1206,7 @@ function hostnamesFromCert(cert /*X509Certificate*/) {
 			.filter((part) => part); // filter out any empty names
 	}
 	// finally we fall back to the common name
-	const commonName = cert.subject.match(/CN=(.*)/)?.[1];
+	const commonName = cert.subject?.match(/CN=(.*)/)?.[1];
 	return commonName ? [commonName] : [];
 }
 
