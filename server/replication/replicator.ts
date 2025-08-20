@@ -482,7 +482,7 @@ function getCommonNameFromCert() {
 		// we can use this to get the hostname if it isn't provided by config
 		const cert_parsed = new X509Certificate(readFileSync(certificate_path));
 		const subject = cert_parsed.subject;
-		return (common_name_from_cert = subject.match(/CN=(.*)/)?.[1] ?? null);
+		return (common_name_from_cert = subject?.match(/CN=(.*)/)?.[1] ?? null);
 	}
 }
 let node_name;
