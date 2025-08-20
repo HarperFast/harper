@@ -49,6 +49,7 @@ interface UsageLicense extends ValidatedLicense {
 	usedRealTimeMessages?: number;
 	usedRealTimeBytes?: number;
 	usedCpuTime?: number;
+	usedStorage?: number;
 }
 
 interface UsageLicenseRecord extends UsageLicense {
@@ -63,7 +64,8 @@ export function isActiveLicense(license: UsageLicense): boolean {
 			(license.usedWriteBytes ?? 0) < license.writeBytes &&
 			(license.usedRealTimeMessages ?? 0) < license.realTimeMessages &&
 			(license.usedRealTimeBytes ?? 0) < license.realTimeBytes &&
-			(license.usedCpuTime ?? 0) < license.cpuTime) ||
+			(license.usedCpuTime ?? 0) < license.cpuTime &&
+			(license.usedStorage ?? 0) < license.storage) ||
 		// check for unlimited license
 		(license.reads === -1 &&
 			license.readBytes === -1 &&
@@ -71,7 +73,8 @@ export function isActiveLicense(license: UsageLicense): boolean {
 			license.writeBytes === -1 &&
 			license.realTimeMessages === -1 &&
 			license.realTimeBytes === -1 &&
-			license.cpuTime === -1)
+			license.cpuTime === -1 &&
+			license.storage === -1)
 	);
 }
 
