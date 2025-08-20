@@ -1,10 +1,16 @@
 const { createPrivateKey, sign, randomUUID } = require('node:crypto');
+// eslint-disable-next-line @typescript-eslint/no-unused-vars
+const { ValidatedLicense } = require('../validation/usageLicensing.ts');
 
 const LICENSE_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIAAe+bdBWCbmzgPgfzf5L7L1npsgi+Wkz+uNb9lgcA/w
 -----END PRIVATE KEY-----
 `;
 
+/** generateValidLicensePayload
+ *
+ * @returns ValidatedLicense
+ */
 function generateValidLicensePayload() {
 	const now = new Date();
 	const expiration = new Date(now.getFullYear() + 1, now.getMonth(), now.getDate()).toISOString();
