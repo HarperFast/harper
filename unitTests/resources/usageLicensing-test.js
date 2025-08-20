@@ -16,7 +16,7 @@ describe('recordUsage', () => {
 
 	it('should record CPU usage from analytics object into valid license', async () => {
 		const license = generateValidLicensePayload();
-		await ul.installUsageLicenseOp({ operation: 'install_usage_license', license: signTestLicense(license) });
+		await ul.installUsageLicense(signTestLicense(license));
 		const analytics = [
 			{
 				metric: 'db-read',
@@ -45,7 +45,7 @@ describe('recordUsage', () => {
 		// give the transaction time to settle; TODO: Is there a better way to do this?
 		await new Promise((resolve) => setTimeout(resolve, 100));
 
-		const licenses = ul.getUsageLicensesOp({ operation: 'get_usage_licenses' });
+		const licenses = ul.getUsageLicenses();
 		let licenseWithUsage;
 		for await (const l of licenses) {
 			if (l.id === license.id) {

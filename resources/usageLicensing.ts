@@ -27,7 +27,7 @@ export async function installUsageLicenseOp(req: InstallLicenseRequest): Promise
 	return 'Successfully installed usage license';
 }
 
-async function installUsageLicense(license: string): Promise<void> {
+export async function installUsageLicense(license: string): Promise<void> {
 	const validatedLicense = validateLicense(license);
 	const { id } = validatedLicense;
 	const existingLicense = await databases.system.hdb_license.get(id);
@@ -145,6 +145,6 @@ export function getUsageLicensesOp(req: GetUsageLicensesReq): AsyncIterable<Usag
 	return getUsageLicenses();
 }
 
-function getUsageLicenses(): AsyncIterable<UsageLicenseRecord> {
+export function getUsageLicenses(): AsyncIterable<UsageLicenseRecord> {
 	return databases.system.hdb_license.search({ sort: { attribute: '__updatedtime__' } });
 }
