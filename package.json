@@ -1,0 +1,38 @@
+{
+	"name": "harper",
+	"description": "",
+	"version": "0.0.0",
+	"private": true,
+	"license": "Apache-2.0",
+	"homepage": "https://harpersystems.dev/",
+	"bugs": {
+		"url": "https://github.com/harperdb/harper/issues",
+		"email": "support@harperdb.io"
+	},
+	"author": {
+		"name": "HarperDB, Inc.",
+		"email": "support@harperdb.io",
+		"url": "https://harpersystems.dev/"
+	},
+	"contributors": [],
+	"repository": {
+		"type": "git",
+		"url": "https://github.com/harperdb/harper.git"
+	},
+	"scripts": {},
+	"dependencies": {},
+	"engines": {
+		"node": ">=20"
+	},
+	"devEngines": {
+		"runtime": {
+			"name": "node",
+			"version": ">=20",
+			"onFail": "error"
+		},
+		"packageManager": {
+			"name": "npm",
+			"onFail": "error"
+		}
+	}
+}
