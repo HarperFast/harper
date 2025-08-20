@@ -10,7 +10,7 @@ function generateValidLicensePayload() {
 	const expiration = new Date(now.getFullYear() + 1, now.getMonth(), now.getDate());
 	const uuid = randomUUID();
 	return {
-		id: 'test-' + uuid,
+		id: 'test-id-' + uuid,
 		level: 0,
 		region: 'test',
 		expiration,
