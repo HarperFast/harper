@@ -7,8 +7,8 @@ MC4CAQAwBQYDK2VwBCIEIAAe+bdBWCbmzgPgfzf5L7L1npsgi+Wkz+uNb9lgcA/w
 -----END PRIVATE KEY-----
 `;
 
-/** generateValidLicensePayload
- *
+/**
+ * generateValidLicensePayload
  * @returns ValidatedLicense
  */
 function generateValidLicensePayload() {
