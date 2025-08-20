@@ -93,7 +93,14 @@ export async function recordUsage(analytics: any) {
 		harperLogger.warn?.('No region specified for usage license, selecting any valid license');
 	}
 	const results = databases.system.hdb_license.search(licenseQuery);
-	const activeLicenseId = results.find((license: UsageLicense) => isActiveLicense(license))?.id;
+	let activeLicenseId: string;
+	for await (const license of results) {
+		console.log(license);
+		if (isActiveLicense(license)) {
+			activeLicenseId = license.id;
+			break;
+		}
+	}
 	if (activeLicenseId) {
 		harperLogger.trace?.('Found license to record usage into:', activeLicenseId);
 		const context = {};
