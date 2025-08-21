@@ -27,14 +27,14 @@ export async function installUsageLicenseOp(req: InstallLicenseRequest): Promise
 	return 'Successfully installed usage license';
 }
 
-async function installUsageLicense(license: string): Promise<void> {
+export async function installUsageLicense(license: string): Promise<void> {
 	const validatedLicense = validateLicense(license);
 	const { id } = validatedLicense;
 	const existingLicense = await databases.system.hdb_license.get(id);
 	if (existingLicense) {
 		throw new ExistingLicenseError(`A usage license with ${id} already exists`);
 	}
-	return databases.system.hdb_license.patch(id, validatedLicense);
+	return databases.system.hdb_license.put(id, validatedLicense);
 }
 
 let licenseConsoleErrorPrinted = false;
@@ -42,17 +42,40 @@ let licenseWarningIntervalId: NodeJS.Timeout;
 const LICENSE_NAG_PERIOD = 600000; // ten minutes
 
 interface UsageLicense extends ValidatedLicense {
-	usedReads: number;
-	usedReadBytes: number;
-	usedWrites: number;
-	usedWriteBytes: number;
-	usedRealTimeMessages: number;
-	usedRealTimeBytes: number;
-	usedCpuTime: number;
+	usedReads?: number;
+	usedReadBytes?: number;
+	usedWrites?: number;
+	usedWriteBytes?: number;
+	usedRealTimeMessages?: number;
+	usedRealTimeBytes?: number;
+	usedCpuTime?: number;
+	usedStorage?: number;
 }
 
 interface UsageLicenseRecord extends UsageLicense {
 	addTo: (field: string, value: number) => void;
+}
+
+export function isActiveLicense(license: UsageLicense): boolean {
+	return (
+		((license.usedReads ?? 0) < license.reads &&
+			(license.usedReadBytes ?? 0) < license.readBytes &&
+			(license.usedWrites ?? 0) < license.writes &&
+			(license.usedWriteBytes ?? 0) < license.writeBytes &&
+			(license.usedRealTimeMessages ?? 0) < license.realTimeMessages &&
+			(license.usedRealTimeBytes ?? 0) < license.realTimeBytes &&
+			(license.usedCpuTime ?? 0) < license.cpuTime &&
+			(license.usedStorage ?? 0) < license.storage) ||
+		// check for unlimited license
+		(license.reads === -1 &&
+			license.readBytes === -1 &&
+			license.writes === -1 &&
+			license.writeBytes === -1 &&
+			license.realTimeMessages === -1 &&
+			license.realTimeBytes === -1 &&
+			license.cpuTime === -1 &&
+			license.storage === -1)
+	);
 }
 
 export async function recordUsage(analytics: any) {
@@ -60,7 +83,7 @@ export async function recordUsage(analytics: any) {
 	let updatableActiveLicense: UpdatableRecord<UsageLicenseRecord>;
 	const now = new Date().toISOString();
 	const licenseQuery = {
-		sort: { attribute: '__updatedtime__' },
+		sort: { attribute: '__createdtime__' },
 		conditions: [{ attribute: 'expiration', comparator: 'greater_than', value: now }],
 	};
 	const region = env.get(terms.CONFIG_PARAMS.LICENSE_REGION);
@@ -69,21 +92,13 @@ export async function recordUsage(analytics: any) {
 	} else {
 		harperLogger.warn?.('No region specified for usage license, selecting any valid license');
 	}
-	const results = databases.system.hdb_license.search(licenseQuery);
+	const results = databases.system.hdb_license?.search(licenseQuery);
 	let activeLicenseId: string;
 	for await (const license of results) {
-		harperLogger.trace?.('Checking usage license:', license);
-		if (
-			license.usedReads >= license.reads ||
-			license.usedReadBytes >= license.readBytes ||
-			license.usedWrites >= license.writes ||
-			license.usedWriteBytes >= license.writeBytes ||
-			license.usedRealTimeMessages >= license.realTimeMessages ||
-			license.usedRealTimeBytes >= license.realTimeBytes ||
-			license.usedCpuTime >= license.cpuTime
-		)
-			continue;
-		activeLicenseId = license.id;
+		if (isActiveLicense(license)) {
+			activeLicenseId = license.id;
+			break;
+		}
 	}
 	if (activeLicenseId) {
 		harperLogger.trace?.('Found license to record usage into:', activeLicenseId);
@@ -145,6 +160,6 @@ export function getUsageLicensesOp(req: GetUsageLicensesReq): AsyncIterable<Usag
 	return getUsageLicenses();
 }
 
-function getUsageLicenses(): AsyncIterable<UsageLicenseRecord> {
-	return databases.system.hdb_license.search({ sort: { attribute: '__updatedtime__' } });
+export function getUsageLicenses(): AsyncIterable<UsageLicenseRecord> {
+	return databases.system.hdb_license.search({ sort: { attribute: '__createdtime__' } });
 }
