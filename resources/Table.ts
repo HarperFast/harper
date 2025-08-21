@@ -2184,11 +2184,11 @@ export function makeTable(options) {
 						},
 						return() {
 							if (results.onDone) results.onDone();
-							dbIterator.return();
+							return dbIterator.return();
 						},
 						throw() {
 							if (results.onDone) results.onDone();
-							dbIterator.throw();
+							return dbIterator.throw();
 						},
 					};
 				};
