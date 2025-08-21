@@ -34,7 +34,7 @@ export async function installUsageLicense(license: string): Promise<void> {
 	if (existingLicense) {
 		throw new ExistingLicenseError(`A usage license with ${id} already exists`);
 	}
-	return databases.system.hdb_license.patch(id, validatedLicense);
+	return databases.system.hdb_license.put(id, validatedLicense);
 }
 
 let licenseConsoleErrorPrinted = false;
@@ -83,7 +83,7 @@ export async function recordUsage(analytics: any) {
 	let updatableActiveLicense: UpdatableRecord<UsageLicenseRecord>;
 	const now = new Date().toISOString();
 	const licenseQuery = {
-		sort: { attribute: '__updatedtime__' },
+		sort: { attribute: '__createdtime__' },
 		conditions: [{ attribute: 'expiration', comparator: 'greater_than', value: now }],
 	};
 	const region = env.get(terms.CONFIG_PARAMS.LICENSE_REGION);
@@ -95,7 +95,6 @@ export async function recordUsage(analytics: any) {
 	const results = databases.system.hdb_license.search(licenseQuery);
 	let activeLicenseId: string;
 	for await (const license of results) {
-		console.log(license);
 		if (isActiveLicense(license)) {
 			activeLicenseId = license.id;
 			break;
@@ -162,5 +161,5 @@ export function getUsageLicensesOp(req: GetUsageLicensesReq): AsyncIterable<Usag
 }
 
 export function getUsageLicenses(): AsyncIterable<UsageLicenseRecord> {
-	return databases.system.hdb_license.search({ sort: { attribute: '__updatedtime__' } });
+	return databases.system.hdb_license.search({ sort: { attribute: '__createdtime__' } });
 }
