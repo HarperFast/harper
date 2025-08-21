@@ -364,6 +364,7 @@ export function makeTable(options) {
 						isNotification: true,
 						ensureLoaded: false,
 						nodeId: event.nodeId,
+						async: true,
 					};
 					const id = event.id;
 					const resource: TableResource = await Table.getResource(id, context, options);
