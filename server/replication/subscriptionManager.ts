@@ -269,10 +269,6 @@ export async function startOnMainThread(options) {
 		// a node that may have more recent updates, so we try to go to the next node in the list, using
 		// a sorted list of node names that all nodes should have and use.
 		try {
-			if (env.get(CONFIG_PARAMS.REPLICATION_FAILOVER) === false) {
-				// if failover is disabled, immediately return
-				return;
-			}
 			logger.info('Disconnected from node', connection.name, connection.url, 'finished', !!connection.finished);
 			const node_map_keys = Array.from(node_map.keys());
 			const node_names = node_map_keys.sort();
@@ -289,6 +285,10 @@ export async function startOnMainThread(options) {
 			}
 			existing_worker_entry.connected = false;
 			if (connection.finished) return; // intentionally closed connection
+			if (env.get(CONFIG_PARAMS.REPLICATION_FAILOVER) === false) {
+				// if failover is disabled, immediately return
+				return;
+			}
 			const main_node = existing_worker_entry.nodes[0];
 			if (!(main_node.replicates === true || main_node.replicates?.sends || main_node.subscriptions?.length)) {
 				// no replication, so just return
