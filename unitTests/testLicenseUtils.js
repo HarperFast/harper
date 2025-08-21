@@ -1,6 +1,4 @@
 const { createPrivateKey, sign, randomUUID } = require('node:crypto');
-// eslint-disable-next-line @typescript-eslint/no-unused-vars
-const { ValidatedLicense } = require('../validation/usageLicensing.ts');
 
 const LICENSE_PRIVATE_KEY = `-----BEGIN PRIVATE KEY-----
 MC4CAQAwBQYDK2VwBCIEIAAe+bdBWCbmzgPgfzf5L7L1npsgi+Wkz+uNb9lgcA/w
