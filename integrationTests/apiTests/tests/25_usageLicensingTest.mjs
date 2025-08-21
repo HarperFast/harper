@@ -66,6 +66,4 @@ describe('Usage license expiration', () => {
 				assert.ok(r.body.some((l) => l.expiration === expiration.toISOString()));
 			});
 	});
-
-	it('should not record usage in expired licenses', () => {});
 });
