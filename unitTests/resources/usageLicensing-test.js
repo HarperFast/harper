@@ -1,6 +1,8 @@
 const { describe, it, before } = require('mocha');
 const { expect } = require('chai');
+const sinon = require('sinon');
 const ul = require('../../resources/usageLicensing.ts');
+const vul = require('../../validation/usageLicensing.ts');
 const { generateValidLicensePayload, signTestLicense } = require('../testLicenseUtils.js');
 const { getMockLMDBPath } = require('../test_utils.js');
 const env = require('../../utility/environment/environmentManager.js');
@@ -14,10 +16,12 @@ async function setupTestEnv() {
 	setMainIsWorker(true);
 	env.setProperty(terms.CONFIG_PARAMS.LICENSE_REGION, 'test');
 	await databases.system.hdb_license.delete({ conditions: [] });
+	sinon.replace(vul, 'publicKey', new vul.PublicKey('test'));
 }
 
 describe('recordUsage', () => {
 	before(setupTestEnv);
+	after(sinon.restore);
 
 	it('should record CPU usage from analytics object into valid license', async () => {
 		const license = generateValidLicensePayload();
@@ -70,29 +74,48 @@ describe('recordUsage', () => {
 	});
 });
 
+function licenseErrMsg(allLicenses, license, propName) {
+	return `expected ${license[propName]} to be one of ${allLicenses.map((el) => el[propName])}`;
+}
+
 describe('getUsageLicenses', () => {
 	before(setupTestEnv);
+	after(sinon.restore);
 
 	it('should return all licenses', async () => {
 		const license1 = generateValidLicensePayload();
 		const license2 = generateValidLicensePayload();
-		const license3 = generateValidLicensePayload({ expiration: new Date(Date.now - 1000) });
-		const license4 = generateValidLicensePayload({ expiration: new Date(Date.now + 1000) });
+		const license3 = { ...generateValidLicensePayload(), expiration: new Date(Date.now() - 1000).toISOString() };
+		const license4 = { ...generateValidLicensePayload(), expiration: new Date(Date.now() + 1000).toISOString() };
+		const allLicenses = [license1, license2, license3, license4];
 
-		const installations = [license1, license2, license3, license4].map((l) =>
+		const installations = allLicenses.map((l) =>
 			ul.installUsageLicense(signTestLicense(l))
 		);
 		await Promise.all(installations);
 
 		const licenses = ul.getUsageLicenses();
-		const expectedSet = new Set([license1.id, license2.id, license3.id, license4.id]);
-		const actualSet = new Set();
+		let actualLicenses = new Map();
 		for await (const l of licenses) {
-			actualSet.add(l.id);
+			actualLicenses.set(l.id, l);
 		}
-
-		expect(actualSet).to.deep.equal(expectedSet);
+		expect(actualLicenses.size).to.equal(allLicenses.length);
+		allLicenses.forEach((license) => {
+			const actualLicense = actualLicenses.get(license.id);
+			expect(actualLicense.level, licenseErrMsg(allLicenses, actualLicense, 'level')).to.equal(license.level);
+			expect(actualLicense.region, licenseErrMsg(allLicenses, actualLicense, 'region')).to.equal(license.region);
+			expect(actualLicense.expiration, licenseErrMsg(allLicenses, actualLicense, 'expiration')).to.equal(license.expiration);
+			expect(actualLicense.reads, licenseErrMsg(allLicenses, actualLicense, 'reads')).to.equal(license.reads);
+			expect(actualLicense.readBytes, licenseErrMsg(allLicenses, actualLicense, 'readBytes')).to.equal(license.readBytes);
+			expect(actualLicense.writes, licenseErrMsg(allLicenses, actualLicense, 'writes')).to.equal(license.writes);
+			expect(actualLicense.writeBytes, licenseErrMsg(allLicenses, actualLicense, 'writeBytes')).to.equal(license.writeBytes);
+			expect(actualLicense.realTimeMessages, licenseErrMsg(allLicenses, actualLicense, 'realTimeMessages')).to.equal(license.realTimeMessages);
+			expect(actualLicense.realTimeBytes, licenseErrMsg(allLicenses, actualLicense, 'realTimeBytes')).to.equal(license.realTimeBytes);
+			expect(actualLicense.cpuTime, licenseErrMsg(allLicenses, actualLicense, 'cpuTime')).to.equal(license.cpuTime);
+			expect(actualLicense.storage, licenseErrMsg(allLicenses, actualLicense, 'storage')).to.equal(license.storage);
+		});
 	});
+
 });
 
 describe('isActiveLicense', async () => {
@@ -138,7 +161,8 @@ describe('isActiveLicense', async () => {
 	});
 
 	it('should accept an unlimited license', () => {
-		const license = generateValidLicensePayload({
+		const license = {
+			...generateValidLicensePayload(),
 			reads: -1,
 			readBytes: -1,
 			writes: -1,
@@ -146,7 +170,8 @@ describe('isActiveLicense', async () => {
 			realTimeMessages: -1,
 			realTimeBytes: -1,
 			cpuTime: -1,
-		});
+			storage: -1,
+		};
 		expect(isActiveLicense(license)).to.be.true;
 	});
 });

@@ -39,7 +39,8 @@ function signTestLicense(payload) {
 }
 
 function generateTestLicense(overrides) {
-	const licensePayload = { ...generateValidLicensePayload(), ...overrides };
+	let licensePayload = generateValidLicensePayload();
+	licensePayload = Object.assign(licensePayload, overrides);
 	return signTestLicense(licensePayload);
 }
 

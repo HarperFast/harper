@@ -98,7 +98,7 @@
 		]
 	},
 	"hdb_license": {
-		"primaryKey": "id",
+		"hash_attribute": "id",
 		"table": "hdb_license",
 		"database": "system",
 		"audit": true,
