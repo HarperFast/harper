@@ -116,7 +116,6 @@ describe('getUsageLicenses', () => {
 		});
 	});
 
-	});
 });
 
 describe('isActiveLicense', async () => {
