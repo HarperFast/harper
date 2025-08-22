@@ -116,6 +116,33 @@ describe('getUsageLicenses', () => {
 		});
 	});
 
+	it('should return all licenses in the requested region', async () => {
+		const license1 = { ...generateValidLicensePayload(), region: 'test1' };
+		const license2 = { ...generateValidLicensePayload(), region: 'test2' };
+		const license3 = { ...generateValidLicensePayload(), region: 'test1', expiration: new Date(Date.now() - 1000).toISOString() };
+		const license4 = { ...generateValidLicensePayload(), region: 'test2', expiration: new Date(Date.now() + 1000).toISOString() };
+
+		const installations = [license1, license2, license3, license4].map((l) =>
+			ul.installUsageLicense(signTestLicense(l))
+		);
+		await Promise.all(installations);
+
+		const region1Licenses = ul.getUsageLicenses({ region: 'test1' });
+		const region2Licenses = ul.getUsageLicenses({ region: 'test2' });
+		const expectedSet1 = new Set([license1.id, license3.id]);
+		const expectedSet2 = new Set([license2.id, license4.id]);
+		const actualSet1 = new Set();
+		const actualSet2 = new Set();
+		for await (const l of region1Licenses) {
+			actualSet1.add(l.id);
+		}
+		for await (const l of region2Licenses) {
+			actualSet2.add(l.id);
+		}
+
+		expect(actualSet1).to.deep.equal(expectedSet1);
+		expect(actualSet2).to.deep.equal(expectedSet2);
+	});
 });
 
 describe('isActiveLicense', async () => {

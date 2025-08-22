@@ -9,9 +9,7 @@ describe('usageLicensing', () => {
 		sinon.replace(ul, 'publicKey', new ul.PublicKey('test'));
 	});
 
-	after(() => {
-		sinon.restore();
-	});
+	after(sinon.restore);
 
 	describe('validateLicense', () => {
 		it('should return license payload on valid license', () => {
