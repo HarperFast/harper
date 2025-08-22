@@ -34,6 +34,7 @@ export async function installUsageLicense(license: string): Promise<void> {
 	if (existingLicense) {
 		throw new ExistingLicenseError(`A usage license with ${id} already exists`);
 	}
+	harperLogger.info?.('Installing usage license:', validatedLicense);
 	return databases.system.hdb_license.put(id, validatedLicense);
 }
 
@@ -152,14 +153,32 @@ export async function recordUsage(analytics: any) {
 
 onAnalyticsAggregate(recordUsage);
 
-interface GetUsageLicensesReq {
+interface GetUsageLicenseParams {
+	region?: string;
+}
+
+interface GetUsageLicensesReq extends GetUsageLicenseParams {
 	operation: 'get_usage_licenses';
 }
 
 export function getUsageLicensesOp(req: GetUsageLicensesReq): AsyncIterable<UsageLicenseRecord> {
-	return getUsageLicenses();
+	const params: GetUsageLicenseParams = {};
+	if (req.region) {
+		params.region = req.region;
+	}
+	return getUsageLicenses(params);
 }
 
-export function getUsageLicenses(): AsyncIterable<UsageLicenseRecord> {
-	return databases.system.hdb_license.search({ sort: { attribute: '__createdtime__' } });
+export function getUsageLicenses(params?: GetUsageLicenseParams): AsyncIterable<UsageLicenseRecord> {
+	const conditions = [];
+	const attrs = typeof params === 'object' ? Object.keys(params) : [];
+	if (attrs.length > 0) {
+		attrs.forEach((attribute) => {
+			conditions.push({ attribute, comparator: 'equals', value: params[attribute] });
+		});
+	}
+	return databases.system.hdb_license.search({
+		sort: { attribute: '__createdtime__' },
+		conditions,
+	});
 }
