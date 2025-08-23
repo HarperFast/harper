@@ -334,6 +334,7 @@ function proxyRequest(message) {
 	}
 }
 const { getComponentName } = require('../../components/componentLoader');
+const { throttle } = require('../throttle');
 
 function registerServer(server, port, check_port = true) {
 	if (!port) {
@@ -453,152 +454,170 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 			});
 		}
 		let license_warning = checkMemoryLimit();
-		let server = (http_servers[port] = (secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer)(
-			options,
-			async (node_request, node_response) => {
-				try {
-					let start_time = performance.now();
-					let request = new Request(node_request, node_response);
-					if (is_operations_server) request.isOperationsServer = true;
-					// assign a more WHATWG compliant headers object, this is our real standard interface
-					let response = await http_chain[port](request);
-					if (!response) {
-						// this means that the request was completely handled, presumably through the
-						// node_response and we are actually just done
-						if (request._nodeResponse.statusCode) return;
-						response = unhandled(request);
-					}
-					if (!response.headers?.set) {
-						response.headers = new Headers(response.headers);
-					}
-					if (license_warning)
-						response.headers?.set?.(
-							'Server',
-							'Unlicensed HarperDB, this should only be used for educational and development purposes'
-						);
-					else response.headers?.set?.('Server', 'HarperDB');
+		const requestHandler = async (node_request, node_response) => {
+			try {
+				let start_time = performance.now();
+				let request = new Request(node_request, node_response);
+				if (is_operations_server) request.isOperationsServer = true;
+				// assign a more WHATWG compliant headers object, this is our real standard interface
+				let response = await http_chain[port](request);
+				if (!response) {
+					// this means that the request was completely handled, presumably through the
+					// node_response and we are actually just done
+					if (request._nodeResponse.statusCode) return;
+					response = unhandled(request);
+				}
+				if (!response.headers?.set) {
+					response.headers = new Headers(response.headers);
+				}
+				if (license_warning)
+					response.headers?.set?.(
+						'Server',
+						'Unlicensed HarperDB, this should only be used for educational and development purposes'
+					);
+				else response.headers?.set?.('Server', 'HarperDB');
 
-					if (response.status === -1) {
-						// This means the HDB stack didn't handle the request, and we can then cascade the request
-						// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
-						// to interact with a node HTTP server object.
-						for (let header_pair of response.headers || []) {
-							node_response.setHeader(header_pair[0], header_pair[1]);
-						}
-						node_request.baseRequest = request;
-						node_response.baseResponse = response;
-						return http_servers[port].emit('unhandled', node_request, node_response);
+				if (response.status === -1) {
+					// This means the HDB stack didn't handle the request, and we can then cascade the request
+					// to the server-level handler, forming the bridge to the slower legacy fastify framework that expects
+					// to interact with a node HTTP server object.
+					for (let header_pair of response.headers || []) {
+						node_response.setHeader(header_pair[0], header_pair[1]);
 					}
-					const status = response.status || 200;
-					const end_time = performance.now();
-					const execution_time = end_time - start_time;
-					let body = response.body;
-					let sent_body;
-					let deferWriteHead = false;
-					if (!response.handlesHeaders) {
-						const headers = response.headers || new Headers();
-						if (!body) {
-							headers.set('Content-Length', '0');
-							sent_body = true;
-						} else if (body.length >= 0) {
-							if (typeof body === 'string') headers.set('Content-Length', Buffer.byteLength(body));
-							else headers.set('Content-Length', body.length);
-							sent_body = true;
-						} else if (body instanceof Blob) {
-							// if the size is available now, immediately set it
-							if (body.size) headers.set('Content-Length', body.size);
-							else if (body.on) {
-								deferWriteHead = true;
-								body.on('size', (size) => {
-									// we can also try to set the Content-Length once the header is read and
-									// the size available. but if writeHead is called, this will have no effect. So we
-									// need to defer writeHead if we are going to set this
-									if (!node_response.headersSent) node_response.setHeader('Content-Length', size);
-								});
-							}
-							body = body.stream();
+					node_request.baseRequest = request;
+					node_response.baseResponse = response;
+					return http_servers[port].emit('unhandled', node_request, node_response);
+				}
+				const status = response.status || 200;
+				const end_time = performance.now();
+				const execution_time = end_time - start_time;
+				let body = response.body;
+				let sent_body;
+				let deferWriteHead = false;
+				if (!response.handlesHeaders) {
+					const headers = response.headers || new Headers();
+					if (!body) {
+						headers.set('Content-Length', '0');
+						sent_body = true;
+					} else if (body.length >= 0) {
+						if (typeof body === 'string') headers.set('Content-Length', Buffer.byteLength(body));
+						else headers.set('Content-Length', body.length);
+						sent_body = true;
+					} else if (body instanceof Blob) {
+						// if the size is available now, immediately set it
+						if (body.size) headers.set('Content-Length', body.size);
+						else if (body.on) {
+							deferWriteHead = true;
+							body.on('size', (size) => {
+								// we can also try to set the Content-Length once the header is read and
+								// the size available. but if writeHead is called, this will have no effect. So we
+								// need to defer writeHead if we are going to set this
+								if (!node_response.headersSent) node_response.setHeader('Content-Length', size);
+							});
 						}
-						let server_timing = `hdb;dur=${execution_time.toFixed(2)}`;
-						if (response.wasCacheMiss) {
-							server_timing += ', miss';
-						}
-						appendHeader(headers, 'Server-Timing', server_timing, true);
-						if (!node_response.headersSent) {
-							if (deferWriteHead) {
-								// if we are deferring, we need to set the statusCode and headers, let any other headers be set later
-								// until the first write
-								node_response.statusCode = status;
-								if (headers) {
-									if (headers[Symbol.iterator]) {
-										for (let [name, value] of headers) {
-											node_response.setHeader(name, value);
-										}
-									} else {
-										for (let name in headers) {
-											node_response.setHeader(name, headers[name]);
-										}
+						body = body.stream();
+					}
+					let server_timing = `hdb;dur=${execution_time.toFixed(2)}`;
+					if (response.wasCacheMiss) {
+						server_timing += ', miss';
+					}
+					appendHeader(headers, 'Server-Timing', server_timing, true);
+					if (!node_response.headersSent) {
+						if (deferWriteHead) {
+							// if we are deferring, we need to set the statusCode and headers, let any other headers be set later
+							// until the first write
+							node_response.statusCode = status;
+							if (headers) {
+								if (headers[Symbol.iterator]) {
+									for (let [name, value] of headers) {
+										node_response.setHeader(name, value);
+									}
+								} else {
+									for (let name in headers) {
+										node_response.setHeader(name, headers[name]);
 									}
 								}
-							} // else the fast path, if we don't have to defer
-							else
-								node_response.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
-						}
-						if (sent_body) node_response.end(body);
+							}
+						} // else the fast path, if we don't have to defer
+						else node_response.writeHead(status, headers && (headers[Symbol.iterator] ? Array.from(headers) : headers));
 					}
-					const handler_path = request.handlerPath;
-					const method = request.method;
-					recordAction(
-						execution_time,
-						'duration',
-						handler_path,
-						method,
-						response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
-					);
-					recordActionBinary(status < 400, 'success', handler_path, method);
-					recordActionBinary(1, 'response_' + status, handler_path, method);
-					if (!sent_body) {
-						if (body instanceof ReadableStream) body = Readable.fromWeb(body);
-						if (body[Symbol.iterator] || body[Symbol.asyncIterator]) body = Readable.from(body);
+					if (sent_body) node_response.end(body);
+				}
+				const handler_path = request.handlerPath;
+				const method = request.method;
+				recordAction(
+					execution_time,
+					'duration',
+					handler_path,
+					method,
+					response.wasCacheMiss == undefined ? undefined : response.wasCacheMiss ? 'cache-miss' : 'cache-hit'
+				);
+				recordActionBinary(status < 400, 'success', handler_path, method);
+				recordActionBinary(1, 'response_' + status, handler_path, method);
+				if (!sent_body) {
+					if (body instanceof ReadableStream) body = Readable.fromWeb(body);
+					if (body[Symbol.iterator] || body[Symbol.asyncIterator]) body = Readable.from(body);
 
-						// if it is a stream, pipe it
-						if (body?.pipe) {
-							body.pipe(node_response);
-							if (body.destroy)
-								node_response.on('close', () => {
-									body.destroy();
-								});
-							let bytes_sent = 0;
-							body.on('data', (data) => {
-								bytes_sent += data.length;
+					// if it is a stream, pipe it
+					if (body?.pipe) {
+						body.pipe(node_response);
+						if (body.destroy)
+							node_response.on('close', () => {
+								body.destroy();
 							});
-							body.on('end', () => {
-								recordAction(performance.now() - end_time, 'transfer', handler_path, method);
-								recordAction(bytes_sent, 'bytes-sent', handler_path, method);
-							});
-						}
-						// else just send the buffer/string
-						else if (body?.then)
-							body.then((body) => {
-								node_response.end(body);
-							}, onError);
-						else node_response.end(body);
+						let bytes_sent = 0;
+						body.on('data', (data) => {
+							bytes_sent += data.length;
+						});
+						body.on('end', () => {
+							recordAction(performance.now() - end_time, 'transfer', handler_path, method);
+							recordAction(bytes_sent, 'bytes-sent', handler_path, method);
+						});
 					}
-				} catch (error) {
-					onError(error);
+					// else just send the buffer/string
+					else if (body?.then)
+						body.then((body) => {
+							node_response.end(body);
+						}, onError);
+					else node_response.end(body);
 				}
-				function onError(error) {
-					const headers = error.headers;
-					node_response.writeHead(
-						error.statusCode || 500,
-						headers && (headers[Symbol.iterator] ? Array.from(headers) : headers)
-					);
-					node_response.end(error.toString());
-					// a status code is interpreted as an expected error, so just info or warn, otherwise log as error
-					if (error.statusCode) {
-						if (error.statusCode === 500) harper_logger.warn(error);
-						else harper_logger.info(error);
-					} else harper_logger.error(error);
-				}
+			} catch (error) {
+				onError(error);
+			}
+			function onError(error) {
+				const headers = error.headers;
+				node_response.writeHead(
+					error.statusCode || 500,
+					headers && (headers[Symbol.iterator] ? Array.from(headers) : headers)
+				);
+				node_response.end(error.toString());
+				// a status code is interpreted as an expected error, so just info or warn, otherwise log as error
+				if (error.statusCode) {
+					if (error.statusCode === 500) harper_logger.warn(error);
+					else harper_logger.info(error);
+				} else harper_logger.error(error);
+			}
+		};
+		// create a throttled version of the request handler, so we can throttle POST requests
+		let throttledRequestHandler = throttle(
+			requestHandler,
+			(node_request, node_response) => {
+				// if the request queue is taking too long, we want to return an error
+				node_response.statusCode = 503;
+				node_response.end('Service Unavailable');
+				recordAction(true, 'service-unavailable', port);
+			},
+			(node_request, node_response) => {
+				return `last request was ${node_request.method} ${node_request.url}`;
+			}
+		);
+		let server = (http_servers[port] = (secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer)(
+			options,
+			(node_request, node_response) => {
+				// throttle the POST requests because they are more likely to be slow and we don't want to block them to
+				// slow down other activity
+				if (node_request.method === 'POST') throttledRequestHandler(node_request, node_response);
+				else requestHandler(node_request, node_response);
 			}
 		));
 
