@@ -407,9 +407,6 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 				nodeResponse.end('Service unavailable, exceeded request queue limit');
 				recordAction(true, 'service-unavailable', port);
 			},
-			(nodeRequest, nodeResponse) => {
-				return `last request was ${nodeRequest.method} ${nodeRequest.url}`;
-			},
 			env.get(serverPrefix + '_requestQueueLimit')
 		);
 		const server = (httpServers[port] = (
