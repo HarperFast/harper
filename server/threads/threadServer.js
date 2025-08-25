@@ -609,7 +609,8 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 			},
 			(node_request, node_response) => {
 				return `last request was ${node_request.method} ${node_request.url}`;
-			}
+			},
+			env.get(server_prefix + '_requestQueueLimit')
 		);
 		let server = (http_servers[port] = (secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer)(
 			options,
