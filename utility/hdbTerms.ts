@@ -563,6 +563,7 @@ export const CONFIG_PARAMS = {
 	HTTP_MTLS_USER: 'http_mtls_user',
 	HTTP_MAXHEADERSIZE: 'http_maxHeaderSize',
 	HTTP_THREADRANGE: 'http_threadRange',
+	HTTP_REQUESTQUEUELIMIT: 'http_requestQueueLimit',
 	HTTP_HTTP2: 'http_http2',
 	LOCALSTUDIO_ENABLED: 'localStudio_enabled',
 	LOGGING_CONSOLE: 'logging_console',
