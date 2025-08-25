@@ -2,34 +2,34 @@ import jwt from 'jsonwebtoken';
 import fs from 'fs-extra';
 import path from 'node:path';
 import Joi from 'joi';
-import { validateBySchema } from '../validation/validationWrapper';
+import { validateBySchema } from '../validation/validationWrapper.js';
 import {
 	CONFIG_PARAMS,
 	JWT_ENUM,
 	LICENSE_KEY_DIR_NAME,
 	SYSTEM_SCHEMA_NAME,
 	SYSTEM_TABLE_NAMES,
-} from '../utility/hdbTerms';
-import { ClientError, hdb_errors } from '../utility/errors/hdbError';
-const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS } = hdb_errors;
-import logger from '../utility/logging/harper_logger';
-import * as password from '../utility/password';
-import { findAndValidateUser } from './user';
-import { update } from '../dataLayer/insert';
-import UpdateObject from '../dataLayer/UpdateObject';
-import signalling from '../utility/signalling';
-import { UserEventMsg } from '../server/threads/itc';
-import env from '../utility/environment/environmentManager';
+} from '../utility/hdbTerms.ts';
+import { ClientError, hdbErrors } from '../utility/errors/hdbError.js';
+const { HTTP_STATUS_CODES, AUTHENTICATION_ERROR_MSGS } = hdbErrors;
+import logger from '../utility/logging/harper_logger.js';
+import * as password from '../utility/password.ts';
+import { findAndValidateUser } from './user.js';
+import { update } from '../dataLayer/insert.js';
+import UpdateObject from '../dataLayer/UpdateObject.js';
+import signalling from '../utility/signalling.js';
+import { UserEventMsg } from '../server/threads/itc.js';
+import env from '../utility/environment/environmentManager.js';
 env.initSync();
 
 const OPERATION_TOKEN_TIMEOUT: string = env.get(CONFIG_PARAMS.AUTHENTICATION_OPERATIONTOKENTIMEOUT) || '1d';
 const REFRESH_TOKEN_TIMEOUT: string = env.get(CONFIG_PARAMS.AUTHENTICATION_REFRESHTOKENTIMEOUT) || '30d';
 const RSA_ALGORITHM: string = 'RS256';
 
-enum TOKEN_TYPE {
-	OPERATION = 'operation',
-	REFRESH = 'refresh',
-}
+const TOKEN_TYPE = {
+	OPERATION: 'operation',
+	REFRESH: 'refresh',
+};
 
 interface JWTRSAKeys {
 	publicKey: string;
@@ -94,7 +94,7 @@ export async function createTokens(authObj: AuthObject): Promise<JWTTokens> {
 
 	let user: any;
 	try {
-		// bypass_auth will be set to true if this is called from a component
+		// bypassAuth will be set to true if this is called from a component
 		let validatePassword: boolean = authObj.bypass_auth !== true;
 		if (!authObj.username && !authObj.password) {
 			// if the username and password are not provided, use the hdb_user making the request.

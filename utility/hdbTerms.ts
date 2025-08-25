@@ -1,5 +1,5 @@
-import { join as hdb_terms } from 'node:path';
-import { PACKAGE_ROOT } from './packageUtils';
+import { join as hdbTerms } from 'node:path';
+import { PACKAGE_ROOT } from './packageUtils.js';
 
 /**
  * This module contains common variables/values that will be used across the project.
@@ -113,9 +113,9 @@ export const LOG_LEVELS = {
 /** Launch Service script paths */
 export const LAUNCH_SERVICE_SCRIPTS = {
 	MAIN: 'bin/harperdb.js',
-	NATS_INGEST_SERVICE: hdb_terms(PACKAGE_ROOT, 'launchServiceScripts/launchNatsIngestService.js'),
-	NATS_REPLY_SERVICE: hdb_terms(PACKAGE_ROOT, 'launchServiceScripts/launchNatsReplyService.js'),
-	NODES_UPGRADE_4_0_0: hdb_terms(PACKAGE_ROOT, 'launchServiceScripts/launchUpdateNodes4-0-0.js'),
+	NATS_INGEST_SERVICE: hdbTerms(PACKAGE_ROOT, 'launchServiceScripts/launchNatsIngestService.js'),
+	NATS_REPLY_SERVICE: hdbTerms(PACKAGE_ROOT, 'launchServiceScripts/launchNatsReplyService.js'),
+	NODES_UPGRADE_4_0_0: hdbTerms(PACKAGE_ROOT, 'launchServiceScripts/launchUpdateNodes4-0-0.js'),
 } as const;
 
 /** Specifies user role types */
@@ -283,6 +283,7 @@ export const OPERATIONS_ENUM = {
 	DESCRIBE_DATABASE: 'describe_database',
 	DESCRIBE_TABLE: 'describe_table',
 	DESCRIBE_ALL: 'describe_all',
+	DESCRIBE_METRIC: 'describe_metric',
 	DELETE: 'delete',
 	ADD_USER: 'add_user',
 	ALTER_USER: 'alter_user',
@@ -365,6 +366,11 @@ export const OPERATIONS_ENUM = {
 	SET_SSH_KNOWN_HOSTS: 'set_ssh_known_hosts',
 	GET_SSH_KNOWN_HOSTS: 'get_ssh_known_hosts',
 	GET_KEY: 'get_key',
+	GET_ANALYTICS: 'get_analytics',
+	LIST_METRICS: 'list_metrics',
+	GET_STATUS: 'get_status',
+	SET_STATUS: 'set_status',
+	CLEAR_STATUS: 'clear_status',
 } as const;
 
 /** Defines valid file types that we are able to handle in 'import_from_s3' ops */
@@ -506,6 +512,7 @@ export const LEGACY_CONFIG_PARAMS = {
  */
 export const CONFIG_PARAMS = {
 	ANALYTICS_AGGREGATEPERIOD: 'analytics_aggregatePeriod',
+	ANALYTICS_REPLICATE: 'analytics_replicate',
 	AUTHENTICATION_AUTHORIZELOCAL: 'authentication_authorizeLocal',
 	AUTHENTICATION_CACHETTL: 'authentication_cacheTTL',
 	AUTHENTICATION_COOKIE_DOMAINS: 'authentication_cookie_domains',
@@ -570,6 +577,9 @@ export const CONFIG_PARAMS = {
 	LOGGING_FILE: 'logging_file',
 	LOGGING_LEVEL: 'logging_level',
 	LOGGING_ROOT: 'logging_root',
+	LOGGING_EXTERNAL_LEVEL: 'logging_external_level',
+	LOGGING_EXTERNAL_TAG: 'logging_external_tag',
+	LOGGING_EXTERNAL_PATH: 'logging_external_path',
 	LOGGING_ROTATION_ENABLED: 'logging_rotation_enabled',
 	LOGGING_ROTATION_COMPRESS: 'logging_rotation_compress',
 	LOGGING_ROTATION_INTERVAL: 'logging_rotation_interval',

@@ -125,7 +125,7 @@ describe.skip('Test natsConfig module', () => {
 	before(() => {
 		fs.mkdirpSync(TEMP_TEST_ROOT_DIR);
 		fs.mkdirpSync(TEMP_TEST_CLUSTERING_DIR);
-		natsConfig.__set__('env_manager.initSync', init_sync_stub);
+		natsConfig.__set__('envManager.initSync', init_sync_stub);
 		list_users_stub = sandbox.stub(user, 'listUsers').resolves(FAKE_USER_LIST);
 		port_taken_stub = sandbox.stub(hdb_utils, 'isPortTaken').resolves(false);
 		get_clustering_routes_stub = sandbox.stub(config_utils, 'getClusteringRoutes').returns(FAKE_ROUTES);

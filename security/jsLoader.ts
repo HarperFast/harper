@@ -1,5 +1,5 @@
-import { Resource } from '../resources/Resource';
-import { tables, databases } from '../resources/databases';
+import { Resource } from '../resources/Resource.ts';
+import { tables, databases } from '../resources/databases.ts';
 import { Compartment as CompartmentClass } from 'ses';
 import { readFile } from 'fs/promises';
 import { extname } from 'path';
@@ -14,24 +14,24 @@ let compartment;
  * This is the main entry point for loading plugin and application modules that may be sandboxed/constrained to a
  * secure JavaScript compartment. The configuration defines if these are loaded in a secure compartment or if they
  * are just loaded with a standard import.
- * @param module_url
+ * @param moduleUrl
  */
-export async function secureImport(file_path) {
-	const module_url = pathToFileURL(file_path).toString();
+export async function secureImport(filePath) {
+	const moduleUrl = pathToFileURL(filePath).toString();
 	if (SECURE_JS) {
 		// note that we use a single compartment that is used by all the secure JS modules and we load it on-demand, only
 		// loading if necessary (since it is actually very heavy)
 		if (!compartment) compartment = getCompartment(getGlobalVars);
-		const result = await (await compartment).import(module_url);
+		const result = await (await compartment).import(moduleUrl);
 		return result.namespace;
 	} else {
 		try {
 			// important! we need to await the import, otherwise the error will not be caught
-			return await import(module_url);
+			return await import(moduleUrl);
 		} catch (err) {
 			try {
 				// the actual parse error (internally known as the "arrow message")
-				// is hidden behind a private symbol (arrow_message_private_symbol)
+				// is hidden behind a private symbol (arrowMessagePrivateSymbol)
 				// on the error object and the only way to access it is to use the
 				// internal util.decorateErrorStack() function
 				const util = await import('internal/util');
@@ -69,24 +69,26 @@ async function getCompartment(getGlobalVars) {
 		},
 		{
 			name: 'h-dapp',
-			resolveHook(module_specifier, module_referrer) {
-				if (module_specifier === 'harperdb') return 'harperdb';
-				module_specifier = new URL(module_specifier, module_referrer).toString();
-				if (!extname(module_specifier)) module_specifier += '.js';
-				return module_specifier;
+			resolveHook(moduleSpecifier, moduleReferrer) {
+				if (moduleSpecifier === 'harperdb') return 'harperdb';
+				moduleSpecifier = new URL(moduleSpecifier, moduleReferrer).toString();
+				if (!extname(moduleSpecifier)) moduleSpecifier += '.js';
+				return moduleSpecifier;
 			},
-			importHook: async (module_specifier) => {
-				if (module_specifier === 'harperdb') {
+			importHook: async (moduleSpecifier) => {
+				if (moduleSpecifier === 'harperdb') {
 					return {
 						imports: [],
 						exports: ['Resource', 'tables', 'databases'],
 						execute(exports) {
-							Object.assign(exports, { Resource, tables: tables, databases });
+							exports.Resource = Resource;
+exports.tables = tables;
+exports.databases = databases;
 						},
 					};
 				}
-				const moduleText = await readFile(new URL(module_specifier), { encoding: 'utf-8' });
-				return new StaticModuleRecord(moduleText, module_specifier);
+				const moduleText = await readFile(new URL(moduleSpecifier), { encoding: 'utf-8' });
+				return new StaticModuleRecord(moduleText, moduleSpecifier);
 			},
 		}
 	);
@@ -113,6 +115,6 @@ function secureOnlyFetch(resource, options) {
 function getGlobalVars() {
 	return {
 		Resource,
-		tables: tables,
+		tables,
 	};
 }

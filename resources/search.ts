@@ -1,10 +1,12 @@
-import { ClientError, ServerError } from '../utility/errors/hdbError';
-import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms';
+import { ClientError, ServerError, Violation } from '../utility/errors/hdbError.js';
+import { OVERFLOW_MARKER, MAX_SEARCH_KEY_LENGTH, SEARCH_TYPES } from '../utility/lmdb/terms.js';
 import { compareKeys, MAXIMUM_KEY } from 'ordered-binary';
 import { SKIP } from 'lmdb';
-import { INVALIDATED, EVICTED } from './Table';
-import { DirectCondition, Id } from './ResourceInterface';
-import { MultiPartId } from './Resource';
+import { INVALIDATED, EVICTED } from './Table.ts';
+import type { DirectCondition, Id } from './ResourceInterface.ts';
+import { MultiPartId } from './Resource.ts';
+import { RequestTarget } from './RequestTarget.ts';
+import { lastMetadata } from './RecordEncoder';
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;
 const BETWEEN_ESTIMATE = 0.1;
@@ -31,34 +33,34 @@ export const COERCIBLE_OPERATORS = {
 	eq: true,
 };
 export function executeConditions(conditions, operator, table, txn, request, context, transformToEntries, filtered) {
-	const first_search = conditions[0];
+	const firstSearch = conditions[0];
 	// both AND and OR start by getting an iterator for the ids for first condition
 	// and then things diverge...
 	if (operator === 'or') {
-		let results = executeCondition(first_search);
+		let results = executeCondition(firstSearch);
 		//get the union of ids from all condition searches
 		for (let i = 1; i < conditions.length; i++) {
 			const condition = conditions[i];
 			// might want to lazily execute this after getting to this point in the iteration
-			const next_results = executeCondition(condition);
-			results = results.concat(next_results);
+			const nextResults = executeCondition(condition);
+			results = results.concat(nextResults);
 		}
-		const returned_ids = new Set();
+		const returnedIds = new Set();
 		return results.filter((entry) => {
 			const id = entry.key ?? entry;
-			if (returned_ids.has(id))
+			if (returnedIds.has(id))
 				// skip duplicate ids
 				return false;
-			returned_ids.add(id);
+			returnedIds.add(id);
 			return true;
 		});
 	} else {
 		// AND
-		const results = executeCondition(first_search);
+		const results = executeCondition(firstSearch);
 		// get the intersection of condition searches by using the indexed query for the first condition
 		// and then filtering by all subsequent conditions.
 		// now apply filters that require looking up records
-		const filters = mapConditionsToFilters(conditions.slice(1), true, first_search.estimated_count);
+		const filters = mapConditionsToFilters(conditions.slice(1), true, firstSearch.estimated_count);
 		return filters.length > 0 ? transformToEntries(results, filters) : results;
 	}
 	function executeCondition(condition) {
@@ -79,26 +81,27 @@ export function executeConditions(conditions, operator, table, txn, request, con
 			condition.descending || request.reverse === true,
 			table,
 			request.allowFullScan,
-			filtered
+			filtered,
+			context
 		);
 	}
-	function mapConditionsToFilters(conditions, intersection, estimated_incoming_count) {
+	function mapConditionsToFilters(conditions, intersection, estimatedIncomingCount) {
 		return conditions
 			.map((condition, index) => {
 				if (condition.conditions) {
 					// this is a group of conditions, we need to combine them
 					const union = condition.operator === 'or';
-					const filters = mapConditionsToFilters(condition.conditions, !union, estimated_incoming_count);
+					const filters = mapConditionsToFilters(condition.conditions, !union, estimatedIncomingCount);
 					if (union) return (record, entry) => filters.some((filter) => filter(record, entry));
 					else return (record, entry) => filters.every((filter) => filter(record, entry));
 				}
-				const is_primary_key = (condition.attribute || condition[0]) === table.primaryKey;
-				const filter = filterByType(condition, table, context, filtered, is_primary_key, estimated_incoming_count);
-				if (intersection && index < conditions.length - 1 && estimated_incoming_count) {
-					estimated_incoming_count = intersectionEstimate(
+				const isPrimaryKey = (condition.attribute || condition[0]) === table.primaryKey;
+				const filter = filterByType(condition, table, context, filtered, isPrimaryKey, estimatedIncomingCount);
+				if (intersection && index < conditions.length - 1 && estimatedIncomingCount) {
+					estimatedIncomingCount = intersectionEstimate(
 						table.primaryStore,
 						condition.estimated_count,
-						estimated_incoming_count
+						estimatedIncomingCount
 					);
 				}
 				return filter;
@@ -109,38 +112,39 @@ export function executeConditions(conditions, operator, table, txn, request, con
 
 /**
  * Search for records or keys, based on the search condition, using an index if available
- * @param search_condition
+ * @param searchCondition
  * @param transaction
  * @param reverse
  * @param Table
- * @param allow_full_scan
+ * @param allowFullScan
  * @param filtered
  */
 export function searchByIndex(
-	search_condition: DirectCondition,
+	searchCondition: DirectCondition,
 	transaction: any,
 	reverse: boolean,
 	Table: any,
-	allow_full_scan?: boolean,
-	filtered?: boolean
+	allowFullScan?: boolean,
+	filtered?: boolean,
+	context?: any
 ): AsyncIterable<Id | { key: Id; value: any }> {
-	let attribute_name = search_condition[0] ?? search_condition.attribute;
-	let value = search_condition[1] ?? search_condition.value;
-	const comparator = search_condition.comparator;
+	let attribute_name = searchCondition[0] ?? searchCondition.attribute;
+	let value = searchCondition[1] ?? searchCondition.value;
+	const comparator = searchCondition.comparator;
 	if (value === undefined && comparator !== 'sort') {
 		throw new ClientError(`Search condition for ${attribute_name} must have a value`);
 	}
 	if (Array.isArray(attribute_name)) {
-		const first_attribute_name = attribute_name[0];
+		const firstAttributeName = attribute_name[0];
 		// get the potential relationship attribute
-		const attribute = findAttribute(Table.attributes, first_attribute_name);
+		const attribute = findAttribute(Table.attributes, firstAttributeName);
 		if (attribute.relationship) {
 			// it is a join/relational query
 			if (attribute_name.length < 2)
 				throw new ClientError(
 					'Can not directly query a relational attribute, must query an attribute within the target table'
 				);
-			const related_table = attribute.definition?.tableClass || attribute.elements?.definition?.tableClass;
+			const relatedTable = attribute.definition?.tableClass || attribute.elements?.definition?.tableClass;
 			const joined = new Map();
 			// search the related table
 			let results = searchByIndex(
@@ -151,33 +155,33 @@ export function searchByIndex(
 				},
 				transaction,
 				reverse,
-				related_table,
-				allow_full_scan,
+				relatedTable,
+				allowFullScan,
 				joined
 			);
 			if (attribute.relationship.to) {
 				// this is one-to-many or many-to-many, so we need to track the filtering of related entries that match
 				filtered[attribute_name[0]] = joined;
 				// Use the joinTo to join the results of the related table to the current table (can be one-to-many or many-to-many)
-				const is_many_to_many = Boolean(findAttribute(related_table.attributes, attribute.relationship.to)?.elements);
-				results = joinTo(results, attribute, related_table.primaryStore, is_many_to_many, joined);
+				const isManyToMany = Boolean(findAttribute(relatedTable.attributes, attribute.relationship.to)?.elements);
+				results = joinTo(results, attribute, relatedTable.primaryStore, isManyToMany, joined);
 			}
 			if (attribute.relationship.from) {
-				const searchEntry = (related_entry) => {
-					if (related_entry?.key !== undefined) related_entry = related_entry.key;
+				const searchEntry = (relatedEntry) => {
+					if (relatedEntry?.key !== undefined) relatedEntry = relatedEntry.key;
 					return searchByIndex(
-						{ attribute: attribute.relationship.from, value: related_entry },
+						{ attribute: attribute.relationship.from, value: relatedEntry },
 						transaction,
 						reverse,
 						Table,
-						allow_full_scan,
+						allowFullScan,
 						joined
 					);
 				};
 				if (attribute.elements) {
 					filtered[attribute_name[0]] = joined;
 					// many-to-many relationship (forward), get all the ids first
-					results = joinFrom(results, attribute, related_table.primaryStore, joined, searchEntry);
+					results = joinFrom(results, attribute, relatedTable.primaryStore, joined, searchEntry);
 				} else {
 					// many-to-one relationship, need to flatten the ids that point back to potentially many instances of this
 					results = results.flatMap(searchEntry);
@@ -190,10 +194,12 @@ export function searchByIndex(
 			throw new ClientError('Unable to query by attribute ' + JSON.stringify(attribute_name));
 		}
 	}
+	const isPrimaryKey = attribute_name === Table.primaryKey || attribute_name == null;
+	const index = isPrimaryKey ? Table.primaryStore : Table.indices[attribute_name];
 	let start;
 	let end, inclusiveEnd, exclusiveStart;
 	if (value instanceof Date) value = value.getTime();
-	let need_full_scan;
+	let needFullScan;
 	switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
 		case 'lt':
 			start = true;
@@ -254,39 +260,37 @@ export function searchByIndex(
 		case 'ends_with':
 			// we have to revert to full table scan here
 			start = true;
-			need_full_scan = true;
+			needFullScan = true;
 			break;
 		default:
 			throw new ClientError(`Unknown query comparator "${comparator}"`);
 	}
 	let filter;
-	const is_primary_key = attribute_name === Table.primaryKey || attribute_name == null;
 	if (typeof start === 'string' && start.length > MAX_SEARCH_KEY_LENGTH) {
 		// if the key is too long, we need to truncate it and filter the results
 		start = start.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER;
 		exclusiveStart = false;
-		filter = filterByType(search_condition, Table, null, filtered, is_primary_key);
+		filter = filterByType(searchCondition, Table, null, filtered, isPrimaryKey);
 	}
 	if (typeof end === 'string' && end.length > MAX_SEARCH_KEY_LENGTH) {
 		// if the key is too long, we need to truncate it and filter the results
 		end = end.slice(0, MAX_SEARCH_KEY_LENGTH) + OVERFLOW_MARKER;
 		inclusiveEnd = true;
-		filter = filter ?? filterByType(search_condition, Table, null, filtered, is_primary_key);
+		filter = filter ?? filterByType(searchCondition, Table, null, filtered, isPrimaryKey);
 	}
 	if (reverse) {
-		let new_end = start;
+		let newEnd = start;
 		start = end;
-		end = new_end;
-		new_end = !exclusiveStart;
+		end = newEnd;
+		newEnd = !exclusiveStart;
 		exclusiveStart = !inclusiveEnd;
-		inclusiveEnd = new_end;
+		inclusiveEnd = newEnd;
 	}
-	const index = is_primary_key ? Table.primaryStore : Table.indices[attribute_name];
-	if (!index || index.isIndexing || need_full_scan || (value === null && !index.indexNulls)) {
+	if (!index || index.isIndexing || needFullScan || (value === null && !index.indexNulls)) {
 		// no indexed searching available, need a full scan
-		if (allow_full_scan === false && !index)
+		if (allowFullScan === false && !index)
 			throw new ClientError(`"${attribute_name}" is not indexed, can not search for this attribute`, 404);
-		if (allow_full_scan === false && need_full_scan)
+		if (allowFullScan === false && needFullScan)
 			throw new ClientError(
 				`Can not use ${
 					comparator || 'equal'
@@ -300,23 +304,23 @@ export function searchByIndex(
 				`"${attribute_name}" is not indexed for nulls, index needs to be rebuilt to search for nulls, can not search for this attribute`,
 				400
 			);
-		filter = filter ?? filterByType(search_condition, Table, null, filtered, is_primary_key);
+		filter = filter ?? filterByType(searchCondition, Table, null, filtered, isPrimaryKey);
 		if (!filter) {
-			throw new ClientError(`Unknown search operator ${search_condition.comparator}`);
+			throw new ClientError(`Unknown search operator ${searchCondition.comparator}`);
 		}
 	}
-	const range_options = {
+	const rangeOptions = {
 		start,
 		end,
 		inclusiveEnd,
 		exclusiveStart,
 		values: true,
-		versions: is_primary_key,
+		versions: isPrimaryKey,
 		transaction,
 		reverse,
 	};
-	if (is_primary_key) {
-		const results = index.getRange(range_options).map(
+	if (isPrimaryKey) {
+		const results = index.getRange(rangeOptions).map(
 			filter
 				? function ({ key, value }) {
 						if (this?.isSync) return value && filter(value) ? key : SKIP;
@@ -334,27 +338,40 @@ export function searchByIndex(
 					}
 				: (entry) => {
 						if (entry.value == null && !(entry.metadataFlags & (INVALIDATED | EVICTED))) return SKIP;
+						if (context?._freezeRecords) Object.freeze(entry.value);
 						return entry;
 					}
 		);
 		results.hasEntries = true;
 		return results;
 	} else if (index) {
-		return index.getRange(range_options).map(
+		if (index.customIndex) {
+			return index.customIndex.search(searchCondition, context).map((entry) => {
+				// if the custom index returns an entry with metadata, merge it with the loaded entry
+				if (typeof entry === 'object' && entry) {
+					const { key, ...otherProps } = entry;
+					const loadedEntry = Table.primaryStore.getEntry(key);
+					if (context?._freezeRecords) Object.freeze(loadedEntry?.value);
+					return { ...otherProps, ...loadedEntry };
+				}
+				return entry;
+			});
+		}
+		return index.getRange(rangeOptions).map(
 			filter
 				? function ({ key, value }) {
-						let record_matcher: any;
+						let recordMatcher: any;
 						if (typeof key === 'string' && key.length > MAX_SEARCH_KEY_LENGTH) {
 							// if it is an overflow string, need to get the actual value from the database
-							record_matcher = Table.primaryStore.get(value);
-						} else record_matcher = { [attribute_name]: key };
-						if (this.isSync) return filter(record_matcher) ? value : SKIP;
+							recordMatcher = Table.primaryStore.get(value);
+						} else recordMatcher = { [attribute_name]: key };
+						if (this.isSync) return filter(recordMatcher) ? value : SKIP;
 						// for filter operations, we intentionally yield the event turn so that scanning queries
 						// do not hog resources
 						return new Promise((resolve, reject) =>
 							setImmediate(() => {
 								try {
-									resolve(filter(record_matcher) ? value : SKIP);
+									resolve(filter(recordMatcher) ? value : SKIP);
 								} catch (error) {
 									reject(error);
 								}
@@ -386,11 +403,11 @@ export function searchByIndex(
 export function findAttribute(attributes, attribute_name) {
 	if (Array.isArray(attribute_name)) {
 		if (attribute_name.length > 1) {
-			const first_attribute = findAttribute(attributes, attribute_name[0]);
-			const next_attributes =
-				(first_attribute?.definition?.tableClass || first_attribute?.elements?.definition?.tableClass)?.attributes ??
-				first_attribute?.properties;
-			if (next_attributes) return findAttribute(next_attributes, attribute_name.slice(1));
+			const firstAttribute = findAttribute(attributes, attribute_name[0]);
+			const nextAttributes =
+				(firstAttribute?.definition?.tableClass || firstAttribute?.elements?.definition?.tableClass)?.attributes ??
+				firstAttribute?.properties;
+			if (nextAttributes) return findAttribute(nextAttributes, attribute_name.slice(1));
 			return;
 		} else attribute_name = attribute_name.toString();
 	} else if (typeof attribute_name !== 'string') attribute_name = attribute_name.toString();
@@ -400,40 +417,40 @@ export function findAttribute(attributes, attribute_name) {
 /**
  * This is used to join the results of a query where the right side is a set of records with the foreign key that
  * points to the left side (from right to left)
- * @param right_iterable
+ * @param rightIterable
  * @param attribute
  * @param store
- * @param is_many_to_many
+ * @param isManyToMany
  * @param joined
  * @returns
  */
-function joinTo(right_iterable, attribute, store, is_many_to_many, joined: Map<any, any[]>) {
-	return new right_iterable.constructor({
+function joinTo(rightIterable, attribute, store, isManyToMany, joined: Map<any, any[]>) {
+	return new rightIterable.constructor({
 		[Symbol.iterator]() {
-			let joined_iterator;
+			let joinedIterator;
 			joined.hasMappings = true;
 			return {
 				next() {
-					if (!joined_iterator) {
-						const right_property = attribute.relationship.to;
-						const add_entry = (key, entry) => {
-							let entries_for_key = joined.get(key);
-							if (entries_for_key) entries_for_key.push(entry);
-							else joined.set(key, (entries_for_key = [entry]));
+					if (!joinedIterator) {
+						const rightProperty = attribute.relationship.to;
+						const addEntry = (key, entry) => {
+							let entriesForKey = joined.get(key);
+							if (entriesForKey) entriesForKey.push(entry);
+							else joined.set(key, (entriesForKey = [entry]));
 						};
 						//let i = 0;
 						// get all the ids of the related records
-						for (const entry of right_iterable) {
+						for (const entry of rightIterable) {
 							const record = entry.value ?? store.get(entry.key ?? entry);
-							const left_key = record?.[right_property];
-							if (left_key == null) continue;
+							const leftKey = record?.[rightProperty];
+							if (leftKey == null) continue;
 							if (joined.filters?.some((filter) => !filter(record))) continue;
-							if (is_many_to_many) {
-								for (let i = 0; i < left_key.length; i++) {
-									add_entry(left_key[i], entry);
+							if (isManyToMany) {
+								for (let i = 0; i < leftKey.length; i++) {
+									addEntry(leftKey[i], entry);
 								}
 							} else {
-								add_entry(left_key, entry);
+								addEntry(leftKey, entry);
 							}
 							// TODO: Enable this with async iterator manually iterating so that we don't need to do an await on every iteration
 							/*
@@ -443,18 +460,18 @@ function joinTo(right_iterable, attribute, store, is_many_to_many, joined: Map<a
 								i = 0;
 							}*/
 						}
-						joined_iterator = joined.keys()[Symbol.iterator]();
+						joinedIterator = joined.keys()[Symbol.iterator]();
 						return this.next();
 					}
-					const joined_entry = joined_iterator.next();
-					if (joined_entry.done) return joined_entry;
+					const joinedEntry = joinedIterator.next();
+					if (joinedEntry.done) return joinedEntry;
 					return {
 						// if necessary, get the original key from the entries array
-						value: joined_entry.value,
+						value: joinedEntry.value,
 					};
 				},
 				return() {
-					if (joined_iterator?.return) return joined_iterator.return();
+					if (joinedIterator?.return) return joinedIterator.return();
 				},
 			};
 		},
@@ -463,33 +480,33 @@ function joinTo(right_iterable, attribute, store, is_many_to_many, joined: Map<a
 /**
  * This is used to join the results of a query where the right side is a set of ids and the left side is a set of records
  * that have the foreign key (from left to right)
- * @param right_iterable
+ * @param rightIterable
  * @param attribute
  * @param store
  * @param joined
- * @param search_entry
+ * @param searchEntry
  * @returns
  */
-function joinFrom(right_iterable, attribute, store, joined: Map<any, any[]>, search_entry) {
-	return new right_iterable.constructor({
+function joinFrom(rightIterable, attribute, store, joined: Map<any, any[]>, searchEntry) {
+	return new rightIterable.constructor({
 		[Symbol.iterator]() {
-			let id_iterator;
-			let joined_iterator;
-			const seen_ids = new Set();
+			let idIterator;
+			let joinedIterator;
+			const seenIds = new Set();
 			return {
 				next() {
-					let joined_entry;
-					if (joined_iterator) {
+					let joinedEntry;
+					if (joinedIterator) {
 						while (true) {
-							joined_entry = joined_iterator.next();
-							if (joined_entry.done) break; // and continue to find next
-							const id = joined_entry.value;
-							if (seen_ids.has(id)) continue;
-							seen_ids.add(id);
-							return joined_entry;
+							joinedEntry = joinedIterator.next();
+							if (joinedEntry.done) break; // and continue to find next
+							const id = joinedEntry.value;
+							if (seenIds.has(id)) continue;
+							seenIds.add(id);
+							return joinedEntry;
 						}
 					}
-					if (!id_iterator) {
+					if (!idIterator) {
 						// get the ids of the related records as a Set so we can quickly check if it is in the set
 						// when are iterating through the results
 						const ids = new Set();
@@ -501,7 +518,7 @@ function joinFrom(right_iterable, attribute, store, joined: Map<any, any[]>, sea
 						};
 						//let i = 0;
 						// get all the ids of the related records
-						for (const id of right_iterable) {
+						for (const id of rightIterable) {
 							if (joined.filters) {
 								// if additional filters are defined, we need to check them
 								const record = store.get(id);
@@ -522,21 +539,21 @@ function joinFrom(right_iterable, attribute, store, joined: Map<any, any[]>, sea
 							}*/
 						}
 						// and now start iterating through the ids
-						id_iterator = ids[Symbol.iterator]();
+						idIterator = ids[Symbol.iterator]();
 						return this.next();
 					}
 					do {
-						const id_entry = id_iterator.next();
-						if (id_entry.done) return id_entry;
-						joined_iterator = search_entry(id_entry.value)[Symbol.iterator]();
+						const idEntry = idIterator.next();
+						if (idEntry.done) return idEntry;
+						joinedIterator = searchEntry(idEntry.value)[Symbol.iterator]();
 						return this.next();
 					} while (true);
 				},
 				return() {
-					return joined_iterator?.return?.();
+					return joinedIterator?.return?.();
 				},
 				throw() {
-					return joined_iterator?.throw?.();
+					return joinedIterator?.throw?.();
 				},
 			};
 		},
@@ -570,74 +587,106 @@ const ALTERNATE_COMPARATOR_NAMES = {
 
 /**
  * Create a filter based on the search condition that can be used to test each supplied record.
- * @param {SearchObject} search_condition
+ * @param {SearchObject} searchCondition
  * @returns {({}) => boolean}
  */
-export function filterByType(search_condition, Table, context, filtered, is_primary_key?, estimated_incoming_count?) {
-	const comparator = search_condition.comparator;
-	let attribute = search_condition[0] ?? search_condition.attribute;
-	let value = search_condition[1] ?? search_condition.value;
+export function filterByType(searchCondition, Table, context, filtered, isPrimaryKey?, estimatedIncomingCount?) {
+	const comparator = searchCondition.comparator;
+	let attribute = searchCondition[0] ?? searchCondition.attribute;
+	let value = searchCondition[1] ?? searchCondition.value;
 	if (Array.isArray(attribute)) {
 		if (attribute.length === 0) return () => true;
 		if (attribute.length === 1) attribute = attribute[0];
 		else if (attribute.length > 1) {
-			const first_attribute_name = attribute[0];
+			const firstAttributeName = attribute[0];
 			// get the relationship attribute
-			const first_attribute = findAttribute(Table.attributes, first_attribute_name);
-			const related_table = first_attribute.definition?.tableClass || first_attribute.elements.definition?.tableClass;
+			const firstAttribute = findAttribute(Table.attributes, firstAttributeName);
+			const relatedTable = firstAttribute.definition?.tableClass || firstAttribute.elements.definition?.tableClass;
 			// TODO: If this is a relationship, we can potentially make this more efficient by using the index
 			// and retrieving the set of matching ids first
-			const filter_map = filtered?.[first_attribute_name];
-			const next_filter = filterByType(
+			const filterMap = filtered?.[firstAttributeName];
+			const nextFilter = filterByType(
 				{
 					attribute: attribute.length > 2 ? attribute.slice(1) : attribute[1],
 					value,
 					comparator,
 				},
-				related_table,
+				relatedTable,
 				context,
-				filter_map?.[first_attribute_name]?.joined,
-				attribute[1] === related_table.primaryKey,
-				estimated_incoming_count
+				filterMap?.[firstAttributeName]?.joined,
+				attribute[1] === relatedTable.primaryKey,
+				estimatedIncomingCount
 			);
-			if (!next_filter) return;
-			if (filter_map) {
-				if (!filter_map.filters) filter_map.filters = [];
-				filter_map.filters.push(next_filter);
+			if (!nextFilter) return;
+			if (filterMap) {
+				if (!filterMap.filters) filterMap.filters = [];
+				filterMap.filters.push(nextFilter);
 				return;
 			}
-			const resolver = Table.propertyResolvers?.[first_attribute_name];
-			let sub_id_filter;
-			const recordFilter = (record, entry) => {
-				let sub_object, sub_entry;
+			const resolver = Table.propertyResolvers?.[firstAttributeName];
+			if (resolver.to) nextFilter.to = resolver.to;
+			let subIdFilter;
+			const getSubObject = (record, entry) => {
+				let subObject, subEntry;
 				if (resolver) {
-					if (resolver.from && next_filter.idFilter) {
+					if (resolver.returnDirect) {
+						// indicates that the resolver will direct return the value instead of an entry
+						subObject = resolver(record, context, entry);
+						subEntry = lastMetadata;
+					} else {
+						subEntry = resolver(record, context, entry, true);
+						if (Array.isArray(subEntry)) {
+							// if any array, map the values
+							subObject = subEntry.map((subEntry) => subEntry.value);
+							subEntry = null;
+						} else {
+							subObject = subEntry?.value;
+						}
+					}
+				} else subObject = record[firstAttributeName];
+				return { subObject, subEntry };
+			};
+			const recordFilter = (record, entry) => {
+				if (resolver) {
+					if (nextFilter.idFilter) {
 						// if we are filtering by id, we can use the idFilter to avoid loading the record
-						if (!sub_id_filter) {
-							if (next_filter.idFilter.idSet?.size === 1) {
+						if (!subIdFilter) {
+							if (nextFilter.idFilter.idSet?.size === 1) {
 								// if there is a single id we are looking for, we can create a new search condition that the
 								// attribute comparator could eventually use to create a recursive id set
 								// TODO: Eventually we should be able to handle multiple ids by creating a union
-								for (const id of next_filter.idFilter.idSet) {
-									search_condition = {
-										attribute: resolver.from,
+								for (const id of nextFilter.idFilter.idSet) {
+									searchCondition = {
+										attribute: resolver.from ?? Table.primaryKey, // if no from, we use our primary key
 										value: id,
 									};
 								}
 								// indicate that we can use an index for this. also we indicate that we allow object matching to allow array ids to directly tested
-								sub_id_filter = attributeComparator(resolver.from, next_filter.idFilter, true, true);
-							} else sub_id_filter = attributeComparator(resolver.from, next_filter.idFilter, false, true);
+								subIdFilter = attributeComparator(resolver.from ?? Table.primaryKey, nextFilter.idFilter, true, true);
+							} else
+								subIdFilter = attributeComparator(resolver.from ?? Table.primaryKey, nextFilter.idFilter, false, true);
 						}
-						const matches = sub_id_filter(record);
-						if (sub_id_filter.idFilter) recordFilter.idFilter = sub_id_filter.idFilter;
+						const matches = subIdFilter(record);
+						if (subIdFilter.idFilter) recordFilter.idFilter = subIdFilter.idFilter;
 						return matches;
 					}
-					sub_entry = resolver(record, context, entry);
-					sub_object = sub_entry?.value;
-				} else sub_object = record[first_attribute_name];
-				if (!sub_object) return false;
-				if (!Array.isArray(sub_object)) return next_filter(sub_object, sub_entry);
-				return sub_object.some(next_filter);
+				}
+				const { subObject, subEntry } = getSubObject(record, entry);
+				if (!subObject) return false;
+				if (!Array.isArray(subObject)) return nextFilter(subObject, subEntry);
+				const filterMap = filtered?.[firstAttributeName];
+				if (!filterMap && filtered) {
+					// establish a filtering that can preserve this filter for the select() results of these sub objects
+					filtered[firstAttributeName] = {
+						fromRecord(record) {
+							// this is called when selecting the fields to include in results
+							const value = getSubObject(record).subObject;
+							if (Array.isArray(value)) return value.filter(nextFilter).map((value) => value[relatedTable.primaryKey]);
+							return value;
+						},
+					};
+				}
+				return subObject.some(nextFilter);
 			};
 			return recordFilter;
 		}
@@ -647,15 +696,15 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 	switch (ALTERNATE_COMPARATOR_NAMES[comparator] || comparator) {
 		case SEARCH_TYPES.EQUALS:
 		case undefined:
-			return attributeComparator(attribute, (record_value) => record_value === value, true);
+			return attributeComparator(attribute, (recordValue) => recordValue === value, true);
 		case 'contains':
-			return attributeComparator(attribute, (record_value) => record_value?.toString().includes(value));
+			return attributeComparator(attribute, (recordValue) => recordValue?.toString().includes(value));
 		case 'ends_with':
-			return attributeComparator(attribute, (record_value) => record_value?.toString().endsWith(value));
+			return attributeComparator(attribute, (recordValue) => recordValue?.toString().endsWith(value));
 		case 'starts_with':
 			return attributeComparator(
 				attribute,
-				(record_value) => typeof record_value === 'string' && record_value.startsWith(value),
+				(recordValue) => typeof recordValue === 'string' && recordValue.startsWith(value),
 				true
 			);
 		case 'prefix':
@@ -663,10 +712,10 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 			else if (value[value.length - 1] == null) value = value.slice(0, -1);
 			return attributeComparator(
 				attribute,
-				(record_value) => {
-					if (!Array.isArray(record_value)) return false;
+				(recordValue) => {
+					if (!Array.isArray(recordValue)) return false;
 					for (let i = 0, l = value.length; i < l; i++) {
-						if (record_value[i] !== value[i]) return false;
+						if (recordValue[i] !== value[i]) return false;
 					}
 					return true;
 				},
@@ -677,21 +726,21 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 			if (value[1] instanceof Date) value[1] = value[1].getTime();
 			return attributeComparator(
 				attribute,
-				(record_value) => {
-					return compareKeys(record_value, value[0]) >= 0 && compareKeys(record_value, value[1]) <= 0;
+				(recordValue) => {
+					return compareKeys(recordValue, value[0]) >= 0 && compareKeys(recordValue, value[1]) <= 0;
 				},
 				true
 			);
 		case 'gt':
-			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) > 0);
+			return attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) > 0);
 		case 'ge':
-			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) >= 0);
+			return attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) >= 0);
 		case 'lt':
-			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) < 0);
+			return attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) < 0);
 		case 'le':
-			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) <= 0);
+			return attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) <= 0);
 		case 'ne':
-			return attributeComparator(attribute, (record_value) => compareKeys(record_value, value) !== 0, false, true);
+			return attributeComparator(attribute, (recordValue) => compareKeys(recordValue, value) !== 0, false, true);
 		case 'sort':
 			return () => true;
 		default:
@@ -701,55 +750,60 @@ export function filterByType(search_condition, Table, context, filtered, is_prim
 	function attributeComparator(
 		attribute: string,
 		filter: (record: any) => boolean,
-		can_use_index?: boolean,
-		allow_object_matching?: boolean
+		canUseIndex?: boolean,
+		allowObjectMatching?: boolean
 	) {
-		let threshold_remaining_misses: number;
-		can_use_index =
-			can_use_index && // is it a comparator that makes sense to use index
-			!is_primary_key && // no need to use index for primary keys, since we will be iterating over the primary keys
+		let thresholdRemainingMisses: number;
+		canUseIndex =
+			canUseIndex && // is it a comparator that makes sense to use index
+			!isPrimaryKey && // no need to use index for primary keys, since we will be iterating over the primary keys
 			Table?.indices[attribute] && // is there an index for this attribute
-			estimated_incoming_count > 3; // do we have a valid estimate of multiple incoming records (that is worth using an index for)
-		if (can_use_index) {
-			if (search_condition.estimated_count == undefined) estimateCondition(Table)(search_condition);
-			threshold_remaining_misses = search_condition.estimated_count >> 4;
-			if (isNaN(threshold_remaining_misses) || threshold_remaining_misses >= estimated_incoming_count)
+			estimatedIncomingCount > 3; // do we have a valid estimate of multiple incoming records (that is worth using an index for)
+		if (canUseIndex) {
+			if (searchCondition.estimated_count == undefined) estimateCondition(Table)(searchCondition);
+			thresholdRemainingMisses = searchCondition.estimated_count >> 4;
+			if (isNaN(thresholdRemainingMisses) || thresholdRemainingMisses >= estimatedIncomingCount)
 				// invalid or can't be ever reached
-				can_use_index = false;
+				canUseIndex = false;
 		}
 		let misses = 0;
-		let filtered_so_far = 3; // what we use to calculate miss rate; we give some buffer so we don't jump to indexed retrieval too quickly
+		let filteredSoFar = 3; // what we use to calculate miss rate; we give some buffer so we don't jump to indexed retrieval too quickly
 		function recordFilter(record: any) {
 			const value = record[attribute];
 			let matches: boolean;
-			if (typeof value !== 'object' || !value || allow_object_matching) matches = filter(value);
+			if (typeof value !== 'object' || !value || allowObjectMatching) matches = filter(value);
 			else if (Array.isArray(value)) matches = value.some(filter);
 			else if (value instanceof Date) matches = filter(value.getTime());
 			//else matches = false;
 			// As we are filtering, we can lazily/reactively switch to indexing if we are getting a low match rate, allowing use to load
 			// a set of ids instead of loading each record. This can be a significant performance improvement for large queries with low match rates
-			if (can_use_index) {
-				filtered_so_far++;
+			if (canUseIndex) {
+				filteredSoFar++;
 				if (
 					!matches &&
 					!recordFilter.idFilter &&
 					// miss rate x estimated remaining to filter > 10% of estimated incoming
-					(++misses / filtered_so_far) * (estimated_incoming_count - filtered_so_far) > threshold_remaining_misses
+					(++misses / filteredSoFar) * estimatedIncomingCount > thresholdRemainingMisses
 				) {
 					// if we have missed too many times, we need to switch to indexed retrieval
-					const matching_ids = searchByIndex(search_condition, context.transaction.getReadTxn(), false, Table).map(
-						flattenKey
-					);
+					const searchResults = searchByIndex(searchCondition, context.transaction.getReadTxn(), false, Table);
+					let matchingIds: Iterable<Id>;
+					if (recordFilter.to) {
+						// the values could be an array of keys, so we flatten the mapping
+						matchingIds = searchResults.flatMap((id) => Table.primaryStore.get(id)[recordFilter.to]);
+					} else {
+						matchingIds = searchResults.map(flattenKey);
+					}
 					// now generate a hash set that we can efficiently check primary keys against
 					// TODO: Do this asynchronously
-					const id_set = new Set(matching_ids);
-					recordFilter.idFilter = (id) => id_set.has(flattenKey(id));
-					recordFilter.idFilter.idSet = id_set;
+					const idSet = new Set(matchingIds);
+					recordFilter.idFilter = (id) => idSet.has(flattenKey(id));
+					recordFilter.idFilter.idSet = idSet;
 				}
 			}
 			return matches;
 		}
-		if (is_primary_key) {
+		if (isPrimaryKey) {
 			recordFilter.idFilter = filter;
 		}
 		return recordFilter;
@@ -761,70 +815,82 @@ export function estimateCondition(table) {
 		if (condition.estimated_count === undefined) {
 			if (condition.conditions) {
 				// for a group of conditions, we can estimate the count by combining the estimates of the sub-conditions
-				let estimated_count;
+				let estimatedCount;
 				if (condition.operator === 'or') {
 					// with a union, we can just add the estimated counts
-					estimated_count = 0;
-					for (const sub_condition of condition.conditions) {
-						estimateConditionForTable(sub_condition);
-						estimated_count += sub_condition.estimated_count;
+					estimatedCount = 0;
+					for (const subCondition of condition.conditions) {
+						estimateConditionForTable(subCondition);
+						estimatedCount += subCondition.estimated_count;
 					}
 				} else {
 					// with an intersection, we have to use the rate of the sub-conditions to apply to estimate count of last condition
-					estimated_count = Infinity;
-					for (const sub_condition of condition.conditions) {
-						estimateConditionForTable(sub_condition);
-						estimated_count = isFinite(estimated_count)
-							? (estimated_count * sub_condition.estimated_count) / estimatedEntryCount(table.primaryStore)
-							: sub_condition.estimated_count;
+					estimatedCount = Infinity;
+					for (const subCondition of condition.conditions) {
+						estimateConditionForTable(subCondition);
+						estimatedCount = isFinite(estimatedCount)
+							? (estimatedCount * subCondition.estimated_count) / estimatedEntryCount(table.primaryStore)
+							: subCondition.estimated_count;
 					}
 				}
-				condition.estimated_count = estimated_count;
+				condition.estimated_count = estimatedCount;
 				return condition.estimated_count;
 			}
 			// skip if it is cached
-			let search_type = condition.comparator || condition.search_type;
-			search_type = ALTERNATE_COMPARATOR_NAMES[search_type] || search_type;
-			if (search_type === SEARCH_TYPES.EQUALS || !search_type) {
+			let searchType = condition.comparator || condition.search_type;
+			searchType = ALTERNATE_COMPARATOR_NAMES[searchType] || searchType;
+			if (searchType === SEARCH_TYPES.EQUALS || !searchType) {
 				const attribute_name = condition[0] ?? condition.attribute;
 				if (attribute_name == null || attribute_name === table.primaryKey) condition.estimated_count = 1;
 				else if (Array.isArray(attribute_name) && attribute_name.length > 1) {
 					const attribute = findAttribute(table.attributes, attribute_name[0]);
-					const related_table = attribute.definition?.tableClass || attribute.elements.definition?.tableClass;
-					const estimate = estimateCondition(related_table)({
+					const relatedTable = attribute.definition?.tableClass || attribute.elements.definition?.tableClass;
+					const estimate = estimateCondition(relatedTable)({
 						value: condition.value,
 						attribute: attribute_name.length > 2 ? attribute_name.slice(1) : attribute_name[1],
 						comparator: 'equals',
 					});
-					const from_index = table.indices[attribute.relationship.from];
+					const fromIndex = table.indices[attribute.relationship.from];
 					// the estimated count is sum of the estimate of the related table and the estimate of the index
 					condition.estimated_count =
 						estimate +
-						(from_index
+						(fromIndex
 							? (estimate * estimatedEntryCount(table.indices[attribute.relationship.from])) /
-								(estimatedEntryCount(related_table.primaryStore) || 1)
+								(estimatedEntryCount(relatedTable.primaryStore) || 1)
 							: estimate);
 				} else {
 					// we only attempt to estimate count on equals operator because that's really all that LMDB supports (some other key-value stores like libmdbx could be considered if we need to do estimated counts of ranges at some point)
 					const index = table.indices[attribute_name];
 					condition.estimated_count = index ? index.getValuesCount(condition[1] ?? condition.value) : Infinity;
 				}
-			} else if (search_type === 'contains' || search_type === 'ends_with' || search_type === 'ne') {
+			} else if (searchType === 'contains' || searchType === 'ends_with' || searchType === 'ne') {
 				const attribute_name = condition[0] ?? condition.attribute;
 				const index = table.indices[attribute_name];
-				if (condition.value === null && search_type === 'ne') {
+				if (condition.value === null && searchType === 'ne') {
 					condition.estimated_count =
 						estimatedEntryCount(table.primaryStore) - (index ? index.getValuesCount(null) : 0);
 				} else condition.estimated_count = Infinity;
-				// for range queries (betweens, starts_with, greater, etc.), just arbitrarily guess
-			} else if (search_type === 'starts_with' || search_type === 'prefix')
+				// for range queries (betweens, startsWith, greater, etc.), just arbitrarily guess
+			} else if (searchType === 'starts_with' || searchType === 'prefix')
 				condition.estimated_count = STARTS_WITH_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
-			else if (search_type === 'between')
+			else if (searchType === 'between')
 				condition.estimated_count = BETWEEN_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
-			else if (search_type === 'sort')
-				condition.estimated_count = estimatedEntryCount(table.primaryStore) + 1; // only used by sort
-			// for the search types that use the broadest range, try do them last
-			else condition.estimated_count = OPEN_RANGE_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
+			else if (searchType === 'sort') {
+				const attribute_name = condition[0] ?? condition.attribute;
+				const index = table.indices[attribute_name];
+				if (index?.customIndex?.estimateCountAsSort)
+					// allow custom index to define its own estimation of counts
+					condition.estimated_count = index.customIndex.estimateCountAsSort(condition);
+				else condition.estimated_count = estimatedEntryCount(table.primaryStore) + 1; // only used by sort
+			} else {
+				// for the search types that use the broadest range, try do them last
+				const attribute_name = condition[0] ?? condition.attribute;
+				const index = table.indices[attribute_name];
+				if (index?.customIndex?.estimateCount)
+					// allow custom index to define its own estimation of counts
+					condition.estimated_count = index.customIndex.estimateCount(condition.value);
+				else condition.estimated_count = OPEN_RANGE_ESTIMATE * estimatedEntryCount(table.primaryStore) + 1;
+			}
 			// we give a condition significantly more weight/preference if we will be ordering by it
 			if (typeof condition.descending === 'boolean') condition.estimated_count /= 2;
 		}
@@ -832,67 +898,85 @@ export function estimateCondition(table) {
 	}
 	return estimateConditionForTable;
 }
+class SyntaxViolation extends Violation {}
 const NEEDS_PARSER = /[()[\]|!<>.]|(=\w*=)/;
 const QUERY_PARSER = /([^?&|=<>!([{}\]),]*)([([{}\])|,&]|[=<>!]*)/g;
 const VALUE_PARSER = /([^&|=[\]{}]+)([[\]{}]|[&|=]*)/g;
-let last_index;
-let query_string;
+let lastIndex;
+let currentQuery;
+let queryString;
 /**
- * This is responsible for taking a query string (from a get()) and converting it to a standard query object
- * structure
- * @param query_string
+ * This is responsible for taking a query string (from a get()) and merging the parsed elements into a RequestTarget object.
+ * @param queryString
  */
-export function parseQuery(query_to_parse) {
-	if (!query_to_parse) return;
-	query_string = query_to_parse;
+export function parseQuery(queryToParse: string, query: RequestTarget) {
+	if (!queryToParse) return;
+	queryString = queryToParse;
 	// TODO: We can remove this if we are sure all exits points end with lastIndex as zero (reaching the end of parsing will do that)
 	QUERY_PARSER.lastIndex = 0;
-	if (NEEDS_PARSER.test(query_to_parse)) {
+	if (NEEDS_PARSER.test(queryToParse)) {
 		try {
-			const query = parseBlock(new Query(), '');
-			if (last_index !== query_string.length) throw new SyntaxError(`Unable to parse query, unexpected end of query`);
-			return query;
+			if (query) query.conditions = [];
+			currentQuery = query ?? new Query();
+			parseBlock(currentQuery, '');
+			if (lastIndex !== queryString.length) recordError(`Unable to parse query, unexpected end of query`);
+			if (currentQuery.parseErrorMessage) {
+				currentQuery.parseError = new SyntaxViolation(query.parseErrorMessage);
+				if (!query) throw currentQuery.parseError;
+			}
+			return currentQuery;
 		} catch (error) {
 			error.statusCode = 400;
-			error.message = `Unable to parse query, ${error.message} at position ${last_index} in '${query_string}'`;
-			throw error;
+			error.message = `Unable to parse query, ${error.message} at position ${lastIndex} in '${queryString}'`;
+			if (currentQuery.parseErrorMessage) error.message += ', ' + currentQuery.parseErrorMessage;
+			if (query) {
+				query.parseError = error;
+			} else {
+				throw error;
+			}
 		}
 	} else {
-		return new URLSearchParams(query_to_parse);
+		return query ?? new URLSearchParams(queryToParse);
 	}
 }
-function parseBlock(query, expected_end) {
+function recordError(message: string) {
+	const errorMessage = `${message} at position ${lastIndex}`;
+	currentQuery.parseErrorMessage = currentQuery.parseErrorMessage
+		? currentQuery.parseErrorMessage + ', ' + errorMessage
+		: errorMessage;
+}
+function parseBlock(query, expectedEnd) {
 	let parser = QUERY_PARSER;
 	let match;
-	let attribute, comparator, expecting_delimiter, expecting_value;
+	let attribute, comparator, expectingDelimiter, expectingValue;
 	let valueDecoder = decodeURIComponent;
-	let last_binary_operator;
-	while ((match = parser.exec(query_string))) {
-		last_index = parser.lastIndex;
+	let lastBinaryOperator;
+	while ((match = parser.exec(queryString))) {
+		lastIndex = parser.lastIndex;
 		const [, value, operator] = match;
-		if (expecting_delimiter) {
-			if (value) throw new SyntaxError(`expected operator, but encountered '${value}'`);
-			expecting_delimiter = false;
-			expecting_value = false;
-		} else expecting_value = true;
+		if (expectingDelimiter) {
+			if (value) recordError(`expected operator, but encountered '${value}'`);
+			expectingDelimiter = false;
+			expectingValue = false;
+		} else expectingValue = true;
 		let entry;
 		switch (operator) {
 			case '=':
 				if (attribute != undefined) {
 					// a FIQL operator like =gt= (and don't allow just any string)
 					if (value.length <= 2) comparator = value;
-					else throw new SyntaxError(`invalid FIQL operator ${value}`);
+					else recordError(`invalid FIQL operator ${value}`);
 					valueDecoder = typedDecoding; // use typed/auto-cast decoding for FIQL operators
 				} else {
 					// standard equal comparison
 					valueDecoder = decodeURIComponent; // use strict decoding
 					comparator = 'equals'; // strict equals
-					if (!value) throw new SyntaxError(`attribute must be specified before equality comparator`);
+					if (!value) recordError(`attribute must be specified before equality comparator`);
 					attribute = decodeProperty(value);
 				}
 				break;
 			case '==':
-			// TODO: Separate decoder to handle * operator here for starts_with, ends_with, and contains?
+			// TODO: Separate decoder to handle * operator here for startsWith, endsWith, and contains?
 			// fall through
 			case '!=':
 			case '<':
@@ -903,7 +987,7 @@ function parseBlock(query, expected_end) {
 			case '!==':
 				comparator = SYMBOL_OPERATORS[operator];
 				valueDecoder = COERCIBLE_OPERATORS[comparator] ? typedDecoding : decodeURIComponent;
-				if (!value) throw new SyntaxError(`attribute must be specified before comparator ${operator}`);
+				if (!value) recordError(`attribute must be specified before comparator ${operator}`);
 				attribute = decodeProperty(value);
 				break;
 			case '&=': // for chaining conditions on to the same attribute
@@ -914,64 +998,60 @@ function parseBlock(query, expected_end) {
 			case undefined:
 				if (attribute == null) {
 					if (attribute === undefined) {
-						if (expected_end)
-							throw new SyntaxError(
-								`expected '${expected_end}', but encountered ${
-									operator[0] ? "'" + operator[0] + "'" : 'end of string'
-								}}`
+						if (expectedEnd)
+							recordError(
+								`expected '${expectedEnd}', but encountered ${operator[0] ? "'" + operator[0] + "'" : 'end of string'}}`
 							);
-						throw new SyntaxError(
-							`no comparison specified before ${operator ? "'" + operator + "'" : 'end of string'}`
-						);
+						recordError(`no comparison specified before ${operator ? "'" + operator + "'" : 'end of string'}`);
 					}
 				} else {
-					if (!query.conditions) throw new SyntaxError('conditions/comparisons are not allowed in a property list');
+					if (!query.conditions) recordError('conditions/comparisons are not allowed in a property list');
 					const condition = {
-						comparator: comparator,
+						comparator,
 						attribute: attribute || null,
 						value: valueDecoder(value),
 					};
 					if (comparator === 'eq') wildcardDecoding(condition, value);
 					if (attribute === '') {
 						// this is a nested condition
-						const last_condition = query.conditions[query.conditions.length - 1];
-						last_condition.chainedConditions = last_condition.chainedConditions || [];
-						last_condition.chainedConditions.push(condition);
-						last_condition.operator = last_binary_operator;
+						const lastCondition = query.conditions[query.conditions.length - 1];
+						lastCondition.chainedConditions = lastCondition.chainedConditions || [];
+						lastCondition.chainedConditions.push(condition);
+						lastCondition.operator = lastBinaryOperator;
 					} else {
-						assignOperator(query, last_binary_operator);
+						assignOperator(query, lastBinaryOperator);
 						query.conditions.push(condition);
 					}
 				}
 				if (operator === '&') {
-					last_binary_operator = 'and';
+					lastBinaryOperator = 'and';
 					attribute = undefined;
 				} else if (operator === '|') {
-					last_binary_operator = 'or';
+					lastBinaryOperator = 'or';
 					attribute = undefined;
 				} else if (operator === '&=') {
-					last_binary_operator = 'and';
+					lastBinaryOperator = 'and';
 					attribute = '';
 				} else if (operator === '|=') {
-					last_binary_operator = 'or';
+					lastBinaryOperator = 'or';
 					attribute = '';
 				}
 				break;
 			case ',':
 				if (query.conditions) {
 					// TODO: Add support for a list of values
-					throw new SyntaxError('conditions/comparisons are not allowed in a property list');
+					recordError('conditions/comparisons are not allowed in a property list');
 				} else {
 					query.push(decodeProperty(value));
 				}
 				attribute = undefined;
 				break;
 			case '(':
-				QUERY_PARSER.lastIndex = last_index;
+				QUERY_PARSER.lastIndex = lastIndex;
 				const args = parseBlock(value ? [] : new Query(), ')');
 				switch (value) {
 					case '': // nested/grouped condition
-						assignOperator(query, last_binary_operator);
+						assignOperator(query, lastBinaryOperator);
 						query.conditions.push(args);
 						break;
 					case 'limit':
@@ -984,7 +1064,7 @@ function parseBlock(query, expected_end) {
 								query.limit = args[1] - query.offset;
 								break;
 							default:
-								throw new SyntaxError('limit must have 1 or 2 arguments');
+								recordError('limit must have 1 or 2 arguments');
 						}
 						break;
 					case 'select':
@@ -996,32 +1076,32 @@ function parseBlock(query, expected_end) {
 						else query.select = args;
 						break;
 					case 'group-by':
-						throw new SyntaxError('group by is not implemented yet');
+						recordError('group by is not implemented yet');
 					case 'sort':
 						query.sort = toSortObject(args);
 						break;
 					default:
-						throw new SyntaxError(`unknown query function call ${value}`);
+						recordError(`unknown query function call ${value}`);
 				}
-				if (query_string[last_index] === ',') {
-					parser.lastIndex = ++last_index;
-				} else expecting_delimiter = true;
+				if (queryString[lastIndex] === ',') {
+					parser.lastIndex = ++lastIndex;
+				} else expectingDelimiter = true;
 				attribute = null;
 				break;
 			case '{':
-				if (query.conditions) throw new SyntaxError('property sets are not allowed in a queries');
-				if (!value) throw new SyntaxError('property sets must have a defined parent property name');
+				if (query.conditions) recordError('property sets are not allowed in a queries');
+				if (!value) recordError('property sets must have a defined parent property name');
 				// this is interpreted as property{subProperty}
-				QUERY_PARSER.lastIndex = last_index;
+				QUERY_PARSER.lastIndex = lastIndex;
 				entry = parseBlock([], '}');
 				entry.name = value;
 				query.push(entry);
-				if (query_string[last_index] === ',') {
-					parser.lastIndex = ++last_index;
-				} else expecting_delimiter = true;
+				if (queryString[lastIndex] === ',') {
+					parser.lastIndex = ++lastIndex;
+				} else expectingDelimiter = true;
 				break;
 			case '[':
-				QUERY_PARSER.lastIndex = last_index;
+				QUERY_PARSER.lastIndex = lastIndex;
 				if (value) {
 					// this is interpreted as propertyWithArray[name=value&anotherOtherConditions...]
 					entry = parseBlock(new Query(), ']');
@@ -1031,18 +1111,27 @@ function parseBlock(query, expected_end) {
 					entry = parseBlock(query.conditions ? new Query() : [], ']');
 				}
 				if (query.conditions) {
-					assignOperator(query, last_binary_operator);
-					query.conditions.push(entry);
-					attribute = null;
+					assignOperator(query, lastBinaryOperator);
+					if (queryString[lastIndex] === '=') {
+						// handle the case of a query parameter like property[]=value, using the standard equal behavior
+						valueDecoder = decodeURIComponent; // use strict decoding
+						comparator = 'equals'; // strict equals
+						attribute = decodeProperty(value);
+						parser.lastIndex = ++lastIndex;
+						break;
+					} else {
+						query.conditions.push(entry);
+						attribute = null;
+					}
 				} else query.push(entry);
-				if (query_string[last_index] === ',') {
-					parser.lastIndex = ++last_index;
-				} else expecting_delimiter = true;
+				if (queryString[lastIndex] === ',') {
+					parser.lastIndex = ++lastIndex;
+				} else expectingDelimiter = true;
 				break;
 			case ')':
 			case ']':
 			case '}':
-				if (expected_end === operator[0]) {
+				if (expectedEnd === operator[0]) {
 					// assert that it is expected
 					if (query.conditions) {
 						// finish condition
@@ -1053,34 +1142,33 @@ function parseBlock(query, expected_end) {
 								value: valueDecoder(value),
 							};
 							if (comparator === 'eq') wildcardDecoding(condition, value);
-							assignOperator(query, last_binary_operator);
+							assignOperator(query, lastBinaryOperator);
 							query.conditions.push(condition);
 						} else if (value) {
-							throw new SyntaxError('no attribute or comparison specified');
+							recordError('no attribute or comparison specified');
 						}
-					} else if (value || (query.length > 0 && expecting_value)) {
+					} else if (value || (query.length > 0 && expectingValue)) {
 						query.push(decodeProperty(value));
 					}
 					return query;
-				} else if (expected_end) throw new SyntaxError(`expected '${expected_end}', but encountered '${operator[0]}'`);
-				else throw new SyntaxError(`unexpected token '${operator[0]}'`);
+				} else if (expectedEnd) recordError(`expected '${expectedEnd}', but encountered '${operator[0]}'`);
+				else recordError(`unexpected token '${operator[0]}'`);
 			default:
-				throw new SyntaxError(`unexpected operator '${operator}'`);
+				recordError(`unexpected operator '${operator}'`);
 		}
-		if (expected_end !== ')') {
+		if (expectedEnd !== ')') {
 			parser = attribute ? VALUE_PARSER : QUERY_PARSER;
-			parser.lastIndex = last_index;
+			parser.lastIndex = lastIndex;
 		}
-		if (last_index === query_string.length) return query;
+		if (lastIndex === queryString.length) return query;
 	}
-	if (expected_end) throw new SyntaxError(`expected '${expected_end}', but encountered end of string`);
+	if (expectedEnd) recordError(`expected '${expectedEnd}', but encountered end of string`);
 }
-function assignOperator(query, last_binary_operator) {
+function assignOperator(query, lastBinaryOperator) {
 	if (query.conditions.length > 0) {
 		if (query.operator) {
-			if (query.operator !== last_binary_operator)
-				throw new SyntaxError('Can not mix operators within a condition grouping');
-		} else query.operator = last_binary_operator;
+			if (query.operator !== lastBinaryOperator) recordError('Can not mix operators within a condition grouping');
+		} else query.operator = lastBinaryOperator;
 	}
 }
 function decodeProperty(name) {
@@ -1094,14 +1182,14 @@ function typedDecoding(value) {
 	// for non-strict operators, we allow for coercion of types
 	if (value === 'null') return null;
 	if (value.indexOf(':') > -1) {
-		const [type, value_to_coerce] = value.split(':');
+		const [type, valueToCoerce] = value.split(':');
 		if (type === 'number') {
-			if (value_to_coerce[0] === '$') return parseInt(value_to_coerce.slice(1), 36);
-			return +value_to_coerce;
-		} else if (type === 'boolean') return value_to_coerce === 'true';
+			if (valueToCoerce[0] === '$') return parseInt(valueToCoerce.slice(1), 36);
+			return +valueToCoerce;
+		} else if (type === 'boolean') return valueToCoerce === 'true';
 		else if (type === 'date')
-			return new Date(isNaN(value_to_coerce) ? decodeURIComponent(value_to_coerce) : +value_to_coerce);
-		else if (type === 'string') return decodeURIComponent(value_to_coerce);
+			return new Date(isNaN(valueToCoerce) ? decodeURIComponent(valueToCoerce) : +valueToCoerce);
+		else if (type === 'string') return decodeURIComponent(valueToCoerce);
 		else throw new ClientError(`Unknown type ${type}`);
 	}
 	return decodeURIComponent(value);
@@ -1123,18 +1211,18 @@ function wildcardDecoding(condition, value) {
 }
 
 function toSortObject(sort) {
-	const sort_object = toSortEntry(sort[0]);
+	const sortObject = toSortEntry(sort[0]);
 	if (sort.length > 1) {
-		sort_object.next = toSortObject(sort.slice(1));
+		sortObject.next = toSortObject(sort.slice(1));
 	}
-	return sort_object;
+	return sortObject;
 }
 function toSortEntry(sort) {
 	if (Array.isArray(sort)) {
-		const sort_object = toSortEntry(sort[0]);
-		sort[0] = sort_object.attribute;
-		sort_object.attribute = sort;
-		return sort_object;
+		const sortObject = toSortEntry(sort[0]);
+		sort[0] = sortObject.attribute;
+		sortObject.attribute = sort;
+		return sortObject;
 	}
 	if (typeof sort === 'string') {
 		switch (sort[0]) {
@@ -1146,7 +1234,7 @@ function toSortEntry(sort) {
 				return { attribute: sort, descending: false };
 		}
 	}
-	throw new SyntaxError(`Unknown sort type ${sort}`);
+	recordError(`Unknown sort type ${sort}`);
 }
 
 class Query {
@@ -1166,6 +1254,14 @@ class Query {
 			if (condition.attribute === name) return condition.value;
 		}
 	}
+	getAll() {
+		const values = [];
+		for (let i = 0, len = this.conditions.length; i < len; i++) {
+			const condition = this.conditions[i];
+			if (condition.attribute) values.push(condition.value);
+		}
+		return values;
+	}
 }
 export function flattenKey(key) {
 	if (Array.isArray(key)) return key.join('\x00');
@@ -1183,13 +1279,4 @@ function estimatedEntryCount(store) {
 
 export function intersectionEstimate(store, left, right) {
 	return (left * right) / estimatedEntryCount(store);
-}
-export class SimpleURLQuery {
-	constructor(public url: string) {}
-	get() {
-		// this is a simple holder for the URL query, so we don't return anything (will be parsed later into a USP or Query object as needed)
-	}
-	[Symbol.iterator]() {
-		return [][Symbol.iterator]();
-	}
 }

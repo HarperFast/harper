@@ -1,70 +1,70 @@
 'use strict';
 
 // eslint-disable-next-line no-unused-vars
-const UpsertObject = require('../../../dataObjects/UpsertObject');
-const insert_update_validate = require('../../bridgeUtility/insertUpdateValidate');
-const lmdb_process_rows = require('../lmdbUtility/lmdbProcessRows');
-const lmdb_check_new_attributes = require('../lmdbUtility/lmdbCheckForNewAttributes');
-const hdb_terms = require('../../../../utility/hdbTerms');
-const lmdb_upsert_records = require('../../../../utility/lmdb/writeUtility').upsertRecords;
-const environment_utility = require('../../../../utility/lmdb/environmentUtility');
-const { getSchemaPath } = require('../lmdbUtility/initializePaths');
-const write_transaction = require('../lmdbUtility/lmdbWriteTransaction');
+const UpsertObject = require('../../../dataObjects/UpsertObject.js');
+const insertUpdateValidate = require('../../bridgeUtility/insertUpdateValidate.js');
+const lmdbProcessRows = require('../lmdbUtility/lmdbProcessRows.js');
+const lmdbCheckNewAttributes = require('../lmdbUtility/lmdbCheckForNewAttributes.js');
+const hdbTerms = require('../../../../utility/hdbTerms.ts');
+const lmdb_upsert_records = require('../../../../utility/lmdb/writeUtility.js').upsertRecords;
+const environmentUtility = require('../../../../utility/lmdb/environmentUtility.js');
+const { getSchemaPath } = require('../lmdbUtility/initializePaths.js');
+const writeTransaction = require('../lmdbUtility/lmdbWriteTransaction.js');
 
-const logger = require('../../../../utility/logging/harper_logger');
-const { handleHDBError, hdb_errors } = require('../../../../utility/errors/hdbError');
+const logger = require('../../../../utility/logging/harper_logger.js');
+const { handleHDBError, hdbErrors } = require('../../../../utility/errors/hdbError.js');
 
 module.exports = lmdbUpsertRecords;
 
 /**
  * Orchestrates the UPSERT of data in LMDB and the creation of new attributes/dbis
  * if they do not already exist.
- * @param {UpsertObject} upsert_obj
+ * @param {UpsertObject} upsertObj
  * @returns {{ skipped_hashes: *, written_hashes: *, schema_table: *, new_attributes: *, txn_time: * }}
  */
-async function lmdbUpsertRecords(upsert_obj) {
-	let validation_result;
+async function lmdbUpsertRecords(upsertObj) {
+	let validationResult;
 	try {
-		validation_result = insert_update_validate(upsert_obj);
+		validationResult = insertUpdateValidate(upsertObj);
 	} catch (err) {
-		throw handleHDBError(err, err.message, hdb_errors.HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
+		throw handleHDBError(err, err.message, hdbErrors.HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
-	let { schema_table, attributes } = validation_result;
+	let { schemaTable, attributes } = validationResult;
 
-	lmdb_process_rows(upsert_obj, attributes, schema_table.hash_attribute);
+	lmdbProcessRows(upsertObj, attributes, schemaTable.hash_attribute);
 
-	if (upsert_obj.schema !== hdb_terms.SYSTEM_SCHEMA_NAME) {
-		if (!attributes.includes(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME)) {
-			attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.CREATED_TIME);
+	if (upsertObj.schema !== hdbTerms.SYSTEM_SCHEMA_NAME) {
+		if (!attributes.includes(hdbTerms.TIME_STAMP_NAMES_ENUM.CREATED_TIME)) {
+			attributes.push(hdbTerms.TIME_STAMP_NAMES_ENUM.CREATED_TIME);
 		}
 
-		if (!attributes.includes(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME)) {
-			attributes.push(hdb_terms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME);
+		if (!attributes.includes(hdbTerms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME)) {
+			attributes.push(hdbTerms.TIME_STAMP_NAMES_ENUM.UPDATED_TIME);
 		}
 	}
 
-	let new_attributes = await lmdb_check_new_attributes(upsert_obj.hdb_auth_header, schema_table, attributes);
-	let env_base_path = getSchemaPath(upsert_obj.schema, upsert_obj.table);
-	let environment = await environment_utility.openEnvironment(env_base_path, upsert_obj.table);
-	let lmdb_response = await lmdb_upsert_records(
+	let new_attributes = await lmdbCheckNewAttributes(upsertObj.hdb_auth_header, schemaTable, attributes);
+	let envBasePath = getSchemaPath(upsertObj.schema, upsertObj.table);
+	let environment = await environmentUtility.openEnvironment(envBasePath, upsertObj.table);
+	let lmdbResponse = await lmdb_upsert_records(
 		environment,
-		schema_table.hash_attribute,
+		schemaTable.hash_attribute,
 		attributes,
-		upsert_obj.records,
-		upsert_obj.__origin?.timestamp
+		upsertObj.records,
+		upsertObj.__origin?.timestamp
 	);
 
 	try {
-		await write_transaction(upsert_obj, lmdb_response);
+		await writeTransaction(upsertObj, lmdbResponse);
 	} catch (e) {
 		logger.error(`unable to write transaction due to ${e.message}`);
 	}
 
 	return {
-		written_hashes: lmdb_response.written_hashes,
-		schema_table,
+		written_hashes: lmdbResponse.written_hashes,
+		schemaTable,
 		new_attributes,
-		txn_time: lmdb_response.txn_time,
+		txn_time: lmdbResponse.txn_time,
 	};
 }

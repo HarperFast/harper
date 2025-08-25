@@ -8,6 +8,8 @@ global.server = exports.server = {};
 global.contentTypes = exports.contentTypes = null;
 global.threads = exports.threads = [];
 global.logger = {};
+global.RequestTarget = exports.RequestTarget = undefined;
+global.operation = exports.operation = undefined;
 exports._assignPackageExport = (name, value) => {
 	global[name] = exports[name] = value;
 };

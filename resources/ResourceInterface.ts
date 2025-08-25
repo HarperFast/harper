@@ -1,24 +1,33 @@
-import { DatabaseTransaction } from './DatabaseTransaction';
+import { DatabaseTransaction } from './DatabaseTransaction.ts';
+import { OperationFunctionName } from '../server/serverHelpers/serverUtilities.ts';
+import { RequestTarget } from './RequestTarget';
 
 export interface ResourceInterface<Key = any, Record = any> {
-	get?(): Promise<UpdatableRecord<Record>>;
-	get?(query: Query): Promise<AsyncIterable<Record>>;
-	get?(property: string): any;
-	put?(record: any): void;
-	update?(updates: any, full_update?: boolean): Promise<UpdatableRecord<Record>>;
-	delete?(): boolean;
-	search?(query: Query): AsyncIterable<any>;
+	get?(id: Id): Promise<UpdatableRecord<Record>>;
+	get?(query: RequestTargetOrId): Promise<AsyncIterable<Record>>;
+	put?(target: RequestTargetOrId, record: any): void;
+	post?(target: RequestTargetOrId, record: any): void;
+	patch?(target: RequestTargetOrId, record: any): void;
+	publish?(target: RequestTargetOrId, record: any): void;
+	update?(updates: any, fullUpdate?: boolean): Promise<UpdatableRecord<Record>>;
+	delete?(target: RequestTargetOrId): boolean;
+	search?(query: RequestTarget): AsyncIterable<any>;
 	subscribe?(request: SubscriptionRequest): Subscription;
-	allowRead(user: any, query?: Query, context: Context): boolean | Promise<boolean>;
-	allowUpdate(user: any, record: any, full_update?: boolean): boolean | Promise<boolean>;
-	allowCreate(user: any, record: any, context: Context): boolean | Promise<boolean>;
-	allowDelete(user: any, query: Query, context: Context): boolean | Promise<boolean>;
+	allowRead(user: any, target: RequestTarget): boolean | Promise<boolean>;
+	allowUpdate(user: any, record: any, target: RequestTarget): boolean | Promise<boolean>;
+	allowCreate(user: any, record: any, target: RequestTarget): boolean | Promise<boolean>;
+	allowDelete(user: any, target: RequestTarget): boolean | Promise<boolean>;
 }
+
+export interface User {
+	username: string;
+}
+
 export interface Context {
 	/**	 The user making the request	 */
-	user?: any;
+	user?: User;
 	/**	 The database transaction object	 */
-	transaction: DatabaseTransaction;
+	transaction?: DatabaseTransaction;
 	/**	 If the operation that will be performed with this context should check user authorization	 */
 	authorize?: number;
 	/**	 The last modification time of any data that has been accessed with this context	 */
@@ -37,17 +46,44 @@ export interface Context {
 	mustRevalidate?: boolean;
 	/**	 An array of nodes to replicate to */
 	replicateTo?: string[];
+	replicateFrom?: boolean;
+	replicatedConfirmation?: number;
+	originatingOperation?: OperationFunctionName;
+	previousResidency?: string[];
+	loadedFromSource?: boolean;
+	nodeName?: string;
+	resourceCache?: Map<Id, any>;
+	_freezeRecords?: boolean; // until v5, we conditionally freeze records for back-compat
 }
+
+export type Operator = 'and' | 'or';
+
+type SearchType =
+	| 'equals'
+	| 'contains'
+	| 'starts_with'
+	| 'ends_with'
+	| 'greater_than'
+	| 'greater_than_equal'
+	| 'less_than'
+	| 'less_than_equal'
+	| 'between';
+
 export interface DirectCondition {
-	attribute: string;
-	comparator?: string;
-	value: any;
+	attribute?: string;
+	search_attribute?: string;
+	comparator?: SearchType;
+	search_type?: SearchType;
+	value?: any;
+	search_value?: any;
 }
 interface ConditionGroup {
-	conditions: Condition[];
-	operator?: string;
+	conditions: Conditions;
+	operator?: Operator;
 }
 export type Condition = DirectCondition | ConditionGroup;
+export type Conditions = Condition[];
+
 export interface Sort {
 	attribute: string;
 	descending?: boolean;
@@ -57,26 +93,7 @@ export interface SubSelect {
 	name: string;
 	select: (string | SubSelect)[];
 }
-export interface Query {
-	/** Retrieve a specific record, but can be combined with select */
-	id?: Id;
-	/**	 The conditions to use in the query, that the returned records must satisfy	 */
-	conditions?: Condition[];
-	/**	 The number of records to return	 */
-	limit?: number;
-	/**	 The number of records to skip	 */
-	offset?: number;
-	/**	 The number of operator to use*/
-	operator?: 'AND' | 'OR';
-	/**	 The sort attribute and direction to use */
-	sort?: Sort;
-	/**	 The selected attributes to return	 */
-	select?: (string | SubSelect)[];
-	/**	 Return an explanation of the query order */
-	explain?: boolean;
-	/**	 Force the query to be executed in the order of conditions */
-	enforceExecutionOrder?: boolean;
-}
+export type Select = (string | SubSelect)[];
 export interface SubscriptionRequest {
 	/** The starting time of events to return (defaults to now) */
 	startTime?: number;
@@ -84,8 +101,15 @@ export interface SubscriptionRequest {
 	previousCount?: number;
 	/** If the current record state should be omitted as the first event */
 	omitCurrent?: boolean;
+	onlyChildren?: boolean;
+	includeDescendants?: boolean;
+	supportsTransactions?: boolean;
+	rawEvents?: boolean;
+	listener: (data: any) => void;
 }
+export type Query = RequestTarget; // for back-compat
+export type RequestTargetOrId = RequestTarget | Id;
+
 export type Id = number | string | (number | string | null)[] | null;
 type UpdatableRecord<T> = T;
 interface Subscription {}
-type ResourceId = Request | number | string;

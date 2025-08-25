@@ -1,18 +1,18 @@
 'use strict';
 
-require('../../bin/dev');
-const hdb_terms = require('../../utility/hdbTerms');
-const hdb_utils = require('../../utility/common_utils');
-const harper_logger = require('../../utility/logging/harper_logger');
-const global_schema = require('../../utility/globalSchema');
-const user = require('../../security/user');
-const server_utils = require('../serverHelpers/serverUtilities');
-const { start: startNATS } = require('../nats/natsReplicator');
-const { closeConnection } = require('../nats/utility/natsUtils');
+require('../../bin/dev.js');
+const hdbTerms = require('../../utility/hdbTerms.ts');
+const hdbUtils = require('../../utility/common_utils.js');
+const harperLogger = require('../../utility/logging/harper_logger.js');
+const globalSchema = require('../../utility/globalSchema.js');
+const user = require('../../security/user.js');
+const serverUtils = require('../serverHelpers/serverUtilities.ts');
+const { start: startNATS } = require('../nats/natsReplicator.ts');
+const { closeConnection } = require('../nats/utility/natsUtils.js');
 const moment = require('moment');
-const jobs = require('./jobs');
+const jobs = require('./jobs.js');
 const { cloneDeep } = require('lodash');
-const JOB_NAME = process.env[hdb_terms.PROCESS_NAME_ENV_PROP];
+const JOB_NAME = process.env[hdbTerms.PROCESS_NAME_ENV_PROP];
 const JOB_ID = JOB_NAME.substring(4);
 
 /**
@@ -22,53 +22,53 @@ const JOB_ID = JOB_NAME.substring(4);
  */
 (async function job() {
 	// The request value could potentially be quite large so it's set to undefined to clear it out after being processed.
-	let job_obj = { id: JOB_ID, request: undefined };
-	let exit_code = 0;
+	let jobObj = { id: JOB_ID, request: undefined };
+	let exitCode = 0;
 	try {
-		harper_logger.notify('Starting job:', JOB_ID);
+		harperLogger.notify('Starting job:', JOB_ID);
 		startNATS();
-		global_schema.setSchemaDataToGlobal();
+		globalSchema.setSchemaDataToGlobal();
 		await user.setUsersWithRolesCache();
 
-		// When the job record is first inserted in hdb_job table by HDB, the incoming API request is included, this is
+		// When the job record is first inserted in hdbJob table by HDB, the incoming API request is included, this is
 		// how we pass the request to the job process. IPC was initially used but messages were getting lost under heavy load.
-		const job_record = await jobs.getJobById(JOB_ID);
-		if (hdb_utils.isEmptyOrZeroLength(job_record)) {
-			throw new Error(`Unable to find a record in hdb_job for job: ${JOB_ID}`);
+		const jobRecord = await jobs.getJobById(JOB_ID);
+		if (hdbUtils.isEmptyOrZeroLength(jobRecord)) {
+			throw new Error(`Unable to find a record in hdbJob for job: ${JOB_ID}`);
 		}
 
-		let { request } = job_record[0];
-		if (hdb_utils.isEmptyOrZeroLength(request)) {
+		let { request } = jobRecord[0];
+		if (hdbUtils.isEmptyOrZeroLength(request)) {
 			throw new Error('Did not find job request in hdb_job table, unable to proceed');
 		}
 		request = cloneDeep(request);
 
-		const operation = server_utils.getOperationFunction(request);
-		harper_logger.trace('Running operation:', request.operation, 'for job', JOB_ID);
+		const operation = serverUtils.getOperationFunction(request);
+		harperLogger.trace('Running operation:', request.operation, 'for job', JOB_ID);
 
 		// Run the job operation.
 		const results = await operation.job_operation_function(request);
-		harper_logger.trace('Result from job:', JOB_ID, results);
+		harperLogger.trace('Result from job:', JOB_ID, results);
 
-		job_obj.status = hdb_terms.JOB_STATUS_ENUM.COMPLETE;
-		if (typeof results === 'string') job_obj.message = results;
+		jobObj.status = hdbTerms.JOB_STATUS_ENUM.COMPLETE;
+		if (typeof results === 'string') jobObj.message = results;
 		else {
-			job_obj.result = results;
-			job_obj.message = 'Successfully completed job: ' + JOB_ID;
+			jobObj.result = results;
+			jobObj.message = 'Successfully completed job: ' + JOB_ID;
 		}
-		job_obj.end_datetime = moment().valueOf();
-		harper_logger.notify('Successfully completed job:', JOB_ID);
+		jobObj.end_datetime = moment().valueOf();
+		harperLogger.notify('Successfully completed job:', JOB_ID);
 	} catch (err) {
-		exit_code = 1;
-		harper_logger.error(err);
-		job_obj.status = hdb_terms.JOB_STATUS_ENUM.ERROR;
-		job_obj.message = err.message ? err.message : err;
-		job_obj.end_datetime = moment().valueOf();
+		exitCode = 1;
+		harperLogger.error(err);
+		jobObj.status = hdbTerms.JOB_STATUS_ENUM.ERROR;
+		jobObj.message = err.message ? err.message : err;
+		jobObj.end_datetime = moment().valueOf();
 	} finally {
-		await jobs.updateJob(job_obj);
+		await jobs.updateJob(jobObj);
 		await closeConnection();
 		setTimeout(() => {
-			process.exit(exit_code);
+			process.exit(exitCode);
 		}, 3000).unref();
 	}
 })();

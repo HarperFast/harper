@@ -28,7 +28,7 @@ describe('Test natsReplyService Module', () => {
 
 	before(() => {
 		natsReplyService.__set__('decode', sandbox.stub().returns(fake_msg));
-		natsReplyService.__set__('update_remote_source', update_remote_source_stub);
+		natsReplyService.__set__('updateRemoteSource', update_remote_source_stub);
 		sandbox.stub(nats_utils, 'getConnection').resolves(fake_connection);
 		env_manager.setProperty(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME, 'test_node');
 	});

@@ -1,5 +1,5 @@
 'use strict';
-const OPERATIONS_ENUM = require('../utility/hdbTerms').OPERATIONS_ENUM;
+const OPERATIONS_ENUM = require('../utility/hdbTerms.ts').OPERATIONS_ENUM;
 
 /**
  * opject representing an update operation

@@ -28,7 +28,18 @@
 		"sonarjs/public-static-readonly": "off",
 		"sonarjs/pseudo-random": "off",
 		"sonarjs/assertions-in-tests": "off",
+		"sonarjs/todo-tag": "off",
+		"sonarjs/no-nested-functions": "off",
+		"sonarjs/no-nested-template-literals": "off",
 		"@typescript-eslint/no-explicit-any": "off",
 		"@typescript-eslint/no-var-requires": "off"
-	}
+	},
+	"overrides": [
+		{
+			"files": ["*.js"],
+			"rules": {
+				"@typescript-eslint/no-require-imports": "off"
+			}
+		}
+	]
 }

@@ -1,39 +1,41 @@
-import { initSync, getHdbBasePath, get as env_get } from '../utility/environment/environmentManager';
-import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms';
-import { open, compareKeys } from 'lmdb';
+import { initSync, getHdbBasePath, get as envGet } from '../utility/environment/environmentManager.js';
+import { INTERNAL_DBIS_NAME } from '../utility/lmdb/terms.js';
+import { open, compareKeys, type Database } from 'lmdb';
 import { join, extname, basename } from 'path';
 import { existsSync, readdirSync } from 'fs';
 import {
 	getBaseSchemaPath,
 	getTransactionAuditStoreBasePath,
-} from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths';
-import { makeTable } from './Table';
-import OpenDBIObject from '../utility/lmdb/OpenDBIObject';
-import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject';
-import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms';
+} from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
+import { makeTable } from './Table.ts';
+import OpenDBIObject from '../utility/lmdb/OpenDBIObject.js';
+import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.js';
+import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
 import * as fs from 'fs-extra';
-import { _assignPackageExport } from '../globals';
-import { getIndexedValues } from '../utility/lmdb/commonUtility';
-import * as signalling from '../utility/signalling';
-import { SchemaEventMsg } from '../server/threads/itc';
+import { _assignPackageExport } from '../globals.js';
+import { getIndexedValues } from '../utility/lmdb/commonUtility.js';
+import * as signalling from '../utility/signalling.js';
+import { SchemaEventMsg } from '../server/threads/itc.js';
 import { workerData, threadId } from 'worker_threads';
-import * as harper_logger from '../utility/logging/harper_logger';
-import * as manage_threads from '../server/threads/manageThreads';
-import { openAuditStore, transactionKeyEncoder } from './auditStore';
-import { handleLocalTimeForGets } from './RecordEncoder';
-import { deleteRootBlobPathsForDB } from './blob';
+import { forComponent } from '../utility/logging/harper_logger.js';
+import * as manageThreads from '../server/threads/manageThreads.js';
+import { openAuditStore, transactionKeyEncoder } from './auditStore.ts';
+import { handleLocalTimeForGets } from './RecordEncoder.ts';
+import { deleteRootBlobPathsForDB } from './blob.ts';
+import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
+const logger = forComponent('storage');
 
 const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
-const DEFAULT_COMPRESSION_THRESHOLD = (env_get(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
+const DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
 initSync();
 
 export type Table = ReturnType<typeof makeTable>;
 export interface Tables {
-	[table_name: string]: Table;
+	[tableName: string]: Table;
 }
 export interface Databases {
-	[database_name: string]: Tables;
+	[databaseName: string]: Tables;
 }
 
 export const tables: Tables = Object.create(null);
@@ -41,18 +43,18 @@ export const databases: Databases = Object.create(null);
 _assignPackageExport('databases', databases);
 _assignPackageExport('tables', tables);
 const NEXT_TABLE_ID = Symbol.for('next-table-id');
-const table_listeners = [];
-const db_removal_listeners = [];
-let loaded_databases; // indicates if we have loaded databases from the file system yet
-export const database_envs = new Map<string, any>();
+const tableListeners = [];
+const dbRemovalListeners = [];
+let loadedDatabases; // indicates if we have loaded databases from the file system yet
+export const databaseEnvs = new Map<string, any>();
 // This is used to track all the databases that are found when iterating through the file system so that anything that is missing
 // can be removed:
-let defined_databases;
+let definedDatabases;
 /**
  * This gets the set of tables from the default database ("data").
  */
 export function getTables(): Tables {
-	if (!loaded_databases) getDatabases();
+	if (!loadedDatabases) getDatabases();
 	return tables || {};
 }
 
@@ -66,46 +68,46 @@ export function getTables(): Tables {
  * can span any tables in the database.
  */
 export function getDatabases(): Databases {
-	if (loaded_databases) return databases;
-	loaded_databases = true;
-	defined_databases = new Map();
-	let database_path = getHdbBasePath() && join(getHdbBasePath(), DATABASES_DIR_NAME);
-	const schema_configs = env_get(CONFIG_PARAMS.DATABASES) || {};
+	if (loadedDatabases) return databases;
+	loadedDatabases = true;
+	definedDatabases = new Map();
+	let databasePath = getHdbBasePath() && join(getHdbBasePath(), DATABASES_DIR_NAME);
+	const schemaConfigs = envGet(CONFIG_PARAMS.DATABASES) || {};
 	// not sure why this doesn't work with the environmemt manager
-	if (process.env.SCHEMAS_DATA_PATH) schema_configs.data = { path: process.env.SCHEMAS_DATA_PATH };
-	database_path =
+	if (process.env.SCHEMAS_DATA_PATH) schemaConfigs.data = { path: process.env.SCHEMAS_DATA_PATH };
+	databasePath =
 		process.env.STORAGE_PATH ||
-		env_get(CONFIG_PARAMS.STORAGE_PATH) ||
-		(database_path && (existsSync(database_path) ? database_path : join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME)));
-	if (!database_path) return;
-	if (existsSync(database_path)) {
+		envGet(CONFIG_PARAMS.STORAGE_PATH) ||
+		(databasePath && (existsSync(databasePath) ? databasePath : join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME)));
+	if (!databasePath) return;
+	if (existsSync(databasePath)) {
 		// First load all the databases from our main database folder
 		// TODO: Load any databases defined with explicit storage paths from the config
-		for (const database_entry of readdirSync(database_path, { withFileTypes: true })) {
-			const db_name = basename(database_entry.name, '.mdb');
+		for (const databaseEntry of readdirSync(databasePath, { withFileTypes: true })) {
+			const dbName = basename(databaseEntry.name, '.mdb');
 			if (
-				database_entry.isFile() &&
-				extname(database_entry.name).toLowerCase() === '.mdb' &&
-				!schema_configs[db_name]?.path
+				databaseEntry.isFile() &&
+				extname(databaseEntry.name).toLowerCase() === '.mdb' &&
+				!schemaConfigs[dbName]?.path
 			) {
-				readMetaDb(join(database_path, database_entry.name), null, db_name);
+				readMetaDb(join(databasePath, databaseEntry.name), null, dbName);
 			}
 		}
 	}
 	// now we load databases from the legacy "schema" directory folder structure
 	if (existsSync(getBaseSchemaPath())) {
-		for (const schema_entry of readdirSync(getBaseSchemaPath(), { withFileTypes: true })) {
-			if (!schema_entry.isFile()) {
-				const schema_path = join(getBaseSchemaPath(), schema_entry.name);
-				const schema_audit_path = join(getTransactionAuditStoreBasePath(), schema_entry.name);
-				for (const table_entry of readdirSync(schema_path, { withFileTypes: true })) {
-					if (table_entry.isFile() && extname(table_entry.name).toLowerCase() === '.mdb') {
-						const audit_path = join(schema_audit_path, table_entry.name);
+		for (const schemaEntry of readdirSync(getBaseSchemaPath(), { withFileTypes: true })) {
+			if (!schemaEntry.isFile()) {
+				const schemaPath = join(getBaseSchemaPath(), schemaEntry.name);
+				const schemaAuditPath = join(getTransactionAuditStoreBasePath(), schemaEntry.name);
+				for (const tableEntry of readdirSync(schemaPath, { withFileTypes: true })) {
+					if (tableEntry.isFile() && extname(tableEntry.name).toLowerCase() === '.mdb') {
+						const auditPath = join(schemaAuditPath, tableEntry.name);
 						readMetaDb(
-							join(schema_path, table_entry.name),
-							basename(table_entry.name, '.mdb'),
-							schema_entry.name,
-							audit_path,
+							join(schemaPath, tableEntry.name),
+							basename(tableEntry.name, '.mdb'),
+							schemaEntry.name,
+							auditPath,
 							true
 						);
 					}
@@ -113,24 +115,24 @@ export function getDatabases(): Databases {
 			}
 		}
 	}
-	if (schema_configs) {
-		for (const db_name in schema_configs) {
-			const schema_config = schema_configs[db_name];
-			const database_path = schema_config.path;
-			if (existsSync(database_path)) {
-				for (const database_entry of readdirSync(database_path, { withFileTypes: true })) {
-					if (database_entry.isFile() && extname(database_entry.name).toLowerCase() === '.mdb') {
-						readMetaDb(join(database_path, database_entry.name), basename(database_entry.name, '.mdb'), db_name);
+	if (schemaConfigs) {
+		for (const dbName in schemaConfigs) {
+			const schemaConfig = schemaConfigs[dbName];
+			const databasePath = schemaConfig.path;
+			if (existsSync(databasePath)) {
+				for (const databaseEntry of readdirSync(databasePath, { withFileTypes: true })) {
+					if (databaseEntry.isFile() && extname(databaseEntry.name).toLowerCase() === '.mdb') {
+						readMetaDb(join(databasePath, databaseEntry.name), basename(databaseEntry.name, '.mdb'), dbName);
 					}
 				}
 			}
-			const table_configs = schema_config.tables;
-			if (table_configs) {
-				for (const table_name in table_configs) {
-					const table_config = table_configs[table_name];
-					const table_path = join(table_config.path, basename(table_name + '.mdb'));
-					if (existsSync(table_path)) {
-						readMetaDb(table_path, table_name, db_name, null, true);
+			const tableConfigs = schemaConfig.tables;
+			if (tableConfigs) {
+				for (const tableName in tableConfigs) {
+					const tableConfig = tableConfigs[tableName];
+					const tablePath = join(tableConfig.path, basename(tableName + '.mdb'));
+					if (existsSync(tablePath)) {
+						readMetaDb(tablePath, tableName, dbName, null, true);
 					}
 				}
 			}
@@ -138,23 +140,23 @@ export function getDatabases(): Databases {
 		}
 	}
 	// now remove any databases or tables that have been removed
-	for (const db_name in databases) {
-		const defined_tables = defined_databases.get(db_name);
-		if (defined_tables) {
-			const tables = databases[db_name];
-			if (db_name.includes('delete')) harper_logger.trace(`defined tables ${Array.from(defined_tables.keys())}`);
+	for (const dbName in databases) {
+		const definedTables = definedDatabases.get(dbName);
+		if (definedTables) {
+			const tables = databases[dbName];
+			if (dbName.includes('delete')) logger.trace(`defined tables ${Array.from(definedTables.keys())}`);
 
-			for (const table_name in tables) {
-				if (!defined_tables.has(table_name)) {
-					harper_logger.trace(`delete table class ${table_name}`);
-					delete tables[table_name];
+			for (const tableName in tables) {
+				if (!definedTables.has(tableName)) {
+					logger.trace(`delete table class ${tableName}`);
+					delete tables[tableName];
 				}
 			}
 		} else {
-			delete databases[db_name];
-			if (db_name === 'data') {
-				for (const table_name in tables) {
-					delete tables[table_name];
+			delete databases[dbName];
+			if (dbName === 'data') {
+				for (const tableName in tables) {
+					delete tables[tableName];
 				}
 				delete tables[DEFINED_TABLES];
 			}
@@ -165,33 +167,48 @@ export function getDatabases(): Databases {
 	const NON_REPLICATING_SYSTEM_TABLES = [
 		'hdb_temp',
 		'hdb_certificate',
-		'hdb_analytics',
 		'hdb_raw_analytics',
 		'hdb_session_will',
 		'hdb_job',
 		'hdb_license',
 		'hdb_info',
 	];
+	if (envGet(CONFIG_PARAMS.ANALYTICS_REPLICATE) === false) {
+		NON_REPLICATING_SYSTEM_TABLES.push('hdb_analytics');
+	} else {
+		// auditing must be enabled for replication
+		databases.system?.hdb_analytics?.enableAuditing();
+		databases.system?.hdb_analytics_hostname?.enableAuditing();
+	}
 	if (databases.system) {
-		for (const table_name of NON_REPLICATING_SYSTEM_TABLES) {
-			if (databases.system[table_name]) databases.system[table_name].replicate = false;
+		for (const tableName of NON_REPLICATING_SYSTEM_TABLES) {
+			if (databases.system[tableName]) {
+				databases.system[tableName].replicate = false;
+			}
 		}
 	}
-	defined_databases = null;
+	definedDatabases = null;
 	return databases;
 }
 export function resetDatabases() {
-	loaded_databases = false;
-	for (const [, store] of database_envs) {
+	loadedDatabases = false;
+	for (const [, store] of databaseEnvs) {
 		store.needsDeletion = true;
 	}
 	getDatabases();
-	for (const [path, store] of database_envs) {
+	for (const [path, store] of databaseEnvs) {
 		if (store.needsDeletion && !path.endsWith('system.mdb')) {
 			store.close();
-			database_envs.delete(path);
-			delete databases[store.databaseName];
-			db_removal_listeners.forEach((listener) => listener(store.databaseName));
+			databaseEnvs.delete(path);
+			const db = databases[store.databaseName];
+			for (const tableName in db) {
+				const table = db[tableName];
+				if (table.primaryStore.path === path) {
+					delete databases[store.databaseName];
+					dbRemovalListeners.forEach((listener) => listener(store.databaseName));
+					break;
+				}
+			}
 		}
 	}
 	return databases;
@@ -201,78 +218,77 @@ export function resetDatabases() {
  * This is responsible for reading the internal dbi of a single database file to get a list of all the tables and
  * their indexed or registered attributes
  * @param path
- * @param default_table
- * @param database_name
+ * @param defaultTable
+ * @param databaseName
  */
 export function readMetaDb(
 	path: string,
-	default_table?: string,
-	database_name: string = DEFAULT_DATABASE_NAME,
-	audit_path?: string,
-	is_legacy?: boolean
+	defaultTable?: string,
+	databaseName: string = DEFAULT_DATABASE_NAME,
+	auditPath?: string,
+	isLegacy?: boolean
 ) {
-	const env_init = new OpenEnvironmentObject(path, false);
+	const envInit = new OpenEnvironmentObject(path, false);
 	try {
-		let root_store = database_envs.get(path);
-		if (root_store) root_store.needsDeletion = false;
+		let rootStore = databaseEnvs.get(path);
+		if (rootStore) rootStore.needsDeletion = false;
 		else {
-			root_store = open(env_init);
-			database_envs.set(path, root_store);
+			rootStore = open(envInit);
+			databaseEnvs.set(path, rootStore);
 		}
-		const internal_dbi_init = new OpenDBIObject(false);
-		const dbis_store =
-			root_store.dbisDb || (root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init));
-		let audit_store = root_store.auditStore;
-		if (!audit_store) {
-			if (audit_path) {
-				if (existsSync(audit_path)) {
-					env_init.path = audit_path;
-					audit_store = open(env_init);
-					audit_store.isLegacy = true;
+		const internalDbiInit = new OpenDBIObject(false);
+		const dbisStore = rootStore.dbisDb || (rootStore.dbisDb = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit));
+		let auditStore = rootStore.auditStore;
+		if (!auditStore) {
+			if (auditPath) {
+				if (existsSync(auditPath)) {
+					envInit.path = auditPath;
+					auditStore = open(envInit);
+					auditStore.isLegacy = true;
 				}
 			} else {
-				audit_store = openAuditStore(root_store);
+				auditStore = openAuditStore(rootStore);
 			}
 		}
 
-		const tables = ensureDB(database_name);
-		const defined_tables = tables[DEFINED_TABLES];
-		const tables_to_load = new Map();
-		for (const { key, value } of dbis_store.getRange({ start: false })) {
-			let [table_name, attribute_name] = key.toString().split('/');
+		const tables = ensureDB(databaseName);
+		const definedTables = tables[DEFINED_TABLES];
+		const tablesToLoad = new Map();
+		for (const { key, value } of dbisStore.getRange({ start: false })) {
+			let [tableName, attribute_name] = key.toString().split('/');
 			if (attribute_name === '') {
 				// primary key
 				attribute_name = value.name;
 			} else if (!attribute_name) {
-				attribute_name = table_name;
-				table_name = default_table;
+				attribute_name = tableName;
+				tableName = defaultTable;
 				if (!value.name) {
 					// legacy attribute
 					value.name = attribute_name;
 					value.indexed = !value.is_hash_attribute;
 				}
 			}
-			defined_tables?.add(table_name);
-			let table_def = tables_to_load.get(table_name);
-			if (!table_def) tables_to_load.set(table_name, (table_def = { attributes: [] }));
-			if (attribute_name == null || value.is_hash_attribute) table_def.primary = value;
-			if (attribute_name != null) table_def.attributes.push(value);
+			definedTables?.add(tableName);
+			let tableDef = tablesToLoad.get(tableName);
+			if (!tableDef) tablesToLoad.set(tableName, (tableDef = { attributes: [] }));
+			if (attribute_name == null || value.is_hash_attribute) tableDef.primary = value;
+			if (attribute_name != null) tableDef.attributes.push(value);
 			Object.defineProperty(value, 'key', { value: key, configurable: true });
 		}
 
-		for (const [table_name, table_def] of tables_to_load) {
-			let { attributes, primary: primary_attribute } = table_def;
-			if (!primary_attribute) {
+		for (const [tableName, tableDef] of tablesToLoad) {
+			let { attributes, primary: primaryAttribute } = tableDef;
+			if (!primaryAttribute) {
 				// this isn't defined, find it in the attributes
 				for (const attribute of attributes) {
 					if (attribute.is_hash_attribute || attribute.isPrimaryKey) {
-						primary_attribute = attribute;
+						primaryAttribute = attribute;
 						break;
 					}
 				}
-				if (!primary_attribute) {
-					harper_logger.warn(
-						`Unable to find a primary key attribute on table ${table_name}, with attributes: ${JSON.stringify(
+				if (!primaryAttribute) {
+					logger.warn(
+						`Unable to find a primary key attribute on table ${tableName}, with attributes: ${JSON.stringify(
 							attributes
 						)}`
 					);
@@ -280,124 +296,122 @@ export function readMetaDb(
 				}
 			}
 			// if the table has already been defined, use that class, don't create a new one
-			let table = tables[table_name];
+			let table = tables[tableName];
 			let indices = {},
-				existing_attributes = [];
-			let table_id;
-			let primary_store;
+				existingAttributes = [];
+			let tableId;
+			let primaryStore;
 			const audit =
-				typeof primary_attribute.audit === 'boolean'
-					? primary_attribute.audit
-					: env_get(CONFIG_PARAMS.LOGGING_AUDITLOG);
-			const track_deletes = primary_attribute.trackDeletes;
-			const expiration = primary_attribute.expiration;
-			const eviction = primary_attribute.eviction;
-			const sealed = primary_attribute.sealed;
-			const split_segments = primary_attribute.splitSegments;
-			const replicate = primary_attribute.replicate;
+				typeof primaryAttribute.audit === 'boolean' ? primaryAttribute.audit : envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
+			const trackDeletes = primaryAttribute.trackDeletes;
+			const expiration = primaryAttribute.expiration;
+			const eviction = primaryAttribute.eviction;
+			const sealed = primaryAttribute.sealed;
+			const splitSegments = primaryAttribute.splitSegments;
+			const replicate = primaryAttribute.replicate;
 			if (table) {
 				indices = table.indices;
-				existing_attributes = table.attributes;
+				existingAttributes = table.attributes;
 				table.schemaVersion++;
 			} else {
-				table_id = primary_attribute.tableId;
-				if (table_id) {
-					if (table_id >= (dbis_store.get(NEXT_TABLE_ID) || 0)) {
-						dbis_store.putSync(NEXT_TABLE_ID, table_id + 1);
-						harper_logger.info(`Updating next table id (it was out of sync) to ${table_id + 1} for ${table_name}`);
+				tableId = primaryAttribute.tableId;
+				if (tableId) {
+					if (tableId >= (dbisStore.get(NEXT_TABLE_ID) || 0)) {
+						dbisStore.putSync(NEXT_TABLE_ID, tableId + 1);
+						logger.info(`Updating next table id (it was out of sync) to ${tableId + 1} for ${tableName}`);
 					}
 				} else {
-					primary_attribute.tableId = table_id = dbis_store.get(NEXT_TABLE_ID);
-					if (!table_id) table_id = 1;
-					harper_logger.debug(`Table {table_name} missing an id, assigning {table_id}`);
-					dbis_store.putSync(NEXT_TABLE_ID, table_id + 1);
-					dbis_store.putSync(primary_attribute.key, primary_attribute);
+					primaryAttribute.tableId = tableId = dbisStore.get(NEXT_TABLE_ID);
+					if (!tableId) tableId = 1;
+					logger.debug(`Table {tableName} missing an id, assigning {tableId}`);
+					dbisStore.putSync(NEXT_TABLE_ID, tableId + 1);
+					dbisStore.putSync(primaryAttribute.key, primaryAttribute);
 				}
-				const dbi_init = new OpenDBIObject(!primary_attribute.is_hash_attribute, primary_attribute.is_hash_attribute);
-				dbi_init.compression = primary_attribute.compression;
-				if (dbi_init.compression) {
-					const compression_threshold =
-						env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD) || DEFAULT_COMPRESSION_THRESHOLD; // this is the only thing that can change;
-					dbi_init.compression.threshold = compression_threshold;
+				const dbiInit = new OpenDBIObject(!primaryAttribute.is_hash_attribute, primaryAttribute.is_hash_attribute);
+				dbiInit.compression = primaryAttribute.compression;
+				if (dbiInit.compression) {
+					const compressionThreshold =
+						envGet(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD) || DEFAULT_COMPRESSION_THRESHOLD; // this is the only thing that can change;
+					dbiInit.compression.threshold = compressionThreshold;
 				}
-				primary_store = handleLocalTimeForGets(root_store.openDB(primary_attribute.key, dbi_init), root_store);
-				root_store.databaseName = database_name;
-				primary_store.tableId = table_id;
+				primaryStore = handleLocalTimeForGets(rootStore.openDB(primaryAttribute.key, dbiInit), rootStore);
+				rootStore.databaseName = databaseName;
+				primaryStore.tableId = tableId;
 			}
-			let attributes_updated;
+			let attributesUpdated: boolean;
 			for (const attribute of attributes) {
 				attribute.attribute = attribute.name;
 				try {
 					// now load the non-primary keys, opening the dbs as necessary for indices
 					if (!attribute.is_hash_attribute && (attribute.indexed || (attribute.attribute && !attribute.name))) {
 						if (!indices[attribute.name]) {
-							const dbi_init = new OpenDBIObject(!attribute.is_hash_attribute, attribute.is_hash_attribute);
-							indices[attribute.name] = root_store.openDB(attribute.key, dbi_init);
+							const dbi = openIndex(attribute.key, rootStore, attribute);
+							indices[attribute.name] = dbi;
 							indices[attribute.name].indexNulls = attribute.indexNulls;
 						}
-						const existing_attribute = existing_attributes.find(
-							(existing_attribute) => existing_attribute.name === attribute.name
+						const existingAttribute = existingAttributes.find(
+							(existingAttribute) => existingAttribute.name === attribute.name
 						);
-						if (existing_attribute)
-							existing_attributes.splice(existing_attributes.indexOf(existing_attribute), 1, attribute);
-						else existing_attributes.push(attribute);
-						attributes_updated = true;
+						if (existingAttribute)
+							existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1, attribute);
+						else existingAttributes.push(attribute);
+						attributesUpdated = true;
 					}
 				} catch (error) {
-					harper_logger.error(`Error trying to update attribute`, attribute, existing_attributes, indices, error);
+					logger.error(`Error trying to update attribute`, attribute, existingAttributes, indices, error);
 				}
 			}
-			for (const existing_attribute of existing_attributes) {
-				const attribute = attributes.find((attribute) => attribute.name === existing_attribute.name);
+			for (const existingAttribute of existingAttributes) {
+				const attribute = attributes.find((attribute) => attribute.name === existingAttribute.name);
 				if (!attribute) {
-					if (existing_attribute.is_hash_attribute) {
-						harper_logger.error('Unable to remove existing primary key attribute', existing_attribute);
+					if (existingAttribute.is_hash_attribute) {
+						logger.error('Unable to remove existing primary key attribute', existingAttribute);
 						continue;
 					}
-					if (existing_attribute.indexed) {
-						// we only remove attributes if they were indexed, in order to support drop_attribute that removes dynamic indexed attributes
-						existing_attributes.splice(existing_attributes.indexOf(existing_attribute), 1);
-						attributes_updated = true;
+					if (existingAttribute.indexed) {
+						// we only remove attributes if they were indexed, in order to support dropAttribute that removes dynamic indexed attributes
+						existingAttributes.splice(existingAttributes.indexOf(existingAttribute), 1);
+						attributesUpdated = true;
 					}
 				}
 			}
 			if (table) {
-				if (attributes_updated) {
+				if (attributesUpdated) {
 					table.schemaVersion++;
 					table.updatedAttributes();
 				}
 			} else {
 				table = setTable(
 					tables,
-					table_name,
+					tableName,
 					makeTable({
-						primaryStore: primary_store,
-						auditStore: audit_store,
+						primaryStore,
+						auditStore,
 						audit,
 						sealed,
-						splitSegments: split_segments,
+						splitSegments,
 						replicate,
 						expirationMS: expiration && expiration * 1000,
 						evictionMS: eviction && eviction * 1000,
-						trackDeletes: track_deletes,
-						tableName: table_name,
-						tableId: table_id,
-						primaryKey: primary_attribute.name,
-						databasePath: is_legacy ? database_name + '/' + table_name : database_name,
-						databaseName: database_name,
+						trackDeletes,
+						tableName,
+						tableId,
+						primaryKey: primaryAttribute.name,
+						databasePath: isLegacy ? databaseName + '/' + tableName : databaseName,
+						databaseName,
 						indices,
 						attributes,
-						schemaDefined: primary_attribute.schemaDefined,
-						dbisDB: dbis_store,
+						schemaDefined: primaryAttribute.schemaDefined,
+						dbisDB: dbisStore,
 					})
 				);
 				table.schemaVersion = 1;
-				for (const listener of table_listeners) {
+				for (const listener of tableListeners) {
 					listener(table);
 				}
 			}
 		}
-		return root_store;
+		return rootStore;
 	} catch (error) {
 		error.message += ` opening database ${path}`;
 		throw error;
@@ -421,41 +435,41 @@ interface TableDefinition {
 }
 /**
  * Ensure that we have this database object (that holds a set of tables) set up
- * @param database_name
+ * @param databaseName
  * @returns
  */
-function ensureDB(database_name) {
-	let db_tables = databases[database_name];
-	if (!db_tables) {
-		if (database_name === 'data')
+function ensureDB(databaseName) {
+	let dbTables = databases[databaseName];
+	if (!dbTables) {
+		if (databaseName === 'data')
 			// preserve the data tables objet
-			db_tables = databases[database_name] = tables;
-		else if (database_name === 'system')
+			dbTables = databases[databaseName] = tables;
+		else if (databaseName === 'system')
 			// make system non-enumerable
 			Object.defineProperty(databases, 'system', {
-				value: (db_tables = Object.create(null)),
+				value: (dbTables = Object.create(null)),
 				configurable: true, // no enum
 			});
 		else {
-			db_tables = databases[database_name] = Object.create(null);
+			dbTables = databases[databaseName] = Object.create(null);
 		}
 	}
-	if (defined_databases && !defined_databases.has(database_name)) {
-		const defined_tables = new Set(); // we create this so we can determine what was found in a reset and remove any removed dbs/tables
-		db_tables[DEFINED_TABLES] = defined_tables;
-		defined_databases.set(database_name, defined_tables);
+	if (definedDatabases && !definedDatabases.has(databaseName)) {
+		const definedTables = new Set(); // we create this so we can determine what was found in a reset and remove any removed dbs/tables
+		dbTables[DEFINED_TABLES] = definedTables;
+		definedDatabases.set(databaseName, definedTables);
 	}
-	return db_tables;
+	return dbTables;
 }
 /**
  * Set the table class into the database's tables object
  * @param tables
- * @param table_name
+ * @param tableName
  * @param Table
  * @returns
  */
-function setTable(tables, table_name, Table) {
-	tables[table_name] = Table;
+function setTable(tables, tableName, Table) {
+	tables[tableName] = Table;
 	return Table;
 }
 /**
@@ -463,73 +477,89 @@ function setTable(tables, table_name, Table) {
  * @param options
  * @returns
  */
-export function database({ database: database_name, table: table_name }) {
-	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
+export function database({ database: databaseName, table: tableName }) {
+	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
 	getDatabases();
-	const database = ensureDB(database_name);
-	let database_path = join(getHdbBasePath(), DATABASES_DIR_NAME);
-	const database_config = env_get(CONFIG_PARAMS.DATABASES) || {};
-	if (process.env.SCHEMAS_DATA_PATH) database_config.data = { path: process.env.SCHEMAS_DATA_PATH };
-	const table_path = table_name && database_config[database_name]?.tables?.[table_name]?.path;
-	database_path =
-		table_path ||
-		database_config[database_name]?.path ||
+	const database = ensureDB(databaseName);
+	let databasePath = join(getHdbBasePath(), DATABASES_DIR_NAME);
+	const databaseConfig = envGet(CONFIG_PARAMS.DATABASES) || {};
+	if (process.env.SCHEMAS_DATA_PATH) databaseConfig.data = { path: process.env.SCHEMAS_DATA_PATH };
+	const tablePath = tableName && databaseConfig[databaseName]?.tables?.[tableName]?.path;
+	databasePath =
+		tablePath ||
+		databaseConfig[databaseName]?.path ||
 		process.env.STORAGE_PATH ||
-		env_get(CONFIG_PARAMS.STORAGE_PATH) ||
-		(existsSync(database_path) ? database_path : join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME));
-	const path = join(database_path, (table_path ? table_name : database_name) + '.mdb');
-	let root_store = database_envs.get(path);
-	if (!root_store || root_store.status === 'closed') {
+		envGet(CONFIG_PARAMS.STORAGE_PATH) ||
+		(existsSync(databasePath) ? databasePath : join(getHdbBasePath(), LEGACY_DATABASES_DIR_NAME));
+	const path = join(databasePath, (tablePath ? tableName : databaseName) + '.mdb');
+	let rootStore = databaseEnvs.get(path);
+	if (!rootStore || rootStore.status === 'closed') {
 		// TODO: validate database name
-		const env_init = new OpenEnvironmentObject(path, false);
-		root_store = open(env_init);
-		database_envs.set(path, root_store);
+		const envInit = new OpenEnvironmentObject(path, false);
+		rootStore = open(envInit);
+		databaseEnvs.set(path, rootStore);
 	}
-	if (!root_store.auditStore) {
-		root_store.auditStore = openAuditStore(root_store);
+	if (!rootStore.auditStore) {
+		rootStore.auditStore = openAuditStore(rootStore);
 	}
-	return root_store;
+	return rootStore;
 }
 /**
  * Delete the database
- * @param database_name
+ * @param databaseName
  */
-export async function dropDatabase(database_name) {
-	if (!databases[database_name]) throw new Error('Schema does not exist');
-	const db_tables = databases[database_name];
-	let root_store;
-	for (const table_name in db_tables) {
-		const table = db_tables[table_name];
-		root_store = table.primaryStore.rootStore;
-		database_envs.delete(root_store.path);
-		if (root_store.status === 'open') {
-			await root_store.close();
-			await fs.remove(root_store.path);
+export async function dropDatabase(databaseName) {
+	if (!databases[databaseName]) throw new Error('Schema does not exist');
+	const dbTables = databases[databaseName];
+	let rootStore;
+	for (const tableName in dbTables) {
+		const table = dbTables[tableName];
+		rootStore = table.primaryStore.rootStore;
+		databaseEnvs.delete(rootStore.path);
+		if (rootStore.status === 'open') {
+			await rootStore.close();
+			await fs.remove(rootStore.path);
 		}
 	}
-	if (!root_store) {
-		root_store = database({ database: database_name, table: null });
-		if (root_store.status === 'open') {
-			await root_store.close();
-			await fs.remove(root_store.path);
+	if (!rootStore) {
+		rootStore = database({ database: databaseName, table: null });
+		if (rootStore.status === 'open') {
+			await rootStore.close();
+			await fs.remove(rootStore.path);
 		}
 	}
-	if (database_name === 'data') {
-		for (const table_name in tables) {
-			delete tables[table_name];
+	if (databaseName === 'data') {
+		for (const tableName in tables) {
+			delete tables[tableName];
 		}
 		delete tables[DEFINED_TABLES];
 	}
-	delete databases[database_name];
-	db_removal_listeners.forEach((listener) => listener(database_name));
-	await deleteRootBlobPathsForDB(root_store);
+	delete databases[databaseName];
+	dbRemovalListeners.forEach((listener) => listener(databaseName));
+	await deleteRootBlobPathsForDB(rootStore);
+}
+// opens an index, consulting with custom indexes that may use alternate store configuration
+function openIndex(dbiKey: string, rootStore: Database, attribute: any): Database {
+	const objectStorage =
+		attribute.is_hash_attribute || (attribute.indexed.type && CUSTOM_INDEXES[attribute.indexed.type]?.useObjectStore);
+	const dbiInit = new OpenDBIObject(!objectStorage, objectStorage);
+	const dbi = rootStore.openDB(dbiKey, dbiInit);
+	if (attribute.indexed.type) {
+		const CustomIndex = CUSTOM_INDEXES[attribute.indexed.type];
+		if (CustomIndex) {
+			dbi.customIndex = new CustomIndex(dbi, attribute.indexed);
+		} else {
+			logger.error(`The indexing type '${attribute.indexed.type}' is unknown`);
+		}
+	}
+	return dbi;
 }
 
 /**
  * This can be called to ensure that the specified table exists and if it does not exist, it should be created.
- * @param table_name
- * @param database_name
- * @param custom_path
+ * @param tableName
+ * @param databaseName
+ * @param customPath
  * @param expiration
  * @param eviction
  * @param scanInterval
@@ -539,36 +569,36 @@ export async function dropDatabase(database_name) {
  * @param splitSegments
  * @param replicate
  */
-export function table(table_definition: TableDefinition) {
+export function table(tableDefinition: TableDefinition) {
 	// eslint-disable-next-line prefer-const
 	let {
-		table: table_name,
-		database: database_name,
+		table: tableName,
+		database: databaseName,
 		expiration,
 		eviction,
-		scanInterval: scan_interval,
+		scanInterval,
 		attributes,
 		audit,
 		sealed,
-		splitSegments: split_segments,
+		splitSegments,
 		replicate,
-		trackDeletes: track_deletes,
-		schemaDefined: schema_defined,
+		trackDeletes,
+		schemaDefined,
 		origin,
-	} = table_definition;
-	if (!database_name) database_name = DEFAULT_DATABASE_NAME;
-	const root_store = database({ database: database_name, table: table_name });
-	const tables = databases[database_name];
-	harper_logger.trace(`Defining ${table_name} in ${database_name}`);
-	let Table = tables?.[table_name];
-	if (root_store.status === 'closed') {
-		throw new Error(`Can not use a closed data store for ${table_name}`);
+	} = tableDefinition;
+	if (!databaseName) databaseName = DEFAULT_DATABASE_NAME;
+	const rootStore = database({ database: databaseName, table: tableName });
+	const tables = databases[databaseName];
+	logger.trace(`Defining ${tableName} in ${databaseName}`);
+	let Table = tables?.[tableName];
+	if (rootStore.status === 'closed') {
+		throw new Error(`Can not use a closed data store for ${tableName}`);
 	}
-	let primary_key;
-	let primary_key_attribute;
-	let attributes_dbi;
-	if (schema_defined == undefined) schema_defined = true;
-	const internal_dbi_init = new OpenDBIObject(false);
+	let primaryKey;
+	let primaryKeyAttribute;
+	let attributesDbi;
+	if (schemaDefined == undefined) schemaDefined = true;
+	const internalDbiInit = new OpenDBIObject(false);
 
 	for (const attribute of attributes) {
 		if (attribute.attribute && !attribute.name) {
@@ -578,235 +608,234 @@ export function table(table_definition: TableDefinition) {
 		} else attribute.attribute = attribute.name;
 		if (attribute.expiresAt) attribute.indexed = true;
 	}
-	let has_changes;
-	let txn_commit;
+	let hasChanges;
+	let txnCommit;
 	if (Table) {
-		primary_key = Table.primaryKey;
+		primaryKey = Table.primaryKey;
 		if (Table.primaryStore.rootStore.status === 'closed') {
-			throw new Error(`Can not use a closed data store from ${table_name} class`);
+			throw new Error(`Can not use a closed data store from ${tableName} class`);
 		}
 		// it table already exists, get the split segments setting
-		if (split_segments == undefined) split_segments = Table.splitSegments;
+		if (splitSegments == undefined) splitSegments = Table.splitSegments;
 		Table.attributes.splice(0, Table.attributes.length, ...attributes);
 	} else {
-		const audit_store = root_store.auditStore;
-		primary_key_attribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
-		primary_key = primary_key_attribute.name;
-		primary_key_attribute.is_hash_attribute = primary_key_attribute.isPrimaryKey = true;
-		primary_key_attribute.schemaDefined = schema_defined;
+		const auditStore = rootStore.auditStore;
+		primaryKeyAttribute = attributes.find((attribute) => attribute.isPrimaryKey) || {};
+		primaryKey = primaryKeyAttribute.name;
+		primaryKeyAttribute.is_hash_attribute = primaryKeyAttribute.isPrimaryKey = true;
+		primaryKeyAttribute.schemaDefined = schemaDefined;
 		// can't change compression after the fact (except threshold), so save only when we create the table
-		primary_key_attribute.compression = getDefaultCompression();
-		if (track_deletes) primary_key_attribute.trackDeletes = true;
-		audit = primary_key_attribute.audit = typeof audit === 'boolean' ? audit : env_get(CONFIG_PARAMS.LOGGING_AUDITLOG);
-		if (expiration) primary_key_attribute.expiration = expiration;
-		if (eviction) primary_key_attribute.eviction = eviction;
-		split_segments ??= false;
-		primary_key_attribute.splitSegments = split_segments; // always default to not splitting segments going forward
-		if (typeof sealed === 'boolean') primary_key_attribute.sealed = sealed;
-		if (typeof replicate === 'boolean') primary_key_attribute.replicate = replicate;
+		primaryKeyAttribute.compression = getDefaultCompression();
+		if (trackDeletes) primaryKeyAttribute.trackDeletes = true;
+		audit = primaryKeyAttribute.audit = typeof audit === 'boolean' ? audit : envGet(CONFIG_PARAMS.LOGGING_AUDITLOG);
+		if (expiration) primaryKeyAttribute.expiration = expiration;
+		if (eviction) primaryKeyAttribute.eviction = eviction;
+		splitSegments ??= false;
+		primaryKeyAttribute.splitSegments = splitSegments; // always default to not splitting segments going forward
+		if (typeof sealed === 'boolean') primaryKeyAttribute.sealed = sealed;
+		if (typeof replicate === 'boolean') primaryKeyAttribute.replicate = replicate;
 		if (origin) {
-			if (!primary_key_attribute.origins) primary_key_attribute.origins = [origin];
-			else if (!primary_key_attribute.origins.includes(origin)) primary_key_attribute.origins.push(origin);
+			if (!primaryKeyAttribute.origins) primaryKeyAttribute.origins = [origin];
+			else if (!primaryKeyAttribute.origins.includes(origin)) primaryKeyAttribute.origins.push(origin);
 		}
-		harper_logger.trace(`${table_name} table loading, opening primary store`);
-		const dbi_init = new OpenDBIObject(false, true);
-		dbi_init.compression = primary_key_attribute.compression;
-		const dbi_name = table_name + '/';
-		attributes_dbi = root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init);
+		logger.trace(`${tableName} table loading, opening primary store`);
+		const dbiInit = new OpenDBIObject(false, true);
+		dbiInit.compression = primaryKeyAttribute.compression;
+		const dbiName = tableName + '/';
+		attributesDbi = rootStore.dbisDb = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit);
 		startTxn(); // get an exclusive lock on the database so we can verify that we are the only thread creating the table (and assigning the table id)
-		if (attributes_dbi.get(dbi_name)) {
+		if (attributesDbi.get(dbiName)) {
 			// table was created while we were setting up
-			if (txn_commit) txn_commit();
+			if (txnCommit) txnCommit();
 			resetDatabases();
-			return table(table_definition);
+			return table(tableDefinition);
 		}
-		const primary_store = handleLocalTimeForGets(root_store.openDB(dbi_name, dbi_init), root_store);
-		root_store.databaseName = database_name;
-		primary_store.tableId = attributes_dbi.get(NEXT_TABLE_ID);
-		harper_logger.trace(`Assigning new table id ${primary_store.tableId} for ${table_name}`);
-		if (!primary_store.tableId) primary_store.tableId = 1;
-		attributes_dbi.put(NEXT_TABLE_ID, primary_store.tableId + 1);
+		const primaryStore = handleLocalTimeForGets(rootStore.openDB(dbiName, dbiInit), rootStore);
+		rootStore.databaseName = databaseName;
+		primaryStore.tableId = attributesDbi.get(NEXT_TABLE_ID);
+		logger.trace(`Assigning new table id ${primaryStore.tableId} for ${tableName}`);
+		if (!primaryStore.tableId) primaryStore.tableId = 1;
+		attributesDbi.put(NEXT_TABLE_ID, primaryStore.tableId + 1);
 
-		primary_key_attribute.tableId = primary_store.tableId;
+		primaryKeyAttribute.tableId = primaryStore.tableId;
 		Table = setTable(
 			tables,
-			table_name,
+			tableName,
 			makeTable({
-				primaryStore: primary_store,
-				auditStore: audit_store,
+				primaryStore,
+				auditStore,
 				audit,
 				sealed,
-				splitSegments: split_segments,
+				splitSegments,
 				replicate,
-				trackDeletes: track_deletes,
+				trackDeletes,
 				expirationMS: expiration && expiration * 1000,
 				evictionMS: eviction && eviction * 1000,
-				primaryKey: primary_key,
-				tableName: table_name,
-				tableId: primary_store.tableId,
-				databasePath: database_name,
-				databaseName: database_name,
+				primaryKey,
+				tableName,
+				tableId: primaryStore.tableId,
+				databasePath: databaseName,
+				databaseName,
 				indices: {},
 				attributes,
-				schemaDefined: schema_defined,
-				dbisDB: attributes_dbi,
+				schemaDefined,
+				dbisDB: attributesDbi,
 			})
 		);
 		Table.schemaVersion = 1;
-		has_changes = true;
+		hasChanges = true;
 
-		attributes_dbi.put(dbi_name, primary_key_attribute);
+		attributesDbi.put(dbiName, primaryKeyAttribute);
 	}
 	const indices = Table.indices;
-	attributes_dbi = attributes_dbi || (root_store.dbisDb = root_store.openDB(INTERNAL_DBIS_NAME, internal_dbi_init));
-	Table.dbisDB = attributes_dbi;
-	const indices_to_remove = [];
-	for (const { key, value } of attributes_dbi.getRange({ start: true })) {
-		let [attribute_table_name, attribute_name] = key.toString().split('/');
+	attributesDbi = attributesDbi || (rootStore.dbisDb = rootStore.openDB(INTERNAL_DBIS_NAME, internalDbiInit));
+	Table.dbisDB = attributesDbi;
+	const indicesToRemove = [];
+	for (const { key, value } of attributesDbi.getRange({ start: true })) {
+		let [attributeTableName, attribute_name] = key.toString().split('/');
 		if (attribute_name === '') attribute_name = value.name; // primary key
 		if (attribute_name) {
-			if (attribute_table_name !== table_name) continue;
+			if (attributeTableName !== tableName) continue;
 		} else {
 			// table attribute for a table with no primary key, we don't want to remove this, so continue on
 			continue;
 		}
 		const attribute = attributes.find((attribute) => attribute.name === attribute_name);
-		const remove_index = !attribute?.indexed && value.indexed && !value.isPrimaryKey;
-		if (!attribute || remove_index) {
+		const removeIndex = !attribute?.indexed && value.indexed && !value.isPrimaryKey;
+		if (!attribute || removeIndex) {
 			startTxn();
-			has_changes = true;
-			if (!attribute) attributes_dbi.remove(key);
-			if (remove_index) {
-				const index_dbi = Table.indices[attribute_table_name];
-				if (index_dbi) indices_to_remove.push(index_dbi);
+			hasChanges = true;
+			if (!attribute) attributesDbi.remove(key);
+			if (removeIndex) {
+				const indexDbi = Table.indices[attributeTableName];
+				if (indexDbi) indicesToRemove.push(indexDbi);
 			}
 		}
 	}
-	const attributes_to_index = [];
+	const attributesToIndex = [];
 	try {
 		// TODO: If we have attributes and the schemaDefined flag is not set, turn it on
 		// iterate through the attributes to ensure that we have all the dbis created and indexed
 		for (const attribute of attributes || []) {
 			if (attribute.relationship || attribute.computed) {
-				has_changes = true; // need to update the table so the computed properties are translated to property resolvers
+				hasChanges = true; // need to update the table so the computed properties are translated to property resolvers
 				if (attribute.relationship) continue;
 			}
-			let dbi_key = table_name + '/' + (attribute.name || '');
-			Object.defineProperty(attribute, 'key', { value: dbi_key, configurable: true });
-			let attribute_descriptor = attributes_dbi.get(dbi_key);
+			let dbiKey = tableName + '/' + (attribute.name || '');
+			Object.defineProperty(attribute, 'key', { value: dbiKey, configurable: true });
+			let attributeDescriptor = attributesDbi.get(dbiKey);
 			if (attribute.isPrimaryKey) {
-				attribute_descriptor = attribute_descriptor || attributes_dbi.get((dbi_key = table_name + '/')) || {};
+				attributeDescriptor = attributeDescriptor || attributesDbi.get((dbiKey = tableName + '/')) || {};
 				// primary key can't change indexing, but settings can change
 				if (
 					(audit !== undefined && audit !== Table.audit) ||
 					(sealed !== undefined && sealed !== Table.sealed) ||
 					(replicate !== undefined && replicate !== Table.replicate) ||
-					(+expiration || undefined) !== (+attribute_descriptor.expiration || undefined) ||
-					(+eviction || undefined) !== (+attribute_descriptor.eviction || undefined) ||
-					attribute.type !== attribute_descriptor.type
+					(+expiration || undefined) !== (+attributeDescriptor.expiration || undefined) ||
+					(+eviction || undefined) !== (+attributeDescriptor.eviction || undefined) ||
+					attribute.type !== attributeDescriptor.type
 				) {
-					const updated_primary_attribute = { ...attribute_descriptor };
+					const updatedPrimaryAttribute = { ...attributeDescriptor };
 					if (typeof audit === 'boolean') {
 						if (audit) Table.enableAuditing(audit);
-						updated_primary_attribute.audit = audit;
+						updatedPrimaryAttribute.audit = audit;
 					}
-					if (expiration) updated_primary_attribute.expiration = +expiration;
-					if (eviction) updated_primary_attribute.eviction = +eviction;
-					if (sealed !== undefined) updated_primary_attribute.sealed = sealed;
-					if (replicate !== undefined) updated_primary_attribute.replicate = replicate;
-					if (attribute.type) updated_primary_attribute.type = attribute.type;
-					has_changes = true; // send out notification of the change
+					if (expiration) updatedPrimaryAttribute.expiration = +expiration;
+					if (eviction) updatedPrimaryAttribute.eviction = +eviction;
+					if (sealed !== undefined) updatedPrimaryAttribute.sealed = sealed;
+					if (replicate !== undefined) updatedPrimaryAttribute.replicate = replicate;
+					if (attribute.type) updatedPrimaryAttribute.type = attribute.type;
+					hasChanges = true; // send out notification of the change
 					startTxn();
-					attributes_dbi.put(dbi_key, updated_primary_attribute);
+					attributesDbi.put(dbiKey, updatedPrimaryAttribute);
 				}
 
 				continue;
 			}
 
 			// note that non-indexed attributes do not need a dbi
-			if (attribute_descriptor?.attribute && !attribute_descriptor.name) attribute_descriptor.indexed = true; // legacy descriptor
+			if (attributeDescriptor?.attribute && !attributeDescriptor.name) attributeDescriptor.indexed = true; // legacy descriptor
 			const changed =
-				!attribute_descriptor ||
-				attribute_descriptor.type !== attribute.type ||
-				attribute_descriptor.indexed !== attribute.indexed ||
-				attribute_descriptor.nullable !== attribute.nullable ||
-				attribute_descriptor.version !== attribute.version ||
-				JSON.stringify(attribute_descriptor.properties) !== JSON.stringify(attribute.properties) ||
-				JSON.stringify(attribute_descriptor.elements) !== JSON.stringify(attribute.elements);
+				!attributeDescriptor ||
+				attributeDescriptor.type !== attribute.type ||
+				JSON.stringify(attributeDescriptor.indexed) !== JSON.stringify(attribute.indexed) ||
+				attributeDescriptor.nullable !== attribute.nullable ||
+				attributeDescriptor.version !== attribute.version ||
+				JSON.stringify(attributeDescriptor.properties) !== JSON.stringify(attribute.properties) ||
+				JSON.stringify(attributeDescriptor.elements) !== JSON.stringify(attribute.elements);
 			if (attribute.indexed) {
-				const dbi_init = new OpenDBIObject(true, false);
-				const dbi = root_store.openDB(dbi_key, dbi_init);
+				const dbi = openIndex(dbiKey, rootStore, attribute);
 				if (
 					changed ||
-					(attribute_descriptor.indexingPID && attribute_descriptor.indexingPID !== process.pid) ||
-					attribute_descriptor.restartNumber < workerData?.restartNumber
+					(attributeDescriptor.indexingPID && attributeDescriptor.indexingPID !== process.pid) ||
+					attributeDescriptor.restartNumber < workerData?.restartNumber
 				) {
-					has_changes = true;
+					hasChanges = true;
 					startTxn();
-					attribute_descriptor = attributes_dbi.get(dbi_key);
+					attributeDescriptor = attributesDbi.get(dbiKey);
 					if (
 						changed ||
-						(attribute_descriptor.indexingPID && attribute_descriptor.indexingPID !== process.pid) ||
-						attribute_descriptor.restartNumber < workerData?.restartNumber
+						(attributeDescriptor.indexingPID && attributeDescriptor.indexingPID !== process.pid) ||
+						attributeDescriptor.restartNumber < workerData?.restartNumber
 					) {
-						has_changes = true;
+						hasChanges = true;
 						if (attribute.indexNulls === undefined) attribute.indexNulls = true;
 						if (Table.primaryStore.getStats().entryCount > 0) {
-							attribute.lastIndexedKey = attribute_descriptor?.lastIndexedKey ?? undefined;
+							attribute.lastIndexedKey = attributeDescriptor?.lastIndexedKey ?? undefined;
 							attribute.indexingPID = process.pid;
 							dbi.isIndexing = true;
 							Object.defineProperty(attribute, 'dbi', { value: dbi });
 							// we only set indexing nulls to true if new or reindexing, we can't have partial indexing of null
-							attributes_to_index.push(attribute);
+							attributesToIndex.push(attribute);
 						}
 					}
-					attributes_dbi.put(dbi_key, attribute);
+					attributesDbi.put(dbiKey, attribute);
 				}
-				if (attribute_descriptor?.indexNulls && attribute.indexNulls === undefined) attribute.indexNulls = true;
+				if (attributeDescriptor?.indexNulls && attribute.indexNulls === undefined) attribute.indexNulls = true;
 				dbi.indexNulls = attribute.indexNulls;
 				indices[attribute.name] = dbi;
 			} else if (changed) {
-				has_changes = true;
+				hasChanges = true;
 				startTxn();
-				attributes_dbi.put(dbi_key, attribute);
+				attributesDbi.put(dbiKey, attribute);
 			}
 		}
 	} finally {
-		if (txn_commit) txn_commit();
+		if (txnCommit) txnCommit();
 	}
-	if (has_changes) {
+	if (hasChanges) {
 		Table.schemaVersion++;
 		Table.updatedAttributes();
 	}
-	harper_logger.trace(`${table_name} table loading, running index`);
-	if (attributes_to_index.length > 0 || indices_to_remove.length > 0) {
-		Table.indexingOperation = runIndexing(Table, attributes_to_index, indices_to_remove);
-	} else if (has_changes)
+	logger.trace(`${tableName} table loading, running index`);
+	if (attributesToIndex.length > 0 || indicesToRemove.length > 0) {
+		Table.indexingOperation = runIndexing(Table, attributesToIndex, indicesToRemove);
+	} else if (hasChanges)
 		signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
 		);
 
 	Table.origin = origin;
-	if (has_changes) {
-		for (const listener of table_listeners) {
+	if (hasChanges) {
+		for (const listener of tableListeners) {
 			listener(Table, origin !== 'cluster');
 		}
 	}
-	if (expiration || eviction || scan_interval)
+	if (expiration || eviction || scanInterval)
 		Table.setTTLExpiration({
 			expiration,
 			eviction,
-			scanInterval: scan_interval,
+			scanInterval,
 		});
-	harper_logger.trace(`${table_name} table loaded`);
+	logger.trace(`${tableName} table loaded`);
 
 	return Table;
 	function startTxn() {
-		if (txn_commit) return;
-		root_store.transactionSync(() => {
+		if (txnCommit) return;
+		rootStore.transactionSync(() => {
 			return {
 				then(callback) {
-					txn_commit = callback;
+					txnCommit = callback;
 				},
 			};
 		});
@@ -816,21 +845,21 @@ const MAX_OUTSTANDING_INDEXING = 1000;
 const MIN_OUTSTANDING_INDEXING = 10;
 async function runIndexing(Table, attributes, indicesToRemove) {
 	try {
-		harper_logger.info(`Indexing ${Table.tableName} attributes`, attributes);
-		const schema_version = Table.schemaVersion;
+		logger.info(`Indexing ${Table.tableName} attributes`, attributes);
+		const schemaVersion = Table.schemaVersion;
 		await signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'schema-change', Table.databaseName, Table.tableName)
 		);
-		let last_resolution;
+		let lastResolution;
 		for (const index of indicesToRemove) {
-			last_resolution = index.drop();
+			lastResolution = index.drop();
 		}
 		let interrupted;
-		const attribute_error_reported = {};
+		const attributeErrorReported = {};
 		let indexed = 0;
-		const attributes_length = attributes.length;
+		const attributesLength = attributes.length;
 		await new Promise((resolve) => setImmediate(resolve)); // yield event turn, indexing should consistently take at least one event turn
-		if (attributes_length > 0) {
+		if (attributesLength > 0) {
 			let start: any;
 			for (const attribute of attributes) {
 				// if we are resuming, we need to start from the last key we indexed by all attributes
@@ -844,25 +873,30 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 			// this means that a new attribute has been introduced that needs to be indexed
 			for (const { key, value: record, version } of Table.primaryStore.getRange({
 				start,
-				lazy: attributes_length < 4,
+				lazy: attributesLength < 4,
 				versions: true,
 				snapshot: false, // don't hold a read transaction this whole time
 			})) {
 				if (!record) continue; // deletion entry
 				// TODO: Do we ever need to interrupt due to a schema change that was not a restart?
-				//if (Table.schemaVersion !== schema_version) return; // break out if there are any schema changes and let someone else pick it up
+				//if (Table.schemaVersion !== schemaVersion) return; // break out if there are any schema changes and let someone else pick it up
 				outstanding++;
 				// every index operation needs to be guarded by the version still be the same. If it has already changed before
 				// we index, that's fine because indexing is idempotent, we can just put the same values again. If it changes
 				// during the indexing, the indexing here will fail. This is also fine because it means the other thread will have
 				// performed indexing and we don't need to do anything further
-				last_resolution = Table.primaryStore.ifVersion(key, version, () => {
-					for (let i = 0; i < attributes_length; i++) {
+				lastResolution = Table.primaryStore.ifVersion(key, version, () => {
+					for (let i = 0; i < attributesLength; i++) {
 						const attribute = attributes[i];
 						const property = attribute.name;
+						const index = attribute.dbi;
 						try {
 							const resolver = attribute.resolve;
 							const value = record && (resolver ? resolver(record) : record[property]);
+							if (index.customIndex) {
+								index.customIndex.index(key, value);
+								continue;
+							}
 							const values = getIndexedValues(value);
 							if (values) {
 								/*					if (LMDB_PREFETCH_WRITES)
@@ -871,26 +905,26 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 															noop
 														);*/
 								for (let i = 0, l = values.length; i < l; i++) {
-									attribute.dbi.put(values[i], key);
+									index.put(values[i], key);
 								}
 							}
 						} catch (error) {
-							if (!attribute_error_reported[property]) {
+							if (!attributeErrorReported[property]) {
 								// just report an indexing error once per attribute so we don't spam the logs
-								attribute_error_reported[property] = true;
-								harper_logger.error(`Error indexing attribute ${property}`, error);
+								attributeErrorReported[property] = true;
+								logger.error(`Error indexing attribute ${property}`, error);
 							}
 						}
 					}
 				});
-				last_resolution.then(
+				lastResolution.then(
 					() => outstanding--,
 					(error) => {
 						outstanding--;
-						harper_logger.error(error);
+						logger.error(error);
 					}
 				);
-				if (workerData && workerData.restartNumber !== manage_threads.restartNumber) {
+				if (workerData && workerData.restartNumber !== manageThreads.restartNumber) {
 					interrupted = true;
 				}
 				if (++indexed % 100 === 0 || interrupted) {
@@ -901,7 +935,7 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 					}
 					if (interrupted) return;
 				}
-				if (outstanding > MAX_OUTSTANDING_INDEXING) await last_resolution;
+				if (outstanding > MAX_OUTSTANDING_INDEXING) await lastResolution;
 				else if (outstanding > MIN_OUTSTANDING_INDEXING) await new Promise((resolve) => setImmediate(resolve)); // yield event turn, don't want to use all computation
 			}
 			// update the attributes to indicate that we are finished
@@ -909,17 +943,17 @@ async function runIndexing(Table, attributes, indicesToRemove) {
 				delete attribute.lastIndexedKey;
 				delete attribute.indexingPID;
 				attribute.dbi.isIndexing = false;
-				last_resolution = Table.dbisDB.put(attribute.key, attribute);
+				lastResolution = Table.dbisDB.put(attribute.key, attribute);
 			}
 		}
-		await last_resolution;
+		await lastResolution;
 		// now notify all the threads that we are done and the index is ready to use
 		await signalling.signalSchemaChange(
 			new SchemaEventMsg(process.pid, 'indexing-finished', Table.databaseName, Table.tableName)
 		);
-		harper_logger.info(`Finished indexing ${Table.tableName} attributes`, attributes);
+		logger.info(`Finished indexing ${Table.tableName} attributes`, attributes);
 	} catch (error) {
-		harper_logger.error('Error in indexing', error);
+		logger.error('Error in indexing', error);
 	}
 }
 /**
@@ -928,40 +962,40 @@ async function runIndexing(Table, attributes, indicesToRemove) {
  */
 function cleanupDatabase(origin) {}
 
-export function dropTableMeta({ table: table_name, database: database_name }) {
-	const root_store = database({ database: database_name, table: table_name });
+export function dropTableMeta({ table: tableName, database: databaseName }) {
+	const rootStore = database({ database: databaseName, table: tableName });
 	const removals = [];
-	const dbis_db = root_store.dbisDb;
-	for (const key of dbis_db.getKeys({ start: table_name + '/', end: table_name + '0' })) {
-		removals.push(dbis_db.remove(key));
+	const dbisDb = rootStore.dbisDb;
+	for (const key of dbisDb.getKeys({ start: tableName + '/', end: tableName + '0' })) {
+		removals.push(dbisDb.remove(key));
 	}
 	return Promise.all(removals);
 }
 
 export function onUpdatedTable(listener) {
-	table_listeners.push(listener);
+	tableListeners.push(listener);
 	return {
 		remove() {
-			const index = table_listeners.indexOf(listener);
-			if (index > -1) table_listeners.splice(index, 1);
+			const index = tableListeners.indexOf(listener);
+			if (index > -1) tableListeners.splice(index, 1);
 		},
 	};
 }
 export function onRemovedDB(listener) {
-	db_removal_listeners.push(listener);
+	dbRemovalListeners.push(listener);
 	return {
 		remove() {
-			const index = db_removal_listeners.indexOf(listener);
-			if (index > -1) db_removal_listeners.splice(index, 1);
+			const index = dbRemovalListeners.indexOf(listener);
+			if (index > -1) dbRemovalListeners.splice(index, 1);
 		},
 	};
 }
 
 export function getDefaultCompression() {
-	const LMDB_COMPRESSION = env_get(CONFIG_PARAMS.STORAGE_COMPRESSION);
-	const STORAGE_COMPRESSION_DICTIONARY = env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_DICTIONARY);
+	const LMDB_COMPRESSION = envGet(CONFIG_PARAMS.STORAGE_COMPRESSION);
+	const STORAGE_COMPRESSION_DICTIONARY = envGet(CONFIG_PARAMS.STORAGE_COMPRESSION_DICTIONARY);
 	const STORAGE_COMPRESSION_THRESHOLD =
-		env_get(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD) || DEFAULT_COMPRESSION_THRESHOLD;
+		envGet(CONFIG_PARAMS.STORAGE_COMPRESSION_THRESHOLD) || DEFAULT_COMPRESSION_THRESHOLD;
 	const LMDB_COMPRESSION_OPTS = { startingOffset: 32 };
 	if (STORAGE_COMPRESSION_DICTIONARY)
 		LMDB_COMPRESSION_OPTS['dictionary'] = fs.readFileSync(STORAGE_COMPRESSION_DICTIONARY);

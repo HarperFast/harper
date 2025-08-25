@@ -175,6 +175,12 @@ describe('Parsing queries', () => {
 		assert.equal(query.conditions.length, 2);
 		assert.deepEqual(query.select, ['name', 'age']);
 	});
+	it('Bracket/array parameter', function () {
+		let query = parseQuery('itemIds[]=1&itemIds[]=2');
+		assert.equal(query.conditions.length, 2);
+		assert.equal(query.conditions[0].value, '1');
+		assert.equal(query.conditions[1].value, '2');
+	});
 	it('Bad calls', function () {
 		assert.throws(() => parseQuery('limit(5,10'), /expected '\)'/);
 		assert.throws(() => parseQuery('unknown(5,10)'), /unknown query function call/);

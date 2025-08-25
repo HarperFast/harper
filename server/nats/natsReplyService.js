@@ -1,26 +1,26 @@
 'use strict';
 
-const env_manager = require('../../utility/environment/environmentManager');
-env_manager.initSync();
+const envManager = require('../../utility/environment/environmentManager.js');
+envManager.initSync();
 
-const nats_utils = require('./utility/natsUtils');
-const harper_logger = require('../../utility/logging/harper_logger');
-const hdb_terms = require('../../utility/hdbTerms');
-const nats_terms = require('./utility/natsTerms');
-const update_remote_source = require('../../utility/clustering/updateRemoteSource');
-const remove_remote_source = require('../../utility/clustering/removeRemoteSource');
-const get_remote_source_config = require('../../utility/clustering/getRemoteSourceConfig');
-const UpdateRemoteResponseObject = require('../../utility/clustering/UpdateRemoteResponseObject');
+const natsUtils = require('./utility/natsUtils.js');
+const harperLogger = require('../../utility/logging/harper_logger.js');
+const hdbTerms = require('../../utility/hdbTerms.ts');
+const natsTerms = require('./utility/natsTerms.js');
+const updateRemoteSource = require('../../utility/clustering/updateRemoteSource.js');
+const removeRemoteSource = require('../../utility/clustering/removeRemoteSource.js');
+const getRemoteSourceConfig = require('../../utility/clustering/getRemoteSourceConfig.js');
+const UpdateRemoteResponseObject = require('../../utility/clustering/UpdateRemoteResponseObject.js');
 const { encode, decode } = require('msgpackr');
-const global_schema = require('../../utility/globalSchema');
-const schema_describe = require('../../dataLayer/schemaDescribe');
+const globalSchema = require('../../utility/globalSchema.js');
+const schemaDescribe = require('../../dataLayer/schemaDescribe.js');
 const util = require('util');
-const terms = require('../../utility/hdbTerms');
+const terms = require('../../utility/hdbTerms.ts');
 const { isMainThread, parentPort } = require('worker_threads');
-require('../threads/manageThreads');
+require('../threads/manageThreads.js');
 
-const p_schema_to_global = util.promisify(global_schema.setSchemaDataToGlobal);
-const node_name = env_manager.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
+const pSchemaToGlobal = util.promisify(globalSchema.setSchemaDataToGlobal);
+const node_name = envManager.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 
 module.exports = initialize;
 
@@ -32,18 +32,18 @@ module.exports = initialize;
  */
 async function initialize() {
 	try {
-		harper_logger.notify('Starting reply service.');
-		await p_schema_to_global();
+		harperLogger.notify('Starting reply service.');
+		await pSchemaToGlobal();
 
-		const connection = await nats_utils.getConnection();
-		const subject_name = `${node_name}.__request__`;
+		const connection = await natsUtils.getConnection();
+		const subjectName = `${node_name}.__request__`;
 
 		// We define a queue name to allow multiple processes to subscribe to the same subject but only one process will receive the message.
 		// This allows for scale, more on queue groups here: https://github.com/nats-io/nats.js#queue-groups
-		const sub = connection.subscribe(subject_name, { queue: node_name });
+		const sub = connection.subscribe(subjectName, { queue: node_name });
 		await handleRequest(sub);
 	} catch (err) {
-		harper_logger.error(err);
+		harperLogger.error(err);
 	}
 }
 
@@ -56,30 +56,30 @@ async function initialize() {
  */
 async function handleRequest(sub) {
 	for await (const msg of sub) {
-		const msg_data = decode(msg.data);
+		const msgData = decode(msg.data);
 		let reply;
 
-		switch (msg_data.operation) {
-			case hdb_terms.OPERATIONS_ENUM.ADD_NODE:
-			case hdb_terms.OPERATIONS_ENUM.UPDATE_NODE:
-				reply = await update_remote_source(msg_data);
+		switch (msgData.operation) {
+			case hdbTerms.OPERATIONS_ENUM.ADD_NODE:
+			case hdbTerms.OPERATIONS_ENUM.UPDATE_NODE:
+				reply = await updateRemoteSource(msgData);
 				break;
-			case hdb_terms.OPERATIONS_ENUM.REMOVE_NODE:
-				reply = await remove_remote_source(msg_data);
+			case hdbTerms.OPERATIONS_ENUM.REMOVE_NODE:
+				reply = await removeRemoteSource(msgData);
 				break;
-			case hdb_terms.OPERATIONS_ENUM.CLUSTER_STATUS:
-				reply = await get_remote_source_config(msg_data);
+			case hdbTerms.OPERATIONS_ENUM.CLUSTER_STATUS:
+				reply = await getRemoteSourceConfig(msgData);
 				break;
-			case hdb_terms.OPERATIONS_ENUM.DESCRIBE_ALL:
+			case hdbTerms.OPERATIONS_ENUM.DESCRIBE_ALL:
 				reply = await getRemoteDescribeAll();
 				break;
 			default:
-				const err_msg = `node '${node_name}' reply service received unrecognized request operation`;
-				harper_logger.error(err_msg);
-				reply = new UpdateRemoteResponseObject(nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR, err_msg);
+				const errMsg = `node '${node_name}' reply service received unrecognized request operation`;
+				harperLogger.error(errMsg);
+				reply = new UpdateRemoteResponseObject(natsTerms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR, errMsg);
 		}
 
-		harper_logger.trace(reply);
+		harperLogger.trace(reply);
 		msg.respond(encode(reply));
 	}
 }
@@ -87,14 +87,14 @@ async function handleRequest(sub) {
 async function getRemoteDescribeAll() {
 	try {
 		return {
-			status: nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.SUCCESS,
-			message: await schema_describe.describeAll({ bypass_auth: true }),
+			status: natsTerms.UPDATE_REMOTE_RESPONSE_STATUSES.SUCCESS,
+			message: await schemaDescribe.describeAll({ bypass_auth: true }),
 		};
 	} catch (err) {
-		harper_logger.error(err);
+		harperLogger.error(err);
 
 		return {
-			status: nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR,
+			status: natsTerms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR,
 			message: err.message,
 		};
 	}
@@ -103,7 +103,7 @@ if (!isMainThread) {
 	parentPort.on('message', async (message) => {
 		const { type } = message;
 		if (type === terms.ITC_EVENT_TYPES.SHUTDOWN) {
-			nats_utils.closeConnection();
+			natsUtils.closeConnection();
 		}
 	});
 }

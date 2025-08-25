@@ -4,5 +4,5 @@
 	"extension": ["js"],
 	"recursive": true,
 	"exit": true,
-	"require": ["../bin/dev.js"]
+	"require": ["./bin/dev.js"]
 }

@@ -76,8 +76,8 @@ describe('Test updateNode module', () => {
 
 	before(() => {
 		sandbox.stub(clustering_utils, 'getSystemInfo').resolves(test_sys_info);
-		updateNode.__set__('local_node_name', 'local_node');
-		updateNode.__set__('review_subscriptions', review_subs_stub);
+		updateNode.__set__('localNodeName', 'local_node');
+		updateNode.__set__('reviewSubscriptions', review_subs_stub);
 		delete global.hdb_schema;
 		test_utils.setGlobalSchema('name', 'reptile', 'crocodilia', ['name', 'age']);
 		test_utils.setGlobalSchema('id', 'country', 'england', ['id', 'county']);

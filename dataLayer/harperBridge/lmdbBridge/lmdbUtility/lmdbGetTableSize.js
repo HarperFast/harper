@@ -1,37 +1,37 @@
 'use strict';
 
-const TableSizeObject = require('./TableSizeObject');
-const lmdb_terms = require('../../../../utility/lmdb/terms');
-const lmdb_environment_utility = require('../../../../utility/lmdb/environmentUtility');
-const log = require('../../../../utility/logging/harper_logger');
-const { getSchemaPath, getTransactionAuditStorePath } = require('./initializePaths');
-const { getDatabases } = require('../../../../resources/databases');
+const TableSizeObject = require('./TableSizeObject.js');
+const lmdbTerms = require('../../../../utility/lmdb/terms.js');
+const lmdbEnvironmentUtility = require('../../../../utility/lmdb/environmentUtility.js');
+const log = require('../../../../utility/logging/harper_logger.js');
+const { getSchemaPath, getTransactionAuditStorePath } = require('./initializePaths.js');
+const { getDatabases } = require('../../../../resources/databases.ts');
 
 module.exports = lmdbGetTableSize;
 
 /**
  * calculates the number of entries & data size in bytes for a table & its transaction log
- * @param table_object
+ * @param tableObject
  * @returns {Promise<TableSizeObject>}
  */
-async function lmdbGetTableSize(table_object) {
-	let table_stats = new TableSizeObject();
+async function lmdbGetTableSize(tableObject) {
+	let tableStats = new TableSizeObject();
 	try {
 		//get the table record count
-		let table = getDatabases()[table_object.schema]?.[table_object.name];
+		let table = getDatabases()[tableObject.schema]?.[tableObject.name];
 
-		let dbi_stat = table.primaryStore.getStats();
+		let dbiStat = table.primaryStore.getStats();
 
 		//get the txn log record count
-		let txn_dbi_stat = table.auditStore?.getStats();
+		let txnDbiStat = table.auditStore?.getStats();
 
-		table_stats.schema = table_object.schema;
-		table_stats.table = table_object.name;
-		table_stats.record_count = dbi_stat.entryCount;
-		table_stats.transaction_log_record_count = txn_dbi_stat.entryCount;
+		tableStats.schema = tableObject.schema;
+		tableStats.table = tableObject.name;
+		tableStats.record_count = dbiStat.entryCount;
+		tableStats.transaction_log_record_count = txnDbiStat.entryCount;
 	} catch (e) {
 		log.warn(`unable to stat table dbi due to ${e}`);
 	}
 
-	return table_stats;
+	return tableStats;
 }

@@ -58,8 +58,8 @@ describe('Test addNode module', () => {
 
 	before(() => {
 		get_sys_info_sub = sandbox.stub(clustering_utils, 'getSystemInfo').resolves(test_sys_info);
-		addNode.__set__('local_node_name', 'local_node');
-		addNode.__set__('review_subscriptions', review_subs_stub);
+		addNode.__set__('localNodeName', 'local_node');
+		addNode.__set__('reviewSubscriptions', review_subs_stub);
 		test_utils.setGlobalSchema('name', 'breed', 'beagle', ['name', 'age']);
 		test_utils.setGlobalSchema('id', 'country', 'england', ['id', 'county']);
 		test_utils.setGlobalSchema('number', 'dog', 'poodle', ['number']);

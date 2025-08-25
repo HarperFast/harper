@@ -7,28 +7,28 @@ const tar = require('tar-fs');
 const gunzip = require('gunzip-maybe');
 const normalize = require('normalize-path');
 
-const validator = require('./operationsValidation');
-const log = require('../utility/logging/harper_logger');
-const hdb_terms = require('../utility/hdbTerms');
-const env = require('../utility/environment/environmentManager');
-const config_utils = require('../config/configUtils');
-const hdb_utils = require('../utility/common_utils');
-const { PACKAGE_ROOT } = require('../utility/packageUtils');
-const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+const validator = require('./operationsValidation.js');
+const log = require('../utility/logging/harper_logger.js');
+const hdbTerms = require('../utility/hdbTerms.ts');
+const env = require('../utility/environment/environmentManager.js');
+const configUtils = require('../config/configUtils.js');
+const hdbUtils = require('../utility/common_utils.js');
+const { PACKAGE_ROOT } = require('../utility/packageUtils.js');
+const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
 const { basename } = require('path');
-const installComponents = require('../components/installComponents');
-const eng_mgr = require('../utility/environment/environmentManager');
+const installComponents = require('../components/installComponents.js');
+const engMgr = require('../utility/environment/environmentManager.js');
 const { Readable } = require('stream');
 const { isMainThread } = require('worker_threads');
-const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
-const manage_threads = require('../server/threads/manageThreads');
-const { replicateOperation } = require('../server/replication/replicator');
-const { packageDirectory } = require('../components/packageComponent');
-const npm_utils = require('../utility/npmUtilities');
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
+const manageThreads = require('../server/threads/manageThreads.js');
+const { replicateOperation } = require('../server/replication/replicator.ts');
+const { packageDirectory } = require('../components/packageComponent.ts');
+const npmUtils = require('../utility/npmUtilities.js');
 const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
-const root_dir = env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
-const ssh_dir = path.join(root_dir, 'ssh');
-const known_hosts_file = path.join(ssh_dir, 'known_hosts');
+const rootDir = env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH);
+const sshDir = path.join(rootDir, 'ssh');
+const knownHostsFile = path.join(sshDir, 'known_hosts');
 
 /**
  * Read the settings.js file and return the
@@ -41,8 +41,8 @@ function customFunctionsStatus() {
 
 	try {
 		response = {
-			port: env.get(hdb_terms.CONFIG_PARAMS.HTTP_PORT),
-			directory: env.get(hdb_terms.CONFIG_PARAMS.COMPONENTSROOT),
+			port: env.get(hdbTerms.CONFIG_PARAMS.HTTP_PORT),
+			directory: env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT),
 			is_enabled: true,
 		};
 	} catch (err) {
@@ -65,19 +65,19 @@ function customFunctionsStatus() {
 function getCustomFunctions() {
 	log.trace(`getting custom api endpoints`);
 	let response = {};
-	const dir = env.get(hdb_terms.CONFIG_PARAMS.COMPONENTSROOT);
+	const dir = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 
 	try {
-		const project_folders = fg.sync(normalize(`${dir}/*`), { onlyDirectories: true });
+		const projectFolders = fg.sync(normalize(`${dir}/*`), { onlyDirectories: true });
 
-		project_folders.forEach((project_folder) => {
-			const folderName = project_folder.split('/').pop();
+		projectFolders.forEach((projectFolder) => {
+			const folderName = projectFolder.split('/').pop();
 			response[folderName] = {
 				routes: fg
-					.sync(normalize(`${project_folder}/routes/*.js`))
+					.sync(normalize(`${projectFolder}/routes/*.js`))
 					.map((filepath) => filepath.split('/').pop().split('.js')[0]),
 				helpers: fg
-					.sync(normalize(`${project_folder}/helpers/*.js`))
+					.sync(normalize(`${projectFolder}/helpers/*.js`))
 					.map((filepath) => filepath.split('/').pop().split('.js')[0]),
 			};
 		});
@@ -94,7 +94,7 @@ function getCustomFunctions() {
 }
 
 /**
- * Read the specified function_name file in the custom_functions/routes directory and return the file content
+ * Read the specified functionName file in the custom_functions/routes directory and return the file content
  *
  * @param {NodeObject} req
  * @returns {string}
@@ -114,9 +114,9 @@ function getCustomFunction(req) {
 	}
 
 	log.trace(`getting custom api endpoint file content`);
-	const cf_dir = env.get(hdb_terms.CONFIG_PARAMS.COMPONENTSROOT);
+	const cfDir = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project, type, file } = req;
-	const fileLocation = path.join(cf_dir, project, type, file + '.js');
+	const fileLocation = path.join(cfDir, project, type, file + '.js');
 
 	try {
 		return fs.readFileSync(fileLocation, { encoding: 'utf8' });
@@ -132,7 +132,7 @@ function getCustomFunction(req) {
 }
 
 /**
- * Write the supplied function_content to the provided function_name file in the custom_functions/routes directory
+ * Write the supplied function_content to the provided functionName file in the custom_functions/routes directory
  *
  * @param {NodeObject} req
  * @returns {{message:string}}
@@ -152,11 +152,11 @@ async function setCustomFunction(req) {
 	}
 
 	log.trace(`setting custom function file content`);
-	const cf_dir = env.get(hdb_terms.CONFIG_PARAMS.COMPONENTSROOT);
+	const cfDir = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project, type, file, function_content } = req;
 
 	try {
-		fs.outputFileSync(path.join(cf_dir, project, type, file + '.js'), function_content);
+		fs.outputFileSync(path.join(cfDir, project, type, file + '.js'), function_content);
 		let response = await replicateOperation(req);
 		response.message = `Successfully updated custom function: ${file}.js`;
 		return response;
@@ -172,7 +172,7 @@ async function setCustomFunction(req) {
 }
 
 /**
- * Delete the provided function_name file from the custom_functions/routes directory
+ * Delete the provided functionName file from the custom_functions/routes directory
  *
  * @param {NodeObject} req
  * @returns {{message:string}}
@@ -192,11 +192,11 @@ async function dropCustomFunction(req) {
 	}
 
 	log.trace(`dropping custom function file`);
-	const cf_dir = env.get(hdb_terms.CONFIG_PARAMS.COMPONENTSROOT);
+	const cfDir = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project, type, file } = req;
 
 	try {
-		fs.unlinkSync(path.join(cf_dir, project, type, file + '.js'));
+		fs.unlinkSync(path.join(cfDir, project, type, file + '.js'));
 		let response = await replicateOperation(req);
 		response.message = `Successfully deleted custom function: ${file}.js`;
 		return response;
@@ -227,13 +227,13 @@ async function addComponent(req) {
 	}
 
 	log.trace(`adding component`);
-	const cf_dir = env.get(hdb_terms.CONFIG_PARAMS.COMPONENTSROOT);
+	const cfDir = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project } = req;
 
 	try {
-		const project_dir = path.join(cf_dir, project);
-		fs.mkdirSync(project_dir, { recursive: true });
-		fs.copySync(APPLICATION_TEMPLATE, project_dir);
+		const projectDir = path.join(cfDir, project);
+		fs.mkdirSync(projectDir, { recursive: true });
+		fs.copySync(APPLICATION_TEMPLATE, projectDir);
 		let response = await replicateOperation(req);
 		response.message = `Successfully added project: ${project}`;
 		return response;
@@ -265,30 +265,30 @@ async function dropCustomFunctionProject(req) {
 	}
 
 	log.trace(`dropping custom function project`);
-	const cf_dir = env.get(hdb_terms.CONFIG_PARAMS.COMPONENTSROOT);
+	const cfDir = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project } = req;
 
-	let apps = env.get(hdb_terms.CONFIG_PARAMS.APPS);
-	if (!hdb_utils.isEmptyOrZeroLength(apps)) {
-		let app_found = false;
+	let apps = env.get(hdbTerms.CONFIG_PARAMS.APPS);
+	if (!hdbUtils.isEmptyOrZeroLength(apps)) {
+		let appFound = false;
 		for (const [i, app] of apps.entries()) {
 			if (app.name === project) {
 				apps.splice(i, 1);
-				app_found = true;
+				appFound = true;
 				break;
 			}
 		}
 
-		if (app_found) {
-			config_utils.updateConfigValue(hdb_terms.CONFIG_PARAMS.APPS, apps);
+		if (appFound) {
+			configUtils.updateConfigValue(hdbTerms.CONFIG_PARAMS.APPS, apps);
 
 			return `Successfully deleted project: ${project}`;
 		}
 	}
 
 	try {
-		const project_dir = path.join(cf_dir, project);
-		fs.rmSync(project_dir, { recursive: true });
+		const projectDir = path.join(cfDir, project);
+		fs.rmSync(projectDir, { recursive: true });
 		let response = await replicateOperation(req);
 		response.message = `Successfully deleted project: ${project}`;
 		return response;
@@ -319,23 +319,23 @@ async function packageComponent(req) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	const cf_dir = env.get(hdb_terms.CONFIG_PARAMS.COMPONENTSROOT);
+	const cfDir = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const { project } = req;
 	log.trace(`packaging component`, project);
 
-	let path_to_project;
+	let pathToProject;
 	try {
-		path_to_project = await fs.realpath(path.join(cf_dir, project));
+		pathToProject = await fs.realpath(path.join(cfDir, project));
 	} catch (err) {
-		if (err.code !== hdb_terms.NODE_ERROR_CODES.ENOENT) throw err;
+		if (err.code !== hdbTerms.NODE_ERROR_CODES.ENOENT) throw err;
 		try {
-			path_to_project = await fs.realpath(path.join(env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project));
+			pathToProject = await fs.realpath(path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project));
 		} catch (err) {
-			if (err.code === hdb_terms.NODE_ERROR_CODES.ENOENT) throw new Error(`Unable to locate project '${project}'`);
+			if (err.code === hdbTerms.NODE_ERROR_CODES.ENOENT) throw new Error(`Unable to locate project '${project}'`);
 		}
 	}
 
-	const payload = (await packageDirectory(path_to_project, req)).toString('base64');
+	const payload = (await packageDirectory(pathToProject, req)).toString('base64');
 
 	// return the package payload as base64-encoded string
 	return { project, payload };
@@ -343,7 +343,7 @@ async function packageComponent(req) {
 
 /**
  * Can deploy a component in multiple ways. If a 'package' is provided all it will do is write that package to
- * harperdb-config, when HDB is restarted the package will be installed in hdb/node_modules. If a base64 encoded string is passed it
+ * harperdb-config, when HDB is restarted the package will be installed in hdb/nodeModules. If a base64 encoded string is passed it
  * will write string to a temp tar file and extract that file into the deployed project in hdb/components.
  * @param req
  * @returns {Promise<string>}
@@ -360,75 +360,75 @@ async function deployComponent(req) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	const cf_dir = env.get(hdb_terms.CONFIG_PARAMS.COMPONENTSROOT);
-	let { project, payload, package: pkg, install_command } = req;
+	const cfDir = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+	let { project, payload, package: pkg, install_command: installCommand } = req;
 	log.trace(`deploying component`, project);
 
 	if (!payload && !pkg) {
 		throw new Error("'payload' or 'package' must be provided");
 	}
-	let path_to_project;
+	let pathToProject;
 	if (payload) {
-		path_to_project = path.join(cf_dir, project);
-		pkg = 'file:' + path_to_project;
+		pathToProject = path.join(cfDir, project);
+		pkg = 'file:' + pathToProject;
 		// check if the project exists, if it doesn't, create it, if it does, empty it.
-		await fs.emptyDir(path_to_project);
+		await fs.emptyDir(pathToProject);
 
 		// extract the reconstituted file to the proper project directory
 		const stream = Readable.from(payload instanceof Buffer ? payload : Buffer.from(payload, 'base64'));
 		await new Promise((resolve, reject) => {
 			stream
 				.pipe(gunzip())
-				.pipe(tar.extract(path_to_project, { finish: resolve }))
+				.pipe(tar.extract(pathToProject, { finish: resolve }))
 				.on('error', reject);
 		});
 
-		const comp_dir = await fs.readdir(path_to_project);
-		if (comp_dir.length === 1 && comp_dir[0] === 'package') {
-			await fs.copy(path.join(path_to_project, 'package'), path_to_project);
-			await fs.remove(path.join(path_to_project, 'package'));
+		const compDir = await fs.readdir(pathToProject);
+		if (compDir.length === 1 && compDir[0] === 'package') {
+			await fs.copy(path.join(pathToProject, 'package'), pathToProject);
+			await fs.remove(path.join(pathToProject, 'package'));
 		}
-		const node_modules_path = path.join(path_to_project, 'node_modules');
-		if (install_command) {
+		const nodeModulesPath = path.join(pathToProject, 'node_modules');
+		if (installCommand) {
 			// if the user provided an install command, we run that instead of npm install at the root
 			// TODO: When we support untrusted packages in a secure mode, we will need to deny this
-			await npm_utils.runCommand(install_command, path_to_project);
+			await npmUtils.runCommand(installCommand, pathToProject);
 		}
-		// if we have a node_modules folder, we assume we have our own modules, and we don't need to npm install them
-		else if (!fs.existsSync(node_modules_path)) {
-			// if the package came with node_modules, we don't need to npm install
+		// if we have a nodeModules folder, we assume we have our own modules, and we don't need to npm install them
+		else if (!fs.existsSync(nodeModulesPath)) {
+			// if the package came with nodeModules, we don't need to npm install
 			// them, but otherwise we do
-			await npm_utils.installAllRootModules(false, path_to_project);
+			await npmUtils.installAllRootModules(false, pathToProject);
 		}
 	} else {
 		// Adds package to harperdb-config and then relies on restart to call install on the new app
-		await config_utils.addConfig(project, { package: pkg });
+		await configUtils.addConfig(project, { package: pkg });
 
 		// The main thread can install the components, but we do it here and now so that if it fails, we can immediately
 		// know about it and report it.
 		await installComponents();
-		const root_path = eng_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH);
-		path_to_project = path.join(root_path, 'node_modules', project);
+		const rootPath = engMgr.get(hdbTerms.CONFIG_PARAMS.ROOTPATH);
+		pathToProject = path.join(rootPath, 'node_modules', project);
 	}
 
 	// the main thread should never actually load component, just do a deploy
 	if (isMainThread) return;
 	// now we attempt to actually load the component in case there is
 	// an error we can immediately detect and report
-	const pseudo_resources = new Map();
-	pseudo_resources.isWorker = true;
-	const component_loader = require('./componentLoader');
-	let last_error;
-	component_loader.setErrorReporter((error) => (last_error = error));
-	const component_name = basename(path_to_project);
-	const original_error = component_loader.component_errors.get(component_name); // we don't want this to change to preserve
+	const pseudoResources = new Map();
+	pseudoResources.isWorker = true;
+	const componentLoader = require('./componentLoader.ts');
+	let lastError;
+	componentLoader.setErrorReporter((error) => (lastError = error));
+	const componentName = basename(pathToProject);
+	const originalError = componentLoader.componentErrors.get(componentName); // we don't want this to change to preserve
 	// consistency with other threads
 	try {
-		await component_loader.loadComponent(path_to_project, pseudo_resources);
+		await componentLoader.loadComponent(pathToProject, pseudoResources);
 	} finally {
-		component_loader.component_errors.set(component_name, original_error);
+		componentLoader.componentErrors.set(componentName, originalError);
 	}
-	if (last_error) throw last_error;
+	if (lastError) throw lastError;
 	log.info('Installed component');
 
 	const rollingRestart = req.restart === 'rolling';
@@ -436,10 +436,10 @@ async function deployComponent(req) {
 	req.restart = rollingRestart ? false : req.restart;
 	let response = await replicateOperation(req);
 	if (req.restart === true) {
-		manage_threads.restartWorkers('http');
+		manageThreads.restartWorkers('http');
 		response.message = `Successfully deployed: ${project}, restarting HarperDB`;
 	} else if (rollingRestart) {
-		const serverUtilities = require('../server/serverHelpers/serverUtilities');
+		const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
 		const jobResponse = await serverUtilities.executeJob({
 			operation: 'restart_service',
 			service: 'http',
@@ -515,13 +515,13 @@ async function getComponents() {
 		}
 	};
 
-	const results = await walkDir(env.get(hdb_terms.CONFIG_PARAMS.COMPONENTSROOT), {
-		name: env.get(hdb_terms.CONFIG_PARAMS.COMPONENTSROOT).split(path.sep).slice(-1).pop(),
+	const results = await walkDir(env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), {
+		name: env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT).split(path.sep).slice(-1).pop(),
 		entries: [],
 	});
 
-	const componentLoader = require('./componentLoader');
-	const componentErrors = componentLoader.component_errors;
+	const componentLoader = require('./componentLoader.ts');
+	const componentErrors = componentLoader.componentErrors;
 	for (const component of results.entries) {
 		const error = componentErrors.get(component.name);
 		// if it is loaded properly, this should be false
@@ -542,24 +542,24 @@ async function getComponentFile(req) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	// If comp is in config we know it is a referenced comp and lives in node_modules
-	const config_obj = config_utils.getConfigObj();
-	const comp_root =
-		config_obj[req.project] || req.project === 'harperdb'
-			? path.join(eng_mgr.get(hdb_terms.CONFIG_PARAMS.ROOTPATH), 'node_modules')
-			: env.get(hdb_terms.CONFIG_PARAMS.COMPONENTSROOT);
+	// If comp is in config we know it is a referenced comp and lives in nodeModules
+	const configObj = configUtils.getConfigObj();
+	const compRoot =
+		configObj[req.project] || req.project === 'harperdb'
+			? path.join(engMgr.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules')
+			: env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const options = req.encoding ? { encoding: req.encoding } : { encoding: 'utf8' };
 
 	try {
-		const stats = await fs.stat(path.join(comp_root, req.project, req.file));
+		const stats = await fs.stat(path.join(compRoot, req.project, req.file));
 		return {
-			message: await fs.readFile(path.join(comp_root, req.project, req.file), options),
+			message: await fs.readFile(path.join(compRoot, req.project, req.file), options),
 			size: stats.size,
 			birthtime: stats.birthtime,
 			mtime: stats.mtime,
 		};
 	} catch (err) {
-		if (err.code === hdb_terms.NODE_ERROR_CODES.ENOENT) {
+		if (err.code === hdbTerms.NODE_ERROR_CODES.ENOENT) {
 			throw new Error(`Component file not found '${path.join(req.project, req.file)}'`);
 		}
 		throw err;
@@ -578,12 +578,12 @@ async function setComponentFile(req) {
 	}
 
 	const options = req.encoding ? { encoding: req.encoding } : { encoding: 'utf8' };
-	const path_to_comp = path.join(env.get(hdb_terms.CONFIG_PARAMS.COMPONENTSROOT), req.project, req.file);
+	const pathToComp = path.join(env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), req.project, req.file);
 	if (req.payload !== undefined) {
-		await fs.ensureFile(path_to_comp);
-		await fs.outputFile(path_to_comp, req.payload, options);
+		await fs.ensureFile(pathToComp);
+		await fs.outputFile(pathToComp, req.payload, options);
 	} else {
-		await fs.ensureDir(path_to_comp);
+		await fs.ensureDir(pathToComp);
 	}
 	let response = await replicateOperation(req);
 	response.message = `Successfully set component: ` + req.file;
@@ -603,9 +603,9 @@ async function dropComponent(req) {
 
 	const { project, file } = req;
 	const projectPath = req.file ? path.join(project, file) : project;
-	const pathToComponent = path.join(env.get(hdb_terms.CONFIG_PARAMS.COMPONENTSROOT), projectPath);
+	const pathToComponent = path.join(env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT), projectPath);
 
-	const componentSymlink = path.join(env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
+	const componentSymlink = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project);
 	if (await fs.pathExists(componentSymlink)) {
 		await fs.unlink(componentSymlink);
 	}
@@ -615,7 +615,7 @@ async function dropComponent(req) {
 	}
 
 	// Remove the component from the package.json file
-	const packageJsonPath = path.join(env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH), 'package.json');
+	const packageJsonPath = path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'package.json');
 	if (await fs.pathExists(packageJsonPath)) {
 		const packageJson = JSON.parse(await fs.readFile(packageJsonPath, 'utf8'));
 		if (packageJson?.dependencies?.[project]) {
@@ -624,10 +624,10 @@ async function dropComponent(req) {
 		await fs.writeFile(packageJsonPath, JSON.stringify(packageJson, null, 2), 'utf8');
 	}
 
-	config_utils.deleteConfigFromFile([project]);
+	configUtils.deleteConfigFromFile([project]);
 	let response = await replicateOperation(req);
 	if (req.restart === true) {
-		manage_threads.restartWorkers('http');
+		manageThreads.restartWorkers('http');
 		response.message = `Successfully dropped: ${projectPath}, restarting HarperDB`;
 	} else response.message = `Successfully dropped: ${projectPath}`;
 	return response;
@@ -641,66 +641,66 @@ async function addSSHKey(req) {
 	let { name, key, host, hostname, known_hosts } = req;
 	log.trace(`adding ssh key`, name);
 
-	const file_path = path.join(ssh_dir, name + '.key');
-	const config_file = path.join(ssh_dir, 'config');
+	const filePath = path.join(sshDir, name + '.key');
+	const config_file = path.join(sshDir, 'config');
 
 	// Check if the key already exists
-	if (await fs.pathExists(file_path)) {
+	if (await fs.pathExists(filePath)) {
 		throw new Error('Key already exists. Use update_ssh_key or delete_ssh_key and then add_ssh_key');
 	}
 
 	// Create the key file
-	await fs.outputFile(file_path, key);
-	await fs.chmod(file_path, '0600');
+	await fs.outputFile(filePath, key);
+	await fs.chmod(filePath, '0600');
 
 	// Build the config block string
-	const config_block = `#${name}
+	const configBlock = `#${name}
 Host ${host}
 	HostName ${hostname}
 	User git
-	IdentityFile ${file_path}
+	IdentityFile ${filePath}
 	IdentitiesOnly yes`;
 
 	// If the file already exists, add a new config block, otherwise write the file for the first time
 	if (await fs.pathExists(config_file)) {
-		await fs.appendFile(config_file, '\n' + config_block);
+		await fs.appendFile(config_file, '\n' + configBlock);
 	} else {
-		await fs.outputFile(config_file, config_block);
+		await fs.outputFile(config_file, configBlock);
 	}
 
-	let additional_message = '';
+	let additionalMessage = '';
 
 	// Create the known_hosts file and set permissions if missing
-	if (!(await fs.pathExists(known_hosts_file))) {
-		await fs.writeFile(known_hosts_file, '');
-		await fs.chmod(known_hosts_file, '0600');
+	if (!(await fs.pathExists(knownHostsFile))) {
+		await fs.writeFile(knownHostsFile, '');
+		await fs.chmod(knownHostsFile, '0600');
 	}
 
 	// If adding a github.com ssh key download it automatically
 	if (hostname == 'github.com') {
-		const file_contents = await fs.readFile(known_hosts_file, 'utf8');
+		const fileContents = await fs.readFile(knownHostsFile, 'utf8');
 
 		// Check if there's already github.com entries
-		if (!file_contents.includes('github.com')) {
+		if (!fileContents.includes('github.com')) {
 			try {
 				const response = await fetch('https://api.github.com/meta');
-				const resp_json = await response.json();
-				const ssh_keys = resp_json['ssh_keys'];
-				for (let known_host of ssh_keys) {
-					fs.appendFile(known_hosts_file, 'github.com ' + known_host + '\n');
+				const respJson = await response.json();
+				const sshKeys = respJson['ssh_keys'];
+				for (let knownHost of sshKeys) {
+					fs.appendFile(knownHostsFile, 'github.com ' + knownHost + '\n');
 				}
 			} catch (err) {
-				additional_message =
+				additionalMessage =
 					'. Unable to get known hosts from github.com. Set your known hosts manually using set_ssh_known_hosts.';
 			}
 		}
 	}
 
 	if (known_hosts) {
-		await fs.appendFile(known_hosts_file, known_hosts);
+		await fs.appendFile(knownHostsFile, known_hosts);
 	}
 	let response = await replicateOperation(req);
-	response.message = `Added ssh key: ${name}${additional_message}`;
+	response.message = `Added ssh key: ${name}${additionalMessage}`;
 	return response;
 }
 
@@ -712,12 +712,12 @@ async function updateSSHKey(req) {
 	let { name, key } = req;
 	log.trace(`updating ssh key`, name);
 
-	const file_path = path.join(ssh_dir, name + '.key');
-	if (!(await fs.pathExists(file_path))) {
+	const filePath = path.join(sshDir, name + '.key');
+	if (!(await fs.pathExists(filePath))) {
 		throw new Error('Key does not exist. Use add_ssh_key');
 	}
 
-	await fs.outputFile(file_path, key);
+	await fs.outputFile(filePath, key);
 	let response = await replicateOperation(req);
 	response.message = `Updated ssh key: ${name}`;
 	return response;
@@ -731,20 +731,20 @@ async function deleteSSHKey(req) {
 	let { name } = req;
 	log.trace(`deleting ssh key`, name);
 
-	const file_path = path.join(ssh_dir, name + '.key');
-	const config_file = path.join(ssh_dir, 'config');
+	const filePath = path.join(sshDir, name + '.key');
+	const config_file = path.join(sshDir, 'config');
 
-	if (!(await fs.pathExists(file_path))) {
+	if (!(await fs.pathExists(filePath))) {
 		throw new Error('Key does not exist');
 	}
 
-	let file_contents = await fs.readFile(config_file, 'utf8');
+	let fileContents = await fs.readFile(config_file, 'utf8');
 
-	let config_block_regex = new RegExp(`#${name}[\\S\\s]*?IdentitiesOnly yes`, 'g');
-	file_contents = file_contents.replace(config_block_regex, '');
+	let configBlockRegex = new RegExp(`#${name}[\\S\\s]*?IdentitiesOnly yes`, 'g');
+	fileContents = fileContents.replace(configBlockRegex, '');
 
-	await fs.outputFile(config_file, file_contents);
-	fs.removeSync(file_path);
+	await fs.outputFile(config_file, fileContents);
+	fs.removeSync(filePath);
 	let response = await replicateOperation(req);
 	response.message = `Deleted ssh key: ${name}`;
 	return response;
@@ -752,8 +752,8 @@ async function deleteSSHKey(req) {
 
 async function listSSHKeys(req) {
 	let results = [];
-	if (await fs.pathExists(ssh_dir)) {
-		(await fs.readdir(ssh_dir)).forEach((file) => {
+	if (await fs.pathExists(sshDir)) {
+		(await fs.readdir(sshDir)).forEach((file) => {
 			if (file != 'known_hosts' && file != 'config') {
 				results.push({ name: file.split('.')[0] });
 			}
@@ -770,37 +770,35 @@ async function setSSHKnownHosts(req) {
 	}
 	let { known_hosts } = req;
 
-	await fs.outputFile(known_hosts_file, known_hosts);
+	await fs.outputFile(knownHostsFile, known_hosts);
 	let response = await replicateOperation(req);
 	response.message = `Known hosts successfully set`;
 	return response;
 }
 
 async function getSSHKnownHosts(req) {
-	if (!(await fs.pathExists(known_hosts_file))) {
+	if (!(await fs.pathExists(knownHostsFile))) {
 		return { known_hosts: null };
 	}
-	return { known_hosts: await fs.readFile(known_hosts_file, 'utf8') };
+	return { known_hosts: await fs.readFile(knownHostsFile, 'utf8') };
 }
 
-Object.assign(exports, {
-	customFunctionsStatus,
-	getCustomFunctions,
-	getCustomFunction,
-	setCustomFunction,
-	dropCustomFunction,
-	addComponent,
-	dropCustomFunctionProject,
-	packageComponent,
-	deployComponent,
-	getComponents,
-	getComponentFile,
-	setComponentFile,
-	dropComponent,
-	addSSHKey,
-	updateSSHKey,
-	deleteSSHKey,
-	listSSHKeys,
-	setSSHKnownHosts,
-	getSSHKnownHosts,
-});
+exports.customFunctionsStatus = customFunctionsStatus;
+exports.getCustomFunctions = getCustomFunctions;
+exports.getCustomFunction = getCustomFunction;
+exports.setCustomFunction = setCustomFunction;
+exports.dropCustomFunction = dropCustomFunction;
+exports.addComponent = addComponent;
+exports.dropCustomFunctionProject = dropCustomFunctionProject;
+exports.packageComponent = packageComponent;
+exports.deployComponent = deployComponent;
+exports.getComponents = getComponents;
+exports.getComponentFile = getComponentFile;
+exports.setComponentFile = setComponentFile;
+exports.dropComponent = dropComponent;
+exports.addSSHKey = addSSHKey;
+exports.updateSSHKey = updateSSHKey;
+exports.deleteSSHKey = deleteSSHKey;
+exports.listSSHKeys = listSSHKeys;
+exports.setSSHKnownHosts = setSSHKnownHosts;
+exports.getSSHKnownHosts = getSSHKnownHosts;

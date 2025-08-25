@@ -90,7 +90,7 @@ describe('Test customFunctionsServer module', () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			server = customFunctionsServer_rw.__get__('fastify_server');
+			server = customFunctionsServer_rw.__get__('fastifyServer');
 
 			expect(server).to.not.be.undefined;
 			expect(server.server.constructor.name).to.contain('Server');
@@ -105,7 +105,7 @@ describe('Test customFunctionsServer module', () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			server = customFunctionsServer_rw.__get__('fastify_server');
+			server = customFunctionsServer_rw.__get__('fastifyServer');
 
 			const state_key = Object.getOwnPropertySymbols(server).find((s) => String(s) === 'Symbol(fastify.state)');
 			expect(server[state_key].started).to.be.true;
@@ -115,7 +115,7 @@ describe('Test customFunctionsServer module', () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			server = customFunctionsServer_rw.__get__('fastify_server');
+			server = customFunctionsServer_rw.__get__('fastifyServer');
 
 			expect(server.initialConfig.connectionTimeout).to.equal(
 				config_utils.getDefaultConfig(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_TIMEOUT)
@@ -137,7 +137,7 @@ describe('Test customFunctionsServer module', () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			server = customFunctionsServer_rw.__get__('fastify_server');
+			server = customFunctionsServer_rw.__get__('fastifyServer');
 
 			expect(server.server.timeout).to.equal(test_config_settings.server_timeout);
 			expect(server.server.headersTimeout).to.equal(test_config_settings.headers_timeout);
@@ -154,7 +154,7 @@ describe('Test customFunctionsServer module', () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			server = customFunctionsServer_rw.__get__('fastify_server');
+			server = customFunctionsServer_rw.__get__('fastifyServer');
 
 			const plugin_key = Object.getOwnPropertySymbols(server).find(
 				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
@@ -170,7 +170,7 @@ describe('Test customFunctionsServer module', () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			server = customFunctionsServer_rw.__get__('fastify_server');
+			server = customFunctionsServer_rw.__get__('fastifyServer');
 
 			const plugin_key = Object.getOwnPropertySymbols(server).find(
 				(s) => String(s) === 'Symbol(fastify.pluginNameChain)'
@@ -187,7 +187,7 @@ describe('Test customFunctionsServer module', () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			server = customFunctionsServer_rw.__get__('fastify_server');
+			server = customFunctionsServer_rw.__get__('fastifyServer');
 
 			const test_headers = { origin: 'https://google.com', ...test_req_options.headers };
 			const test_response = await server.inject({
@@ -208,7 +208,7 @@ describe('Test customFunctionsServer module', () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			server = customFunctionsServer_rw.__get__('fastify_server');
+			server = customFunctionsServer_rw.__get__('fastifyServer');
 
 			const test_headers = { origin: 'https://harperdb.io', ...test_req_options.headers };
 			const test_response = await server.inject({
@@ -227,7 +227,7 @@ describe('Test customFunctionsServer module', () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			server = customFunctionsServer_rw.__get__('fastify_server');
+			server = customFunctionsServer_rw.__get__('fastifyServer');
 			const buildServer_rw = customFunctionsServer_rw.__get__('buildServer');
 
 			const test_is_https = false;
@@ -240,7 +240,7 @@ describe('Test customFunctionsServer module', () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			server = customFunctionsServer_rw.__get__('fastify_server');
+			server = customFunctionsServer_rw.__get__('fastifyServer');
 			const buildServer_rw = customFunctionsServer_rw.__get__('buildServer');
 
 			const test_is_https = true;
@@ -271,7 +271,7 @@ describe('Test customFunctionsServer module', () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			server = customFunctionsServer_rw.__get__('fastify_server');
+			server = customFunctionsServer_rw.__get__('fastifyServer');
 
 			const plugin_key = Object.getOwnPropertySymbols(server).find((s) => String(s) === 'Symbol(fastify.children)');
 			const plugins_array = Object.getOwnPropertySymbols(server[plugin_key][0]).find(
@@ -288,7 +288,7 @@ describe('Test customFunctionsServer module', () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			server = customFunctionsServer_rw.__get__('fastify_server');
+			server = customFunctionsServer_rw.__get__('fastifyServer');
 
 			const plugin_key = Object.getOwnPropertySymbols(server).find((s) => String(s) === 'Symbol(fastify.children)');
 			const test_result = server[plugin_key][0];
@@ -304,7 +304,7 @@ describe('Test customFunctionsServer module', () => {
 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 			await customFunctionsServer_rw.customFunctionsServer();
 			await new Promise((resolve) => setTimeout(resolve, 100));
-			server = customFunctionsServer_rw.__get__('fastify_server');
+			server = customFunctionsServer_rw.__get__('fastifyServer');
 
 			const plugin_key = Object.getOwnPropertySymbols(server).find((s) => String(s) === 'Symbol(fastify.children)');
 			const children = Object.getOwnPropertySymbols(server[plugin_key][0]).find(
@@ -318,7 +318,7 @@ describe('Test customFunctionsServer module', () => {
 		// 		it('should register the appropriate routes with the server', async () => {
 		// 			const customFunctionsServer_rw = await rewire(CF_SERVER_PATH);
 		// 			await new Promise((resolve) => setTimeout(resolve, 500));
-		// 			server = customFunctionsServer_rw.__get__('fastify_server');
+		// 			server = customFunctionsServer_rw.__get__('fastifyServer');
 		//
 		// 			const template_routes = `└── /
 		//     ├── test (GET)

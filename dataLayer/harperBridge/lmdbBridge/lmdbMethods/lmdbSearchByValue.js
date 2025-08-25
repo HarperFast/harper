@@ -1,29 +1,29 @@
 'use strict';
 
-const SearchObject = require('../../../SearchObject');
-const search_validator = require('../../../../validation/searchValidator');
-const common_utils = require('../../../../utility/common_utils');
-const hdb_terms = require('../../../../utility/hdbTerms');
-const lmdb_search = require('../lmdbUtility/lmdbSearch');
+const SearchObject = require('../../../SearchObject.js');
+const searchValidator = require('../../../../validation/searchValidator.js');
+const commonUtils = require('../../../../utility/common_utils.js');
+const hdbTerms = require('../../../../utility/hdbTerms.ts');
+const lmdb_search = require('../lmdbUtility/lmdbSearch.js');
 
 module.exports = lmdbSearchByValue;
 
 /**
  * gets records by value - returns array of Objects
- * @param {SearchObject} search_object
- * @param {hdb_terms.VALUE_SEARCH_COMPARATORS} [comparator]
+ * @param {SearchObject} searchObject
+ * @param {hdbTerms.VALUE_SEARCH_COMPARATORS} [comparator]
  * @returns {Promise<{}|{}[]>}
  */
-async function lmdbSearchByValue(search_object, comparator) {
-	let comparator_search = !common_utils.isEmpty(comparator);
-	if (comparator_search && hdb_terms.VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[comparator] === undefined) {
+async function lmdbSearchByValue(searchObject, comparator) {
+	let comparatorSearch = !commonUtils.isEmpty(comparator);
+	if (comparatorSearch && hdbTerms.VALUE_SEARCH_COMPARATORS_REVERSE_LOOKUP[comparator] === undefined) {
 		throw new Error(`Value search comparator - ${comparator} - is not valid`);
 	}
 
-	let validation_error = search_validator(search_object, 'value');
-	if (validation_error) {
-		throw validation_error;
+	let validationError = searchValidator(searchObject, 'value');
+	if (validationError) {
+		throw validationError;
 	}
 
-	return lmdb_search.prepSearch(search_object, comparator, false);
+	return lmdb_search.prepSearch(searchObject, comparator, false);
 }

@@ -1,4 +1,4 @@
-name: 'Run Docker CI Tests'
+name: 'Run Docker CI Tests with Postman'
 
 on:
   push:
@@ -62,14 +62,19 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ needs.build.outputs.nodeVersion }}
-      - name: Run Tests
+      - name: Run Tests with Postman
         timeout-minutes: 20
+        env:
+          HDB_ADMIN_USERNAME: ${{ secrets.HDB_ADMIN_USERNAME }}
+          HDB_ADMIN_PASSWORD: ${{ secrets.HDB_ADMIN_PASSWORD }}
+          S3_KEY: ${{ secrets.AWS_S3_CI_CLUSTER_KEY }}
+          S3_SECRET: ${{ secrets.AWS_S3_CI_CLUSTER_SECRET }}
         run: |
           pushd utility/Docker
           docker load -i ${{ matrix.tarName }}
           docker image inspect harperdb/harperdb:${{ needs.build.outputs.harperdbVersion }} > /dev/null || exit 1
           popd
-          containerId=$(docker run -d --name harper --restart=no -p 9925:9925 -p 9926:9926 -e HARPERDB_FINGERPRINT="4sADRM2e7dd501d7db58bb02d35bd0745146423a1" -e HARPERDB_LICENSE='{"license_key":"1373969b4cabd39e8b29c3c16e419c6abef4437d48168b4721e575610dcf656cf57016bd037cf1107f8232a1e94b7352c05b7c069560ac0e54ca156d3babc966289c664e5fb163e3429158a2f57afd39854ca51fa885abbca62f7e063a334498cd5ef0a038cbea80c6e063d174bbcc189a81dc4f2771ad90c9022cf20a322043ec4213fdef1d1e9eba36117c865acb6a13be3be218513ee80385e78bda0b9e27e7ec6532ac6e5416bc020f4f4be91cf6mofi25eYMW6aiRf6bd3d9b691699749569f6acd34a93e61","company":"harperdb.io"}' -e CUSTOM_FUNCTIONS=true -e LOG_TO_STDSTREAMS=true -e LOG_TO_FILE=true -e HDB_ADMIN_USERNAME="admin" -e HDB_ADMIN_PASSWORD="Abc1234!" -e OPERATIONSAPI_NETWORK_PORT=9925 -e HTTP_PORT=9926 harperdb/harperdb:${{ needs.build.outputs.harperdbVersion }})
+          containerId=$(docker run -d --name harper --restart=no -p 9925:9925 -p 9926:9926 -e HARPERDB_FINGERPRINT="4sADRM2e7dd501d7db58bb02d35bd0745146423a1" -e HARPERDB_LICENSE='{"license_key":"1373969b4cabd39e8b29c3c16e419c6abef4437d48168b4721e575610dcf656cf57016bd037cf1107f8232a1e94b7352c05b7c069560ac0e54ca156d3babc966289c664e5fb163e3429158a2f57afd39854ca51fa885abbca62f7e063a334498cd5ef0a038cbea80c6e063d174bbcc189a81dc4f2771ad90c9022cf20a322043ec4213fdef1d1e9eba36117c865acb6a13be3be218513ee80385e78bda0b9e27e7ec6532ac6e5416bc020f4f4be91cf6mofi25eYMW6aiRf6bd3d9b691699749569f6acd34a93e61","company":"harperdb.io"}' -e CUSTOM_FUNCTIONS=true -e LOG_TO_STDSTREAMS=true -e LOG_TO_FILE=true -e HDB_ADMIN_USERNAME="$HDB_ADMIN_USERNAME" -e HDB_ADMIN_PASSWORD="$HDB_ADMIN_PASSWORD" -e OPERATIONSAPI_NETWORK_PORT=9925 -e HTTP_PORT=9926 harperdb/harperdb:${{ needs.build.outputs.harperdbVersion }})
           sleep 30s
 
           echo "DEBUG"
@@ -86,7 +91,14 @@ jobs:
           # Run integration tests from the Docker host
           docker cp test/data/integrationTestsCsvs/ $containerId:/home/harperdb/
           cd ./integrationTests/
-          newman run HarperDB_Integration_Tests.json -e Int_test_env_var.json --reporters cli,html,htmlextra --reporter-cli-show-timestamps --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --env-var "files_location=/home/harperdb/integrationTestsCsvs/" --env-var "username=admin" --env-var "password=Abc1234!"
+          
+          # Inject credentials from environment variables into the JSON file
+          sed -i "s|\"value\": \"PLACEHOLDER_USERNAME\"|\"value\": \"$HDB_ADMIN_USERNAME\"|" Int_test_env_var.json
+          sed -i "s|\"value\": \"PLACEHOLDER_PASSWORD\"|\"value\": \"$HDB_ADMIN_PASSWORD\"|" Int_test_env_var.json
+          sed -i "s|\"value\": \"PLACEHOLDER_S3_KEY\"|\"value\": \"$S3_KEY\"|" Int_test_env_var.json
+          sed -i "s|\"value\": \"PLACEHOLDER_S3_SECRET\"|\"value\": \"$S3_SECRET\"|" Int_test_env_var.json
+          
+          newman run HarperDB_Integration_Tests.json -e Int_test_env_var.json --reporters cli,html,htmlextra --reporter-cli-show-timestamps --reporter-html-export newman/report.html --reporter-htmlextra-export newman/extra_report.html --env-var "files_location=/home/harperdb/integrationTestsCsvs/"
 
       - name: Create artifact
         if: always()

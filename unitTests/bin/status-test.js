@@ -155,7 +155,7 @@ describe('Test status module', () => {
 		get_server_config_stub = sandbox.stub(nats_utils, 'getServerConfig').returns({ port: 1234 });
 		sandbox.stub(user, 'getClusterUser').resolves({ username: 'unit-t-user', decrypt_hash: '123nifoh24' });
 		sandbox.stub(nats_utils, 'createConnection').resolves(fake_nats_connection);
-		status.__set__('cluster_network', network_stub);
+		status.__set__('clusterNetwork', network_stub);
 		sandbox.stub(cluster_status, 'clusterStatus').resolves(fake_cluster_status);
 		sandbox.stub(nats_utils, 'closeConnection').resolves();
 		sandbox.stub(run, 'isHdbInstalled').resolves(true);

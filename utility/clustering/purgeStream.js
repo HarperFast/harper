@@ -1,10 +1,10 @@
 'use strict';
 
-const { handleHDBError, hdb_errors } = require('../errors/hdbError');
-const { HTTP_STATUS_CODES } = hdb_errors;
-const purge_stream_validator = require('../../validation/clustering/purgeStreamValidator');
-const nats_utils = require('../../server/nats/utility/natsUtils');
-const clustering_utils = require('./clusterUtilities');
+const { handleHDBError, hdbErrors } = require('../errors/hdbError.js');
+const { HTTP_STATUS_CODES } = hdbErrors;
+const purgeStreamValidator = require('../../validation/clustering/purgeStreamValidator.js');
+const natsUtils = require('../../server/nats/utility/natsUtils.js');
+const clusteringUtils = require('./clusterUtilities.js');
 
 module.exports = purgeStream;
 
@@ -16,11 +16,11 @@ module.exports = purgeStream;
  */
 async function purgeStream(req) {
 	req.schema = req.schema ?? req.database;
-	const validation_err = purge_stream_validator(req);
-	if (validation_err) {
+	const validationErr = purgeStreamValidator(req);
+	if (validationErr) {
 		throw handleHDBError(
-			validation_err,
-			validation_err.message,
+			validationErr,
+			validationErr.message,
 			HTTP_STATUS_CODES.BAD_REQUEST,
 			undefined,
 			undefined,
@@ -28,9 +28,9 @@ async function purgeStream(req) {
 		);
 	}
 
-	clustering_utils.checkClusteringEnabled();
+	clusteringUtils.checkClusteringEnabled();
 	const { schema, table, options } = req;
-	await nats_utils.purgeTableStream(schema, table, options);
+	await natsUtils.purgeTableStream(schema, table, options);
 
 	return `Successfully purged table '${schema}.${table}'`;
 }

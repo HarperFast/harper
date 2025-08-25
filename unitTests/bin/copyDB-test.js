@@ -31,6 +31,7 @@ describe('Test database copy and compact', () => {
 		storage_before_test = env_mgr.get('storage_path');
 		test_db_path = path.join(storage_path, 'copy-test.mdb');
 		test_db_backup_path = path.resolve(__dirname, '../envDir/copy-test.mdb');
+		delete databases.copyTest; // delete/cleanup the wrong db from memory
 		env_mgr.setProperty('storage_path', storage_path);
 		env_mgr.setProperty('rootPath', storage_path);
 		setMainIsWorker(true);
@@ -70,6 +71,7 @@ describe('Test database copy and compact', () => {
 		sandbox.resetHistory();
 		await fs.copy(test_db_backup_path, test_db_path, { overwrite: true });
 		resetDatabases();
+		delete databases.copyTest; // delete/cleanup the wrong db from memory
 	});
 
 	after(async () => {
@@ -103,7 +105,7 @@ describe('Test database copy and compact', () => {
 		const stat_after = await fs.stat(path.join(storage_path, 'copy-test.mdb'));
 		assert(update_config_stub.called);
 		assert(!console_error_spy.called);
-		assert((stat_after.size / stat_before_compact.size) * 100 < 10);
+		assert(stat_after.size < 200000);
 		assert(await fs.exists(path.join(storage_path, 'backup', 'copy-test.mdb')));
 	});
 });

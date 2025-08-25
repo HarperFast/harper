@@ -1,23 +1,23 @@
 'use strict';
 
-const env_mangr = require('../utility/environment/environmentManager');
+const envMangr = require('../utility/environment/environmentManager.js');
 const Joi = require('joi');
-const validator = require('./validationWrapper');
+const validator = require('./validationWrapper.js');
 const moment = require('moment');
 const fs = require('fs-extra');
 const path = require('path');
 const _ = require('lodash');
-const hdb_terms = require('../utility/hdbTerms');
-const { LOG_LEVELS } = require('../utility/hdbTerms');
+const hdbTerms = require('../utility/hdbTerms.ts');
+const { LOG_LEVELS } = require('../utility/hdbTerms.ts');
 
 const LOG_DATE_FORMAT = 'YYYY-MM-DD hh:mm:ss';
 const INSTALL_LOG_LOCATION = path.resolve(__dirname, `../logs`);
 
 module.exports = function (object) {
-	return validator.validateBySchema(object, read_log_schema);
+	return validator.validateBySchema(object, readLogSchema);
 };
 
-const read_log_schema = Joi.object({
+const readLogSchema = Joi.object({
 	from: Joi.custom(validateDatetime),
 	until: Joi.custom(validateDatetime),
 	level: Joi.valid(
@@ -42,19 +42,19 @@ function validateDatetime(value, helpers) {
 }
 
 function validateReadLogPath(value, helpers) {
-	const process_log_name = _.invert(hdb_terms.LOG_NAMES);
-	if (process_log_name[value] === undefined) {
+	const processLogName = _.invert(hdbTerms.LOG_NAMES);
+	if (processLogName[value] === undefined) {
 		return helpers.message(`'log_name' '${value}' is invalid.`);
 	}
 
-	const log_path = env_mangr.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
-	const log_name = value === undefined ? hdb_terms.LOG_NAMES.HDB : value;
-	const read_log_path =
-		log_name === hdb_terms.LOG_NAMES.INSTALL
-			? path.join(INSTALL_LOG_LOCATION, hdb_terms.LOG_NAMES.INSTALL)
-			: path.join(log_path, log_name);
+	const logPath = envMangr.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
+	const logName = value === undefined ? hdbTerms.LOG_NAMES.HDB : value;
+	const readLogPath =
+		logName === hdbTerms.LOG_NAMES.INSTALL
+			? path.join(INSTALL_LOG_LOCATION, hdbTerms.LOG_NAMES.INSTALL)
+			: path.join(logPath, logName);
 
-	let exists = fs.existsSync(read_log_path);
+	let exists = fs.existsSync(readLogPath);
 	if (exists) {
 		return null;
 	}

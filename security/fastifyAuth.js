@@ -1,25 +1,25 @@
 'use strict';
 
-const validation = require('../validation/check_permissions');
+const validation = require('../validation/check_permissions.js');
 const passport = require('passport');
 const LocalStrategy = require('passport-local').Strategy;
 const BasicStrategy = require('passport-http').BasicStrategy;
 const util = require('util');
-const user_functions = require('./user');
-const cb_find_validate_users = util.callbackify(user_functions.findAndValidateUser);
-const hdb_errors = require('../utility/errors/commonErrors');
-const hdb_terms = require('../utility/hdbTerms');
-const token_authentication = require('./tokenAuthentication');
+const userFunctions = require('./user.js');
+const cbFindValidateUsers = util.callbackify(userFunctions.findAndValidateUser);
+const hdbErrors = require('../utility/errors/commonErrors.js');
+const hdbTerms = require('../utility/hdbTerms.ts');
+const tokenAuthentication = require('./tokenAuthentication.ts');
 
 passport.use(
 	new LocalStrategy(function (username, password, done) {
-		cb_find_validate_users(username, password, done);
+		cbFindValidateUsers(username, password, done);
 	})
 );
 
 passport.use(
 	new BasicStrategy(function (username, password, done) {
-		cb_find_validate_users(username, password, done);
+		cbFindValidateUsers(username, password, done);
 	})
 );
 
@@ -36,9 +36,9 @@ function authorize(req, res, next) {
 	let strategy;
 	let token;
 	if (req.headers?.authorization) {
-		let split_auth_header = req.headers.authorization.split(' ');
-		strategy = split_auth_header[0];
-		token = split_auth_header[1];
+		let splitAuthHeader = req.headers.authorization.split(' ');
+		strategy = splitAuthHeader[0];
+		token = splitAuthHeader[1];
 	}
 
 	function handleResponse(err, user) {
@@ -58,8 +58,8 @@ function authorize(req, res, next) {
 			})(req, res, next);
 			break;
 		case 'Bearer':
-			if (req.body?.operation && req.body.operation === hdb_terms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN) {
-				token_authentication
+			if (req.body?.operation && req.body.operation === hdbTerms.OPERATIONS_ENUM.REFRESH_OPERATION_TOKEN) {
+				tokenAuthentication
 					.validateRefreshToken(token)
 					.then((user) => {
 						req.body.refresh_token = token;
@@ -69,7 +69,7 @@ function authorize(req, res, next) {
 						next(e);
 					});
 			} else {
-				token_authentication
+				tokenAuthentication
 					.validateOperationToken(token)
 					.then((user) => {
 						next(null, user);
@@ -87,20 +87,20 @@ function authorize(req, res, next) {
 	}
 }
 
-function checkPermissions(check_permission_obj, callback) {
-	let validation_results = validation(check_permission_obj);
+function checkPermissions(checkPermissionObj, callback) {
+	let validationResults = validation(checkPermissionObj);
 
-	if (validation_results) {
-		callback(validation_results);
+	if (validationResults) {
+		callback(validationResults);
 		return;
 	}
 
-	let authoriziation_obj = {
+	let authoriziationObj = {
 		authorized: true,
 		messages: [],
 	};
 
-	let role = check_permission_obj.user.role;
+	let role = checkPermissionObj.user.role;
 
 	if (!role?.permission) {
 		return callback('Invalid role');
@@ -108,63 +108,63 @@ function checkPermissions(check_permission_obj, callback) {
 	let permission = JSON.parse(role.permission);
 
 	if (permission.super_user) {
-		return callback(null, authoriziation_obj);
+		return callback(null, authoriziationObj);
 	}
 
-	if (!permission[check_permission_obj.schema]) {
-		authoriziation_obj.authorized = false;
-		authoriziation_obj.messages.push(`Not authorized to access ${check_permission_obj.schema} schema`);
-		return callback(null, authoriziation_obj);
+	if (!permission[checkPermissionObj.schema]) {
+		authoriziationObj.authorized = false;
+		authoriziationObj.messages.push(`Not authorized to access ${checkPermissionObj.schema} schema`);
+		return callback(null, authoriziationObj);
 	}
 
-	if (!permission[check_permission_obj.schema].tables[check_permission_obj.table]) {
-		authoriziation_obj.authorized = false;
-		authoriziation_obj.messages.push(`Not authorized to access ${check_permission_obj.table} table`);
-		return callback(null, authoriziation_obj);
+	if (!permission[checkPermissionObj.schema].tables[checkPermissionObj.table]) {
+		authoriziationObj.authorized = false;
+		authoriziationObj.messages.push(`Not authorized to access ${checkPermissionObj.table} table`);
+		return callback(null, authoriziationObj);
 	}
 
-	if (!permission[check_permission_obj.schema].tables[check_permission_obj.table][check_permission_obj.operation]) {
-		authoriziation_obj.authorized = false;
-		authoriziation_obj.messages.push(
-			`Not authorized to access ${check_permission_obj.operation} on ${check_permission_obj.table} table`
+	if (!permission[checkPermissionObj.schema].tables[checkPermissionObj.table][checkPermissionObj.operation]) {
+		authoriziationObj.authorized = false;
+		authoriziationObj.messages.push(
+			`Not authorized to access ${checkPermissionObj.operation} on ${checkPermissionObj.table} table`
 		);
-		return callback(null, authoriziation_obj);
+		return callback(null, authoriziationObj);
 	}
 
 	if (
-		permission[check_permission_obj.schema].tables[check_permission_obj.table].attribute_permissions &&
-		!check_permission_obj.attributes
+		permission[checkPermissionObj.schema].tables[checkPermissionObj.table].attribute_permissions &&
+		!checkPermissionObj.attributes
 	) {
-		authoriziation_obj.authorized = false;
-		authoriziation_obj.messages.push(
-			`${check_permission_obj.schema}.${check_permission_obj.table} has attribute permissions. Missing attributes to validate`
+		authoriziationObj.authorized = false;
+		authoriziationObj.messages.push(
+			`${checkPermissionObj.schema}.${checkPermissionObj.table} has attribute permissions. Missing attributes to validate`
 		);
-		return callback(null, authoriziation_obj);
+		return callback(null, authoriziationObj);
 	}
 
 	if (
-		permission[check_permission_obj.schema].tables[check_permission_obj.table].attribute_permissions &&
-		check_permission_obj.attributes
+		permission[checkPermissionObj.schema].tables[checkPermissionObj.table].attribute_permissions &&
+		checkPermissionObj.attributes
 	) {
-		let restricted_attrs =
-			permission[check_permission_obj.schema].tables[check_permission_obj.table].attribute_permissions;
-		for (let r_attr in restricted_attrs) {
+		let restrictedAttrs =
+			permission[checkPermissionObj.schema].tables[checkPermissionObj.table].attribute_permissions;
+		for (let rAttr in restrictedAttrs) {
 			if (
-				check_permission_obj.attributes.indexOf(restricted_attrs[r_attr].attribute_name) > -1 &&
-				!restricted_attrs[r_attr][check_permission_obj.operation]
+				checkPermissionObj.attributes.indexOf(restrictedAttrs[rAttr].attribute_name) > -1 &&
+				!restrictedAttrs[rAttr][checkPermissionObj.operation]
 			) {
-				authoriziation_obj.authorized = false;
-				authoriziation_obj.messages.push(
-					`Not authorized to ${check_permission_obj.operation} ${restricted_attrs[r_attr].attribute_name} `
+				authoriziationObj.authorized = false;
+				authoriziationObj.messages.push(
+					`Not authorized to ${checkPermissionObj.operation} ${restrictedAttrs[rAttr].attribute_name} `
 				);
 			}
 		}
 	}
 
-	return callback(null, authoriziation_obj);
+	return callback(null, authoriziationObj);
 }
 
 module.exports = {
-	authorize: authorize,
-	checkPermissions: checkPermissions,
+	authorize,
+	checkPermissions,
 };

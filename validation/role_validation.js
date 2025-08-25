@@ -1,9 +1,9 @@
 const validate = require('validate.js'),
-	validator = require('./validationWrapper'),
-	terms = require('../utility/hdbTerms'),
-	{ handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
+	validator = require('./validationWrapper.js'),
+	terms = require('../utility/hdbTerms.ts'),
+	{ handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
 
-const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 
 const constraintsTemplate = () => ({
 	role: {
@@ -63,32 +63,32 @@ function customValidate(object, constraints) {
 		schema_permissions: {},
 	};
 
-	const json_msg_keys = Object.keys(object);
+	const jsonMsgKeys = Object.keys(object);
 
 	//Check to confirm that keys in JSON body are valid
-	const invalid_keys = [];
-	for (let i = 0, arr_length = json_msg_keys.length; i < arr_length; i++) {
-		if (!ALLOWED_JSON_KEYS.includes(json_msg_keys[i])) {
-			invalid_keys.push(json_msg_keys[i]);
+	const invalidKeys = [];
+	for (let i = 0, arrLength = jsonMsgKeys.length; i < arrLength; i++) {
+		if (!ALLOWED_JSON_KEYS.includes(jsonMsgKeys[i])) {
+			invalidKeys.push(jsonMsgKeys[i]);
 		}
 	}
-	if (invalid_keys.length > 0) {
-		addPermError(HDB_ERROR_MSGS.INVALID_ROLE_JSON_KEYS(invalid_keys), validationErrors);
+	if (invalidKeys.length > 0) {
+		addPermError(HDB_ERROR_MSGS.INVALID_ROLE_JSON_KEYS(invalidKeys), validationErrors);
 	}
 
-	let validate_result = validator.validateObject(object, constraints);
-	if (validate_result) {
-		validate_result.message.split(',').forEach((validation_err) => {
-			addPermError(validation_err, validationErrors);
+	let validateResult = validator.validateObject(object, constraints);
+	if (validateResult) {
+		validateResult.message.split(',').forEach((validationErr) => {
+			addPermError(validationErr, validationErrors);
 		});
 	}
 
 	//need this check to avoid unexpected errors if someone doesn't have permissions key included in request
 	if (object.permission) {
 		//check if role is SU or CU and has perms included
-		const su_perms_error = validateNoSUPerms(object);
-		if (su_perms_error) {
-			addPermError(su_perms_error, validationErrors);
+		const suPermsError = validateNoSUPerms(object);
+		if (suPermsError) {
+			addPermError(suPermsError, validationErrors);
 		}
 		//check if cu or su values, if included, are booleans
 		ROLE_TYPES.forEach((role) => {
@@ -102,19 +102,19 @@ function customValidate(object, constraints) {
 		if (ROLE_TYPES.indexOf(item) < 0) {
 			//validate the user type 'structure_user'.  acceptable data type is boolean or array of strings (this would be array of accepted schemas to interact with)
 			if (item === STRUCTURE_USER_ENUM.STRUCTURE_USER) {
-				let structure_user_perm = object.permission[item];
+				let structureUserPerm = object.permission[item];
 
 				//boolean is valid, move on
-				if (typeof structure_user_perm === 'boolean') {
+				if (typeof structureUserPerm === 'boolean') {
 					continue;
 				}
 
 				//array is valid check to make sure each entry is actually a schema.
-				if (Array.isArray(structure_user_perm)) {
-					for (let k = 0, length = structure_user_perm.length; k < length; k++) {
-						let schema_perm = structure_user_perm[k];
-						if (!global.hdb_schema[schema_perm]) {
-							addPermError(HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema_perm), validationErrors);
+				if (Array.isArray(structureUserPerm)) {
+					for (let k = 0, length = structureUserPerm.length; k < length; k++) {
+						let schemaPerm = structureUserPerm[k];
+						if (!global.hdb_schema[schemaPerm]) {
+							addPermError(HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schemaPerm), validationErrors);
 						}
 					}
 					continue;
@@ -141,18 +141,18 @@ function customValidate(object, constraints) {
 					}
 
 					//validate all table perm keys are valid
-					Object.keys(table).forEach((table_key) => {
-						if (!TABLE_PERM_KEYS.includes(table_key)) {
-							addPermError(HDB_ERROR_MSGS.INVALID_PERM_KEY(table_key), validationErrors, item, t);
+					Object.keys(table).forEach((tableKey) => {
+						if (!TABLE_PERM_KEYS.includes(tableKey)) {
+							addPermError(HDB_ERROR_MSGS.INVALID_PERM_KEY(tableKey), validationErrors, item, t);
 						}
 					});
 
 					//validate table CRUD perms
-					Object.values(PERMS_CRUD_ENUM).forEach((perm_key) => {
-						if (!validate.isDefined(table[perm_key])) {
-							addPermError(HDB_ERROR_MSGS.TABLE_PERM_MISSING(perm_key), validationErrors, item, t);
-						} else if (!validate.isBoolean(table[perm_key])) {
-							addPermError(HDB_ERROR_MSGS.TABLE_PERM_NOT_BOOLEAN(perm_key), validationErrors, item, t);
+					Object.values(PERMS_CRUD_ENUM).forEach((permKey) => {
+						if (!validate.isDefined(table[permKey])) {
+							addPermError(HDB_ERROR_MSGS.TABLE_PERM_MISSING(permKey), validationErrors, item, t);
+						} else if (!validate.isBoolean(table[permKey])) {
+							addPermError(HDB_ERROR_MSGS.TABLE_PERM_NOT_BOOLEAN(permKey), validationErrors, item, t);
 						}
 					});
 
@@ -167,8 +167,8 @@ function customValidate(object, constraints) {
 
 					//need this check here to ensure no unexpected errors if key is missing in table perms obj
 					if (table.attribute_permissions) {
-						let table_attribute_names = global.hdb_schema[item][t].attributes.map(({ attribute }) => attribute);
-						const attr_perms_check = {
+						let tableAttributeNames = global.hdb_schema[item][t].attributes.map(({ attribute }) => attribute);
+						const attrPermsCheck = {
 							read: false,
 							insert: false,
 							update: false,
@@ -191,41 +191,41 @@ function customValidate(object, constraints) {
 								continue;
 							}
 
-							const attr_name = permission.attribute_name;
+							const attrName = permission.attribute_name;
 							//validate that attr exists in schema for table
-							if (!table_attribute_names.includes(attr_name)) {
-								addPermError(HDB_ERROR_MSGS.INVALID_ATTRIBUTE_IN_PERMS(attr_name), validationErrors, item, t);
+							if (!tableAttributeNames.includes(attrName)) {
+								addPermError(HDB_ERROR_MSGS.INVALID_ATTRIBUTE_IN_PERMS(attrName), validationErrors, item, t);
 								continue;
 							}
 
 							//validate table attribute CRU perms
-							ATTR_CRU_KEYS.forEach((perm_key) => {
-								if (!validate.isDefined(permission[perm_key])) {
-									addPermError(HDB_ERROR_MSGS.ATTR_PERM_MISSING(perm_key, attr_name), validationErrors, item, t);
-								} else if (!validate.isBoolean(permission[perm_key])) {
-									addPermError(HDB_ERROR_MSGS.ATTR_PERM_NOT_BOOLEAN(perm_key, attr_name), validationErrors, item, t);
+							ATTR_CRU_KEYS.forEach((permKey) => {
+								if (!validate.isDefined(permission[permKey])) {
+									addPermError(HDB_ERROR_MSGS.ATTR_PERM_MISSING(permKey, attrName), validationErrors, item, t);
+								} else if (!validate.isBoolean(permission[permKey])) {
+									addPermError(HDB_ERROR_MSGS.ATTR_PERM_NOT_BOOLEAN(permKey, attrName), validationErrors, item, t);
 								}
 							});
 
 							//confirm that false table perms are not set to true for an attribute
-							if (!attr_perms_check.read && permission.read === true) {
-								attr_perms_check.read = true;
+							if (!attrPermsCheck.read && permission.read === true) {
+								attrPermsCheck.read = true;
 							}
-							if (!attr_perms_check.insert && permission.insert === true) {
-								attr_perms_check.insert = true;
+							if (!attrPermsCheck.insert && permission.insert === true) {
+								attrPermsCheck.insert = true;
 							}
-							if (!attr_perms_check.update && permission.update === true) {
-								attr_perms_check.update = true;
+							if (!attrPermsCheck.update && permission.update === true) {
+								attrPermsCheck.update = true;
 							}
 						}
 						//validate that there is no mismatching perms between table and attrs
 						if (
-							(table.read === false && attr_perms_check.read === true) ||
-							(table.insert === false && attr_perms_check.insert === true) ||
-							(table.update === false && attr_perms_check.update === true)
+							(table.read === false && attrPermsCheck.read === true) ||
+							(table.insert === false && attrPermsCheck.insert === true) ||
+							(table.update === false && attrPermsCheck.update === true)
 						) {
-							const schema_name = `${item}.${t}`;
-							addPermError(HDB_ERROR_MSGS.MISMATCHED_TABLE_ATTR_PERMS(schema_name), validationErrors, item, t);
+							const schemaName = `${item}.${t}`;
+							addPermError(HDB_ERROR_MSGS.MISMATCHED_TABLE_ATTR_PERMS(schemaName), validationErrors, item, t);
 						}
 					}
 				}
@@ -237,9 +237,9 @@ function customValidate(object, constraints) {
 }
 
 module.exports = {
-	addRoleValidation: addRoleValidation,
-	alterRoleValidation: alterRoleValidation,
-	dropRoleValidation: dropRoleValidation,
+	addRoleValidation,
+	alterRoleValidation,
+	dropRoleValidation,
 };
 
 /**
@@ -251,15 +251,15 @@ function validateNoSUPerms(obj) {
 	const { operation, permission } = obj;
 	if (operation === terms.OPERATIONS_ENUM.ADD_ROLE || operation === terms.OPERATIONS_ENUM.ALTER_ROLE) {
 		//Check if role type is super user or cluster user
-		const is_su_role = permission.super_user === true;
-		const is_cu_role = permission.cluster_user === true;
-		const has_perms = Object.keys(permission).length > 1;
-		if (has_perms && (is_su_role || is_cu_role)) {
-			if (is_cu_role && is_su_role) {
+		const isSuRole = permission.super_user === true;
+		const isCuRole = permission.cluster_user === true;
+		const hasPerms = Object.keys(permission).length > 1;
+		if (hasPerms && (isSuRole || isCuRole)) {
+			if (isCuRole && isSuRole) {
 				return HDB_ERROR_MSGS.SU_CU_ROLE_COMBINED_ERROR;
 			} else {
-				const role_type = permission.super_user ? terms.ROLE_TYPES_ENUM.SUPER_USER : terms.ROLE_TYPES_ENUM.CLUSTER_USER;
-				return HDB_ERROR_MSGS.SU_CU_ROLE_NO_PERMS_ALLOWED(role_type);
+				const roleType = permission.super_user ? terms.ROLE_TYPES_ENUM.SUPER_USER : terms.ROLE_TYPES_ENUM.CLUSTER_USER;
+				return HDB_ERROR_MSGS.SU_CU_ROLE_NO_PERMS_ALLOWED(roleType);
 			}
 		}
 	}
@@ -275,12 +275,12 @@ function validateNoSUPerms(obj) {
 function generateRolePermResponse(validationErrors) {
 	const { main_permissions, schema_permissions } = validationErrors;
 	if (main_permissions.length > 0 || Object.keys(schema_permissions).length > 0) {
-		let validation_message = {
+		let validationMessage = {
 			error: HDB_ERROR_MSGS.ROLE_PERMS_ERROR,
 			...validationErrors,
 		};
 
-		return handleHDBError(new Error(), validation_message, HTTP_STATUS_CODES.BAD_REQUEST);
+		return handleHDBError(new Error(), validationMessage, HTTP_STATUS_CODES.BAD_REQUEST);
 	} else {
 		return null;
 	}
@@ -289,19 +289,19 @@ function generateRolePermResponse(validationErrors) {
 /**
  * Adds perm validation error to the correct category for the final validation error response
  * @param err
- * @param invalid_perms_obj
+ * @param invalidPermsObj
  * @param schema
  * @param table
  */
-function addPermError(err, invalid_perms_obj, schema, table) {
+function addPermError(err, invalidPermsObj, schema, table) {
 	if (!schema) {
-		invalid_perms_obj.main_permissions.push(err);
+		invalidPermsObj.main_permissions.push(err);
 	} else {
-		const schema_key = table ? schema + '_' + table : schema;
-		if (!invalid_perms_obj.schema_permissions[schema_key]) {
-			invalid_perms_obj.schema_permissions[schema_key] = [err];
+		const schemaKey = table ? schema + '_' + table : schema;
+		if (!invalidPermsObj.schema_permissions[schemaKey]) {
+			invalidPermsObj.schema_permissions[schemaKey] = [err];
 		} else {
-			invalid_perms_obj.schema_permissions[schema_key].push(err);
+			invalidPermsObj.schema_permissions[schemaKey].push(err);
 		}
 	}
 }

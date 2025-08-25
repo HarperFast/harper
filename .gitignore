@@ -12,6 +12,8 @@ logs/*
 /bin/coverage/*
 coverage/*
 hdb_boot_properties.file
+integrationTests/apiTests/.env
+/bin/integration-test.json
 *test_export.json.json
 /unitTests/envDir/*
 /unitTests/apiTests/envDir/*
@@ -39,3 +41,4 @@ utility/Docker/licenses/**
 license-output.md
 
 .DS_Store
+integrationTests/apiTests/package.json

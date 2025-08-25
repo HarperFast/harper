@@ -4,10 +4,10 @@ const StreamZip = require('node-stream-zip');
 const util = require('util');
 const fs = require('fs');
 const path = require('path');
-const child_process = require('child_process');
+const childProcess = require('child_process');
 const streamPipeline = util.promisify(require('stream').pipeline);
-const exec = util.promisify(child_process.exec);
-const { packageJson, PACKAGE_ROOT } = require('../../packageUtils');
+const exec = util.promisify(childProcess.exec);
+const { packageJson, PACKAGE_ROOT } = require('../../packageUtils.js');
 process.chdir(PACKAGE_ROOT);
 
 const TMP_FOLDER_NAME = 'tmp';
@@ -41,9 +41,9 @@ const NATS_SERVER_VERSION = packageJson.engines[NATS_SERVER_NAME];
 	await fs.promises.rm(NATS_SERVER_ZIP_PATH);
 
 	let dirs = await fs.promises.readdir(TMP_FOLDER_PATH);
-	const tmp_source_path = path.join(TMP_FOLDER_PATH, dirs[0]);
+	const tmpSourcePath = path.join(TMP_FOLDER_PATH, dirs[0]);
 	console.log('moving source out of tmp');
-	await fs.promises.rename(tmp_source_path, NATS_SOURCE_PATH);
+	await fs.promises.rename(tmpSourcePath, NATS_SOURCE_PATH);
 	console.log('building nats server which also downloads dependencies');
 	await exec(`export GOPATH=${PACKAGE_ROOT} && go build`, { cwd: NATS_SOURCE_PATH });
 

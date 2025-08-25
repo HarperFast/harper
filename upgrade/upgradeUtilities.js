@@ -1,11 +1,11 @@
 'use strict';
 
-const hdb_util = require('../utility/common_utils');
-const config_utils = require('../config/configUtils');
-const log = require('../utility/logging/harper_logger');
+const hdbUtil = require('../utility/common_utils.js');
+const configUtils = require('../config/configUtils.js');
+const log = require('../utility/logging/harper_logger.js');
 const path = require('path');
 const fs = require('fs');
-const terms = require('../utility/hdbTerms');
+const terms = require('../utility/hdbTerms.ts');
 
 module.exports = {
 	getOldPropsValue,
@@ -18,35 +18,35 @@ module.exports = {
 /**
  * Creates all directories specified in a directive file.
  *
- * @param hdb_base - value from HDB_ROOT in settings file
- * @param directive_paths
+ * @param hdbBase - value from HDB_ROOT in settings file
+ * @param directivePaths
  */
-function createRelativeDirectories(hdb_base, directive_paths) {
-	if (hdb_util.isEmptyOrZeroLength(directive_paths)) {
+function createRelativeDirectories(hdbBase, directivePaths) {
+	if (hdbUtil.isEmptyOrZeroLength(directivePaths)) {
 		log.info('No upgrade directories to create.');
 		return;
 	}
 
-	for (let dir_path of directive_paths) {
+	for (let dirPath of directivePaths) {
 		// This is synchronous
-		let new_dir_path = path.join(hdb_base, dir_path);
-		log.info(`Creating directory ${new_dir_path}`);
-		makeDirectory(new_dir_path);
+		let newDirPath = path.join(hdbBase, dirPath);
+		log.info(`Creating directory ${newDirPath}`);
+		makeDirectory(newDirPath);
 	}
 }
 
-function createExplicitDirectories(directive_paths) {
-	if (hdb_util.isEmptyOrZeroLength(directive_paths)) {
+function createExplicitDirectories(directivePaths) {
+	if (hdbUtil.isEmptyOrZeroLength(directivePaths)) {
 		log.info('No upgrade directories to create.');
 		return;
 	}
-	for (let dir_path of directive_paths) {
+	for (let dirPath of directivePaths) {
 		// This is synchronous
 		try {
-			log.info(`Creating directory ${dir_path}`);
-			makeDirectory(dir_path);
+			log.info(`Creating directory ${dirPath}`);
+			makeDirectory(dirPath);
 		} catch (err) {
-			log.error(`Error Creating path ${dir_path}.`);
+			log.error(`Error Creating path ${dirPath}.`);
 			log.error(err);
 			continue;
 		}
@@ -60,7 +60,7 @@ function createExplicitDirectories(directive_paths) {
  * @param isRelativeToScript - Defaults to false, if true will use curr directory as the base path
  */
 function makeDirectory(targetDir, { isRelativeToScript = false } = {}) {
-	if (hdb_util.isEmptyOrZeroLength(targetDir)) {
+	if (hdbUtil.isEmptyOrZeroLength(targetDir)) {
 		log.info('Invalid directory path.');
 		return;
 	}
@@ -88,18 +88,18 @@ function makeDirectory(targetDir, { isRelativeToScript = false } = {}) {
  * We need to make sure we are setting empty string for values that are null/undefined/empty string - PropertiesReader
  * castes values in some awkward ways and this covers those scenarios AND ensures we have default values set for new
  * config values that may have been added in a previous version (between when user installed HDB and is now upgrading)
- * @param prop_name
- * @param old_hdb_props
- * @param value_required
+ * @param propName
+ * @param oldHdbProps
+ * @param valueRequired
  * @returns {string|*}
  */
-function getOldPropsValue(prop_name, old_hdb_props, value_required = false) {
-	const old_val = old_hdb_props.getRaw(prop_name);
-	if (hdb_util.isNotEmptyAndHasValue(old_val)) {
-		return old_val;
+function getOldPropsValue(propName, oldHdbProps, valueRequired = false) {
+	const oldVal = oldHdbProps.getRaw(propName);
+	if (hdbUtil.isNotEmptyAndHasValue(oldVal)) {
+		return oldVal;
 	}
-	if (value_required) {
-		return config_utils.getDefaultConfig(prop_name);
+	if (valueRequired) {
+		return configUtils.getDefaultConfig(propName);
 	}
 	return '';
 }

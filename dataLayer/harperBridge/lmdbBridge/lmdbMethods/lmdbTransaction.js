@@ -1,8 +1,8 @@
 'use strict';
 
-const { getSchemaPath } = require('../lmdbUtility/initializePaths');
-const environment_utility = require('../../../../utility/lmdb/environmentUtility');
-const { database } = require('../../../../resources/databases');
+const { getSchemaPath } = require('../lmdbUtility/initializePaths.js');
+const environmentUtility = require('../../../../utility/lmdb/environmentUtility.js');
+const { database } = require('../../../../resources/databases.ts');
 
 module.exports = {
 	writeTransaction,
@@ -16,6 +16,6 @@ module.exports = {
  * @returns {Promise<any>}
  */
 async function writeTransaction(schema, table, callback) {
-	let root_store = database({ database: schema, table });
-	return root_store.transaction(callback);
+	let rootStore = database({ database: schema, table });
+	return rootStore.transaction(callback);
 }

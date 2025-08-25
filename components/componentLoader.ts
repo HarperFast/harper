@@ -1,150 +1,118 @@
-import { readdirSync, promises, readFileSync, existsSync, symlinkSync, rmSync, mkdirSync, realpathSync } from 'fs';
-import { join, relative, basename, dirname } from 'path';
-import { isMainThread } from 'worker_threads';
+import { readdirSync, readFileSync, existsSync, symlinkSync, rmSync, mkdirSync, realpathSync } from 'node:fs';
+import { join, basename, dirname } from 'node:path';
+import { isMainThread } from 'node:worker_threads';
 import { parseDocument } from 'yaml';
-import * as env from '../utility/environment/environmentManager';
-import { PACKAGE_ROOT } from '../utility/packageUtils';
-import { CONFIG_PARAMS, HDB_ROOT_DIR_NAME } from '../utility/hdbTerms';
-import * as graphql_handler from '../resources/graphql';
-import * as graphql_query_handler from '../server/graphqlQuerying';
-import * as roles from '../resources/roles';
-import * as js_handler from '../resources/jsResource';
-import * as login from '../resources/login';
-import * as REST from '../server/REST';
-import * as fastify_routes_handler from '../server/fastifyRoutes';
-import * as staticFiles from '../server/static';
-import * as loadEnv from '../resources/loadEnv';
-import fg from 'fast-glob';
-import { watchDir, getWorkerIndex } from '../server/threads/manageThreads';
-import harper_logger from '../utility/logging/harper_logger';
-import { secureImport } from '../security/jsLoader';
-import { server } from '../server/Server';
-import { Resources } from '../resources/Resources';
-import { handleHDBError } from '../utility/errors/hdbError';
-import { table, getDatabases } from '../resources/databases';
-import { startSocketServer } from '../server/threads/socketRouter';
-import { getHdbBasePath } from '../utility/environment/environmentManager';
-import * as operationsServer from '../server/operationsServer';
-import * as auth from '../security/auth';
-import * as natsReplicator from '../server/nats/natsReplicator';
-import * as replication from '../server/replication/replicator';
-import * as mqtt from '../server/mqtt';
-import { getConfigObj, resolvePath } from '../config/configUtils';
-import { createReuseportFd } from '../server/serverHelpers/Request';
-import { ErrorResource } from '../resources/ErrorResource';
-
-const { readFile } = promises;
+import * as env from '../utility/environment/environmentManager.js';
+import { PACKAGE_ROOT } from '../utility/packageUtils.js';
+import { CONFIG_PARAMS, HDB_ROOT_DIR_NAME } from '../utility/hdbTerms.ts';
+import * as graphqlHandler from '../resources/graphql.ts';
+import * as graphqlQueryHandler from '../server/graphqlQuerying.ts';
+import * as roles from '../resources/roles.ts';
+import * as jsHandler from '../resources/jsResource.ts';
+import * as login from '../resources/login.ts';
+import * as REST from '../server/REST.ts';
+import * as fastifyRoutesHandler from '../server/fastifyRoutes.ts';
+import * as staticFiles from '../server/static.ts';
+import * as loadEnv from '../resources/loadEnv.ts';
+import harperLogger from '../utility/logging/harper_logger.js';
+import * as dataLoader from '../resources/dataLoader.ts';
+import { watchDir, getWorkerIndex } from '../server/threads/manageThreads.js';
+import { secureImport } from '../security/jsLoader.ts';
+import { server } from '../server/Server.ts';
+import { Resources } from '../resources/Resources.ts';
+import { table } from '../resources/databases.ts';
+import { startSocketServer } from '../server/threads/socketRouter.ts';
+import { getHdbBasePath } from '../utility/environment/environmentManager.js';
+import * as operationsServer from '../server/operationsServer.ts';
+import * as auth from '../security/auth.ts';
+import * as natsReplicator from '../server/nats/natsReplicator.ts';
+import * as replication from '../server/replication/replicator.ts';
+import * as mqtt from '../server/mqtt.ts';
+import { getConfigObj, resolvePath } from '../config/configUtils.js';
+import { createReuseportFd } from '../server/serverHelpers/Request.ts';
+import { ErrorResource } from '../resources/ErrorResource.ts';
+import { Scope } from './Scope.ts';
+import { ComponentV1, processResourceExtensionComponent } from './ComponentV1.ts';
+import * as httpComponent from '../server/http.ts';
+import { Status } from '../server/status/index.ts';
+import { DEFAULT_CONFIG } from './DEFAULT_CONFIG.ts';
+import { PluginModule } from './PluginModule.ts';
 
 const CF_ROUTES_DIR = resolvePath(env.get(CONFIG_PARAMS.COMPONENTSROOT));
-let loaded_components = new Map<any, any>();
-let watches_setup;
+let loadedComponents = new Map<any, any>();
+let watchesSetup;
 let resources;
-// eslint-disable-next-line radar/no-unused-collection -- This is not used within this file, but is used within `./operations.js`
-export let component_errors = new Map();
+
+export let componentErrors = new Map();
 
 /**
  * Load all the applications registered in HarperDB, those in the components directory as well as any directly
  * specified to run
- * @param loaded_plugin_modules
- * @param loaded_resources
+ * @param loadedPluginModules
+ * @param loadedResources
  */
-export function loadComponentDirectories(loaded_plugin_modules?: Map<any, any>, loaded_resources?: Resources) {
-	if (loaded_resources) resources = loaded_resources;
-	if (loaded_plugin_modules) loaded_components = loaded_plugin_modules;
-	const cfs_loaded = [];
+export function loadComponentDirectories(loadedPluginModules?: Map<any, any>, loadedResources?: Resources) {
+	if (loadedResources) resources = loadedResources;
+	if (loadedPluginModules) loadedComponents = loadedPluginModules;
+	const cfsLoaded: Promise<any>[] = [];
 	if (existsSync(CF_ROUTES_DIR)) {
-		const cf_folders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
-		for (const app_entry of cf_folders) {
-			if (!app_entry.isDirectory() && !app_entry.isSymbolicLink()) continue;
-			const app_name = app_entry.name;
-			const app_folder = join(CF_ROUTES_DIR, app_name);
-			cfs_loaded.push(loadComponent(app_folder, resources, HDB_ROOT_DIR_NAME, false));
+		const cfFolders = readdirSync(CF_ROUTES_DIR, { withFileTypes: true });
+		for (const appEntry of cfFolders) {
+			if (!appEntry.isDirectory() && !appEntry.isSymbolicLink()) continue;
+			const appName = appEntry.name;
+			const appFolder = join(CF_ROUTES_DIR, appName);
+			cfsLoaded.push(loadComponent(appFolder, resources, HDB_ROOT_DIR_NAME, false));
 		}
 	}
-	const hdb_app_folder = process.env.RUN_HDB_APP;
-	if (hdb_app_folder) {
-		cfs_loaded.push(
-			loadComponent(hdb_app_folder, resources, hdb_app_folder, false, null, Boolean(process.env.DEV_MODE))
+	const hdbAppFolder = process.env.RUN_HDB_APP;
+	if (hdbAppFolder) {
+		cfsLoaded.push(
+			loadComponent(hdbAppFolder, resources, hdbAppFolder, false, undefined, Boolean(process.env.DEV_MODE))
 		);
 	}
-	return Promise.all(cfs_loaded).then(() => {
-		watches_setup = true;
+	return Promise.all(cfsLoaded).then(() => {
+		watchesSetup = true;
 	});
 }
 
 const TRUSTED_RESOURCE_LOADERS = {
 	REST, // for backwards compatibility with older configs
 	rest: REST,
-	graphql: graphql_query_handler,
-	graphqlSchema: graphql_handler,
+	graphql: graphqlQueryHandler,
+	graphqlSchema: graphqlHandler,
 	roles,
-	jsResource: js_handler,
-	fastifyRoutes: fastify_routes_handler,
+	jsResource: jsHandler,
+	fastifyRoutes: fastifyRoutesHandler,
 	login,
 	static: staticFiles,
 	operationsApi: operationsServer,
 	customFunctions: {},
-	http: {},
+	http: httpComponent,
 	clustering: natsReplicator,
 	replication,
 	authentication: auth,
 	mqtt,
 	loadEnv,
+	logging: harperLogger,
+	dataLoader,
 	/*
 	static: ...
 	login: ...
 	 */
 };
 
-const DEFAULT_CONFIG = {
-	rest: true,
-	graphqlSchema: {
-		files: '*.graphql',
-		//path: '/', // from root path by default, like http://server/query
-	},
-	roles: {
-		files: 'roles.yaml',
-	},
-	jsResource: {
-		files: 'resources.js',
-		//path: '/', // from root path by default, like http://server/resource-name
-	},
-	fastifyRoutes: {
-		files: 'routes/*.js',
-		path: '.', // relative to the app-name, like  http://server/app-name/route-name
-	},
-	/*{
-		module: 'login',
-		path: '/',
-	},
-	/*{
-		files: 'static',
-		module: 'fastify_routes',
-		path: '.',
-	},
-	{
-		module: 'login',
-		path: '/login', // relative to the app-name, like http://server/login
-	},*/
-};
-// make this non-enumerable so we don't load by default, but has a default 'files' so we don't show errors on
-// templates that want to have a default static handler:
-Object.defineProperty(DEFAULT_CONFIG, 'static', { value: { files: 'web/**' } });
-
-const ports_started = [];
-const loaded_paths = new Map();
-let error_reporter;
+const portsStarted = [];
+const loadedPaths = new Map();
+let errorReporter;
 export function setErrorReporter(reporter) {
-	error_reporter = reporter;
+	errorReporter = reporter;
 }
 
-let comp_name: string;
-export const getComponentName = () => comp_name;
+let compName: string;
+export const getComponentName = () => compName;
 
 function symlinkHarperModule(componentDirectory: string, harperModule: string) {
 	return new Promise<void>((resolve, reject) => {
-		const Status = getDatabases().system.hdb_info; // this exists just for 4.5 so we have better code alignment with 4.6 that uses the real status table
-		if (!Status) return resolve(); // depending on timing, might not be there
 		const timeout = setTimeout(() => {
 			Status.primaryStore.unlock(componentDirectory, 0);
 			reject(new Error('symlinking harperdb module timed out'));
@@ -170,85 +138,129 @@ function symlinkHarperModule(componentDirectory: string, harperModule: string) {
 }
 
 /**
+ * This function handles the `handleApplication` call for a plugin in a sequential manner.
+ * It ensures the execution of `handleApplication` happens on one thread at a time for a given scope.
+ * If the lock cannot be acquired, it waits for the lock to be released and retries.
+ * If the lock is not acquired within the specified timeout, it rejects with a timeout error.
+ *
+ * @param scope
+ * @param plugin
+ * @returns
+ */
+function sequentiallyHandleApplication(scope: Scope, plugin: PluginModule) {
+	return scope.ready.then(() => {
+		// Timeout priority is user config, plugin default, finally 30 seconds
+		const timeout = scope.options.get(['timeout']) || plugin.defaultTimeout || 30_000; // default 30 second timeout
+		if (typeof timeout !== 'number') {
+			throw new Error(`Invalid timeout value for ${scope.name}. Expected a number, received: ${typeof timeout}`);
+		}
+		let whenResolved, timer;
+		if (
+			!Status.primaryStore.attemptLock(scope.name, 0, () => {
+				clearTimeout(timer);
+				whenResolved(sequentiallyHandleApplication(scope, plugin));
+			})
+		) {
+			return new Promise((resolve, reject) => {
+				whenResolved = resolve;
+				timer = setTimeout(() => {
+					reject(new Error(`Timeout waiting for lock on ${scope.name}`));
+				}, timeout + 5_000); // extra time for lock acquisition
+			});
+		}
+
+		return Promise.race([
+			plugin.handleApplication(scope),
+			new Promise((_, reject) =>
+				setTimeout(() => reject(new Error(`handleApplication timed out after ${timeout}ms for ${scope.name}`)), timeout)
+			),
+		]).finally(() => {
+			Status.primaryStore.unlock(scope.name, 0);
+		});
+	});
+}
+
+/**
  * Load a component from the specified directory
- * @param component_path
+ * @param componentPath
  * @param resources
  * @param origin
- * @param ports_allowed
- * @param provided_loaded_components
+ * @param portsAllowed
+ * @param providedLoadedComponents
  */
 export async function loadComponent(
-	folder: string,
+	componentDirectory: string,
 	resources: Resources,
 	origin: string,
-	is_root?: boolean,
-	provided_loaded_components?: Map<any, any>,
-	auto_reload?: boolean
+	isRoot?: boolean,
+	providedLoadedComponents?: Map<any, any>,
+	autoReload?: boolean
 ) {
-	const resolved_folder = realpathSync(folder);
-	if (loaded_paths.has(resolved_folder)) return loaded_paths.get(resolved_folder);
-	loaded_paths.set(resolved_folder, true);
-	if (provided_loaded_components) loaded_components = provided_loaded_components;
+	const resolvedFolder = realpathSync(componentDirectory);
+	if (loadedPaths.has(resolvedFolder)) return loadedPaths.get(resolvedFolder);
+	loadedPaths.set(resolvedFolder, true);
+	if (providedLoadedComponents) loadedComponents = providedLoadedComponents;
 	try {
 		let config;
-		if (is_root) component_errors = new Map();
-		let config_path = join(folder, 'harperdb-config.yaml'); // look for the specific harperdb-config.yaml first
-		if (existsSync(config_path)) {
-			config = is_root ? getConfigObj() : parseDocument(readFileSync(config_path, 'utf8')).toJSON();
+		if (isRoot) componentErrors = new Map();
+		let configPath = join(componentDirectory, 'harperdb-config.yaml'); // look for the specific harperdb-config.yaml first
+		if (existsSync(configPath)) {
+			config = isRoot ? getConfigObj() : parseDocument(readFileSync(configPath, 'utf8')).toJSON();
 			// if not found, look for the generic config.yaml, the config filename we have historically used, but only if not the root
-		} else if (!is_root && existsSync((config_path = join(folder, 'config.yaml')))) {
-			config = parseDocument(readFileSync(config_path, 'utf8')).toJSON();
+			// eslint-disable-next-line sonarjs/no-nested-assignment
+		} else if (!isRoot && existsSync((configPath = join(componentDirectory, 'config.yaml')))) {
+			config = parseDocument(readFileSync(configPath, 'utf8')).toJSON();
 		} else {
 			config = DEFAULT_CONFIG;
 		}
 
 		try {
-			const harperModule = join(folder, 'node_modules', 'harperdb');
+			const harperModule = join(componentDirectory, 'node_modules', 'harperdb');
 			if (
-				is_root ||
-				((existsSync(harperModule) || !folder.startsWith(getHdbBasePath())) &&
+				isRoot ||
+				((existsSync(harperModule) || !componentDirectory.startsWith(getHdbBasePath())) &&
 					(!existsSync(harperModule) || realpathSync(PACKAGE_ROOT) !== realpathSync(harperModule)))
 			) {
-				await symlinkHarperModule(folder, harperModule);
+				await symlinkHarperModule(componentDirectory, harperModule);
 			}
 		} catch (error) {
-			harper_logger.error('Error symlinking harperdb module', error);
+			harperLogger.error('Error symlinking harperdb module', error);
 			if (error.code == 'EPERM' && process.platform === 'win32') {
-				harper_logger.error(
+				harperLogger.error(
 					'You may need to enable developer mode in "Settings" / "System" (or "Update & Security") / "For developers", in order to enable symlinks so components can use `import from "harperdb"`'
 				);
 			}
 		}
 
-		const parent_comp_name: string = comp_name;
-		let has_functionality = is_root;
+		const parentCompName: string = compName;
+		const componentFunctionality = {};
 		// iterate through the app handlers so they can each do their own loading process
-		for (const component_name in config) {
-			comp_name = component_name;
-			const component_config = config[component_name];
-			component_errors.set(is_root ? component_name : basename(folder), false);
-			if (!component_config) continue;
-			let extension_module;
-			const pkg = component_config.package;
+		for (const componentName in config) {
+			compName = componentName;
+			const componentConfig = config[componentName];
+			componentErrors.set(isRoot ? componentName : basename(componentDirectory), false);
+			if (!componentConfig) continue;
+			let extensionModule;
+			const pkg = componentConfig.package;
 			try {
 				if (pkg) {
-					let container_folder = folder;
-					let component_path;
-					while (!existsSync((component_path = join(container_folder, 'node_modules', component_name)))) {
-						container_folder = dirname(container_folder);
-						if (container_folder.length < getHdbBasePath().length) {
-							component_path = null;
+					let containerFolder = componentDirectory;
+					let componentPath;
+					while (!existsSync((componentPath = join(containerFolder, 'node_modules', componentName)))) {
+						containerFolder = dirname(containerFolder);
+						if (containerFolder.length < getHdbBasePath().length) {
+							componentPath = null;
 							break;
 						}
 					}
-					if (component_path) {
-						extension_module = await loadComponent(component_path, resources, origin, false);
-						has_functionality = true;
+					if (componentPath) {
+						extensionModule = await loadComponent(componentPath, resources, origin, false);
+						componentFunctionality[componentName] = true;
 					} else {
-						throw new Error(`Unable to find package ${component_name}:${pkg}`);
+						throw new Error(`Unable to find package ${componentName}:${pkg}`);
 					}
-				} else extension_module = TRUSTED_RESOURCE_LOADERS[component_name];
-				if (!extension_module) continue;
+				} else extensionModule = TRUSTED_RESOURCE_LOADERS[componentName];
+				if (!extensionModule) continue;
 				// our own trusted modules can be directly retrieved from our map, otherwise use the (configurable) secure module loader
 				const ensureTable = (options) => {
 					options.origin = origin;
@@ -256,183 +268,146 @@ export async function loadComponent(
 				};
 				// call the main start hook
 				const network =
-					component_config.network || ((component_config.port || component_config.securePort) && component_config);
+					componentConfig.network || ((componentConfig.port || componentConfig.securePort) && componentConfig);
 				const securePort =
 					network?.securePort ||
 					// legacy support for switching to securePort
 					(network?.https && network.port);
 				const port = !network?.https && network?.port;
+
+				if (
+					'handleApplication' in extensionModule &&
+					('start' in extensionModule ||
+						'startOnMainThread' in extensionModule ||
+						'handleFile' in extensionModule ||
+						'handleDirectory' in extensionModule ||
+						'setupFile' in extensionModule ||
+						'setupDirectory' in extensionModule)
+				) {
+					throw new Error(
+						`Component ${componentName} has both 'handleComponent' and 'start' or 'startOnMainThread' methods. Please use only one of them.`
+					);
+				}
+
+				// New Plugin API (`handleApplication`)
+				if (resources.isWorker && extensionModule.handleApplication) {
+					if (extensionModule.suppressHandleApplicationWarning !== true) {
+						harperLogger.warn(`Plugin ${componentName} is using the experimental handleApplication API`);
+					}
+
+					const scope = new Scope(componentName, componentDirectory, configPath, resources, server);
+
+					await sequentiallyHandleApplication(scope, extensionModule);
+
+					continue;
+				}
+
+				// Old Extension API (`start` or `startOnMainThread`)
 				if (isMainThread) {
-					extension_module =
-						(await extension_module.startOnMainThread?.({
+					extensionModule =
+						(await extensionModule.startOnMainThread?.({
 							server,
 							ensureTable,
 							port,
 							securePort,
 							resources,
-							...component_config,
-						})) || extension_module;
-					if (is_root && network) {
-						for (const possible_port of [port, securePort]) {
+							...componentConfig,
+						})) || extensionModule;
+					if (isRoot && network) {
+						for (const possiblePort of [port, securePort]) {
 							try {
-								if (+possible_port && !ports_started.includes(possible_port)) {
-									const session_affinity = env.get(CONFIG_PARAMS.HTTP_SESSIONAFFINITY);
-									if (session_affinity)
-										harper_logger.warn('Session affinity is not recommended and may cause memory leaks');
-									if (session_affinity || !createReuseportFd) {
+								if (+possiblePort && !portsStarted.includes(possiblePort)) {
+									const sessionAffinity = env.get(CONFIG_PARAMS.HTTP_SESSIONAFFINITY);
+									if (sessionAffinity)
+										harperLogger.warn('Session affinity is not recommended and may cause memory leaks');
+									if (sessionAffinity || !createReuseportFd) {
 										// if there is a TCP port associated with the plugin, we set up the routing on the main thread for it
-										ports_started.push(possible_port);
-										startSocketServer(possible_port, session_affinity);
+										portsStarted.push(possiblePort);
+										startSocketServer(possiblePort, sessionAffinity);
 									}
 								}
 							} catch (error) {
-								console.error('Error listening on socket', possible_port, error, component_name);
+								console.error('Error listening on socket', possiblePort, error, componentName);
 							}
 						}
 					}
 				}
 				if (resources.isWorker)
-					extension_module =
-						(await extension_module.start?.({
+					extensionModule =
+						(await extensionModule.start?.({
 							server,
 							ensureTable,
 							port,
 							securePort,
 							resources,
-							...component_config,
-						})) || extension_module;
-				loaded_components.set(extension_module, true);
+							...componentConfig,
+						})) || extensionModule;
+				loadedComponents.set(extensionModule, true);
 
-				// a loader is configured to specify a glob of files to be loaded, we pass each of those to the plugin
-				// handling files ourselves allows us to pass files to sandboxed modules that might not otherwise have
-				// access to the file system.
 				if (
-					(extension_module.handleFile ||
-						extension_module.handleDirectory ||
-						extension_module.setupFile ||
-						extension_module.setupDirectory) &&
-					component_config.files != undefined
+					(extensionModule.handleFile ||
+						extensionModule.handleDirectory ||
+						extensionModule.setupFile ||
+						extensionModule.setupDirectory) &&
+					componentConfig.files != undefined
 				) {
-					if (component_config.files.includes('..')) throw handleHDBError('Can not reference parent directories');
-					const files = join(folder, component_config.files).replace(/\\/g, '/'); // must normalize to slashes for fast-glob to work
-					const end_of_fixed_path = files.indexOf('/*');
-					if (
-						end_of_fixed_path > -1 &&
-						component_config.files !== DEFAULT_CONFIG[component_name]?.files &&
-						!existsSync(files.slice(0, end_of_fixed_path))
-					)
-						throw new Error(
-							`The path '${files.slice(
-								0,
-								end_of_fixed_path
-							)}' does not exist and cannot be used as the base of the resolved 'files' path value '${
-								component_config.files
-							}'`
-						);
-					const app_name = basename(folder);
-					let base_url_path = component_config.path || '/';
-					base_url_path = base_url_path.startsWith('/')
-						? base_url_path
-						: base_url_path.startsWith('./')
-							? '/' + app_name + base_url_path.slice(2)
-							: base_url_path === '.'
-								? '/' + app_name
-								: '/' + app_name + '/' + base_url_path;
-					let root_path, root_file_path;
-					let root_end;
-					if (component_config.root) {
-						let root_path = component_config.root;
-						if (root_path.startsWith('/')) root_path = root_path.slice(1);
-						if (root_path.endsWith('/')) root_path = root_path.slice(0, -1);
-						root_path += '/';
-						root_file_path = join(folder, root_path);
-					} else if ((root_end = files.indexOf('/*')) > -1) {
-						root_file_path = files.slice(0, root_end + 1);
-						root_path = relative(folder, root_file_path);
-					} else if (component_config.files.indexOf('/') > -1) {
-						root_file_path = files.slice(0, files.lastIndexOf('/') + 1);
-						root_path = relative(folder, root_file_path);
-					}
-					let directory_handled = false;
-					if (isMainThread && extension_module.setupDirectory) {
-						directory_handled = await extension_module.setupDirectory?.(base_url_path, root_file_path, resources);
-					}
-					if (resources.isWorker && extension_module.handleDirectory) {
-						directory_handled = await extension_module.handleDirectory?.(base_url_path, root_file_path, resources);
-					}
-					if (directory_handled) {
-						has_functionality = true;
-						continue;
-					}
-					for (const entry of await fg(files, { onlyFiles: false, objectMode: true })) {
-						const { path, dirent } = entry;
-						has_functionality = true;
-						let relative_path = relative(folder, path).replace(/\\/g, '/');
-						if (root_path) {
-							if (relative_path.startsWith(root_path)) relative_path = relative_path.slice(root_path.length + 1);
-							else
-								throw new Error(
-									`The root path '${component_config.root}' does not reference a valid part of the file path '${relative_path}'.` +
-										`The root path should be used to indicate the relative path/part of the file path for determining the exported web path.`
-								);
-						}
-						const url_path = base_url_path + (base_url_path.endsWith('/') ? '' : '/') + relative_path;
-						try {
-							if (dirent.isFile()) {
-								const contents = await readFile(path);
-								if (isMainThread) await extension_module.setupFile?.(contents, url_path, path, resources);
-								if (resources.isWorker) await extension_module.handleFile?.(contents, url_path, path, resources);
-							} else {
-								// some plugins may want to just handle whole directories
-								if (isMainThread) await extension_module.setupDirectory?.(url_path, path, resources);
-								if (resources.isWorker) await extension_module.handleDirectory?.(url_path, path, resources);
-							}
-						} catch (error) {
-							const message = `Could not load ${dirent.isFile() ? 'file' : 'directory'} '${path}'${
-								component_config.module ? ` using '${component_config.module}'` : ''
-							} for application '${folder}' due to:\n`;
-							error.message = `${message}${error.message}`;
-							error.stack = `${message}${error.stack}`;
-							error_reporter?.(error);
-							harper_logger.error(error);
-							resources.set(component_config.path || '/', new ErrorResource(error));
-							component_errors.set(is_root ? component_name : basename(folder), error.message);
-						}
-					}
+					const component = new ComponentV1({
+						config: componentConfig,
+						name: componentName,
+						directory: componentDirectory,
+						module: extensionModule,
+						resources,
+					});
+
+					componentFunctionality[componentName] = await processResourceExtensionComponent(component);
 				}
 			} catch (error) {
-				error.message = `Could not load component '${component_name}' for application '${basename(folder)}' due to: ${
+				error.message = `Could not load component '${componentName}' for application '${basename(componentDirectory)}' due to: ${
 					error.message
 				}`;
-				error_reporter?.(error);
-				(getWorkerIndex() === 0 ? console : harper_logger).error(error);
-				resources.set(component_config.path || '/', new ErrorResource(error), null, true);
-				component_errors.set(is_root ? component_name : basename(folder), error.message);
+				errorReporter?.(error);
+				(getWorkerIndex() === 0 ? console : harperLogger).error(error);
+				resources.set(componentConfig.path || '/', new ErrorResource(error), null, true);
+				componentErrors.set(isRoot ? componentName : basename(componentDirectory), error.message);
 			}
 		}
 
-		comp_name = parent_comp_name;
+		compName = parentCompName;
 		// Auto restart threads on changes to any app folder. TODO: Make this configurable
-		if (isMainThread && !watches_setup && auto_reload) {
-			watchDir(folder, async () => {
+		if (isMainThread && !watchesSetup && autoReload) {
+			watchDir(componentDirectory, async () => {
 				return loadComponentDirectories(); // return the promise
 			});
 		}
-		if (config.extensionModule) {
-			const extension_module = await secureImport(join(folder, config.extensionModule));
-			loaded_paths.set(resolved_folder, extension_module);
-			return extension_module;
+		if (config.extensionModule || config.pluginModule) {
+			const extensionModule = await secureImport(
+				join(componentDirectory, config.extensionModule || config.pluginModule)
+			);
+			loadedPaths.set(resolvedFolder, extensionModule);
+			return extensionModule;
 		}
-		if (!has_functionality && resources.isWorker) {
-			const error_message = `${folder} did not load any modules, resources, or files, is this a valid component?`;
-			error_reporter?.(new Error(error_message));
-			(getWorkerIndex() === 0 ? console : harper_logger).error(error_message);
-			component_errors.set(basename(folder), error_message);
+		const componentFunctionalityValues = Object.values(componentFunctionality);
+		if (
+			componentFunctionalityValues.length > 0 &&
+			componentFunctionalityValues.every((functionality) => !functionality) &&
+			resources.isWorker
+		) {
+			const errorMessage = `${componentDirectory} did not load any modules, resources, or files, is this a valid component?`;
+			errorReporter?.(new Error(errorMessage));
+			(getWorkerIndex() === 0 ? console : harperLogger).error(errorMessage);
+			componentErrors.set(basename(componentDirectory), errorMessage);
+		}
+
+		for (const [componentName, functionality] of Object.entries(componentFunctionality)) {
+			if (!functionality)
+				harperLogger.warn(
+					`Component ${componentName} from (${basename(componentDirectory)}) did not load any functionality.`
+				);
 		}
 	} catch (error) {
-		console.error(`Could not load application directory ${folder}`, error);
+		console.error(`Could not load application directory ${componentDirectory}`, error);
 		error.message = `Could not load application due to ${error.message}`;
-		error_reporter?.(error);
+		errorReporter?.(error);
 		resources.set('', new ErrorResource(error));
 	}
 }

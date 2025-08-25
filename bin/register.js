@@ -1,7 +1,7 @@
 'use strict';
 
-const registrationHandler = require('../utility/registration/registrationHandler');
-const hdb_logger = require('../utility/logging/harper_logger');
+const registrationHandler = require('../utility/registration/registrationHandler.js');
+const hdbLogger = require('../utility/logging/harper_logger.js');
 
 const REG_FAILED_MSG = 'Registration failed.';
 
@@ -10,7 +10,7 @@ async function register() {
 	try {
 		result = await registrationHandler.register();
 	} catch (err) {
-		hdb_logger.error(`Registration error ${err}`);
+		hdbLogger.error(`Registration error ${err}`);
 		return REG_FAILED_MSG;
 	}
 
@@ -22,5 +22,5 @@ async function register() {
 }
 
 module.exports = {
-	register: register,
+	register,
 };

@@ -1,19 +1,19 @@
 'use strict';
 
-const cluster_utils = require('./clusterUtilities');
-const nats_utils = require('../../server/nats/utility/natsUtils');
-const env_mgr = require('../environment/environmentManager');
-const hdb_terms = require('../hdbTerms');
-const nats_terms = require('../../server/nats/utility/natsTerms');
-const hdb_utils = require('../common_utils');
-const hdb_logger = require('../logging/harper_logger');
-const { RemotePayloadObject } = require('./RemotePayloadObject');
+const clusterUtils = require('./clusterUtilities.js');
+const natsUtils = require('../../server/nats/utility/natsUtils.js');
+const envMgr = require('../environment/environmentManager.js');
+const hdbTerms = require('../hdbTerms.ts');
+const natsTerms = require('../../server/nats/utility/natsTerms.js');
+const hdbUtils = require('../common_utils.js');
+const hdbLogger = require('../logging/harper_logger.js');
+const { RemotePayloadObject } = require('./RemotePayloadObject.js');
 const { ErrorCode } = require('nats');
 const { parentPort } = require('worker_threads');
-const { onMessageByType } = require('../../server/threads/manageThreads');
-const { getThisNodeName } = require('../../server/replication/replicator');
-const { requestClusterStatus } = require('../../server/replication/subscriptionManager');
-const { getReplicationSharedStatus, getHDBNodeTable } = require('../../server/replication/knownNodes');
+const { onMessageByType } = require('../../server/threads/manageThreads.js');
+const { getThisNodeName } = require('../../server/replication/replicator.ts');
+const { requestClusterStatus } = require('../../server/replication/subscriptionManager.ts');
+const { getReplicationSharedStatus, getHDBNodeTable } = require('../../server/replication/knownNodes.ts');
 const {
 	CONFIRMATION_STATUS_POSITION,
 	RECEIVED_VERSION_POSITION,
@@ -21,56 +21,51 @@ const {
 	SENDING_TIME_POSITION,
 	RECEIVING_STATUS_POSITION,
 	RECEIVING_STATUS_RECEIVING,
-} = require('../../server/replication/replicationConnection');
+} = require('../../server/replication/replicationConnection.ts');
 
-const clustering_enabled = env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED);
-const this_node_name = env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
+const clusteringEnabled = envMgr.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED);
+const thisNodeName = envMgr.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 
 module.exports = {
 	clusterStatus,
 	buildNodeStatus,
 };
 
-let cluster_status_resolve;
+let clusterStatusResolve;
 onMessageByType('cluster-status', async (message) => {
-	cluster_status_resolve(message);
+	clusterStatusResolve(message);
 });
 /**
- * Function will msg all the remote nodes in the hdb_nodes table. From the replies
- * it gets back from each node and the details in the hdb_nodes table it will
+ * Function will msg all the remote nodes in the hdbNodes table. From the replies
+ * it gets back from each node and the details in the hdbNodes table it will
  * generate a status object. All the status objects are pushed to an array and returned.
  * @returns {Promise<{is_enabled: *, node_name: *, connections: *[]}>}
  */
 async function clusterStatus() {
-	if (
-		env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_URL) ||
-		env_mgr.get(hdb_terms.CONFIG_PARAMS.REPLICATION_HOSTNAME)
-	) {
+	if (envMgr.get(hdbTerms.CONFIG_PARAMS.REPLICATION_URL) || envMgr.get(hdbTerms.CONFIG_PARAMS.REPLICATION_HOSTNAME)) {
 		let response;
 		if (parentPort) {
 			parentPort.postMessage({ type: 'request-cluster-status' });
 			response = await new Promise((resolve) => {
-				cluster_status_resolve = resolve;
+				clusterStatusResolve = resolve;
 			});
 			for (let connection of response.connections) {
-				const remote_node_name = connection.name;
+				const remoteNodeName = connection.name;
 				for (let socket of connection.database_sockets) {
-					const database_name = socket.database;
-					let audit_store;
-					for (let table of Object.values(databases[database_name] || {})) {
-						audit_store = table.auditStore;
-						if (audit_store) break;
+					const databaseName = socket.database;
+					let auditStore;
+					for (let table of Object.values(databases[databaseName] || {})) {
+						auditStore = table.auditStore;
+						if (auditStore) break;
 					}
-					if (!audit_store) continue;
-					let replication_shared_status = getReplicationSharedStatus(audit_store, database_name, remote_node_name);
-					socket.lastCommitConfirmed = asDate(replication_shared_status[CONFIRMATION_STATUS_POSITION]);
-					socket.lastReceivedRemoteTime = asDate(replication_shared_status[RECEIVED_VERSION_POSITION]);
-					socket.lastReceivedLocalTime = asDate(replication_shared_status[RECEIVED_TIME_POSITION]);
-					socket.sendingMessage = asDate(replication_shared_status[SENDING_TIME_POSITION]);
+					if (!auditStore) continue;
+					let replicationSharedStatus = getReplicationSharedStatus(auditStore, databaseName, remoteNodeName);
+					socket.lastCommitConfirmed = asDate(replicationSharedStatus[CONFIRMATION_STATUS_POSITION]);
+					socket.lastReceivedRemoteTime = asDate(replicationSharedStatus[RECEIVED_VERSION_POSITION]);
+					socket.lastReceivedLocalTime = asDate(replicationSharedStatus[RECEIVED_TIME_POSITION]);
+					socket.sendingMessage = asDate(replicationSharedStatus[SENDING_TIME_POSITION]);
 					socket.lastReceivedStatus =
-						replication_shared_status[RECEIVING_STATUS_POSITION] === RECEIVING_STATUS_RECEIVING
-							? 'Receiving'
-							: 'Waiting';
+						replicationSharedStatus[RECEIVING_STATUS_POSITION] === RECEIVING_STATUS_RECEIVING ? 'Receiving' : 'Waiting';
 				}
 			}
 		} else {
@@ -78,31 +73,31 @@ async function clusterStatus() {
 		}
 		response.node_name = getThisNodeName();
 		// If it doesn't exist and or needs to be updated.
-		const this_node = getHDBNodeTable().primaryStore.get(response.node_name);
-		if (this_node?.shard) response.shard = this_node.shard;
-		if (this_node?.url) response.url = this_node.url;
+		const thisNode = getHDBNodeTable().primaryStore.get(response.node_name);
+		if (thisNode?.shard) response.shard = thisNode.shard;
+		if (thisNode?.url) response.url = thisNode.url;
 		response.is_enabled = true; // if we have replication, replication is enabled
 		return response;
 	}
 	const response = {
-		node_name: this_node_name,
-		is_enabled: clustering_enabled,
+		node_name: thisNodeName,
+		is_enabled: clusteringEnabled,
 		connections: [],
 	};
 
 	// If clustering is not enabled return response with empty connections.
-	if (!clustering_enabled) return response;
+	if (!clusteringEnabled) return response;
 
-	// If clustering is enabled but there are no records in the hdb_nodes table, return response with empty connections.
-	const all_node_records = await cluster_utils.getAllNodeRecords();
-	if (hdb_utils.isEmptyOrZeroLength(all_node_records)) return response;
+	// If clustering is enabled but there are no records in the hdbNodes table, return response with empty connections.
+	const allNodeRecords = await clusterUtils.getAllNodeRecords();
+	if (hdbUtils.isEmptyOrZeroLength(allNodeRecords)) return response;
 
-	// For all the records in the hdb_nodes table build a status for each one.
+	// For all the records in the hdbNodes table build a status for each one.
 	// Each call to buildNodeStatus is pushed to a promises array so that we can utilize
 	// Promise.allSettled which runs all the promises in parallel.
 	let promises = [];
-	for (let i = 0, rec_length = all_node_records.length; i < rec_length; i++) {
-		promises.push(buildNodeStatus(all_node_records[i], response.connections));
+	for (let i = 0, recLength = allNodeRecords.length; i < recLength; i++) {
+		promises.push(buildNodeStatus(allNodeRecords[i], response.connections));
 	}
 
 	await Promise.allSettled(promises);
@@ -113,84 +108,84 @@ function asDate(date) {
 	return date ? (date === 1 ? 'Copying' : new Date(date).toUTCString()) : undefined;
 }
 
-async function buildNodeStatus(node_record, connections) {
-	const remote_node_name = node_record.name;
-	const remote_payload = new RemotePayloadObject(
-		hdb_terms.OPERATIONS_ENUM.CLUSTER_STATUS,
-		this_node_name,
+async function buildNodeStatus(nodeRecord, connections) {
+	const remoteNodeName = nodeRecord.name;
+	const remotePayload = new RemotePayloadObject(
+		hdbTerms.OPERATIONS_ENUM.CLUSTER_STATUS,
+		thisNodeName,
 		undefined,
-		await cluster_utils.getSystemInfo()
+		await clusterUtils.getSystemInfo()
 	);
 	let reply;
-	let elapsed_time;
-	let status = nats_terms.CLUSTER_STATUS_STATUSES.OPEN;
+	let elapsedTime;
+	let status = natsTerms.CLUSTER_STATUS_STATUSES.OPEN;
 	try {
-		const start_time = Date.now();
-		reply = await nats_utils.request(nats_terms.REQUEST_SUBJECT(remote_node_name), remote_payload);
-		elapsed_time = Date.now() - start_time;
+		const startTime = Date.now();
+		reply = await natsUtils.request(natsTerms.REQUEST_SUBJECT(remoteNodeName), remotePayload);
+		elapsedTime = Date.now() - startTime;
 
 		// If an error occurs any value that we rely on from the remote node will be set to undefined.
 		// If the remote node replies with an error, set status to closed and log error.
-		if (reply.status === nats_terms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR) {
-			status = nats_terms.CLUSTER_STATUS_STATUSES.CLOSED;
-			hdb_logger.error(`Error getting node status from ${remote_node_name} `, reply);
+		if (reply.status === natsTerms.UPDATE_REMOTE_RESPONSE_STATUSES.ERROR) {
+			status = natsTerms.CLUSTER_STATUS_STATUSES.CLOSED;
+			hdbLogger.error(`Error getting node status from ${remoteNodeName} `, reply);
 		}
 	} catch (err) {
 		// If the request to the remote node fails set status accordingly and log error.
-		hdb_logger.warn(`Error getting node status from ${remote_node_name}`, err);
-		if (err.code === ErrorCode.NoResponders) status = nats_terms.CLUSTER_STATUS_STATUSES.NO_RESPONDERS;
-		else if (err.code === ErrorCode.Timeout) status = nats_terms.CLUSTER_STATUS_STATUSES.TIMEOUT;
-		else status = nats_terms.CLUSTER_STATUS_STATUSES.CLOSED;
+		hdbLogger.warn(`Error getting node status from ${remoteNodeName}`, err);
+		if (err.code === ErrorCode.NoResponders) status = natsTerms.CLUSTER_STATUS_STATUSES.NO_RESPONDERS;
+		else if (err.code === ErrorCode.Timeout) status = natsTerms.CLUSTER_STATUS_STATUSES.TIMEOUT;
+		else status = natsTerms.CLUSTER_STATUS_STATUSES.CLOSED;
 	}
 
-	const node_status = new NodeStatusObject(
-		remote_node_name,
+	const nodeStatus = new NodeStatusObject(
+		remoteNodeName,
 		status,
 		reply?.message?.ports?.clustering,
 		reply?.message?.ports?.operations_api,
-		elapsed_time,
+		elapsedTime,
 		reply?.message?.uptime,
-		node_record.subscriptions,
+		nodeRecord.subscriptions,
 		reply?.message?.system_info
 	);
 
 	try {
 		// Each node responding to the status request should send its system info back.
 		// Update its system info in hdb nodes table.
-		const update_record = {
-			name: remote_node_name,
+		const updateRecord = {
+			name: remoteNodeName,
 			system_info: reply?.message?.system_info,
 		};
 
 		// pre 4.0.0 clustering upgrade relies on system_info.hdb_version being 3.x.x, for this reason dont update any version that match this
-		if (node_record.system_info?.hdb_version !== hdb_terms.PRE_4_0_0_VERSION) {
-			await cluster_utils.upsertNodeRecord(update_record);
+		if (nodeRecord.system_info?.hdb_version !== hdbTerms.PRE_4_0_0_VERSION) {
+			await clusterUtils.upsertNodeRecord(updateRecord);
 		}
 	} catch (err) {
-		hdb_logger.error('Cluster status encountered an error updating system info for node:', remote_node_name, err);
+		hdbLogger.error('Cluster status encountered an error updating system info for node:', remoteNodeName, err);
 	}
 
-	connections.push(node_status);
+	connections.push(nodeStatus);
 }
 
 /**
  * Constructs an object that will be used as the complete status of one remote node.
  * @param node_name
  * @param status
- * @param port_clustering
- * @param port_operations_api
+ * @param portClustering
+ * @param portOperationsApi
  * @param latency
  * @param uptime
  * @param subs
  * @param system_info
  * @constructor
  */
-function NodeStatusObject(node_name, status, port_clustering, port_operations_api, latency, uptime, subs, system_info) {
+function NodeStatusObject(node_name, status, portClustering, portOperationsApi, latency, uptime, subs, system_info) {
 	this.node_name = node_name;
 	this.status = status;
 	this.ports = {
-		clustering: port_clustering,
-		operations_api: port_operations_api,
+		clustering: portClustering,
+		operations_api: portOperationsApi,
 	};
 	this.latency_ms = latency;
 	this.uptime = uptime;

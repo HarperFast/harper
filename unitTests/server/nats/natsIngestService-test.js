@@ -56,8 +56,7 @@ describe('Test natsIngestService module', () => {
 			attributes: [{ name: 'name', isPrimaryKey: true }],
 		});
 		setNATSReplicator('hippopotamus', 'dev', Hippopotamus);
-		sub_restore = nats_ingest_service.__set__(
-			'database_subscriptions',
+		sub_restore = nats_ingest_service.__set__('databaseSubscriptions',
 			real_nats_ingest_service.getDatabaseSubscriptions()
 		);
 	});
@@ -80,10 +79,10 @@ describe('Test natsIngestService module', () => {
 
 	it('Test initialize function get nats references', async () => {
 		await nats_ingest_service.initialize();
-		const nats_connection = nats_ingest_service.__get__('nats_connection');
+		const nats_connection = nats_ingest_service.__get__('natsConnection');
 		const server_name = nats_ingest_service.__get__('server_name');
-		const js_manager = nats_ingest_service.__get__('js_manager');
-		const js_client = nats_ingest_service.__get__('js_client');
+		const js_manager = nats_ingest_service.__get__('jsManager');
+		const js_client = nats_ingest_service.__get__('jsClient');
 
 		expect(nats_connection).to.haveOwnProperty('options');
 		expect(server_name).to.equal('testLeafServer-leaf');
@@ -135,8 +134,8 @@ describe('Test natsIngestService module', () => {
 			};
 
 			await nats_ingest_service.initialize();
-			const js_manager = nats_ingest_service.__get__('js_manager');
-			const js_client = nats_ingest_service.__get__('js_client');
+			const js_manager = nats_ingest_service.__get__('jsManager');
+			const js_client = nats_ingest_service.__get__('jsClient');
 			nats_ingest_service.ingestConsumer(STREAM_NAME, js_client, js_manager, 'testLeafServer-leaf');
 			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, TEST_HEADERS, test_operation);
 			await nats_utils.publishToStream(SUBJECT_NAME, STREAM_NAME, TEST_HEADERS, second_test_operation);
@@ -167,8 +166,8 @@ describe('Test natsIngestService module', () => {
 		const test_consumer_msg_map = new Map();
 		let close_stub = sandbox.stub().callsFake(async () => {});
 		test_consumer_msg_map.set('testunit-test-leaf', { close: close_stub });
-		nats_ingest_service.__set__('consumer_msgs', test_consumer_msg_map);
-		const connection_status = nats_ingest_service.__get__('connection_status');
+		nats_ingest_service.__set__('consumerMsgs', test_consumer_msg_map);
+		const connection_status = nats_ingest_service.__get__('connectionStatus');
 		connection_status.set('unit-test-leaf', 'failed');
 		await nats_ingest_service.updateConsumer({
 			status: 'stop',

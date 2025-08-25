@@ -1,23 +1,23 @@
 'use strict';
 
-const terms = require('../hdbTerms');
+const terms = require('../hdbTerms.ts');
 
 /**
  * Base License class used to define a license
  */
 class BaseLicense {
 	/**
-	 * @param exp_date {Number} - expiration date of license
+	 * @param expDate {Number} - expiration date of license
 	 * @param version {String} - licensed version
 	 */
 	constructor(
-		exp_date = 0,
-		ram_allocation = terms.RAM_ALLOCATION_ENUM.DEFAULT,
+		expDate = 0,
+		ramAllocation = terms.RAM_ALLOCATION_ENUM.DEFAULT,
 		version = terms.LICENSE_VALUES.VERSION_DEFAULT,
 		fingerprint
 	) {
-		this.exp_date = exp_date;
-		this.ram_allocation = ram_allocation;
+		this.exp_date = expDate;
+		this.ram_allocation = ramAllocation;
 		this.version = version;
 		this.fingerprint = fingerprint;
 	}
@@ -28,18 +28,18 @@ class BaseLicense {
  */
 class ExtendedLicense extends BaseLicense {
 	/**
-	 * @param exp_date {Number} - expiration date of license
+	 * @param expDate {Number} - expiration date of license
 	 * @param version {String} - licensed version
 	 * @param enterprise {Boolean} - states if this is a licensed instance
 	 */
 	constructor(
-		exp_date = 0,
-		ram_allocation = terms.RAM_ALLOCATION_ENUM.DEFAULT,
+		expDate = 0,
+		ramAllocation = terms.RAM_ALLOCATION_ENUM.DEFAULT,
 		version = terms.LICENSE_VALUES.VERSION_DEFAULT,
 		fingerprint,
 		enterprise = false
 	) {
-		super(exp_date, ram_allocation, version, fingerprint);
+		super(expDate, ramAllocation, version, fingerprint);
 		this.enterprise = enterprise;
 	}
 }

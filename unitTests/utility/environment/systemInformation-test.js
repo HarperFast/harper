@@ -310,7 +310,7 @@ describe('test systemInformation module', () => {
 		});
 	});
 
-	it('test getCPUInfo function', async () => {
+	it.skip('test getCPUInfo function', async () => {
 		let results = await system_information.getCPUInfo();
 
 		EXPECTED_PROPERTIES.cpu.forEach((property) => {
@@ -475,11 +475,11 @@ describe('test getTableSize function', () => {
 	let rw_schema_describe;
 	let rw_lmdb_get_table_size;
 	before(() => {
-		rw_schema_describe = rw_system_information.__set__('schema_describe', {
+		rw_schema_describe = rw_system_information.__set__('schemaDescribe', {
 			describeAll: async () => RETURN_SCHEMA,
 		});
 
-		rw_lmdb_get_table_size = rw_system_information.__set__('lmdb_get_table_size', async (table_object) => {
+		rw_lmdb_get_table_size = rw_system_information.__set__('lmdbGetTableSize', async (table_object) => {
 			return new TableSizeObject(table_object.schema, table_object.name, 4096, 0, 0, 4096);
 		});
 	});

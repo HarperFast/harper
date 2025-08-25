@@ -1,4 +1,5 @@
-if (__filename.endsWith('dev.js')) {
+// once we have typestrip working, we can auto disable compilation with process.versions.node < '23'
+if (__filename.endsWith('dev.js') && !process.env.HARPER_SKIP_COMPILE) {
 	const fg = require('fast-glob');
 	const { tmpdir } = require('node:os');
 	const { relative, join } = require('node:path');
@@ -12,7 +13,7 @@ if (__filename.endsWith('dev.js')) {
 	// `module.setSourceMapsSupport()` when our minimum Node version is 22.
 	process.setSourceMapsEnabled(true);
 
-	const { PACKAGE_ROOT } = require('../utility/packageUtils');
+	const { PACKAGE_ROOT } = require('../utility/packageUtils.js');
 
 	const SRC_DIRECTORIES = [
 		'bin',
@@ -115,10 +116,13 @@ if (__filename.endsWith('dev.js')) {
 			} else {
 				alternate = join(PACKAGE_ROOT, TS_DIRECTORY, path);
 			}
-			let base_filename = join(alternate, request);
-			let filename = base_filename + '.js';
+			if (request.endsWith('.js') || request.endsWith('.ts')) {
+				request = request.slice(0, -3);
+			}
+			let baseFilename = join(alternate, request);
+			let filename = baseFilename + '.js';
 			if (existsSync(filename)) return filename;
-			if (base_filename.includes('.') && existsSync(base_filename)) return base_filename;
+			if (baseFilename.includes('.') && existsSync(baseFilename)) return baseFilename;
 		}
 		return findPath(request, paths, isMain);
 	};

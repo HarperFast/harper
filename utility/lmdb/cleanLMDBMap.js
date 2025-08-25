@@ -1,8 +1,8 @@
 'use strict';
 
-const environment_utility = require('./environmentUtility');
-const harper_logger = require('../logging/harper_logger');
-const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
+const environmentUtility = require('./environmentUtility.js');
+const harperLogger = require('../logging/harper_logger.js');
+const LMDB_ERRORS = require('../errors/commonErrors.js').LMDB_ERRORS_ENUM;
 
 module.exports = cleanLMDBMap;
 
@@ -14,7 +14,7 @@ async function cleanLMDBMap(msg) {
 	try {
 		if (global.lmdb_map !== undefined && msg.operation !== undefined) {
 			let keys = Object.keys(global.lmdb_map);
-			let cached_environment = undefined;
+			let cachedEnvironment = undefined;
 
 			switch (msg.operation) {
 				case 'drop_schema':
@@ -22,7 +22,7 @@ async function cleanLMDBMap(msg) {
 						let key = keys[x];
 						if (key.startsWith(`${msg.schema}.`) || key.startsWith(`txn.${msg.schema}.`)) {
 							try {
-								await environment_utility.closeEnvironment(global.lmdb_map[key]);
+								await environmentUtility.closeEnvironment(global.lmdb_map[key]);
 							} catch (err) {
 								if (err.message !== LMDB_ERRORS.ENV_REQUIRED) {
 									throw err;
@@ -33,12 +33,12 @@ async function cleanLMDBMap(msg) {
 					break;
 				case 'drop_table':
 					// eslint-disable-next-line no-case-declarations
-					let schema_table_name = `${msg.schema}.${msg.table}`;
+					let schemaTableName = `${msg.schema}.${msg.table}`;
 					// eslint-disable-next-line no-case-declarations
-					let txn_schema_table_name = `txn.${schema_table_name}`;
+					let txnSchemaTableName = `txn.${schemaTableName}`;
 					try {
-						await environment_utility.closeEnvironment(global.lmdb_map[schema_table_name]);
-						await environment_utility.closeEnvironment(global.lmdb_map[txn_schema_table_name]);
+						await environmentUtility.closeEnvironment(global.lmdb_map[schemaTableName]);
+						await environmentUtility.closeEnvironment(global.lmdb_map[txnSchemaTableName]);
 					} catch (err) {
 						if (err.message !== LMDB_ERRORS.ENV_REQUIRED) {
 							throw err;
@@ -46,13 +46,13 @@ async function cleanLMDBMap(msg) {
 					}
 					break;
 				case 'drop_attribute':
-					cached_environment = global.lmdb_map[`${msg.schema}.${msg.table}`];
+					cachedEnvironment = global.lmdb_map[`${msg.schema}.${msg.table}`];
 					if (
-						cached_environment !== undefined &&
-						typeof cached_environment.dbis === 'object' &&
-						cached_environment.dbis[`${msg.attribute}`] !== undefined
+						cachedEnvironment !== undefined &&
+						typeof cachedEnvironment.dbis === 'object' &&
+						cachedEnvironment.dbis[`${msg.attribute}`] !== undefined
 					) {
-						delete cached_environment.dbis[`${msg.attribute}`];
+						delete cachedEnvironment.dbis[`${msg.attribute}`];
 					}
 					break;
 				default:
@@ -60,6 +60,6 @@ async function cleanLMDBMap(msg) {
 			}
 		}
 	} catch (e) {
-		harper_logger.error(e);
+		harperLogger.error(e);
 	}
 }

@@ -1,33 +1,33 @@
-import { getDatabases, onUpdatedTable } from '../../resources/databases';
-import { Resource } from '../../resources/Resource';
-import { publishToStream as natsPublishToStream } from './utility/natsUtils';
-import { SUBJECT_PREFIXES } from './utility/natsTerms';
-import { createNatsTableStreamName } from '../../security/cryptoHash';
-import { IterableEventQueue } from '../../resources/IterableEventQueue';
-import { setSubscription as natsSetSubscription } from './natsIngestService';
-import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility';
-import env from '../../utility/environment/environmentManager';
-import * as hdb_terms from '../../utility/hdbTerms';
-import * as harper_logger from '../../utility/logging/harper_logger';
-import { Context } from '../../resources/ResourceInterface';
+import { getDatabases, onUpdatedTable } from '../../resources/databases.ts';
+import { Resource } from '../../resources/Resource.ts';
+import { publishToStream as natsPublishToStream } from './utility/natsUtils.js';
+import { SUBJECT_PREFIXES } from './utility/natsTerms.js';
+import { createNatsTableStreamName } from '../../security/cryptoHash.js';
+import { IterableEventQueue } from '../../resources/IterableEventQueue.ts';
+import { setSubscription as natsSetSubscription } from './natsIngestService.js';
+import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.js';
+import env from '../../utility/environment/environmentManager.js';
+import * as hdbTerms from '../../utility/hdbTerms.ts';
+import * as harperLogger from '../../utility/logging/harper_logger.js';
+import type { Context } from '../../resources/ResourceInterface.ts';
 
-let nats_disabled;
+let natsDisabled;
 export function start() {
-	if (env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+	if (env.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
 		assignReplicationSource();
 	}
 }
 export function disableNATS(disabled = true) {
-	nats_disabled = disabled;
+	natsDisabled = disabled;
 }
 export let publishToStream = natsPublishToStream;
 export let setSubscription = natsSetSubscription;
-export function setPublishToStream(new_publish, new_setSubscription) {
-	publishToStream = new_publish;
-	setSubscription = new_setSubscription;
+export function setPublishToStream(newPublish, newSetSubscription) {
+	publishToStream = newPublish;
+	setSubscription = newSetSubscription;
 }
 const MAX_INGEST_THREADS = 2;
-let immediateNATSTransaction, subscribed_to_nodes;
+let immediateNATSTransaction, subscribedToNodes;
 /**
  * Replication functions by acting as a "source" for tables. With replicated tables, the local tables are considered
  * a "cache" of the cluster's data. The tables don't resolve gets to the cluster, but they do propagate
@@ -36,25 +36,25 @@ let immediateNATSTransaction, subscribed_to_nodes;
  * any tables that aren't caching tables for another source).
  */
 function assignReplicationSource() {
-	if (nats_disabled || process.env._DISABLE_NATS) return;
+	if (natsDisabled || process.env._DISABLE_NATS) return;
 	const databases = getDatabases();
-	const database_names = Object.keys(databases);
-	database_names.push('system');
-	for (const database_name of database_names) {
-		const database = databases[database_name];
-		for (const table_name in database) {
-			const Table = database[table_name];
-			setNATSReplicator(table_name, database_name, Table);
+	const databaseNames = Object.keys(databases);
+	databaseNames.push('system');
+	for (const databaseName of databaseNames) {
+		const database = databases[databaseName];
+		for (const tableName in database) {
+			const Table = database[tableName];
+			setNATSReplicator(tableName, databaseName, Table);
 		}
 	}
-	onUpdatedTable((Table, is_changed) => {
+	onUpdatedTable((Table, isChanged) => {
 		setNATSReplicator(Table.tableName, Table.databaseName, Table);
-		if (is_changed) publishSchema(Table);
+		if (isChanged) publishSchema(Table);
 	});
-	if (subscribed_to_nodes) return;
-	subscribed_to_nodes = true;
+	if (subscribedToNodes) return;
+	subscribedToNodes = true;
 }
-const NEVER_REPLICATE_SYSTEM_TABLES = ['hdb_job', 'hdb_analytics', 'hdb_raw_analytics', 'hdb_info', 'hdb_license'];
+const NEVER_REPLICATE_SYSTEM_TABLES = ['hdb_job', 'hdb_raw_analytics', 'hdb_info', 'hdb_license'];
 /*
 onMessageFromWorkers((event) => {
 	if (event.type === 'nats_update') {
@@ -63,53 +63,53 @@ onMessageFromWorkers((event) => {
 });
 /**
  * Get/create a NATS replication resource that can be assigned as a source to tables
- * @param table_name
- * @param db_name
+ * @param tableName
+ * @param dbName
  */
-export function setNATSReplicator(table_name, db_name, Table) {
-	if (db_name === 'system' && NEVER_REPLICATE_SYSTEM_TABLES.includes(table_name)) return;
+export function setNATSReplicator(tableName, dbName, Table) {
+	if (dbName === 'system' && NEVER_REPLICATE_SYSTEM_TABLES.includes(tableName)) return;
 	if (!Table) {
-		return console.error(`Attempt to replicate non-existent table ${table_name} from database ${db_name}`);
+		return console.error(`Attempt to replicate non-existent table ${tableName} from database ${dbName}`);
 	}
 	if (Table.sources.some((source) => source?.isNATSReplicator)) return;
 	Table.sourcedFrom(
 		class NATSReplicator extends Resource {
 			put(record) {
 				// add this to the transaction
-				return getNATSTransaction(this.getContext()).addWrite(db_name, {
+				return getNATSTransaction(this.getContext()).addWrite(dbName, {
 					operation: 'put',
-					table: table_name,
+					table: tableName,
 					id: this.getId(),
 					record,
 				});
 			}
 			delete() {
-				return getNATSTransaction(this.getContext()).addWrite(db_name, {
+				return getNATSTransaction(this.getContext()).addWrite(dbName, {
 					operation: 'delete',
-					table: table_name,
+					table: tableName,
 					id: this.getId(),
 				});
 			}
 			publish(message) {
-				return getNATSTransaction(this.getContext()).addWrite(db_name, {
+				return getNATSTransaction(this.getContext()).addWrite(dbName, {
 					operation: 'publish',
-					table: table_name,
+					table: tableName,
 					id: this.getId(),
 					record: message,
 				});
 			}
 			patch(update) {
-				return getNATSTransaction(this.getContext()).addWrite(db_name, {
+				return getNATSTransaction(this.getContext()).addWrite(dbName, {
 					operation: 'patch',
-					table: table_name,
+					table: tableName,
 					id: this.getId(),
 					record: update,
 				});
 			}
 			invalidate() {
-				getNATSTransaction(this.getContext()).addWrite(db_name, {
+				getNATSTransaction(this.getContext()).addWrite(dbName, {
 					operation: 'invalidate',
-					table: table_name,
+					table: tableName,
 					id: this.getId(),
 				});
 			}
@@ -125,13 +125,13 @@ export function setNATSReplicator(table_name, db_name, Table) {
 			 */
 			static subscribe() {
 				const subscription = new IterableEventQueue();
-				setSubscription(db_name, table_name, subscription);
+				setSubscription(dbName, tableName, subscription);
 				return subscription;
 			}
-			static subscribeOnThisThread(worker_index) {
+			static subscribeOnThisThread(workerIndex) {
 				return (
-					worker_index <
-					(env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXINGESTTHREADS) ?? MAX_INGEST_THREADS)
+					workerIndex <
+					(env.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_STREAMS_MAXINGESTTHREADS) ?? MAX_INGEST_THREADS)
 				);
 			}
 			static isEqual(source) {
@@ -150,18 +150,18 @@ export function setNATSReplicator(table_name, db_name, Table) {
 	 * @param context
 	 */
 	function getNATSTransaction(context: Context): NATSTransaction {
-		let nats_transaction: NATSTransaction = context?.transaction?.nats;
-		if (!nats_transaction) {
+		let natsTransaction: NATSTransaction = context?.transaction?.nats;
+		if (!natsTransaction) {
 			if (context?.transaction) {
-				context.transaction.nats = nats_transaction = new NATSTransaction(context.transaction, context);
-				let last_transaction = context.transaction;
-				while (last_transaction.next) last_transaction = last_transaction.next;
-				last_transaction.next = context.transaction.nats;
-				nats_transaction.user = context.user;
-				nats_transaction.context = context;
-			} else nats_transaction = immediateNATSTransaction;
+				context.transaction.nats = natsTransaction = new NATSTransaction(context.transaction, context);
+				let lastTransaction = context.transaction;
+				while (lastTransaction.next) lastTransaction = lastTransaction.next;
+				lastTransaction.next = context.transaction.nats;
+				natsTransaction.user = context.user;
+				natsTransaction.context = context;
+			} else natsTransaction = immediateNATSTransaction;
 		}
-		return nats_transaction;
+		return natsTransaction;
 	}
 }
 
@@ -170,7 +170,7 @@ export function setNATSReplicator(table_name, db_name, Table) {
  * @param Table
  */
 function publishSchema(Table) {
-	const node_name = env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
+	const node_name = env.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 	publishToStream(
 		`${SUBJECT_PREFIXES.TXN}.${Table.databaseName}.${Table.tableName}`,
 		createNatsTableStreamName(Table.databaseName, Table.tableName),
@@ -192,13 +192,16 @@ function publishSchema(Table) {
  */
 class NATSTransaction {
 	user: string;
-	writes_by_db = new Map(); // TODO: short circuit of setting up a map if all the db paths are the same (99.9% of the time that will be the case)
-	constructor(protected transaction, protected options?) {}
-	addWrite(database_path, write) {
+	writesByDb = new Map(); // TODO: short circuit of setting up a map if all the db paths are the same (99.9% of the time that will be the case)
+	constructor(
+		protected transaction,
+		protected options?
+	) {}
+	addWrite(databasePath, write) {
 		write.expiresAt = this.context?.expiresAt;
-		let writes_for_path = this.writes_by_db.get(database_path);
-		if (!writes_for_path) this.writes_by_db.set(database_path, (writes_for_path = []));
-		writes_for_path.push(write);
+		let writesForPath = this.writesByDb.get(databasePath);
+		if (!writesForPath) this.writesByDb.set(databasePath, (writesForPath = []));
+		writesForPath.push(write);
 	}
 
 	/**
@@ -206,19 +209,19 @@ class NATSTransaction {
 	 * message and publish it to the cluster
 	 */
 	commit({ timestamp }) {
-		const node_name = env.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_NODENAME);
+		const node_name = env.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_NODENAME);
 		const promises = [];
-		for (const [db, writes] of this.writes_by_db) {
+		for (const [db, writes] of this.writesByDb) {
 			const records = [];
 			const ids = [];
-			let transaction_event;
-			let last_write_event;
+			let transactionEvent;
+			let lastWriteEvent;
 			for (const write of writes) {
 				const table = write.table;
 				const operation = write.operation == 'put' ? 'upsert' : write.operation;
-				if (!transaction_event) {
-					harper_logger.trace(`Sending transaction event ${operation}`);
-					last_write_event = transaction_event = {
+				if (!transactionEvent) {
+					harperLogger.trace(`Sending transaction event ${operation}`);
+					lastWriteEvent = transactionEvent = {
 						operation,
 						schema: db,
 						table,
@@ -228,33 +231,33 @@ class NATSTransaction {
 							node_name,
 						},
 					};
-					transaction_event.hash_values = ids;
+					transactionEvent.hash_values = ids;
 					if (operation !== 'delete' && operation !== 'invalidate') {
-						transaction_event.records = records;
+						transactionEvent.records = records;
 					}
 				}
-				if (transaction_event.table === table && transaction_event.operation === operation) {
+				if (transactionEvent.table === table && transactionEvent.operation === operation) {
 					records.push(write.record);
 					ids.push(write.id);
 				} else {
-					last_write_event = last_write_event.next = {
+					lastWriteEvent = lastWriteEvent.next = {
 						operation,
 						table,
 						id: write.id,
 						record: write.record,
 					};
 				}
-				if (write.expiresAt) last_write_event.expiresAt = write.expiresAt;
+				if (write.expiresAt) lastWriteEvent.expiresAt = write.expiresAt;
 			}
-			if (transaction_event) {
+			if (transactionEvent) {
 				promises.push(
 					publishToStream(
-						`${SUBJECT_PREFIXES.TXN}.${db}.${transaction_event.table}`,
-						createNatsTableStreamName(db, transaction_event.table),
+						`${SUBJECT_PREFIXES.TXN}.${db}.${transactionEvent.table}`,
+						createNatsTableStreamName(db, transactionEvent.table),
 						undefined,
-						transaction_event
+						transactionEvent
 					)?.catch((error) => {
-						harper_logger.error('An error has occurred trying to replicate transaction', transaction_event, error);
+						harperLogger.error('An error has occurred trying to replicate transaction', transactionEvent, error);
 						error.statusCode = 504; // Gateway timeout is the best description of this type of failure
 						throw error;
 					})
@@ -278,8 +281,8 @@ class ImmmediateNATSTransaction extends NATSTransaction {
 		});
 	}
 
-	addWrite(database_path, write) {
-		super.addWrite(database_path, write);
+	addWrite(databasePath, write) {
+		super.addWrite(databasePath, write);
 		this.commit({});
 	}
 }

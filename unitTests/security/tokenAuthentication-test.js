@@ -234,8 +234,7 @@ describe('test getJWTRSAKeys function', () => {
 	});
 
 	it('test rsa_keys is defined', async () => {
-		let rw_rsa_keys = token_auth.__set__(
-			'rsaKeys',
+		let rw_rsa_keys = token_auth.__set__('rsaKeys',
 			new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
 		);
 
@@ -337,8 +336,7 @@ describe('test createTokens', () => {
 	});
 
 	it('test happy path', async () => {
-		let rw_get_tokens = token_auth.__set__(
-			'getJWTRSAKeys',
+		let rw_get_tokens = token_auth.__set__('getJWTRSAKeys',
 			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
 		);
 		let result = await token_auth.createTokens({ username: 'HDB_USER', password: 'pass' });
@@ -362,8 +360,7 @@ describe('test createTokens', () => {
 			throw Error('update failed');
 		});
 
-		let rw_get_tokens = token_auth.__set__(
-			'getJWTRSAKeys',
+		let rw_get_tokens = token_auth.__set__('getJWTRSAKeys',
 			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
 		);
 		let result;
@@ -383,8 +380,7 @@ describe('test createTokens', () => {
 			return { message: 'updated 0 of 1', update_hashes: [], skipped_hashes: ['1'] };
 		});
 
-		let rw_get_tokens = token_auth.__set__(
-			'getJWTRSAKeys',
+		let rw_get_tokens = token_auth.__set__('getJWTRSAKeys',
 			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
 		);
 		let result;
@@ -410,8 +406,7 @@ describe('test validateOperationToken function', () => {
 	before(async () => {
 		sandbox.restore();
 
-		rw_get_tokens = token_auth.__set__(
-			'getJWTRSAKeys',
+		rw_get_tokens = token_auth.__set__('getJWTRSAKeys',
 			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
 		);
 
@@ -561,8 +556,7 @@ describe('test validateRefreshToken function', () => {
 
 	before(async () => {
 		validate_refresh_token = token_auth.__get__('validateRefreshToken');
-		rw_get_tokens = token_auth.__set__(
-			'getJWTRSAKeys',
+		rw_get_tokens = token_auth.__set__('getJWTRSAKeys',
 			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
 		);
 
@@ -717,8 +711,7 @@ describe('test refreshOperationToken function', () => {
 	let old_user_tokens;
 	let non_user_tokens;
 	before(async () => {
-		rw_get_tokens = token_auth.__set__(
-			'getJWTRSAKeys',
+		rw_get_tokens = token_auth.__set__('getJWTRSAKeys',
 			async () => new JWTRSAKeys(PUBLIC_KEY_VALUE, PRIVATE_KEY_VALUE, PASSPHRASE_VALUE)
 		);
 

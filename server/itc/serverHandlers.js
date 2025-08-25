@@ -1,39 +1,39 @@
 'use strict';
 
-const hdb_logger = require('../../utility/logging/harper_logger');
-const hdb_terms = require('../../utility/hdbTerms');
-const clean_lmdb_map = require('../../utility/lmdb/cleanLMDBMap');
-const global_schema = require('../../utility/globalSchema');
-const schema_describe = require('../../dataLayer/schemaDescribe');
-const user_schema = require('../../security/user');
-const { validateEvent } = require('../threads/itc');
-const harperBridge = require('../../dataLayer/harperBridge/harperBridge');
+const hdbLogger = require('../../utility/logging/harper_logger.js');
+const hdbTerms = require('../../utility/hdbTerms.ts');
+const cleanLmdbMap = require('../../utility/lmdb/cleanLMDBMap.js');
+const globalSchema = require('../../utility/globalSchema.js');
+const schemaDescribe = require('../../dataLayer/schemaDescribe.js');
+const userSchema = require('../../security/user.js');
+const { validateEvent } = require('../threads/itc.js');
+const harperBridge = require('../../dataLayer/harperBridge/harperBridge.js');
 const process = require('process');
-const { resetDatabases } = require('../../resources/databases');
+const { resetDatabases } = require('../../resources/databases.ts');
 
 /**
  * This object/functions are passed to the ITC client instance and dynamically added as event handlers.
  * @type {{schema: ((function(*): Promise<void>)|*), job: ((function(*): Promise<void>)|*), user: ((function(): Promise<void>)|*)}}
  */
-const server_itc_handlers = {
-	[hdb_terms.ITC_EVENT_TYPES.SCHEMA]: schemaHandler,
-	[hdb_terms.ITC_EVENT_TYPES.USER]: userHandler,
+const serverItcHandlers = {
+	[hdbTerms.ITC_EVENT_TYPES.SCHEMA]: schemaHandler,
+	[hdbTerms.ITC_EVENT_TYPES.USER]: userHandler,
 };
 
 /**
- * Updates the global hdb_schema object.
+ * Updates the global hdbSchema object.
  * @param event
  * @returns {Promise<void>}
  */
 async function schemaHandler(event) {
 	const validate = validateEvent(event);
 	if (validate) {
-		hdb_logger.error(validate);
+		hdbLogger.error(validate);
 		return;
 	}
 
-	hdb_logger.trace(`ITC schemaHandler received schema event:`, event);
-	await clean_lmdb_map(event.message);
+	hdbLogger.trace(`ITC schemaHandler received schema event:`, event);
+	await cleanLmdbMap(event.message);
 	await syncSchemaMetadata(event.message);
 }
 
@@ -47,55 +47,55 @@ async function schemaHandler(event) {
 async function syncSchemaMetadata(msg) {
 	try {
 		// reset current read transactions to ensure that we are getting the very latest data
-		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME);
-		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME);
-		harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME);
+		harperBridge.resetReadTxn(hdbTerms.SYSTEM_SCHEMA_NAME, hdbTerms.SYSTEM_TABLE_NAMES.TABLE_TABLE_NAME);
+		harperBridge.resetReadTxn(hdbTerms.SYSTEM_SCHEMA_NAME, hdbTerms.SYSTEM_TABLE_NAMES.ATTRIBUTE_TABLE_NAME);
+		harperBridge.resetReadTxn(hdbTerms.SYSTEM_SCHEMA_NAME, hdbTerms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME);
 		// TODO: Eventually should indicate which database/table changed so we don't have to scan everything
 		let databases = resetDatabases();
 		if (msg.table && msg.database)
 			// wait for a write to finish to ensure all writes have been written
 			await databases[msg.database][msg.table].put(Symbol.for('write-verify'), null);
 	} catch (e) {
-		hdb_logger.error(e);
+		hdbLogger.error(e);
 	}
 }
 
 function handleErrorCallback(err) {
 	if (err) {
-		hdb_logger.error(err);
+		hdbLogger.error(err);
 	}
 }
 
-const user_listeners = [];
+const userListeners = [];
 /**
- * Updates the global hdb_users object by querying the hdb_role table.
+ * Updates the global hdbUsers object by querying the hdbRole table.
  * @param event
  * @returns {Promise<void>}
  */
 async function userHandler(event) {
 	try {
 		try {
-			harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME);
-			harperBridge.resetReadTxn(hdb_terms.SYSTEM_SCHEMA_NAME, hdb_terms.SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME);
+			harperBridge.resetReadTxn(hdbTerms.SYSTEM_SCHEMA_NAME, hdbTerms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME);
+			harperBridge.resetReadTxn(hdbTerms.SYSTEM_SCHEMA_NAME, hdbTerms.SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME);
 		} catch (error) {
 			// this can happen during tests, best to ignore
-			hdb_logger.warn(error);
+			hdbLogger.warn(error);
 		}
 		const validate = validateEvent(event);
 		if (validate) {
-			hdb_logger.error(validate);
+			hdbLogger.error(validate);
 			return;
 		}
 
-		hdb_logger.trace(`ITC userHandler ${hdb_terms.HDB_ITC_CLIENT_PREFIX}${process.pid} received user event:`, event);
-		await user_schema.setUsersWithRolesCache();
-		for (let listener of user_listeners) listener();
+		hdbLogger.trace(`ITC userHandler ${hdbTerms.HDB_ITC_CLIENT_PREFIX}${process.pid} received user event:`, event);
+		await userSchema.setUsersWithRolesCache();
+		for (let listener of userListeners) listener();
 	} catch (err) {
-		hdb_logger.error(err);
+		hdbLogger.error(err);
 	}
 }
 
 userHandler.addListener = function (listener) {
-	user_listeners.push(listener);
+	userListeners.push(listener);
 };
-module.exports = server_itc_handlers;
+module.exports = serverItcHandlers;

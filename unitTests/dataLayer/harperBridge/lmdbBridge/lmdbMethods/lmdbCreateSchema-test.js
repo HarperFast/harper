@@ -73,7 +73,7 @@ describe('test lmdbCreateSchema module', () => {
 
 	it('Test that error from lmdbCreateRecords caught and thrown', async () => {
 		let error_msg = new Error('Error creating the record');
-		let rw_create_records = lmdb_create_schema.__set__('lmdb_create_records', async () => {
+		let rw_create_records = lmdb_create_schema.__set__('lmdbCreateRecords', async () => {
 			throw error_msg;
 		});
 		await test_utils.assertErrorAsync(lmdb_create_schema, [CREATE_SCHEMA_OBJ_TEST_A], error_msg);

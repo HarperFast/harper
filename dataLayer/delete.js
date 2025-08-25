@@ -1,26 +1,26 @@
 'use strict';
 
-const bulkDeleteValidator = require('../validation/bulkDeleteValidator');
-const deleteValidator = require('../validation/deleteValidator');
-const common_utils = require('../utility/common_utils');
+const bulkDeleteValidator = require('../validation/bulkDeleteValidator.js');
+const deleteValidator = require('../validation/deleteValidator.js');
+const commonUtils = require('../utility/common_utils.js');
 const moment = require('moment');
-const harper_logger = require('../utility/logging/harper_logger');
+const harperLogger = require('../utility/logging/harper_logger.js');
 const { promisify, callbackify } = require('util');
-const terms = require('../utility/hdbTerms');
-const global_schema = require('../utility/globalSchema');
-const p_global_schema = promisify(global_schema.getTableSchema);
-const harperBridge = require('./harperBridge/harperBridge');
-const { DeleteResponseObject } = require('./DataLayerObjects');
-const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
-const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
+const terms = require('../utility/hdbTerms.ts');
+const globalSchema = require('../utility/globalSchema.js');
+const pGlobalSchema = promisify(globalSchema.getTableSchema);
+const harperBridge = require('./harperBridge/harperBridge.js');
+const { DeleteResponseObject } = require('./DataLayerObjects.js');
+const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 
 const SUCCESS_MESSAGE = 'records successfully deleted';
 
 // Callbackified functions
-const cb_delete_record = callbackify(deleteRecord);
+const cbDeleteRecord = callbackify(deleteRecord);
 
 module.exports = {
-	delete: cb_delete_record,
+	delete: cbDeleteRecord,
 	deleteRecord,
 	deleteFilesBefore,
 	deleteAuditLogsBefore,
@@ -31,18 +31,18 @@ module.exports = {
  * so if clustering is enabled values added will still remain in a parent node.  This serves only to remove files for
  * devices that have a small amount of disk space.
  *
- * @param delete_obj - the request passed from chooseOperation.
+ * @param deleteObj - the request passed from chooseOperation.
  */
-async function deleteFilesBefore(delete_obj) {
-	let validation = bulkDeleteValidator(delete_obj, 'date');
+async function deleteFilesBefore(deleteObj) {
+	let validation = bulkDeleteValidator(deleteObj, 'date');
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
-	common_utils.transformReq(delete_obj);
+	commonUtils.transformReq(deleteObj);
 
-	let parsed_date = moment(delete_obj.date, moment.ISO_8601);
-	if (!parsed_date.isValid()) {
+	let parsedDate = moment(deleteObj.date, moment.ISO_8601);
+	if (!parsedDate.isValid()) {
 		throw handleHDBError(
 			new Error(),
 			HDB_ERROR_MSGS.INVALID_DATE,
@@ -53,21 +53,21 @@ async function deleteFilesBefore(delete_obj) {
 		);
 	}
 
-	let invalid_schema_table_msg = common_utils.checkSchemaTableExist(delete_obj.schema, delete_obj.table);
-	if (invalid_schema_table_msg) {
+	let invalidSchemaTableMsg = commonUtils.checkSchemaTableExist(deleteObj.schema, deleteObj.table);
+	if (invalidSchemaTableMsg) {
 		throw handleHDBError(
 			new Error(),
-			invalid_schema_table_msg,
+			invalidSchemaTableMsg,
 			HTTP_STATUS_CODES.NOT_FOUND,
 			terms.LOG_LEVELS.ERROR,
-			invalid_schema_table_msg,
+			invalidSchemaTableMsg,
 			true
 		);
 	}
 
-	let results = await harperBridge.deleteRecordsBefore(delete_obj);
-	await p_global_schema(delete_obj.schema, delete_obj.table);
-	harper_logger.info(`Finished deleting files before ${delete_obj.date}`);
+	let results = await harperBridge.deleteRecordsBefore(deleteObj);
+	await pGlobalSchema(deleteObj.schema, deleteObj.table);
+	harperLogger.info(`Finished deleting files before ${deleteObj.date}`);
 	if (results && results.message) {
 		return results.message;
 	}
@@ -76,17 +76,17 @@ async function deleteFilesBefore(delete_obj) {
 /**
  * Deletes audit logs which are older than a specific date
  *
- * @param {DeleteBeforeObject} delete_obj - the request passed from chooseOperation.
+ * @param {DeleteBeforeObject} deleteObj - the request passed from chooseOperation.
  */
-async function deleteAuditLogsBefore(delete_obj) {
-	let validation = bulkDeleteValidator(delete_obj, 'timestamp');
+async function deleteAuditLogsBefore(deleteObj) {
+	let validation = bulkDeleteValidator(deleteObj, 'timestamp');
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
-	common_utils.transformReq(delete_obj);
+	commonUtils.transformReq(deleteObj);
 
-	if (isNaN(delete_obj.timestamp)) {
+	if (isNaN(deleteObj.timestamp)) {
 		throw handleHDBError(
 			new Error(),
 			HDB_ERROR_MSGS.INVALID_VALUE('Timestamp'),
@@ -97,66 +97,66 @@ async function deleteAuditLogsBefore(delete_obj) {
 		);
 	}
 
-	let invalid_schema_table_msg = common_utils.checkSchemaTableExist(delete_obj.schema, delete_obj.table);
-	if (invalid_schema_table_msg) {
+	let invalidSchemaTableMsg = commonUtils.checkSchemaTableExist(deleteObj.schema, deleteObj.table);
+	if (invalidSchemaTableMsg) {
 		throw handleHDBError(
 			new Error(),
-			invalid_schema_table_msg,
+			invalidSchemaTableMsg,
 			HTTP_STATUS_CODES.NOT_FOUND,
 			terms.LOG_LEVELS.ERROR,
-			invalid_schema_table_msg,
+			invalidSchemaTableMsg,
 			true
 		);
 	}
 
-	let results = await harperBridge.deleteAuditLogsBefore(delete_obj);
-	await p_global_schema(delete_obj.schema, delete_obj.table);
-	harper_logger.info(`Finished deleting audit logs before ${delete_obj.timestamp}`);
+	let results = await harperBridge.deleteAuditLogsBefore(deleteObj);
+	await pGlobalSchema(deleteObj.schema, deleteObj.table);
+	harperLogger.info(`Finished deleting audit logs before ${deleteObj.timestamp}`);
 
 	return results;
 }
 
 /**
  * Calls the harper bridge to delete records.
- * @param delete_object
+ * @param deleteObject
  * @returns {Promise<string>}
  */
-async function deleteRecord(delete_object) {
-	if (delete_object.ids) delete_object.hash_values = delete_object.ids;
-	let validation = deleteValidator(delete_object);
+async function deleteRecord(deleteObject) {
+	if (deleteObject.ids) deleteObject.hash_values = deleteObject.ids;
+	let validation = deleteValidator(deleteObject);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
-	common_utils.transformReq(delete_object);
+	commonUtils.transformReq(deleteObject);
 
-	let invalid_schema_table_msg = common_utils.checkSchemaTableExist(delete_object.schema, delete_object.table);
-	if (invalid_schema_table_msg) {
+	let invalidSchemaTableMsg = commonUtils.checkSchemaTableExist(deleteObject.schema, deleteObject.table);
+	if (invalidSchemaTableMsg) {
 		throw handleHDBError(
 			new Error(),
-			invalid_schema_table_msg,
+			invalidSchemaTableMsg,
 			HTTP_STATUS_CODES.NOT_FOUND,
 			terms.LOG_LEVELS.ERROR,
-			invalid_schema_table_msg,
+			invalidSchemaTableMsg,
 			true
 		);
 	}
 
 	try {
-		await p_global_schema(delete_object.schema, delete_object.table);
-		let delete_result_object = await harperBridge.deleteRecords(delete_object);
+		await pGlobalSchema(deleteObject.schema, deleteObject.table);
+		let deleteResultObject = await harperBridge.deleteRecords(deleteObject);
 
-		if (common_utils.isEmptyOrZeroLength(delete_result_object.message)) {
-			delete_result_object.message = `${delete_result_object.deleted_hashes.length} of ${delete_object.hash_values.length} ${SUCCESS_MESSAGE}`;
+		if (commonUtils.isEmptyOrZeroLength(deleteResultObject.message)) {
+			deleteResultObject.message = `${deleteResultObject.deleted_hashes.length} of ${deleteObject.hash_values.length} ${SUCCESS_MESSAGE}`;
 		}
-		return delete_result_object;
+		return deleteResultObject;
 	} catch (err) {
 		if (err.message === terms.SEARCH_NOT_FOUND_MESSAGE) {
-			let return_msg = new DeleteResponseObject();
-			return_msg.message = terms.SEARCH_NOT_FOUND_MESSAGE;
-			return_msg.skipped_hashes = delete_object.hash_values.length;
-			return_msg.deleted_hashes = 0;
-			return return_msg;
+			let returnMsg = new DeleteResponseObject();
+			returnMsg.message = terms.SEARCH_NOT_FOUND_MESSAGE;
+			returnMsg.skipped_hashes = deleteObject.hash_values.length;
+			returnMsg.deleted_hashes = 0;
+			return returnMsg;
 		}
 
 		throw err;

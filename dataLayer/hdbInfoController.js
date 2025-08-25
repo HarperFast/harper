@@ -1,7 +1,7 @@
 'use strict';
 
 /**
- * Module meant as an intermediary between the hdb_info table and the upgrade/install processes. Please update
+ * Module meant as an intermediary between the hdbInfo table and the upgrade/install processes. Please update
  * MINIMUM_SUPPORTED_VERSION_NUM as needed.
  */
 
@@ -9,28 +9,28 @@ const util = require('util');
 const chalk = require('chalk');
 const os = require('os');
 
-const insert = require('./insert');
-const search = require('./search');
-const hdb_terms = require('../utility/hdbTerms');
-const BinObjects = require('../bin/BinObjects');
-const DataLayerObjects = require('./DataLayerObjects');
-const { UpgradeObject } = require('../upgrade/UpgradeObjects');
-const { forceDowngradePrompt } = require('../upgrade/upgradePrompt');
-const { packageJson } = require('../utility/packageUtils');
-const log = require('../utility/logging/harper_logger');
-const hdb_utils = require('../utility/common_utils');
-const global_schema = require('../utility/globalSchema');
-const tableLoader = require('../resources/databases');
-const directiveManager = require('../upgrade/directives/directivesController');
-let p_setSchemaDataToGlobal = util.promisify(global_schema.setSchemaDataToGlobal);
+const insert = require('./insert.js');
+const search = require('./search.js');
+const hdbTerms = require('../utility/hdbTerms.ts');
+const BinObjects = require('../bin/BinObjects.js');
+const DataLayerObjects = require('./DataLayerObjects.js');
+const { UpgradeObject } = require('../upgrade/UpgradeObjects.js');
+const { forceDowngradePrompt } = require('../upgrade/upgradePrompt.js');
+const { packageJson } = require('../utility/packageUtils.js');
+const log = require('../utility/logging/harper_logger.js');
+const hdbUtils = require('../utility/common_utils.js');
+const globalSchema = require('../utility/globalSchema.js');
+const tableLoader = require('../resources/databases.ts');
+const directiveManager = require('../upgrade/directives/directivesController.js');
+let pSetSchemaDataToGlobal = util.promisify(globalSchema.setSchemaDataToGlobal);
 
-let p_search_search_by_value = search.searchByValue;
+let pSearchSearchByValue = search.searchByValue;
 
 const HDB_INFO_SEARCH_ATTRIBUTE = 'info_id';
 
 // This is the value we use to set a default/stubbed 'data version' number for HDB instances installed before
 // version 3.0.0 in order to allow our version comparison functions to evaluate correctly.  B/c most/all older versions
-// will NOT have a hdb_info record from their previous install, we need to stub this data so that the 3.0.0 upgrade
+// will NOT have a hdbInfo record from their previous install, we need to stub this data so that the 3.0.0 upgrade
 // directives - and any additional upgrade directives that may be added later (if they do not upgrade right away) - are
 // identified and run when the upgrade eventually happens.
 const DEFAULT_DATA_VERSION_NUM = '2.9.9';
@@ -38,60 +38,60 @@ const DEFAULT_DATA_VERSION_NUM = '2.9.9';
 const MINIMUM_SUPPORTED_VERSION_NUM = '3.0.0';
 
 /**
- * * Insert a row into hdb_info with the initial version data at install.
+ * * Insert a row into hdbInfo with the initial version data at install.
  *
- * @param new_version_string - The version of this install
+ * @param newVersionString - The version of this install
  * @returns {Promise<{message: string, new_attributes: *, txn_time: *}|undefined>}
  */
-async function insertHdbInstallInfo(new_version_string) {
-	const info_table_insert_object = new BinObjects.HdbInfoInsertObject(1, new_version_string, new_version_string);
+async function insertHdbInstallInfo(newVersionString) {
+	const infoTableInsertObject = new BinObjects.HdbInfoInsertObject(1, newVersionString, newVersionString);
 
-	//Insert the initial version record into the hdb_info table.
-	let insert_object = new DataLayerObjects.InsertObject(
-		hdb_terms.OPERATIONS_ENUM.INSERT,
-		hdb_terms.SYSTEM_SCHEMA_NAME,
-		hdb_terms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME,
-		hdb_terms.INFO_TABLE_HASH_ATTRIBUTE,
-		[info_table_insert_object]
+	//Insert the initial version record into the hdbInfo table.
+	let insertObject = new DataLayerObjects.InsertObject(
+		hdbTerms.OPERATIONS_ENUM.INSERT,
+		hdbTerms.SYSTEM_SCHEMA_NAME,
+		hdbTerms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME,
+		hdbTerms.INFO_TABLE_HASH_ATTRIBUTE,
+		[infoTableInsertObject]
 	);
-	global_schema.setSchemaDataToGlobal();
-	return insert.insert(insert_object);
+	globalSchema.setSchemaDataToGlobal();
+	return insert.insert(insertObject);
 }
 
 /**
  * This method inserts the new 'hdb_info' record after the upgrade process has completed with the new version value for the
  * hdb software version and data version.
  *
- * @param new_version_string
+ * @param newVersionString
  * @returns {Promise<void>}
  */
-async function insertHdbUpgradeInfo(new_version_string) {
-	let new_info_record;
-	let version_data = await getAllHdbInfoRecords();
+async function insertHdbUpgradeInfo(newVersionString) {
+	let newInfoRecord;
+	let versionData = await getAllHdbInfoRecords();
 
 	// always have a 0 in case the search returned nothing.  That way we will have an entry at 1 if there are no rows returned due to table
 	// not existing (upgrade from old install).
 	let vals = new Map([[0, {}]]);
-	for (const vers of version_data) {
+	for (const vers of versionData) {
 		vals.set(vers.info_id, vers);
 	}
 
 	// get the largest
-	const latest_id = Math.max.apply(null, [...vals.keys()]);
-	const new_id = latest_id + 1;
-	new_info_record = new BinObjects.HdbInfoInsertObject(new_id, new_version_string, new_version_string);
+	const latestId = Math.max.apply(null, [...vals.keys()]);
+	const newId = latestId + 1;
+	newInfoRecord = new BinObjects.HdbInfoInsertObject(newId, newVersionString, newVersionString);
 
-	//Insert the most recent record with the new data version in the hdb_info system table.
-	let insert_object = new DataLayerObjects.InsertObject(
-		hdb_terms.OPERATIONS_ENUM.INSERT,
-		hdb_terms.SYSTEM_SCHEMA_NAME,
-		hdb_terms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME,
-		hdb_terms.INFO_TABLE_HASH_ATTRIBUTE,
-		[new_info_record]
+	//Insert the most recent record with the new data version in the hdbInfo system table.
+	let insertObject = new DataLayerObjects.InsertObject(
+		hdbTerms.OPERATIONS_ENUM.INSERT,
+		hdbTerms.SYSTEM_SCHEMA_NAME,
+		hdbTerms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME,
+		hdbTerms.INFO_TABLE_HASH_ATTRIBUTE,
+		[newInfoRecord]
 	);
 
-	await p_setSchemaDataToGlobal();
-	return insert.insert(insert_object);
+	await pSetSchemaDataToGlobal();
+	return insert.insert(insertObject);
 }
 
 /**
@@ -99,56 +99,56 @@ async function insertHdbUpgradeInfo(new_version_string) {
  * @returns {Promise<[]>}
  */
 async function getAllHdbInfoRecords() {
-	// get the latest hdb_info id
-	let search_obj = new DataLayerObjects.NoSQLSeachObject(
-		hdb_terms.SYSTEM_SCHEMA_NAME,
-		hdb_terms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME,
+	// get the latest hdbInfo id
+	let searchObj = new DataLayerObjects.NoSQLSeachObject(
+		hdbTerms.SYSTEM_SCHEMA_NAME,
+		hdbTerms.SYSTEM_TABLE_NAMES.INFO_TABLE_NAME,
 		HDB_INFO_SEARCH_ATTRIBUTE,
-		hdb_terms.INFO_TABLE_HASH_ATTRIBUTE,
+		hdbTerms.INFO_TABLE_HASH_ATTRIBUTE,
 		['*'],
 		'*'
 	);
 
-	// Using a NoSql search and filter to get the largest info_id, as running SQL searches internally is difficult.
-	let version_data = [];
+	// Using a NoSql search and filter to get the largest infoId, as running SQL searches internally is difficult.
+	let versionData = [];
 	try {
-		version_data = Array.from(await p_search_search_by_value(search_obj));
+		versionData = Array.from(await pSearchSearchByValue(searchObj));
 	} catch (err) {
 		// search may fail during a new install as the table doesn't exist yet or initial upgrade for 3.0.  This is ok,
 		// we will assume an id of 0 below.
 		console.error(err);
 	}
 
-	return version_data;
+	return versionData;
 }
 
 /**
- * This method grabs all rows from the hbd_info table and returns the most recent record
+ * This method grabs all rows from the hbdInfo table and returns the most recent record
  *
  * @returns {Promise<*>} - the most recent record OR undefined (if no records exist in the table)
  */
 async function getLatestHdbInfoRecord() {
-	let version_data = await getAllHdbInfoRecords();
+	let versionData = await getAllHdbInfoRecords();
 
 	//This scenario means that new software has been downloaded but harperdb install has not been run so
 	// we need to run the upgrade for 3.0
-	if (version_data.length === 0) {
+	if (versionData.length === 0) {
 		return;
 	}
 
-	let current_info_record;
+	let currentInfoRecord;
 	// always have a 0 in case the search returned nothing.  That way we will have an entry at 1 if there are no rows returned due to table
 	// not existing (upgrade from old install).
-	let version_map = new Map();
-	for (const vers of version_data) {
-		version_map.set(vers.info_id, vers);
+	let versionMap = new Map();
+	for (const vers of versionData) {
+		versionMap.set(vers.info_id, vers);
 	}
 
 	// get the largest which will be the most recent
-	const latest_id = Math.max.apply(null, [...version_map.keys()]);
-	current_info_record = version_map.get(latest_id);
+	const latestId = Math.max.apply(null, [...versionMap.keys()]);
+	currentInfoRecord = versionMap.get(latestId);
 
-	return current_info_record;
+	return currentInfoRecord;
 }
 
 /**
@@ -161,35 +161,35 @@ async function getLatestHdbInfoRecord() {
 async function getVersionUpdateInfo() {
 	log.info('Checking if HDB software has been updated');
 	try {
-		const upgrade_version = packageJson.version;
-		if (!upgrade_version) {
+		const upgradeVersion = packageJson.version;
+		if (!upgradeVersion) {
 			throw new Error('Could not find the version number in the package.json file');
 		}
-		const latest_info_record = await getLatestHdbInfoRecord();
+		const latestInfoRecord = await getLatestHdbInfoRecord();
 
-		let data_version;
+		let dataVersion;
 
-		if (hdb_utils.isEmpty(latest_info_record)) {
-			// If there's no record, then there's no hdb_info table. If there's no hdb_info table, we know it comes before 3.0.0.
+		if (hdbUtils.isEmpty(latestInfoRecord)) {
+			// If there's no record, then there's no hdbInfo table. If there's no hdbInfo table, we know it comes before 3.0.0.
 			// We assign the default version number to aptly make upgrade decisions
-			data_version = DEFAULT_DATA_VERSION_NUM;
+			dataVersion = DEFAULT_DATA_VERSION_NUM;
 		} else {
-			data_version = latest_info_record.data_version_num;
-			if (hdb_utils.compareVersions(data_version.toString(), upgrade_version.toString()) > 0) {
-				if (!hdb_utils.isCompatibleDataVersion(data_version.toString(), upgrade_version.toString())) {
-					console.log(chalk.yellow(`This instance's data was last run on version ${data_version}`));
+			dataVersion = latestInfoRecord.data_version_num;
+			if (hdbUtils.compareVersions(dataVersion.toString(), upgradeVersion.toString()) > 0) {
+				if (!hdbUtils.isCompatibleDataVersion(dataVersion.toString(), upgradeVersion.toString())) {
+					console.log(chalk.yellow(`This instance's data was last run on version ${dataVersion}`));
 					console.error(
 						chalk.red(
-							`You have installed a version lower than the version that your data was created on or was upgraded to. This may cause issues and is currently not supported.${os.EOL}${hdb_terms.SUPPORT_HELP_MSG}`
+							`You have installed a version lower than the version that your data was created on or was upgraded to. This may cause issues and is currently not supported.${os.EOL}${hdbTerms.SUPPORT_HELP_MSG}`
 						)
 					);
 					throw new Error('Trying to downgrade major HDB versions is not supported.');
 				}
-				if (!hdb_utils.isCompatibleDataVersion(data_version.toString(), upgrade_version.toString(), true)) {
-					console.log(chalk.yellow(`This instance's data was last run on version ${data_version}`));
+				if (!hdbUtils.isCompatibleDataVersion(dataVersion.toString(), upgradeVersion.toString(), true)) {
+					console.log(chalk.yellow(`This instance's data was last run on version ${dataVersion}`));
 
-					if (await forceDowngradePrompt(new UpgradeObject(data_version, upgrade_version))) {
-						await insertHdbUpgradeInfo(upgrade_version.toString());
+					if (await forceDowngradePrompt(new UpgradeObject(dataVersion, upgradeVersion))) {
+						await insertHdbUpgradeInfo(upgradeVersion.toString());
 					} else {
 						console.log('Cancelled downgrade, closing HarperDB');
 						process.exit(0);
@@ -198,15 +198,15 @@ async function getVersionUpdateInfo() {
 			}
 		}
 
-		global_schema.setSchemaDataToGlobal();
-		checkIfInstallIsSupported(data_version);
+		globalSchema.setSchemaDataToGlobal();
+		checkIfInstallIsSupported(dataVersion);
 
-		if (upgrade_version.toString() === data_version.toString()) {
+		if (upgradeVersion.toString() === dataVersion.toString()) {
 			//versions are up to date so nothing to do here
 			return;
 		}
 
-		const newUpgradeObj = new UpgradeObject(data_version, upgrade_version);
+		const newUpgradeObj = new UpgradeObject(dataVersion, upgradeVersion);
 		// We only want to prompt for a reinstall if there are updates that need to be made. If there are no new version
 		// update directives between the two versions, we can skip by returning undefined
 		const upgradeRequired = directiveManager.hasUpgradesRequired(newUpgradeObj);
@@ -216,7 +216,7 @@ async function getVersionUpdateInfo() {
 
 		// If we get here they are running on an upgraded version that doesn't require any upgrade directives
 		if (
-			hdb_utils.compareVersions(newUpgradeObj.data_version.toString(), newUpgradeObj.upgrade_version.toString()) < 0
+			hdbUtils.compareVersions(newUpgradeObj.data_version.toString(), newUpgradeObj.upgrade_version.toString()) < 0
 		) {
 			await insertHdbUpgradeInfo(newUpgradeObj.upgrade_version);
 			log.notify(`HarperDB running on upgraded version: ${newUpgradeObj.upgrade_version}`);
@@ -231,21 +231,21 @@ async function getVersionUpdateInfo() {
 /**
  * First we check for the existence of the info table--this rejects too old versions.
  * Next we ensure the version is currently supported against our defined variable, MINIMUM_SUPPORTED_VERSION_NUM
- * @param data_v_num - string of version number
+ * @param dataVNum - string of version number
  */
-function checkIfInstallIsSupported(data_v_num) {
-	const err_msg =
+function checkIfInstallIsSupported(dataVNum) {
+	const errMsg =
 		'You are attempting to upgrade from an old instance of HarperDB that is no longer supported. ' +
 		'In order to upgrade to this version, you must do a fresh install. If you need support, ' +
-		`please contact ${hdb_terms.HDB_SUPPORT_ADDRESS}`;
+		`please contact ${hdbTerms.HDB_SUPPORT_ADDRESS}`;
 
 	if (!('hdb_info' in tableLoader.databases.system)) {
-		console.log(err_msg);
-		throw new Error(err_msg);
+		console.log(errMsg);
+		throw new Error(errMsg);
 	}
-	if (!hdb_utils.isEmpty(data_v_num) && data_v_num < MINIMUM_SUPPORTED_VERSION_NUM) {
-		console.log(err_msg);
-		throw new Error(err_msg);
+	if (!hdbUtils.isEmpty(dataVNum) && dataVNum < MINIMUM_SUPPORTED_VERSION_NUM) {
+		console.log(errMsg);
+		throw new Error(errMsg);
 	}
 }
 

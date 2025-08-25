@@ -82,8 +82,8 @@ describe('Test update module', () => {
 
 		before(() => {
 			transaction_rw = update.__set__('transaction', transaction_stub);
-			p_get_table_schema_rw = update.__set__('p_get_table_schema', p_get_table_schema_stub);
-			p_search_rw = update.__set__('p_search', p_search_stub);
+			p_get_table_schema_rw = update.__set__('pGetTableSchema', p_get_table_schema_stub);
+			p_search_rw = update.__set__('pSearch', p_search_stub);
 			update_records_rw = update.__set__('updateRecords', update_records_stub);
 			write_rw = update.__set__('write', write_stub);
 			alasql_parse_spy = sandbox.spy(alasql, 'parse');

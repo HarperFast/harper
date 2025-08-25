@@ -53,7 +53,7 @@ describe('Test insert module', () => {
 	});
 
 	before(() => {
-		insert_rw.__set__('hdb_utils', {
+		insert_rw.__set__('hdbUtils', {
 			checkSchemaTableExist: check_schema_stub,
 			isEmpty: is_empty_stub,
 			transformReq: transform_stub,

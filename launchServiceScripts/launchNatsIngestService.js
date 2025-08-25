@@ -1,10 +1,10 @@
 'use strict';
 
-const nats_ingest_service = require('../server/nats/natsIngestService');
+const natsIngestService = require('../server/nats/natsIngestService.js');
 
 (async () => {
 	try {
-		await nats_ingest_service.initialize();
+		await natsIngestService.initialize();
 	} catch (err) {
 		console.error('Error launching Nats ingest service.');
 		console.error(err);

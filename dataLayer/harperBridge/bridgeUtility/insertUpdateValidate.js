@@ -1,10 +1,10 @@
 'use strict';
 
-const hdb_utils = require('../../../utility/common_utils');
-const log = require('../../../utility/logging/harper_logger');
-const insert_validator = require('../../../validation/insertValidator');
-const { getDatabases } = require('../../../resources/databases');
-const { ClientError } = require('../../../utility/errors/hdbError');
+const hdbUtils = require('../../../utility/common_utils.js');
+const log = require('../../../utility/logging/harper_logger.js');
+const insertValidator = require('../../../validation/insertValidator.js');
+const { getDatabases } = require('../../../resources/databases.ts');
+const { ClientError } = require('../../../utility/errors/hdbError.js');
 
 module.exports = insertUpdateValidate;
 
@@ -12,66 +12,66 @@ module.exports = insertUpdateValidate;
 // below are also made there.  This is to resolve a circular dependency.
 /**
  * Takes an insert/update object and validates attributes, also looks for dups and get a list of all attributes from the record set
- * @param {Object} write_object
- * @returns {Promise<{table_schema, hashes: any[], attributes: string[]}>}
+ * @param {Object} writeObject
+ * @returns {Promise<{tableSchema, hashes: any[], attributes: string[]}>}
  */
-function insertUpdateValidate(write_object) {
+function insertUpdateValidate(writeObject) {
 	// Need to validate these outside of the validator as the getTableSchema call will fail with
 	// invalid values.
 
-	if (hdb_utils.isEmpty(write_object)) {
+	if (hdbUtils.isEmpty(writeObject)) {
 		throw new ClientError('invalid update parameters defined.');
 	}
-	if (hdb_utils.isEmptyOrZeroLength(write_object.schema)) {
+	if (hdbUtils.isEmptyOrZeroLength(writeObject.schema)) {
 		throw new ClientError('invalid schema specified.');
 	}
-	if (hdb_utils.isEmptyOrZeroLength(write_object.table)) {
+	if (hdbUtils.isEmptyOrZeroLength(writeObject.table)) {
 		throw new ClientError('invalid table specified.');
 	}
 
-	if (!Array.isArray(write_object.records)) {
+	if (!Array.isArray(writeObject.records)) {
 		throw new ClientError('records must be an array');
 	}
 
-	let schema_table = getDatabases()[write_object.schema]?.[write_object.table];
-	if (hdb_utils.isEmpty(schema_table)) {
-		throw new ClientError(`could not retrieve schema:${write_object.schema} and table ${write_object.table}`);
+	let schemaTable = getDatabases()[writeObject.schema]?.[writeObject.table];
+	if (hdbUtils.isEmpty(schemaTable)) {
+		throw new ClientError(`could not retrieve schema:${writeObject.schema} and table ${writeObject.table}`);
 	}
 
-	let hash_attribute = schema_table.primaryKey;
+	let hash_attribute = schemaTable.primaryKey;
 	let dups = new Set();
 	let attributes = {};
 
-	let is_update = false;
-	if (write_object.operation === 'update') {
-		is_update = true;
+	let isUpdate = false;
+	if (writeObject.operation === 'update') {
+		isUpdate = true;
 	}
 
-	write_object.records.forEach((record) => {
-		if (is_update && hdb_utils.isEmptyOrZeroLength(record[hash_attribute])) {
+	writeObject.records.forEach((record) => {
+		if (isUpdate && hdbUtils.isEmptyOrZeroLength(record[hash_attribute])) {
 			log.error('a valid hash attribute must be provided with update record:', record);
 			throw new ClientError('a valid hash attribute must be provided with update record, check log for more info');
 		}
 
 		if (
-			!hdb_utils.isEmptyOrZeroLength(record[hash_attribute]) &&
+			!hdbUtils.isEmptyOrZeroLength(record[hash_attribute]) &&
 			(record[hash_attribute] === 'null' || record[hash_attribute] === 'undefined')
 		) {
-			log.error(`a valid hash value must be provided with ${write_object.operation} record:`, record);
+			log.error(`a valid hash value must be provided with ${writeObject.operation} record:`, record);
 			throw new ClientError(
 				`Invalid hash value: '${record[hash_attribute]}' is not a valid hash attribute value, check log for more info`
 			);
 		}
 
 		if (
-			!hdb_utils.isEmpty(record[hash_attribute]) &&
+			!hdbUtils.isEmpty(record[hash_attribute]) &&
 			record[hash_attribute] !== '' &&
-			dups.has(hdb_utils.autoCast(record[hash_attribute]))
+			dups.has(hdbUtils.autoCast(record[hash_attribute]))
 		) {
 			record.skip = true;
 		}
 
-		dups.add(hdb_utils.autoCast(record[hash_attribute]));
+		dups.add(hdbUtils.autoCast(record[hash_attribute]));
 
 		for (let attr in record) {
 			attributes[attr] = 1;
@@ -82,7 +82,7 @@ function insertUpdateValidate(write_object) {
 	attributes[hash_attribute] = 1;
 
 	return {
-		schema_table: schema_table,
+		schema_table: schemaTable,
 		hashes: Array.from(dups),
 		attributes: Object.keys(attributes),
 	};

@@ -55,7 +55,7 @@ jobs:
       privateDnsNames: ${{ steps.createInstances.outputs.PRIVATE_DNS_NAMES}}
       privateIps: ${{ steps.createInstances.outputs.PRIVATE_IPS}}
     runs-on: ubuntu-latest
-    timeout-minutes: 10
+    timeout-minutes: 15
     steps:
       - uses: actions/checkout@v4
       - name: Setup Terraform

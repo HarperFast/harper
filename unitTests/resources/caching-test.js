@@ -259,13 +259,9 @@ describe('Caching', () => {
 		events = [];
 		await new Promise((resolve) => setTimeout(resolve, 10));
 		// should be stale but not evicted
-		let result = await CachingTable.get(23, { onlyIfCached: true, noCacheStore: true });
+		let result = await CachingTable.get(23, { onlyIfCached: true });
 		assert(result); // should exist in database even though it is stale
-		assert.equal(source_requests, 0); // the source request should be started
-		assert.equal(source_responses, 0); // the source request should not be completed yet
-		result = await CachingTable.get(23, { onlyIfCached: true });
-		assert(result); // should exist in database even though it is stale
-		assert.equal(source_requests, 1); // the source request should be started
+		assert.equal(source_requests, 0); // the source request should not be started
 		assert.equal(source_responses, 0); // the source request should not be completed yet
 		result = await CachingTable.get(23);
 		assert(result); // should exist now

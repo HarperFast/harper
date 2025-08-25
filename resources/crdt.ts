@@ -1,20 +1,20 @@
-import { readAuditEntry } from './auditStore';
+import { readAuditEntry } from './auditStore.ts';
 
 export function add(record, property, action) {
-	const previous_value = record[property];
-	if (typeof previous_value === 'bigint') {
-		record[property] = previous_value + BigInt(action.value);
+	const previousValue = record[property];
+	if (typeof previousValue === 'bigint') {
+		record[property] = previousValue + BigInt(action.value);
 	} else if (isNaN(record[property])) record[property] = action.value;
 	else {
-		record[property] = previous_value + action.value;
+		record[property] = previousValue + action.value;
 	}
 }
 add.reverse = function (record, property, action) {
-	const previous_value = record[property];
-	if (typeof previous_value === 'bigint') {
-		record[property] = previous_value - BigInt(action.value);
+	const previousValue = record[property];
+	if (typeof previousValue === 'bigint') {
+		record[property] = previousValue - BigInt(action.value);
 	} else if (!isNaN(record[property])) {
-		record[property] = previous_value - action.value;
+		record[property] = previousValue - action.value;
 	}
 };
 const operations = {
@@ -24,40 +24,40 @@ const operations = {
 /**
  * Rebuild a record update that has a timestamp before the provided newer update
  * @param update
- * @param newer_update
+ * @param newerUpdate
  */
-export function rebuildUpdateBefore(update: any, newer_update: any, full_update?: boolean) {
-	let new_update = null;
+export function rebuildUpdateBefore(update: any, newerUpdate: any, fullUpdate?: boolean) {
+	let newUpdate = null;
 	for (const key in update) {
-		if (key in newer_update) {
-			const newer_value = newer_update[key];
-			if (newer_value?.__op__) {
+		if (key in newerUpdate) {
+			const newerValue = newerUpdate[key];
+			if (newerValue?.__op__) {
 				const value = update[key];
 				if (value?.__op__) {
-					if (value.__op__ === newer_value.__op__) {
+					if (value.__op__ === newerValue.__op__) {
 						// we only have add right now
-						if (!new_update) new_update = {};
-						new_update[key] = value;
+						if (!newUpdate) newUpdate = {};
+						newUpdate[key] = value;
 					} else throw new Error('Can not merge updates with different operations');
 				} else {
-					if (!new_update) new_update = {};
+					if (!newUpdate) newUpdate = {};
 					// start with the older value
-					new_update[key] = value;
+					newUpdate[key] = value;
 					// and apply the newer update
-					add(new_update, key, newer_value);
+					add(newUpdate, key, newerValue);
 				}
-			} else if (full_update) {
+			} else if (fullUpdate) {
 				// if the newer update has a direct non-CRDT value, it overwrites the older update, but if we are using a full copy, we need to include it
-				if (!new_update) new_update = {};
-				new_update[key] = newer_value;
+				if (!newUpdate) newUpdate = {};
+				newUpdate[key] = newerValue;
 			} // else we can skip for a patch
 		} else {
 			// if the newer update does not have a value for this key, we can include it
-			if (!new_update) new_update = {};
-			new_update[key] = update[key];
+			if (!newUpdate) newUpdate = {};
+			newUpdate[key] = update[key];
 		}
 	}
-	return new_update;
+	return newUpdate;
 }
 export function applyReverse(record, update) {
 	for (const key in update) {
@@ -74,65 +74,65 @@ export function applyReverse(record, update) {
 const UNKNOWN = {};
 /**
  * Reconstruct the record state at a given timestamp by going back through the audit history and reversing any changes
- * @param current_entry
+ * @param currentEntry
  * @param timestamp
  * @param store
  * @returns
  */
-export function getRecordAtTime(current_entry, timestamp, store) {
-	const audit_store = store.rootStore.auditStore;
-	let record = { ...current_entry.value };
-	let audit_time = current_entry.localTime;
+export function getRecordAtTime(currentEntry, timestamp, store) {
+	const auditStore = store.rootStore.auditStore;
+	let record = { ...currentEntry.value };
+	let auditTime = currentEntry.localTime;
 	// Iterate in reverse through the record history, trying to reverse all changes
-	while (audit_time > timestamp) {
-		const audit_data = audit_store.get(audit_time);
+	while (auditTime > timestamp) {
+		const auditData = auditStore.get(auditTime);
 		// TODO: Caching of audit entries
-		const audit_entry = readAuditEntry(audit_data);
-		switch (audit_entry.type) {
+		const auditEntry = readAuditEntry(auditData);
+		switch (auditEntry.type) {
 			case 'put':
-				record = audit_entry.getValue(store);
+				record = auditEntry.getValue(store);
 				break;
 			case 'patch':
-				applyReverse(record, audit_entry.getValue(store));
+				applyReverse(record, auditEntry.getValue(store));
 				break;
 			case 'delete':
 				record = null;
 		}
-		audit_time = audit_entry.previousLocalTime;
+		auditTime = auditEntry.previousLocalTime;
 	}
 	// some patches may leave properties in an unknown state, so we need to fill in the blanks
 	// first we determine if there any unknown properties
 	const unknowns = {};
-	let unknown_count = 0;
+	let unknownCount = 0;
 	for (const key in record) {
 		if (record[key] === UNKNOWN) {
 			unknowns[key] = true;
-			unknown_count++;
+			unknownCount++;
 		}
 	}
 	// then continue to iterate back through the audit history, filling in the blanks
-	while (unknown_count > 0 && audit_time > 0) {
-		const audit_data = audit_store.get(audit_time);
-		const audit_entry = readAuditEntry(audit_data);
-		let prior_record;
-		switch (audit_entry.type) {
+	while (unknownCount > 0 && auditTime > 0) {
+		const auditData = auditStore.get(auditTime);
+		const auditEntry = readAuditEntry(auditData);
+		let priorRecord;
+		switch (auditEntry.type) {
 			case 'put':
-				prior_record = audit_entry.getValue(store);
+				priorRecord = auditEntry.getValue(store);
 				break;
 			case 'patch':
-				prior_record = audit_entry.getValue(store);
+				priorRecord = auditEntry.getValue(store);
 				break;
 		}
-		for (const key in prior_record) {
+		for (const key in priorRecord) {
 			if (unknowns[key]) {
-				record[key] = prior_record[key];
+				record[key] = priorRecord[key];
 				unknowns[key] = false;
-				unknown_count--;
+				unknownCount--;
 			}
 		}
-		audit_time = audit_entry.previousLocalTime;
+		auditTime = auditEntry.previousLocalTime;
 	}
-	if (unknown_count > 0) {
+	if (unknownCount > 0) {
 		// if we were unable to determine the value of a property, set it to null
 		for (const key in unknowns) record[key] = null;
 	}

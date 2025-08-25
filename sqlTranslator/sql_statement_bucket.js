@@ -6,14 +6,14 @@
 
 const alasql = require('alasql');
 const RecursiveIterator = require('recursive-iterator');
-const harper_logger = require('../utility/logging/harper_logger');
-const hdb_utils = require('../utility/common_utils');
-const terms = require('../utility/hdbTerms');
+const harperLogger = require('../utility/logging/harper_logger.js');
+const hdbUtils = require('../utility/common_utils.js');
+const terms = require('../utility/hdbTerms.ts');
 
-class sql_statement_bucket {
+class sqlStatementBucket {
 	constructor(ast) {
 		this.ast = ast;
-		// affected_attributes stores a table and it's attributes as a Map [schema, Map[table, [attributes_array]]].
+		// affectedAttributes stores a table and it's attributes as a Map [schema, Map[table, [attributesArray]]].
 		this.affected_attributes = new Map();
 		this.table_lookup = new Map();
 		this.schema_lookup = new Map();
@@ -29,20 +29,20 @@ class sql_statement_bucket {
 
 	/**
 	 * Returns all attributes stored under a schema/table key set.
-	 * @param schema_name - Name of the schema to search under
-	 * @param table_name - Name of the table to pull attributes for.
+	 * @param schemaName - Name of the schema to search under
+	 * @param tableName - Name of the table to pull attributes for.
 	 * @returns {Array}
 	 */
-	getAttributesBySchemaTableName(schema_name, table_name) {
-		if (!schema_name || !table_name || !this.affected_attributes) {
+	getAttributesBySchemaTableName(schemaName, tableName) {
+		if (!schemaName || !tableName || !this.affected_attributes) {
 			return [];
 		}
-		if (this.affected_attributes.has(schema_name)) {
-			if (!this.affected_attributes.get(schema_name).has(table_name)) {
-				table_name = this.table_lookup.get(table_name);
-				if (!table_name) return [];
+		if (this.affected_attributes.has(schemaName)) {
+			if (!this.affected_attributes.get(schemaName).has(tableName)) {
+				tableName = this.table_lookup.get(tableName);
+				if (!tableName) return [];
 			}
-			return this.affected_attributes.get(schema_name).get(table_name);
+			return this.affected_attributes.get(schemaName).get(tableName);
 		}
 	}
 
@@ -63,12 +63,12 @@ class sql_statement_bucket {
 
 	/**
 	 * Get an array of all tables under the passed in schema name.  Will return an empty array with invalid parameters
-	 * @param schema_name - name of the schema
+	 * @param schemaName - name of the schema
 	 * @returns {Array}
 	 */
-	getTablesBySchemaName(schema_name) {
-		if (!schema_name || !this.affected_attributes) return [];
-		return Array.from(this.affected_attributes.get(schema_name).keys());
+	getTablesBySchemaName(schemaName) {
+		if (!schemaName || !this.affected_attributes) return [];
+		return Array.from(this.affected_attributes.get(schemaName).keys());
 	}
 
 	/**
@@ -94,66 +94,66 @@ class sql_statement_bucket {
 	 *When a SELECT * is included in the AST for a non-SU, we need to convert the star into the specific attributes the
 	 * user has READ permissions
 	 *
-	 * @param role_perms - role permission set to update the wildcard to the permitted attributes
+	 * @param rolePerms - role permission set to update the wildcard to the permitted attributes
 	 * @returns {ast} - this function returns the updated AST that can be used for final validation and the additional
 	 * steps to complete the request
 	 */
-	updateAttributeWildcardsForRolePerms(role_perms) {
-		const ast_wildcards = this.ast.columns.filter((col) => terms.SEARCH_WILDCARDS.includes(col.columnid));
+	updateAttributeWildcardsForRolePerms(rolePerms) {
+		const astWildcards = this.ast.columns.filter((col) => terms.SEARCH_WILDCARDS.includes(col.columnid));
 
 		//If there are no wildcards, we can skip this step
-		if (ast_wildcards.length === 0) {
+		if (astWildcards.length === 0) {
 			return this.ast;
 		}
 
 		//This function will need to be updated if/when we start to do cross-schema joins - i.e. function will need
 		// to handle multiple schema values instead of just the one below
-		const from_databaseid = this.ast.from[0].databaseid;
+		const fromDatabaseid = this.ast.from[0].databaseid;
 		this.ast.columns = this.ast.columns.filter((col) => !terms.SEARCH_WILDCARDS.includes(col.columnid));
 
-		ast_wildcards.forEach((val) => {
-			let col_schema = this.table_to_schema_lookup.has(val.tableid)
+		astWildcards.forEach((val) => {
+			let colSchema = this.table_to_schema_lookup.has(val.tableid)
 				? this.table_to_schema_lookup.get(val.tableid)
-				: from_databaseid;
-			let col_table = this.table_lookup.has(val.tableid)
+				: fromDatabaseid;
+			let colTable = this.table_lookup.has(val.tableid)
 				? this.table_lookup.get(val.tableid)
 				: this.ast.from[0].tableid;
 
 			//We only want to do this if the table that is being SELECT *'d has READ permissions - if not, we will only
 			// want to send the table permissions error response so we can skip this step.
 			if (
-				role_perms[col_schema] &&
-				role_perms[col_schema].tables[col_table] &&
-				role_perms[col_schema].tables[col_table][terms.PERMS_CRUD_ENUM.READ]
+				rolePerms[colSchema] &&
+				rolePerms[colSchema].tables[colTable] &&
+				rolePerms[colSchema].tables[colTable][terms.PERMS_CRUD_ENUM.READ]
 			) {
-				let final_table_attrs;
-				if (role_perms[col_schema].tables[col_table].attribute_permissions.length > 0) {
-					final_table_attrs = filterReadRestrictedAttrs(role_perms[col_schema].tables[col_table].attribute_permissions);
+				let finalTableAttrs;
+				if (rolePerms[colSchema].tables[colTable].attribute_permissions.length > 0) {
+					finalTableAttrs = filterReadRestrictedAttrs(rolePerms[colSchema].tables[colTable].attribute_permissions);
 				} else {
 					//If the user has READ perms for the table but no perms for the attributes in it, we add all the attrs
-					// into the AST * affected_attributes map so that the individual attribute permissions error responses
+					// into the AST * affectedAttributes map so that the individual attribute permissions error responses
 					// are returned to the user
-					final_table_attrs = global.hdb_schema[col_schema][col_table].attributes.map((attr) => ({
+					finalTableAttrs = global.hdb_schema[colSchema][colTable].attributes.map((attr) => ({
 						attribute_name: attr.attribute,
 					}));
 				}
 
 				//It's important to REMOVE the wildcard as we replace it with the actual attributes that will be selected
-				const table_affected_attrs = this.affected_attributes
-					.get(col_schema)
-					.get(col_table)
+				const tableAffectedAttrs = this.affected_attributes
+					.get(colSchema)
+					.get(colTable)
 					.filter((attr) => !terms.SEARCH_WILDCARDS.includes(attr));
-				final_table_attrs.forEach(({ attribute_name }) => {
-					let new_column = new alasql.yy.Column({ columnid: attribute_name });
+				finalTableAttrs.forEach(({ attribute_name }) => {
+					let newColumn = new alasql.yy.Column({ columnid: attribute_name });
 					if (val.tableid) {
-						new_column.tableid = val.tableid;
+						newColumn.tableid = val.tableid;
 					}
-					this.ast.columns.push(new_column);
-					if (!table_affected_attrs.includes(attribute_name)) {
-						table_affected_attrs.push(attribute_name);
+					this.ast.columns.push(newColumn);
+					if (!tableAffectedAttrs.includes(attribute_name)) {
+						tableAffectedAttrs.push(attribute_name);
 					}
 				});
-				this.affected_attributes.get(col_schema).set(col_table, table_affected_attrs);
+				this.affected_attributes.get(colSchema).set(colTable, tableAffectedAttrs);
 			}
 		});
 
@@ -164,79 +164,79 @@ class sql_statement_bucket {
 /**
  * Takes full table attribute permissions array and filters out attributes w/ FALSE READ perms
  *
- * @param attr_perms [] - attribute permissions for a table
+ * @param attrPerms [] - attribute permissions for a table
  * @returns [] - array of attribute permissions objects w/ READ perms === TRUE
  */
 
-function filterReadRestrictedAttrs(attr_perms) {
-	return attr_perms.filter((perm) => perm[terms.PERMS_CRUD_ENUM.READ]);
+function filterReadRestrictedAttrs(attrPerms) {
+	return attrPerms.filter((perm) => perm[terms.PERMS_CRUD_ENUM.READ]);
 }
 
-function interpretAST(ast, affected_attributes, table_lookup, schema_lookup, table_to_schema_lookup) {
-	getRecordAttributesAST(ast, affected_attributes, table_lookup, schema_lookup, table_to_schema_lookup);
+function interpretAST(ast, affectedAttributes, tableLookup, schemaLookup, tableToSchemaLookup) {
+	getRecordAttributesAST(ast, affectedAttributes, tableLookup, schemaLookup, tableToSchemaLookup);
 }
 
 /**
- * Takes an AST definition and adds it to the schema/table affected_attributes parameter as well as adding table alias'
- * to the table_lookup parameter.
+ * Takes an AST definition and adds it to the schema/table affectedAttributes parameter as well as adding table alias'
+ * to the tableLookup parameter.
  *
  * @param record - An AST style record
- * @param {Map} affected_attributes - A map of attributes affected in the call.  Defined as [schema, Map[table, [attributes_array]]].
- * @param {Map} table_lookup - A map that will be filled in.  This map contains alias to table definitions as [alias, table_name].
+ * @param {Map} affectedAttributes - A map of attributes affected in the call.  Defined as [schema, Map[table, [attributesArray]]].
+ * @param {Map} tableLookup - A map that will be filled in.  This map contains alias to table definitions as [alias, tableName].
  */
-function addSchemaTableToMap(record, affected_attributes, table_lookup, schema_lookup, table_to_schema_lookup) {
+function addSchemaTableToMap(record, affectedAttributes, tableLookup, schemaLookup, tableToSchemaLookup) {
 	if (!record || !record.databaseid) {
 		return;
 	}
-	if (!affected_attributes.has(record.databaseid)) {
-		affected_attributes.set(record.databaseid, new Map());
+	if (!affectedAttributes.has(record.databaseid)) {
+		affectedAttributes.set(record.databaseid, new Map());
 	}
-	if (!affected_attributes.get(record.databaseid).has(record.tableid)) {
-		affected_attributes.get(record.databaseid).set(record.tableid, []);
+	if (!affectedAttributes.get(record.databaseid).has(record.tableid)) {
+		affectedAttributes.get(record.databaseid).set(record.tableid, []);
 	}
 	if (record.as) {
-		if (!table_lookup.has(record.as)) {
-			table_lookup.set(record.as, record.tableid);
+		if (!tableLookup.has(record.as)) {
+			tableLookup.set(record.as, record.tableid);
 		}
-		if (schema_lookup && !schema_lookup.has(record.as)) {
-			schema_lookup.set(record.as, record.databaseid);
+		if (schemaLookup && !schemaLookup.has(record.as)) {
+			schemaLookup.set(record.as, record.databaseid);
 		}
 	}
-	if (table_to_schema_lookup) {
-		const schema_id = record.databaseid;
-		let table_id = record.tableid;
+	if (tableToSchemaLookup) {
+		const schemaId = record.databaseid;
+		let tableId = record.tableid;
 		if (record.as) {
-			table_id = record.as;
+			tableId = record.as;
 		}
 
-		table_to_schema_lookup.set(table_id, schema_id);
+		tableToSchemaLookup.set(tableId, schemaId);
 	}
 }
 
 /**
- * Pull the table attributes specified in the AST statement and adds them to the affected_attributes and table_lookup parameters.
+ * Pull the table attributes specified in the AST statement and adds them to the affectedAttributes and tableLookup parameters.
  *
  * @param ast - the syntax tree containing SQL specifications
- * @param {Map} affected_attributes - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributes_array]]].
- * @param {Map} table_lookup - A map that will be filled in.  This map contains alias to table definitions as [alias, table_name].
+ * @param {Map} affectedAttributes - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributesArray]]].
+ * @param {Map} tableLookup - A map that will be filled in.  This map contains alias to table definitions as [alias, tableName].
  */
-function getRecordAttributesAST(ast, affected_attributes, table_lookup, schema_lookup, table_to_schema_lookup) {
+function getRecordAttributesAST(ast, affectedAttributes, tableLookup, schemaLookup, tableToSchemaLookup) {
 	if (!ast) {
-		harper_logger.info(`getRecordAttributesAST: invalid SQL syntax tree`);
+		harperLogger.info(`getRecordAttributesAST: invalid SQL syntax tree`);
 		return;
 	}
 	// We can reference any schema/table attributes, so we need to check each possibility
-	// affected attributes is a Map of Maps like so [schema, Map[table, [attributes_array]]];
+	// affected attributes is a Map of Maps like so [schema, Map[table, [attributesArray]]];
 	if (ast instanceof alasql.yy.Insert) {
-		getInsertAttributes(ast, affected_attributes, table_lookup);
+		getInsertAttributes(ast, affectedAttributes, tableLookup);
 	} else if (ast instanceof alasql.yy.Select) {
-		getSelectAttributes(ast, affected_attributes, table_lookup, schema_lookup, table_to_schema_lookup);
+		getSelectAttributes(ast, affectedAttributes, tableLookup, schemaLookup, tableToSchemaLookup);
 	} else if (ast instanceof alasql.yy.Update) {
-		getUpdateAttributes(ast, affected_attributes, table_lookup);
+		getUpdateAttributes(ast, affectedAttributes, tableLookup);
 	} else if (ast instanceof alasql.yy.Delete) {
-		getDeleteAttributes(ast, affected_attributes, table_lookup);
+		getDeleteAttributes(ast, affectedAttributes, tableLookup);
 	} else {
-		harper_logger.error(`AST in getRecordAttributesAST() is not a valid SQL type.`);
+		harperLogger.error(`AST in getRecordAttributesAST() is not a valid SQL type.`);
 	}
 }
 
@@ -244,24 +244,24 @@ function getRecordAttributesAST(ast, affected_attributes, table_lookup, schema_l
  * Retrieve the schemas, tables, and attributes from the source Select AST.
  *
  * @param ast - SQL command converted to an AST
- * @param affected_attributes - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributes_array]]].
- * @param table_lookup - A map that will be filled in.  This map contains alias to table definitions as [alias, table_name].
+ * @param affectedAttributes - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributesArray]]].
+ * @param tableLookup - A map that will be filled in.  This map contains alias to table definitions as [alias, tableName].
  */
-function getSelectAttributes(ast, affected_attributes, table_lookup, schema_lookup, table_to_schema_lookup) {
+function getSelectAttributes(ast, affectedAttributes, tableLookup, schemaLookup, tableToSchemaLookup) {
 	if (!ast) {
-		harper_logger.info(`getSelectAttributes: invalid SQL syntax tree`);
+		harperLogger.info(`getSelectAttributes: invalid SQL syntax tree`);
 		return;
 	}
 	if (!ast.from || ast.from[0] === undefined) {
 		return;
 	}
 	let schema = ast.from[0].databaseid;
-	if (hdb_utils.isEmptyOrZeroLength(schema)) {
-		harper_logger.error('No schema specified');
+	if (hdbUtils.isEmptyOrZeroLength(schema)) {
+		harperLogger.error('No schema specified');
 		return;
 	}
 	ast.from.forEach((from) => {
-		addSchemaTableToMap(from, affected_attributes, table_lookup, schema_lookup, table_to_schema_lookup);
+		addSchemaTableToMap(from, affectedAttributes, tableLookup, schemaLookup, tableToSchemaLookup);
 	});
 	if (ast.joins) {
 		ast.joins.forEach((join) => {
@@ -270,31 +270,31 @@ function getSelectAttributes(ast, affected_attributes, table_lookup, schema_look
 			if (join.as) {
 				join.table.as = join.as;
 			}
-			addSchemaTableToMap(join.table, affected_attributes, table_lookup, schema_lookup, table_to_schema_lookup);
+			addSchemaTableToMap(join.table, affectedAttributes, tableLookup, schemaLookup, tableToSchemaLookup);
 		});
 	}
 
 	const iterator = new RecursiveIterator(ast.columns);
 	for (let { node } of iterator) {
 		if (node && node.columnid) {
-			let table_name = node.tableid;
-			const column_schema = schema_lookup.has(table_name) ? schema_lookup.get(table_name) : schema;
+			let tableName = node.tableid;
+			const columnSchema = schemaLookup.has(tableName) ? schemaLookup.get(tableName) : schema;
 
-			if (!table_name) {
-				table_name = ast.from[0].tableid;
+			if (!tableName) {
+				tableName = ast.from[0].tableid;
 			}
 
-			if (!affected_attributes.get(column_schema).has(table_name)) {
-				if (!table_lookup.has(table_name)) {
-					harper_logger.info(`table specified as ${table_name} not found.`);
+			if (!affectedAttributes.get(columnSchema).has(tableName)) {
+				if (!tableLookup.has(tableName)) {
+					harperLogger.info(`table specified as ${tableName} not found.`);
 					return;
 				} else {
-					table_name = table_lookup.get(table_name);
+					tableName = tableLookup.get(tableName);
 				}
 			}
 
-			if (affected_attributes.get(column_schema).get(table_name).indexOf(node.columnid) < 0) {
-				affected_attributes.get(column_schema).get(table_name).push(node.columnid);
+			if (affectedAttributes.get(columnSchema).get(tableName).indexOf(node.columnid) < 0) {
+				affectedAttributes.get(columnSchema).get(tableName).push(node.columnid);
 			}
 		}
 	}
@@ -303,23 +303,23 @@ function getSelectAttributes(ast, affected_attributes, table_lookup, schema_look
 	// the SELECT clause
 	if (ast.where) {
 		const iterator = new RecursiveIterator(ast.where);
-		const from_table = ast.from[0].tableid;
+		const fromTable = ast.from[0].tableid;
 
 		for (let { node } of iterator) {
 			if (node && node.columnid) {
-				let table = node.tableid ? node.tableid : from_table;
+				let table = node.tableid ? node.tableid : fromTable;
 
-				if (!affected_attributes.get(schema).has(table)) {
-					if (!table_lookup.has(table)) {
-						harper_logger.info(`table specified as ${table} not found.`);
+				if (!affectedAttributes.get(schema).has(table)) {
+					if (!tableLookup.has(table)) {
+						harperLogger.info(`table specified as ${table} not found.`);
 						continue;
 					} else {
-						table = table_lookup.get(table);
+						table = tableLookup.get(table);
 					}
 				}
 				//We need to check to ensure this columnid wasn't already set in the Map
-				if (affected_attributes.get(schema).get(table).indexOf(node.columnid) < 0) {
-					affected_attributes.get(schema).get(table).push(node.columnid);
+				if (affectedAttributes.get(schema).get(table).indexOf(node.columnid) < 0) {
+					affectedAttributes.get(schema).get(table).push(node.columnid);
 				}
 			}
 		}
@@ -334,19 +334,19 @@ function getSelectAttributes(ast, affected_attributes, table_lookup, schema_look
 			for (let { node } of iterator) {
 				if (node && node.columnid) {
 					let table = node.tableid;
-					let schema = table_to_schema_lookup.get(table);
+					let schema = tableToSchemaLookup.get(table);
 
-					if (!affected_attributes.get(schema).has(table)) {
-						if (!table_lookup.has(table)) {
-							harper_logger.info(`table specified as ${table} not found.`);
+					if (!affectedAttributes.get(schema).has(table)) {
+						if (!tableLookup.has(table)) {
+							harperLogger.info(`table specified as ${table} not found.`);
 							continue;
 						} else {
-							table = table_lookup.get(table);
+							table = tableLookup.get(table);
 						}
 					}
 					//We need to check to ensure this columnid wasn't already set in the Map
-					if (affected_attributes.get(schema).get(table).indexOf(node.columnid) < 0) {
-						affected_attributes.get(schema).get(table).push(node.columnid);
+					if (affectedAttributes.get(schema).get(table).indexOf(node.columnid) < 0) {
+						affectedAttributes.get(schema).get(table).push(node.columnid);
 					}
 				}
 			}
@@ -356,27 +356,27 @@ function getSelectAttributes(ast, affected_attributes, table_lookup, schema_look
 	// It's important to iterate through the ORDER clause in case there are other columns that are not included in
 	// the SELECT clause with wildcard
 	if (ast.order) {
-		const order_iterator = new RecursiveIterator(ast.order);
-		for (let { node } of order_iterator) {
+		const orderIterator = new RecursiveIterator(ast.order);
+		for (let { node } of orderIterator) {
 			if (node && node.columnid) {
-				let table_name = node.tableid;
-				const order_schema = schema_lookup.has(table_name) ? schema_lookup.get(table_name) : schema;
+				let tableName = node.tableid;
+				const orderSchema = schemaLookup.has(tableName) ? schemaLookup.get(tableName) : schema;
 
-				if (!table_name) {
-					table_name = ast.from[0].tableid;
+				if (!tableName) {
+					tableName = ast.from[0].tableid;
 				}
 
-				if (!affected_attributes.get(order_schema).has(table_name)) {
-					if (!table_lookup.has(table_name)) {
-						harper_logger.info(`table specified as ${table_name} not found.`);
+				if (!affectedAttributes.get(orderSchema).has(tableName)) {
+					if (!tableLookup.has(tableName)) {
+						harperLogger.info(`table specified as ${tableName} not found.`);
 						return;
 					} else {
-						table_name = table_lookup.get(table_name);
+						tableName = tableLookup.get(tableName);
 					}
 				}
 
-				if (affected_attributes.get(order_schema).get(table_name).indexOf(node.columnid) < 0) {
-					affected_attributes.get(order_schema).get(table_name).push(node.columnid);
+				if (affectedAttributes.get(orderSchema).get(tableName).indexOf(node.columnid) < 0) {
+					affectedAttributes.get(orderSchema).get(tableName).push(node.columnid);
 				}
 			}
 		}
@@ -386,22 +386,22 @@ function getSelectAttributes(ast, affected_attributes, table_lookup, schema_look
 /**
  * Retrieve the schemas, tables, and attributes from the source Update AST.
  * @param ast - SQL command converted to an AST
- * @param affected_attributes - - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributes_array]]].
- * @param table_lookup - A map that will be filled in.  This map contains alias to table definitions as [alias, table_name].
+ * @param affectedAttributes - - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributesArray]]].
+ * @param tableLookup - A map that will be filled in.  This map contains alias to table definitions as [alias, tableName].
  */
-function getUpdateAttributes(ast, affected_attributes, table_lookup) {
+function getUpdateAttributes(ast, affectedAttributes, tableLookup) {
 	if (!ast) {
-		harper_logger.info(`getUpdateAttributes: invalid SQL syntax tree`);
+		harperLogger.info(`getUpdateAttributes: invalid SQL syntax tree`);
 		return;
 	}
 	let iterator = new RecursiveIterator(ast.columns);
 	let schema = ast.table.databaseid;
 
-	addSchemaTableToMap(ast.table, affected_attributes, table_lookup);
+	addSchemaTableToMap(ast.table, affectedAttributes, tableLookup);
 
 	for (let { node } of iterator) {
 		if (node && node.columnid) {
-			pushAttribute(ast.table.tableid, schema, node.columnid, affected_attributes, table_lookup);
+			pushAttribute(ast.table.tableid, schema, node.columnid, affectedAttributes, tableLookup);
 		}
 	}
 }
@@ -409,22 +409,22 @@ function getUpdateAttributes(ast, affected_attributes, table_lookup) {
 /**
  * Retrieve the schemas, tables, and attributes from the source Delete AST.
  * @param ast - SQL command converted to an AST
- * @param affected_attributes - - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributes_array]]].
- * @param table_lookup - A map that will be filled in.  This map contains alias to table definitions as [alias, table_name].
+ * @param affectedAttributes - - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributesArray]]].
+ * @param tableLookup - A map that will be filled in.  This map contains alias to table definitions as [alias, tableName].
  */
-function getDeleteAttributes(ast, affected_attributes, table_lookup) {
+function getDeleteAttributes(ast, affectedAttributes, tableLookup) {
 	if (!ast) {
-		harper_logger.info(`getDeleteAttributes: invalid SQL syntax tree`);
+		harperLogger.info(`getDeleteAttributes: invalid SQL syntax tree`);
 		return;
 	}
 	let iterator = new RecursiveIterator(ast.where);
 	let schema = ast.table.databaseid;
 
-	addSchemaTableToMap(ast.table, affected_attributes, table_lookup);
+	addSchemaTableToMap(ast.table, affectedAttributes, tableLookup);
 
 	for (let { node } of iterator) {
 		if (node && node.columnid) {
-			pushAttribute(ast.table.tableid, schema, node.columnid, affected_attributes, table_lookup);
+			pushAttribute(ast.table.tableid, schema, node.columnid, affectedAttributes, tableLookup);
 		}
 	}
 }
@@ -432,22 +432,22 @@ function getDeleteAttributes(ast, affected_attributes, table_lookup) {
 /**
  * Retrieve the schemas, tables, and attributes from the source Insert AST.
  * @param ast - SQL command converted to an AST
- * @param affected_attributes - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributes_array]]].
- * @param table_lookup - A map that will be filled in.  This map contains alias to table definitions as [alias, table_name].
+ * @param affectedAttributes - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributesArray]]].
+ * @param tableLookup - A map that will be filled in.  This map contains alias to table definitions as [alias, tableName].
  */
-function getInsertAttributes(ast, affected_attributes, table_lookup) {
+function getInsertAttributes(ast, affectedAttributes, tableLookup) {
 	if (!ast) {
-		harper_logger.info(`getInsertAttributes: invalid SQL syntax tree`);
+		harperLogger.info(`getInsertAttributes: invalid SQL syntax tree`);
 		return;
 	}
 	let iterator = new RecursiveIterator(ast.columns);
 	let schema = ast.into.databaseid;
 
-	addSchemaTableToMap(ast.into, affected_attributes, table_lookup);
+	addSchemaTableToMap(ast.into, affectedAttributes, tableLookup);
 
 	for (let { node } of iterator) {
 		if (node && node.columnid) {
-			pushAttribute(ast.into.tableid, schema, node.columnid, affected_attributes, table_lookup);
+			pushAttribute(ast.into.tableid, schema, node.columnid, affectedAttributes, tableLookup);
 		}
 	}
 }
@@ -457,18 +457,18 @@ function getInsertAttributes(ast, affected_attributes, table_lookup) {
  * @param schema - The schema to add the column into
  * @param table - the table to add the column into
  * @param columnid - the column name that should be stored
- * @param affected_attributes - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributes_array]]].
- * @param table_lookup - A map that will be filled in.  This map contains alias to table definitions as [alias, table_name].
+ * @param affectedAttributes - A map containing attributes affected by the statement. Defined as [schema, Map[table, [attributesArray]]].
+ * @param tableLookup - A map that will be filled in.  This map contains alias to table definitions as [alias, tableName].
  */
-function pushAttribute(table, schema, columnid, affected_attributes, table_lookup) {
-	if (!affected_attributes.get(schema)) {
+function pushAttribute(table, schema, columnid, affectedAttributes, tableLookup) {
+	if (!affectedAttributes.get(schema)) {
 		return;
 	}
-	let table_id = table;
-	if (!affected_attributes.get(schema).has(table_id)) {
-		table_id = table_lookup.get(table_id);
+	let tableId = table;
+	if (!affectedAttributes.get(schema).has(tableId)) {
+		tableId = tableLookup.get(tableId);
 	}
-	affected_attributes.get(schema).get(table_id).push(columnid);
+	affectedAttributes.get(schema).get(tableId).push(columnid);
 }
 
-module.exports = sql_statement_bucket;
+module.exports = sqlStatementBucket;

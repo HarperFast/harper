@@ -1,30 +1,30 @@
 'use strict';
 
 class InsertObject {
-	constructor(operation_string, schema_string, table_string, hash_attribute_string, records_array) {
-		this.operation = operation_string;
-		this.schema = schema_string;
-		this.table = table_string;
-		this.hash_attribute = hash_attribute_string;
-		this.records = records_array;
+	constructor(operationString, schemaString, tableString, hashAttributeString, recordsArray) {
+		this.operation = operationString;
+		this.schema = schemaString;
+		this.table = tableString;
+		this.hash_attribute = hashAttributeString;
+		this.records = recordsArray;
 	}
 }
 
 class NoSQLSeachObject {
 	constructor(
-		schema_string,
-		table_string,
-		search_attribute_string,
-		hash_attribute_string,
-		get_attributes_string_array,
-		search_value_string
+		schemaString,
+		tableString,
+		searchAttributeString,
+		hashAttributeString,
+		getAttributesStringArray,
+		searchValueString
 	) {
-		this.schema = schema_string;
-		this.table = table_string;
-		this.search_attribute = search_attribute_string;
-		this.hash_attribute = hash_attribute_string;
-		this.get_attributes = get_attributes_string_array;
-		this.search_value = search_value_string;
+		this.schema = schemaString;
+		this.table = tableString;
+		this.search_attribute = searchAttributeString;
+		this.hash_attribute = hashAttributeString;
+		this.get_attributes = getAttributesStringArray;
+		this.search_value = searchValueString;
 	}
 }
 

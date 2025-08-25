@@ -40,7 +40,7 @@ describe('Test hdbChildIpcHandler module', () => {
 		let job_handler;
 
 		before(() => {
-			server_itc_handlers.__set__('clean_lmdb_map', clean_map_stub);
+			server_itc_handlers.__set__('cleanLmdbMap', clean_map_stub);
 			sync_schema_rw = server_itc_handlers.__set__('syncSchemaMetadata', sync_schema_stub);
 			set_users_to_global_stub = sandbox.stub(user_schema, 'setUsersWithRolesCache');
 			parse_msg_stub = sandbox.stub(job_runner, 'parseMessage');

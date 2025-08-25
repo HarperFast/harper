@@ -1,18 +1,19 @@
 import { parentPort, threadId } from 'worker_threads';
-import { setChildListenerByType } from '../server/threads/manageThreads';
-import { getDatabases, table } from './databases';
-import type { Databases, Table, Tables } from './databases';
-import { getLogFilePath } from '../utility/logging/harper_logger';
-import { loggerWithTag } from '../utility/logging/logger';
+import { setChildListenerByType } from '../../server/threads/manageThreads.js';
+import { getDatabases, table } from '../databases.ts';
+import type { Databases, Table, Tables } from '../databases.ts';
+import { getLogFilePath, forComponent } from '../../utility/logging/harper_logger.js';
 import { dirname, join } from 'path';
 import { open } from 'fs/promises';
-import { getNextMonotonicTime } from '../utility/lmdb/commonUtility';
-import { get as env_get, initSync } from '../utility/environment/environmentManager';
-import { CONFIG_PARAMS } from '../utility/hdbTerms';
-import { server } from '../server/Server';
-import fs from 'node:fs';
+import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.js';
+import { get as envGet, initSync } from '../../utility/environment/environmentManager.js';
+import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
+import { server } from '../../server/Server.ts';
+import * as fs from 'node:fs';
+import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts';
+import { METRIC } from './metadata.ts';
 
-const log = loggerWithTag('analytics');
+const log = forComponent('analytics').conditional;
 
 initSync();
 
@@ -31,11 +32,11 @@ interface Action {
 	};
 }
 
-let active_actions = new Map<string, Action>();
-let analytics_enabled = env_get(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
+let activeActions = new Map<string, Action>();
+let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
 
 export function setAnalyticsEnabled(enabled: boolean) {
-	analytics_enabled = enabled;
+	analyticsEnabled = enabled;
 }
 
 function recordExistingAction(value: Value, action: Action) {
@@ -43,9 +44,9 @@ function recordExistingAction(value: Value, action: Action) {
 		let values: Float32Array = action.values;
 		const index = values.index++;
 		if (index >= values.length) {
-			const old_values = values;
+			const oldValues = values;
 			action.values = values = new Float32Array(index * 2);
-			values.set(old_values);
+			values.set(oldValues);
 			values.index = index + 1;
 		}
 		values[index] = value;
@@ -82,7 +83,7 @@ function recordNewAction(key: string, value: Value, metric?: string, path?: stri
 		method,
 		type,
 	};
-	active_actions.set(key, action);
+	activeActions.set(key, action);
 }
 
 /**
@@ -94,18 +95,18 @@ function recordNewAction(key: string, value: Value, metric?: string, path?: stri
  * @param type
  */
 export function recordAction(value: Value, metric: string, path?: string, method?: string, type?: string) {
-	if (!analytics_enabled) return;
+	if (!analyticsEnabled) return;
 	// TODO: May want to consider nested paths, as they may yield faster hashing of (fixed) strings that hashing concatenated strings
 	let key = metric + (path ? '-' + path : '');
 	if (method !== undefined) key += '-' + method;
 	if (type !== undefined) key += '-' + type;
-	const action = active_actions.get(key);
+	const action = activeActions.get(key);
 	if (action) {
 		recordExistingAction(value, action);
 	} else {
 		recordNewAction(key, value, metric, path, method, type);
 	}
-	if (!analytics_start) sendAnalytics();
+	if (!analyticsStart) sendAnalytics();
 }
 
 server.recordAnalytics = recordAction;
@@ -114,13 +115,13 @@ export function recordActionBinary(value, metric, path?, method?, type?) {
 	recordAction(Boolean(value), metric, path, method, type);
 }
 
-let analytics_start = 0;
+let analyticsStart = 0;
 const ANALYTICS_DELAY = 1000;
 const ANALYTICS_REPORT_TYPE = 'analytics-report';
-const analytics_listeners = [];
+const analyticsListeners = [];
 
 export function addAnalyticsListener(callback) {
-	analytics_listeners.push(callback);
+	analyticsListeners.push(callback);
 }
 
 const IDEAL_PERCENTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999, 1];
@@ -129,10 +130,10 @@ const IDEAL_PERCENTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999, 1
  * Periodically send analytics data back to the main thread for storage
  */
 function sendAnalytics() {
-	analytics_start = performance.now();
+	analyticsStart = performance.now();
 	setTimeout(async () => {
-		const period = performance.now() - analytics_start;
-		analytics_start = 0;
+		const period = performance.now() - analyticsStart;
+		analyticsStart = 0;
 		const metrics = [];
 		const report = {
 			time: Date.now(),
@@ -140,29 +141,29 @@ function sendAnalytics() {
 			threadId,
 			metrics,
 		};
-		for (const [name, action] of active_actions) {
+		for (const [name, action] of activeActions) {
 			if (action.values) {
 				const values = action.values.subarray(0, action.values.index);
 				values.sort();
 				const count = values.length;
 				// compute the stats
-				let last_upper_bound = 0;
+				let lastUpperBound = 0;
 				const distribution = [];
-				let last_value;
+				let lastValue;
 				for (const percentile of IDEAL_PERCENTILES) {
-					const upper_bound = Math.floor(count * percentile);
-					const value = values[upper_bound - 1];
-					if (upper_bound > last_upper_bound) {
-						const count = upper_bound - last_upper_bound;
-						if (value === last_value) {
+					const upperBound = Math.floor(count * percentile);
+					const value = values[upperBound - 1];
+					if (upperBound > lastUpperBound) {
+						const count = upperBound - lastUpperBound;
+						if (value === lastValue) {
 							const entry = distribution[distribution.length - 1];
 							if (typeof entry === 'number') distribution[distribution.length - 1] = { value: entry, count: 1 + count };
 							else entry.count += count;
 						} else {
 							distribution.push(count > 1 ? { value, count } : value);
-							last_value = value;
+							lastValue = value;
 						}
-						last_upper_bound = upper_bound;
+						lastUpperBound = upperBound;
 					}
 				}
 				metrics.push(
@@ -184,17 +185,17 @@ function sendAnalytics() {
 			}
 			await rest(); // sort's are expensive and we don't want to do two of them in the same event turn
 		}
-		const memory_usage = process.memoryUsage();
+		const memoryUsage = process.memoryUsage();
 		metrics.push({
 			metric: 'memory',
 			threadId,
 			byThread: true,
-			...memory_usage,
+			...memoryUsage,
 		});
-		for (const listener of analytics_listeners) {
+		for (const listener of analyticsListeners) {
 			listener(metrics);
 		}
-		active_actions = new Map();
+		activeActions = new Map();
 		if (parentPort)
 			parentPort.postMessage({
 				type: ANALYTICS_REPORT_TYPE,
@@ -204,37 +205,62 @@ function sendAnalytics() {
 	}, ANALYTICS_DELAY).unref();
 }
 
-interface Metric {
+export async function recordHostname() {
+	const hostname = server.hostname;
+	log.trace?.('recordHostname server.hostname:', hostname);
+	const nodeId = stableNodeId(hostname);
+	log.trace?.('recordHostname nodeId:', nodeId);
+	const hostnamesTable = getAnalyticsHostnameTable();
+	const record = await hostnamesTable.get(nodeId);
+	if (!record) {
+		const hostnameRecord = {
+			id: nodeId,
+			hostname,
+		};
+		log.trace?.(`recordHostname storing hostname: ${JSON.stringify(hostnameRecord)}`);
+		hostnamesTable.put(hostnameRecord.id, hostnameRecord);
+	}
+}
+
+export interface Metric {
 	[key: string]: any;
 }
 
-function storeMetric(table: Table, metricName: string, metric: Metric) {
+function storeMetric(table: Table, metric: Metric) {
+	const hostname = server.hostname;
+	let nodeId = nodeIds.get(hostname);
+	if (nodeId) {
+		log.trace?.('storeMetric cached nodeId:', nodeId);
+	} else {
+		nodeId = stableNodeId(hostname);
+		log.trace?.('storeMetric new nodeId:', nodeId);
+		nodeIds.set(hostname, nodeId);
+	}
 	const metricValue = {
-		id: getNextMonotonicTime(),
-		metric: metricName,
+		id: [getNextMonotonicTime(), nodeId],
 		...metric,
 	};
-	table.primaryStore.put(metricValue.id, metricValue, { append: true }).then((success: boolean) => {
-		if (!success) {
-			table.primaryStore.put(metricValue.id, metricValue);
-		}
-	});
+	log.trace?.(`storing metric ${JSON.stringify(metricValue)}`);
+	table.put(metricValue.id, metricValue);
 }
 
 interface ResourceUsage extends Partial<NodeJS.ResourceUsage> {
 	time?: number;
 	period?: number;
 	cpuUtilization?: number;
+	userCPUTime?: number;
+	systemCPUTime?: number;
 }
 
-/** calculateCPUUtilization takes a ResourceUsage with at least userCPUTime & systemCPUTime set
- *  with millisecond values (NB: Node's process.resourceUsage returns values in microseconds for
- *  these fields so divide them by 1000 to get milliseconds) and a time period in milliseconds
- *  and returns the percentage of that time the CPU was being utilized as a decimal value
- *  between 0 and 1. So for example, 50% utilization will be returned as 0.5.
+/** calculateCPUUtilization takes a ResourceUsage with at least userCPUTime &
+ *  systemCPUTime set with millisecond values and a time period in milliseconds
+ *  and returns the percentage of that time the CPU was being utilized as a
+ *  decimal value between 0 and 1. So for example, 50% utilization will be
+ *  returned as 0.5.
  */
 export function calculateCPUUtilization(resourceUsage: ResourceUsage, period: number): number {
 	const cpuTime = resourceUsage.userCPUTime + resourceUsage.systemCPUTime;
+	log.trace?.(`calculateCPUUtilization cpuTime: ${cpuTime} period: ${period}`);
 	return Math.round((cpuTime / period) * 100) / 100;
 }
 
@@ -244,12 +270,11 @@ export function calculateCPUUtilization(resourceUsage: ResourceUsage, period: nu
  */
 export function diffResourceUsage(
 	lastResourceUsage: ResourceUsage,
-	resourceUsage: NodeJS.ResourceUsage
+	resourceUsage: ResourceUsage
 ): ResourceUsage {
 	return {
-		// Node returns userCPUTime & systemCPUTime as microseconds, so normalize to milliseconds first
-		userCPUTime: resourceUsage.userCPUTime / 1000 - (lastResourceUsage?.userCPUTime ?? 0),
-		systemCPUTime: resourceUsage.systemCPUTime / 1000 - (lastResourceUsage?.systemCPUTime ?? 0),
+		userCPUTime: resourceUsage.userCPUTime - (lastResourceUsage?.userCPUTime ?? 0),
+		systemCPUTime: resourceUsage.systemCPUTime - (lastResourceUsage?.systemCPUTime ?? 0),
 		minorPageFault: resourceUsage.minorPageFault - (lastResourceUsage?.minorPageFault ?? 0),
 		majorPageFault: resourceUsage.majorPageFault - (lastResourceUsage?.majorPageFault ?? 0),
 		fsRead: resourceUsage.fsRead - (lastResourceUsage?.fsRead ?? 0),
@@ -269,12 +294,13 @@ function storeTableSizeMetrics(analyticsTable: Table, dbName: string, tables: Ta
 		const fullTableName = `${dbName}.${tableName}`;
 		const tableSize = table.getSize();
 		const metric = {
+			metric: METRIC.TABLE_SIZE,
 			database: dbName,
 			table: tableName,
 			size: tableSize,
 		};
-		storeMetric(analyticsTable, 'table-size', metric);
 		log.trace?.(`table ${fullTableName} size metric: ${JSON.stringify(metric)}`);
+		storeMetric(analyticsTable, metric);
 		dbUsedSize += tableSize;
 	}
 	return dbUsedSize;
@@ -292,13 +318,14 @@ function storeDBSizeMetrics(analyticsTable: Table, databases: Databases) {
 			const dbUsedSize = storeTableSizeMetrics(analyticsTable, db, tables);
 			const dbFree = dbTotalSize - dbUsedSize;
 			const metric = {
+				metric: METRIC.DATABASE_SIZE,
 				database: db,
 				size: dbTotalSize,
 				used: dbUsedSize,
 				free: dbFree,
 				audit: dbAuditSize,
 			};
-			storeMetric(analyticsTable, 'database-size', metric);
+			storeMetric(analyticsTable, metric);
 			log.trace?.(`database ${db} size metric: ${JSON.stringify(metric)}`);
 		} catch (error) {
 			// a table or db was deleted, could get an error here
@@ -316,10 +343,11 @@ function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
 				return;
 			}
 			const metric = {
+				metric: METRIC.STORAGE_VOLUME,
 				database: db,
 				...storageStats,
 			};
-			storeMetric(analyticsTable, 'storage-volume', metric);
+			storeMetric(analyticsTable, metric);
 			log.trace?.(`db ${db} storage volume metrics: ${JSON.stringify(metric)}`);
 		} catch (error) {
 			// a table or db was deleted, could get an error here
@@ -328,10 +356,10 @@ function storeVolumeMetrics(analyticsTable: Table, databases: Databases) {
 	}
 }
 
-async function aggregation(from_period, to_period = 60000) {
-	const raw_analytics_table = getRawAnalyticsTable();
-	const analytics_table = getAnalyticsTable();
-	const task_queue_latency = new Promise((resolve) => {
+async function aggregation(fromPeriod, toPeriod = 60000) {
+	const rawAnalyticsTable = getRawAnalyticsTable();
+	const analyticsTable = getAnalyticsTable();
+	const taskQueueLatency = new Promise((resolve) => {
 		let start = performance.now();
 		setImmediate(() => {
 			const now = performance.now();
@@ -339,41 +367,41 @@ async function aggregation(from_period, to_period = 60000) {
 				log.warn?.('Unusually high event queue latency on the main thread of ' + Math.round(now - start) + 'ms');
 			start = performance.now(); // We use this start time to measure the time it actually takes to on the task queue, minus the time on the event queu
 		});
-		analytics_table.primaryStore.prefetch([1], () => {
+		analyticsTable.primaryStore.prefetch([1], () => {
 			const now = performance.now();
 			if (now - start > 5000)
 				log.warn?.('Unusually high task queue latency on the main thread of ' + Math.round(now - start) + 'ms');
 			resolve(now - start);
 		});
 	});
-	let last_for_period;
+	let lastForPeriod;
 	// find the last entry for this period
-	for (const entry of analytics_table.primaryStore.getRange({
+	for (const entry of analyticsTable.primaryStore.getRange({
 		start: Infinity,
 		end: false,
 		reverse: true,
 	})) {
 		if (!entry.value?.time) continue;
-		last_for_period = entry.value.time;
+		lastForPeriod = entry.value.time;
 		break;
 	}
 	// was the last aggregation too recent to calculate a whole period?
-	if (Date.now() - to_period < last_for_period) return;
-	let first_for_period;
-	const aggregate_actions = new Map();
+	if (Date.now() - toPeriod < lastForPeriod) return;
+	let firstForPeriod;
+	const aggregateActions = new Map();
 	const distributions = new Map();
-	const threads_to_average = [];
-	let last_time: number;
-	for (const { key, value } of raw_analytics_table.primaryStore.getRange({
-		start: last_for_period || false,
+	const threadsToAverage = [];
+	let lastTime: number;
+	for (const { key, value } of rawAnalyticsTable.primaryStore.getRange({
+		start: lastForPeriod || false,
 		exclusiveStart: true,
 		end: Infinity,
 	})) {
 		if (!value) continue;
-		if (first_for_period) {
-			if (key > first_for_period + to_period) break; // outside the period of interest
-		} else first_for_period = key;
-		last_time = key;
+		if (firstForPeriod) {
+			if (key > firstForPeriod + toPeriod) break; // outside the period of interest
+		} else firstForPeriod = key;
+		lastTime = key;
 		const { metrics, threadId } = value;
 		for (const entry of metrics || []) {
 			let { path, method, type, metric, count, total, distribution, threads, ...measures } = entry;
@@ -381,22 +409,22 @@ async function aggregation(from_period, to_period = 60000) {
 			let key = metric + (path ? '-' + path : '');
 			if (method !== undefined) key += '-' + method;
 			if (type !== undefined) key += '-' + type;
-			let action = aggregate_actions.get(key);
+			let action = aggregateActions.get(key);
 			if (action) {
 				if (action.threads) {
-					const action_for_thread = action.threads[threadId];
-					if (action_for_thread) action = action_for_thread;
+					const actionForThread = action.threads[threadId];
+					if (actionForThread) action = actionForThread;
 					else {
 						action.threads[threadId] = { ...measures };
 						continue;
 					}
 				}
 				if (!action.count) action.count = 1;
-				const previous_count = action.count;
-				for (const measure_name in measures) {
-					const value = measures[measure_name];
+				const previousCount = action.count;
+				for (const measureName in measures) {
+					const value = measures[measureName];
 					if (typeof value === 'number') {
-						action[measure_name] = (action[measure_name] * previous_count + value * count) / (previous_count + count);
+						action[measureName] = (action[measureName] * previousCount + value * count) / (previousCount + count);
 					}
 				}
 				action.count += count;
@@ -405,39 +433,40 @@ async function aggregation(from_period, to_period = 60000) {
 					action.ratio = action.total / action.count;
 				}
 			} else {
-				action = { period: to_period, ...entry };
+				action = { period: toPeriod, ...entry };
 				delete action.distribution;
-				aggregate_actions.set(key, action);
+				aggregateActions.set(key, action);
 				if (action.byThread) {
 					action.threads = [];
 					action.threads[threadId] = { ...measures };
-					threads_to_average.push(action);
+					threadsToAverage.push(action);
 				}
 			}
 			if (distribution) {
 				distribution = distribution.map((entry) => (typeof entry === 'number' ? { value: entry, count: 1 } : entry));
-				const existing_distribution = distributions.get(key);
-				if (!existing_distribution) distributions.set(key, distribution);
+				const existingDistribution = distributions.get(key);
+				if (!existingDistribution) distributions.set(key, distribution);
 				else {
-					existing_distribution.push(...distribution);
+					existingDistribution.push(...distribution);
 				}
 			}
 		}
 		await rest();
 	}
-	for (const entry of threads_to_average) {
+	for (const entry of threadsToAverage) {
+		// eslint-disable-next-line @typescript-eslint/no-unused-vars,prefer-const
 		let { path, method, type, metric, count, total, distribution, threads, ...measures } = entry;
 		threads = threads.filter((thread) => thread);
-		for (const measure_name in measures) {
-			if (typeof entry[measure_name] !== 'number') continue;
+		for (const measureName in measures) {
+			if (typeof entry[measureName] !== 'number') continue;
 			let total = 0;
 			for (const thread of threads) {
-				const value = thread[measure_name];
+				const value = thread[measureName];
 				if (typeof value === 'number') {
 					total += value;
 				}
 			}
-			entry[measure_name] = total;
+			entry[measureName] = total;
 		}
 		entry.count = threads.length;
 		delete entry.threads;
@@ -445,87 +474,85 @@ async function aggregation(from_period, to_period = 60000) {
 	}
 	for (const [key, distribution] of distributions) {
 		// now iterate through the distributions finding the close bin to each percentile and interpolating the position in that bin
-		const action = aggregate_actions.get(key);
+		const action = aggregateActions.get(key);
 		distribution.sort((a, b) => (a.value > b.value ? 1 : -1));
 		const count = action.count - 1;
 		const percentiles = [];
-		let count_position = 0;
+		let countPosition = 0;
 		let index = 0;
 		let bin;
 		for (const percentile of IDEAL_PERCENTILES) {
-			const next_target_count = count * percentile;
-			while (count_position < next_target_count) {
+			const nextTargetCount = count * percentile;
+			while (countPosition < nextTargetCount) {
 				bin = distribution[index++];
-				count_position += bin.count;
+				countPosition += bin.count;
 				// we decrement these counts so we are skipping the minimum value in our interpolation
-				if (index === 1) count_position--;
+				if (index === 1) countPosition--;
 			}
-			const previous_bin = distribution[index > 1 ? index - 2 : 0];
+			const previousBin = distribution[index > 1 ? index - 2 : 0];
 			if (!bin) bin = distribution[0];
-			percentiles.push(
-				bin.value - ((bin.value - previous_bin.value) * (count_position - next_target_count)) / bin.count
-			);
+			percentiles.push(bin.value - ((bin.value - previousBin.value) * (countPosition - nextTargetCount)) / bin.count);
 		}
 		const [p1, p10, p25, median, p75, p90, p95, p99, p999] = percentiles;
 		Object.assign(action, { p1, p10, p25, median, p75, p90, p95, p99, p999 });
 	}
-	let has_updates;
-	for (const [key, value] of aggregate_actions) {
-		value.id = getNextMonotonicTime();
-		value.time = last_time;
-		analytics_table.primaryStore.put(value.id, value, { append: true }).then((success: boolean) => {
-			// if for some reason we can't append, try again without append
-			if (!success) {
-				analytics_table.primaryStore.put(value.id, value);
-			}
-		});
-		has_updates = true;
+	let hasUpdates;
+	for (const [, value] of aggregateActions) {
+		value.time = lastTime;
+		storeMetric(analyticsTable, value);
+		hasUpdates = true;
 	}
 	const now = Date.now();
 	const { idle, active } = performance.eventLoopUtilization();
 	// don't record boring entries
-	if (has_updates || active * 10 > idle) {
-		const id = getNextMonotonicTime();
+	if (hasUpdates || active * 10 > idle) {
 		const value = {
-			id,
-			metric: 'main-thread-utilization',
-			idle: idle - last_idle,
-			active: active - last_active,
-			taskQueueLatency: await task_queue_latency,
+			metric: METRIC.MAIN_THREAD_UTILIZATION,
+			idle: idle - lastIdle,
+			active: active - lastActive,
+			taskQueueLatency: await taskQueueLatency,
 			time: now,
 			...process.memoryUsage(),
 		};
-		analytics_table.primaryStore.put(id, value, { append: true }).then((success: boolean) => {
-			// if for some reason we can't append, try again without append
-			if (!success) {
-				analytics_table.primaryStore.put(id, value);
-			}
-		});
+		storeMetric(analyticsTable, value);
 	}
-	last_idle = idle;
-	last_active = active;
+	lastIdle = idle;
+	lastActive = active;
 
 	// resource-usage metrics
-	const resourceUsage = process.resourceUsage();
+	const resourceUsage = process.resourceUsage() as ResourceUsage;
+	resourceUsage.time = now;
+	// normalize to milliseconds
+	resourceUsage.userCPUTime = resourceUsage.userCPUTime / 1000;
+	resourceUsage.systemCPUTime = resourceUsage.systemCPUTime / 1000;
+	log.trace?.(`process.resourceUsage: ${JSON.stringify(resourceUsage)}`);
 	const currentResourceUsage = diffResourceUsage(lastResourceUsage, resourceUsage);
+	log.trace?.(`diffed resourceUsage: ${JSON.stringify(currentResourceUsage)}`);
 	currentResourceUsage.time = now;
-	currentResourceUsage.period = lastResourceUsage.time ? now - lastResourceUsage.time : to_period;
-	currentResourceUsage.cpuUtilization = calculateCPUUtilization(lastResourceUsage, currentResourceUsage.period);
-	storeMetric(analytics_table, 'resource-usage', currentResourceUsage);
-	lastResourceUsage = currentResourceUsage;
+	currentResourceUsage.period = lastResourceUsage.time ? now - lastResourceUsage.time : toPeriod;
+	currentResourceUsage.cpuUtilization = calculateCPUUtilization(currentResourceUsage, currentResourceUsage.period);
+	const cruMetric = {
+		metric: METRIC.RESOURCE_USAGE,
+		...currentResourceUsage,
+	};
+	storeMetric(analyticsTable, cruMetric);
+	lastResourceUsage = resourceUsage;
 
 	// database-size & table-size metrics
 	const databases = getDatabases();
-	storeDBSizeMetrics(analytics_table, databases);
-	storeDBSizeMetrics(analytics_table, { system: databases.system });
+	storeDBSizeMetrics(analyticsTable, databases);
+	storeDBSizeMetrics(analyticsTable, { system: databases.system });
 
 	// database storage volume metrics
-	storeVolumeMetrics(analytics_table, databases);
-	storeVolumeMetrics(analytics_table, { system: databases.system });
+	storeVolumeMetrics(analyticsTable, databases);
+	storeVolumeMetrics(analyticsTable, { system: databases.system });
 }
-let last_idle = 0;
-let last_active = 0;
-let lastResourceUsage: ResourceUsage = {};
+let lastIdle = 0;
+let lastActive = 0;
+let lastResourceUsage: ResourceUsage = {
+	userCPUTime: 0,
+	systemCPUTime: 0,
+};
 
 const rest = () => new Promise(setImmediate);
 
@@ -538,7 +565,8 @@ async function cleanup(AnalyticsTable, expiration) {
 
 const RAW_EXPIRATION = 3600000;
 const AGGREGATE_EXPIRATION = 31536000000; // one year
-let RawAnalyticsTable;
+
+let RawAnalyticsTable: Table;
 function getRawAnalyticsTable() {
 	return (
 		RawAnalyticsTable ||
@@ -562,14 +590,15 @@ function getRawAnalyticsTable() {
 		}))
 	);
 }
-let AnalyticsTable;
+
+let AnalyticsTable: Table;
 function getAnalyticsTable() {
 	return (
 		AnalyticsTable ||
 		(AnalyticsTable = table({
 			table: 'hdb_analytics',
 			database: 'system',
-			audit: false,
+			audit: true,
 			trackDeletes: false,
 			attributes: [
 				{
@@ -594,10 +623,10 @@ function getAnalyticsTable() {
 }
 
 setChildListenerByType(ANALYTICS_REPORT_TYPE, recordAnalytics);
-let scheduled_tasks_running;
+let scheduledTasksRunning;
 function startScheduledTasks() {
-	scheduled_tasks_running = true;
-	const AGGREGATE_PERIOD = env_get(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1000;
+	scheduledTasksRunning = true;
+	const AGGREGATE_PERIOD = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1000;
 	if (AGGREGATE_PERIOD) {
 		setInterval(
 			async () => {
@@ -610,8 +639,8 @@ function startScheduledTasks() {
 	}
 }
 
-let total_bytes_processed = 0;
-const last_utilizations = new Map();
+let totalBytesProcessed = 0;
+const lastUtilizations = new Map();
 const LOG_ANALYTICS = false; // TODO: Make this a config option if we really want this
 function recordAnalytics(message, worker?) {
 	const report = message.report;
@@ -619,45 +648,45 @@ function recordAnalytics(message, worker?) {
 	// Add system information stats as well
 	for (const metric of report.metrics) {
 		if (metric.metric === 'bytes-sent') {
-			total_bytes_processed += metric.mean * metric.count;
+			totalBytesProcessed += metric.mean * metric.count;
 		}
 	}
-	report.totalBytesProcessed = total_bytes_processed;
+	report.totalBytesProcessed = totalBytesProcessed;
 	if (worker) {
 		report.metrics.push({
-			metric: 'utilization',
-			...worker.performance.eventLoopUtilization(last_utilizations.get(worker)),
+			metric: METRIC.UTILIZATION,
+			...worker.performance.eventLoopUtilization(lastUtilizations.get(worker)),
 		});
-		last_utilizations.set(worker, worker.performance.eventLoopUtilization());
+		lastUtilizations.set(worker, worker.performance.eventLoopUtilization());
 	}
 	report.id = getNextMonotonicTime();
 	getRawAnalyticsTable().primaryStore.put(report.id, report);
-	if (!scheduled_tasks_running) startScheduledTasks();
-	if (LOG_ANALYTICS) last_append = logAnalytics(report);
+	if (!scheduledTasksRunning) startScheduledTasks();
+	if (LOG_ANALYTICS) lastAppend = logAnalytics(report);
 }
-let last_append;
-let analytics_log;
+let lastAppend;
+let analyticsLog;
 const MAX_ANALYTICS_SIZE = 1000000;
 async function logAnalytics(report) {
-	await last_append;
-	if (!analytics_log) {
-		const log_dir = dirname(getLogFilePath());
+	await lastAppend;
+	if (!analyticsLog) {
+		const logDir = dirname(getLogFilePath());
 		try {
-			analytics_log = await open(join(log_dir, 'analytics.log'), 'r+');
+			analyticsLog = await open(join(logDir, 'analytics.log'), 'r+');
 		} catch (error) {
-			analytics_log = await open(join(log_dir, 'analytics.log'), 'w+');
+			analyticsLog = await open(join(logDir, 'analytics.log'), 'w+');
 		}
 	}
-	let position = (await analytics_log.stat()).size;
+	let position = (await analyticsLog.stat()).size;
 	if (position > MAX_ANALYTICS_SIZE) {
 		let contents = Buffer.alloc(position);
-		await analytics_log.read(contents, { position: 0 });
+		await analyticsLog.read(contents, { position: 0 });
 		contents = contents.subarray(contents.indexOf(10, contents.length / 2) + 1); // find a carriage return to break on after the halfway point
-		await analytics_log.write(contents, { position: 0 });
-		await analytics_log.truncate(contents.length);
+		await analyticsLog.write(contents, { position: 0 });
+		await analyticsLog.truncate(contents.length);
 		position = contents.length;
 	}
-	await analytics_log.write(JSON.stringify(report) + '\n', position);
+	await analyticsLog.write(JSON.stringify(report) + '\n', position);
 }
 
 /**
@@ -672,13 +701,13 @@ function addToBucket(action, value) {
 	let jump = BUCKET_COUNT >> 1; // amount to jump with each iteration
 	let position = jump; // start at halfway point
 	while ((jump = jump >> 1) > 0) {
-		const bucket_value = values[position];
-		if (bucket_value === 0) {
+		const bucketValue = values[position];
+		if (bucketValue === 0) {
 			// unused slot, immediately put our value in
 			counts[position] = 1;
 			values[position] = value;
 		}
-		if (value > bucket_value) {
+		if (value > bucketValue) {
 			position += jump;
 		} else {
 			position -= jump;
@@ -706,36 +735,36 @@ function newBuckets() {
 	};
 }
 
-let balancing_buckets;
+let balancingBuckets;
 
  /**
  * Rebalance the buckets, we can reset the counts at the same time, if this occurred after a delivery
  * @param param
- * @param reset_counts
+ * @param resetCounts
  *
-function rebalance({ counts, values, totalCount }, reset_counts: boolean) {
-	const count_per_bucket = totalCount / BUCKET_COUNT;
-	let target_position = 0;
-	let target_count = 0;
-	let last_target_value = 0;
-	const { values: target_values, counts: target_counts } = balancing_buckets || (balancing_buckets = newBuckets());
+function rebalance({ counts, values, totalCount }, resetCounts: boolean) {
+	const countPerBucket = totalCount / BUCKET_COUNT;
+	let targetPosition = 0;
+	let targetCount = 0;
+	let lastTargetValue = 0;
+	const { values: targetValues, counts: targetCounts } = balancingBuckets || (balancingBuckets = newBuckets());
 	for (let i = 0; i < BUCKET_COUNT; i++) {
 		// iterate through the existing buckets, filling up the target buckets in a balanced way
 		let count = counts[i];
-		while ((count_per_bucket - target_count) < count) {
+		while ((countPerBucket - targetCount) < count) {
 			const value = values[i];
-			last_target_value = ((count_per_bucket - target_count) / count) * (value - last_target_value) + last_target_value;
-			target_values[target_position] = last_target_value;
-			target_counts[target_position] = count_per_bucket;
-			count -= count_per_bucket;
-			target_position++;
-			target_count = 0;
+			lastTargetValue = ((countPerBucket - targetCount) / count) * (value - lastTargetValue) + lastTargetValue;
+			targetValues[targetPosition] = lastTargetValue;
+			targetCounts[targetPosition] = countPerBucket;
+			count -= countPerBucket;
+			targetPosition++;
+			targetCount = 0;
 		}
-		target_count += count;
+		targetCount += count;
 	}
 	// now copy the balanced buckets back into the original buckets
-	values.set(target_values);
-	if (reset_counts) counts.fill(0);
-	else counts.set(target_counts);
+	values.set(targetValues);
+	if (resetCounts) counts.fill(0);
+	else counts.set(targetCounts);
 }
 */

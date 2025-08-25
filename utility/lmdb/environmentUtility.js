@@ -3,19 +3,19 @@
 const lmdb = require('lmdb');
 const fs = require('fs-extra');
 const path = require('path');
-const common = require('./commonUtility');
-const log = require('../logging/harper_logger');
-const LMDB_ERRORS = require('../errors/commonErrors').LMDB_ERRORS_ENUM;
-const DBIDefinition = require('./DBIDefinition');
-const OpenDBIObject = require('./OpenDBIObject');
-const OpenEnvironmentObject = require('./OpenEnvironmentObject');
-const lmdb_terms = require('./terms');
-const hdb_terms = require('../hdbTerms');
-const { table, resetDatabases } = require('../../resources/databases');
-const env_mngr = require('../environment/environmentManager');
+const common = require('./commonUtility.js');
+const log = require('../logging/harper_logger.js');
+const LMDB_ERRORS = require('../errors/commonErrors.js').LMDB_ERRORS_ENUM;
+const DBIDefinition = require('./DBIDefinition.js');
+const OpenDBIObject = require('./OpenDBIObject.js');
+const OpenEnvironmentObject = require('./OpenEnvironmentObject.js');
+const lmdbTerms = require('./terms.js');
+const hdbTerms = require('../hdbTerms.ts');
+const { table, resetDatabases } = require('../../resources/databases.ts');
+const envMngr = require('../environment/environmentManager.js');
 
-const INTERNAL_DBIS_NAME = lmdb_terms.INTERNAL_DBIS_NAME;
-const DBI_DEFINITION_NAME = lmdb_terms.DBI_DEFINITION_NAME;
+const INTERNAL_DBIS_NAME = lmdbTerms.INTERNAL_DBIS_NAME;
+const DBI_DEFINITION_NAME = lmdbTerms.DBI_DEFINITION_NAME;
 const MDB_LEGACY_FILE_NAME = 'data.mdb';
 const MDB_LEGACY_LOCK_FILE_NAME = 'lock.mdb';
 const MDB_FILE_EXTENSION = '.mdb';
@@ -29,13 +29,13 @@ class TransactionCursor {
 	 * create the TransactionCursor object
 	 * @param {lmdb.RootDatabase} env - environment object to create the transaction & cursor from
 	 * @param {String} attribute - name of the attribute to create the cursor against
-	 * @param {Boolean} [write_cursor] - optional, dictates if the cursor created will be a readOnly cursor or not
+	 * @param {Boolean} [writeCursor] - optional, dictates if the cursor created will be a readOnly cursor or not
 	 */
-	constructor(env, attribute, write_cursor = false) {
+	constructor(env, attribute, writeCursor = false) {
 		this.dbi = openDBI(env, attribute);
-		this.key_type = this.dbi[lmdb_terms.DBI_DEFINITION_NAME].key_type;
-		this.is_hash_attribute = this.dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute;
-		this.txn = env.beginTxn({ readOnly: write_cursor === false });
+		this.key_type = this.dbi[lmdbTerms.DBI_DEFINITION_NAME].key_type;
+		this.is_hash_attribute = this.dbi[lmdbTerms.DBI_DEFINITION_NAME].is_hash_attribute;
+		this.txn = env.beginTxn({ readOnly: writeCursor === false });
 		this.cursor = new lmdb.Cursor(this.txn, this.dbi);
 	}
 
@@ -59,30 +59,30 @@ class TransactionCursor {
 /***  VALIDATION FUNCTIONS ***/
 
 /**
- * validates the base_path & env_name exist.  checks base_path is a valid path
- * @param {String} base_path - top level path the environment folder and the .mdb file live under
- * @param {String} env_name - name of environment
+ * validates the basePath & envName exist.  checks basePath is a valid path
+ * @param {String} basePath - top level path the environment folder and the .mdb file live under
+ * @param {String} envName - name of environment
  */
-function pathEnvNameValidation(base_path, env_name) {
-	if (base_path === undefined) {
+function pathEnvNameValidation(basePath, envName) {
+	if (basePath === undefined) {
 		throw new Error(LMDB_ERRORS.BASE_PATH_REQUIRED);
 	}
 
-	if (env_name === undefined) {
+	if (envName === undefined) {
 		throw new Error(LMDB_ERRORS.ENV_NAME_REQUIRED);
 	}
 }
 
 /**
  * checks the environment file exists and returns its path
- * @param {String} base_path - top level path the environment folder and the .mdb file live under
- * @param {String} env_name - name of environment
+ * @param {String} basePath - top level path the environment folder and the .mdb file live under
+ * @param {String} envName - name of environment
  * @returns {Promise<string>}
  */
-async function validateEnvironmentPath(base_path, env_name, allow_v3 = true) {
-	//verify the base_path is valid
+async function validateEnvironmentPath(basePath, envName, allowV3 = true) {
+	//verify the basePath is valid
 	try {
-		await fs.access(base_path);
+		await fs.access(basePath);
 	} catch (e) {
 		if (e.code === 'ENOENT') {
 			throw new Error(LMDB_ERRORS.INVALID_BASE_PATH);
@@ -90,15 +90,15 @@ async function validateEnvironmentPath(base_path, env_name, allow_v3 = true) {
 		throw e;
 	}
 	try {
-		let standard_path = path.join(base_path, env_name + MDB_FILE_EXTENSION);
-		await fs.access(standard_path, fs.constants.R_OK | fs.constants.F_OK);
-		return standard_path; // success with standard path
+		let standardPath = path.join(basePath, envName + MDB_FILE_EXTENSION);
+		await fs.access(standardPath, fs.constants.R_OK | fs.constants.F_OK);
+		return standardPath; // success with standard path
 	} catch (e) {
 		if (e.code === 'ENOENT') {
-			if (allow_v3) {
+			if (allowV3) {
 				try {
-					await fs.access(path.join(base_path, env_name, MDB_LEGACY_FILE_NAME), fs.constants.R_OK | fs.constants.F_OK);
-					return path.join(base_path, env_name);
+					await fs.access(path.join(basePath, envName, MDB_LEGACY_FILE_NAME), fs.constants.R_OK | fs.constants.F_OK);
+					return path.join(basePath, envName);
 				} catch (e2) {
 					if (e2.code === 'ENOENT') {
 						throw new Error(LMDB_ERRORS.INVALID_ENVIRONMENT);
@@ -112,14 +112,14 @@ async function validateEnvironmentPath(base_path, env_name, allow_v3 = true) {
 }
 
 /**
- * validates the env & dbi_name variables exist
+ * validates the env & dbiName variables exist
  * @param {lmdb.RootDatabase} env - lmdb environment object
- * @param {String} dbi_name - name of the dbi (KV store)
+ * @param {String} dbiName - name of the dbi (KV store)
  */
-function validateEnvDBIName(env, dbi_name) {
+function validateEnvDBIName(env, dbiName) {
 	common.validateEnv(env);
 
-	if (dbi_name === undefined) {
+	if (dbiName === undefined) {
 		throw new Error(LMDB_ERRORS.DBI_NAME_REQUIRED);
 	}
 }
@@ -128,43 +128,43 @@ function validateEnvDBIName(env, dbi_name) {
 
 /**
  * creates a new environment
- * @param base_path - base path the environment will reside in
- * @param env_name - name of the environment
- * @param {Boolean} is_txn - defines if is a transactions environment
+ * @param basePath - base path the environment will reside in
+ * @param envName - name of the environment
+ * @param {Boolean} isTxn - defines if is a transactions environment
  * @returns {Promise<lmdb.RootDatabase>} - LMDB environment object
  */
-async function createEnvironment(base_path, env_name, is_txn = false, is_v3 = false) {
-	pathEnvNameValidation(base_path, env_name);
-	let db_name = path.basename(base_path);
+async function createEnvironment(basePath, envName, isTxn = false, isV3 = false) {
+	pathEnvNameValidation(basePath, envName);
+	let dbName = path.basename(basePath);
 
-	env_name = env_name.toString();
-	let schemas_config = env_mngr.get(hdb_terms.CONFIG_PARAMS.DATABASES);
-	if (!schemas_config) env_mngr.setProperty(hdb_terms.CONFIG_PARAMS.DATABASES, (schemas_config = {}));
-	if (!schemas_config[db_name]) schemas_config[db_name] = {};
-	schemas_config[db_name].path = base_path;
+	envName = envName.toString();
+	let schemasConfig = envMngr.get(hdbTerms.CONFIG_PARAMS.DATABASES);
+	if (!schemasConfig) envMngr.setProperty(hdbTerms.CONFIG_PARAMS.DATABASES, (schemasConfig = {}));
+	if (!schemasConfig[dbName]) schemasConfig[dbName] = {};
+	schemasConfig[dbName].path = basePath;
 	try {
-		await validateEnvironmentPath(base_path, env_name, is_v3);
+		await validateEnvironmentPath(basePath, envName, isV3);
 		//if no error is thrown the environment already exists so we return the handle to that environment
-		return openEnvironment(base_path, env_name, is_txn);
+		return openEnvironment(basePath, envName, isTxn);
 	} catch (e) {
 		if (e.message === LMDB_ERRORS.INVALID_ENVIRONMENT) {
-			let environment_path = path.join(base_path, env_name);
-			await fs.mkdirp(is_v3 ? environment_path : base_path);
-			let env_init = new OpenEnvironmentObject(is_v3 ? environment_path : environment_path + MDB_FILE_EXTENSION, false);
-			let env = lmdb.open(env_init);
+			let environmentPath = path.join(basePath, envName);
+			await fs.mkdirp(isV3 ? environmentPath : basePath);
+			let envInit = new OpenEnvironmentObject(isV3 ? environmentPath : environmentPath + MDB_FILE_EXTENSION, false);
+			let env = lmdb.open(envInit);
 
 			env.dbis = Object.create(null);
 			//next we create an internal dbi to track the named databases
-			let dbi_init = new OpenDBIObject(false);
-			env.openDB(INTERNAL_DBIS_NAME, dbi_init);
+			let dbiInit = new OpenDBIObject(false);
+			env.openDB(INTERNAL_DBIS_NAME, dbiInit);
 
 			//add environment to global variable to cache reference to environment & named databases
 			if (global.lmdb_map === undefined) {
 				global.lmdb_map = Object.create(null);
 			}
-			let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
-			env[lmdb_terms.ENVIRONMENT_NAME_KEY] = full_name;
-			global.lmdb_map[full_name] = env;
+			let fullName = getCachedEnvironmentName(basePath, envName, isTxn);
+			env[lmdbTerms.ENVIRONMENT_NAME_KEY] = fullName;
+			global.lmdb_map[fullName] = env;
 
 			return env;
 		}
@@ -172,14 +172,14 @@ async function createEnvironment(base_path, env_name, is_txn = false, is_v3 = fa
 	}
 }
 
-async function copyEnvironment(base_path, env_name, destination_path, compact_environment = true) {
-	pathEnvNameValidation(base_path, env_name);
-	env_name = env_name.toString();
-	let environment_path = path.join(base_path, env_name);
+async function copyEnvironment(basePath, envName, destinationPath, compactEnvironment = true) {
+	pathEnvNameValidation(basePath, envName);
+	envName = envName.toString();
+	let environmentPath = path.join(basePath, envName);
 	return table({
-		table: env_name,
-		database: path.parse(base_path).name,
-		path: environment_path,
+		table: envName,
+		database: path.parse(basePath).name,
+		path: environmentPath,
 		attributes: [{ name: 'id', isPrimaryKey: true }],
 	});
 }
@@ -187,27 +187,27 @@ async function copyEnvironment(base_path, env_name, destination_path, compact_en
 /**
  * opens an environment
  * @returns {lmdb.RootDatabase} - lmdb environment object
- * @param {String} base_path - the base pase under which the envrinment resides
- * @param {String} env_name -  the name of the environment
- * @param {Boolean} is_txn - defines if is a transactions environemnt
+ * @param {String} basePath - the base pase under which the envrinment resides
+ * @param {String} envName -  the name of the environment
+ * @param {Boolean} isTxn - defines if is a transactions environemnt
  */
-async function openEnvironment(base_path, env_name, is_txn = false) {
-	pathEnvNameValidation(base_path, env_name);
-	env_name = env_name.toString();
-	let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
+async function openEnvironment(basePath, envName, isTxn = false) {
+	pathEnvNameValidation(basePath, envName);
+	envName = envName.toString();
+	let fullName = getCachedEnvironmentName(basePath, envName, isTxn);
 
 	if (global.lmdb_map === undefined) {
 		global.lmdb_map = Object.create(null);
 	}
 
-	if (global.lmdb_map[full_name] !== undefined) {
-		return global.lmdb_map[full_name];
+	if (global.lmdb_map[fullName] !== undefined) {
+		return global.lmdb_map[fullName];
 	}
-	let env_path = await validateEnvironmentPath(base_path, env_name);
-	let standard_path = path.join(base_path, env_name + MDB_FILE_EXTENSION);
-	let read_only = env_path != standard_path; // legacy database, only open in read only mode
-	let env_init = new OpenEnvironmentObject(env_path, read_only);
-	let env = lmdb.open(env_init);
+	let envPath = await validateEnvironmentPath(basePath, envName);
+	let standardPath = path.join(basePath, envName + MDB_FILE_EXTENSION);
+	let readOnly = envPath != standardPath; // legacy database, only open in read only mode
+	let envInit = new OpenEnvironmentObject(envPath, readOnly);
+	let env = lmdb.open(envInit);
 
 	env.dbis = Object.create(null);
 
@@ -215,37 +215,37 @@ async function openEnvironment(base_path, env_name, is_txn = false) {
 	for (let x = 0; x < dbis.length; x++) {
 		openDBI(env, dbis[x]);
 	}
-	env[lmdb_terms.ENVIRONMENT_NAME_KEY] = full_name;
-	global.lmdb_map[full_name] = env;
+	env[lmdbTerms.ENVIRONMENT_NAME_KEY] = fullName;
+	global.lmdb_map[fullName] = env;
 
 	return env;
 }
 
 /**
  * deletes the environment from the file system & removes the reference from global
- * @param {String} base_path - top level path the environment folder and the .mdb file live under
- * @param {String} env_name - name of environment
- * @param {Boolean} is_txn - defines if is a transactions environemnt
+ * @param {String} basePath - top level path the environment folder and the .mdb file live under
+ * @param {String} envName - name of environment
+ * @param {Boolean} isTxn - defines if is a transactions environemnt
  */
-async function deleteEnvironment(base_path, env_name, is_txn = false) {
-	pathEnvNameValidation(base_path, env_name);
-	env_name = env_name.toString();
-	let standard_path = path.join(base_path, env_name + MDB_FILE_EXTENSION);
-	let data_path = await validateEnvironmentPath(base_path, env_name);
+async function deleteEnvironment(basePath, envName, isTxn = false) {
+	pathEnvNameValidation(basePath, envName);
+	envName = envName.toString();
+	let standardPath = path.join(basePath, envName + MDB_FILE_EXTENSION);
+	let dataPath = await validateEnvironmentPath(basePath, envName);
 
 	if (global.lmdb_map !== undefined) {
-		let full_name = getCachedEnvironmentName(base_path, env_name, is_txn);
-		if (global.lmdb_map[full_name]) {
-			let env = global.lmdb_map[full_name];
+		let fullName = getCachedEnvironmentName(basePath, envName, isTxn);
+		if (global.lmdb_map[fullName]) {
+			let env = global.lmdb_map[fullName];
 			await closeEnvironment(env);
-			delete global.lmdb_map[full_name];
+			delete global.lmdb_map[fullName];
 		}
 	}
-	await fs.remove(data_path);
+	await fs.remove(dataPath);
 	await fs.remove(
-		data_path === standard_path
-			? data_path + MDB_LOCK_FILE_SUFFIX
-			: path.join(path.dirname(data_path), MDB_LEGACY_LOCK_FILE_NAME)
+		dataPath === standardPath
+			? dataPath + MDB_LOCK_FILE_SUFFIX
+			: path.join(path.dirname(dataPath), MDB_LEGACY_LOCK_FILE_NAME)
 	); // I suspect we may have problems with this on Windows
 }
 
@@ -256,29 +256,29 @@ async function deleteEnvironment(base_path, env_name, is_txn = false) {
 async function closeEnvironment(env) {
 	//make sure env is actually a reference to the lmdb environment class so we don't blow anything up
 	common.validateEnv(env);
-	let environment_name = env[lmdb_terms.ENVIRONMENT_NAME_KEY];
+	let environmentName = env[lmdbTerms.ENVIRONMENT_NAME_KEY];
 	//we need to close the environment to release the file from the process
 	await env.close();
-	if (environment_name !== undefined && global.lmdb_map !== undefined) {
-		delete global.lmdb_map[environment_name];
+	if (environmentName !== undefined && global.lmdb_map !== undefined) {
+		delete global.lmdb_map[environmentName];
 	}
 }
 
 /**
  * creates a composite name for the environment based on the parent folder name & the environment name.
  * This forces uniqueness when same environment names live under different parent folders
- * @param {String} base_path
- * @param {String} env_name
- * @param {Boolean} is_txn - defines if is a transactions environemnt
+ * @param {String} basePath
+ * @param {String} envName
+ * @param {Boolean} isTxn - defines if is a transactions environemnt
  * @returns {string}
  */
-function getCachedEnvironmentName(base_path, env_name, is_txn = false) {
-	let schema_name = path.basename(base_path);
-	let full_name = `${schema_name}.${env_name}`;
-	if (is_txn === true) {
-		full_name = `txn.${full_name}`;
+function getCachedEnvironmentName(basePath, envName, isTxn = false) {
+	let schemaName = path.basename(basePath);
+	let fullName = `${schemaName}.${envName}`;
+	if (isTxn === true) {
+		fullName = `txn.${fullName}`;
 	}
-	return full_name;
+	return fullName;
 }
 
 /***  DBI FUNCTIONS ***/
@@ -329,65 +329,65 @@ function listDBIs(env) {
 /**
  * fetches an individual dbi definition from the internal dbi
  * @param {lmdb.RootDatabase} env
- * @param dbi_name
+ * @param dbiName
  * @returns {undefined|DBIDefinition}
  */
-function getDBIDefinition(env, dbi_name) {
+function getDBIDefinition(env, dbiName) {
 	let dbi = openDBI(env, INTERNAL_DBIS_NAME);
 
-	let found = dbi.getEntry(dbi_name);
-	let dbi_definition = new DBIDefinition();
+	let found = dbi.getEntry(dbiName);
+	let dbiDefinition = new DBIDefinition();
 
 	if (found === undefined) {
 		return;
 	}
 
 	try {
-		dbi_definition = Object.assign(dbi_definition, found.value);
+		dbiDefinition = Object.assign(dbiDefinition, found.value);
 	} catch (e) {
 		log.warn(`an internal error occurred: unable to parse DBI Definition for ${found}`);
 	}
 
-	return dbi_definition;
+	return dbiDefinition;
 }
 
 /**
  * creates a new named database in an environment
  * @param {lmdb.RootDatabase} env - environment object used high level to interact with all data in an environment
- * @param {String} dbi_name - name of the dbi (KV store)
- * @param {Boolean} [dup_sort] - optional, determines if the dbi allows duplicate keys or not
- * @param {Boolean} is_hash_attribute - defines if the dbi being created is the hash_attribute fro the environment / table
+ * @param {String} dbiName - name of the dbi (KV store)
+ * @param {Boolean} [dupSort] - optional, determines if the dbi allows duplicate keys or not
+ * @param {Boolean} isHashAttribute - defines if the dbi being created is the hash_attribute fro the environment / table
  * @returns {*} - reference to the dbi
  */
-function createDBI(env, dbi_name, dup_sort, is_hash_attribute = !dup_sort) {
-	validateEnvDBIName(env, dbi_name);
-	dbi_name = dbi_name.toString();
-	if (dbi_name === INTERNAL_DBIS_NAME) {
+function createDBI(env, dbiName, dupSort, isHashAttribute = !dupSort) {
+	validateEnvDBIName(env, dbiName);
+	dbiName = dbiName.toString();
+	if (dbiName === INTERNAL_DBIS_NAME) {
 		throw new Error(LMDB_ERRORS.CANNOT_CREATE_INTERNAL_DBIS_NAME);
 	}
-	/*if (is_hash_attribute) return; // should already be created
-	return env.addAttribute({ name: dbi_name, indexed: true });*/
+	/*if (isHashAttribute) return; // should already be created
+	return env.addAttribute({ name: dbiName, indexed: true });*/
 
 	try {
 		//first check if the dbi exists
-		return openDBI(env, dbi_name);
+		return openDBI(env, dbiName);
 	} catch (e) {
 		//if not create it
 		if (e.message === LMDB_ERRORS.DBI_DOES_NOT_EXIST) {
 			//we version just the hash attribute index
-			let dbi_init = new OpenDBIObject(dup_sort, is_hash_attribute === true);
+			let dbiInit = new OpenDBIObject(dupSort, isHashAttribute === true);
 
-			let new_dbi = env.openDB(dbi_name, dbi_init);
+			let newDbi = env.openDB(dbiName, dbiInit);
 
-			let dbi_definition = new DBIDefinition(dup_sort === true, is_hash_attribute);
-			new_dbi[DBI_DEFINITION_NAME] = dbi_definition;
+			let dbiDefinition = new DBIDefinition(dupSort === true, isHashAttribute);
+			newDbi[DBI_DEFINITION_NAME] = dbiDefinition;
 
 			let dbis = openDBI(env, INTERNAL_DBIS_NAME);
-			dbis.putSync(dbi_name, dbi_definition);
+			dbis.putSync(dbiName, dbiDefinition);
 
-			env.dbis[dbi_name] = new_dbi;
+			env.dbis[dbiName] = newDbi;
 
-			return new_dbi;
+			return newDbi;
 		}
 
 		throw e;
@@ -397,30 +397,30 @@ function createDBI(env, dbi_name, dup_sort, is_hash_attribute = !dup_sort) {
 /**
  * opens an existing named database from an environment
  * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
- * @param {String} dbi_name - name of the dbi (KV store)
+ * @param {String} dbiName - name of the dbi (KV store)
  * @returns {lmdb.Database} - returns reference to the dbi
  */
-function openDBI(env, dbi_name) {
-	validateEnvDBIName(env, dbi_name);
-	dbi_name = dbi_name.toString();
-	if (env.dbis[dbi_name] !== undefined) {
-		return env.dbis[dbi_name];
+function openDBI(env, dbiName) {
+	validateEnvDBIName(env, dbiName);
+	dbiName = dbiName.toString();
+	if (env.dbis[dbiName] !== undefined) {
+		return env.dbis[dbiName];
 	}
 
-	let dbi_definition;
-	if (dbi_name !== INTERNAL_DBIS_NAME) {
-		dbi_definition = getDBIDefinition(env, dbi_name);
+	let dbiDefinition;
+	if (dbiName !== INTERNAL_DBIS_NAME) {
+		dbiDefinition = getDBIDefinition(env, dbiName);
 	} else {
-		dbi_definition = new DBIDefinition();
+		dbiDefinition = new DBIDefinition();
 	}
-	if (dbi_definition === undefined) {
+	if (dbiDefinition === undefined) {
 		throw new Error(LMDB_ERRORS.DBI_DOES_NOT_EXIST);
 	}
 
 	let dbi;
 	try {
-		let dbi_init = new OpenDBIObject(dbi_definition.dup_sort, dbi_definition.useVersions);
-		dbi = env.openDB(dbi_name, dbi_init);
+		let dbiInit = new OpenDBIObject(dbiDefinition.dup_sort, dbiDefinition.useVersions);
+		dbi = env.openDB(dbiName, dbiInit);
 		//current version of lmdb no longer throws an error if you attempt to open a non-existent dbi, simulating old behavior
 		if (dbi.db === undefined) {
 			throw new Error('MDB_NOTFOUND');
@@ -432,24 +432,24 @@ function openDBI(env, dbi_name) {
 
 		throw e;
 	}
-	dbi[DBI_DEFINITION_NAME] = dbi_definition;
-	env.dbis[dbi_name] = dbi;
+	dbi[DBI_DEFINITION_NAME] = dbiDefinition;
+	env.dbis[dbiName] = dbi;
 	return dbi;
 }
 
 /**
  * gets the statistics for a named database from the environment
  * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
- * @param {String} dbi_name - name of the dbi (KV store)
+ * @param {String} dbiName - name of the dbi (KV store)
  * @returns {void | Promise<Stats> | *} - object holding stats for the dbi
  */
-function statDBI(env, dbi_name) {
-	validateEnvDBIName(env, dbi_name);
-	dbi_name = dbi_name.toString();
-	let dbi = openDBI(env, dbi_name);
+function statDBI(env, dbiName) {
+	validateEnvDBIName(env, dbiName);
+	dbiName = dbiName.toString();
+	let dbi = openDBI(env, dbiName);
 
 	let stats = dbi.getStats();
-	if (dbi[lmdb_terms.DBI_DEFINITION_NAME].is_hash_attribute && stats.entryCount > 0) {
+	if (dbi[lmdbTerms.DBI_DEFINITION_NAME].is_hash_attribute && stats.entryCount > 0) {
 		stats.entryCount--;
 	}
 
@@ -458,15 +458,15 @@ function statDBI(env, dbi_name) {
 
 /**
  * gets the byte size of an environment file
- * @param {String} environment_base_path
- * @param {String} table_name
+ * @param {String} environmentBasePath
+ * @param {String} tableName
  * @returns {Promise<number>}
  */
-async function environmentDataSize(environment_base_path, table_name) {
+async function environmentDataSize(environmentBasePath, tableName) {
 	try {
-		let environment_path = path.join(environment_base_path, table_name + MDB_FILE_EXTENSION);
-		let stat_result = await fs.stat(environment_path);
-		return stat_result['size'];
+		let environmentPath = path.join(environmentBasePath, tableName + MDB_FILE_EXTENSION);
+		let statResult = await fs.stat(environmentPath);
+		return statResult['size'];
 	} catch (e) {
 		throw new Error(LMDB_ERRORS.INVALID_ENVIRONMENT);
 	}
@@ -475,36 +475,36 @@ async function environmentDataSize(environment_base_path, table_name) {
 /**
  * removes a named database from an environment
  * @param {lmdb.RootDatabase} env - environment object used thigh level to interact with all data in an environment
- * @param {String} dbi_name - name of the dbi (KV store)
+ * @param {String} dbiName - name of the dbi (KV store)
  */
-function dropDBI(env, dbi_name) {
-	validateEnvDBIName(env, dbi_name);
-	dbi_name = dbi_name.toString();
-	if (dbi_name === INTERNAL_DBIS_NAME) {
+function dropDBI(env, dbiName) {
+	validateEnvDBIName(env, dbiName);
+	dbiName = dbiName.toString();
+	if (dbiName === INTERNAL_DBIS_NAME) {
 		throw new Error(LMDB_ERRORS.CANNOT_DROP_INTERNAL_DBIS_NAME);
 	}
 
-	let dbi = openDBI(env, dbi_name);
+	let dbi = openDBI(env, dbiName);
 	dbi.dropSync();
 
 	if (env.dbis !== undefined) {
-		delete env.dbis[dbi_name];
+		delete env.dbis[dbiName];
 	}
 
 	let dbis = openDBI(env, INTERNAL_DBIS_NAME);
-	dbis.removeSync(dbi_name);
+	dbis.removeSync(dbiName);
 }
 
 /**
  * opens/ creates all specified attributes
  * @param {lmdb.RootDatabase} env - lmdb environment object
  * @param {String} hash_attribute - name of the table's hash attribute
- * @param {Array.<String>} write_attributes - list of all attributes to write to the database
+ * @param {Array.<String>} writeAttributes - list of all attributes to write to the database
  */
-function initializeDBIs(env, hash_attribute, write_attributes) {
-	let created_attributes;
-	for (let x = 0; x < write_attributes.length; x++) {
-		let attribute = write_attributes[x];
+function initializeDBIs(env, hash_attribute, writeAttributes) {
+	let createdAttributes;
+	for (let x = 0; x < writeAttributes.length; x++) {
+		let attribute = writeAttributes[x];
 
 		//check the internal cache to see if the dbi has been intialized
 		if (!env.dbis[attribute]) {
@@ -515,14 +515,14 @@ function initializeDBIs(env, hash_attribute, write_attributes) {
 				//if not opened, create it
 				if (e.message === LMDB_ERRORS.DBI_DOES_NOT_EXIST) {
 					createDBI(env, attribute, attribute !== hash_attribute, attribute === hash_attribute);
-					created_attributes = true;
+					createdAttributes = true;
 				} else {
 					throw e;
 				}
 			}
 		}
 	}
-	if (created_attributes) resetDatabases();
+	if (createdAttributes) resetDatabases();
 }
 
 module.exports = {

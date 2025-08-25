@@ -1,52 +1,52 @@
-const hdb_license = require('./hdb_license');
+const hdbLicense = require('./hdb_license.js');
 const chalk = require('chalk');
-const log = require('../logging/harper_logger');
+const log = require('../logging/harper_logger.js');
 const prompt = require('prompt');
 const { promisify } = require('util');
-const terms = require('../hdbTerms');
+const terms = require('../hdbTerms.ts');
 const fs = require('fs-extra');
 const path = require('path');
-const hdb_utils = require('../common_utils');
-const { packageJson } = require('../packageUtils');
-const env_utility = require('../environment/environmentManager');
-env_utility.initSync();
+const hdbUtils = require('../common_utils.js');
+const { packageJson } = require('../packageUtils.js');
+const envUtility = require('../environment/environmentManager.js');
+envUtility.initSync();
 
 const moment = require('moment');
 
 //Promisified function
-let p_prompt_get = promisify(prompt.get);
+let pPromptGet = promisify(prompt.get);
 
 const LICENSE_FILE = path.join(
-	env_utility.getHdbBasePath(),
+	envUtility.getHdbBasePath(),
 	terms.LICENSE_KEY_DIR_NAME,
 	terms.LICENSE_FILE_NAME,
 	terms.LICENSE_FILE_NAME
 );
 
 module.exports = {
-	getFingerprint: getFingerprint,
-	setLicense: setLicense,
-	parseLicense: parseLicense,
-	register: register,
+	getFingerprint,
+	setLicense,
+	parseLicense,
+	register,
 	getRegistrationInfo,
 };
 
 /**
- * Set the license on this node to the key specified in the json_message parameter.
- * @param json_message
+ * Set the license on this node to the key specified in the jsonMessage parameter.
+ * @param jsonMessage
  * @returns {Promise<string>}
  */
-async function setLicense(json_message) {
-	if (json_message && json_message.key && json_message.company) {
+async function setLicense(jsonMessage) {
+	if (jsonMessage && jsonMessage.key && jsonMessage.company) {
 		try {
-			log.info(`parsing license key: ${json_message.key} and `);
-			let company = json_message.company.toString();
-			await parseLicense(json_message.key.trim(), company.trim());
+			log.info(`parsing license key: ${jsonMessage.key} and `);
+			let company = jsonMessage.company.toString();
+			await parseLicense(jsonMessage.key.trim(), company.trim());
 		} catch (err) {
-			let err_msg = `There was an error parsing the license key.`;
-			log.error(err_msg);
+			let errMsg = `There was an error parsing the license key.`;
+			log.error(errMsg);
 			log.error(err);
-			throw new Error(err_msg);
+			throw new Error(errMsg);
 		}
 		return 'Wrote license key file.  Registration successful.';
 	}
@@ -60,12 +60,12 @@ async function setLicense(json_message) {
 async function getFingerprint() {
 	let fingerprint = {};
 	try {
-		fingerprint = await hdb_license.generateFingerPrint();
+		fingerprint = await hdbLicense.generateFingerPrint();
 	} catch (err) {
-		let err_msg = 'Error generating fingerprint.';
-		log.error(err_msg);
+		let errMsg = 'Error generating fingerprint.';
+		log.error(errMsg);
 		log.error(err);
-		throw new Error(err_msg);
+		throw new Error(errMsg);
 	}
 	return fingerprint;
 }
@@ -81,7 +81,7 @@ async function parseLicense(license, company) {
 	}
 
 	log.info('Validating license input...');
-	let validation = hdb_license.validateLicense(license, company);
+	let validation = hdbLicense.validateLicense(license, company);
 
 	log.info(`checking for valid license...`);
 	if (!validation.valid_license) {
@@ -117,8 +117,8 @@ async function register() {
  * @returns {Promise<*>}
  */
 async function promptForRegistration() {
-	let fingerprint = await hdb_license.generateFingerPrint();
-	let register_schema = {
+	let fingerprint = await hdbLicense.generateFingerPrint();
+	let registerSchema = {
 		properties: {
 			CUSTOMER_COMPANY: {
 				description: chalk.magenta(`[COMPANY] Please enter your company name`),
@@ -139,7 +139,7 @@ async function promptForRegistration() {
 
 	let data;
 	try {
-		data = await p_prompt_get(register_schema);
+		data = await pPromptGet(registerSchema);
 	} catch (err) {
 		console.error('There was a problem prompting for registration input.  Exiting.');
 		throw err;
@@ -149,7 +149,7 @@ async function promptForRegistration() {
 }
 
 async function getRegistrationInfo() {
-	const reg_info_obj = {
+	const regInfoObj = {
 		registered: false,
 		version: null,
 		ram_allocation: null,
@@ -159,24 +159,24 @@ async function getRegistrationInfo() {
 	let license;
 
 	try {
-		license = await hdb_license.getLicense();
+		license = await hdbLicense.getLicense();
 	} catch (e) {
 		log.error(`There was an error when searching licenses due to: ${e.message}`);
 		throw e;
 	}
 
-	if (hdb_utils.isEmptyOrZeroLength(license)) {
+	if (hdbUtils.isEmptyOrZeroLength(license)) {
 		throw new Error('There were no licenses found.');
 	}
 
-	reg_info_obj.registered = license.enterprise;
-	reg_info_obj.version = packageJson.version;
-	reg_info_obj.ram_allocation = license.ram_allocation;
+	regInfoObj.registered = license.enterprise;
+	regInfoObj.version = packageJson.version;
+	regInfoObj.ram_allocation = license.ram_allocation;
 	if (isNaN(license.exp_date)) {
-		reg_info_obj.license_expiration_date = license.enterprise ? license.exp_date : null;
+		regInfoObj.license_expiration_date = license.enterprise ? license.exp_date : null;
 	} else {
-		let exp_date = moment.utc(license.exp_date).format('YYYY-MM-DD');
-		reg_info_obj.license_expiration_date = license.enterprise ? exp_date : null;
+		let expDate = moment.utc(license.exp_date).format('YYYY-MM-DD');
+		regInfoObj.license_expiration_date = license.enterprise ? expDate : null;
 	}
-	return reg_info_obj;
+	return regInfoObj;
 }

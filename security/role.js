@@ -1,27 +1,27 @@
 'use strict';
 
-const insert = require('../dataLayer/insert');
-const search = require('../dataLayer/search');
-const delete_ = require('../dataLayer/delete');
-const validation = require('../validation/role_validation');
-const signalling = require('../utility/signalling');
+const insert = require('../dataLayer/insert.js');
+const search = require('../dataLayer/search.js');
+const delete_ = require('../dataLayer/delete.js');
+const validation = require('../validation/role_validation.js');
+const signalling = require('../utility/signalling.js');
 const uuidV4 = require('uuid').v4;
 const util = require('util');
-const terms = require('../utility/hdbTerms');
-const hdb_utils = require('../utility/common_utils');
-const p_search_search_by_value = search.searchByValue;
-const p_search_search_by_hash = search.searchByHash;
-const p_delete_delete = util.promisify(delete_.delete);
-const SearchObject = require('../dataLayer/SearchObject');
-const SearchByHashObject = require('../dataLayer/SearchByHashObject');
-const { hdb_errors, handleHDBError } = require('../utility/errors/hdbError');
-const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
-const { UserEventMsg } = require('../server/threads/itc');
+const terms = require('../utility/hdbTerms.ts');
+const hdbUtils = require('../utility/common_utils.js');
+const pSearchSearchByValue = search.searchByValue;
+const pSearchSearchByHash = search.searchByHash;
+const pDeleteDelete = util.promisify(delete_.delete);
+const SearchObject = require('../dataLayer/SearchObject.js');
+const SearchByHashObject = require('../dataLayer/SearchByHashObject.js');
+const { hdbErrors, handleHDBError } = require('../utility/errors/hdbError.js');
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
+const { UserEventMsg } = require('../server/threads/itc.js');
 
 module.exports = {
-	addRole: addRole,
-	alterRole: alterRole,
-	dropRole: dropRole,
+	addRole,
+	alterRole,
+	dropRole,
 	listRoles,
 };
 
@@ -46,14 +46,14 @@ function scrubRoleDetails(role) {
 }
 
 async function addRole(role) {
-	let validation_resp = validation.addRoleValidation(role);
-	if (validation_resp) {
-		throw validation_resp;
+	let validationResp = validation.addRoleValidation(role);
+	if (validationResp) {
+		throw validationResp;
 	}
 
 	role = scrubRoleDetails(role);
 
-	let search_obj = {
+	let searchObj = {
 		schema: 'system',
 		table: 'hdb_role',
 		search_attribute: 'role',
@@ -62,15 +62,15 @@ async function addRole(role) {
 		get_attributes: ['*'],
 	};
 
-	let search_role;
+	let searchRole;
 	try {
 		// here, and for other interactions, need convert to real array
-		search_role = Array.from((await p_search_search_by_value(search_obj)) || []);
+		searchRole = Array.from((await pSearchSearchByValue(searchObj)) || []);
 	} catch (err) {
 		throw handleHDBError(err);
 	}
 
-	if (search_role && search_role.length > 0) {
+	if (searchRole && searchRole.length > 0) {
 		throw handleHDBError(
 			new Error(),
 			HDB_ERROR_MSGS.ROLE_ALREADY_EXISTS(role.role),
@@ -83,7 +83,7 @@ async function addRole(role) {
 
 	if (!role.id) role.id = role.role;
 
-	let insert_object = {
+	let insertObject = {
 		operation: 'insert',
 		schema: 'system',
 		table: 'hdb_role',
@@ -91,7 +91,7 @@ async function addRole(role) {
 		records: [role],
 	};
 
-	await insert.insert(insert_object);
+	await insert.insert(insertObject);
 
 	signalling.signalUserChange(new UserEventMsg(process.pid));
 
@@ -100,28 +100,28 @@ async function addRole(role) {
 }
 
 async function alterRole(role) {
-	let validation_resp = validation.alterRoleValidation(role);
-	if (validation_resp) {
-		throw validation_resp;
+	let validationResp = validation.alterRoleValidation(role);
+	if (validationResp) {
+		throw validationResp;
 	}
 
 	role = scrubRoleDetails(role);
 
-	let update_object = {
+	let updateObject = {
 		operation: 'update',
 		schema: 'system',
 		table: 'hdb_role',
 		records: [role],
 	};
 
-	let update_response;
+	let updateResponse;
 	try {
-		update_response = await insert.update(update_object);
+		updateResponse = await insert.update(updateObject);
 	} catch (err) {
 		throw handleHDBError(err);
 	}
 
-	if (update_response && update_response?.message === 'updated 0 of 1 records') {
+	if (updateResponse && updateResponse?.message === 'updated 0 of 1 records') {
 		throw handleHDBError(new Error(), 'Invalid role id', HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
@@ -130,20 +130,20 @@ async function alterRole(role) {
 }
 
 async function dropRole(role) {
-	let validation_resp = validation.dropRoleValidation(role);
-	if (validation_resp) {
-		throw handleHDBError(new Error(), validation_resp, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
+	let validationResp = validation.dropRoleValidation(role);
+	if (validationResp) {
+		throw handleHDBError(new Error(), validationResp, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
-	let role_id_search = new SearchByHashObject(
+	let roleIdSearch = new SearchByHashObject(
 		terms.SYSTEM_SCHEMA_NAME,
 		terms.SYSTEM_TABLE_NAMES.ROLE_TABLE_NAME,
 		[role.id],
 		['role']
 	);
-	let role_name = Array.from(await p_search_search_by_hash(role_id_search));
+	let roleName = Array.from(await pSearchSearchByHash(roleIdSearch));
 
-	if (role_name.length === 0) {
+	if (roleName.length === 0) {
 		throw handleHDBError(
 			new Error(),
 			HDB_ERROR_MSGS.ROLE_NOT_FOUND,
@@ -154,7 +154,7 @@ async function dropRole(role) {
 		);
 	}
 
-	let search_user_by_roleid = new SearchObject(
+	let searchUserByRoleid = new SearchObject(
 		terms.SYSTEM_SCHEMA_NAME,
 		terms.SYSTEM_TABLE_NAMES.USER_TABLE_NAME,
 		'role',
@@ -162,21 +162,21 @@ async function dropRole(role) {
 		undefined,
 		['username', 'active']
 	);
-	let found_users = Array.from(await p_search_search_by_value(search_user_by_roleid));
-	let active_users = false;
-	if (hdb_utils.isEmptyOrZeroLength(found_users) === false) {
-		for (let k = 0; k < found_users.length; k++) {
-			if (found_users[k].active === true) {
-				active_users = true;
+	let foundUsers = Array.from(await pSearchSearchByValue(searchUserByRoleid));
+	let activeUsers = false;
+	if (hdbUtils.isEmptyOrZeroLength(foundUsers) === false) {
+		for (let k = 0; k < foundUsers.length; k++) {
+			if (foundUsers[k].active === true) {
+				activeUsers = true;
 				break;
 			}
 		}
 	}
 
-	if (active_users === true) {
+	if (activeUsers === true) {
 		throw handleHDBError(
 			new Error(),
-			`Cannot drop role ${role_name[0].role} as it has active user(s) tied to this role`,
+			`Cannot drop role ${roleName[0].role} as it has active user(s) tied to this role`,
 			HTTP_STATUS_CODES.CONFLICT,
 			undefined,
 			undefined,
@@ -184,20 +184,20 @@ async function dropRole(role) {
 		);
 	}
 
-	let delete_object = {
+	let deleteObject = {
 		table: 'hdb_role',
 		schema: 'system',
 		hash_values: [role.id],
 	};
 
-	await p_delete_delete(delete_object);
+	await pDeleteDelete(deleteObject);
 
 	signalling.signalUserChange(new UserEventMsg(process.pid));
-	return `${role_name[0].role} successfully deleted`;
+	return `${roleName[0].role} successfully deleted`;
 }
 
 async function listRoles() {
-	let search_obj = {
+	let searchObj = {
 		table: 'hdb_role',
 		schema: 'system',
 		hash_attribute: 'id',
@@ -206,5 +206,5 @@ async function listRoles() {
 		get_attributes: ['*'],
 	};
 
-	return p_search_search_by_value(search_obj);
+	return pSearchSearchByValue(searchObj);
 }

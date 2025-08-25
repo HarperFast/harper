@@ -1,41 +1,41 @@
 'use strict';
 
-const harperBridge = require('./harperBridge/harperBridge');
+const harperBridge = require('./harperBridge/harperBridge.js');
 // eslint-disable-next-line no-unused-vars
-const GetBackupObject = require('./GetBackupObject');
-const hdb_utils = require('../utility/common_utils');
-const hdb_terms = require('../utility/hdbTerms');
-const env_mgr = require('../utility/environment/environmentManager');
-const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
-const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
+const GetBackupObject = require('./GetBackupObject.js');
+const hdbUtils = require('../utility/common_utils.js');
+const hdbTerms = require('../utility/hdbTerms.ts');
+const envMgr = require('../utility/environment/environmentManager.js');
+const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 
 module.exports = getBackup;
 
 /**
  *
- * @param {GetBackupObject} get_backup_object
+ * @param {GetBackupObject} getBackupObject
  * @returns {Promise<void>}
  */
-async function getBackup(get_backup_object) {
-	if (hdb_utils.isEmpty(get_backup_object.schema)) {
+async function getBackup(getBackupObject) {
+	if (hdbUtils.isEmpty(getBackupObject.schema)) {
 		throw new Error(HDB_ERROR_MSGS.SCHEMA_REQUIRED_ERR);
 	}
 
-	if (hdb_utils.isEmpty(get_backup_object.table)) {
+	if (hdbUtils.isEmpty(getBackupObject.table)) {
 		throw new Error(HDB_ERROR_MSGS.TABLE_REQUIRED_ERR);
 	}
 
-	const invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(get_backup_object.schema, get_backup_object.table);
-	if (invalid_schema_table_msg) {
+	const invalidSchemaTableMsg = hdbUtils.checkSchemaTableExist(getBackupObject.schema, getBackupObject.table);
+	if (invalidSchemaTableMsg) {
 		throw handleHDBError(
 			new Error(),
-			invalid_schema_table_msg,
+			invalidSchemaTableMsg,
 			HTTP_STATUS_CODES.NOT_FOUND,
-			hdb_terms.LOG_LEVELS.ERROR,
-			invalid_schema_table_msg,
+			hdbTerms.LOG_LEVELS.ERROR,
+			invalidSchemaTableMsg,
 			true
 		);
 	}
 
-	return await harperBridge.getBackup(read_audit_log_object);
+	return await harperBridge.getBackup(readAuditLogObject);
 }

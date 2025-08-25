@@ -1,31 +1,31 @@
 'use strict';
 
-const hdb_terms = require('../../../../utility/hdbTerms');
-const lmdb_create_records = require('./lmdbCreateRecords');
-const InsertObject = require('../../../InsertObject');
+const hdbTerms = require('../../../../utility/hdbTerms.ts');
+const lmdbCreateRecords = require('./lmdbCreateRecords.js');
+const InsertObject = require('../../../InsertObject.js');
 const fs = require('fs-extra');
-const { getSchemaPath } = require('../lmdbUtility/initializePaths');
+const { getSchemaPath } = require('../lmdbUtility/initializePaths.js');
 
 module.exports = lmdbCreateSchema;
 
 /**
  * creates the meta data for the schema
- * @param create_schema_obj
+ * @param createSchemaObj
  */
-async function lmdbCreateSchema(create_schema_obj) {
+async function lmdbCreateSchema(createSchemaObj) {
 	let records = [
 		{
-			name: create_schema_obj.schema,
+			name: createSchemaObj.schema,
 			createddate: Date.now(),
 		},
 	];
-	let insert_object = new InsertObject(
-		hdb_terms.SYSTEM_SCHEMA_NAME,
-		hdb_terms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME,
+	let insertObject = new InsertObject(
+		hdbTerms.SYSTEM_SCHEMA_NAME,
+		hdbTerms.SYSTEM_TABLE_NAMES.SCHEMA_TABLE_NAME,
 		undefined,
 		records
 	);
 
-	await lmdb_create_records(insert_object);
-	await fs.mkdirp(getSchemaPath(create_schema_obj.schema));
+	await lmdbCreateRecords(insertObject);
+	await fs.mkdirp(getSchemaPath(createSchemaObj.schema));
 }

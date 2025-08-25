@@ -1,4 +1,4 @@
-const validator = require('./validationWrapper');
+const validator = require('./validationWrapper.js');
 
 const constraints = {
 	user: {
@@ -14,6 +14,6 @@ const constraints = {
 		presence: true,
 	},
 };
-module.exports = function (delete_object) {
-	return validator.validateObject(delete_object, constraints);
+module.exports = function (deleteObject) {
+	return validator.validateObject(deleteObject, constraints);
 };

@@ -2,14 +2,14 @@
 
 const Joi = require('joi');
 const { string, boolean, array } = Joi.types();
-const hdb_terms = require('../../utility/hdbTerms');
-const validator = require('../validationWrapper');
+const hdbTerms = require('../../utility/hdbTerms.ts');
+const validator = require('../validationWrapper.js');
 
 module.exports = updateRemoteSourceValidator;
 
 function updateRemoteSourceValidator(req) {
 	const schema = Joi.object({
-		operation: string.valid(hdb_terms.OPERATIONS_ENUM.ADD_NODE, hdb_terms.OPERATIONS_ENUM.UPDATE_NODE).required(),
+		operation: string.valid(hdbTerms.OPERATIONS_ENUM.ADD_NODE, hdbTerms.OPERATIONS_ENUM.UPDATE_NODE).required(),
 		node_name: string.required(),
 		subscriptions: array
 			.items({

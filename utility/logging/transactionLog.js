@@ -1,18 +1,18 @@
 'use strict';
 
-const hdb_terms = require('../hdbTerms');
-const nats_utils = require('../../server/nats/utility/natsUtils');
-const hdb_utils = require('../common_utils');
-const env_mgr = require('../environment/environmentManager');
-const crypto_hash = require('../../security/cryptoHash');
-const log = require('./harper_logger');
-const { handleHDBError, hdb_errors } = require('../errors/hdbError');
-const { HTTP_STATUS_CODES } = hdb_errors;
+const hdbTerms = require('../hdbTerms.ts');
+const natsUtils = require('../../server/nats/utility/natsUtils.js');
+const hdbUtils = require('../common_utils.js');
+const envMgr = require('../environment/environmentManager.js');
+const cryptoHash = require('../../security/cryptoHash.js');
+const log = require('./harper_logger.js');
+const { handleHDBError, hdbErrors } = require('../errors/hdbError.js');
+const { HTTP_STATUS_CODES } = hdbErrors;
 const {
 	readTransactionLogValidator,
 	deleteTransactionLogsBeforeValidator,
-} = require('../../validation/transactionLogValidator');
-const harperBridge = require('../../dataLayer/harperBridge/harperBridge');
+} = require('../../validation/transactionLogValidator.js');
+const harperBridge = require('../../dataLayer/harperBridge/harperBridge.js');
 
 const CLUSTERING_DISABLED_MSG = 'This operation relies on clustering and cannot run with it disable.';
 const PARTIAL_DELETE_SUCCESS_MSG = 'Logs successfully deleted from transaction log.';
@@ -30,11 +30,11 @@ async function readTransactionLog(req) {
 	}
 
 	req.database = req.database ?? req.schema ?? 'data';
-	const invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(req.database, req.table);
-	if (invalid_schema_table_msg) {
+	const invalidSchemaTableMsg = hdbUtils.checkSchemaTableExist(req.database, req.table);
+	if (invalidSchemaTableMsg) {
 		throw handleHDBError(
 			new Error(),
-			invalid_schema_table_msg,
+			invalidSchemaTableMsg,
 			HTTP_STATUS_CODES.NOT_FOUND,
 			undefined,
 			undefined,
@@ -42,7 +42,7 @@ async function readTransactionLog(req) {
 		);
 	}
 
-	if (!env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+	if (!envMgr.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
 		log.info('Reading HarperDB logs used by Plexus');
 
 		if (req.from || req.to) {
@@ -63,9 +63,9 @@ async function readTransactionLog(req) {
  * @returns {Promise<*[]>}
  */
 async function* readTransactionLogNats(req) {
-	const stream_name = crypto_hash.createNatsTableStreamName(req.database, req.table);
+	const stream_name = cryptoHash.createNatsTableStreamName(req.database, req.table);
 	// Using consumer and sub config we can filter a Nats stream with from date and max messages.
-	const transactions = await nats_utils.viewStreamIterator(stream_name, parseInt(req.from), req.limit);
+	const transactions = await natsUtils.viewStreamIterator(stream_name, parseInt(req.from), req.limit);
 
 	for await (const tx of transactions) {
 		// Nats uses nanosecond timestamps in their stream msgs but only accepts milliseconds when filtering streams.
@@ -75,7 +75,7 @@ async function* readTransactionLogNats(req) {
 		// If we have reached the 'to' timestamp exit loop.
 		if (req.to && timestamp > req.to) break;
 
-		const formatted_tx = {
+		const formattedTx = {
 			operation: tx?.entry?.operation,
 			user: tx?.entry?.__origin?.user,
 			timestamp,
@@ -83,9 +83,9 @@ async function* readTransactionLogNats(req) {
 			attributes: tx?.entry?.attributes,
 		};
 
-		if (tx?.entry?.operation === hdb_terms.OPERATIONS_ENUM.DELETE) formatted_tx.hash_values = tx?.entry?.hash_values;
+		if (tx?.entry?.operation === hdbTerms.OPERATIONS_ENUM.DELETE) formattedTx.hash_values = tx?.entry?.hash_values;
 
-		yield formatted_tx;
+		yield formattedTx;
 	}
 }
 
@@ -102,17 +102,17 @@ async function deleteTransactionLogsBefore(req) {
 	}
 
 	req.database = req.database ?? req.schema ?? 'data';
-	if (!env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+	if (!envMgr.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
 		log.info('Delete transaction logs called for Plexus');
 		return harperBridge.deleteAuditLogsBefore(req);
 	}
 
 	const { database, table, timestamp } = req;
-	const invalid_schema_table_msg = hdb_utils.checkSchemaTableExist(database, table);
-	if (invalid_schema_table_msg) {
+	const invalidSchemaTableMsg = hdbUtils.checkSchemaTableExist(database, table);
+	if (invalidSchemaTableMsg) {
 		throw handleHDBError(
 			new Error(),
-			invalid_schema_table_msg,
+			invalidSchemaTableMsg,
 			HTTP_STATUS_CODES.NOT_FOUND,
 			undefined,
 			undefined,
@@ -120,34 +120,34 @@ async function deleteTransactionLogsBefore(req) {
 		);
 	}
 
-	const stream_name = crypto_hash.createNatsTableStreamName(database, table);
-	const { jsm } = await nats_utils.getNATSReferences();
-	const stream_info = await nats_utils.getStreamInfo(stream_name);
+	const stream_name = cryptoHash.createNatsTableStreamName(database, table);
+	const { jsm } = await natsUtils.getNATSReferences();
+	const streamInfo = await natsUtils.getStreamInfo(stream_name);
 
 	// Get first TS from first message in stream. If TS in req is less than/equal to
 	// first stream message TS there are no messages to purge.
-	const first_log_timestamp = new Date(stream_info.state.first_ts).getTime();
-	if (timestamp <= first_log_timestamp) return `No transactions exist before: ${timestamp}`;
+	const firstLogTimestamp = new Date(streamInfo.state.first_ts).getTime();
+	if (timestamp <= firstLogTimestamp) return `No transactions exist before: ${timestamp}`;
 
 	let response = PARTIAL_DELETE_SUCCESS_MSG;
 	let seq;
-	const last_log_timestamp = new Date(stream_info.state.last_ts).getTime();
+	const lastLogTimestamp = new Date(streamInfo.state.last_ts).getTime();
 	// If req TS is greater than last message TS in stream we want to purge all messages
 	// in the stream. To do this we get the last seq number.
-	if (timestamp > last_log_timestamp) {
-		// We plus one so that last_seq msg is included in the purge.
-		seq = stream_info.state.last_seq + 1;
+	if (timestamp > lastLogTimestamp) {
+		// We plus one so that lastSeq msg is included in the purge.
+		seq = streamInfo.state.last_seq + 1;
 		response = ALL_DELETE_SUCCESS_MSG;
 	} else {
 		// If we get here the req TS falls somewhere in-between first and last stream message TS.
 		// Using view stream filters get messages from a specific time onward with max message count of one.
-		const transaction = await nats_utils.viewStream(stream_name, parseInt(timestamp), 1);
+		const transaction = await natsUtils.viewStream(stream_name, parseInt(timestamp), 1);
 		seq = transaction[0].nats_sequence;
 	}
 
 	// Nats doesn't have the option to purge streams by timestamp only sequence.
 	// This will purge all messages upto but not including seq.
-	await nats_utils.purgeTableStream(database, table, { seq });
+	await natsUtils.purgeTableStream(database, table, { seq });
 
 	return response;
 }

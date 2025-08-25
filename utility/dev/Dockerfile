@@ -15,9 +15,10 @@ COPY bin/dev.js ./bin/
 COPY utility/packageUtils.js utility/hdbTerms.ts ./utility/
 COPY server/nats/utility/* ./server/nats/utility/
 
-RUN npm i
+RUN npm ci
 
 COPY . /opt/harper/
+RUN rm -rf ts-build && npx tsc || true
 
 RUN npm link
 

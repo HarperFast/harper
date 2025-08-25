@@ -1,8 +1,8 @@
 'use strict';
 
-const env = require('../../../utility/environment/environmentManager');
+const env = require('../../../utility/environment/environmentManager.js');
 env.initSync();
-const terms = require('../../../utility/hdbTerms');
+const terms = require('../../../utility/hdbTerms.ts');
 
 /**
  * Returns header timeout value from config file

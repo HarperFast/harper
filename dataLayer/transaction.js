@@ -1,6 +1,6 @@
 'use strict';
 
-const harperBridge = require('./harperBridge/harperBridge');
+const harperBridge = require('./harperBridge/harperBridge.js');
 
 module.exports = {
 	writeTransaction,

@@ -51,7 +51,7 @@ describe('Tests for delete.js', () => {
 
 	before(() => {
 		log_info_spy = sandbox.spy(log, 'info');
-		_delete.__set__('p_global_schema', p_global_schema_stub);
+		_delete.__set__('pGlobalSchema', p_global_schema_stub);
 		schema_table_exist_stub = sandbox.stub(hdb_utils, 'checkSchemaTableExist').returns(undefined);
 	});
 
