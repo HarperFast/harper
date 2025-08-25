@@ -1,6 +1,7 @@
 require('../test_utils');
 const assert = require('assert');
 const { throttle } = require('../../server/throttle');
+const { setTimeout: delay } = require('node:timers/promises');
 describe('throttle test', () => {
 	it('will throttle calls to a function', async () => {
 		let calledCount = 0;
@@ -58,6 +59,3 @@ describe('throttle test', () => {
 		}
 	});
 });
-function delay(ms) {
-	return new Promise((resolve) => setTimeout(resolve, ms)); // wait for audit log removal and deletion
-}
