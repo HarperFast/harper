@@ -604,7 +604,7 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 			(node_request, node_response) => {
 				// if the request queue is taking too long, we want to return an error
 				node_response.statusCode = 503;
-				node_response.end('Service Unavailable');
+				node_response.end('Service unavailable, exceeded request queue limit');
 				recordAction(true, 'service-unavailable', port);
 			},
 			(node_request, node_response) => {
@@ -614,10 +614,11 @@ function getHTTPServer(port, secure, is_operations_server, is_mtls) {
 		let server = (http_servers[port] = (secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer)(
 			options,
 			(node_request, node_response) => {
-				// throttle the POST requests because they are more likely to be slow and we don't want to block them to
-				// slow down other activity
-				if (node_request.method === 'POST') throttledRequestHandler(node_request, node_response);
-				else requestHandler(node_request, node_response);
+				// throttle the requests that can make data modifications because they are more likely to be slow and we don't
+				// want to block or slow down other activity
+				const method = node_request.method;
+				if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(node_request, node_response);
+				else throttledRequestHandler(node_request, node_response);
 			}
 		));
 
