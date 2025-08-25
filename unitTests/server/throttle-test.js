@@ -42,6 +42,22 @@ describe('throttle test', () => {
 			while (performance.now() < start + 10) {}
 		}
 	});
+	it('throttled calls propagate errors', async () => {
+		let returned = 0;
+		let throttledFunction = throttle(errorFunction);
+		for (let i = 0; i < 10; i++) {
+			try {
+				await throttledFunction();
+				returned++;
+			} catch (error) {
+				assert.equal(error.message, 'test error');
+			}
+		}
+		assert.equal(returned, 0);
+		function errorFunction() {
+			throw new Error('test error');
+		}
+	});
 });
 function delay(ms) {
 	return new Promise((resolve) => setTimeout(resolve, ms)); // wait for audit log removal and deletion
