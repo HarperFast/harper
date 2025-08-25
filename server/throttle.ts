@@ -1,8 +1,9 @@
 import logger from '../utility/logging/logger.js';
 const MAX_EVENT_TURN_TIME = 1000;
-const DEFAULT_MAX_QUEUE = 20;
+const DEFAULT_MAX_QUEUE_TIME = 20_000; // 20 seconds
 const lastWarning = 0;
 const WARNING_INTERVAL = 30000;
+let averageEventCycleTime = 0;
 /**
  * Throttle function to limit the number of calls to a function so that the event queue doesn't get overwhelmed.
  * @param fn
@@ -13,12 +14,13 @@ export function throttle(
 	fn: (...args: any) => any,
 	onLimitExceeded?: (...args: any) => any,
 	getSourceDescription?: (...args: any) => any,
-	limit = DEFAULT_MAX_QUEUE
+	maxQueueTimeLimit = DEFAULT_MAX_QUEUE_TIME
 ) {
 	let queuedCalls: any[];
 	return function (...args: any[]) {
 		if (queuedCalls) {
-			if (queuedCalls.length > limit) {
+			// this is an estimate of the time an event will take to process, based on the average event cycle time and the queue depth
+			if (queuedCalls.length * averageEventCycleTime > maxQueueTimeLimit) {
 				return onLimitExceeded(...args);
 			}
 			return new Promise((resolve, reject) => {
@@ -42,6 +44,8 @@ export function throttle(
 	function waitForNextCycle(startTime: number, args: any) {
 		setImmediate(() => {
 			const now = performance.now();
+			// get the decaying/running average of the event cycle time
+			averageEventCycleTime = (averageEventCycleTime * 4 + now - startTime) / 5;
 			if (now - startTime > MAX_EVENT_TURN_TIME && lastWarning + WARNING_INTERVAL < now) {
 				logger.warn?.(
 					`JavaScript execution has taken too long and is not allowing proper event queue cycling ${getSourceDescription?.(...args) ?? ''}, consider using 'await new Promise(setImmediate)' in code that will execute for a long duration`
