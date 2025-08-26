@@ -1102,13 +1102,15 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 								// if we have more than just a txn time, send it
 								ws.send(encodingBuffer.subarray(encodingStart, position));
 								logger.debug?.(connectionId, 'Sent message, size:', position - encodingStart);
-								recordAction(
-									position - encodingStart,
-									'bytes-sent',
-									`${remoteNodeName}.${databaseName}`,
-									'replication',
-									'egress'
-								);
+								if (databaseName !== 'system') {
+									recordAction(
+										position - encodingStart,
+										'bytes-sent',
+										`${remoteNodeName}.${databaseName}`,
+										'replication',
+										'egress'
+									);
+								}
 							} else logger.debug?.(connectionId, 'skipping empty transaction');
 						};
 
@@ -1365,13 +1367,15 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 				decoder.position = start + eventLength;
 			} while (decoder.position < body.byteLength);
 			outstandingCommits++;
-			recordAction(
-				body.byteLength,
-				'bytes-received',
-				`${remoteNodeName}.${databaseName}.${event?.table || 'unknown_table'}`,
-				'replication',
-				'ingest'
-			);
+			if (databaseName !== 'system') {
+				recordAction(
+					body.byteLength,
+					'bytes-received',
+					`${remoteNodeName}.${databaseName}.${event?.table || 'unknown_table'}`,
+					'replication',
+					'ingest'
+				);
+			}
 			if (outstandingCommits > MAX_OUTSTANDING_COMMITS && !replicationPaused) {
 				replicationPaused = true;
 				ws.pause();
@@ -1386,13 +1390,15 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 				async onCommit() {
 					if (event) {
 						const latency = Date.now() - event.timestamp;
-						recordAction(
-							latency,
-							'replication-latency',
-							remoteNodeName + '.' + databaseName + '.' + event.table,
-							event.type,
-							'ingest'
-						);
+						if (databaseName !== 'system') {
+							recordAction(
+								latency,
+								'replication-latency',
+								remoteNodeName + '.' + databaseName + '.' + event.table,
+								event.type,
+								'ingest'
+							);
+						}
 					}
 					outstandingCommits--;
 					if (replicationPaused) {
