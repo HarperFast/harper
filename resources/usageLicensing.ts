@@ -10,7 +10,7 @@ import { databases } from './databases.ts';
 import path from 'node:path';
 import * as configUtils from '../config/configUtils.js';
 import * as fs from 'node:fs/promises';
-import { Stats } from 'node:fs';
+import type { Stats } from 'node:fs';
 import { watch } from 'chokidar';
 
 class ExistingLicenseError extends Error {}
