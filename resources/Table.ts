@@ -49,6 +49,7 @@ import { appendHeader } from '../server/serverHelpers/Headers';
 import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject } from './blob';
 import { onStorageReclamation } from '../server/storageReclamation';
+import { throttle } from '../server/throttle';
 
 type Attribute = {
 	name: string;
@@ -2958,6 +2959,23 @@ export function makeTable(options) {
 			delete_callback_handle?.remove();
 		}
 	}
+	const throttledCallToSource = throttle(
+		async (id, sourceContext, existingEntry) => {
+			// find the first data source that will fulfill our request for data
+			for (const source of TableResource.sources) {
+				if (source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
+					if (source.available?.(existingEntry) === false) continue;
+					sourceContext.source = source;
+					const resolvedData = await source.get(id, sourceContext);
+					if (resolvedData) return resolvedData;
+				}
+			}
+		},
+		() => {
+			throw new ServerError('Service unavailable, exceeded request queue limit for resolving cache record', 503);
+		}
+	);
+
 	TableResource.updatedAttributes(); // on creation, update accessors as well
 	const prototype = TableResource.prototype;
 	if (expiration_ms) TableResource.setTTLExpiration(expiration_ms / 1000);
@@ -3421,15 +3439,7 @@ export function makeTable(options) {
 					let updated_record;
 					let has_changes, invalidated;
 					try {
-						// find the first data source that will fulfill our request for data
-						for (const source of TableResource.sources) {
-							if (source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
-								if (source.available?.(existing_entry) === false) continue;
-								source_context.source = source;
-								updated_record = await source.get(id, source_context);
-								if (updated_record) break;
-							}
-						}
+						updated_record = await throttledCallToSource(id, source_context, existing_entry);
 						invalidated = metadata_flags & INVALIDATED;
 						let version = source_context.lastModified || (invalidated && existing_version);
 						has_changes = invalidated || version > existing_version || !existing_record;
