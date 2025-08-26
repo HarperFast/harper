@@ -294,7 +294,7 @@ export async function startOnMainThread(options) {
 			}
 			existingWorkerEntry.connected = false;
 			if (connection.finished) return; // intentionally closed connection
-			if (env.get(CONFIG_PARAMS.REPLICATION_FAILOVER) === false) {
+			if (!env.get(CONFIG_PARAMS.REPLICATION_FAILOVER)) {
 				// if failover is disabled, immediately return
 				return;
 			}

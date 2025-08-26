@@ -576,6 +576,7 @@ export const CONFIG_PARAMS = {
 	HTTP_MTLS_CERTIFICATEVERIFICATION_FAILUREMODE: 'http_mtls_certificateVerification_failureMode',
 	HTTP_MAXHEADERSIZE: 'http_maxHeaderSize',
 	HTTP_THREADRANGE: 'http_threadRange',
+	HTTP_REQUESTQUEUELIMIT: 'http_requestQueueLimit',
 	HTTP_HTTP2: 'http_http2',
 	LICENSE_MODE: 'license_mode',
 	LICENSE_REGION: 'license_region',

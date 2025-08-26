@@ -23,6 +23,7 @@ import { Readable } from 'node:stream';
 import { server } from './Server.ts';
 import { setPortServerMap, SERVERS } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
+import { throttle } from './throttle';
 import { WebSocketServer } from 'ws';
 
 const { errorToString } = harperLogger;
@@ -248,9 +249,7 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 			});
 		}
 		const licenseWarning = checkMemoryLimit();
-		const server = (httpServers[port] = (
-			secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer
-		)(options, async (nodeRequest: IncomingMessage, nodeResponse: any) => {
+		const requestHandler = async (nodeRequest: IncomingMessage, nodeResponse: any) => {
 			const startTime = performance.now();
 			let requestId = 0;
 			try {
@@ -399,6 +398,26 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 					else harperLogger.info(error);
 				} else harperLogger.error(error);
 			}
+		};
+		// create a throttled version of the request handler, so we can throttle POST requests
+		const throttledRequestHandler = throttle(
+			requestHandler,
+			(nodeRequest: IncomingMessage, nodeResponse: any) => {
+				// if the request queue is taking too long, we want to return an error
+				nodeResponse.statusCode = 503;
+				nodeResponse.end('Service unavailable, exceeded request queue limit');
+				recordAction(true, 'service-unavailable', port);
+			},
+			env.get(serverPrefix + '_requestQueueLimit')
+		);
+		const server = (httpServers[port] = (
+			secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer
+		)(options, (nodeRequest: IncomingMessage, nodeResponse: any) => {
+			// throttle the requests that can make data modifications because they are more likely to be slow and we don't
+			// want to block or slow down other activity
+			const method = nodeRequest.method;
+			if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
+			else throttledRequestHandler(nodeRequest, nodeResponse);
 		}));
 
 		// Node v16 and earlier required setting this as a property; but carefully, we must only set if it is actually a
