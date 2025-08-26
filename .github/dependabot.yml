@@ -1,6 +1,79 @@
 version: 2
 updates:
-  - package-ecosystem: 'npm' # See documentation for possible values
-    directory: '/' # Location of package manifests
+  # Main package.json updates
+  - package-ecosystem: 'npm'
+    directory: '/'
     schedule:
       interval: 'weekly'
+      day: 'monday'
+      time: '09:00' # UTC
+    open-pull-requests-limit: 10
+    # This configuration groups dependency updates by package ecosystem to reduce the number of pull requests
+    # created by Dependabot. Only minor and patch version updates are grouped together; major version updates
+    # will create individual PRs for easier review due to their potential for breaking changes.
+    # 
+    # Documentation: https://docs.github.com/en/code-security/dependabot/working-with-dependabot/dependabot-options-reference#groups--
+    groups:
+      # Group AWS SDK updates
+      aws-dependencies:
+        patterns:
+          - "@aws-sdk/*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group turf updates
+      turf-dependencies:
+        patterns:
+          - "@turf/*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group fastify updates
+      fastify-dependencies:
+        patterns:
+          - "@fastify/*"
+        update-types:
+          - "minor"
+          - "patch"
+      # Group all other patch updates
+      patch:
+        patterns:
+          - "*"
+        update-types:
+          - "patch"
+      # Group all production minor updates
+      minor-production:
+        dependency-type: "production"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+      # Group all development minor updates
+      minor-development:
+        dependency-type: "development"
+        patterns:
+          - "*"
+        update-types:
+          - "minor"
+      # Group major turf updates
+      turf-dependencies:
+        patterns:
+          - "@turf/*"
+        update-types:
+          - "major"
+      # What falls through should be individual major updates. Scoped major updates might be better grouped. TBD.
+    # Add labels to PRs
+    labels:
+      - "dependencies"
+      - "automated"
+    # Customize commit message
+    commit-message:
+      prefix: "chore"
+      include: "scope"
+    # Allow specific updates
+    allow:
+      - dependency-type: "all"
+    # Ignore specific dependencies if needed
+    ignore:
+      # Completely ignore NATS
+      - dependency-name: "nats"

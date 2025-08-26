@@ -90,7 +90,28 @@ class SimpleCacheSource extends tables.FourProp {
 		return super.get(query);
 	}
 }
-export class SimpleCache extends tables.SimpleCache.sourcedFrom(SimpleCacheSource) {
+tables.SimpleCache.sourcedFrom(SimpleCacheSource);
+export class SimpleCache extends tables.SimpleCache {
+	static loadAsInstance = false;
+	post(query, data) {
+		if (data.invalidate) this.invalidate();
+		if (data.customResponse) {
+			return {
+				status: 222,
+				headers: {
+					'x-custom-header': 'custom value',
+				},
+				data: { property: 'custom response' },
+			};
+		}
+	}
+	async delete(query) {
+		tables.SimpleCache.lastDeleteData = await this.getContext()?.data;
+		return super.delete(query);
+	}
+}
+export class SimpleCacheLoadAsInstance extends tables.SimpleCache {
+	static loadAsInstance = true;
 	post(data) {
 		if (data.invalidate) this.invalidate();
 		if (data.customResponse) {

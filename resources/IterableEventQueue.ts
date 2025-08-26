@@ -49,12 +49,12 @@ export class IterableEventQueue extends EventEmitter {
 			}
 		});
 	}
-	on(event_name, listener) {
-		if (event_name === 'data' && !this.hasDataListeners) {
+	on(eventName, listener) {
+		if (eventName === 'data' && !this.hasDataListeners) {
 			this.hasDataListeners = true;
 			while (this.queue?.length > 0) listener(this.queue.shift());
 		}
-		return super.on(event_name, listener);
+		return super.on(eventName, listener);
 	}
 }
 

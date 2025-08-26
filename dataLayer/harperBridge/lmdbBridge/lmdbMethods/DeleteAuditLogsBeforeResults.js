@@ -5,14 +5,14 @@
  */
 class DeleteAuditLogsBeforeResults {
 	/**
-	 * @param {number} start_timestamp
-	 * @param {number} end_timestamp
-	 * @param {number} transactions_deleted
+	 * @param {number} startTimestamp
+	 * @param {number} endTimestamp
+	 * @param {number} transactionsDeleted
 	 */
-	constructor(start_timestamp = undefined, end_timestamp = undefined, transactions_deleted = 0) {
-		this.start_timestamp = start_timestamp;
-		this.end_timestamp = end_timestamp;
-		this.transactions_deleted = transactions_deleted;
+	constructor(startTimestamp = undefined, endTimestamp = undefined, transactionsDeleted = 0) {
+		this.start_timestamp = startTimestamp;
+		this.end_timestamp = endTimestamp;
+		this.transactions_deleted = transactionsDeleted;
 	}
 }
 

@@ -300,8 +300,7 @@ describe('Test permissionsTranslator module', function () {
 		createStructureUserPermissions_spy = sandbox.spy(
 			permissionsTranslator_rw.__get__('createStructureUserPermissions')
 		);
-		createStructureUserPermissions_rw = permissionsTranslator_rw.__set__(
-			'createStructureUserPermissions',
+		createStructureUserPermissions_rw = permissionsTranslator_rw.__set__('createStructureUserPermissions',
 			createStructureUserPermissions_spy
 		);
 		global.hdb_schema = cloneDeep(TEST_SCHEMA_DOG_BREED);

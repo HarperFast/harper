@@ -22,6 +22,7 @@ authentication:
   refreshTokenTimeout: 30d
 analytics:
   aggregatePeriod: 60
+  replicate: false
 replication:
   securePort: 9933
   enableRootCAs: true

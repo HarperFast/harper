@@ -1,6 +1,6 @@
 'use strict';
 
-const nats_terms = require('./natsTerms');
+const natsTerms = require('./natsTerms.js');
 
 /**
  * This class represents the config consumed by the Nats hub server.
@@ -9,23 +9,23 @@ class HubConfigObject {
 	constructor(
 		port,
 		node_name,
-		pid_file,
+		pidFile,
 		cert_file,
 		key_file,
 		ca_file,
 		insecure,
 		verify,
-		leafnodes_port,
-		cluster_name,
-		cluster_port,
-		cluster_routes,
-		sys_users,
-		hdb_users
+		leafnodesPort,
+		clusterName,
+		clusterPort,
+		clusterRoutes,
+		sysUsers,
+		hdbUsers
 	) {
 		this.port = port;
 		if (ca_file === null) ca_file = undefined;
-		this.server_name = node_name + nats_terms.SERVER_SUFFIX.HUB;
-		this.pid_file = pid_file;
+		this.server_name = node_name + natsTerms.SERVER_SUFFIX.HUB;
+		this.pid_file = pidFile;
 		this.max_payload = 67108864;
 		this.reconnect_error_reports = 100;
 		this.jetstream = {
@@ -39,7 +39,7 @@ class HubConfigObject {
 			verify,
 		};
 		this.leafnodes = {
-			port: leafnodes_port,
+			port: leafnodesPort,
 			tls: {
 				cert_file,
 				key_file,
@@ -48,9 +48,9 @@ class HubConfigObject {
 			},
 		};
 		this.cluster = {
-			name: cluster_name,
-			port: cluster_port,
-			routes: cluster_routes,
+			name: clusterName,
+			port: clusterPort,
+			routes: clusterRoutes,
 			tls: {
 				cert_file,
 				key_file,
@@ -61,10 +61,10 @@ class HubConfigObject {
 		};
 		this.accounts = {
 			SYS: {
-				users: sys_users,
+				users: sysUsers,
 			},
 			HDB: {
-				users: hdb_users,
+				users: hdbUsers,
 			},
 		};
 		this.system_account = 'SYS';

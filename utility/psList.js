@@ -2,12 +2,12 @@
 const util = require('util');
 const path = require('path');
 const childProcess = require('child_process');
-const exec_file = util.promisify(childProcess.execFile);
+const execFile = util.promisify(childProcess.execFile);
 
 const TEN_MEGABYTES = 1000 * 1000 * 10;
 
 module.exports = {
-	findPs: findPs,
+	findPs,
 };
 
 /**
@@ -17,23 +17,23 @@ module.exports = {
  * @returns {Promise<Array>}
  */
 async function findPs(name) {
-	let ps_list = {};
+	let psList = {};
 
 	try {
 		await Promise.all(
 			['comm', 'args', 'ppid', 'uid', '%cpu', '%mem'].map(async (cmd) => {
-				let { stdout } = await exec_file('ps', ['wwxo', `pid,${cmd}`], { maxBuffer: TEN_MEGABYTES });
+				let { stdout } = await execFile('ps', ['wwxo', `pid,${cmd}`], { maxBuffer: TEN_MEGABYTES });
 
 				for (let line of stdout.trim().split('\n').slice(1)) {
 					line = line.trim();
 					const [pid] = line.split(' ', 1);
 					const val = line.slice(pid.length + 1).trim();
 
-					if (ps_list[pid] === undefined) {
-						ps_list[pid] = {};
+					if (psList[pid] === undefined) {
+						psList[pid] = {};
 					}
 
-					ps_list[pid][cmd] = val;
+					psList[pid][cmd] = val;
 				}
 			})
 		);
@@ -43,7 +43,7 @@ async function findPs(name) {
 
 	// Filter out inconsistencies as there might be raceS
 	// issues due to differences in `ps` between the spawns
-	return Object.entries(ps_list)
+	return Object.entries(psList)
 		.filter(
 			([, value]) =>
 				value.comm &&

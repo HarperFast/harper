@@ -1,8 +1,8 @@
 'use strict';
 
 const Joi = require('joi');
-const validator = require('../validationWrapper');
-const { route_constraints } = require('../configValidator');
+const validator = require('../validationWrapper.js');
+const { routeConstraints } = require('../configValidator.js');
 
 module.exports = {
 	setRoutesValidator,
@@ -12,7 +12,7 @@ module.exports = {
 function setRoutesValidator(req) {
 	const schema = Joi.object({
 		server: Joi.valid('hub', 'leaf'),
-		routes: route_constraints.required(),
+		routes: routeConstraints.required(),
 	});
 
 	return validator.validateBySchema(req, schema);
@@ -20,7 +20,7 @@ function setRoutesValidator(req) {
 
 function deleteRoutesValidator(req) {
 	const schema = Joi.object({
-		routes: route_constraints.required(),
+		routes: routeConstraints.required(),
 	});
 
 	return validator.validateBySchema(req, schema);

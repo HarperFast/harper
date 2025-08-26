@@ -57,29 +57,29 @@ module.exports = {
 	validateBySchema,
 };
 
-function validateObject(object, file_constraints) {
-	if (!object || !file_constraints) {
+function validateObject(object, fileConstraints) {
+	if (!object || !fileConstraints) {
 		return new Error('validateObject parameters were null');
 	}
 
-	let validate_result = validate(object, file_constraints, { format: 'flat' });
-	if (!validate_result) return null;
-	return new Error(validate_result);
+	let validateResult = validate(object, fileConstraints, { format: 'flat' });
+	if (!validateResult) return null;
+	return new Error(validateResult);
 }
 
 /**
  * Use this function for calls that support async/await
  * @param object - the json object being validated
- * @param file_constraints - validation rules for the json object
+ * @param fileConstraints - validation rules for the json object
  * @returns {Promise<Error|null>}
  */
-async function validateObjectAsync(object, file_constraints) {
-	if (!object || !file_constraints) {
+async function validateObjectAsync(object, fileConstraints) {
+	if (!object || !fileConstraints) {
 		return new Error('validateObject parameters were null');
 	}
 
 	try {
-		await validate.async(object, file_constraints, { format: 'flat' });
+		await validate.async(object, fileConstraints, { format: 'flat' });
 	} catch (err) {
 		// unroll the array and make a full error message.
 		let msg = err.join(`,`);

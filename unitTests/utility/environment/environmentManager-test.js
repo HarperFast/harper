@@ -139,7 +139,7 @@ describe('Test environmentManager module', () => {
 		});
 
 		it('Tests config env initialized', () => {
-			env_rw.__set__('prop_file_exists', false);
+			env_rw.__set__('propFileExists', false);
 			env_rw.__set__('doesPropFileExist', does_prop_file_exist_stub);
 
 			env_rw.initSync();

@@ -1,7 +1,7 @@
 'use strict';
 
 const Joi = require('joi');
-const validator = require('./validationWrapper');
+const validator = require('./validationWrapper.js');
 
 module.exports = {
 	readTransactionLogValidator,

@@ -1,6 +1,6 @@
 FROM alpine:latest
 
-RUN apk add curl
+RUN apk add curl bash
 
 COPY --chmod=555 add_node.sh /usr/local/bin/
 

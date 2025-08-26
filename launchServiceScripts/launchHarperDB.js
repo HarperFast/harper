@@ -1,3 +1,3 @@
 'use strict';
 
-require('../server/operationsServer').hdbServer();
+require('../server/operationsServer.ts').hdbServer();

@@ -3,9 +3,9 @@
  * subscriptions that are needed and delegates them to the available threads. It also manages when connections are
  * lost and delegating subscriptions through other nodes
  */
-import { getDatabases, onUpdatedTable, table } from '../../resources/databases';
-import { workers, onMessageByType, whenThreadsStarted } from '../threads/manageThreads';
-import { table_update_listeners } from './replicationConnection';
+import { getDatabases, onUpdatedTable, table } from '../../resources/databases.ts';
+import { workers, onMessageByType, whenThreadsStarted } from '../threads/manageThreads.js';
+import { tableUpdateListeners } from './replicationConnection.ts';
 import {
 	getThisNodeName,
 	getThisNodeUrl,
@@ -14,34 +14,34 @@ import {
 	forEachReplicatedDatabase,
 	unsubscribeFromNode,
 	lastTimeInAuditStore,
-} from './replicator';
+} from './replicator.ts';
 import { parentPort } from 'worker_threads';
-import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes, shouldReplicateToNode } from './knownNodes';
-import * as logger from '../../utility/logging/harper_logger';
+import { subscribeToNodeUpdates, getHDBNodeTable, iterateRoutes, shouldReplicateToNode } from './knownNodes.ts';
+import * as logger from '../../utility/logging/harper_logger.js';
 import { cloneDeep } from 'lodash';
-import env from '../../utility/environment/environmentManager';
-import { CONFIG_PARAMS } from '../../utility/hdbTerms';
+import env from '../../utility/environment/environmentManager.js';
+import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { X509Certificate } from 'crypto';
 
 const NODE_SUBSCRIBE_DELAY = 200; // delay before sending node subscribe to other nodes, so operations can complete first
-const connection_replication_map = new Map();
+const connectionReplicationMap = new Map();
 export let disconnectedFromNode; // this is set by thread to handle when a node is disconnected (or notify main thread so it can handle)
 export let connectedToNode; // this is set by thread to handle when a node is connected (or notify main thread so it can handle)
-const node_map = new Map(); // this is a map of all nodes that are available to connect to
-const self_catchup_of_database = new Map<string, number>(); // this is a map of databases that need to catch up to themselves, and the time of the last audit entry (to start from)
+const nodeMap = new Map(); // this is a map of all nodes that are available to connect to
+const selfCatchupOfDatabase = new Map<string, number>(); // this is a map of databases that need to catch up to themselves, and the time of the last audit entry (to start from)
 export async function startOnMainThread(options) {
 	// we do all of the main management of tracking connections and subscriptions on the main thread and delegate
 	// the actual work to the worker threads
-	let next_worker_index = 0;
+	let nextWorkerIndex = 0;
 	const databases = getDatabases();
 	// find all the databases last recorded audit entry so that we can inquire from the first node for self catch-up
 	// of any records that may have been missed
-	for (const db_name of Object.getOwnPropertyNames(databases)) {
-		const database = databases[db_name];
-		for (const table_name in database) {
-			const table = database[table_name];
+	for (const dbName of Object.getOwnPropertyNames(databases)) {
+		const database = databases[dbName];
+		for (const tableName in database) {
+			const table = database[tableName];
 			if (table.auditStore) {
-				self_catchup_of_database.set(db_name, lastTimeInAuditStore(table.auditStore));
+				selfCatchupOfDatabase.set(dbName, lastTimeInAuditStore(table.auditStore));
 				break;
 			}
 		}
@@ -50,32 +50,35 @@ export async function startOnMainThread(options) {
 	// but don't await this because this start function has to finish before the threads can start
 	whenThreadsStarted.then(async () => {
 		const nodes = [];
-		// if we are getting notified of system table updates, hdb_nodes could be absent
+		// if we are getting notified of system table updates, hdbNodes could be absent
 		for await (const node of databases.system.hdb_nodes?.search([]) || []) {
 			nodes.push(node);
 		}
+		const thisName = getThisNodeName();
+		function ensureThisNode() {
+			// If it doesn't exist and or needs to be updated.
+			const existing = getHDBNodeTable().primaryStore.get(thisName);
+			if (existing !== null) {
+				// if this was null it has previously been deleted, and we don't want to recreate nodes for deleted nodes
+				const url = options.url ?? getThisNodeUrl();
+				if (existing === undefined || existing.url !== url || existing.shard !== options.shard) {
+					return ensureNode(thisName, {
+						name: thisName,
+						url,
+						shard: options.shard,
+						replicates: true,
+					});
+				}
+			}
+		}
+		if (getHDBNodeTable().primaryStore.get(thisName)) ensureThisNode(); // if this node record already exists, check for config changes
 		for (const route of iterateRoutes(options)) {
 			try {
-				const replicate_all = !route.subscriptions;
-				if (replicate_all) {
-					const this_name = getThisNodeName();
-					// If it doesn't exist and or needs to be updated.
-					const existing = getHDBNodeTable().primaryStore.get(this_name);
-					if (existing !== null) {
-						// if this was null it has previously been deleted, and we don't want to recreate nodes for deleted nodes
-						const url = options.url ?? getThisNodeUrl();
-						if (existing === undefined || existing.url !== url || existing.shard !== options.shard) {
-							await ensureNode(this_name, {
-								name: this_name,
-								url,
-								shard: options.shard,
-								replicates: true,
-							});
-						}
-					}
+				const replicateAll = !route.subscriptions;
+				if (replicateAll) {
+					await ensureThisNode();
 				}
-				const replicate_system = route.trusted !== false;
-				if (replicate_all) {
+				if (replicateAll) {
 					if (route.replicates == undefined) route.replicates = true;
 				}
 				if (nodes.find((node) => node.url === route.url)) continue;
@@ -87,60 +90,60 @@ export async function startOnMainThread(options) {
 		}
 		subscribeToNodeUpdates(onNodeUpdate);
 	});
-	let is_fully_replicating;
+	let isFullyReplicating;
 	/**
-	 * This is called when a new node is added to the hdb_nodes table
+	 * This is called when a new node is added to the hdbNodes table
 	 * @param node
 	 */
 	function onNodeUpdate(node, hostname = node?.name) {
-		const is_self =
+		const isSelf =
 			(getThisNodeName() && hostname === getThisNodeName()) || (getThisNodeUrl() && node?.url === getThisNodeUrl());
-		if (is_self) {
+		if (isSelf) {
 			// this is just this node, we don't need to connect to ourselves, but if we get removed, we need to remove all fully replicating connections,
 			// so we update each one
-			const should_fully_replicate = Boolean(node?.replicates);
-			if (is_fully_replicating !== undefined && is_fully_replicating !== should_fully_replicate) {
+			const shouldFullyReplicate = Boolean(node?.replicates);
+			if (isFullyReplicating !== undefined && isFullyReplicating !== shouldFullyReplicate) {
 				for (const node of getHDBNodeTable().search([])) {
 					if (node.replicates && node.name !== hostname) onNodeUpdate(node, node.name);
 				}
 			}
-			is_fully_replicating = should_fully_replicate;
+			isFullyReplicating = shouldFullyReplicate;
 		}
 		logger.trace('Setting up node replication for', node);
 		if (!node) {
 			// deleted node
-			for (const [url, db_replication_workers] of connection_replication_map) {
-				let found_node;
-				for (const [database, { worker, nodes }] of db_replication_workers) {
+			for (const [url, dbReplicationWorkers] of connectionReplicationMap) {
+				let foundNode;
+				for (const [database, { worker, nodes }] of dbReplicationWorkers) {
 					const node = nodes[0];
 					if (!node) continue;
 					if (node.name == hostname) {
-						found_node = true;
-						for (const [database, { worker }] of db_replication_workers) {
-							db_replication_workers.delete(database);
+						foundNode = true;
+						for (const [database, { worker }] of dbReplicationWorkers) {
+							dbReplicationWorkers.delete(database);
 							logger.warn('Node was deleted, unsubscribing from node', hostname, database, url);
 							worker?.postMessage({ type: 'unsubscribe-from-node', node: hostname, database, url });
 						}
 						break;
 					}
 				}
-				if (found_node) {
-					const db_replication_workers = connection_replication_map.get(url);
-					db_replication_workers.iterator.remove();
-					connection_replication_map.delete(url);
+				if (foundNode) {
+					const dbReplicationWorkers = connectionReplicationMap.get(url);
+					dbReplicationWorkers.iterator.remove();
+					connectionReplicationMap.delete(url);
 					return;
 				}
 			}
 			return;
 		}
-		if (is_self) return;
+		if (isSelf) return;
 		if (!node.url) {
 			logger.info(`Node ${node.name} is missing url`);
 			return;
 		}
-		let db_replication_workers = connection_replication_map.get(node.url);
-		if (db_replication_workers) db_replication_workers.iterator.remove(); // we need to remove the old iterator so we can create a new one
-		if (!(node.replicates === true || node.replicates?.sends) && !node.subscriptions?.length && !db_replication_workers)
+		let dbReplicationWorkers = connectionReplicationMap.get(node.url);
+		if (dbReplicationWorkers) dbReplicationWorkers.iterator.remove(); // we need to remove the old iterator so we can create a new one
+		if (!(node.replicates === true || node.replicates?.sends) && !node.subscriptions?.length && !dbReplicationWorkers)
 			return; // we don't have any subscriptions and we haven't connected yet, so just return
 		logger.info(`Added node ${node.name} at ${node.url} for process ${getThisNodeName()}`);
 		if (node.replicates && node.subscriptions) {
@@ -149,89 +152,86 @@ export async function startOnMainThread(options) {
 		if (node.name) {
 			// don't add to a map if we don't have a name (yet)
 			// replace any node with same url
-			for (const [key, existing_node] of node_map) {
-				if (node.url === existing_node.url) {
-					node_map.delete(key);
+			for (const [key, existingNode] of nodeMap) {
+				if (node.url === existingNode.url) {
+					nodeMap.delete(key);
 					break;
 				}
 			}
-			node_map.set(node.name, node);
+			nodeMap.set(node.name, node);
 		}
 		const databases = getDatabases();
-		if (!db_replication_workers) {
-			db_replication_workers = new Map();
-			connection_replication_map.set(node.url, db_replication_workers);
+		if (!dbReplicationWorkers) {
+			dbReplicationWorkers = new Map();
+			connectionReplicationMap.set(node.url, dbReplicationWorkers);
 		}
-		db_replication_workers.iterator = forEachReplicatedDatabase(
-			options,
-			(database, database_name, replicate_by_default) => {
-				if (replicate_by_default) {
-					onDatabase(database_name, true);
-				} else {
-					onDatabase(database_name, false);
-				}
+		dbReplicationWorkers.iterator = forEachReplicatedDatabase(options, (database, databaseName, replicateByDefault) => {
+			if (replicateByDefault) {
+				onDatabase(databaseName, true);
+			} else {
+				onDatabase(databaseName, false);
 			}
-		);
+		});
 		// check to see if there are any explicit subscriptions to databases that don't exist yet
 		if (node.subscriptions) {
 			// if we can't find any more granular subscriptions, then we skip this database
 			// check to see if we have any explicit node subscriptions
 			for (const sub of node.subscriptions) {
-				const database_name = sub.database || sub.schema;
-				if (!databases[database_name]) {
-					logger.warn(`Database ${database_name} not found for node ${node.name}, making a subscription anyway`);
-					onDatabase(database_name, false);
+				const databaseName = sub.database || sub.schema;
+				if (!databases[databaseName]) {
+					logger.warn(`Database ${databaseName} not found for node ${node.name}, making a subscription anyway`);
+					onDatabase(databaseName, false);
 				}
 			}
 		}
 
-		function onDatabase(database_name, tables_replicate_by_default) {
-			logger.trace('Setting up replication for database', database_name, 'on node', node.name);
-			const existing_entry = db_replication_workers.get(database_name);
+		function onDatabase(databaseName, tablesReplicateByDefault) {
+			logger.trace('Setting up replication for database', databaseName, 'on node', node.name);
+			const existingEntry = dbReplicationWorkers.get(databaseName);
 			let worker;
-			const nodes = [{ replicateByDefault: tables_replicate_by_default, ...node }];
+			const nodes = [{ replicateByDefault: tablesReplicateByDefault, ...node }];
 			// Self catchup is done in case we have replicated any records that weren't actually written to our storage
 			// before a crash.
-			if (self_catchup_of_database.has(database_name)) {
+			if (selfCatchupOfDatabase.has(databaseName)) {
 				// if we have a self catchup, we need to add this node to the list of nodes that need to catch up
 				// and then we will remove it when it is done
 				nodes.push({
-					replicateByDefault: tables_replicate_by_default,
+					replicateByDefault: tablesReplicateByDefault,
 					name: getThisNodeName(),
-					start_time: self_catchup_of_database.get(database_name),
-					end_time: Date.now(),
+					startTime: selfCatchupOfDatabase.get(databaseName),
+					endTime: Date.now(),
 					replicates: true,
 				});
-				self_catchup_of_database.delete(database_name);
+				selfCatchupOfDatabase.delete(databaseName);
 			}
-			const should_subscribe = shouldReplicateToNode(node, database_name);
-			const http_workers = workers.filter((worker) => worker.name === 'http');
-			if (existing_entry) {
-				worker = existing_entry.worker;
-				existing_entry.nodes = nodes;
-			} else if (should_subscribe) {
-				next_worker_index = next_worker_index % http_workers.length; // wrap around as necessary
-				worker = http_workers[next_worker_index++];
+			const shouldSubscribe = shouldReplicateToNode(node, databaseName);
+			const httpWorkers = workers.filter((worker) => worker.name === 'http');
+			if (existingEntry) {
+				worker = existingEntry.worker;
+				existingEntry.nodes = nodes;
+			} else if (shouldSubscribe) {
+				nextWorkerIndex = nextWorkerIndex % httpWorkers.length; // wrap around as necessary
+				worker = httpWorkers[nextWorkerIndex++];
 
-				db_replication_workers.set(database_name, {
+				dbReplicationWorkers.set(databaseName, {
 					worker,
 					nodes,
 					url: node.url,
 				});
 				worker?.on('exit', () => {
 					// when a worker exits, we need to remove the entry from the map, and then reassign the subscriptions
-					if (db_replication_workers.get(database_name)?.worker === worker) {
+					if (dbReplicationWorkers.get(databaseName)?.worker === worker) {
 						// first verify it is still the worker
-						db_replication_workers.delete(database_name);
-						onDatabase(database_name, tables_replicate_by_default);
+						dbReplicationWorkers.delete(databaseName);
+						onDatabase(databaseName, tablesReplicateByDefault);
 					}
 				});
 			}
-			if (should_subscribe) {
+			if (shouldSubscribe) {
 				setTimeout(() => {
 					const request = {
 						type: 'subscribe-to-node',
-						database: database_name,
+						database: databaseName,
 						nodes,
 					};
 					if (worker) {
@@ -239,20 +239,28 @@ export async function startOnMainThread(options) {
 					} else subscribeToNode(request);
 				}, NODE_SUBSCRIBE_DELAY);
 			} else {
-				logger.info(
-					'Node no longer should be used, unsubscribing from node',
-					node.replicates,
-					!!databases[database_name],
-					getHDBNodeTable().primaryStore.get(getThisNodeName())?.replicates
-				);
+				logger.info('Node no longer should be used, unsubscribing from node', {
+					replicates: node.replicates,
+					databaseName,
+					node,
+					subscriptions: node.subscriptions,
+					hasDatabase: !!databases[databaseName],
+					thisReplicates: getHDBNodeTable().primaryStore.get(getThisNodeName())?.replicates,
+				});
 				if (!getHDBNodeTable().primaryStore.get(getThisNodeName())?.replicates) {
 					// if we are not fully replicating because it is turned off, make sure we set this
 					// flag so that we actually turn on subscriptions if full replication is turned on
-					is_fully_replicating = false;
+					isFullyReplicating = false;
+					logger.info(
+						'Disabling replication, this node name',
+						getThisNodeName(),
+						getHDBNodeTable().primaryStore.get(getThisNodeName()),
+						databaseName
+					);
 				}
 				const request = {
 					type: 'unsubscribe-from-node',
-					database: database_name,
+					database: databaseName,
 					url: node.url,
 					name: node.name,
 				};
@@ -270,65 +278,64 @@ export async function startOnMainThread(options) {
 		// a sorted list of node names that all nodes should have and use.
 		try {
 			logger.info('Disconnected from node', connection.name, connection.url, 'finished', !!connection.finished);
-			const node_map_keys = Array.from(node_map.keys());
-			const node_names = node_map_keys.sort();
-			const existing_index = node_names.indexOf(connection.name || urlToNodeName(connection.url));
-			if (existing_index === -1) {
-				logger.warn('Disconnected node not found in node map', connection.name, node_map_keys);
+			const nodeMapKeys = Array.from(nodeMap.keys());
+			const nodeNames = nodeMapKeys.sort();
+			const existingIndex = nodeNames.indexOf(connection.name || urlToNodeName(connection.url));
+			if (existingIndex === -1) {
+				logger.warn('Disconnected node not found in node map', connection.name, nodeMapKeys);
 				return;
 			}
-			let db_replication_workers = connection_replication_map.get(connection.url);
-			const existing_worker_entry = db_replication_workers?.get(connection.database);
-			if (!existing_worker_entry) {
-				logger.warn('Disconnected node not found in replication map', connection.database, db_replication_workers);
+			let dbReplicationWorkers = connectionReplicationMap.get(connection.url);
+			const existingWorkerEntry = dbReplicationWorkers?.get(connection.database);
+			if (!existingWorkerEntry) {
+				logger.warn('Disconnected node not found in replication map', connection.database, dbReplicationWorkers);
 				return;
 			}
-			existing_worker_entry.connected = false;
+			existingWorkerEntry.connected = false;
 			if (connection.finished) return; // intentionally closed connection
 			if (!env.get(CONFIG_PARAMS.REPLICATION_FAILOVER)) {
 				// if failover is disabled, immediately return
 				return;
 			}
-			const main_node = existing_worker_entry.nodes[0];
-			if (!(main_node.replicates === true || main_node.replicates?.sends || main_node.subscriptions?.length)) {
+			const mainNode = existingWorkerEntry.nodes[0];
+			if (!(mainNode.replicates === true || mainNode.replicates?.sends || mainNode.subscriptions?.length)) {
 				// no replication, so just return
 				return;
 			}
-			const shard = main_node.shard;
-			let next_index = (existing_index + 1) % node_names.length;
-			while (existing_index !== next_index) {
-				const next_node_name = node_names[next_index];
-				const next_node = node_map.get(next_node_name);
-				db_replication_workers = connection_replication_map.get(next_node.url);
-				const failover_worker_entry = db_replication_workers?.get(connection.database);
+			const shard = mainNode.shard;
+			let nextIndex = (existingIndex + 1) % nodeNames.length;
+			while (existingIndex !== nextIndex) {
+				const nextNodeName = nodeNames[nextIndex];
+				const nextNode = nodeMap.get(nextNodeName);
+				dbReplicationWorkers = connectionReplicationMap.get(nextNode.url);
+				const failoverWorkerEntry = dbReplicationWorkers?.get(connection.database);
 				if (
-					!failover_worker_entry ||
-					failover_worker_entry.connected === false ||
-					failover_worker_entry.nodes[0].shard !== shard
+					!failoverWorkerEntry ||
+					failoverWorkerEntry.connected === false ||
+					failoverWorkerEntry.nodes[0].shard !== shard
 				) {
 					// try the next node if this isn't connected or isn't in the same shard
-					next_index = (next_index + 1) % node_names.length;
+					nextIndex = (nextIndex + 1) % nodeNames.length;
 					continue;
 				}
-				const { worker, nodes } = failover_worker_entry;
+				const { worker, nodes } = failoverWorkerEntry;
 				// record which node we are now redirecting to
-				let has_moved_nodes = false;
-				for (const node of existing_worker_entry.nodes) {
+				let hasMovedNodes = false;
+				for (const node of existingWorkerEntry.nodes) {
 					if (nodes.some((n) => n.name === node.name)) {
-						logger.info(`Disconnected node is already failing over to ${next_node_name} for ${connection.database}`);
+						logger.info(`Disconnected node is already failing over to ${nextNodeName} for ${connection.database}`);
 						continue;
 					}
-					if (node.end_time < Date.now()) continue; // already expired
+					if (node.endTime < Date.now()) continue; // already expired
 					nodes.push(node);
-					has_moved_nodes = true;
+					hasMovedNodes = true;
 				}
-				existing_worker_entry.nodes = [existing_worker_entry.nodes[0]]; // only keep our own subscription
-
-				if (!has_moved_nodes) {
-					logger.info(`Disconnected node ${connection.name} has no nodes to fail over to ${next_node_name}`);
+				existingWorkerEntry.nodes = [existingWorkerEntry.nodes[0]]; // only keep our own subscription
+				if (!hasMovedNodes) {
+					logger.info(`Disconnected node ${connection.name} has no nodes to fail over to ${nextNodeName}`);
 					return;
 				}
-				logger.info(`Failing over ${connection.database} from ${connection.name} to ${next_node_name}`);
+				logger.info(`Failing over ${connection.database} from ${connection.name} to ${nextNodeName}`);
 				if (worker) {
 					worker.postMessage({
 						type: 'subscribe-to-node',
@@ -346,41 +353,41 @@ export async function startOnMainThread(options) {
 
 	connectedToNode = function (connection) {
 		// Basically undo what we did in disconnectedFromNode and also update the latency
-		const db_replication_workers = connection_replication_map.get(connection.url);
-		const main_worker_entry = db_replication_workers?.get(connection.database);
-		if (!main_worker_entry) {
+		const dbReplicationWorkers = connectionReplicationMap.get(connection.url);
+		const mainWorkerEntry = dbReplicationWorkers?.get(connection.database);
+		if (!mainWorkerEntry) {
 			logger.warn(
 				'Connected node not found in replication map, this may be because the node is being removed',
 				connection.database,
-				db_replication_workers
+				dbReplicationWorkers
 			);
 			return;
 		}
-		main_worker_entry.connected = true;
-		main_worker_entry.latency = connection.latency;
-		const restored_node = main_worker_entry.nodes[0];
-		if (!restored_node) {
-			logger.info('Connected node has no nodes', connection.database, main_worker_entry);
+		mainWorkerEntry.connected = true;
+		mainWorkerEntry.latency = connection.latency;
+		const restoredNode = mainWorkerEntry.nodes[0];
+		if (!restoredNode) {
+			logger.warn('Newly connected node has no node subscriptions', connection.database, mainWorkerEntry);
 			return;
 		}
-		if (!restored_node.name) {
-			logger.debug('Connected node is not named yet', connection.database, main_worker_entry);
+		if (!restoredNode.name) {
+			logger.debug('Connected node is not named yet', connection.database, mainWorkerEntry);
 			return;
 		}
-		main_worker_entry.nodes = [restored_node]; // restart with just our own connection
+		mainWorkerEntry.nodes = [restoredNode]; // restart with just our own connection
 		let hasChanges = false;
-		for (const nodeWorkers of connection_replication_map.values()) {
+		for (const nodeWorkers of connectionReplicationMap.values()) {
 			const failOverConnections = nodeWorkers.get(connection.database);
-			if (!failOverConnections || failOverConnections == main_worker_entry) continue;
+			if (!failOverConnections || failOverConnections == mainWorkerEntry) continue;
 			const { worker: failOverWorker, nodes: failOverNodes, connected } = failOverConnections;
 			if (!failOverNodes) continue;
-			if (connected === false && failOverNodes[0].shard === restored_node.shard) {
+			if (connected === false && failOverNodes[0].shard === restoredNode.shard) {
 				// if it is not connected and has extra nodes, grab them
 				hasChanges = true;
-				main_worker_entry.nodes.push(failOverNodes[0]);
+				mainWorkerEntry.nodes.push(failOverNodes[0]);
 			} else {
 				// remove the restored node from any other connections list of node
-				const filtered = failOverNodes.filter((node) => node.name !== restored_node.name);
+				const filtered = failOverNodes.filter((node) => node && node.name !== restoredNode.name);
 				if (filtered.length < failOverNodes.length) {
 					// if we were in the list, reset the subscription
 					failOverConnections.nodes = filtered;
@@ -392,12 +399,12 @@ export async function startOnMainThread(options) {
 				}
 			}
 		}
-		if (hasChanges && main_worker_entry.worker) {
+		if (hasChanges && mainWorkerEntry.worker) {
 			// if the reconnected node changed subscriptions reissue the subscriptions
-			main_worker_entry.worker.postMessage({
+			mainWorkerEntry.worker.postMessage({
 				type: 'subscribe-to-node',
 				database: connection.database,
-				nodes: main_worker_entry.nodes,
+				nodes: mainWorkerEntry.nodes,
 			});
 		}
 	};
@@ -414,19 +421,19 @@ export async function startOnMainThread(options) {
  */
 export function requestClusterStatus(message, port) {
 	const connections = [];
-	for (const [node_name, node] of node_map) {
+	for (const [node_name, node] of nodeMap) {
 		try {
-			const db_replication_map = connection_replication_map.get(node.url);
-			logger.info('Getting cluster status for', node_name, node.url, 'has dbs', db_replication_map?.size);
+			const dbReplicationMap = connectionReplicationMap.get(node.url);
+			logger.info('Getting cluster status for', node_name, node.url, 'has dbs', dbReplicationMap?.size);
 			const databases = [];
-			if (db_replication_map) {
-				for (const [database, { worker, connected, nodes, latency }] of db_replication_map) {
+			if (dbReplicationMap) {
+				for (const [database, { worker, connected, nodes, latency }] of dbReplicationMap) {
 					databases.push({
 						database,
 						connected,
 						latency,
-						thread_id: worker?.threadId,
-						nodes: nodes.filter((node) => !(node.end_time < Date.now())).map((node) => node.name),
+						threadId: worker?.threadId,
+						nodes: nodes.filter((node) => !(node.endTime < Date.now())).map((node) => node.name),
 					});
 				}
 
@@ -475,10 +482,10 @@ export async function ensureNode(name: string, node) {
 			node.ca_info = {
 				issuer: cert.issuer.replace(/\n/g, ' '),
 				subject: cert.subject.replace(/\n/g, ' '),
-				subject_alt_name: cert.subjectAltName,
-				serial_number: cert.serialNumber,
-				valid_from: cert.validFrom,
-				valid_to: cert.validTo,
+				subjectAltName: cert.subjectAltName,
+				serialNumber: cert.serialNumber,
+				validFrom: cert.validFrom,
+				validTo: cert.validTo,
 			};
 		}
 	} catch (err) {
@@ -494,33 +501,33 @@ export async function ensureNode(name: string, node) {
 		for (const key in node) {
 			if (existing[key] !== node[key] && key === 'subscriptions' && node[key] && existing[key]) {
 				// Update any existing subscriptions or append to subscriptions array
-				const new_subs = [];
-				const existing_subs = cloneDeep(existing[key]);
-				for (const new_sub of node[key]) {
-					let match_found = false;
-					for (const existing_sub of existing_subs) {
+				const newSubs = [];
+				const existingSubs = cloneDeep(existing[key]);
+				for (const newSub of node[key]) {
+					let matchFound = false;
+					for (const existingSub of existingSubs) {
 						if (
-							(new_sub.database ?? new_sub.schema) === (existing_sub.database ?? existing_sub.schema) &&
-							new_sub.table === existing_sub.table
+							(newSub.database ?? newSub.schema) === (existingSub.database ?? existingSub.schema) &&
+							newSub.table === existingSub.table
 						) {
-							existing_sub.publish = new_sub.publish;
-							existing_sub.subscribe = new_sub.subscribe;
-							match_found = true;
+							existingSub.publish = newSub.publish;
+							existingSub.subscribe = newSub.subscribe;
+							matchFound = true;
 							break;
 						}
 					}
 
-					if (!match_found) new_subs.push(new_sub);
+					if (!matchFound) newSubs.push(newSub);
 				}
 
-				node.subscriptions = [...existing_subs, ...new_subs];
+				node.subscriptions = [...existingSubs, ...newSubs];
 				break;
 			}
 		}
 
 		if (Array.isArray(node.revoked_certificates)) {
-			const existing_revoked = existing.revoked_certificates || [];
-			node.revoked_certificates = [...new Set([...existing_revoked, ...node.revoked_certificates])];
+			const existingRevoked = existing.revoked_certificates || [];
+			node.revoked_certificates = [...new Set([...existingRevoked, ...node.revoked_certificates])];
 		}
 
 		logger.info(`Updating node ${name} at ${node.url}`);

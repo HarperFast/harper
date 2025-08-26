@@ -1,5 +1,5 @@
-const license_generator = require('./licenseGenerator');
-const hdb_terms = require('../hdbTerms');
+const licenseGenerator = require('./licenseGenerator.js');
+const hdbTerms = require('../hdbTerms.ts');
 const moment = require('moment');
 
 const DURATION_UNIT = 'year';
@@ -8,7 +8,7 @@ const LICENSE_PARAMS = {
 	company: undefined,
 	fingerprint: undefined,
 	ram_allocation: undefined, // in MB
-	version: hdb_terms.LICENSE_VALUES.VERSION_DEFAULT,
+	version: hdbTerms.LICENSE_VALUES.VERSION_DEFAULT,
 	exp_date: moment().add(DURATION, DURATION_UNIT).format('YYYY-MM-DD'),
 };
 
@@ -17,5 +17,5 @@ const LICENSE_PARAMS = {
  * Update params above and run file with node.
  */
 (function getLicense() {
-	console.log('License:\n' + license_generator.generateLicense(LICENSE_PARAMS));
+	console.log('License:\n' + licenseGenerator.generateLicense(LICENSE_PARAMS));
 })();

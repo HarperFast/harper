@@ -1,11 +1,11 @@
-/** Like harper_logger, but conditionally exports functions based on the log level. */
-const harper_logger = require('./harper_logger');
+/** Like harperLogger, but conditionally exports functions based on the log level. */
+const harperLogger = require('./harper_logger.js');
 
 for (let level of ['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'notify']) {
-	if (harper_logger.logsAtLevel(level)) exports[level] = harper_logger[level];
+	if (harperLogger.logsAtLevel(level)) exports[level] = harperLogger[level];
 }
 exports.loggerWithTag = (tag) => {
-	return harper_logger.loggerWithTag(tag, true);
+	return harperLogger.loggerWithTag(tag, true);
 };
 
-exports.setLogLevel = harper_logger.setLogLevel;
+exports.setLogLevel = harperLogger.setLogLevel;

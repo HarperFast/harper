@@ -1,6 +1,6 @@
 'use strict';
 
-const CreateAttributeObject = require('../../../CreateAttributeObject');
+const CreateAttributeObject = require('../../../CreateAttributeObject.js');
 
 class LMDBCreateAttributeObject extends CreateAttributeObject {
 	/**
@@ -9,13 +9,13 @@ class LMDBCreateAttributeObject extends CreateAttributeObject {
 	 * @param {String} table
 	 * @param {String} attribute
 	 * @param {*} [id] - optional, the predefined id for this attribute
-	 * @param {Boolean} [dup_sort] - optional, whether this attribute will allow duplicate keys in the lmdb dbi, defaults to true
-	 * @param {Boolean} [is_hash_attribute]
+	 * @param {Boolean} [dupSort] - optional, whether this attribute will allow duplicate keys in the lmdb dbi, defaults to true
+	 * @param {Boolean} [isHashAttribute]
 	 */
-	constructor(schema, table, attribute, id, dup_sort = true, is_hash_attribute = false) {
+	constructor(schema, table, attribute, id, dupSort = true, isHashAttribute = false) {
 		super(schema, table, attribute, id);
-		this.dup_sort = dup_sort;
-		this.is_hash_attribute = is_hash_attribute;
+		this.dup_sort = dupSort;
+		this.is_hash_attribute = isHashAttribute;
 	}
 }
 

@@ -1,28 +1,26 @@
 'use strict';
 const path = require('path');
 const fs = require('fs-extra');
-const log = require('./logging/harper_logger');
-const fs_extra = require('fs-extra');
+const log = require('./logging/harper_logger.js');
+const fsExtra = require('fs-extra');
 const os = require('os');
 const net = require('net');
 const RecursiveIterator = require('recursive-iterator');
-const terms = require('./hdbTerms');
-const { PACKAGE_ROOT } = require('./packageUtils');
-const ps_list = require('./psList');
-const papa_parse = require('papaparse');
+const terms = require('./hdbTerms.ts');
+const { PACKAGE_ROOT } = require('./packageUtils.js');
+const psList = require('./psList.js');
+const papaParse = require('papaparse');
 const moment = require('moment');
 const { inspect } = require('util');
-const is_number = require('is-number');
-const _ = require('lodash');
+const isNumber = require('is-number');
 const minimist = require('minimist');
 const https = require('https');
 const http = require('http');
-const { hdb_errors } = require('./errors/hdbError');
 
 const ISO_DATE =
 	/^((\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d\.\d+([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z))|(\d{4}-[01]\d-[0-3]\dT[0-2]\d:[0-5]\d([+-][0-2]\d:[0-5]\d|Z)))$/;
 
-const async_set_timeout = require('util').promisify(setTimeout);
+const asyncSetTimeout = require('util').promisify(setTimeout);
 const HDB_PROC_START_TIMEOUT = 100;
 const CHECK_PROCS_LOOP_LIMIT = 5;
 
@@ -41,60 +39,58 @@ const AUTOCAST_COMMON_STRINGS = {
 	NULL: null,
 	NaN: NaN,
 };
-module.exports = {
-	isEmpty: isEmpty,
-	isEmptyOrZeroLength: isEmptyOrZeroLength,
-	arrayHasEmptyValues: arrayHasEmptyValues,
-	arrayHasEmptyOrZeroLengthValues: arrayHasEmptyOrZeroLengthValues,
-	buildFolderPath: buildFolderPath,
-	isBoolean: isBoolean,
-	errorizeMessage: errorizeMessage,
-	stripFileExtension: stripFileExtension,
-	autoCast,
-	autoCastJSON,
-	autoCastJSONDeep,
-	removeDir: removeDir,
-	compareVersions,
-	isCompatibleDataVersion,
-	escapeRawValue: escapeRawValue,
-	unescapeValue: unescapeValue,
-	stringifyProps: stringifyProps,
-	timeoutPromise: timeoutPromise,
-	isClusterOperation: isClusterOperation,
-	getClusterUser: getClusterUser,
-	checkGlobalSchemaTable,
-	getHomeDir: getHomeDir,
-	getPropsFilePath: getPropsFilePath,
-	promisifyPapaParse,
-	removeBOM,
-	createEventPromise,
-	checkProcessRunning,
-	checkSchemaTableExist,
-	checkSchemaExists,
-	checkTableExists,
-	getStartOfTomorrowInSeconds,
-	getLimitKey,
-	isObject,
-	isNotEmptyAndHasValue,
-	autoCasterIsNumberCheck,
-	backtickASTSchemaItems,
-	isPortTaken,
-	createForkArgs,
-	autoCastBoolean,
-	async_set_timeout,
-	getTableHashAttribute,
-	doesSchemaExist,
-	doesTableExist,
-	stringifyObj,
-	ms_to_time,
-	changeExtension,
-	getEnvCliRootPath,
-	noBootFile,
-	httpRequest,
-	transformReq,
-	convertToMS,
-	PACKAGE_ROOT,
-};
+exports.isEmpty = isEmpty;
+exports.isEmptyOrZeroLength = isEmptyOrZeroLength;
+exports.arrayHasEmptyValues = arrayHasEmptyValues;
+exports.arrayHasEmptyOrZeroLengthValues = arrayHasEmptyOrZeroLengthValues;
+exports.buildFolderPath = buildFolderPath;
+exports.isBoolean = isBoolean;
+exports.errorizeMessage = errorizeMessage;
+exports.stripFileExtension = stripFileExtension;
+exports.autoCast = autoCast;
+exports.autoCastJSON = autoCastJSON;
+exports.autoCastJSONDeep = autoCastJSONDeep;
+exports.removeDir = removeDir;
+exports.compareVersions = compareVersions;
+exports.isCompatibleDataVersion = isCompatibleDataVersion;
+exports.escapeRawValue = escapeRawValue;
+exports.unescapeValue = unescapeValue;
+exports.stringifyProps = stringifyProps;
+exports.timeoutPromise = timeoutPromise;
+exports.isClusterOperation = isClusterOperation;
+exports.getClusterUser = getClusterUser;
+exports.checkGlobalSchemaTable = checkGlobalSchemaTable;
+exports.getHomeDir = getHomeDir;
+exports.getPropsFilePath = getPropsFilePath;
+exports.promisifyPapaParse = promisifyPapaParse;
+exports.removeBOM = removeBOM;
+exports.createEventPromise = createEventPromise;
+exports.checkProcessRunning = checkProcessRunning;
+exports.checkSchemaTableExist = checkSchemaTableExist;
+exports.checkSchemaExists = checkSchemaExists;
+exports.checkTableExists = checkTableExists;
+exports.getStartOfTomorrowInSeconds = getStartOfTomorrowInSeconds;
+exports.getLimitKey = getLimitKey;
+exports.isObject = isObject;
+exports.isNotEmptyAndHasValue = isNotEmptyAndHasValue;
+exports.autoCasterIsNumberCheck = autoCasterIsNumberCheck;
+exports.backtickASTSchemaItems = backtickASTSchemaItems;
+exports.isPortTaken = isPortTaken;
+exports.createForkArgs = createForkArgs;
+exports.autoCastBoolean = autoCastBoolean;
+exports.asyncSetTimeout = asyncSetTimeout;
+exports.getTableHashAttribute = getTableHashAttribute;
+exports.doesSchemaExist = doesSchemaExist;
+exports.doesTableExist = doesTableExist;
+exports.stringifyObj = stringifyObj;
+exports.ms_to_time = ms_to_time;
+exports.changeExtension = changeExtension;
+exports.getEnvCliRootPath = getEnvCliRootPath;
+exports.noBootFile = noBootFile;
+exports.httpRequest = httpRequest;
+exports.transformReq = transformReq;
+exports.convertToMS = convertToMS;
+exports.PACKAGE_ROOT = PACKAGE_ROOT;
 
 /**
  * Converts a message to an error containing the error as a message. Will always return an error if the passed in error is
@@ -133,15 +129,15 @@ function isEmptyOrZeroLength(value) {
 
 /**
  * Test if the passed array contains any null or undefined values.
- * @param values_list - An array of values
+ * @param valuesList - An array of values
  * @returns {boolean}
  */
-function arrayHasEmptyValues(values_list) {
-	if (isEmpty(values_list)) {
+function arrayHasEmptyValues(valuesList) {
+	if (isEmpty(valuesList)) {
 		return true;
 	}
-	for (let val = 0; val < values_list.length; val++) {
-		if (isEmpty(values_list[val])) {
+	for (let val = 0; val < valuesList.length; val++) {
+		if (isEmpty(valuesList[val])) {
 			return true;
 		}
 	}
@@ -150,15 +146,15 @@ function arrayHasEmptyValues(values_list) {
 
 /**
  * Test if the passed array contains any null or undefined values.
- * @param values_list - An array of values
+ * @param valuesList - An array of values
  * @returns {boolean}
  */
-function arrayHasEmptyOrZeroLengthValues(values_list) {
-	if (isEmptyOrZeroLength(values_list)) {
+function arrayHasEmptyOrZeroLengthValues(valuesList) {
+	if (isEmptyOrZeroLength(valuesList)) {
 		return true;
 	}
-	for (let val = 0; val < values_list.length; val++) {
-		if (isEmptyOrZeroLength(values_list[val])) {
+	for (let val = 0; val < valuesList.length; val++) {
+		if (isEmptyOrZeroLength(valuesList[val])) {
 			return true;
 		}
 	}
@@ -167,13 +163,13 @@ function arrayHasEmptyOrZeroLengthValues(values_list) {
 
 /**
  * takes an array of strings and joins them with the folder separator to return a path
- * @param path_elements
+ * @param pathElements
  */
-function buildFolderPath(...path_elements) {
+function buildFolderPath(...pathElements) {
 	try {
-		return path_elements.join(path.sep);
+		return pathElements.join(path.sep);
 	} catch (e) {
-		console.error(path_elements);
+		console.error(pathElements);
 	}
 }
 
@@ -207,14 +203,14 @@ function isObject(value) {
 /**
  * Strip the .hdb file extension from file names.  To keep this efficient, this will not check that the
  * parameter contains the .hdb extension.
- * @param file_name - the filename.
+ * @param fileName - the filename.
  * @returns {string}
  */
-function stripFileExtension(file_name) {
-	if (isEmptyOrZeroLength(file_name)) {
+function stripFileExtension(fileName) {
+	if (isEmptyOrZeroLength(fileName)) {
 		return EMPTY_STRING;
 	}
-	return file_name.slice(0, -FILE_EXTENSION_LENGTH);
+	return fileName.slice(0, -FILE_EXTENSION_LENGTH);
 }
 
 /**
@@ -286,57 +282,57 @@ function autoCastJSONDeep(data) {
  * @returns {boolean}
  */
 function autoCasterIsNumberCheck(data) {
-	if (data.startsWith('0.') && is_number(data)) {
+	if (data.startsWith('0.') && isNumber(data)) {
 		return true;
 	}
 
-	let contains_e = data.toUpperCase().includes('E');
-	let starts_with_zero = data !== '0' && data.startsWith('0');
-	return !!(starts_with_zero === false && contains_e === false && is_number(data));
+	let containsE = data.toUpperCase().includes('E');
+	let startsWithZero = data !== '0' && data.startsWith('0');
+	return !!(startsWithZero === false && containsE === false && isNumber(data));
 }
 
 /**
  * Removes all files in a given directory path.
- * @param dir_path
+ * @param dirPath
  * @returns {Promise<[any]>}
  */
-async function removeDir(dir_path) {
-	if (isEmptyOrZeroLength(dir_path)) {
-		throw new Error(`Directory path: ${dir_path} does not exist`);
+async function removeDir(dirPath) {
+	if (isEmptyOrZeroLength(dirPath)) {
+		throw new Error(`Directory path: ${dirPath} does not exist`);
 	}
 	try {
-		await fs_extra.emptyDir(dir_path);
-		await fs_extra.remove(dir_path);
+		await fsExtra.emptyDir(dirPath);
+		await fsExtra.remove(dirPath);
 	} catch (e) {
-		log.error(`Error removing files in ${dir_path} -- ${e}`);
+		log.error(`Error removing files in ${dirPath} -- ${e}`);
 		throw e;
 	}
 }
 
 /**
- * Sorting function, Get old_version list of version directives to run during an upgrade.
+ * Sorting function, Get oldVersion list of version directives to run during an upgrade.
  * Can be used via [<versions>].sort(compareVersions). Can also be used to just compare strictly version
- * numbers.  Returns a number less than 0 if the old_version is less than new_version.
+ * numbers.  Returns a number less than 0 if the oldVersion is less than newVersion.
  * e.x. compareVersionsompareVersions('1.1.0', '2.0.0') will return a value less than 0.
- * @param old_version - As an UpgradeDirective object or just a version number as a string
- * @param new_version - Newest version As an UpgradeDirective object or just a version number as a string
+ * @param oldVersion - As an UpgradeDirective object or just a version number as a string
+ * @param newVersion - Newest version As an UpgradeDirective object or just a version number as a string
  * @returns {*}
  */
-function compareVersions(old_version, new_version) {
-	if (isEmptyOrZeroLength(old_version)) {
+function compareVersions(oldVersion, newVersion) {
+	if (isEmptyOrZeroLength(oldVersion)) {
 		log.info('Invalid current version sent as parameter.');
 		return;
 	}
-	if (isEmptyOrZeroLength(new_version)) {
+	if (isEmptyOrZeroLength(newVersion)) {
 		log.info('Invalid upgrade version sent as parameter.');
 		return;
 	}
 	let diff;
 	let regExStrip0 = /(\.0+)+$/;
-	let old_version_as_string = old_version.version ? old_version.version : old_version;
-	let new_version_as_string = new_version.version ? new_version.version : new_version;
-	let segmentsA = old_version_as_string.replace(regExStrip0, '').split('.');
-	let segmentsB = new_version_as_string.replace(regExStrip0, '').split('.');
+	let oldVersionAsString = oldVersion.version ? oldVersion.version : oldVersion;
+	let newVersionAsString = newVersion.version ? newVersion.version : newVersion;
+	let segmentsA = oldVersionAsString.replace(regExStrip0, '').split('.');
+	let segmentsB = newVersionAsString.replace(regExStrip0, '').split('.');
 	let l = Math.min(segmentsA.length, segmentsB.length);
 
 	for (let i = 0; i < l; i++) {
@@ -350,14 +346,14 @@ function compareVersions(old_version, new_version) {
 
 /**
  * Check to see if the data from one version is compatible with another. Per semver, this is only major version changes
- * @param old_version
- * @param new_version
+ * @param oldVersion
+ * @param newVersion
  * @returns {boolean}
  */
-function isCompatibleDataVersion(old_version, new_version, check_minor = false) {
-	let old_parts = old_version.toString().split('.');
-	let new_parts = new_version.toString().split('.');
-	return old_parts[0] === new_parts[0] && (!check_minor || old_parts[1] === new_parts[1]);
+function isCompatibleDataVersion(oldVersion, newVersion, checkMinor = false) {
+	let oldParts = oldVersion.toString().split('.');
+	let newParts = newVersion.toString().split('.');
+	return oldParts[0] === newParts[0] && (!checkMinor || oldParts[1] === newParts[1]);
 }
 
 /**
@@ -370,17 +366,17 @@ function escapeRawValue(value) {
 	if (isEmpty(value)) {
 		return value;
 	}
-	let the_value = String(value);
+	let theValue = String(value);
 
-	if (the_value === '.') {
+	if (theValue === '.') {
 		return terms.UNICODE_PERIOD;
 	}
 
-	if (the_value === '..') {
+	if (theValue === '..') {
 		return terms.UNICODE_PERIOD + terms.UNICODE_PERIOD;
 	}
 
-	return the_value.replace(terms.FORWARD_SLASH_REGEX, terms.UNICODE_FORWARD_SLASH);
+	return theValue.replace(terms.FORWARD_SLASH_REGEX, terms.UNICODE_FORWARD_SLASH);
 }
 
 /**
@@ -393,13 +389,13 @@ function unescapeValue(value) {
 		return value;
 	}
 
-	let the_value = String(value);
+	let theValue = String(value);
 
-	if (the_value === terms.UNICODE_PERIOD) {
+	if (theValue === terms.UNICODE_PERIOD) {
 		return '.';
 	}
 
-	if (the_value === terms.UNICODE_PERIOD + terms.UNICODE_PERIOD) {
+	if (theValue === terms.UNICODE_PERIOD + terms.UNICODE_PERIOD) {
 		return '..';
 	}
 
@@ -408,22 +404,22 @@ function unescapeValue(value) {
 
 /**
  * Takes a PropertiesReader object and converts it to a string so it can be printed to a file.
- * @param prop_reader_object - An object of type properties-reader containing properties stored in settings.js
+ * @param propReaderObject - An object of type properties-reader containing properties stored in settings.js
  * @param comments - Object with key,value describing comments that should be placed above a variable in the settings file.
  * The key is the variable name (PROJECT_DIR) and the value will be the string comment.
  * @returns {string}
  */
-function stringifyProps(prop_reader_object, comments) {
-	if (isEmpty(prop_reader_object)) {
+function stringifyProps(propReaderObject, comments) {
+	if (isEmpty(propReaderObject)) {
 		log.info('Properties object is null');
 		return '';
 	}
 	let lines = '';
-	prop_reader_object.each(function (key, value) {
+	propReaderObject.each(function (key, value) {
 		try {
 			if (comments && comments[key]) {
-				let curr_comments = comments[key];
-				for (let comm of curr_comments) {
+				let currComments = comments[key];
+				for (let comm of currComments) {
 					lines += ';' + comm + os.EOL;
 				}
 			}
@@ -441,27 +437,27 @@ function stringifyProps(prop_reader_object, comments) {
 }
 
 function getHomeDir() {
-	let home_dir = undefined;
+	let homeDir = undefined;
 	try {
-		home_dir = os.homedir();
+		homeDir = os.homedir();
 	} catch (err) {
 		// could get here in android
-		home_dir = process.env.HOME;
+		homeDir = process.env.HOME;
 	}
-	return home_dir;
+	return homeDir;
 }
 
 /**
- * This function will attempt to find the hdb_boot_properties.file path.  IT IS SYNCHRONOUS, SO SHOULD ONLY BE
+ * This function will attempt to find the hdbBootProperties.file path.  IT IS SYNCHRONOUS, SO SHOULD ONLY BE
  * CALLED IN CERTAIN SITUATIONS (startup, upgrade, etc).
  */
 function getPropsFilePath() {
-	let boot_props_file_path = path.join(getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.BOOT_PROPS_FILE_NAME);
+	let bootPropsFilePath = path.join(getHomeDir(), terms.HDB_HOME_DIR_NAME, terms.BOOT_PROPS_FILE_NAME);
 	// this checks how we used to store the boot props file for older installations.
-	if (!fs.existsSync(boot_props_file_path)) {
-		boot_props_file_path = path.join(__dirname, '../', 'hdb_boot_properties.file');
+	if (!fs.existsSync(bootPropsFilePath)) {
+		bootPropsFilePath = path.join(__dirname, '../', 'hdb_boot_properties.file');
 	}
-	return boot_props_file_path;
+	return bootPropsFilePath;
 }
 
 /**
@@ -480,7 +476,7 @@ function timeoutPromise(ms, msg) {
 	});
 
 	return {
-		promise: promise,
+		promise,
 		cancel: function () {
 			clearTimeout(timeout);
 		},
@@ -511,12 +507,12 @@ async function isPortTaken(port) {
 
 /**
  * Returns true if a given operation name is a cluster operation.  Should always return a boolean.
- * @param operation_name - the operation name being called
+ * @param operationName - the operation name being called
  * @returns {boolean|*}
  */
-function isClusterOperation(operation_name) {
+function isClusterOperation(operationName) {
 	try {
-		return terms.CLUSTER_OPERATIONS[operation_name.toLowerCase()] !== undefined;
+		return terms.CLUSTER_OPERATIONS[operationName.toLowerCase()] !== undefined;
 	} catch (err) {
 		log.error(`Error checking operation against cluster ops ${err}`);
 	}
@@ -525,22 +521,22 @@ function isClusterOperation(operation_name) {
 
 /**
  * Checks the global databases for a schema and table
- * @param schema_name
- * @param table_name
+ * @param schemaName
+ * @param tableName
  * @returns string returns a thrown message if schema and or table does not exist
  */
-function checkGlobalSchemaTable(schema_name, table_name) {
-	let databases = require('../resources/databases').getDatabases();
-	if (!databases[schema_name]) {
-		return hdb_errors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema_name);
+function checkGlobalSchemaTable(schemaName, tableName) {
+	let databases = require('../resources/databases.ts').getDatabases();
+	if (!databases[schemaName]) {
+		return hdbErrors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schemaName);
 	}
-	if (!databases[schema_name][table_name]) {
-		return hdb_errors.HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema_name, table_name);
+	if (!databases[schemaName][tableName]) {
+		return hdbErrors.HDB_ERROR_MSGS.TABLE_NOT_FOUND(schemaName, tableName);
 	}
 }
 
-function getClusterUser(users, cluster_user_name) {
-	if (isEmpty(cluster_user_name)) {
+function getClusterUser(users, clusterUserName) {
+	if (isEmpty(clusterUserName)) {
 		log.warn('No CLUSTERING_USER defined, clustering disabled');
 		return;
 	}
@@ -553,14 +549,10 @@ function getClusterUser(users, cluster_user_name) {
 	let cluster_user;
 
 	try {
-		const temp_cluster_user = users.get(cluster_user_name);
+		const tempClusterUser = users.get(clusterUserName);
 
-		if (
-			temp_cluster_user &&
-			temp_cluster_user.role.permission.cluster_user === true &&
-			temp_cluster_user.active === true
-		) {
-			cluster_user = temp_cluster_user;
+		if (tempClusterUser && tempClusterUser.role.permission.cluster_user === true && tempClusterUser.active === true) {
+			cluster_user = tempClusterUser;
 		}
 	} catch (e) {
 		log.error(`unable to find cluster_user due to: ${e.message}`);
@@ -568,7 +560,7 @@ function getClusterUser(users, cluster_user_name) {
 	}
 
 	if (cluster_user === undefined) {
-		log.warn(`CLUSTERING_USER: ${cluster_user_name} not found or is not active.`);
+		log.warn(`CLUSTERING_USER: ${clusterUserName} not found or is not active.`);
 		return;
 	}
 
@@ -577,19 +569,19 @@ function getClusterUser(users, cluster_user_name) {
 
 /**
  * Promisify csv parser papaparse. Once function is promisified it can be called with:
- * papa_parse.parsePromise(<reject-promise-obj>, <read-stream>, <chunking-function>)
+ * papaParse.parsePromise(<reject-promise-obj>, <read-stream>, <chunking-function>)
  * In the case of an error, reject promise object must be called from chunking-function, it will bubble up
  * through bind to this function.
  */
 function promisifyPapaParse() {
-	papa_parse.parsePromise = function (stream, chunk_func, typing_function) {
+	papaParse.parsePromise = function (stream, chunkFunc, typingFunction) {
 		return new Promise(function (resolve, reject) {
-			papa_parse.parse(stream, {
+			papaParse.parse(stream, {
 				header: true,
 				transformHeader: removeBOM,
-				chunk: chunk_func.bind(null, reject),
+				chunk: chunkFunc.bind(null, reject),
 				skipEmptyLines: true,
-				transform: typing_function,
+				transform: typingFunction,
 				dynamicTyping: false,
 				error: reject,
 				complete: resolve,
@@ -601,27 +593,27 @@ function promisifyPapaParse() {
 /**
  * Removes the byte order mark from a string
  * @returns a string minus any byte order marks
- * @param data_string
+ * @param dataString
  */
-function removeBOM(data_string) {
-	if (typeof data_string !== 'string') {
-		throw new TypeError(`Expected a string, got ${typeof data_string}`);
+function removeBOM(dataString) {
+	if (typeof dataString !== 'string') {
+		throw new TypeError(`Expected a string, got ${typeof dataString}`);
 	}
 
-	if (data_string.charCodeAt(0) === 0xfeff) {
-		return data_string.slice(1);
+	if (dataString.charCodeAt(0) === 0xfeff) {
+		return dataString.slice(1);
 	}
 
-	return data_string;
+	return dataString;
 }
 
-function createEventPromise(event_name, event_emitter_object, timeout_promise) {
+function createEventPromise(eventName, eventEmitterObject, timeout_promise) {
 	return new Promise((resolve) => {
-		event_emitter_object.once(event_name, (msg) => {
-			let curr_timeout_promise = timeout_promise;
+		eventEmitterObject.once(eventName, (msg) => {
+			let currTimeoutPromise = timeout_promise;
 			log.info(`Got cluster status event response: ${inspect(msg)}`);
 			try {
-				curr_timeout_promise.cancel();
+				currTimeoutPromise.cancel();
 			} catch (err) {
 				log.error('Error trying to cancel timeout.');
 			}
@@ -634,21 +626,21 @@ function createEventPromise(event_name, event_emitter_object, timeout_promise) {
  * Verifies the named process has started before fulfilling promise.
  * @returns {Promise<void>}
  */
-async function checkProcessRunning(proc_name) {
-	let go_on = true;
+async function checkProcessRunning(procName) {
+	let goOn = true;
 	let x = 0;
 	do {
-		await async_set_timeout(HDB_PROC_START_TIMEOUT * x++);
+		await asyncSetTimeout(HDB_PROC_START_TIMEOUT * x++);
 
-		let instances = await ps_list.findPs(proc_name);
+		let instances = await psList.findPs(procName);
 
 		if (instances.length > 0) {
-			go_on = false;
+			goOn = false;
 		}
-	} while (go_on && x < CHECK_PROCS_LOOP_LIMIT);
+	} while (goOn && x < CHECK_PROCS_LOOP_LIMIT);
 
-	if (go_on) {
-		throw new Error(`process ${proc_name} was not started`);
+	if (goOn) {
+		throw new Error(`process ${procName} was not started`);
 	}
 }
 
@@ -658,14 +650,14 @@ async function checkProcessRunning(proc_name) {
  * @param table
  */
 function checkSchemaTableExist(schema, table) {
-	let schema_not_exist = checkSchemaExists(schema);
-	if (schema_not_exist) {
-		return schema_not_exist;
+	let schemaNotExist = checkSchemaExists(schema);
+	if (schemaNotExist) {
+		return schemaNotExist;
 	}
 
-	let table_not_exist = checkTableExists(schema, table);
-	if (table_not_exist) {
-		return table_not_exist;
+	let tableNotExist = checkTableExists(schema, table);
+	if (tableNotExist) {
+		return tableNotExist;
 	}
 }
 
@@ -675,9 +667,9 @@ function checkSchemaTableExist(schema, table) {
  * @returns {string}
  */
 function checkSchemaExists(schema) {
-	const { getDatabases } = require('../resources/databases');
+	const { getDatabases } = require('../resources/databases.ts');
 	if (!getDatabases()[schema]) {
-		return hdb_errors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema);
+		return hdbErrors.HDB_ERROR_MSGS.SCHEMA_NOT_FOUND(schema);
 	}
 }
 
@@ -688,9 +680,9 @@ function checkSchemaExists(schema) {
  * @returns {string}
  */
 function checkTableExists(schema, table) {
-	const { getDatabases } = require('../resources/databases');
+	const { getDatabases } = require('../resources/databases.ts');
 	if (!getDatabases()[schema][table]) {
-		return hdb_errors.HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema, table);
+		return hdbErrors.HDB_ERROR_MSGS.TABLE_NOT_FOUND(schema, table);
 	}
 }
 
@@ -699,9 +691,9 @@ function checkTableExists(schema, table) {
  * @returns {number}
  */
 function getStartOfTomorrowInSeconds() {
-	let tomorow_seconds = moment().utc().add(1, 'd').startOf('d').unix();
-	let now_seconds = moment().utc().unix();
-	return tomorow_seconds - now_seconds;
+	let tomorowSeconds = moment().utc().add(1, 'd').startOf('d').unix();
+	let nowSeconds = moment().utc().unix();
+	return tomorowSeconds - nowSeconds;
 }
 
 /**
@@ -751,12 +743,12 @@ function backtickASTSchemaItems(statement) {
 }
 
 /**
- * Create arguments for child_process fork
- * @param module_path
+ * Create arguments for childProcess fork
+ * @param modulePath
  * @returns {*[]}
  */
-function createForkArgs(module_path) {
-	return [module_path];
+function createForkArgs(modulePath) {
+	return [modulePath];
 }
 
 /**
@@ -772,9 +764,9 @@ function autoCastBoolean(boolean) {
  * Gets a tables hash attribute from the global schema
  */
 function getTableHashAttribute(schema, table) {
-	const { getDatabases } = require('../resources/databases');
-	let table_obj = getDatabases()[schema]?.[table];
-	return table_obj?.primaryKey || table_obj?.hash_attribute;
+	const { getDatabases } = require('../resources/databases.ts');
+	let tableObj = getDatabases()[schema]?.[table];
+	return tableObj?.primaryKey || tableObj?.hash_attribute;
 }
 
 /**
@@ -783,7 +775,7 @@ function getTableHashAttribute(schema, table) {
  * @returns {boolean} - returns true if schema exists
  */
 function doesSchemaExist(schema) {
-	const { getDatabases } = require('../resources/databases');
+	const { getDatabases } = require('../resources/databases.ts');
 	return getDatabases()[schema] !== undefined;
 }
 
@@ -794,7 +786,7 @@ function doesSchemaExist(schema) {
  * @returns {boolean} - returns true if table exists
  */
 function doesTableExist(schema, table) {
-	const { getDatabases } = require('../resources/databases');
+	const { getDatabases } = require('../resources/databases.ts');
 	return getDatabases()[schema]?.[table] !== undefined;
 }
 
@@ -844,8 +836,8 @@ function changeExtension(file, extension) {
 function getEnvCliRootPath() {
 	if (process.env[terms.CONFIG_PARAMS.ROOTPATH.toUpperCase()])
 		return process.env[terms.CONFIG_PARAMS.ROOTPATH.toUpperCase()];
-	const cli_args = minimist(process.argv);
-	if (cli_args[terms.CONFIG_PARAMS.ROOTPATH.toUpperCase()]) return cli_args[terms.CONFIG_PARAMS.ROOTPATH.toUpperCase()];
+	const cliArgs = minimist(process.argv);
+	if (cliArgs[terms.CONFIG_PARAMS.ROOTPATH.toUpperCase()]) return cliArgs[terms.CONFIG_PARAMS.ROOTPATH.toUpperCase()];
 }
 
 /**
@@ -855,8 +847,8 @@ function getEnvCliRootPath() {
 let no_boot_file;
 function noBootFile() {
 	if (no_boot_file) return no_boot_file;
-	const cli_env_root = getEnvCliRootPath();
-	if (getEnvCliRootPath() && fs.pathExistsSync(path.join(cli_env_root, terms.HDB_CONFIG_FILE))) {
+	const cliEnvRoot = getEnvCliRootPath();
+	if (getEnvCliRootPath() && fs.pathExistsSync(path.join(cliEnvRoot, terms.HDB_CONFIG_FILE))) {
 		no_boot_file = true;
 		return true;
 	}
@@ -924,3 +916,4 @@ function convertToMS(interval) {
 	}
 	return seconds * 1000;
 }
+const hdbErrors = require('./errors/commonErrors.js');

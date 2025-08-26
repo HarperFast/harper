@@ -30,12 +30,12 @@ import type { StatsFs } from 'node:fs';
 import { createDeflate, deflate } from 'node:zlib';
 import { Readable } from 'node:stream';
 import { ensureDirSync } from 'fs-extra';
-import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager';
-import { CONFIG_PARAMS } from '../utility/hdbTerms';
+import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager.js';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
 import { join, dirname } from 'path';
-import logger from '../utility/logging/logger';
+import logger from '../utility/logging/logger.js';
 import type { LMDBStore } from 'lmdb';
-import { asyncSerialization, hasAsyncSerialization } from '../server/serverHelpers/contentTypes';
+import { asyncSerialization, hasAsyncSerialization } from '../server/serverHelpers/contentTypes.ts';
 
 type StorageInfo = {
 	storageIndex: number;
@@ -447,7 +447,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 		return saveBlob(this).saving ?? Promise.resolve();
 	}
 }
-let deletion_delay = 500;
+let deletionDelay = 500;
 /**
  * Delete the file for the blob
  * @param blob
@@ -463,10 +463,10 @@ export function deleteBlob(blob: Blob): void {
 		unlink(filePath, (error) => {
 			if (error) logger.debug?.('Error trying to remove blob file', error);
 		});
-	}, deletion_delay);
+	}, deletionDelay);
 }
 export function setDeletionDelay(delay: number) {
-	deletion_delay = delay;
+	deletionDelay = delay;
 }
 export type BlobCreationOptions = {
 	type?: string; // the MIME type of the blob

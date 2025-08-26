@@ -1,23 +1,23 @@
 'use strict';
 
 class BulkLoadFileObject {
-	constructor(operation_func, action, schema, table, file_path, file_type, role_perms = null) {
-		this.op = operation_func;
+	constructor(operationFunc, action, schema, table, filePath, fileType, rolePerms = null) {
+		this.op = operationFunc;
 		this.action = action;
 		this.schema = schema;
 		this.table = table;
-		this.file_path = file_path;
-		this.file_type = file_type;
-		this.role_perms = role_perms;
+		this.file_path = filePath;
+		this.file_type = fileType;
+		this.role_perms = rolePerms;
 	}
 }
 
 class BulkLoadDataObject {
-	constructor(action, schema, table, json_data) {
+	constructor(action, schema, table, jsonData) {
 		this.action = action;
 		this.schema = schema;
 		this.table = table;
-		this.data = json_data;
+		this.data = jsonData;
 	}
 }
 

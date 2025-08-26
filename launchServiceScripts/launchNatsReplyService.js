@@ -1,10 +1,10 @@
 'use strict';
 
-const nats_reply_service = require('../server/nats/natsReplyService');
+const natsReplyService = require('../server/nats/natsReplyService.js');
 
 (async () => {
 	try {
-		await nats_reply_service();
+		await natsReplyService();
 	} catch (err) {
 		console.error('Error launching Nats reply service.');
 		console.error(err);

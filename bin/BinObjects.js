@@ -5,13 +5,13 @@
  */
 
 class HdbInfoInsertObject {
-	constructor(id, data_version_num, hdb_version_num) {
+	constructor(id, dataVersionNum, hdbVersionNum) {
 		this.info_id = id;
-		this.data_version_num = data_version_num;
-		this.hdb_version_num = hdb_version_num;
+		this.data_version_num = dataVersionNum;
+		this.hdb_version_num = hdbVersionNum;
 	}
 }
 
 module.exports = {
-	HdbInfoInsertObject: HdbInfoInsertObject,
+	HdbInfoInsertObject,
 };

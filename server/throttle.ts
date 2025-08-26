@@ -1,8 +1,10 @@
 import logger from '../utility/logging/logger.js';
-const MAX_EVENT_TURN_TIME = 1000;
+const MAX_EVENT_DELAY_TIME = 3000;
 const DEFAULT_MAX_QUEUE_TIME = 20_000; // 20 seconds
-const lastWarning = 0;
+let lastWarning = 0;
 const WARNING_INTERVAL = 30000;
+const EVENT_QUEUE_MONITORING_INTERVAL = 3000;
+let lastEventQueueCheck = performance.now() + EVENT_QUEUE_MONITORING_INTERVAL;
 let averageEventCycleTime = 0;
 /**
  * Throttle function to limit the number of calls to a function so that the event queue doesn't get overwhelmed.
@@ -13,7 +15,6 @@ let averageEventCycleTime = 0;
 export function throttle(
 	fn: (...args: any) => any,
 	onLimitExceeded?: (...args: any) => any,
-	getSourceDescription?: (...args: any) => any,
 	maxQueueTimeLimit = DEFAULT_MAX_QUEUE_TIME
 ) {
 	let queuedCalls: any[];
@@ -46,11 +47,6 @@ export function throttle(
 			const now = performance.now();
 			// get the decaying/running average of the event cycle time
 			averageEventCycleTime = (averageEventCycleTime * 4 + now - startTime) / 5;
-			if (now - startTime > MAX_EVENT_TURN_TIME && lastWarning + WARNING_INTERVAL < now) {
-				logger.warn?.(
-					`JavaScript execution has taken too long and is not allowing proper event queue cycling ${getSourceDescription?.(...args) ?? ''}, consider using 'await new Promise(setImmediate)' in code that will execute for a long duration`
-				);
-			}
 			const nextCall = queuedCalls.shift();
 			if (nextCall) {
 				const { args: nextArgs, fn: nextFunction } = nextCall;
@@ -62,3 +58,16 @@ export function throttle(
 		});
 	}
 }
+setInterval(() => {
+	const now = performance.now();
+	if (
+		now - lastEventQueueCheck - EVENT_QUEUE_MONITORING_INTERVAL > MAX_EVENT_DELAY_TIME &&
+		lastWarning + WARNING_INTERVAL < now
+	) {
+		logger.warn?.(
+			`JavaScript execution has taken too long and is not allowing proper event queue cycling, consider using 'await new Promise(setImmediate)' in code that will execute for a long duration`
+		);
+		lastWarning = now;
+	}
+	lastEventQueueCheck = now;
+}, EVENT_QUEUE_MONITORING_INTERVAL).unref();

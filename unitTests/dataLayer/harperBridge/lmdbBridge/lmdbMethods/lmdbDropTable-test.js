@@ -456,8 +456,8 @@ describe('test deleteAttributesFromSystem function', () => {
 
 	it('test removing all attributes', async () => {
 		sandbox.restore();
-		let search_by_value_spy = sandbox.spy(lmdb_drop_table.__get__('search_by_value'));
-		let delete_records_spy = sandbox.spy(lmdb_drop_table.__get__('delete_records'));
+		let search_by_value_spy = sandbox.spy(lmdb_drop_table.__get__('searchByValue'));
+		let delete_records_spy = sandbox.spy(lmdb_drop_table.__get__('deleteRecords'));
 
 		let search_obj = new SearchObject('system', 'hdb_attribute', 'schema_table', 'dev.test', undefined, ['*']);
 		let results = await test_utils.assertErrorAsync(search_by_value, [search_obj], undefined);

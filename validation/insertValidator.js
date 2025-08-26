@@ -1,40 +1,40 @@
-const { hdb_table, hdb_database } = require('./common_validators');
-const validator = require('./validationWrapper');
+const { hdbTable, hdbDatabase } = require('./common_validators.js');
+const validator = require('./validationWrapper.js');
 const Joi = require('joi');
 const INVALID_ATTRIBUTE_NAMES = {
 	undefined: 'undefined',
 	null: 'null',
 };
 
-const custom_records_val = (value, helpers) => {
+const customRecordsVal = (value, helpers) => {
 	const attributes = Object.keys(value);
-	const attributes_length = attributes.length;
-	let error_msg = undefined;
-	for (let i = 0; i < attributes_length; i++) {
+	const attributesLength = attributes.length;
+	let errorMsg = undefined;
+	for (let i = 0; i < attributesLength; i++) {
 		const attribute = attributes[i];
 		if (!attribute || attribute.length === 0 || INVALID_ATTRIBUTE_NAMES[attribute] !== undefined) {
-			if (error_msg === undefined) {
-				error_msg = `Invalid attribute name: '${attribute}'`;
+			if (errorMsg === undefined) {
+				errorMsg = `Invalid attribute name: '${attribute}'`;
 			} else {
-				error_msg += `. Invalid attribute name: '${attribute}'`;
+				errorMsg += `. Invalid attribute name: '${attribute}'`;
 			}
 		}
 	}
 
-	if (error_msg) {
-		return helpers.message(error_msg);
+	if (errorMsg) {
+		return helpers.message(errorMsg);
 	}
 
 	return value;
 };
 
-const insert_schema = Joi.object({
-	database: hdb_database,
-	schema: hdb_database,
-	table: hdb_table,
-	records: Joi.array().items(Joi.object().custom(custom_records_val)).required(),
+const insertSchema = Joi.object({
+	database: hdbDatabase,
+	schema: hdbDatabase,
+	table: hdbTable,
+	records: Joi.array().items(Joi.object().custom(customRecordsVal)).required(),
 });
 
-module.exports = function (insert_object) {
-	return validator.validateBySchema(insert_object, insert_schema);
+module.exports = function (insertObject) {
+	return validator.validateBySchema(insertObject, insertSchema);
 };

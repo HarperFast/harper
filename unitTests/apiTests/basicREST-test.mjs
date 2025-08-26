@@ -387,6 +387,19 @@ describe('test REST calls', () => {
 		assert(!response.headers['server-timing'].includes('miss'));
 		assert.equal(response.data.name, 'name3');
 	});
+	it('invalidate and get from cache and check headers with loadAsInstance', async () => {
+		let response = await axios.post('http://localhost:9926/SimpleCacheLoadAsInstance/3', {
+			invalidate: true,
+		});
+		response = await axios('http://localhost:9926/SimpleCacheLoadAsInstance/3');
+		assert.equal(response.status, 200);
+		assert(response.headers['server-timing'].includes('miss'));
+		assert.equal(response.data.name, 'name3');
+		response = await axios('http://localhost:9926/SimpleCacheLoadAsInstance/3');
+		assert.equal(response.status, 200);
+		assert(!response.headers['server-timing'].includes('miss'));
+		assert.equal(response.data.name, 'name3');
+	});
 	it('query from cache with errors', async () => {
 		// ensure that the error entry exists so we can query with it.
 		let response = await axios.post('http://localhost:9926/SimpleCache/error', {
@@ -458,6 +471,23 @@ describe('test REST calls', () => {
 				name: 'hello world',
 			});
 			response = await axios('http://localhost:9926/SimpleCache/with-query?query=string');
+			assert.equal(response.status, 200);
+			assert.equal(response.data.id, 'with-query?query=string');
+			assert.equal(response.data.name, 'hello world');
+		});
+		after(() => {
+			tables.SimpleCache.directURLMapping = false;
+		});
+	});
+	describe('direct URL mapping with loadAsInstance', function () {
+		before(() => {
+			tables.SimpleCache.directURLMapping = true;
+		});
+		it('direct URL mapping', async () => {
+			let response = await axios.put('http://localhost:9926/SimpleCacheLoadAsInstance/with-query?query=string', {
+				name: 'hello world',
+			});
+			response = await axios('http://localhost:9926/SimpleCacheLoadAsInstance/with-query?query=string');
 			assert.equal(response.status, 200);
 			assert.equal(response.data.id, 'with-query?query=string');
 			assert.equal(response.data.name, 'hello world');
@@ -547,20 +577,21 @@ describe('test REST calls', () => {
 
 		let response2 = await axios('http://localhost:9926/api/v1/resourceA/?queryA=1&queryB=2');
 		assert.equal(response2.data.name, 'ResourceA');
-		assert.strictEqual(response2.data.params.url, '/?queryA=1&queryB=2');
+		assert.strictEqual(response2.data.params.search, 'queryA=1&queryB=2');
 
 		let response3 = await axios('http://localhost:9926/api/v1/resourceA/resourceB/');
 		assert.equal(response3.data.name, 'ResourceB');
-		assert.strictEqual(response3.data.params.url, '/');
+		assert.strictEqual(response3.data.params.pathname, '/');
 
 		let response4 = await axios('http://localhost:9926/api/v1/resourceA/resourceB/subPath/ResourceC?queryA=2&queryB=3');
 		assert.equal(response4.data.name, 'ResourceC');
-		assert.strictEqual(response4.data.params.url, '?queryA=2&queryB=3');
+		assert.strictEqual(response4.data.params.search, 'queryA=2&queryB=3');
 
 		let response5 = await axios(
 			'http://localhost:9926/api/v1/resourceA/resourceB/subPath/ResourceC/some/relative/path/?with=query.property'
 		);
 		assert.equal(response5.data.name, 'ResourceC');
-		assert.strictEqual(response5.data.params.url, '/some/relative/path/?with=query.property');
+		assert.strictEqual(response5.data.params.pathname, '/some/relative/path/');
+		assert.strictEqual(response5.data.params.search, 'with=query.property');
 	});
 });

@@ -1,21 +1,21 @@
 'use strict';
-require('../../bin/dev');
+require('../../bin/dev.js');
 const { Worker, MessageChannel, parentPort, isMainThread, threadId, workerData } = require('worker_threads');
-const { PACKAGE_ROOT } = require('../../utility/packageUtils');
+const { PACKAGE_ROOT } = require('../../utility/packageUtils.js');
 const { join, isAbsolute, extname } = require('path');
-const { server } = require('../Server');
+const { server } = require('../Server.ts');
 const { watch, readdir } = require('fs/promises');
 const { totalmem } = require('os');
-const hdb_terms = require('../../utility/hdbTerms');
-const env_mgr = require('../../utility/environment/environmentManager');
-const harper_logger = require('../../utility/logging/harper_logger');
+const hdbTerms = require('../../utility/hdbTerms.ts');
+const envMgr = require('../../utility/environment/environmentManager.js');
+const harperLogger = require('../../utility/logging/harper_logger.js');
 const { randomBytes } = require('crypto');
-const { _assignPackageExport } = require('../../globals');
+const { _assignPackageExport } = require('../../globals.js');
 const MB = 1024 * 1024;
 const workers = []; // these are our child workers that we are managing
-const connected_ports = []; // these are all known connected worker ports (siblings, children, parents)
+const connectedPorts = []; // these are all known connected worker ports (siblings, children, parents)
 const MAX_UNEXPECTED_RESTARTS = 50;
-let thread_termination_timeout = 10000; // threads, you got 10 seconds to die
+let threadTerminationTimeout = 10000; // threads, you got 10 seconds to die
 const RESTART_TYPE = 'restart';
 const REQUEST_THREAD_INFO = 'request_thread_info';
 const RESOURCE_REPORT = 'resource_report';
@@ -23,8 +23,8 @@ const THREAD_INFO = 'thread_info';
 const ADDED_PORT = 'added-port';
 const ACKNOWLEDGEMENT = 'ack';
 let getThreadInfo;
-let main_thread_port = parentPort;
-_assignPackageExport('threads', connected_ports);
+let mainThreadPort = parentPort;
+_assignPackageExport('threads', connectedPorts);
 
 module.exports = {
 	startWorker,
@@ -45,10 +45,10 @@ module.exports = {
 	restartNumber: workerData?.restartNumber || 1,
 };
 
-connected_ports.onMessageByType = onMessageByType;
-connected_ports.sendToThread = function (thread_id, message) {
+connectedPorts.onMessageByType = onMessageByType;
+connectedPorts.sendToThread = function (threadId, message) {
 	if (!message?.type) throw new Error('A message with a type must be provided');
-	const port = connected_ports.find((port) => port.threadId === thread_id);
+	const port = connectedPorts.find((port) => port.threadId === threadId);
 	if (port) {
 		port.postMessage(message);
 		return true;
@@ -59,8 +59,8 @@ module.exports.whenThreadsStarted = new Promise((resolve) => {
 });
 
 let isMainWorker;
-function setTerminateTimeout(new_timeout) {
-	thread_termination_timeout = new_timeout;
+function setTerminateTimeout(newTimeout) {
+	threadTerminationTimeout = newTimeout;
 }
 function getWorkerIndex() {
 	return workerData ? workerData.workerIndex : isMainWorker ? 0 : undefined;
@@ -72,12 +72,12 @@ function setMainIsWorker(isWorker) {
 	isMainWorker = isWorker;
 	module.exports.threadsHaveStarted();
 }
-let worker_count = 1; // should be assigned when workers are created
-let ticket_keys;
+let workerCount = 1; // should be assigned when workers are created
+let ticketKeys;
 function getTicketKeys() {
-	if (ticket_keys) return ticket_keys;
-	ticket_keys = isMainThread ? randomBytes(48) : workerData.ticketKeys;
-	return ticket_keys;
+	if (ticketKeys) return ticketKeys;
+	ticketKeys = isMainThread ? randomBytes(48) : workerData.ticketKeys;
+	return ticketKeys;
 }
 Object.defineProperty(server, 'workerIndex', {
 	get() {
@@ -108,34 +108,34 @@ function startWorker(path, options = {}) {
 	// 16 threads: 20% of total memory per thread
 	// 64 threads: 11% of total memory per thread
 	// (and then limit to their license limit, if they have one)
-	let available_memory = process.constrainedMemory?.() || totalmem(); // used constrained memory if it is available
+	let availableMemory = process.constrainedMemory?.() || totalmem(); // used constrained memory if it is available
 	// and lower than total memory
-	available_memory = Math.min(available_memory, totalmem(), 20000 * MB);
-	const max_old_memory =
-		env_mgr.get(hdb_terms.CONFIG_PARAMS.THREADS_MAXHEAPMEMORY) ??
-		Math.max(Math.floor(available_memory / MB / (10 + (options.threadCount || 1) / 4)), 512);
+	availableMemory = Math.min(availableMemory, totalmem(), 20000 * MB);
+	const maxOldMemory =
+		envMgr.get(hdbTerms.CONFIG_PARAMS.THREADS_MAXHEAPMEMORY) ??
+		Math.max(Math.floor(availableMemory / MB / (10 + (options.threadCount || 1) / 4)), 512);
 	// Max young memory space (semi-space for scavenger) is 1/128 of max memory (limited to 16-64). For most of our m5
 	// machines this will be 64MB (less for t3's). This is based on recommendations from:
-	// https://www.alibabacloud.com/blog/node-js-application-troubleshooting-manual---comprehensive-gc-problems-and-optimization_594965
+	// https://www.alibabacloud.com/blog/node-js-application-troubleshooting-manual---comprehensive-gc-problems-and-optimization594965
 	// https://github.com/nodejs/node/issues/42511
 	// https://plaid.com/blog/how-we-parallelized-our-node-service-by-30x/
-	const max_young_memory = Math.min(Math.max(max_old_memory >> 6, 16), 64);
+	const maxYoungMemory = Math.min(Math.max(maxOldMemory >> 6, 16), 64);
 
-	const channels_to_connect = [];
-	const ports_to_send = [];
-	for (let existing_port of connected_ports) {
+	const channelsToConnect = [];
+	const portsToSend = [];
+	for (let existingPort of connectedPorts) {
 		const channel = new MessageChannel();
-		channel.existingPort = existing_port;
-		channels_to_connect.push(channel);
-		ports_to_send.push(channel.port2);
+		channel.existingPort = existingPort;
+		channelsToConnect.push(channel);
+		portsToSend.push(channel.port2);
 	}
 
 	if (!extname(path)) path += '.js';
 
 	const worker = new Worker(isAbsolute(path) ? path : join(PACKAGE_ROOT, path), {
 		resourceLimits: {
-			maxOldGenerationSizeMb: max_old_memory,
-			maxYoungGenerationSizeMb: max_young_memory,
+			maxOldGenerationSizeMb: maxOldMemory,
+			maxYoungGenerationSizeMb: maxYoungMemory,
 		},
 		execArgv: [
 			'--enable-source-maps',
@@ -146,21 +146,21 @@ function startWorker(path, options = {}) {
 		argv: process.argv.slice(2),
 		// pass these in synchronously to the worker so it has them on startup:
 		workerData: {
-			addPorts: ports_to_send,
-			addThreadIds: channels_to_connect.map((channel) => channel.existingPort.threadId),
+			addPorts: portsToSend,
+			addThreadIds: channelsToConnect.map((channel) => channel.existingPort.threadId),
 			workerIndex: options.workerIndex,
-			workerCount: (worker_count = options.threadCount),
+			workerCount: (workerCount = options.threadCount),
 			name: options.name,
 			restartNumber: module.exports.restartNumber,
 			ticketKeys: getTicketKeys(),
 		},
-		transferList: ports_to_send,
+		transferList: portsToSend,
 		...options,
 	});
 	// now that we have the new thread ids, we can finishing connecting the channel and notify the existing
 	// worker of the new port with thread id.
-	for (let { port1, existingPort: existing_port } of channels_to_connect) {
-		existing_port.postMessage(
+	for (let { port1, existingPort: existingPort } of channelsToConnect) {
+		existingPort.postMessage(
 			{
 				type: ADDED_PORT,
 				port: port1,
@@ -179,7 +179,7 @@ function startWorker(path, options = {}) {
 	worker.on('error', (error) => {
 		// log errors, and it also important that we catch errors so we can recover if a thread dies (in a recoverable
 		// way)
-		harper_logger.error(`Worker index ${options.workerIndex} error:`, error);
+		harperLogger.error(`Worker index ${options.workerIndex} error:`, error);
 	});
 	worker.on('exit', (code) => {
 		workers.splice(workers.indexOf(worker), 1);
@@ -188,7 +188,7 @@ function startWorker(path, options = {}) {
 			if (worker.unexpectedRestarts < MAX_UNEXPECTED_RESTARTS) {
 				options.unexpectedRestarts = worker.unexpectedRestarts + 1;
 				startWorker(path, options);
-			} else harper_logger.error(`Thread has been restarted ${worker.restarts} times and will not be restarted`);
+			} else harperLogger.error(`Thread has been restarted ${worker.restarts} times and will not be restarted`);
 		}
 	});
 	worker.on('message', (message) => {
@@ -201,13 +201,13 @@ function startWorker(path, options = {}) {
 	return worker;
 }
 
-const OVERLAPPING_RESTART_TYPES = [hdb_terms.THREAD_TYPES.HTTP];
+const OVERLAPPING_RESTART_TYPES = [hdbTerms.THREAD_TYPES.HTTP];
 
 /**
  * Restart all the worker threads
  * @param name If there is a specific set of threads that need to be restarted, they can be specified with this
  * parameter
- * @param max_workers_down The maximum number of worker threads to restart at once. In restarts, we start new
+ * @param maxWorkersDown The maximum number of worker threads to restart at once. In restarts, we start new
  * threads at the same time we shutdown new ones. However, we usually want to limit how many we do at once to avoid
  * excessive load and to keep things responsive. This parameter throttles the restarts to minimize load from
  * thread startups.
@@ -216,8 +216,8 @@ const OVERLAPPING_RESTART_TYPES = [hdb_terms.THREAD_TYPES.HTTP];
 
 async function restartWorkers(
 	name = null,
-	max_workers_down = Math.max(worker_count > 3, 1), // restart 1/8 of the threads at a time, but at least 1
-	start_replacement_threads = true
+	maxWorkersDown = Math.max(workerCount > 3, 1), // restart 1/8 of the threads at a time, but at least 1
+	startReplacementThreads = true
 ) {
 	if (isMainThread) {
 		try {
@@ -226,82 +226,82 @@ async function restartWorkers(
 			// some reason, so we need to reset it to the correct path.
 			process.chdir(process.cwd());
 		} catch (e) {
-			harper_logger.error('Unable to reestablish current working directory', e);
+			harperLogger.error('Unable to reestablish current working directory', e);
 		}
 		// This is here to prevent circular dependencies
-		if (start_replacement_threads) {
-			const { loadRootComponents } = require('../loadRootComponents');
+		if (startReplacementThreads) {
+			const { loadRootComponents } = require('../loadRootComponents.js');
 			await loadRootComponents();
 		}
 
 		module.exports.restartNumber++;
-		if (max_workers_down < 1) {
+		if (maxWorkersDown < 1) {
 			// we accept a ratio of workers, and compute absolute maximum being down at a time from the total number of
 			// threads
-			max_workers_down = max_workers_down * workers.length;
+			maxWorkersDown = maxWorkersDown * workers.length;
 		}
-		let waiting_to_finish = []; // array of workers that we are waiting to restart
+		let waitingToFinish = []; // array of workers that we are waiting to restart
 		// make a copy of the workers before iterating them, as the workers
 		// array will be mutating a lot during this
-		let waiting_to_start = [];
+		let waitingToStart = [];
 		for (let worker of workers.slice(0)) {
 			if ((name && worker.name !== name) || worker.wasShutdown) continue; // filter by type, if specified
-			harper_logger.trace('sending shutdown request to ', worker.threadId);
+			harperLogger.trace('sending shutdown request to ', worker.threadId);
 			worker.postMessage({
 				restartNumber: module.exports.restartNumber,
-				type: hdb_terms.ITC_EVENT_TYPES.SHUTDOWN,
+				type: hdbTerms.ITC_EVENT_TYPES.SHUTDOWN,
 			});
 			worker.wasShutdown = true;
 			worker.emit('shutdown', {});
 			const overlapping = OVERLAPPING_RESTART_TYPES.indexOf(worker.name) > -1;
-			let when_done = new Promise((resolve) => {
+			let whenDone = new Promise((resolve) => {
 				// in case the exit inside the thread doesn't timeout, call terminate if necessary
 				let timeout = setTimeout(() => {
-					harper_logger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
+					harperLogger.warn('Thread did not voluntarily terminate, terminating from the outside', worker.threadId);
 					worker.terminate();
-				}, thread_termination_timeout * 2).unref();
+				}, threadTerminationTimeout * 2).unref();
 				worker.on('exit', () => {
 					clearTimeout(timeout);
-					waiting_to_finish.splice(waiting_to_finish.indexOf(when_done));
-					if (!overlapping && start_replacement_threads) worker.startCopy();
+					waitingToFinish.splice(waitingToFinish.indexOf(whenDone));
+					if (!overlapping && startReplacementThreads) worker.startCopy();
 					resolve();
 				});
 			});
-			waiting_to_finish.push(when_done);
-			if (overlapping && start_replacement_threads) {
-				let new_worker = worker.startCopy();
-				let when_started = new Promise((resolve) => {
+			waitingToFinish.push(whenDone);
+			if (overlapping && startReplacementThreads) {
+				let newWorker = worker.startCopy();
+				let whenStarted = new Promise((resolve) => {
 					const startListener = (message) => {
-						if (message.type === hdb_terms.ITC_EVENT_TYPES.CHILD_STARTED) {
-							harper_logger.trace('Worker has started', new_worker.threadId);
+						if (message.type === hdbTerms.ITC_EVENT_TYPES.CHILD_STARTED) {
+							harperLogger.trace('Worker has started', newWorker.threadId);
 							resolve();
-							waiting_to_start.splice(waiting_to_start.indexOf(when_started));
-							new_worker.off('message', startListener);
+							waitingToStart.splice(waitingToStart.indexOf(whenStarted));
+							newWorker.off('message', startListener);
 						}
 					};
-					harper_logger.trace('Waiting for worker to start', new_worker.threadId);
-					new_worker.on('message', startListener);
+					harperLogger.trace('Waiting for worker to start', newWorker.threadId);
+					newWorker.on('message', startListener);
 				});
-				waiting_to_start.push(when_started);
-				if (waiting_to_finish.length >= max_workers_down) {
+				waitingToStart.push(whenStarted);
+				if (waitingToFinish.length >= maxWorkersDown) {
 					// wait for one to finish before terminating to restart more
-					await Promise.race(waiting_to_finish);
+					await Promise.race(waitingToFinish);
 				}
-				if (waiting_to_start.length >= max_workers_down) {
+				if (waitingToStart.length >= maxWorkersDown) {
 					// wait for one to finish before starting to restart more
-					await Promise.race(waiting_to_start);
+					await Promise.race(waitingToStart);
 				}
 			}
 		}
 		// seems appropriate to wait for this to finish, but the API doesn't actually wait for this function
 		// to finish, so not that important
-		await Promise.all(waiting_to_finish);
-		await Promise.all(waiting_to_start);
-		const { restartService } = require('../../bin/restart');
+		await Promise.all(waitingToFinish);
+		await Promise.all(waitingToStart);
+		const { restartService } = require('../../bin/restart.js');
 		if (
-			start_replacement_threads &&
+			startReplacementThreads &&
 			(name === 'http' || !name) &&
-			env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)
+			envMgr.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED)
 		) {
 			await restartService({ service: 'clustering' });
 		}
@@ -319,21 +319,21 @@ function shutdownWorkers(name) {
 	return restartWorkers(name, Infinity, false);
 }
 
-const message_listeners = [];
+const messageListeners = [];
 function onMessageFromWorkers(listener) {
-	message_listeners.push(listener);
+	messageListeners.push(listener);
 }
-const listeners_by_type = new Map();
+const listenersByType = new Map();
 function onMessageByType(type, listener) {
-	let listeners = listeners_by_type.get(type);
-	if (!listeners) listeners_by_type.set(type, (listeners = []));
+	let listeners = listenersByType.get(type);
+	if (!listeners) listenersByType.set(type, (listeners = []));
 	listeners.push(listener);
 }
 
 const MAX_SYNC_BROADCAST = 10;
-async function broadcast(message, include_self) {
+async function broadcast(message, includeSelf) {
 	let count = 0;
-	for (let port of connected_ports) {
+	for (let port of connectedPorts) {
 		try {
 			port.postMessage(message);
 			if (count++ > MAX_SYNC_BROADCAST) {
@@ -342,58 +342,58 @@ async function broadcast(message, include_self) {
 				await new Promise(setImmediate);
 			}
 		} catch (error) {
-			harper_logger.error(`Unable to send message to worker`, error);
+			harperLogger.error(`Unable to send message to worker`, error);
 		}
 	}
-	if (include_self) {
+	if (includeSelf) {
 		notifyMessageListeners(message, null);
 	}
 }
 
-const awaiting_responses = new Map();
-let next_id = 1;
+const awaitingResponses = new Map();
+let nextId = 1;
 function broadcastWithAcknowledgement(message) {
 	return new Promise((resolve) => {
-		let waiting_count = 0;
-		for (let port of connected_ports) {
+		let waitingCount = 0;
+		for (let port of connectedPorts) {
 			try {
-				let request_id = next_id++;
-				const ack_handler = () => {
-					awaiting_responses.delete(request_id);
-					if (--waiting_count === 0) {
+				let requestId = nextId++;
+				const ackHandler = () => {
+					awaitingResponses.delete(requestId);
+					if (--waitingCount === 0) {
 						resolve();
 					}
 					if (port !== parentPort && --port.refCount === 0) {
 						port.unref();
 					}
 				};
-				ack_handler.port = port;
+				ackHandler.port = port;
 				port.ref();
 				port.refCount = (port.refCount || 0) + 1;
-				awaiting_responses.set((message.requestId = request_id), ack_handler);
+				awaitingResponses.set((message.requestId = requestId), ackHandler);
 				if (!port.hasAckCloseListener) {
 					// just set a single close listener that can clean up all the ack handlers for a port that is closed
 					port.hasAckCloseListener = true;
 					port.on(port.close ? 'close' : 'exit', () => {
-						for (let [, ack_handler] of awaiting_responses) {
-							if (ack_handler.port === port) {
-								ack_handler();
+						for (let [, ackHandler] of awaitingResponses) {
+							if (ackHandler.port === port) {
+								ackHandler();
 							}
 						}
 					});
 				}
 				port.postMessage(message);
-				waiting_count++;
+				waitingCount++;
 			} catch (error) {
-				harper_logger.error(`Unable to send message to worker`, error);
+				harperLogger.error(`Unable to send message to worker`, error);
 			}
 		}
-		if (waiting_count === 0) resolve();
+		if (waitingCount === 0) resolve();
 	});
 }
 
-function sendThreadInfo(target_worker) {
-	target_worker.postMessage({
+function sendThreadInfo(targetWorker) {
+	targetWorker.postMessage({
 		type: THREAD_INFO,
 		workers: getChildWorkerInfo(),
 	});
@@ -424,9 +424,9 @@ function recordResourceReport(worker, message) {
 	worker.resources.updated = Date.now();
 }
 
-let monitor_listener;
+let monitorListener;
 function setMonitorListener(listener) {
-	monitor_listener = listener;
+	monitorListener = listener;
 }
 
 const MONITORING_INTERVAL = 1000;
@@ -449,7 +449,7 @@ function startMonitoring() {
 			worker.lastTotalELU = current_ELU;
 			worker.recentELU = recent_ELU;
 		}
-		if (monitor_listener) monitor_listener();
+		if (monitorListener) monitorListener();
 	}, MONITORING_INTERVAL).unref();
 }
 const REPORTING_INTERVAL = 1000;
@@ -463,13 +463,13 @@ if (parentPort && workerData?.addPorts) {
 	}
 	setInterval(() => {
 		// post our memory usage as a resource report, reporting our memory usage
-		let memory_usage = process.memoryUsage();
+		let memoryUsage = process.memoryUsage();
 		parentPort.postMessage({
 			type: RESOURCE_REPORT,
-			heapTotal: memory_usage.heapTotal,
-			heapUsed: memory_usage.heapUsed,
-			external: memory_usage.external,
-			arrayBuffers: memory_usage.arrayBuffers,
+			heapTotal: memoryUsage.heapTotal,
+			heapUsed: memoryUsage.heapUsed,
+			external: memoryUsage.external,
+			arrayBuffers: memoryUsage.arrayBuffers,
 		});
 	}, REPORTING_INTERVAL).unref();
 	getThreadInfo = () =>
@@ -489,15 +489,15 @@ if (parentPort && workerData?.addPorts) {
 }
 module.exports.getThreadInfo = getThreadInfo;
 
-function addPort(port, keep_ref) {
-	connected_ports.push(port);
+function addPort(port, keepRef) {
+	connectedPorts.push(port);
 	port
 		.on('message', (message) => {
 			if (message.type === ADDED_PORT) {
 				message.port.threadId = message.threadId;
 				addPort(message.port);
 			} else if (message.type === ACKNOWLEDGEMENT) {
-				let completion = awaiting_responses.get(message.id);
+				let completion = awaitingResponses.get(message.id);
 				if (completion) {
 					completion();
 				}
@@ -506,66 +506,66 @@ function addPort(port, keep_ref) {
 			}
 		})
 		.on('close', () => {
-			connected_ports.splice(connected_ports.indexOf(port), 1);
+			connectedPorts.splice(connectedPorts.indexOf(port), 1);
 		})
 		.on('exit', () => {
-			connected_ports.splice(connected_ports.indexOf(port), 1);
+			connectedPorts.splice(connectedPorts.indexOf(port), 1);
 		});
-	if (keep_ref) port.refCount = 100;
+	if (keepRef) port.refCount = 100;
 	else port.unref();
 }
 function notifyMessageListeners(message, port) {
-	for (let listener of message_listeners) {
+	for (let listener of messageListeners) {
 		listener(message, port);
 	}
-	let listeners = listeners_by_type.get(message.type);
+	let listeners = listenersByType.get(message.type);
 	if (listeners) {
 		for (let listener of listeners) {
 			try {
 				listener(message, port);
 			} catch (error) {
-				harper_logger.error(error);
+				harperLogger.error(error);
 			}
 		}
 	}
 }
 if (isMainThread) {
-	let before_restart, queued_restart;
-	let changed_files = new Set();
-	const watch_dir = async (dir, before_restart_callback) => {
-		if (before_restart_callback) before_restart = before_restart_callback;
+	let beforeRestart, queuedRestart;
+	let changedFiles = new Set();
+	const watchDir = async (dir, beforeRestartCallback) => {
+		if (beforeRestartCallback) beforeRestart = beforeRestartCallback;
 		for (let entry of await readdir(dir, { withFileTypes: true })) {
-			if (entry.isDirectory() && entry.name !== 'node_modules') watch_dir(join(dir, entry.name));
+			if (entry.isDirectory() && entry.name !== 'node_modules') watchDir(join(dir, entry.name));
 		}
 		try {
 			for await (let { filename } of watch(dir, { persistent: false })) {
-				changed_files.add(filename);
-				if (queued_restart) clearTimeout(queued_restart);
-				queued_restart = setTimeout(async () => {
-					if (before_restart) await before_restart();
+				changedFiles.add(filename);
+				if (queuedRestart) clearTimeout(queuedRestart);
+				queuedRestart = setTimeout(async () => {
+					if (beforeRestart) await beforeRestart();
 					await restartWorkers();
-					console.log('Reloaded HarperDB components, changed files:', Array.from(changed_files));
-					changed_files.clear();
+					console.log('Reloaded HarperDB components, changed files:', Array.from(changedFiles));
+					changedFiles.clear();
 				}, 100);
 			}
 		} catch (error) {
 			console.warn('Error trying to watch component directory', dir, error);
 		}
 	};
-	module.exports.watchDir = watch_dir;
-	if (process.env.WATCH_DIR) watch_dir(process.env.WATCH_DIR);
+	module.exports.watchDir = watchDir;
+	if (process.env.WATCH_DIR) watchDir(process.env.WATCH_DIR);
 } else {
 	parentPort.on('message', async (message) => {
 		const { type } = message;
-		if (type === hdb_terms.ITC_EVENT_TYPES.SHUTDOWN) {
+		if (type === hdbTerms.ITC_EVENT_TYPES.SHUTDOWN) {
 			module.exports.restartNumber = message.restartNumber;
 			parentPort.unref(); // remove this handle
 			setTimeout(() => {
-				harper_logger.warn('Thread did not voluntarily terminate', threadId);
+				harperLogger.warn('Thread did not voluntarily terminate', threadId);
 				// Note that if this occurs, you may want to use this to debug what is currently running:
 				// require('why-is-node-running')();
 				process.exit(0);
-			}, thread_termination_timeout).unref(); // don't block the shutdown
+			}, threadTerminationTimeout).unref(); // don't block the shutdown
 		}
 	});
 }

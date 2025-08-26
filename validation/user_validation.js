@@ -1,4 +1,4 @@
-const validator = require('./validationWrapper');
+const validator = require('./validationWrapper.js');
 
 const constraints = {
 	username: {
@@ -49,7 +49,7 @@ function dropUserValidation(object) {
 }
 
 module.exports = {
-	addUserValidation: addUserValidation,
-	alterUserValidation: alterUserValidation,
-	dropUserValidation: dropUserValidation,
+	addUserValidation,
+	alterUserValidation,
+	dropUserValidation,
 };

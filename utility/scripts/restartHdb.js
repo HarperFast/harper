@@ -1,7 +1,7 @@
 'use strict';
 
-const pm2_utils = require('../processManagement/processManagement');
-const hdb_terms = require('../hdbTerms');
+const pm2Utils = require('../processManagement/processManagement.js');
+const hdbTerms = require('../hdbTerms.ts');
 
 /**
  * Gets a list of all the running HarperDB processes and calls reload on each one.
@@ -10,13 +10,13 @@ const hdb_terms = require('../hdbTerms');
  */
 (async function restartHdb() {
 	try {
-		const hdb_process_meta = await pm2_utils.describe(hdb_terms.PROCESS_DESCRIPTORS.HDB);
-		for (const proc of hdb_process_meta) {
-			await pm2_utils.reload(proc.pm_id);
+		const hdbProcessMeta = await pm2Utils.describe(hdbTerms.PROCESS_DESCRIPTORS.HDB);
+		for (const proc of hdbProcessMeta) {
+			await pm2Utils.reload(proc.pm_id);
 		}
 
 		// Once this script has finished reloading all the HarperDB processes, delete this process from processManagement.
-		await pm2_utils.deleteProcess(hdb_terms.PROCESS_DESCRIPTORS.RESTART_HDB);
+		await pm2Utils.deleteProcess(hdbTerms.PROCESS_DESCRIPTORS.RESTART_HDB);
 	} catch (err) {
 		console.error(err);
 		throw err;

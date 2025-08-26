@@ -81,9 +81,9 @@ describe('Test configureCluster module', () => {
 
 	before(() => {
 		env_mgr.setProperty('clustering_enabled', true);
-		configure_cluster.__set__('remove_node', remove_node_stub);
-		configure_cluster.__set__('add_node', add_node_stub);
-		configure_cluster.__set__('config_cluster_validator', validate_stub);
+		configure_cluster.__set__('removeNode', remove_node_stub);
+		configure_cluster.__set__('addNode', add_node_stub);
+		configure_cluster.__set__('configClusterValidator', validate_stub);
 		search_stub = sandbox.stub(cluster_utils, 'getAllNodeRecords').resolves(fake_node_records);
 	});
 

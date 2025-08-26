@@ -1,20 +1,24 @@
 'use strict';
 
-// Note - do not import/use common_utils.js in this module, it will cause circular dependencies.
+// Note - do not import/use commonUtils.js in this module, it will cause circular dependencies.
 const fs = require('fs-extra');
 const { workerData, threadId, isMainThread } = require('worker_threads');
-const path = require('path');
+const pathModule = require('path');
 const YAML = require('yaml');
 const PropertiesReader = require('properties-reader');
-const hdb_terms = require('../hdbTerms');
-const assignCMDENVVariables = require('../assignCmdEnvVariables');
+const hdbTerms = require('../hdbTerms.ts');
+const assignCMDENVVariables = require('../assignCmdEnvVariables.js');
 const os = require('os');
-const { PACKAGE_ROOT } = require('../../utility/packageUtils');
-const { _assignPackageExport } = require('../../globals');
+const { PACKAGE_ROOT } = require('../../utility/packageUtils.js');
+const { _assignPackageExport } = require('../../globals.js');
+const { Console } = require('console');
 // store the native write function so we can call it after we write to the log file (and store it on process.stdout
 // because unit tests will create multiple instances of this module)
-let native_std_write = process.stdout.nativeWrite || (process.stdout.nativeWrite = process.stdout.write);
+let nativeStdWrite = process.stdout.nativeWrite || (process.stdout.nativeWrite = process.stdout.write);
+let fileLoggers = new Map();
+const { join } = pathModule;
 
+const MAX_LOG_BUFFER = 10000;
 const LOG_LEVEL_HIERARCHY = {
 	notify: 7,
 	fatal: 6,
@@ -31,28 +35,178 @@ const OUTPUTS = {
 };
 
 // Install log is created in harperdb/logs because the hdb folder doesn't exist initially during the install process.
-const INSTALL_LOG_LOCATION = path.join(PACKAGE_ROOT, `logs`);
+const INSTALL_LOG_LOCATION = join(PACKAGE_ROOT, `logs`);
 
 // Location of default config YAML.
-const DEFAULT_CONFIG_FILE = path.join(PACKAGE_ROOT, 'config/yaml/', hdb_terms.HDB_DEFAULT_CONFIG_FILE);
+const DEFAULT_CONFIG_FILE = join(PACKAGE_ROOT, 'config/yaml/', hdbTerms.HDB_DEFAULT_CONFIG_FILE);
 
 const CLOSE_LOG_FD_TIMEOUT = 10000;
 
-let log_console;
+let logConsole;
 let log_to_file;
-let log_to_stdstreams;
-let log_level;
-let log_name;
-let log_root;
-let log_file_path;
-let log_fd;
+let logToStdstreams;
+let logLevel;
+let logName;
+let logRoot;
+let logFilePath;
+let mainLogger;
+let externalLogger; // default logger used for the global used by external components
+let mainLogFd;
+let writeToLogFile;
+let logImmediately;
 
 // If this is the first time logger is called by process, hdb props will be undefined.
 // Call init to get all the required log settings.
-let hdb_properties;
-if (hdb_properties === undefined) initLogSettings();
+let hdbProperties;
 
-Object.assign(exports, {
+let rootConfig;
+
+function updateLogger(logger, logOptions, name) {
+	logger.rotation = logOptions.rotation;
+	let path = logOptions.path;
+	if (path) {
+		if (!logOptions.root) logOptions.root = pathModule.dirname(path);
+	} else if (logOptions.root) {
+		path = join(logOptions.root, logName);
+	} else {
+		path = mainLogger.path;
+		if (!logOptions.root) logOptions.root = pathModule.dirname(path);
+	}
+	if (path) logger.path = path;
+	else console.error('No path for logger', logOptions);
+	logger.level = LOG_LEVEL_HIERARCHY[logOptions.level] ?? mainLogger?.level ?? LOG_LEVEL_HIERARCHY.info;
+	updateConditional(logger);
+	logger.logToStdstreams = logOptions.stdStreams ?? false;
+	// if there is a configured tag or if a component is logging to default/main log path, use the component name as the tag
+	// to differentiate it
+	logger.tag = logOptions.tag ?? (mainLogger.path === logger.path && name);
+}
+// creates a logger where the methods are only defined if they are within the log level.
+// Using this conditional logger means that every method call must be optional like log.trace?.('message),
+// but there can be performance benefits to using this since it means that the arguments
+// do not need to be evaluated at all.
+function updateConditional(logger) {
+	const conditional = logger.conditional ?? (logger.conditional = {});
+	conditional.notify = LOG_LEVEL_HIERARCHY.notify >= logger.level ? logger.notify.bind(logger) : undefined;
+	conditional.fatal = LOG_LEVEL_HIERARCHY.fatal >= logger.level ? logger.fatal.bind(logger) : undefined;
+	conditional.error = LOG_LEVEL_HIERARCHY.error >= logger.level ? logger.error.bind(logger) : undefined;
+	conditional.warn = LOG_LEVEL_HIERARCHY.warn >= logger.level ? logger.warn.bind(logger) : undefined;
+	conditional.info = LOG_LEVEL_HIERARCHY.info >= logger.level ? logger.info.bind(logger) : undefined;
+	conditional.debug = LOG_LEVEL_HIERARCHY.debug >= logger.level ? logger.debug.bind(logger) : undefined;
+	conditional.trace = LOG_LEVEL_HIERARCHY.trace >= logger.level ? logger.trace.bind(logger) : undefined;
+}
+async function updateLogSettings() {
+	if (!rootConfig) {
+		// set up the initial watcher
+		rootConfig = new RootConfigWatcher();
+		// wait for it to be ready
+		await rootConfig.ready();
+		// TODO: Any way to differentiate changes that we can and can't handle?
+		rootConfig.on('change', updateLogSettings);
+	}
+	let rootConfigObject = rootConfig.config;
+	const logOptions = rootConfigObject.logging ?? {};
+	updateLogger(mainLogger, logOptions);
+	logFilePath = mainLogger.path;
+	logConsole = logOptions.console ?? false;
+	if (logOptions.external) {
+		updateLogger(externalLogger, logOptions.external);
+	}
+	for (const name in rootConfigObject) {
+		// we now scan each component to see if it has logging individual configured
+		const component = rootConfigObject[name];
+		if (component.logging) {
+			updateLogger(mainLogger.forComponent(name), component.logging, name);
+		} else if (mainLogger.hasComponent(name)) {
+			updateLogger(mainLogger.forComponent(name), logOptions, name);
+		}
+	}
+}
+
+class HarperLogger extends Console {
+	constructor(streams, level) {
+		streams.stdout.removeListener = () => {};
+		streams.stderr.removeListener = () => {};
+		streams.stdout.listenerCount = () => {};
+		streams.stderr.listenerCount = () => {};
+		super(streams);
+		this.level = level;
+	}
+	trace(...args) {
+		currentLevel = 'trace';
+		if (this.level <= LOG_LEVEL_HIERARCHY.trace) {
+			super.info(...args);
+		}
+		currentLevel = 'info';
+	}
+	debug(...args) {
+		currentLevel = 'debug';
+		if (this.level <= LOG_LEVEL_HIERARCHY.debug) {
+			super.info(...args);
+		}
+		currentLevel = 'info';
+	}
+	info(...args) {
+		currentLevel = 'info';
+		if (this.level <= LOG_LEVEL_HIERARCHY.info) {
+			super.info(...args);
+		}
+		currentLevel = 'info';
+	}
+	warn(...args) {
+		currentLevel = 'warn';
+		if (this.level <= LOG_LEVEL_HIERARCHY.warn) {
+			super.warn(...args);
+		}
+		currentLevel = 'info';
+	}
+	error(...args) {
+		currentLevel = 'error';
+		if (this.level <= LOG_LEVEL_HIERARCHY.error) {
+			super.error(...args);
+		}
+		currentLevel = 'info';
+	}
+	fatal(...args) {
+		logImmediately = true;
+		try {
+			currentLevel = 'fatal';
+			if (this.level <= LOG_LEVEL_HIERARCHY.fatal) {
+				super.error(...args);
+			}
+			currentLevel = 'info';
+		} finally {
+			logImmediately = false;
+		}
+	}
+	notify(...args) {
+		logImmediately = true;
+		try {
+			currentLevel = 'notify';
+			if (this.level <= LOG_LEVEL_HIERARCHY.notify) {
+				super.info(...args);
+			}
+			currentLevel = 'info';
+		} finally {
+			logImmediately = false;
+		}
+	}
+	withTag(tag) {
+		return loggerWithTag(tag, true, this);
+	}
+	forComponent(name) {
+		// to be replaced
+		return this;
+	}
+	hasComponent(name) {
+		// to be replaced
+		return false;
+	}
+}
+
+if (hdbProperties === undefined) initLogSettings();
+
+module.exports = {
 	notify,
 	fatal,
 	error,
@@ -60,20 +214,56 @@ Object.assign(exports, {
 	info,
 	debug,
 	trace,
-	setLogLevel,
-	log_level,
+	logLevel,
 	loggerWithTag,
 	suppressLogging,
 	initLogSettings,
 	logCustomLevel,
 	closeLogFile,
+	createLogger,
 	logsAtLevel,
-	getLogFilePath: () => log_file_path,
+	getLogFilePath: () => logFilePath,
+	forComponent: (name) => mainLogger.forComponent(name),
+	setMainLogger,
 	OUTPUTS,
 	AuthAuditLog,
-});
-_assignPackageExport('logger', module.exports);
-let logged_fd_err;
+	// for now these functions at least notify us of when the component system is ready so
+	// we can start using the RootConfigWatcher
+	start: updateLogSettings,
+	startOnMainThread: updateLogSettings,
+	errorToString,
+};
+function getLogFilePath() {
+	return logFilePath;
+}
+module.exports.externalLogger = {
+	notify(...args) {
+		externalLogger.notify(...args);
+	},
+	fatal(...args) {
+		externalLogger.fatal(...args);
+	},
+	error(...args) {
+		externalLogger.error(...args);
+	},
+	warn(...args) {
+		externalLogger.warn(...args);
+	},
+	info(...args) {
+		externalLogger.info(...args);
+	},
+	debug(...args) {
+		externalLogger.debug(...args);
+	},
+	trace(...args) {
+		externalLogger.trace(...args);
+	},
+	withTag(tag) {
+		return externalLogger.withTag(tag);
+	},
+};
+_assignPackageExport('logger', module.exports.externalLogger);
+let loggedFdErr;
 
 /**
  * Check if the current log level is at or below the given level.
@@ -81,7 +271,7 @@ let logged_fd_err;
  * @return {boolean}
  */
 function logsAtLevel(level) {
-	return LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY[level];
+	return LOG_LEVEL_HIERARCHY[logLevel] <= LOG_LEVEL_HIERARCHY[level];
 }
 
 /**
@@ -89,93 +279,88 @@ function logsAtLevel(level) {
  * If the settings file doesn't exist (during install) check for command or env vars, if there aren't
  * any, use default values.
  */
-function initLogSettings(force_init = false) {
+function initLogSettings(forceInit = false) {
 	try {
-		if (hdb_properties === undefined || force_init) {
+		if (hdbProperties === undefined || forceInit) {
 			closeLogFile();
-			const boot_props_file_path = getPropsFilePath();
+			const bootPropsFilePath = getPropsFilePath();
 			let properties = assignCMDENVVariables(['ROOTPATH']);
 			try {
-				hdb_properties = PropertiesReader(boot_props_file_path);
+				hdbProperties = PropertiesReader(bootPropsFilePath);
 			} catch (err) {
 				// This is here for situations where HDB isn't using a boot file
 				if (
 					!properties.ROOTPATH ||
-					(properties.ROOTPATH && !fs.pathExistsSync(path.join(properties.ROOTPATH, hdb_terms.HDB_CONFIG_FILE)))
+					(properties.ROOTPATH && !fs.pathExistsSync(join(properties.ROOTPATH, hdbTerms.HDB_CONFIG_FILE)))
 				)
 					throw err;
 			}
 
 			//if root path check for config file, if it exists - all good
 			// if root path and no config file just throw err
-
+			let rotation;
 			({
-				level: log_level,
-				config_log_path: log_root,
-				to_file: log_to_file,
-				to_stream: log_to_stdstreams,
+				level: logLevel,
+				configLogPath: logRoot,
+				toFile: log_to_file,
+				logConsole,
+				rotation,
+				toStream: logToStdstreams,
 			} = getLogConfig(
-				properties.ROOTPATH
-					? path.join(properties.ROOTPATH, hdb_terms.HDB_CONFIG_FILE)
-					: hdb_properties.get('settings_path')
+				properties.ROOTPATH ? join(properties.ROOTPATH, hdbTerms.HDB_CONFIG_FILE) : hdbProperties.get('settings_path')
 			));
 
-			log_name = hdb_terms.LOG_NAMES.HDB;
-			log_file_path = path.join(log_root, log_name);
+			logName = hdbTerms.LOG_NAMES.HDB;
+			logFilePath = join(logRoot, logName);
+
+			mainLogger = createLogger({
+				path: logFilePath,
+				level: logLevel,
+				stdStreams: logToStdstreams,
+				rotation,
+			});
+			// setup the external logger
+			externalLogger = mainLogger.forComponent('external');
+			externalLogger.tag = null; // don't tag by default
 			if (isMainThread) {
 				try {
 					const SegfaultHandler = require('segfault-handler');
-					SegfaultHandler.registerHandler(path.join(log_root, 'crash.log'));
+					SegfaultHandler.registerHandler(join(logRoot, 'crash.log'));
 				} catch (error) {
 					// optional dependency, ok if we can't run it
 				}
 			}
 		}
 	} catch (err) {
-		hdb_properties = undefined;
-		if (
-			err.code === hdb_terms.NODE_ERROR_CODES.ENOENT ||
-			err.code === hdb_terms.NODE_ERROR_CODES.ERR_INVALID_ARG_TYPE
-		) {
+		hdbProperties = undefined;
+		if (err.code === hdbTerms.NODE_ERROR_CODES.ENOENT || err.code === hdbTerms.NODE_ERROR_CODES.ERR_INVALID_ARG_TYPE) {
 			// If the env settings haven't been initialized check cmd/env vars for values. If values not found used default.
-			const cmd_envs = assignCMDENVVariables(Object.keys(hdb_terms.CONFIG_PARAM_MAP), true);
-			for (const key in cmd_envs) {
-				const config_param = hdb_terms.CONFIG_PARAM_MAP[key];
-				if (config_param) config_param.toLowerCase();
-				const config_value = cmd_envs[key];
-				if (config_param === hdb_terms.CONFIG_PARAMS.LOGGING_LEVEL) {
-					log_level = config_value;
+			const cmdEnvs = assignCMDENVVariables(Object.keys(hdbTerms.CONFIG_PARAM_MAP), true);
+			for (const key in cmdEnvs) {
+				const configParam = hdbTerms.CONFIG_PARAM_MAP[key];
+				if (configParam) configParam.toLowerCase();
+				const configValue = cmdEnvs[key];
+				if (configParam === hdbTerms.CONFIG_PARAMS.LOGGING_LEVEL) {
+					logLevel = configValue;
 					continue;
 				}
 
-				if (config_param === hdb_terms.CONFIG_PARAMS.LOGGING_STDSTREAMS) {
-					log_to_stdstreams = config_value;
-					continue;
-				}
-
-				if (config_param === hdb_terms.CONFIG_PARAMS.LOGGING_FILE) {
-					log_to_file = config_param;
-				}
-				if (config_param === hdb_terms.CONFIG_PARAMS.LOGGING_CONSOLE) {
-					log_console = config_param;
+				if (configParam === hdbTerms.CONFIG_PARAMS.LOGGING_CONSOLE) {
+					logConsole = configParam;
 				}
 			}
 
-			const { default_level, default_to_file, default_to_stream } = getDefaultConfig();
+			const { defaultLevel } = getDefaultConfig();
 
-			log_to_file = log_to_file === undefined ? default_to_file : log_to_file;
-			log_to_file = autoCastBoolean(log_to_file);
+			log_to_file = false;
+			logToStdstreams = true;
 
-			log_to_stdstreams = log_to_stdstreams === undefined ? default_to_stream : log_to_stdstreams;
-			log_to_stdstreams = autoCastBoolean(log_to_stdstreams);
+			logLevel = logLevel === undefined ? defaultLevel : logLevel;
 
-			log_level = log_level === undefined ? default_level : log_level;
-
-			// If env hasn't been initialized process is likely install.
-			log_root = INSTALL_LOG_LOCATION;
-			log_name = hdb_terms.LOG_NAMES.INSTALL;
-			log_file_path = path.join(log_root, log_name);
-
+			mainLogger = createLogger({ level: logLevel });
+			// setup the external logger
+			externalLogger = mainLogger.forComponent('external');
+			externalLogger.tag = null; // don't tag by default
 			return;
 		}
 
@@ -183,302 +368,396 @@ function initLogSettings(force_init = false) {
 		error(err);
 		throw err;
 	}
-	if (process.env.DEV_MODE) log_to_stdstreams = true;
+	if (process.env.DEV_MODE) logToStdstreams = true;
 	stdioLogging();
 }
-let logging_enabled = true;
+let loggingEnabled = true;
 function stdioLogging() {
 	if (log_to_file) {
 		process.stdout.write = function (data) {
 			if (
 				typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
-				logging_enabled &&
-				log_console !== false
+				loggingEnabled &&
+				logConsole
 			) {
-				openLogFile();
 				data = data.toString();
 				if (data[data.length - 1] === '\n') data = data.slice(0, -1);
-				fs.appendFileSync(log_fd, createLogRecord('stdout', [data]));
+				writeToLogFile(data);
 			}
-			return native_std_write.apply(process.stdout, arguments);
+			return nativeStdWrite.apply(process.stdout, arguments);
 		};
 		process.stderr.write = function (data) {
 			if (
 				typeof data === 'string' && // this is how we identify console output vs redirected output from a worker
-				logging_enabled &&
-				log_console !== false
+				loggingEnabled &&
+				logConsole
 			) {
-				openLogFile();
 				if (data[data.length - 1] === '\n') data = data.slice(0, -1);
-				fs.appendFileSync(log_fd, createLogRecord('stderr', [data]));
+				writeToLogFile(data);
 			}
-			return native_std_write.apply(process.stderr, arguments);
+			return nativeStdWrite.apply(process.stderr, arguments);
 		};
 	}
 }
 
-function loggerWithTag(tag, conditional) {
-	let tag_object = { tagName: tag.replace(/ /g, '-') }; // tag can't have spaces
+function loggerWithTag(tag, conditional, logger = mainLogger) {
+	tag = tag.replace(/ /g, '-'); // tag can't have spaces
 	return {
-		notify: logWithTag(notify, 'notify'),
-		fatal: logWithTag(fatal, 'fatal'),
-		error: logWithTag(error, 'error'),
-		warn: logWithTag(warn, 'warn'),
-		info: logWithTag(info, 'info'),
-		debug: logWithTag(debug, 'debug'),
-		trace: logWithTag(trace, 'trace'),
+		notify: logWithTag(logger.notify, 'notify'),
+		fatal: logWithTag(logger.fatal, 'fatal'),
+		error: logWithTag(logger.error, 'error'),
+		warn: logWithTag(logger.warn, 'warn'),
+		info: logWithTag(logger.info, 'info'),
+		debug: logWithTag(logger.debug, 'debug'),
+		trace: logWithTag(logger.trace, 'trace'),
 	};
-	function logWithTag(logger, level) {
-		return !conditional || LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY[level]
+	function logWithTag(loggerMethod, level) {
+		return !conditional || logger.level <= LOG_LEVEL_HIERARCHY[level]
 			? function (...args) {
-					return logger(tag_object, ...args);
-			  }
+					currentTag = tag;
+					try {
+						return loggerMethod.call(logger, ...args);
+					} finally {
+						currentTag = undefined;
+					}
+				}
 			: null;
 	}
 }
 
 function suppressLogging(callback) {
 	try {
-		logging_enabled = false;
+		loggingEnabled = false;
 		callback();
 	} finally {
-		logging_enabled = true;
+		loggingEnabled = true;
 	}
 }
-
-/**
- * This function iterates given args array to ensure objects are stringified as needed; spaces are added after each arg except for the last one
- * @param {string} level - the logging level
- * @param {[*]} args - the array of arguments that will be converted into a single log line
- * @returns {string} - a complete log
- */
 
 const SERVICE_NAME = workerData?.name?.replace(/ /g, '-') || 'main';
-function createLogRecord(level, args) {
-	const date_now = new Date(Date.now()).toISOString();
-
-	// If an error instance is stringified it returns an empty object. Also, adding the error instance to a string
-	// only logs the error message and not the stack, that is why we need to set message to stack.
-	let log_msg = '';
-	let length = args.length;
-	const last_arg = length - 1;
-	let tags = [level];
-	let x = 0;
-	let service_name;
-	if (typeof args[0] === 'object') {
-		if (args[0]?.tagName) {
-			tags.push(args[0]?.tagName);
-			x++;
-		} else if (args[0]?.serviceName) {
-			service_name = args[0]?.serviceName;
-			x++;
-		}
-	}
-	tags.unshift(service_name || SERVICE_NAME + '/' + threadId);
-	for (; x < length; x++) {
-		let arg = args[x];
-		if (arg instanceof Error && arg.stack) {
-			log_msg += arg.stack;
-			if (Object.keys(arg).length > 0)
-				// print any extra properties on the error
-				log_msg += '\n' + JSON.stringify(arg);
-			if (arg.cause) {
-				// if there is a cause, add it to the args to be processed
-				args[x--] = arg.cause;
-				if (arg) log_msg += '\nCaused by:';
+// these are used to store information about the current service and tag so we can prepend them to the log during
+// the writes, without having to pass the information through the Console instance
+let currentLevel = 'info'; // default is info
+let currentServiceName;
+let currentTag;
+function createLogger({
+	path: logFilePath,
+	level: logLevel,
+	stdStreams: logToStdstreams,
+	rotation,
+	isExternalInstance,
+	writeToLog,
+	component,
+}) {
+	if (!logLevel) logLevel = 'info';
+	let level = LOG_LEVEL_HIERARCHY[logLevel];
+	let logger;
+	/**
+	 * Log to std out and/or file
+	 * @param log
+	 */
+	function logStdOut(log) {
+		if (log_to_file) {
+			if (logger.logToStdstreams) {
+				// eslint-disable-next-line no-control-regex,sonarjs/no-control-regex
+				logToFile(log.replace(/\x1b\[[0-9;]*m/g, '')); // remove color codes
+				loggingEnabled = false;
+				try {
+					// if we are writing std streams we don't want to double write to the file through the stdio capture
+					process.stdout.write(log);
+				} finally {
+					loggingEnabled = true;
+				}
+			} else {
+				logToFile(log);
 			}
-		} else if (typeof arg === 'object') {
+		} else if (logToStdstreams) process.stdout.write(log);
+	}
+
+	/**
+	 * Log to std err and/or file
+	 * @param log
+	 */
+	function logStdErr(log) {
+		if (log_to_file) {
+			logToFile(log);
+			if (logToStdstreams) {
+				loggingEnabled = false;
+				try {
+					// if we are writing std streams we don't want to double write to the file through the stdio capture
+					process.stderr.write(log);
+				} finally {
+					loggingEnabled = true;
+				}
+			}
+		} else if (logToStdstreams) process.stderr.write(log);
+	}
+	let logToFile = logFilePath && getFileLogger(logFilePath, rotation, isExternalInstance);
+	function logPrepend(write) {
+		return {
+			write(log) {
+				let tags = [currentLevel];
+				tags.unshift(currentServiceName || SERVICE_NAME + '/' + threadId);
+				if (currentTag) tags.push(currentTag);
+				if (logger.tag) tags.push(logger.tag);
+				write(`[${tags.join('] [')}]: ${log}`);
+			},
+		};
+	}
+	if (isExternalInstance) {
+		writeToLogFile = logToFile;
+	}
+	logger = new HarperLogger(
+		{
+			stdout: logPrepend(writeToLog ?? logStdOut),
+			stderr: logPrepend(writeToLog ?? logStdErr),
+			colorMode: logToStdstreams ?? false,
+		},
+		level
+	);
+	updateConditional(logger);
+	logger.path = logFilePath;
+	Object.defineProperty(logger, 'path', {
+		get() {
+			return logFilePath;
+		},
+		set(path) {
+			logFilePath = path;
+			logToFile = getFileLogger(logFilePath, logger.rotation, isExternalInstance);
+			if (isExternalInstance) writeToLogFile = logToFile;
+		},
+		enumerable: true,
+	});
+	logger.closeLogFile = logToFile?.closeLogFile;
+	logger.logToStdstreams = logToStdstreams;
+	if (!component) {
+		let components = new Map();
+		logger.forComponent = function (name) {
+			let componentLogger = components.get(name);
+			if (!componentLogger) {
+				componentLogger = createLogger({
+					path: logFilePath,
+					level: logLevel,
+					stdStreams: logToStdstreams,
+					isExternalInstance: name === 'external',
+					rotation,
+					writeToLog,
+					component: true,
+				});
+				components.set(name, componentLogger);
+			}
+			return componentLogger;
+		};
+		logger.hasComponent = function (name) {
+			return components.has(name);
+		};
+	}
+	return logger;
+}
+const LOG_TIME_USAGE_THRESHOLD = 100;
+/**
+ * Get the file logger for the given path. If it doesn't exist, create it.
+ * @param path
+ * @param isExternalInstance
+ * @return {any}
+ */
+function getFileLogger(path, rotation, isExternalInstance) {
+	let logger = fileLoggers.get(path);
+	let logFD, loggedFDError, logTimer;
+	let logBuffer;
+	let logTimeUsage = 0;
+	if (!logger) {
+		logger = logToFile;
+		logger.closeLogFile = closeLogFile;
+		logger.path = path;
+		fileLoggers.set(path, logger);
+	}
+	if (isMainThread && JSON.stringify(rotation) !== JSON.stringify(logger.rotation)) {
+		logger.rotation = rotation;
+		setTimeout(() => {
+			logger.rotator?.end();
+			if (!rotation) return;
+			const logRotator = require('./logRotator.js');
 			try {
-				log_msg += JSON.stringify(arg);
+				logger.rotator = logRotator({
+					logger,
+					...rotation,
+				});
 			} catch (error) {
-				log_msg += 'Object [' + Object.keys(arg) + ']';
+				logger('Error initializing log rotator', error);
+			}
+		}, 100);
+	}
+	let logCount = 0;
+	return logger;
+	function logToFile(log) {
+		logCount++;
+		let entry = `${new Date().toISOString()} ${log}${log.endsWith('\n') ? '' : '\n'}`;
+		if (logBuffer) {
+			// if we are currently in log buffer mode, we will add the entry to the buffer (there will be a timer to write it)
+			if (logBuffer.length < MAX_LOG_BUFFER) {
+				logBuffer.push(entry);
+			} else if (logBuffer.length === MAX_LOG_BUFFER) {
+				logBuffer.push('Maximum log buffer rate reached, logs will be throttled\n');
+			}
+			if (logImmediately) {
+				clearTimeout(logTimer);
+				logQueuedData();
 			}
 		} else {
-			log_msg += arg;
-		}
-		if (x < last_arg) {
-			log_msg += ' ';
+			if (logImmediately || logTimeUsage < performance.now() + LOG_TIME_USAGE_THRESHOLD) {
+				// if we have a directive to log immediately, or we are not using more than 2 percent of processing time
+				logQueuedData(entry);
+			} else {
+				logTimeUsage = Math.min(logTimeUsage, performance.now() + LOG_TIME_USAGE_THRESHOLD);
+				logBuffer = [entry];
+				logTimer = setTimeout(logQueuedData, 1);
+			}
 		}
 	}
+	// this is called on a timer, and will write the log buffer to the file
+	function logQueuedData(entry) {
+		openLogFile();
+		if (logFD) {
+			let startTime = performance.now();
+			fs.appendFileSync(logFD, logBuffer ? logBuffer.join('') : entry);
+			let endTime = performance.now();
+			// determine if we are using more than about two percent of processing time for log writes recently, and if so, we
+			// will start buffering
+			logTimeUsage = Math.max(endTime, logTimeUsage) + (endTime - startTime) * 50;
+		} else if (!loggedFDError) console.log(logBuffer ? logBuffer.join('') : entry);
+		if (logBuffer) logBuffer = null;
+	}
 
-	return `${date_now} [${tags.join('] [')}]: ${log_msg}\n`;
-}
-
-/**
- * Log to std out and/or file
- * @param log
- */
-function logStdOut(log) {
-	if (log_to_file) {
-		logToFile(log);
-		if (log_to_stdstreams) {
-			logging_enabled = false;
-			try {
-				// if we are writing std streams we don't want to double write to the file through the stdio capture
-				process.stdout.write(log);
-			} finally {
-				logging_enabled = true;
-			}
-		}
-	} else if (log_to_stdstreams) process.stdout.write(log);
-}
-
-/**
- * Log to std err and/or file
- * @param log
- */
-function logStdErr(log) {
-	if (log_to_file) {
-		logToFile(log);
-		if (log_to_stdstreams) {
-			logging_enabled = false;
-			try {
-				// if we are writing std streams we don't want to double write to the file through the stdio capture
-				process.stderr.write(log);
-			} finally {
-				logging_enabled = true;
-			}
-		}
-	} else if (log_to_stdstreams) process.stderr.write(log);
-}
-
-function logToFile(log) {
-	openLogFile();
-	if (log_fd) fs.appendFileSync(log_fd, log);
-	else if (!logged_fd_err) console.log(log);
-}
-
-function closeLogFile() {
-	try {
-		fs.closeSync(log_fd);
-	} catch (err) {}
-	log_fd = null;
-}
-function openLogFile() {
-	if (!log_fd) {
+	function closeLogFile() {
 		try {
-			log_fd = fs.openSync(log_file_path, 'a');
-		} catch (error) {
-			if (!logged_fd_err) {
-				logged_fd_err = true;
-				console.error(error);
+			fs.closeSync(logFD);
+		} catch (err) {}
+		logFD = null;
+		if (isExternalInstance) mainLogFd = null;
+	}
+
+	function openLogFile(isRetry) {
+		if (!logFD) {
+			try {
+				logFD = fs.openSync(path, 'a');
+				if (isExternalInstance) mainLogFd = logFD;
+			} catch (error) {
+				if (error.code === 'ENOENT' && !isRetry) {
+					// if the directory doesn't exist, create it
+					fs.mkdirpSync(pathModule.dirname(path));
+					return openLogFile(true);
+				}
+				if (!loggedFDError) {
+					loggedFDError = true;
+					console.error(error);
+				}
 			}
+			setTimeout(() => {
+				closeLogFile();
+			}, CLOSE_LOG_FD_TIMEOUT).unref(); // periodically time it out so we can reset it in case the file has been moved (log rotation or by user) or deleted.
 		}
-		setTimeout(() => {
-			closeLogFile();
-		}, CLOSE_LOG_FD_TIMEOUT).unref(); // periodically time it out so we can reset it in case the file has been moved (log rotation or by user) or deleted.
 	}
 }
-
 /**
  * Log an info level log.
  * @param args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
- * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
+ * Provide args separated by commas. No need to stringify objects. Console will do that
  */
 function info(...args) {
-	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['info']) {
-		logStdOut(createLogRecord('info', args));
-	}
+	mainLogger.info(...args);
 }
 
 /**
  * Log a trace level log.
  * @param args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
- * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
+ * Provide args separated by commas. No need to stringify objects. Console will do that
  */
 function trace(...args) {
-	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['trace']) {
-		logStdOut(createLogRecord('trace', args));
-	}
+	mainLogger.trace(...args);
 }
 
 /**
  * Log a error level log.
  * @param args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
- * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
+ * Provide args separated by commas. No need to stringify objects. Console will do that
  */
 function error(...args) {
-	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['error']) {
-		logStdErr(createLogRecord('error', args));
-	}
+	mainLogger.error(...args);
 }
 
 /**
  * Log a debug level log.
  * @param args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
- * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
+ * Provide args separated by commas. No need to stringify objects. Console will do that
  */
 function debug(...args) {
-	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['debug']) {
-		logStdOut(createLogRecord('debug', args));
-	}
+	mainLogger.debug(...args);
 }
 
 /**
  * Log a notify level log.
  * @param args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
- * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
+ * Provide args separated by commas. No need to stringify objects. Console will do that
  */
 function notify(...args) {
-	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['notify']) {
-		logStdOut(createLogRecord('notify', args));
-	}
+	mainLogger.notify(...args);
 }
 
 /**
  * Log a fatal level log.
  * @param args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
- * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
+ * Provide args separated by commas. No need to stringify objects. Console will do that
  */
 function fatal(...args) {
-	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['fatal']) {
-		logStdErr(createLogRecord('fatal', args));
-	}
+	mainLogger.fatal(...args);
 }
 
 /**
  * Log a warn level log.
  * @param args - rest parameter syntax (...args), allows function to accept indefinite number of args as an array of log messages(strings/objects).
- * Provide args separated by commas. No need to stringify objects. createLogRecord will do that
+ * Provide args separated by commas. No need to stringify objects. Console will do that
  */
 function warn(...args) {
-	if (LOG_LEVEL_HIERARCHY[log_level] <= LOG_LEVEL_HIERARCHY['warn']) {
-		logStdErr(createLogRecord('warn', args));
-	}
+	mainLogger.warn(...args);
 }
 
-function logCustomLevel(level, output, ...args) {
-	if (output === OUTPUTS.STDERR) logStdErr(createLogRecord(level, args));
-	else logStdOut(createLogRecord(level, args));
+function logCustomLevel(level, output, options, ...args) {
+	currentServiceName = options.service_name;
+	try {
+		mainLogger[level](...args);
+	} finally {
+		currentServiceName = undefined;
+	}
 }
 
 /**
- * This is a duplicate of common_utils.getPropsFilePath.  We need to have it duplicated here to avoid a circular dependency
- * that happens when common_utils is imported.
+ * This is a duplicate of commonUtils.getPropsFilePath.  We need to have it duplicated here to avoid a circular dependency
+ * that happens when commonUtils is imported.
  * @returns {*}
  */
 function getPropsFilePath() {
-	let home_dir = undefined;
+	let homeDir = undefined;
 	try {
-		home_dir = os.homedir();
+		homeDir = os.homedir();
 	} catch (err) {
 		// could get here in android
-		home_dir = process.env.HOME;
+		homeDir = process.env.HOME;
 	}
-	if (!home_dir) {
-		home_dir = '~/';
+	if (!homeDir) {
+		homeDir = '~/';
 	}
 
-	let _boot_props_file_path = path.join(home_dir, hdb_terms.HDB_HOME_DIR_NAME, hdb_terms.BOOT_PROPS_FILE_NAME);
+	let _bootPropsFilePath = join(homeDir, hdbTerms.HDB_HOME_DIR_NAME, hdbTerms.BOOT_PROPS_FILE_NAME);
 	// this checks how we used to store the boot props file for older installations.
-	if (!fs.existsSync(_boot_props_file_path)) {
-		_boot_props_file_path = path.join(PACKAGE_ROOT, 'utility/hdb_boot_properties.file');
+	if (!fs.existsSync(_bootPropsFilePath)) {
+		_bootPropsFilePath = join(PACKAGE_ROOT, 'utility/hdb_boot_properties.file');
 	}
-	return _boot_props_file_path;
+	return _bootPropsFilePath;
 }
 
 function setLogLevel(level) {
-	log_level = level;
+	logLevel = level;
 }
 
 /**
@@ -492,35 +771,40 @@ function autoCastBoolean(boolean) {
 
 /**
  * Reads the harperdb-config.yaml file for log settings.
- * @param hdb_config_path
- * @returns {{config_log_path: any, rotate: any, level: any, to_file: any, root: any, to_stream: any}}
+ * @param hdbConfigPath
+ * @returns {{configLogPath: any, rotate: any, level: any, toFile: any, root: any, toStream: any}}
  */
-function getLogConfig(hdb_config_path) {
+function getLogConfig(hdbConfigPath) {
 	try {
 		// This is here to accommodate pre 4.0.0 settings files that might exist during upgrade.
-		if (hdb_config_path.includes('config/settings.js')) {
-			const old_hdb_settings = PropertiesReader(hdb_config_path);
+		if (hdbConfigPath.includes('config/settings.js')) {
+			const oldHdbSettings = PropertiesReader(hdbConfigPath);
 			return {
-				level: old_hdb_settings.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY),
-				config_log_path: path.dirname(old_hdb_settings.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY)),
-				to_file: old_hdb_settings.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_FILE),
-				to_stream: old_hdb_settings.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS),
+				level: oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_LEVEL_KEY),
+				configLogPath: pathModule.dirname(oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY)),
+				toFile: oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_TO_FILE),
+				toStream: oldHdbSettings.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_TO_STDSTREAMS),
 			};
 		}
-		const config_doc = YAML.parseDocument(fs.readFileSync(hdb_config_path, 'utf8'));
-		const level = config_doc.getIn(['logging', 'level']);
-		const config_log_path = config_doc.getIn(['logging', 'root']);
-		const to_file = config_doc.getIn(['logging', 'file']);
-		const to_stream = config_doc.getIn(['logging', 'stdStreams']);
+		const configDoc = YAML.parseDocument(fs.readFileSync(hdbConfigPath, 'utf8'));
+		const level = configDoc.getIn(['logging', 'level']);
+		const configLogPath = configDoc.getIn(['logging', 'root']);
+		const toFile = configDoc.getIn(['logging', 'file']);
+		const toStream = configDoc.getIn(['logging', 'stdStreams']);
+		const logConsole = configDoc.getIn(['logging', 'console']);
+		const rotation = configDoc.getIn(['logging', 'rotation'])?.toJSON();
+
 		return {
 			level,
-			config_log_path,
-			to_file,
-			to_stream,
+			configLogPath,
+			toFile,
+			toStream,
+			logConsole,
+			rotation,
 		};
 	} catch (err) {
 		// If the config file doesn't exist throw ENOENT error and parent function will use default log settings
-		if (err.code === hdb_terms.NODE_ERROR_CODES.ENOENT) {
+		if (err.code === hdbTerms.NODE_ERROR_CODES.ENOENT) {
 			throw err;
 		}
 
@@ -536,14 +820,14 @@ function getLogConfig(hdb_config_path) {
  */
 function getDefaultConfig() {
 	try {
-		const default_config_doc = YAML.parseDocument(fs.readFileSync(DEFAULT_CONFIG_FILE, 'utf8'));
-		const default_level = default_config_doc.getIn(['logging', 'level']);
-		const default_to_file = default_config_doc.getIn(['logging', 'file']);
-		const default_to_stream = default_config_doc.getIn(['logging', 'stdStreams']);
+		const defaultConfigDoc = YAML.parseDocument(fs.readFileSync(DEFAULT_CONFIG_FILE, 'utf8'));
+		const defaultLevel = defaultConfigDoc.getIn(['logging', 'level']);
+		const defaultToFile = defaultConfigDoc.getIn(['logging', 'file']);
+		const defaultToStream = defaultConfigDoc.getIn(['logging', 'stdStreams']);
 		return {
-			default_level,
-			default_to_file,
-			default_to_stream,
+			defaultLevel,
+			defaultToFile,
+			defaultToStream,
 		};
 	} catch (err) {
 		console.error('Error accessing default config file for logging');
@@ -551,11 +835,34 @@ function getDefaultConfig() {
 	}
 }
 
-function AuthAuditLog(username, status, type, originating_ip, request_method, path) {
+/**
+ * This converts an error to a human readable string. This follows the convention of standard console logging
+ * of printing the error as "ErrorClassName: message". Strangely, this is _not_ how Error.prototype.toString
+ * behaves, so this normalizes to match the bevahior of the console rather than default toString.
+ * @param error
+ * @return {string|string}
+ */
+function errorToString(error) {
+	return typeof error.message === 'string' ? `${error.constructor.name}: ${error.message}` : error.toString();
+}
+
+function setMainLogger(logger) {
+	mainLogger = logger;
+}
+function closeLogFile() {
+	try {
+		fs.closeSync(mainLogFd);
+	} catch (err) {}
+	mainLogFd = null;
+}
+
+function AuthAuditLog(username, status, type, originatingIp, requestMethod, path) {
 	this.username = username;
 	this.status = status;
 	this.type = type;
-	this.originating_ip = originating_ip;
-	this.request_method = request_method;
+	this.originating_ip = originatingIp;
+	this.request_method = requestMethod;
 	this.path = path;
 }
+// we have to load this at the end to avoid circular dependencies problems
+const { RootConfigWatcher } = require('../../config/RootConfigWatcher');

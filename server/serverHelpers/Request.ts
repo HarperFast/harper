@@ -5,25 +5,25 @@ import { platform } from 'os';
  */
 export class Request {
 	#body;
-	constructor(node_request, node_response) {
-		this.method = node_request.method;
-		const url = node_request.url;
-		this._nodeRequest = node_request;
-		this._nodeResponse = node_response;
+	constructor(nodeRequest, nodeResponse) {
+		this.method = nodeRequest.method;
+		const url = nodeRequest.url;
+		this._nodeRequest = nodeRequest;
+		this._nodeResponse = nodeResponse;
 		this.url = url;
-		this.headers = new Headers(node_request.headers);
+		this.headers = new Headers(nodeRequest.headers);
 	}
 	get absoluteURL() {
 		return this.protocol + '://' + this.host + this.url;
 	}
 	get pathname() {
-		const query_start = this.url.indexOf('?');
-		if (query_start > -1) return this.url.slice(0, query_start);
+		const queryStart = this.url.indexOf('?');
+		if (queryStart > -1) return this.url.slice(0, queryStart);
 		return this.url;
 	}
 	set pathname(pathname) {
-		const query_start = this.url.indexOf('?');
-		if (query_start > -1) this.url = pathname + this.url.slice(query_start);
+		const queryStart = this.url.indexOf('?');
+		if (queryStart > -1) this.url = pathname + this.url.slice(queryStart);
 		else this.url = pathname;
 	}
 	get protocol() {
@@ -47,6 +47,9 @@ export class Request {
 	get host() {
 		return this._nodeRequest.authority || this._nodeRequest.headers.host;
 	}
+	get httpVersion() {
+		return this._nodeRequest.httpVersion;
+	}
 	get isAborted() {
 		// TODO: implement this
 		return false;
@@ -57,16 +60,16 @@ export class Request {
 	}
 }
 class RequestBody {
-	#node_request;
-	constructor(node_request) {
-		this.#node_request = node_request;
+	#nodeRequest;
+	constructor(nodeRequest) {
+		this.#nodeRequest = nodeRequest;
 	}
 	on(event, listener) {
-		this.#node_request.on(event, listener);
+		this.#nodeRequest.on(event, listener);
 		return this;
 	}
 	pipe(destination, options) {
-		return this.#node_request.pipe(destination, options);
+		return this.#nodeRequest.pipe(destination, options);
 	}
 }
 

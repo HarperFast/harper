@@ -1,13 +1,13 @@
 import { Socket } from 'net';
-import { _assignPackageExport } from '../globals';
-import type { Value } from '../resources/analytics';
-import type { Resources } from '../resources/Resources';
+import { _assignPackageExport } from '../globals.js';
+import type { Value } from '../resources/analytics/write.ts';
+import type { Resources } from '../resources/Resources.ts';
 
 /**
  * This is the central interface by which we define entry points for different server protocol plugins to listen for
  * incoming connections and requests.
  */
-interface Server {
+export interface Server {
 	socket?(listener: (socket: Socket) => void, options: ServerOptions): void;
 	http?(listener: (request: Request, nextLayer: (request: Request) => Response) => void, options?: ServerOptions): void;
 	request?(
@@ -32,9 +32,10 @@ interface Node {
 	name: string;
 	shard: number;
 }
-interface ServerOptions {
+export interface ServerOptions {
 	port?: number;
 	securePort?: number;
+	isOperationsServer?: boolean;
 }
 interface WebSocketOptions extends ServerOptions {
 	subProtocol: string;

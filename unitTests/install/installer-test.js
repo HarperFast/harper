@@ -60,19 +60,19 @@ describe('Test installer module', () => {
 
 		before(() => {
 			installer.__set__('checkForPromptOverride', check_for_prompt_stub);
-			installer.__set__('install_validator', validator_stub);
+			installer.__set__('installValidator', validator_stub);
 			installer.__set__('checkForExistingInstall', check_for_existing_stub);
 			installer.__set__('termsAgreement', terms_stub);
 			installer.__set__('installPrompts', install_prompts_stub);
-			installer.__set__('env_manager.setHdbBasePath', set_hdb_base_stub);
-			installer.__set__('mount_hdb', mount_stub);
+			installer.__set__('envManager.setHdbBasePath', set_hdb_base_stub);
+			installer.__set__('mountHdb', mount_stub);
 			installer.__set__('createBootPropertiesFile', create_boot_file_stub);
 			installer.__set__('createConfigFile', create_config_stub);
 			installer.__set__('createSuperUser', create_super_user_stub);
 			installer.__set__('createClusterUser', create_cluster_user_stub);
 			keys_rw = installer.__set__('keys.generateKeys', generate_keys_stub);
 			installer.__set__('insertHdbVersionInfo', insert_ver_stub);
-			installer.__set__('check_jwt_tokens', check_jwt_stub);
+			installer.__set__('checkJwtTokens', check_jwt_stub);
 		});
 
 		after(() => {
@@ -168,7 +168,7 @@ describe('Test installer module', () => {
 	});
 
 	it('Test createBootPropertiesFile calls all the things to make file then sets env props', async () => {
-		installer.__set__('hdb_root', 'user/hdb-test/');
+		installer.__set__('hdbRoot', 'user/hdb-test/');
 		sandbox.stub(hdb_utils, 'getHomeDir').returns('homedir/test');
 		const mk_dir_stub = sandbox.stub(fs, 'mkdirpSync');
 		const write_file_stub = sandbox.stub(fs, 'writeFile');
@@ -227,7 +227,7 @@ describe('Test installer module', () => {
 	});
 
 	it('Test rollbackInstall calls remove and process exit', () => {
-		installer.__set__('hdb_root', 'i/am/root/');
+		installer.__set__('hdbRoot', 'i/am/root/');
 		const path_stub = sandbox.stub(path, 'resolve').returns('boot/file/here/');
 		const rollbackInstall = installer.__get__('rollbackInstall');
 		const remove_sync_stub = sandbox.stub(fs, 'removeSync');
@@ -244,7 +244,7 @@ describe('Test installer module', () => {
 
 	it('Test createAdminUser calls addRole then addUser', async () => {
 		const createAdminUser = installer.__get__('createAdminUser');
-		installer.__set__('p_schema_to_global', sandbox.stub());
+		installer.__set__('pSchemaToGlobal', sandbox.stub());
 		const add_role_stub = sandbox.stub(role_ops, 'addRole').resolves({ role: 'super_man' });
 		const add_user_stub = sandbox.stub(user_ops, 'addUser');
 		await createAdminUser({ role: 'super_man' }, { username: 'kent', password: 'lois' });

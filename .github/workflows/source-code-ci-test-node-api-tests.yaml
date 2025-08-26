@@ -1,0 +1,160 @@
+on:
+  # Trigger analysis when pushing in main or pull requests, and when creating
+  # a pull request.
+  push:
+    branches:
+      - main
+      - 'release_*'
+      - CORE-2498
+  pull_request:
+    types: [ opened, synchronize, reopened ]
+  schedule:
+    - cron: '30 5 * * 1-5'
+  workflow_dispatch:
+  
+name: Run Source Code CI Tests and API Tests with Node js
+jobs:
+  getNodeVersion:
+    runs-on: ubuntu-latest
+    outputs:
+      nodeVersion: ${{ steps.getNode.outputs.NODE_VERSION }}
+      harperdbVersion: ${{ steps.getNode.outputs.HARPERDB_VERSION }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+      - id: getNode
+        name: Get node version
+        run: |
+          pwd
+          NODE_VERSION="$(node --version)"
+          NODE_VERSION="${NODE_VERSION:1}"
+          HARPERDB_VERSION=$(cat package.json | jq -r '.version')
+          echo "NODE_VERSION=$NODE_VERSION" >> $GITHUB_OUTPUT
+          echo "HARPERDB_VERSION=$HARPERDB_VERSION" >> $GITHUB_OUTPUT
+  createInstances:
+    needs:
+      - getNodeVersion
+    uses: ./.github/workflows/create-instances.yaml
+    with:
+      instanceCount: '1'
+      harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
+      installType: 'sourceCode'
+      callingWorkflow: ${{ github.workflow }}
+    secrets: inherit
+  registerInstances:
+    needs:
+      - createInstances
+      - getNodeVersion
+    uses: ./.github/workflows/install-and-register.yaml
+    with:
+      publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
+      harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
+      nodeVersion: ${{ needs.getNodeVersion.outputs.nodeVersion }}
+      installType: 'sourceCode'
+    secrets: inherit
+  runUnitTests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - createInstances
+      - registerInstances
+      - getNodeVersion
+    steps:
+      - name: Run Unit Tests on Instances
+        env:
+          CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+        run: |
+          #!/bin/bash
+
+          cd ../
+          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+          public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
+
+          for public_dns_name in ${public_dns_names[@]}
+          do 
+            echo "Starting work on: $public_dns_name"
+            ssh -i private_key -o ConnectTimeout=30 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
+              "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/source-code-unit-tests.sh && /home/ubuntu/harperdb/test/ci-tests/source-code-unit-tests.sh"
+            echo "Ending work on: $public_dns_name"
+          done
+        shell: bash
+  runSonarScans:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    needs:
+      - runUnitTests
+      - createInstances
+    steps:
+      - uses: actions/checkout@v4
+      - name: 'Download coverage file'
+        env:
+          CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+        run: |
+          #!/bin/bash
+          mkdir coverage
+          cd ../
+          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+          public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
+          public_dns_name="${public_dns_names[0]}"
+          scp -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/harperdb/coverage/lcov.info" "harperdb/coverage/lcov.info"
+      - name: SonarCloud Scan
+        uses: sonarsource/sonarqube-scan-action@v5.2.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+  runIntegrationTests:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    needs:
+      - runUnitTests
+      - createInstances
+    steps:
+      - name: Run Integration Tests with Node js on Instances
+        env:
+          CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
+          S3_KEY : ${{ secrets.AWS_S3_INTEGRATION_TEST_DATA_ACCESS_KEY_ID }}
+          S3_SECRET : ${{ secrets.AWS_S3_INTEGRATION_TEST_DATA_SECRET_ACCESS_KEY }}
+          HDB_ADMIN_USERNAME: ${{ secrets.HDB_ADMIN_USERNAME }}
+          HDB_ADMIN_PASSWORD: ${{ secrets.HDB_ADMIN_PASSWORD }}
+        run: |
+          #!/bin/bash
+          cd ../
+          echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
+          public_dns_names=${{ needs.createInstances.outputs.publicDnsNames }}
+
+          for public_dns_name in ${public_dns_names[@]}
+          do 
+            echo "Starting work on: $public_dns_name"
+            ssh -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@$public_dns_name \
+                "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests-node-api-tests.sh && /home/ubuntu/harperdb/test/ci-tests/ci-tests-node-api-tests.sh ${HDB_ADMIN_USERNAME} ${HDB_ADMIN_PASSWORD} ${S3_KEY} ${S3_SECRET} false"
+            echo "Ending work on: $public_dns_name"
+          done
+  downloadLogs:
+    if: always()
+    needs:
+      - runIntegrationTests
+      - createInstances
+    uses: ./.github/workflows/download-logs.yaml
+    with:
+      publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
+    secrets: inherit
+  destroyInstances:
+    if: always()
+    needs: downloadLogs
+    uses: ./.github/workflows/destroy-instances.yaml
+    with:
+      instanceCount: '1'
+      callingWorkflow: ${{ github.workflow }}
+    secrets: inherit
+  sendSlackMessage:
+    uses: ./.github/workflows/post-to-slack-channel.yaml
+    if: ${{ failure() && github.event_name == 'schedule' }}
+    secrets: inherit
+    needs:
+      - destroyInstances
+      - downloadLogs
+      - runUnitTests
+      - runIntegrationTests
+      - registerInstances
+      - createInstances
+      - getNodeVersion

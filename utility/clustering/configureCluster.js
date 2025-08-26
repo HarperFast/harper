@@ -1,15 +1,15 @@
 'use strict';
 
-const hdb_terms = require('../hdbTerms');
-const hdb_logger = require('../logging/harper_logger');
-const hdb_utils = require('../common_utils');
-const env_mgr = require('../environment/environmentManager');
-const remove_node = require('./removeNode');
-const add_node = require('./addNode');
-const clustering_utils = require('./clusterUtilities');
-const config_cluster_validator = require('../../validation/clustering/configureClusterValidator');
-const { handleHDBError, hdb_errors } = require('../errors/hdbError');
-const { HTTP_STATUS_CODES } = hdb_errors;
+const hdbTerms = require('../hdbTerms.ts');
+const hdbLogger = require('../logging/harper_logger.js');
+const hdbUtils = require('../common_utils.js');
+const envMgr = require('../environment/environmentManager.js');
+const removeNode = require('./removeNode.js');
+const addNode = require('./addNode.js');
+const clusteringUtils = require('./clusterUtilities.js');
+const configClusterValidator = require('../../validation/clustering/configureClusterValidator.js');
+const { handleHDBError, hdbErrors } = require('../errors/hdbError.js');
+const { HTTP_STATUS_CODES } = hdbErrors;
 
 const SUCCESS_MSG = 'Configure cluster complete.';
 const FAILED_MSG = 'Failed to configure the cluster. Check the logs for more details.';
@@ -26,50 +26,50 @@ module.exports = configureCluster;
  * @returns {Promise<{message: string, connections: *[]}|{message: string, failed_nodes: *[], connections: *[]}>}
  */
 async function configureCluster(request) {
-	hdb_logger.trace('configure cluster called with:', request);
-	const validation = config_cluster_validator(request);
+	hdbLogger.trace('configure cluster called with:', request);
+	const validation = configClusterValidator(request);
 	if (validation) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST, undefined, undefined, true);
 	}
 
 	// Configure cluster supersedes any existing clustering setup, for this reason we get all existing nodes and remove them.
-	const all_nodes = await clustering_utils.getAllNodeRecords();
-	let remove_result = [];
+	const allNodes = await clusteringUtils.getAllNodeRecords();
+	let removeResult = [];
 	// Only do this for nats setups
-	if (env_mgr.get(hdb_terms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
-		for (let i = 0, nodes_length = all_nodes.length; i < nodes_length; i++) {
+	if (envMgr.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED)) {
+		for (let i = 0, nodesLength = allNodes.length; i < nodesLength; i++) {
 			const response = await functionWrapper(
-				remove_node,
-				{ operation: hdb_terms.OPERATIONS_ENUM.REMOVE_NODE, node_name: all_nodes[i].name },
-				all_nodes[i].name
+				removeNode,
+				{ operation: hdbTerms.OPERATIONS_ENUM.REMOVE_NODE, node_name: allNodes[i].name },
+				allNodes[i].name
 			);
-			remove_result.push(response);
+			removeResult.push(response);
 		}
 
-		hdb_logger.trace(`All results from configure_cluster remove node:`, remove_result);
+		hdbLogger.trace(`All results from configure_cluster remove node:`, removeResult);
 	}
 
 	// // For each connection in the request, call add node
-	let add_result = [];
-	const con_length = request.connections.length;
-	for (let x = 0; x < con_length; x++) {
+	let addResult = [];
+	const conLength = request.connections.length;
+	for (let x = 0; x < conLength; x++) {
 		const connection = request.connections[x];
-		const response = await functionWrapper(add_node, connection, connection.node_name);
-		add_result.push(response);
+		const response = await functionWrapper(addNode, connection, connection.node_name);
+		addResult.push(response);
 	}
 
-	hdb_logger.trace('All results from configure_cluster add node:', add_result);
+	hdbLogger.trace('All results from configure_cluster add node:', addResult);
 
 	// We loop through that array to find if any operations have errored, if they have we log and track them
 	// so that we can return the failed node names to api.
 	let failed_nodes = [];
-	let connection_results = [];
+	let connectionResults = [];
 	let success = false;
-	const results = remove_result.concat(add_result);
-	for (let j = 0, res_length = results.length; j < res_length; j++) {
+	const results = removeResult.concat(addResult);
+	for (let j = 0, resLength = results.length; j < resLength; j++) {
 		const result = results[j];
 		if (result.status === 'rejected') {
-			hdb_logger.error(result.node_name, result?.error?.message, result?.error?.stack);
+			hdbLogger.error(result.node_name, result?.error?.message, result?.error?.stack);
 			if (!failed_nodes.includes(result.node_name)) {
 				failed_nodes.push(result.node_name);
 			}
@@ -86,21 +86,21 @@ async function configureCluster(request) {
 		)
 			continue;
 
-		connection_results.push({
+		connectionResults.push({
 			node_name: result?.node_name,
 			response: result?.result,
 		});
 	}
 
-	if (hdb_utils.isEmptyOrZeroLength(failed_nodes)) {
+	if (hdbUtils.isEmptyOrZeroLength(failed_nodes)) {
 		// If no fails return just success message
-		return { message: SUCCESS_MSG, connections: connection_results };
+		return { message: SUCCESS_MSG, connections: connectionResults };
 	} else if (success) {
 		// If there was at least one fulfilled promise return the failed nodes
 		return {
 			message: PARTIALLY_MSG,
 			failed_nodes,
-			connections: connection_results,
+			connections: connectionResults,
 		};
 	} else {
 		// If none of the add node & remove node operations were successful throw error message

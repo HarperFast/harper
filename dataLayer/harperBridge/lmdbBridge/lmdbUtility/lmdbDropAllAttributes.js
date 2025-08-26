@@ -1,42 +1,42 @@
 'use strict';
 
-const drop_attribute = require('../lmdbMethods/lmdbDropAttribute');
-const DropAttributeObject = require('../../../DropAttributeObject');
-const hdb_utils = require('../../../../utility/common_utils');
-const log = require('../../../../utility/logging/harper_logger');
-const LMDB_ERROR = require('../../../../utility/errors/commonErrors').LMDB_ERRORS_ENUM;
+const dropAttribute = require('../lmdbMethods/lmdbDropAttribute.js');
+const DropAttributeObject = require('../../../DropAttributeObject.js');
+const hdbUtils = require('../../../../utility/common_utils.js');
+const log = require('../../../../utility/logging/harper_logger.js');
+const LMDB_ERROR = require('../../../../utility/errors/commonErrors.js').LMDB_ERRORS_ENUM;
 
 module.exports = lmdbDropAllAttributes;
 
 /**
  * drops all attributes from a table
- * @param drop_obj
+ * @param dropObj
  */
-async function lmdbDropAllAttributes(drop_obj) {
+async function lmdbDropAllAttributes(dropObj) {
 	if (
-		hdb_utils.isEmpty(global.hdb_schema[drop_obj.schema]) ||
-		hdb_utils.isEmpty(global.hdb_schema[drop_obj.schema][drop_obj.table])
+		hdbUtils.isEmpty(global.hdb_schema[dropObj.schema]) ||
+		hdbUtils.isEmpty(global.hdb_schema[dropObj.schema][dropObj.table])
 	) {
-		throw new Error(`unknown schema:${drop_obj.schema} and table ${drop_obj.table}`);
+		throw new Error(`unknown schema:${dropObj.schema} and table ${dropObj.table}`);
 	}
 
-	let schema_table = global.hdb_schema[drop_obj.schema][drop_obj.table];
+	let schemaTable = global.hdb_schema[dropObj.schema][dropObj.table];
 
-	let current_attribute;
+	let currentAttribute;
 	try {
-		for (let i = 0; i < schema_table.attributes.length; i++) {
-			current_attribute = schema_table.attributes[i].attribute;
-			let drop_attr_object = new DropAttributeObject(drop_obj.schema, drop_obj.table, current_attribute);
+		for (let i = 0; i < schemaTable.attributes.length; i++) {
+			currentAttribute = schemaTable.attributes[i].attribute;
+			let dropAttrObject = new DropAttributeObject(dropObj.schema, dropObj.table, currentAttribute);
 			try {
-				await drop_attribute(drop_attr_object, false);
+				await dropAttribute(dropAttrObject, false);
 			} catch (e) {
 				if (e.message !== LMDB_ERROR.DBI_DOES_NOT_EXIST) {
-					log.error(`unable to drop attribute ${drop_obj.schema}.${drop_obj.table}.${current_attribute}:` + e);
+					log.error(`unable to drop attribute ${dropObj.schema}.${dropObj.table}.${currentAttribute}:` + e);
 				}
 			}
 		}
 	} catch (err) {
-		log.error(`Error dropping attribute ${current_attribute}`);
+		log.error(`Error dropping attribute ${currentAttribute}`);
 		throw err;
 	}
 }

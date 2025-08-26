@@ -1,73 +1,73 @@
 'use strict';
 
-const schema_metadata_validator = require('../validation/schemaMetadataValidator');
-const { validateBySchema } = require('../validation/validationWrapper');
-const { common_validators, schema_regex } = require('../validation/common_validators');
+const schemaMetadataValidator = require('../validation/schemaMetadataValidator.js');
+const { validateBySchema } = require('../validation/validationWrapper.js');
+const { commonValidators, schemaRegex } = require('../validation/common_validators.js');
 const Joi = require('joi');
-const logger = require('../utility/logging/harper_logger');
+const logger = require('../utility/logging/harper_logger.js');
 const uuidV4 = require('uuid').v4;
-const signalling = require('../utility/signalling');
-const hdb_terms = require('../utility/hdbTerms');
+const signalling = require('../utility/signalling.js');
+const hdbTerms = require('../utility/hdbTerms.ts');
 const util = require('util');
-const harperBridge = require('./harperBridge/harperBridge');
-const { handleHDBError, hdb_errors, ClientError } = require('../utility/errors/hdbError');
-const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
-const { SchemaEventMsg } = require('../server/threads/itc');
-const nats_utils = require('../server/nats/utility/natsUtils');
-const { getDatabases } = require('../resources/databases');
-const { transformReq } = require('../utility/common_utils');
-const { replicateOperation } = require('../server/replication/replicator');
+const harperBridge = require('./harperBridge/harperBridge.js');
+const { handleHDBError, hdbErrors, ClientError } = require('../utility/errors/hdbError.js');
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
+const { SchemaEventMsg } = require('../server/threads/itc.js');
+const natsUtils = require('../server/nats/utility/natsUtils.js');
+const { getDatabases } = require('../resources/databases.ts');
+const { transformReq } = require('../utility/common_utils.js');
+const { replicateOperation } = require('../server/replication/replicator.ts');
 
 const DB_NAME_CONSTRAINTS = Joi.string()
 	.min(1)
-	.max(common_validators.schema_length.maximum)
-	.pattern(schema_regex)
-	.messages({ 'string.pattern.base': '{:#label} ' + common_validators.schema_format.message });
+	.max(commonValidators.schema_length.maximum)
+	.pattern(schemaRegex)
+	.messages({ 'string.pattern.base': '{:#label} ' + commonValidators.schema_format.message });
 
 const TABLE_NAME_CONSTRAINTS = Joi.string()
 	.min(1)
-	.max(common_validators.schema_length.maximum)
-	.pattern(schema_regex)
-	.messages({ 'string.pattern.base': '{:#label} ' + common_validators.schema_format.message })
+	.max(commonValidators.schema_length.maximum)
+	.pattern(schemaRegex)
+	.messages({ 'string.pattern.base': '{:#label} ' + commonValidators.schema_format.message })
 	.required();
 
 const PRIMARY_KEY_CONSTRAINTS = Joi.string()
 	.min(1)
-	.max(common_validators.schema_length.maximum)
-	.pattern(schema_regex)
+	.max(commonValidators.schema_length.maximum)
+	.pattern(schemaRegex)
 	.messages({
-		'string.pattern.base': '{:#label} ' + common_validators.schema_format.message,
+		'string.pattern.base': '{:#label} ' + commonValidators.schema_format.message,
 		'any.required': "'primary_key' is required",
 		'string.base': "'primary_key' must be a string",
 	})
 	.required();
 
 module.exports = {
-	createSchema: createSchema,
-	createSchemaStructure: createSchemaStructure,
-	createTable: createTable,
-	createTableStructure: createTableStructure,
-	createAttribute: createAttribute,
-	dropSchema: dropSchema,
-	dropTable: dropTable,
-	dropAttribute: dropAttribute,
+	createSchema,
+	createSchemaStructure,
+	createTable,
+	createTableStructure,
+	createAttribute,
+	dropSchema,
+	dropTable,
+	dropAttribute,
 	getBackup,
 };
 
 /** EXPORTED FUNCTIONS **/
 
-async function createSchema(schema_create_object) {
-	let schema_structure = await createSchemaStructure(schema_create_object);
+async function createSchema(schemaCreateObject) {
+	let schemaStructure = await createSchemaStructure(schemaCreateObject);
 	signalling.signalSchemaChange(
-		new SchemaEventMsg(process.pid, schema_create_object.operation, schema_create_object.schema)
+		new SchemaEventMsg(process.pid, schemaCreateObject.operation, schemaCreateObject.schema)
 	);
 
-	return schema_structure;
+	return schemaStructure;
 }
 
-async function createSchemaStructure(schema_create_object) {
+async function createSchemaStructure(schemaCreateObject) {
 	const validation = validateBySchema(
-		schema_create_object,
+		schemaCreateObject,
 		Joi.object({
 			database: DB_NAME_CONSTRAINTS,
 			schema: DB_NAME_CONSTRAINTS,
@@ -75,33 +75,33 @@ async function createSchemaStructure(schema_create_object) {
 	);
 	if (validation) throw new ClientError(validation.message);
 
-	transformReq(schema_create_object);
+	transformReq(schemaCreateObject);
 
-	if (!(await schema_metadata_validator.checkSchemaExists(schema_create_object.schema))) {
+	if (!(await schemaMetadataValidator.checkSchemaExists(schemaCreateObject.schema))) {
 		throw handleHDBError(
 			new Error(),
-			HDB_ERROR_MSGS.SCHEMA_EXISTS_ERR(schema_create_object.schema),
+			HDB_ERROR_MSGS.SCHEMA_EXISTS_ERR(schemaCreateObject.schema),
 			HTTP_STATUS_CODES.BAD_REQUEST,
-			hdb_terms.LOG_LEVELS.ERROR,
-			HDB_ERROR_MSGS.SCHEMA_EXISTS_ERR(schema_create_object.schema),
+			hdbTerms.LOG_LEVELS.ERROR,
+			HDB_ERROR_MSGS.SCHEMA_EXISTS_ERR(schemaCreateObject.schema),
 			true
 		);
 	}
 
-	await harperBridge.createSchema(schema_create_object);
+	await harperBridge.createSchema(schemaCreateObject);
 
-	return `database '${schema_create_object.schema}' successfully created`;
+	return `database '${schemaCreateObject.schema}' successfully created`;
 }
 
-async function createTable(create_table_object) {
-	transformReq(create_table_object);
-	create_table_object.hash_attribute = create_table_object.primary_key ?? create_table_object.hash_attribute;
-	return await createTableStructure(create_table_object);
+async function createTable(createTableObject) {
+	transformReq(createTableObject);
+	createTableObject.hash_attribute = createTableObject.primary_key ?? createTableObject.hash_attribute;
+	return await createTableStructure(createTableObject);
 }
 
-async function createTableStructure(create_table_object) {
+async function createTableStructure(createTableObject) {
 	const validation = validateBySchema(
-		create_table_object,
+		createTableObject,
 		Joi.object({
 			database: DB_NAME_CONSTRAINTS,
 			schema: DB_NAME_CONSTRAINTS,
@@ -112,33 +112,33 @@ async function createTableStructure(create_table_object) {
 	);
 	if (validation) throw new ClientError(validation.message);
 
-	let invalid_table_msg = await schema_metadata_validator.checkSchemaTableExists(
-		create_table_object.schema,
-		create_table_object.table
+	let invalidTableMsg = await schemaMetadataValidator.checkSchemaTableExists(
+		createTableObject.schema,
+		createTableObject.table
 	);
-	if (!invalid_table_msg) {
+	if (!invalidTableMsg) {
 		throw handleHDBError(
 			new Error(),
-			HDB_ERROR_MSGS.TABLE_EXISTS_ERR(create_table_object.schema, create_table_object.table),
+			HDB_ERROR_MSGS.TABLE_EXISTS_ERR(createTableObject.schema, createTableObject.table),
 			HTTP_STATUS_CODES.BAD_REQUEST,
-			hdb_terms.LOG_LEVELS.ERROR,
-			HDB_ERROR_MSGS.TABLE_EXISTS_ERR(create_table_object.schema, create_table_object.table),
+			hdbTerms.LOG_LEVELS.ERROR,
+			HDB_ERROR_MSGS.TABLE_EXISTS_ERR(createTableObject.schema, createTableObject.table),
 			true
 		);
 	}
 
-	let table_system_data = {
-		name: create_table_object.table,
-		schema: create_table_object.schema,
+	let tableSystemData = {
+		name: createTableObject.table,
+		schema: createTableObject.schema,
 		id: uuidV4(),
-		hash_attribute: create_table_object.hash_attribute,
+		hash_attribute: createTableObject.hash_attribute,
 	};
 
 	try {
-		if (create_table_object.residence) {
+		if (createTableObject.residence) {
 			if (global.clustering_on) {
-				table_system_data.residence = create_table_object.residence;
-				await harperBridge.createTable(table_system_data, create_table_object);
+				tableSystemData.residence = createTableObject.residence;
+				await harperBridge.createTable(tableSystemData, createTableObject);
 			} else {
 				throw handleHDBError(
 					new Error(),
@@ -147,18 +147,18 @@ async function createTableStructure(create_table_object) {
 				);
 			}
 		} else {
-			await harperBridge.createTable(table_system_data, create_table_object);
+			await harperBridge.createTable(tableSystemData, createTableObject);
 		}
 
-		return `table '${create_table_object.schema}.${create_table_object.table}' successfully created.`;
+		return `table '${createTableObject.schema}.${createTableObject.table}' successfully created.`;
 	} catch (err) {
 		throw err;
 	}
 }
 
-async function dropSchema(drop_schema_object) {
+async function dropSchema(dropSchemaObject) {
 	const validation = validateBySchema(
-		drop_schema_object,
+		dropSchemaObject,
 		Joi.object({
 			database: Joi.string(),
 			schema: Joi.string(),
@@ -170,45 +170,45 @@ async function dropSchema(drop_schema_object) {
 	);
 	if (validation) throw new ClientError(validation.message);
 
-	transformReq(drop_schema_object);
+	transformReq(dropSchemaObject);
 
-	let invalid_schema_msg = await schema_metadata_validator.checkSchemaExists(drop_schema_object.schema);
-	if (invalid_schema_msg) {
+	let invalidSchemaMsg = await schemaMetadataValidator.checkSchemaExists(dropSchemaObject.schema);
+	if (invalidSchemaMsg) {
 		throw handleHDBError(
 			new Error(),
-			invalid_schema_msg,
+			invalidSchemaMsg,
 			HTTP_STATUS_CODES.NOT_FOUND,
-			hdb_terms.LOG_LEVELS.ERROR,
-			invalid_schema_msg,
+			hdbTerms.LOG_LEVELS.ERROR,
+			invalidSchemaMsg,
 			true
 		);
 	}
 
 	//we refresh and assign the entire schema metadata to global in order to make sure we have the latest
-	let schema = await schema_metadata_validator.schema_describe.describeSchema({ schema: drop_schema_object.schema });
-	//global.hdb_schema[drop_schema_object.schema] = schema;
+	let schema = await schemaMetadataValidator.schemaDescribe.describeSchema({ schema: dropSchemaObject.schema });
+	//global.hdb_schema[dropSchemaObject.schema] = schema;
 
 	// Get all the tables that belong to schema.
-	const tables = Object.keys(global.hdb_schema[drop_schema_object.schema]);
+	const tables = Object.keys(global.hdb_schema[dropSchemaObject.schema]);
 
-	await harperBridge.dropSchema(drop_schema_object);
+	await harperBridge.dropSchema(dropSchemaObject);
 	signalling.signalSchemaChange(
-		new SchemaEventMsg(process.pid, drop_schema_object.operation, drop_schema_object.schema)
+		new SchemaEventMsg(process.pid, dropSchemaObject.operation, dropSchemaObject.schema)
 	);
 
-	//delete global.hdb_schema[drop_schema_object.schema];
+	//delete global.hdb_schema[dropSchemaObject.schema];
 
 	// Purge the streams for all tables that were part of schema.
 	// Streams are part of Nats and are used by clustering, they are 'message stores' that track transactions on a table.
-	await nats_utils.purgeSchemaTableStreams(drop_schema_object.schema, tables);
-	let response = await replicateOperation(drop_schema_object);
-	response.message = `successfully deleted '${drop_schema_object.schema}'`;
+	await natsUtils.purgeSchemaTableStreams(dropSchemaObject.schema, tables);
+	let response = await replicateOperation(dropSchemaObject);
+	response.message = `successfully deleted '${dropSchemaObject.schema}'`;
 	return response;
 }
 
-async function dropTable(drop_table_object) {
+async function dropTable(dropTableObject) {
 	const validation = validateBySchema(
-		drop_table_object,
+		dropTableObject,
 		Joi.object({
 			database: Joi.string(),
 			schema: Joi.string(),
@@ -217,41 +217,41 @@ async function dropTable(drop_table_object) {
 	);
 	if (validation) throw new ClientError(validation.message);
 
-	transformReq(drop_table_object);
+	transformReq(dropTableObject);
 
-	let invalid_schema_table_msg = await schema_metadata_validator.checkSchemaTableExists(
-		drop_table_object.schema,
-		drop_table_object.table
+	let invalidSchemaTableMsg = await schemaMetadataValidator.checkSchemaTableExists(
+		dropTableObject.schema,
+		dropTableObject.table
 	);
-	if (invalid_schema_table_msg) {
+	if (invalidSchemaTableMsg) {
 		throw handleHDBError(
 			new Error(),
-			invalid_schema_table_msg,
+			invalidSchemaTableMsg,
 			HTTP_STATUS_CODES.NOT_FOUND,
-			hdb_terms.LOG_LEVELS.ERROR,
-			invalid_schema_table_msg,
+			hdbTerms.LOG_LEVELS.ERROR,
+			invalidSchemaTableMsg,
 			true
 		);
 	}
 
-	await harperBridge.dropTable(drop_table_object);
+	await harperBridge.dropTable(dropTableObject);
 
 	// Purge tables local stream. Streams are part of Nats and are used by clustering, they are 'message stores' that track transactions on a table.
-	await nats_utils.purgeTableStream(drop_table_object.schema, drop_table_object.table);
+	await natsUtils.purgeTableStream(dropTableObject.schema, dropTableObject.table);
 
-	let response = await replicateOperation(drop_table_object);
-	response.message = `successfully deleted table '${drop_table_object.schema}.${drop_table_object.table}'`;
+	let response = await replicateOperation(dropTableObject);
+	response.message = `successfully deleted table '${dropTableObject.schema}.${dropTableObject.table}'`;
 	return response;
 }
 
 /**
  * Drops all files for the specified attribute.
- * @param drop_attribute_object - The JSON formatted inbound message.
+ * @param dropAttributeObject - The JSON formatted inbound message.
  * @returns {Promise<*>}
  */
-async function dropAttribute(drop_attribute_object) {
+async function dropAttribute(dropAttributeObject) {
 	const validation = validateBySchema(
-		drop_attribute_object,
+		dropAttributeObject,
 		Joi.object({
 			database: Joi.string(),
 			schema: Joi.string(),
@@ -261,26 +261,26 @@ async function dropAttribute(drop_attribute_object) {
 	);
 	if (validation) throw new ClientError(validation.message);
 
-	transformReq(drop_attribute_object);
+	transformReq(dropAttributeObject);
 
-	let invalid_schema_table_msg = await schema_metadata_validator.checkSchemaTableExists(
-		drop_attribute_object.schema,
-		drop_attribute_object.table
+	let invalidSchemaTableMsg = await schemaMetadataValidator.checkSchemaTableExists(
+		dropAttributeObject.schema,
+		dropAttributeObject.table
 	);
-	if (invalid_schema_table_msg) {
+	if (invalidSchemaTableMsg) {
 		throw handleHDBError(
 			new Error(),
-			invalid_schema_table_msg,
+			invalidSchemaTableMsg,
 			HTTP_STATUS_CODES.NOT_FOUND,
-			hdb_terms.LOG_LEVELS.ERROR,
-			invalid_schema_table_msg,
+			hdbTerms.LOG_LEVELS.ERROR,
+			invalidSchemaTableMsg,
 			true
 		);
 	}
 
 	if (
-		drop_attribute_object.attribute ===
-		global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table].hash_attribute
+		dropAttributeObject.attribute ===
+		global.hdb_schema[dropAttributeObject.schema][dropAttributeObject.table].hash_attribute
 	) {
 		throw handleHDBError(
 			new Error(),
@@ -292,10 +292,10 @@ async function dropAttribute(drop_attribute_object) {
 		);
 	}
 
-	if (hdb_terms.TIME_STAMP_NAMES.indexOf(drop_attribute_object.attribute) >= 0) {
+	if (hdbTerms.TIME_STAMP_NAMES.indexOf(dropAttributeObject.attribute) >= 0) {
 		throw handleHDBError(
 			new Error(),
-			`cannot drop internal timestamp attribute: ${drop_attribute_object.attribute}`,
+			`cannot drop internal timestamp attribute: ${dropAttributeObject.attribute}`,
 			HTTP_STATUS_CODES.BAD_REQUEST,
 			undefined,
 			undefined,
@@ -304,50 +304,50 @@ async function dropAttribute(drop_attribute_object) {
 	}
 
 	try {
-		await harperBridge.dropAttribute(drop_attribute_object);
-		dropAttributeFromGlobal(drop_attribute_object);
+		await harperBridge.dropAttribute(dropAttributeObject);
+		dropAttributeFromGlobal(dropAttributeObject);
 		signalling.signalSchemaChange(
 			new SchemaEventMsg(
 				process.pid,
-				drop_attribute_object.operation,
-				drop_attribute_object.schema,
-				drop_attribute_object.table,
-				drop_attribute_object.attribute
+				dropAttributeObject.operation,
+				dropAttributeObject.schema,
+				dropAttributeObject.table,
+				dropAttributeObject.attribute
 			)
 		);
 
-		return `successfully deleted attribute '${drop_attribute_object.attribute}'`;
+		return `successfully deleted attribute '${dropAttributeObject.attribute}'`;
 	} catch (err) {
-		logger.error(`Got an error deleting attribute ${util.inspect(drop_attribute_object)}.`);
+		logger.error(`Got an error deleting attribute ${util.inspect(dropAttributeObject)}.`);
 		throw err;
 	}
 }
 
 /**
  * Removes the dropped attribute from the global hdb schema object.
- * @param drop_attribute_object
+ * @param dropAttributeObject
  */
-function dropAttributeFromGlobal(drop_attribute_object) {
-	let attributes_obj = Object.values(
-		global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table]['attributes']
+function dropAttributeFromGlobal(dropAttributeObject) {
+	let attributesObj = Object.values(
+		global.hdb_schema[dropAttributeObject.schema][dropAttributeObject.table]['attributes']
 	);
 
-	for (let i = 0; i < attributes_obj.length; i++) {
-		if (attributes_obj[i].attribute === drop_attribute_object.attribute) {
-			global.hdb_schema[drop_attribute_object.schema][drop_attribute_object.table]['attributes'].splice(i, 1);
+	for (let i = 0; i < attributesObj.length; i++) {
+		if (attributesObj[i].attribute === dropAttributeObject.attribute) {
+			global.hdb_schema[dropAttributeObject.schema][dropAttributeObject.table]['attributes'].splice(i, 1);
 		}
 	}
 }
 
-async function createAttribute(create_attribute_object) {
-	transformReq(create_attribute_object);
+async function createAttribute(createAttributeObject) {
+	transformReq(createAttributeObject);
 
-	const table_attr = getDatabases()[create_attribute_object.schema][create_attribute_object.table].attributes;
-	for (const { name } of table_attr) {
-		if (name === create_attribute_object.attribute) {
+	const tableAttr = getDatabases()[createAttributeObject.schema][createAttributeObject.table].attributes;
+	for (const { name } of tableAttr) {
+		if (name === createAttributeObject.attribute) {
 			throw handleHDBError(
 				new Error(),
-				`attribute '${create_attribute_object.attribute}' already exists in ${create_attribute_object.schema}.${create_attribute_object.table}`,
+				`attribute '${createAttributeObject.attribute}' already exists in ${createAttributeObject.schema}.${createAttributeObject.table}`,
 				HTTP_STATUS_CODES.BAD_REQUEST,
 				undefined,
 				undefined,
@@ -356,20 +356,20 @@ async function createAttribute(create_attribute_object) {
 		}
 	}
 
-	await harperBridge.createAttribute(create_attribute_object);
+	await harperBridge.createAttribute(createAttributeObject);
 	signalling.signalSchemaChange(
 		new SchemaEventMsg(
 			process.pid,
-			create_attribute_object.operation,
-			create_attribute_object.schema,
-			create_attribute_object.table,
-			create_attribute_object.attribute
+			createAttributeObject.operation,
+			createAttributeObject.schema,
+			createAttributeObject.table,
+			createAttributeObject.attribute
 		)
 	);
 
-	return `attribute '${create_attribute_object.schema}.${create_attribute_object.table}.${create_attribute_object.attribute}' successfully created.`;
+	return `attribute '${createAttributeObject.schema}.${createAttributeObject.table}.${createAttributeObject.attribute}' successfully created.`;
 }
 
-function getBackup(get_backup_object) {
-	return harperBridge.getBackup(get_backup_object);
+function getBackup(getBackupObject) {
+	return harperBridge.getBackup(getBackupObject);
 }

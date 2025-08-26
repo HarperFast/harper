@@ -1,9 +1,9 @@
-import { Resource } from './Resource';
-import { transaction } from './transaction';
-import { ErrorResource } from './ErrorResource';
-import logger from '../utility/logging/harper_logger';
-import { ServerError } from '../utility/errors/hdbError';
-import { server } from '../server/Server';
+import { Resource } from './Resource.ts';
+import { transaction } from './transaction.ts';
+import { ErrorResource } from './ErrorResource.ts';
+import logger from '../utility/logging/harper_logger.js';
+import { ServerError } from '../utility/errors/hdbError.js';
+import { server } from '../server/Server.ts';
 
 interface ResourceEntry {
 	Resource: typeof Resource;
@@ -19,21 +19,21 @@ interface ResourceEntry {
 export class Resources extends Map<string, ResourceEntry> {
 	isWorker = true;
 	loginPath?: (request) => string;
-	set(path, resource, export_types?: { [key: string]: boolean }, force?: boolean): void {
+	set(path, resource, exportTypes?: { [key: string]: boolean }, force?: boolean): void {
 		if (!resource) throw new Error('Must provide a resource');
 		if (path.startsWith('/')) path = path.replace(/^\/+/, '');
 		const entry = {
 			Resource: resource,
 			path,
-			exportTypes: export_types,
+			exportTypes,
 			hasSubPaths: false,
 			relativeURL: '', // reset after each match
 		};
-		const existing_entry = super.get(path);
+		const existingEntry = super.get(path);
 		if (
-			existing_entry &&
-			(existing_entry.Resource.databaseName !== resource.databaseName ||
-				existing_entry.Resource.tableName !== resource.tableName) &&
+			existingEntry &&
+			(existingEntry.Resource.databaseName !== resource.databaseName ||
+				existingEntry.Resource.tableName !== resource.tableName) &&
 			!force
 		) {
 			// there was a conflict in endpoint paths. We don't want this to be ignored, so we log it
@@ -47,11 +47,11 @@ export class Resources extends Map<string, ResourceEntry> {
 		super.set(path, entry);
 		// now mark any entries that have sub paths so we can efficiently route forward
 		for (const [path, entry] of this) {
-			let slash_index = 2;
-			while ((slash_index = path.indexOf('/', slash_index)) > -1) {
-				const parent_entry = this.get(path.slice(0, slash_index));
-				if (parent_entry) parent_entry.hasSubPaths = true;
-				slash_index += 2;
+			let slashIndex = 2;
+			while ((slashIndex = path.indexOf('/', slashIndex)) > -1) {
+				const parentEntry = this.get(path.slice(0, slashIndex));
+				if (parentEntry) parentEntry.hasSubPaths = true;
+				slashIndex += 2;
 			}
 		}
 	}
@@ -60,30 +60,30 @@ export class Resources extends Map<string, ResourceEntry> {
 	 * Find the best (longest) match resource path that matches the (beginning of the) provided path, in order to find
 	 * the correct Resource to handle this URL path.
 	 * @param path The URL Path
-	 * @param export_type Optional request content or protocol type, allows control of which protocols can access a resource
+	 * @param exportType Optional request content or protocol type, allows control of which protocols can access a resource
 	 * and future layering of resources (for defining HTML handlers
 	 * that can further transform data from the main structured object resources).
 	 * @return The matched Resource class. Note that the remaining path is "returned" by setting the relativeURL property
 	 */
-	getMatch(url: string, export_type?: string): ResourceEntry | undefined {
-		let slash_index = 2;
+	getMatch(url: string, exportType?: string): ResourceEntry | undefined {
+		let slashIndex = 2;
 		let prevSlashIndex = 0;
-		let found_entry: ResourceEntry;
+		let foundEntry: ResourceEntry;
 
 		const urlLength = url.length;
 
-		while (slash_index < urlLength) {
-			prevSlashIndex = slash_index;
-			slash_index = url.indexOf('/', slash_index);
+		while (slashIndex < urlLength) {
+			prevSlashIndex = slashIndex;
+			slashIndex = url.indexOf('/', slashIndex);
 
-			if (slash_index === -1) {
-				slash_index = urlLength;
+			if (slashIndex === -1) {
+				slashIndex = urlLength;
 			}
 
-			const resourcePath = slash_index === urlLength ? url : url.slice(0, slash_index);
+			const resourcePath = slashIndex === urlLength ? url : url.slice(0, slashIndex);
 			let entry = this.get(resourcePath);
 			let queryIndex = -1;
-			if (!entry && slash_index === urlLength) {
+			if (!entry && slashIndex === urlLength) {
 				// try to match the first part of the path if there's a query
 				queryIndex = resourcePath.indexOf('?', prevSlashIndex);
 				if (queryIndex !== -1) {
@@ -91,44 +91,44 @@ export class Resources extends Map<string, ResourceEntry> {
 					entry = this.get(pathPart);
 				}
 			}
-			if (entry && (!export_type || entry.exportTypes?.[export_type] !== false)) {
-				entry.relativeURL = url.slice(queryIndex !== -1 ? queryIndex : slash_index);
+			if (entry && (!exportType || entry.exportTypes?.[exportType] !== false)) {
+				entry.relativeURL = url.slice(queryIndex !== -1 ? queryIndex : slashIndex);
 				if (!entry.hasSubPaths) {
 					return entry;
 				}
-				found_entry = entry;
+				foundEntry = entry;
 			}
 
-			slash_index += 2;
+			slashIndex += 2;
 		}
 
-		if (found_entry) return found_entry;
+		if (foundEntry) return foundEntry;
 
 		// try the exact path
-		const search_index = url.indexOf('?');
-		const path = search_index > -1 ? url.slice(0, search_index) : url;
-		found_entry = this.get(path);
-		if (!found_entry && path.indexOf('.') > -1) {
-			found_entry = this.get(path.split('.')[0]);
+		const searchIndex = url.indexOf('?');
+		const path = searchIndex > -1 ? url.slice(0, searchIndex) : url;
+		foundEntry = this.get(path);
+		if (!foundEntry && path.indexOf('.') > -1) {
+			foundEntry = this.get(path.split('.')[0]);
 		}
-		if (found_entry && (!export_type || found_entry.exportTypes?.[export_type] !== false)) {
-			found_entry.relativeURL = search_index > -1 ? url.slice(search_index) : '';
-		} else if (!found_entry) {
+		if (foundEntry && (!exportType || foundEntry.exportTypes?.[exportType] !== false)) {
+			foundEntry.relativeURL = searchIndex > -1 ? url.slice(searchIndex) : '';
+		} else if (!foundEntry) {
 			// still not found, see if there is an explicit root path
-			found_entry = this.get('');
-			if (found_entry && (!export_type || found_entry.exportTypes?.[export_type] !== false)) {
+			foundEntry = this.get('');
+			if (foundEntry && (!exportType || foundEntry.exportTypes?.[exportType] !== false)) {
 				if (url.charAt(0) !== '/') url = '/' + url;
-				found_entry.relativeURL = url;
+				foundEntry.relativeURL = url;
 			}
 		}
-		return found_entry;
+		return foundEntry;
 	}
 
-	getResource(path: string, resource_info) {
+	getResource(path: string, resourceInfo) {
 		const entry = this.getMatch(path);
 		if (entry) {
 			path = entry.relativeURL;
-			return entry.Resource.getResource(this.pathToId(path, entry.Resource), resource_info);
+			return entry.Resource.getResource(this.pathToId(path, entry.Resource), resourceInfo);
 		}
 	}
 	call(path: string, request, callback: Function) {

@@ -11,6 +11,9 @@ const hook_std = require('intercept-stdout');
 const os = require('os');
 const YAML = require('yaml');
 const logger = require('../../../utility/logging/logger');
+const harperLoggerModule = require('../../../utility/logging/harper_logger');
+const { createLogger } = harperLoggerModule;
+const { getHttpOptions, handleApplication, logRequest, getRequestId } = require('../../../server/http');
 
 const HARPER_LOGGER_MODULE = '../../../utility/logging/harper_logger';
 const LOG_DIR_TEST = 'testLogger';
@@ -18,7 +21,6 @@ const LOG_NAME_TEST = 'hdb.log';
 const LOG_PROCESS_NAME_TEST = 'unit_tests';
 const TEST_LOG_DIR = path.join(__dirname, LOG_DIR_TEST);
 const FULL_LOG_PATH_TEST = path.join(TEST_LOG_DIR, LOG_NAME_TEST);
-const INSTALL_LOG_LOCATION = path.resolve(__dirname, `../../../logs`);
 const LOG_LEVEL = {
 	NOTIFY: 'notify',
 	FATAL: 'fatal',
@@ -57,10 +59,9 @@ function unhookStdOutErr() {
 	unhook_std();
 }
 
-function convertLogToArray(log_path) {
+function convertLogToMessages(logs) {
 	let messages = [];
-	let log = fs.readFileSync(log_path).toString();
-	log.replace(/([^ ]+) \[([^\]]+)]: (.+)\n/g, (t, time, tags_string, message) => {
+	logs.replace(/([^ ]+) \[([^\]]+)]: (.+)\n/g, (t, time, tags_string, message) => {
 		let tags = tags_string.split(' ');
 		messages.push({
 			time,
@@ -123,11 +124,11 @@ describe('Test harper_logger module', () => {
 			sandbox.stub(fs, 'readFileSync').returns('foo');
 			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 			const log_to_file = harper_logger.__get__('log_to_file');
-			const log_to_stdstreams = harper_logger.__get__('log_to_stdstreams');
-			const log_level = harper_logger.__get__('log_level');
-			const log_root = harper_logger.__get__('log_root');
-			const log_name = harper_logger.__get__('log_name');
-			const log_file_path = harper_logger.__get__('log_file_path');
+			const log_to_stdstreams = harper_logger.__get__('logToStdstreams');
+			const log_level = harper_logger.__get__('logLevel');
+			const log_root = harper_logger.__get__('logRoot');
+			const log_name = harper_logger.__get__('logName');
+			const log_file_path = harper_logger.__get__('logFilePath');
 
 			expect(log_to_file).to.be.false;
 			expect(log_to_stdstreams).to.be.true;
@@ -137,59 +138,6 @@ describe('Test harper_logger module', () => {
 			expect(log_file_path).to.eql(path.join(TEST_LOG_DIR, 'hdb.log'));
 		});
 
-		it('Test that all log settings initialized via env vars if settings file does not exist', () => {
-			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
-			const properties_reader_stub = sandbox.stub().throws(test_error);
-			harper_logger.__set__('hdb_properties', undefined);
-			harper_logger.__set__('PropertiesReader', properties_reader_stub);
-			test_error.code = 'ENOENT';
-			process.env.LOG_TO_FILE = 'false';
-			process.env.LOG_TO_STDSTREAMS = 'true';
-			process.env.LOG_LEVEL = 'notify';
-			process.env.LOG_PATH = 'INSTALL_LOG_LOCATION';
-
-			const initLogSettings = harper_logger.__get__('initLogSettings');
-			initLogSettings();
-			const log_to_file = harper_logger.__get__('log_to_file');
-			const log_to_stdstreams = harper_logger.__get__('log_to_stdstreams');
-			const log_level = harper_logger.__get__('log_level');
-			const log_root = harper_logger.__get__('log_root');
-
-			delete process.env.LOG_TO_FILE;
-			delete process.env.LOG_TO_STDSTREAMS;
-			delete process.env.LOG_LEVEL;
-			delete process.env.LOG_PATH;
-
-			expect(log_to_file).to.be.false;
-			expect(log_to_stdstreams).to.be.true;
-			expect(log_level).to.equal('notify');
-			expect(log_root).to.eql(INSTALL_LOG_LOCATION);
-		});
-
-		it('Test that all log settings initialized with default values if settings file does not exist', () => {
-			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
-			harper_logger.__set__('hdb_properties', undefined);
-			test_error.code = 'ENOENT';
-			const properties_reader_stub = sandbox.stub().throws(test_error);
-			harper_logger.__set__('PropertiesReader', properties_reader_stub);
-			harper_logger.__set__('log_to_file', undefined);
-			harper_logger.__set__('log_to_stdstreams', undefined);
-			harper_logger.__set__('log_level', undefined);
-			harper_logger.__set__('log_root', undefined);
-
-			const initLogSettings = harper_logger.__get__('initLogSettings');
-			initLogSettings();
-			const log_to_file = harper_logger.__get__('log_to_file');
-			const log_to_stdstreams = harper_logger.__get__('log_to_stdstreams');
-			const log_level = harper_logger.__get__('log_level');
-			const log_path = harper_logger.__get__('log_root');
-
-			expect(log_to_file).to.be.true;
-			expect(log_to_stdstreams).to.be.false;
-			expect(log_level).to.equal('warn');
-			expect(log_path).to.eql(INSTALL_LOG_LOCATION);
-		});
-
 		it('Test that if error code is not ENOENT error is handled correctly', () => {
 			test_error.code = 'EACCES';
 			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
@@ -197,7 +145,7 @@ describe('Test harper_logger module', () => {
 			harper_logger.__set__('PropertiesReader', properties_reader_stub);
 			const error_stub = sandbox.stub();
 			const error_rw = harper_logger.__set__('error', error_stub);
-			harper_logger.__set__('hdb_properties', undefined);
+			harper_logger.__set__('hdbProperties', undefined);
 
 			const initLogSettings = harper_logger.__get__('initLogSettings');
 
@@ -221,8 +169,6 @@ describe('Test harper_logger module', () => {
 		let fake_timer;
 
 		before(() => {
-			const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
-			createLogRecord_rw = harper_logger.__get__('createLogRecord');
 			// Fake timer is used so that we can control the date for these test
 			fake_timer = sandbox.useFakeTimers({ now: 1538592633675 });
 		});
@@ -231,79 +177,52 @@ describe('Test harper_logger module', () => {
 			fake_timer.restore();
 		});
 
-		it('Test record is correctly returned if message is array', () => {
-			const result = createLogRecord_rw('info', [LOG_MSGS_TEST.INFO]);
-			expect(result).to.equal(`2018-10-03T18:50:33.675Z [main/0] [info]: info log\n`);
+		it('Test record is correctly returned if message is a string', () => {
+			let result;
+			const logger = createLogger({ writeToLog: (msg) => (result = msg) });
+			logger.info(LOG_MSGS_TEST.INFO);
+			expect(result).to.equal(`[main/0] [info]: info log\n`);
 		});
 
 		it('Test record is correctly returned if message array has multiple args with object', () => {
-			const result = createLogRecord_rw('info', [`${LOG_MSGS_TEST.INFO}:`, { foo: 'bar' }]);
-			expect(result).to.equal(`2018-10-03T18:50:33.675Z [main/0] [info]: info log: {"foo":"bar"}\n`);
+			let result;
+			const logger = createLogger({ writeToLog: (msg) => (result = msg) });
+			logger.info(`${LOG_MSGS_TEST.INFO}:`, { foo: 'bar' });
+			expect(result).to.equal(`[main/0] [info]: info log: { foo: 'bar' }\n`);
 		});
 
 		it('Test record is correctly returned if called by an instance of an error', () => {
+			let result;
+			const logger = createLogger({ writeToLog: (msg) => (result = msg) });
 			const test_error = new Error(LOG_MSGS_TEST.INFO);
-			const result = createLogRecord_rw('info', [test_error]);
-			expect(result).to.equal(`2018-10-03T18:50:33.675Z [main/0] [info]: ${test_error.stack}\n`);
+			logger.info(test_error);
+			expect(result).to.equal(`[main/0] [info]: ${test_error.stack}\n`);
 		});
 
 		it('Test record is correctly returned if message is an object', () => {
-			const result = createLogRecord_rw('info', [{ foo: 'bar' }]);
-			expect(result).to.equal(`2018-10-03T18:50:33.675Z [main/0] [info]: {"foo":"bar"}\n`);
+			let result;
+			const logger = createLogger({ writeToLog: (msg) => (result = msg) });
+			logger.info({ foo: 'bar' });
+			expect(result).to.equal(`[main/0] [info]: { foo: 'bar' }\n`);
 		});
 
 		it('Test record is correctly returned if message is an error with a cause', () => {
 			const test_error_cause = new SyntaxError('test cause error');
 			test_error_cause.statusCode = 400;
 			const test_error = new TypeError('test error', { cause: test_error_cause });
-			const result = createLogRecord_rw('error', [test_error]);
+			let result;
+			const logger = createLogger({ writeToLog: (msg) => (result = msg) });
+			logger.error([test_error]);
 			const lines = result.split('\n');
-			expect(lines[0]).to.equal('2018-10-03T18:50:33.675Z [main/0] [error]: TypeError: test error');
-			expect(lines[1]).to.include(' at '); // stack trace
+			expect(lines[1]).to.equal('  TypeError: test error');
+			expect(lines[2]).to.include(' at '); // stack trace
 			let found_caused_by, found_statusCode;
 			for (let line of lines) {
-				if (line.includes('Caused by: SyntaxError: test cause error')) found_caused_by = true;
-				if (line.includes('"statusCode":400')) found_statusCode = true;
+				if (line.includes('[cause]: SyntaxError: test cause error')) found_caused_by = true;
+				if (line.includes('statusCode: 400')) found_statusCode = true;
 			}
 			expect(found_caused_by).to.be.true;
 			expect(found_statusCode).to.be.true;
-		});
-	});
-
-	describe('Test logStdOut and logStdErr functions', () => {
-		let harper_logger;
-		let logStdOut;
-		let logStdErr;
-		let append_file_stub;
-		const test_log = `2018-10-03T18:50:33.675Z [main/0] [info]: this is a unit test log\n`;
-
-		before(() => {
-			harper_logger = requireUncached(HARPER_LOGGER_MODULE);
-			logStdOut = harper_logger.__get__('logStdOut');
-			logStdErr = harper_logger.__get__('logStdErr');
-			harper_logger.__set__('log_to_file', true);
-			harper_logger.__set__('log_to_stdstreams', true);
-			append_file_stub = sandbox.stub(fs, 'appendFileSync');
-		});
-
-		it('Test log is written to log stream and stdout if both params are true', () => {
-			capturedStdOutErr();
-			logStdOut(test_log);
-
-			expect(captured_stdout).to.eql(test_log);
-			expect(append_file_stub.firstCall.args[1]).to.eql(test_log);
-
-			unhookStdOutErr();
-		});
-
-		it('Test log is written to log stream and stderr if both params are true', () => {
-			capturedStdOutErr();
-			logStdErr(test_log);
-
-			expect(captured_stdout).to.eql(test_log);
-			expect(append_file_stub.firstCall.args[1]).to.eql(test_log);
-
-			unhookStdOutErr();
 		});
 	});
 
@@ -358,7 +277,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test info log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
-			harper_logger.__set__('process_name', 'unit_tests');
+			harper_logger.__set__('processName', 'unit_tests');
 			expected_log = `${date_test_string} [${LOG_LEVEL.INFO}]: ${LOG_MSGS_TEST.INFO}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -387,7 +306,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test trace log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
-			harper_logger.__set__('process_name', 'unit_tests');
+			harper_logger.__set__('processName', 'unit_tests');
 			expected_log = `${LOG_LEVEL.TRACE}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.TRACE}"}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -416,7 +335,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test error log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
-			harper_logger.__set__('process_name', 'unit_tests');
+			harper_logger.__set__('processName', 'unit_tests');
 			expected_log = `${LOG_LEVEL.ERROR}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.ERROR}"}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -444,7 +363,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test debug log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
-			harper_logger.__set__('process_name', 'unit_tests');
+			harper_logger.__set__('processName', 'unit_tests');
 			expected_log = `${LOG_LEVEL.DEBUG}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.DEBUG}"}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -472,7 +391,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test notify log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
-			harper_logger.__set__('process_name', 'unit_tests');
+			harper_logger.__set__('processName', 'unit_tests');
 			expected_log = `${LOG_LEVEL.NOTIFY}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.NOTIFY}"}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -500,7 +419,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test fatal log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
-			harper_logger.__set__('process_name', 'unit_tests');
+			harper_logger.__set__('processName', 'unit_tests');
 			expected_log = `${LOG_LEVEL.FATAL}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.FATAL}"}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -528,7 +447,7 @@ describe('Test harper_logger module', () => {
 
 		it('Test warn log writes to stdout for processManagement process', () => {
 			harper_logger.__set__('NON_PM2_PROCESS', false);
-			harper_logger.__set__('process_name', 'unit_tests');
+			harper_logger.__set__('processName', 'unit_tests');
 			expected_log = `${LOG_LEVEL.WARN}", "timestamp": "${date_test_string}", "message": "${LOG_MSGS_TEST.WARN}"}\n`;
 			capturedStdOutErr();
 			fake_timer = sandbox.useFakeTimers({ now: date_test });
@@ -569,41 +488,19 @@ describe('Test harper_logger module', () => {
 
 	describe('Test setLogLevel function', () => {
 		let harper_logger;
-		let close_log_file;
-
-		before(() => {
-			sandbox.restore();
-			sandbox.stub(YAML, 'parseDocument').returns(setTestLogConfig(LOG_LEVEL.INFO, TEST_LOG_DIR, true, true));
-			harper_logger = requireUncached(HARPER_LOGGER_MODULE);
-			close_log_file = harper_logger.__get__('closeLogFile');
-		});
-
-		beforeEach(() => {
-			fs.ensureFileSync(FULL_LOG_PATH_TEST);
-		});
-
-		after(() => {
-			try {
-				fs.removeSync(TEST_LOG_DIR);
-			} catch (e) {}
-		});
-
-		afterEach(() => {
-			try {
-				fs.emptyDirSync(TEST_LOG_DIR);
-				close_log_file();
-			} catch (e) {}
-			sandbox.restore();
-		});
 
 		it('Test the correct hierarchical logs are logged when level set to trace', (done) => {
-			harper_logger.setLogLevel(LOG_LEVEL.TRACE);
+			let logged = '';
+			harper_logger = createLogger({
+				level: LOG_LEVEL.TRACE,
+				writeToLog: (msg) => (logged += msg),
+			});
 			logAllTheLevels(harper_logger);
 
 			setTimeout(() => {
-				const logs = convertLogToArray(FULL_LOG_PATH_TEST);
 				const expected_log_levels = ['trace', 'debug', 'info', 'warn', 'error', 'fatal', 'notify'];
 				let pass = false;
+				let logs = convertLogToMessages(logged);
 				for (const log of logs) {
 					if (expected_log_levels.includes(log.level)) {
 						pass = true;
@@ -621,13 +518,17 @@ describe('Test harper_logger module', () => {
 		});
 
 		it('Test the correct hierarchical logs are logged when level set to debug', (done) => {
-			harper_logger.setLogLevel(LOG_LEVEL.DEBUG);
+			let logged = '';
+			harper_logger = createLogger({
+				level: LOG_LEVEL.DEBUG,
+				writeToLog: (msg) => (logged += msg),
+			});
 			logAllTheLevels(harper_logger);
 
 			setTimeout(() => {
-				const logs = convertLogToArray(FULL_LOG_PATH_TEST);
 				const expected_log_levels = ['debug', 'info', 'warn', 'error', 'fatal', 'notify'];
 				let pass = false;
+				let logs = convertLogToMessages(logged);
 				for (const log of logs) {
 					if (expected_log_levels.includes(log.level)) {
 						pass = true;
@@ -644,14 +545,17 @@ describe('Test harper_logger module', () => {
 		});
 
 		it('Test the correct hierarchical logs are logged when level set to info', (done) => {
-			harper_logger.setLogLevel(LOG_LEVEL.TRACE);
-			harper_logger.setLogLevel(LOG_LEVEL.INFO);
+			let logged = '';
+			harper_logger = createLogger({
+				level: LOG_LEVEL.INFO,
+				writeToLog: (msg) => (logged += msg),
+			});
 			logAllTheLevels(harper_logger);
 
 			setTimeout(() => {
-				const logs = convertLogToArray(FULL_LOG_PATH_TEST);
 				const expected_log_levels = ['info', 'warn', 'error', 'fatal', 'notify'];
 				let pass = false;
+				let logs = convertLogToMessages(logged);
 				for (const log of logs) {
 					if (expected_log_levels.includes(log.level)) {
 						pass = true;
@@ -669,13 +573,17 @@ describe('Test harper_logger module', () => {
 		});
 
 		it('Test the correct hierarchical logs are logged when level set to warn', (done) => {
-			harper_logger.setLogLevel(LOG_LEVEL.WARN);
+			let logged = '';
+			harper_logger = createLogger({
+				level: LOG_LEVEL.WARN,
+				writeToLog: (msg) => (logged += msg),
+			});
 			logAllTheLevels(harper_logger);
 
 			setTimeout(() => {
-				const logs = convertLogToArray(FULL_LOG_PATH_TEST);
 				const expected_log_levels = ['warn', 'error', 'fatal', 'notify'];
 				let pass = false;
+				let logs = convertLogToMessages(logged);
 				for (const log of logs) {
 					if (expected_log_levels.includes(log.level)) {
 						pass = true;
@@ -693,13 +601,17 @@ describe('Test harper_logger module', () => {
 		});
 
 		it('Test the correct hierarchical logs are logged when level set to error', (done) => {
-			harper_logger.setLogLevel(LOG_LEVEL.ERROR);
+			let logged = '';
+			harper_logger = createLogger({
+				level: LOG_LEVEL.ERROR,
+				writeToLog: (msg) => (logged += msg),
+			});
 			logAllTheLevels(harper_logger);
 
 			setTimeout(() => {
-				const logs = convertLogToArray(FULL_LOG_PATH_TEST);
 				const expected_log_levels = ['error', 'fatal', 'notify'];
 				let pass = false;
+				let logs = convertLogToMessages(logged);
 				for (const log of logs) {
 					if (expected_log_levels.includes(log.level)) {
 						pass = true;
@@ -717,13 +629,18 @@ describe('Test harper_logger module', () => {
 		});
 
 		it('Test the correct hierarchical logs are logged when level set to fatal', (done) => {
-			harper_logger.setLogLevel(LOG_LEVEL.FATAL);
+			let logged = '';
+			harper_logger = createLogger({
+				level: LOG_LEVEL.FATAL,
+				writeToLog: (msg) => (logged += msg),
+			});
+
 			logAllTheLevels(harper_logger);
 
 			setTimeout(() => {
-				const logs = convertLogToArray(FULL_LOG_PATH_TEST);
 				const expected_log_levels = ['fatal', 'notify'];
 				let pass = false;
+				let logs = convertLogToMessages(logged);
 				for (const log of logs) {
 					if (expected_log_levels.includes(log.level)) {
 						pass = true;
@@ -741,13 +658,18 @@ describe('Test harper_logger module', () => {
 		});
 
 		it('Test the correct hierarchical logs are logged when level set to notify', (done) => {
-			harper_logger.setLogLevel(LOG_LEVEL.NOTIFY);
+			let logged = '';
+			harper_logger = createLogger({
+				level: LOG_LEVEL.NOTIFY,
+				writeToLog: (msg) => (logged += msg),
+			});
+
 			logAllTheLevels(harper_logger);
 
 			setTimeout(() => {
-				const logs = convertLogToArray(FULL_LOG_PATH_TEST);
 				const expected_log_levels = ['notify'];
 				let pass = false;
+				let logs = convertLogToMessages(logged);
 				for (const log of logs) {
 					if (expected_log_levels.includes(log.level)) {
 						pass = true;
@@ -765,25 +687,127 @@ describe('Test harper_logger module', () => {
 		});
 		describe('Test setLogLevel function on conditional logger', () => {
 			it('Test the correct hierarchical logs are available when level set to debug', () => {
-				logger.setLogLevel(LOG_LEVEL.DEBUG);
-				let tagged_logger = logger.loggerWithTag('test');
+				let logger = createLogger({
+					level: LOG_LEVEL.DEBUG,
+					writeToLog: (msg) => {},
+				});
+				let tagged_logger = logger.withTag('test', true);
 				let keys = [];
 				for (let key in tagged_logger) if (tagged_logger[key] != null) keys.push(key);
 				expect(keys).to.deep.equal(['notify', 'fatal', 'error', 'warn', 'info', 'debug']);
+				tagged_logger.debug('test');
 			});
 			it('Test the correct hierarchical logs are available when level set to warn', () => {
-				logger.setLogLevel(LOG_LEVEL.WARN);
-				let tagged_logger = logger.loggerWithTag('test');
+				let logger = createLogger({
+					level: LOG_LEVEL.WARN,
+					writeToLog: (msg) => {},
+				});
+				let tagged_logger = logger.withTag('test', true);
 				let keys = [];
 				for (let key in tagged_logger) if (tagged_logger[key] != null) keys.push(key);
 				expect(keys).to.deep.equal(['notify', 'fatal', 'error', 'warn']);
+				tagged_logger.warn('test');
 			});
 			it('Test the correct hierarchical logs are available when level set to fatal', () => {
-				logger.setLogLevel(LOG_LEVEL.FATAL);
-				let tagged_logger = logger.loggerWithTag('test');
+				let logger = createLogger({
+					level: LOG_LEVEL.FATAL,
+					writeToLog: (msg) => {},
+				});
+
+				let tagged_logger = logger.withTag('test', true);
 				let keys = [];
 				for (let key in tagged_logger) if (tagged_logger[key] != null) keys.push(key);
 				expect(keys).to.deep.equal(['notify', 'fatal']);
+				tagged_logger.fatal('test');
+			});
+		});
+		describe('Test HTTP logger', () => {
+			let originalHttpOptions, originalHttpLogOptions, httpLogPath, httpLogger;
+			before(() => {
+				originalHttpOptions = getHttpOptions();
+				httpLogger = harperLoggerModule.forComponent('http');
+				const { path: logPath, level } = httpLogger;
+				originalHttpLogOptions = { path: logPath, level };
+
+				httpLogPath = path.join(TEST_LOG_DIR, 'http.log');
+				httpLogger.path = httpLogPath;
+				httpLogger.level = 1;
+
+				handleApplication({
+					options: {
+						getAll() {
+							return {
+								logging: {
+									id: true,
+									timing: true,
+									headers: true,
+									path: httpLogPath,
+								},
+							};
+						},
+						on() {},
+					},
+				});
+			});
+			it('Test the correct output from HTTP logger on GET', async () => {
+				logRequest(
+					{
+						method: 'GET',
+						url: '/test',
+						socket: { encrypted: true },
+						httpVersion: '1.1',
+						headers: { 'content-type': 'application/json' },
+					},
+					200,
+					getRequestId(),
+					3.71
+				);
+
+				// Wait for the log to be written
+				await new Promise((resolve) => setTimeout(resolve, 100));
+
+				const httpLog = fs.readFileSync(httpLogPath, 'utf8');
+				expect(httpLog).to.include('GET /test HTTPS/1.1');
+				expect(httpLog).to.match(/id: \d+/);
+				expect(httpLog).to.include(' 200');
+				expect(httpLog).to.include(' 3.71ms');
+				expect(httpLog).to.include('type: application/json');
+			});
+			it('Test the correct output from HTTP logger on POST', async () => {
+				logRequest(
+					{
+						method: 'POST',
+						url: '/post-test',
+						socket: { encrypted: false },
+						httpVersion: 1.1,
+						headers: { 'content-type': 'application/json' },
+					},
+					201,
+					getRequestId(),
+					5.13
+				);
+
+				// Wait for the log to be written
+				await new Promise((resolve) => setTimeout(resolve, 100));
+
+				const httpLog = fs.readFileSync(httpLogPath, 'utf8');
+				expect(httpLog).to.include('POST /post-test HTTP/1.1');
+				expect(httpLog).to.match(/id: \d+/);
+				expect(httpLog).to.include(' 201');
+				expect(httpLog).to.include(' 5.13ms');
+			});
+			after(() => {
+				handleApplication({
+					options: {
+						getAll() {
+							return originalHttpOptions;
+						},
+						on() {},
+					},
+				});
+				fs.unlink(httpLogger.path);
+				httpLogger.path = originalHttpLogOptions.path;
+				httpLogger.level = originalHttpLogOptions.level;
 			});
 		});
 	});
@@ -816,11 +840,36 @@ describe('Test harper_logger module', () => {
 			expect(result).to.be.false;
 		});
 	});
+	describe('Test global logger', () => {
+		let originalHttpOptions, originalHttpLogOptions, httpLogPath, httpLogger;
+		before(() => {
+			this.externalLogger = harperLoggerModule.forComponent('external');
+			const { path: logPath, level } = this.externalLogger;
+			this.originalExternalOptions = { path: logPath, level };
 
+			this.externalLogPath = path.join(TEST_LOG_DIR, 'external.log');
+			this.externalLogger.path = this.externalLogPath;
+			this.externalLogger.level = 1;
+		});
+		it('Test using the global logger', async () => {
+			harperLoggerModule.externalLogger.warn('Test of the global logger');
+
+			// Wait for the log to be written
+			await new Promise((resolve) => setTimeout(resolve, 100));
+
+			const log = fs.readFileSync(this.externalLogPath, 'utf8');
+			expect(log).to.include('Test of the global logger');
+		});
+		after(() => {
+			fs.unlink(this.externalLogger.path);
+			this.externalLogger.path = this.originalExternalOptions.path;
+			this.externalLogger.level = this.originalExternalOptions.level;
+		});
+	});
 	it('Test suppressLogging function', () => {
 		const harper_logger = requireUncached(HARPER_LOGGER_MODULE);
 		const fake_func = sandbox.stub().callsFake(() => {});
-		const enabled_var = harper_logger.__get__('logging_enabled');
+		const enabled_var = harper_logger.__get__('loggingEnabled');
 		harper_logger.suppressLogging(fake_func);
 		expect(enabled_var).to.be.true;
 		expect(fake_func.called).to.be.true;

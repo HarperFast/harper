@@ -1,8 +1,8 @@
 'use strict';
 
 const Joi = require('joi');
-const validator = require('../validationWrapper');
-const { validateSchemaExists, validateTableExists, validateSchemaName } = require('../common_validators');
+const validator = require('../validationWrapper.js');
+const { validateSchemaExists, validateTableExists, validateSchemaName } = require('../common_validators.js');
 
 const schema = Joi.object({
 	operation: Joi.string().valid('purge_stream'),

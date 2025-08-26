@@ -1,8 +1,8 @@
 'use strict';
 
-const env = require('../../../utility/environment/environmentManager');
+const env = require('../../../utility/environment/environmentManager.js');
 env.initSync();
-const { CONFIG_PARAMS } = require('../../../utility/hdbTerms');
+const { CONFIG_PARAMS } = require('../../../utility/hdbTerms.ts');
 
 /**
  * Builds CORS options object to pass to cors plugin when/if it needs to be registered with Fastify
@@ -10,27 +10,27 @@ const { CONFIG_PARAMS } = require('../../../utility/hdbTerms');
  * @returns {{credentials: boolean, origin: boolean, allowedHeaders: [string, string]}}
  */
 function getCORSOptions() {
-	let props_cors_accesslist = env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST);
-	let props_cors = env.get(CONFIG_PARAMS.HTTP_CORS);
-	let cors_options;
-	if (props_cors) {
-		cors_options = {
+	let propsCorsAccesslist = env.get(CONFIG_PARAMS.HTTP_CORSACCESSLIST);
+	let propsCors = env.get(CONFIG_PARAMS.HTTP_CORS);
+	let corsOptions;
+	if (propsCors) {
+		corsOptions = {
 			origin: true,
 			allowedHeaders: ['Content-Type', 'Authorization', 'Accept'],
 			credentials: false,
 		};
 		if (
-			props_cors_accesslist &&
-			props_cors_accesslist.length > 0 &&
-			props_cors_accesslist[0] !== null &&
-			props_cors_accesslist[0] !== '*'
+			propsCorsAccesslist &&
+			propsCorsAccesslist.length > 0 &&
+			propsCorsAccesslist[0] !== null &&
+			propsCorsAccesslist[0] !== '*'
 		) {
-			cors_options.origin = (origin, callback) => {
-				return callback(null, props_cors_accesslist.indexOf(origin) !== -1);
+			corsOptions.origin = (origin, callback) => {
+				return callback(null, propsCorsAccesslist.indexOf(origin) !== -1);
 			};
 		}
 	}
-	return cors_options;
+	return corsOptions;
 }
 
 module.exports = getCORSOptions;

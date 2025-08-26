@@ -7,25 +7,25 @@ class TableSizeObject {
 	/**
 	 * @param {String} schema
 	 * @param {String} table
-	 * @param {Number} table_size - data size of the table in bytes
-	 * @param {Number} record_count - number of entries in the table
-	 * @param {Number} transaction_log_size - number of entries in the transaction log
-	 * @param {Number} transaction_log_record_count - data size of the transaction log in bytes
+	 * @param {Number} tableSize - data size of the table in bytes
+	 * @param {Number} recordCount - number of entries in the table
+	 * @param {Number} transactionLogSize - number of entries in the transaction log
+	 * @param {Number} transactionLogRecordCount - data size of the transaction log in bytes
 	 */
 	constructor(
 		schema,
 		table,
-		table_size = 0,
-		record_count = 0,
-		transaction_log_size = 0,
-		transaction_log_record_count = 0
+		tableSize = 0,
+		recordCount = 0,
+		transactionLogSize = 0,
+		transactionLogRecordCount = 0
 	) {
 		this.schema = schema;
 		this.table = table;
-		this.table_size = table_size;
-		this.record_count = record_count;
-		this.transaction_log_size = transaction_log_size;
-		this.transaction_log_record_count = transaction_log_record_count;
+		this.table_size = tableSize;
+		this.record_count = recordCount;
+		this.transaction_log_size = transactionLogSize;
+		this.transaction_log_record_count = transactionLogRecordCount;
 	}
 }
 

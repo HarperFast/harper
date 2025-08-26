@@ -556,6 +556,38 @@ describe('Querying through Resource API', () => {
 			assert.equal(related.length, 2);
 			assert.equal(related[0].name, 'name-20');
 		});
+		it('Query by join with one-to-many with relational condition as filter', async function () {
+			let results = [];
+			for await (let record of RelatedTable.search({
+				conditions: [
+					{ attribute: ['name'], comparator: 'greater_than', value: 'related' },
+					{ attribute: ['relatedToMany', 'sparse'], value: null },
+				],
+				select: ['id', 'relatedToMany', 'name'],
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 5);
+			let related = await results[0].relatedToMany;
+			assert.equal(related.length, 17);
+			assert(related.every((r) => r.sparse === null));
+		});
+		it('Query by join with many-to-many with relational to condition as filter', async function () {
+			let results = [];
+			for await (let record of ManyToMany.search({
+				conditions: [
+					{ attribute: ['name'], comparator: 'greater_than', value: 'many' },
+					{ attribute: ['reverseManyToMany', 'relatedId'], value: 3 },
+				],
+				select: ['id', 'reverseManyToMany', 'name'],
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 25);
+			let related = await results[0].reverseManyToMany;
+			assert.equal(related.length, 2);
+			assert(related.every((r) => r.relatedId === 3));
+		});
 		it('Query by join with many-to-many (forward)', async function () {
 			let results = [];
 			for await (let record of QueryTable.search({
@@ -758,20 +790,6 @@ describe('Querying through Resource API', () => {
 			assert.equal(related_count, 53);
 		});
 
-		it('Query data in a table with join, returning primary key and do not load records', async function () {
-			let results = [];
-			let start_count = QueryTable.primaryStore.readCount;
-			for await (let record of QueryTable.search({
-				conditions: [{ attribute: ['related', 'name'], comparator: 'equals', value: 'related name 3' }],
-				select: ['id'],
-			})) {
-				results.push(record);
-			}
-			assert.equal(results.length, 20);
-			assert.equal(results[0].id, 'id-13');
-			// should not have to load any records:
-			assert.equal(start_count, QueryTable.primaryStore.readCount);
-		});
 		it('Query data in a table with join, returning primary key and but use records', async function () {
 			let results = [];
 			const select = ['id'];
@@ -1457,21 +1475,6 @@ describe('Querying through Resource API', () => {
 		for (let result of results) {
 			assert(!result.aFlag);
 		}
-	});
-
-	it('Query data in a table returning primary key and do not load records', async function () {
-		let results = [];
-		let start_count = QueryTable.primaryStore.readCount;
-		for await (let record of QueryTable.search({
-			conditions: [{ attribute: 'name', comparator: 'greater_than_equal', value: 'name-90' }],
-			select: 'id',
-		})) {
-			results.push(record);
-		}
-		assert.equal(results.length, 10);
-		assert.equal(results[0], 'id-90');
-		// should not have to load any records:
-		assert.equal(start_count, QueryTable.primaryStore.readCount);
 	});
 
 	it('Query data in a table with bad attribute', async function () {

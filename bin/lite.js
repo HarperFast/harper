@@ -1,5 +1,5 @@
-require('./dev');
-const { startHTTPThreads, startSocketServer } = require('../server/threads/socketRouter');
+require('./dev.js');
+const { startHTTPThreads, startSocketServer } = require('../server/threads/socketRouter.ts');
 
 startHTTPThreads(0, true);
 startSocketServer(9925);

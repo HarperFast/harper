@@ -1,4 +1,4 @@
-import { METADATA_PROPERTY } from '../utility/hdbTerms';
+import { METADATA_PROPERTY } from '../utility/hdbTerms.ts';
 import { Packr } from 'msgpackr';
 
 export class PackrWithMetadata extends Packr {

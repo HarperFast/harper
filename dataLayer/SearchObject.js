@@ -8,11 +8,11 @@ class SearchObject {
 	 *
 	 * @param {String} schema
 	 * @param {String} table
-	 * @param {String} search_attribute
-	 * @param {String|Number} search_value
+	 * @param {String} searchAttribute
+	 * @param {String|Number} searchValue
 	 * @param {String} hash_attribute
 	 * @param {[]} get_attributes
-	 * @param {String|Number} [end_value] - optional
+	 * @param {String|Number} [endValue] - optional
 	 * @param {boolean} reverse
 	 * @param {Number} limit
 	 * @param {Number} offset
@@ -20,22 +20,22 @@ class SearchObject {
 	constructor(
 		schema,
 		table,
-		search_attribute,
-		search_value,
+		searchAttribute,
+		searchValue,
 		hash_attribute,
 		get_attributes,
-		end_value,
+		endValue,
 		reverse = false,
 		limit = undefined,
 		offset = undefined
 	) {
 		this.schema = schema;
 		this.table = table;
-		this.search_attribute = search_attribute;
-		this.search_value = search_value;
+		this.search_attribute = searchAttribute;
+		this.search_value = searchValue;
 		this.hash_attribute = hash_attribute;
 		this.get_attributes = get_attributes;
-		this.end_value = end_value;
+		this.end_value = endValue;
 		this.reverse = reverse;
 		this.limit = limit;
 		this.offset = offset;

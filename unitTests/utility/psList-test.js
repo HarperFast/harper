@@ -32,7 +32,7 @@ describe('Test ps_list', () => {
 	});
 
 	it('should return hdbServer process', async () => {
-		find_ps.__set__('exec_file', execFunc);
+		find_ps.__set__('execFile', execFunc);
 		let result = await find_ps.findPs('');
 		expect(result).to.be.a('array');
 		expect(result[0]).to.be.a('object');

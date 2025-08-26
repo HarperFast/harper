@@ -8,11 +8,13 @@ export async function verifyFilesDoNotExist(folderPath) {
 		await exec(
 			`docker exec ${process.env.DOCKER_CONTAINER_ID} ls -al /home/harperdb/hdb/blobs/blob/0/0/`,
 			(error, stdout, stderr) => {
-				console.log('\n\n\nstdout: ' + stdout);
-				console.log('error: ' + error);
-				console.log('stderr: ' + stderr);
-				console.log('\n\n\nKNOWN BUG: https://harperdb.atlassian.net/browse/CORE-2739\n\n\n');
-				// assert.ok(stderr.includes(`cannot access '/home/harperdb/hdb/blobs/blob/0/0/': No such file or directory`), 'Docker container - .../blobs/blob/0/0/ folder should not exist');
+				if (stderr.length > 0){
+					assert.ok(stderr.includes(`cannot access '/home/harperdb/hdb/blobs/blob/0/0/': No such file or directory`), 'Docker container - .../blobs/blob/0/0/ folder should not exist');
+				} else {
+					const outputLineItems = stdout.split('..');
+					assert.equal(outputLineItems.length, 2);
+					assert.ok(outputLineItems[1].length <= 1);
+				}
 			}
 		);
 		await setTimeout(9000);
@@ -21,14 +23,12 @@ export async function verifyFilesDoNotExist(folderPath) {
 		try {
 			files = await fs.readdir(folderPath);
 		} catch (err) {
-			console.log(err.toString());
 			assert.ok(err.toString().includes(`no such file or directory, scandir '${folderPath}'`));
+			console.log('Checked: folder does not exist');
 		}
 		if (files !== undefined) {
-			console.log('\n\n\nNumber of files found should be 0, but instead there were: ' + files.length);
-			console.log('\n\n\nKNOWN BUG: https://harperdb.atlassian.net/browse/CORE-2739\n\n\n');
 			assert.equal(files.length, 0);
-			console.log('Checked files do not exist');
+			console.log('Checked: files do not exist');
 		}
 	}
 }

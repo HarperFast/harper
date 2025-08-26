@@ -15,7 +15,6 @@ const mkcert = require('mkcert');
 const forge = require('node-forge');
 const pki = forge.pki;
 const { X509Certificate, createPrivateKey, createPublicKey } = require('crypto');
-const { createSNICallback } = require('../../server/threads/threadServer');
 
 describe('Test keys module', () => {
 	const sandbox = sinon.createSandbox();
@@ -218,10 +217,19 @@ describe('Test keys module', () => {
 
 	it('hostnamesFromCert returns the correct hostnames', async () => {
 		const test_cert = {
+			subject: '',
 			subjectAltName: 'DirName:"CN=test-1.name\\u002cO=1999710",' + ' DirName:CN=test-2.org,IP-Address:1.2.3.4',
 		};
 		const hostnames = keys.hostnamesFromCert(test_cert);
 		expect(hostnames).to.eql(['test-1.name', 'test-2.org', '1.2.3.4']);
+		expect(keys.getPrimaryHostName(test_cert)).to.eql('test-1.name');
+	});
+	it('getPrimaryHostName with subject', async () => {
+		const test_cert = {
+			subject: 'CN=test-1.name',
+			subjectAltName: 'DirName:"CN=test-different',
+		};
+		expect(keys.getPrimaryHostName(test_cert)).to.eql('test-1.name');
 	});
 
 	it('test get_key returns JWT and key', async () => {
@@ -243,6 +251,15 @@ describe('Test keys module', () => {
 			error = err;
 		}
 		expect(error.message).to.equal('Key not found');
+	});
+	it('can extract the hostnames from a certificate', async () => {
+		const cert = {
+			subjectaltname: 'IP Address:127.0.0.1, DNS:localhost, IP Address:0:0:0:0:0:0:0:1',
+			subject: { CN: '127.0.0.1', C: 'USA', ST: 'Colorado', L: 'Denver', O: 'HarperDB, Inc.' },
+		};
+
+		const hostnames = await keys.getHostnamesFromCertificate(cert);
+		expect(hostnames).to.have.members(['127.0.0.1', 'localhost']);
 	});
 	/*	it('Test SNI with wildcards', async () => {
 		let cert1 = await mkcert.createCert({

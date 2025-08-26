@@ -4,7 +4,7 @@ class Node {
 	/**
 	 * @param {string} node_name
 	 * @param {Array.<NodeSubscription>} subscriptions
-	 * @param {Object} system_info - {hdb_version, platform, node_version}
+	 * @param {Object} system_info - {hdbVersion, platform, nodeVersion}
 	 */
 	constructor(node_name, subscriptions, system_info) {
 		this.name = node_name;

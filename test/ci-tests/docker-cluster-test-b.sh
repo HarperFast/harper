@@ -26,6 +26,10 @@ sed -in "s/ClstrTestBNode3/ClstrTestB3/" integrationTests/clusterTests/clusterTe
 sed -in "s/ClstrTestBNode4/ClstrTestB4/" integrationTests/clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json
 sed -in "s/ubuntu/harperdb/" integrationTests/clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json
 
+# Inject credentials from environment variables
+sed -in "s|\"value\": \"PLACEHOLDER_USERNAME\"|\"value\": \"$HDB_ADMIN_USERNAME\"|" integrationTests/clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json
+sed -in "s|\"value\": \"PLACEHOLDER_PASSWORD\"|\"value\": \"$HDB_ADMIN_PASSWORD\"|" integrationTests/clusterTests/clusterTestB/Four_Node_Cluster_Tests_Env_vars.postman_environment.json
+
 # create output directories for test
 artifact_dir="artifact"
 mkdir --mode a+rwx -p $artifact_dir/ClstrTestB1/newman $artifact_dir/ClstrTestB1/log

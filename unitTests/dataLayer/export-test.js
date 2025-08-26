@@ -63,7 +63,7 @@ describe('Test export.js', () => {
 		it('Nominal Call to export_local with csv file', async function () {
 			search_stub = sandbox.stub().returns(SEARCH_RESPONSE);
 			file_name = path.join(TMP_TEST_DIR, 'test_file.csv');
-			hdb_export.__set__('p_sql', search_stub);
+			hdb_export.__set__('pSql', search_stub);
 			let export_object = {};
 			export_object.operation = 'export_local';
 			export_object.path = `${TMP_TEST_DIR}`;
@@ -90,7 +90,7 @@ describe('Test export.js', () => {
 		it('Nominal Call to export_local with json file', async function () {
 			search_stub = sandbox.stub().returns(SEARCH_RESPONSE);
 			file_name = path.join(TMP_TEST_DIR, 'test_file.json');
-			hdb_export.__set__('p_sql', search_stub);
+			hdb_export.__set__('pSql', search_stub);
 			let export_object = {};
 			export_object.operation = 'export_local';
 			export_object.path = `${TMP_TEST_DIR}`;
@@ -116,7 +116,7 @@ describe('Test export.js', () => {
 
 		it('Call to export_local with bad path', async function () {
 			search_stub = sandbox.stub().returns(SEARCH_RESPONSE);
-			hdb_export.__set__('p_sql', search_stub);
+			hdb_export.__set__('pSql', search_stub);
 			let export_object = {};
 			export_object.operation = 'export_local';
 			export_object.path = null;
@@ -137,7 +137,7 @@ describe('Test export.js', () => {
 
 		it('Call to export_local with search exception thrown', async function () {
 			search_stub = sandbox.stub().throws(new Error('bah'));
-			hdb_export.__set__('p_sql', search_stub);
+			hdb_export.__set__('pSql', search_stub);
 			let export_object = {};
 			export_object.operation = 'export_local';
 			export_object.path = './';
@@ -697,9 +697,9 @@ describe('Test export.js', () => {
 
 		before(() => {
 			getRecords = hdb_export.__get__('getRecords');
-			hdb_export.__set__('p_search_by_value', p_search_by_value_stub);
-			hdb_export.__set__('p_search_by_hash', p_search_by_hash_stub);
-			hdb_export.__set__('p_sql', p_search_sql_stub);
+			hdb_export.__set__('pSearchByValue', p_search_by_value_stub);
+			hdb_export.__set__('pSearchByHash', p_search_by_hash_stub);
+			hdb_export.__set__('pSql', p_search_sql_stub);
 		});
 
 		it('Test search by value operation is selected', async () => {

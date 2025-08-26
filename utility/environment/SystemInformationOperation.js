@@ -1,6 +1,6 @@
 'use strict';
 
-const terms = require('../hdbTerms');
+const terms = require('../hdbTerms.ts');
 
 class SystemInformationOperation {
 	/**

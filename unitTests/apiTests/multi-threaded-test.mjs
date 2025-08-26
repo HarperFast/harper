@@ -24,7 +24,7 @@ describe('Multi-threaded cache updates', () => {
 		await shutdownWorkers('http');
 	});
 	it('Many updates and invalidations', async function () {
-		this.timeout(15000);
+		//		this.timeout(15000);
 
 		let responses = [];
 		for (let i = 0; i < 1000; i++) {

@@ -1,13 +1,13 @@
 'use strict';
 
-const nats_terms = require('./natsTerms');
+const natsTerms = require('./natsTerms.js');
 
 /**
  * This class represents a user in Nats accounts SYS users array.
  */
 class SysUserObject {
 	constructor(user, password) {
-		this.user = user + nats_terms.SERVER_SUFFIX.ADMIN;
+		this.user = user + natsTerms.SERVER_SUFFIX.ADMIN;
 		this.password = password;
 	}
 }

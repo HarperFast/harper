@@ -2,18 +2,18 @@
 
 /**
  * used to define specific attributes of a dbi.
- * dup_sort for allowing duplicate keys, or not
- * int_key defines if the key entries are integers or not
+ * dupSort for allowing duplicate keys, or not
+ * intKey defines if the key entries are integers or not
  */
 class DBIDefinition {
 	/**
-	 * @param {Boolean} dup_sort - allow duplicate keys, or not
-	 * @param {Boolean} is_hash_attribute - defines if this attribute is a hash attribute
+	 * @param {Boolean} dupSort - allow duplicate keys, or not
+	 * @param {Boolean} isHashAttribute - defines if this attribute is a hash attribute
 	 */
-	constructor(dup_sort = false, is_hash_attribute = false) {
-		this.dup_sort = dup_sort;
-		this.is_hash_attribute = is_hash_attribute;
-		this.useVersions = is_hash_attribute;
+	constructor(dupSort = false, isHashAttribute = false) {
+		this.dup_sort = dupSort;
+		this.is_hash_attribute = isHashAttribute;
+		this.useVersions = isHashAttribute;
 	}
 }
 

@@ -3,19 +3,19 @@
 /**
  * Response object from lmdb upsert function
  * @param {Array.<string|number>} written_hashes
- * @param {number} txn_time
- * @param {Array.<Object>} original_records
+ * @param {number} txnTime
+ * @param {Array.<Object>} originalRecords
  */
 class UpsertRecordsResponseObject {
 	/**
 	 * @param {Array.<string|number>} written_hashes
-	 * @param {number} txn_time
-	 * @param {Array.<Object>} original_records
+	 * @param {number} txnTime
+	 * @param {Array.<Object>} originalRecords
 	 */
-	constructor(written_hashes = [], txn_time = undefined, original_records = []) {
+	constructor(written_hashes = [], txnTime = undefined, originalRecords = []) {
 		this.written_hashes = written_hashes;
-		this.txn_time = txn_time;
-		this.original_records = original_records;
+		this.txn_time = txnTime;
+		this.original_records = originalRecords;
 	}
 }
 

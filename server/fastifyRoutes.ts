@@ -1,23 +1,23 @@
 import { dirname } from 'path';
 import { existsSync } from 'fs';
 import fastify from 'fastify';
-import fastify_cors from '@fastify/cors';
-import request_time_plugin from './serverHelpers/requestTimePlugin';
+import fastifyCors from '@fastify/cors';
+import requestTimePlugin from './serverHelpers/requestTimePlugin.js';
 import autoload from '@fastify/autoload';
-import * as env from '../utility/environment/environmentManager';
-import { CONFIG_PARAMS } from '../utility/hdbTerms';
-import * as harper_logger from '../utility/logging/harper_logger';
-import * as hdbCore from './fastifyRoutes/plugins/hdbCore';
-import * as user_schema from '../security/user';
-import getServerOptions from './fastifyRoutes/helpers/getServerOptions';
-import getCORSOptions from './fastifyRoutes/helpers/getCORSOptions';
-import getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConfig';
-import { serverErrorHandler } from '../server/serverHelpers/serverHandlers';
-import { registerContentHandlers } from '../server/serverHelpers/contentTypes';
-import { server } from './Server';
+import * as env from '../utility/environment/environmentManager.js';
+import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
+import * as harperLogger from '../utility/logging/harper_logger.js';
+import * as hdbCore from './fastifyRoutes/plugins/hdbCore.js';
+import * as userSchema from '../security/user.js';
+import getServerOptions from './fastifyRoutes/helpers/getServerOptions.js';
+import getCORSOptions from './fastifyRoutes/helpers/getCORSOptions.js';
+import getHeaderTimeoutConfig from './fastifyRoutes/helpers/getHeaderTimeoutConfig.js';
+import { serverErrorHandler } from '../server/serverHelpers/serverHandlers.js';
+import { registerContentHandlers } from '../server/serverHelpers/contentTypes.ts';
+import { server } from './Server.ts';
 
-let fastify_server;
-const route_folders = new Set();
+let fastifyServer;
+const routeFolders = new Set();
 
 /**
  * This is the entry point for the fastify route autoloader plugin. This plugin loads JS modules from provided path
@@ -27,32 +27,32 @@ const route_folders = new Set();
  * on fastify routes. Fastify's performance is not as good as our native HTTP handling, so generally this isn't the
  * first choice for new applications where performance is a priority, but certainly is a good option for anyone who
  * likes and/or is familiar with fastify and wants to use its plugins.
- * @param js_content
- * @param relative_path
- * @param file_path
- * @param project_name
+ * @param jsContent
+ * @param relativePath
+ * @param filePath
+ * @param projectName
  */
 export function start(options) {
 	// if we have a secure port, need to use the secure HTTP server for fastify (it can be used for HTTP as well)
-	const is_https = options.securePort > 0;
+	const isHttps = options.securePort > 0;
 	return {
-		async handleFile(js_content, relative_path, file_path, project_name) {
-			if (!fastify_server) {
-				fastify_server = buildServer(is_https);
-				server.http((await fastify_server).server);
+		async handleFile(jsContent, relativePath, filePath, projectName) {
+			if (!fastifyServer) {
+				fastifyServer = buildServer(isHttps);
+				server.http((await fastifyServer).server);
 			}
-			const resolved_server = await fastify_server;
-			const route_folder = dirname(file_path);
-			let prefix = dirname(relative_path);
+			const resolvedServer = await fastifyServer;
+			const routeFolder = dirname(filePath);
+			let prefix = dirname(relativePath);
 			if (prefix.startsWith('/')) prefix = prefix.slice(1);
-			if (!route_folders.has(route_folder)) {
-				route_folders.add(route_folder);
+			if (!routeFolders.has(routeFolder)) {
+				routeFolders.add(routeFolder);
 				try {
-					resolved_server.register(buildRouteFolder(route_folder, prefix));
+					resolvedServer.register(buildRouteFolder(routeFolder, prefix));
 				} catch (error) {
 					if (error.message === 'Root plugin has already booted')
-						harper_logger.warn(
-							`Could not load root fastify route for ${file_path}, this may require a restart to install properly`
+						harperLogger.warn(
+							`Could not load root fastify route for ${filePath}, this may require a restart to install properly`
 						);
 					else throw error;
 				}
@@ -71,19 +71,19 @@ export async function customFunctionsServer() {
 	try {
 		// Instantiate new instance of HDB IPC client and assign it to global.
 
-		harper_logger.info('In Custom Functions Fastify server' + process.cwd());
-		harper_logger.info(`Custom Functions Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
-		harper_logger.debug(`Custom Functions server process ${process.pid} starting up.`);
+		harperLogger.info('In Custom Functions Fastify server' + process.cwd());
+		harperLogger.info(`Custom Functions Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
+		harperLogger.debug(`Custom Functions server process ${process.pid} starting up.`);
 
 		await setUp();
 
-		const is_https = env.get(CONFIG_PARAMS.HTTP_SECUREPORT) > 0;
+		const isHttps = env.get(CONFIG_PARAMS.HTTP_SECUREPORT) > 0;
 		let server;
 		try {
 			//generate a Fastify server instance
-			server = fastify_server = await buildServer(is_https);
+			server = fastifyServer = await buildServer(isHttps);
 		} catch (err) {
-			harper_logger.error(`Custom Functions buildServer error: ${err}`);
+			harperLogger.error(`Custom Functions buildServer error: ${err}`);
 			throw err;
 		}
 
@@ -91,14 +91,14 @@ export async function customFunctionsServer() {
 			//make sure the process waits for the server to be fully instantiated before moving forward
 			await server.ready();
 		} catch (err) {
-			harper_logger.error(`Custom Functions server.ready() error: ${err}`);
+			harperLogger.error(`Custom Functions server.ready() error: ${err}`);
 			throw err;
 		}
 		// fastify can't clean up properly
 		server.server.cantCleanupProperly = true;
 	} catch (err) {
-		harper_logger.error(`Custom Functions ${process.pid} Error: ${err}`);
-		harper_logger.error(err);
+		harperLogger.error(`Custom Functions ${process.pid} Error: ${err}`);
+		harperLogger.error(err);
 		process.exit(1);
 	}
 }
@@ -109,46 +109,46 @@ export async function customFunctionsServer() {
  */
 async function setUp() {
 	try {
-		harper_logger.info('Custom Functions starting configuration.');
-		await user_schema.setUsersWithRolesCache();
-		harper_logger.info('Custom Functions completed configuration.');
+		harperLogger.info('Custom Functions starting configuration.');
+		await userSchema.setUsersWithRolesCache();
+		harperLogger.info('Custom Functions completed configuration.');
 	} catch (e) {
-		harper_logger.error(e);
+		harperLogger.error(e);
 	}
 }
 
 // eslint-disable-next-line require-await
-function buildRouteFolder(routes_folder, project_name) {
-	return async function (cf_server) {
+function buildRouteFolder(routesFolder, projectName) {
+	return async function (cfServer) {
 		try {
-			harper_logger.info('Custom Functions starting buildRoutes');
+			harperLogger.info('Custom Functions starting buildRoutes');
 
-			harper_logger.trace('Loading fastify routes folder ' + routes_folder);
-			const set_up_routes = existsSync(routes_folder);
+			harperLogger.trace('Loading fastify routes folder ' + routesFolder);
+			const setUpRoutes = existsSync(routesFolder);
 
 			// check for a routes folder and, if present, ingest each of the route files in the project's routes folder
-			if (set_up_routes) {
-				cf_server
+			if (setUpRoutes) {
+				cfServer
 					.register(autoload, (parent) => ({
-						dir: routes_folder,
+						dir: routesFolder,
 						dirNameRoutePrefix: false,
 						options: {
 							hdbCore: parent.hdbCore,
-							logger: harper_logger.loggerWithTag('custom-function'),
-							prefix: `/${project_name}`,
+							logger: harperLogger.loggerWithTag('custom-function'),
+							prefix: `/${projectName}`,
 						},
 					}))
 					.after((err, instance, next) => {
 						if (err?.message) {
-							harper_logger.error(err.message);
+							harperLogger.error(err.message);
 						} else if (err) {
-							harper_logger.error(err);
+							harperLogger.error(err);
 						}
 						next();
 					});
 			}
 		} catch (e) {
-			harper_logger.error(`Custom Functions errored buildRoutes: ${e}`);
+			harperLogger.error(`Custom Functions errored buildRoutes: ${e}`);
 		}
 	};
 }
@@ -156,14 +156,14 @@ function buildRouteFolder(routes_folder, project_name) {
 /**
  * This method configures and returns a Fastify server - for either HTTP or HTTPS  - based on the provided config settings
  *
- * @param is_https - <boolean> - type of communication protocol to build server for
+ * @param isHttps - <boolean> - type of communication protocol to build server for
  * @returns {FastifyInstance}
  */
-async function buildServer(is_https) {
-	harper_logger.info(`Custom Functions starting buildServer.`);
-	const server_opts = getServerOptions(is_https);
+async function buildServer(isHttps) {
+	harperLogger.info(`Custom Functions starting buildServer.`);
+	const serverOpts = getServerOptions(isHttps);
 
-	const app = fastify(server_opts);
+	const app = fastify(serverOpts);
 	//Fastify does not set this property in the initial app construction
 	app.server.headersTimeout = getHeaderTimeoutConfig();
 
@@ -171,9 +171,9 @@ async function buildServer(is_https) {
 	// can be handled in a coordinated way
 	app.setErrorHandler(serverErrorHandler);
 
-	const cors_options = getCORSOptions();
-	if (cors_options) {
-		app.register(fastify_cors, cors_options);
+	const corsOptions = getCORSOptions();
+	if (corsOptions) {
+		app.register(fastifyCors, corsOptions);
 	}
 
 	app.register(function (instance, options, done) {
@@ -183,21 +183,21 @@ async function buildServer(is_https) {
 		done();
 	});
 
-	app.register(request_time_plugin);
+	app.register(requestTimePlugin);
 	await app.register(hdbCore);
 	await app.after();
 	registerContentHandlers(app);
 
-	harper_logger.info(`Custom Functions completed buildServer.`);
+	harperLogger.info(`Custom Functions completed buildServer.`);
 	return app;
 }
 
 export function ready() {
-	if (fastify_server) {
-		if (fastify_server.then)
-			return fastify_server.then((server) => {
+	if (fastifyServer) {
+		if (fastifyServer.then)
+			return fastifyServer.then((server) => {
 				return server.ready();
 			});
-		return fastify_server.ready();
+		return fastifyServer.ready();
 	}
 }

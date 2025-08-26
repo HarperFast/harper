@@ -3,9 +3,9 @@ const fg = require('fast-glob');
 const fs = require('fs-extra');
 const path = require('path');
 const { exec } = require('child_process');
-let cwd_path = path.resolve(__dirname, '../../../');
-process.chdir(cwd_path);
-// we define externals to ensure that we don't load packages (from node_modules)
+let cwdPath = path.resolve(__dirname, '../../../');
+process.chdir(cwdPath);
+// we define externals to ensure that we don't load packages (from nodeModules)
 // we also explicitly define index as an external so that it can be preserved as an independent
 // module that users can load and will have the correct exports injected into it.
 let external = ['@*', './index'];
@@ -14,7 +14,7 @@ let external = ['@*', './index'];
 for (let i = 97; i < 123; i++) {
 	external.push(String.fromCharCode(i) + '*');
 }
-let entry_modules = [
+let entryModules = [
 	'bin/harperdb.js',
 	'bin/lite.js',
 	'launchServiceScripts/launchInstallNATSServer.js',
@@ -25,11 +25,11 @@ let entry_modules = [
 	'server/threads/threadServer.js',
 	'utility/scripts/restartHdb.js',
 ];
-for (let entry_module of entry_modules) {
-	let outfile = path.join('npm_pack', entry_module);
+for (let entryModule of entryModules) {
+	let outfile = path.join('npm_pack', entryModule);
 	esbuild
 		.build({
-			entryPoints: [entry_module],
+			entryPoints: [entryModule],
 			bundle: true,
 			platform: 'node',
 			minify: true,

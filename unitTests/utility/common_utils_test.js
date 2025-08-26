@@ -716,7 +716,7 @@ describe('Test common_utils module', () => {
 
 	describe('Test checkProcessRunning', () => {
 		it('Test happy path', async () => {
-			let pslist_rewire = cu_rewire.__set__('ps_list', {
+			let pslist_rewire = cu_rewire.__set__('psList', {
 				findPs: async (name) => {
 					return PSLIST_HELIUM_RETURN;
 				},
@@ -735,7 +735,7 @@ describe('Test common_utils module', () => {
 		});
 
 		it('Test no process running', async () => {
-			let pslist_rewire = cu_rewire.__set__('ps_list', {
+			let pslist_rewire = cu_rewire.__set__('psList', {
 				findPs: async (name) => {
 					return [];
 				},

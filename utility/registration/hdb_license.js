@@ -1,31 +1,31 @@
 'use strict';
 
 const fs = require('fs-extra');
-const password = require('../password');
+const password = require('../password.ts');
 const crypto = require('crypto');
 const moment = require('moment');
 const uuidV4 = require('uuid').v4;
-const log = require('../logging/harper_logger');
+const log = require('../logging/harper_logger.js');
 const path = require('path');
-const hdb_utils = require('../common_utils');
-const terms = require('../hdbTerms');
+const hdbUtils = require('../common_utils.js');
+const terms = require('../hdbTerms.ts');
 const { totalmem } = require('os');
-const License = require('../../utility/registration/licenseObjects').ExtendedLicense;
+const License = require('../../utility/registration/licenseObjects.js').ExtendedLicense;
 const INVALID_LICENSE_FORMAT_MSG = 'invalid license key format';
 const LICENSE_HASH_PREFIX = '061183';
 const LICENSE_KEY_DELIMITER = 'mofi25';
 const ALGORITHM = 'aes-256-cbc';
 const IV_LENGTH = 16;
 const KEY_LENGTH = 32;
-const env = require('../../utility/environment/environmentManager');
-const { resolvePath } = require('../../config/configUtils');
+const env = require('../../utility/environment/environmentManager.js');
+const { resolvePath } = require('../../config/configUtils.js');
 env.initSync();
 
-let current_license = undefined;
+let currentLicense = undefined;
 
 module.exports = {
-	validateLicense: validateLicense,
-	generateFingerPrint: generateFingerPrint,
+	validateLicense,
+	generateFingerPrint,
 	licenseSearch,
 	getLicense,
 	checkMemoryLimit,
@@ -36,25 +36,25 @@ function getLicenseDirPath() {
 }
 
 function getLicenseFilePath() {
-	const license_path = getLicenseDirPath();
-	return resolvePath(path.join(license_path, terms.LICENSE_FILE_NAME));
+	const licensePath = getLicenseDirPath();
+	return resolvePath(path.join(licensePath, terms.LICENSE_FILE_NAME));
 }
 
 function getFingerPrintFilePath() {
-	const license_path = getLicenseDirPath();
-	return resolvePath(path.join(license_path, terms.REG_KEY_FILE_NAME));
+	const licensePath = getLicenseDirPath();
+	return resolvePath(path.join(licensePath, terms.REG_KEY_FILE_NAME));
 }
 
 async function generateFingerPrint() {
-	const finger_print_file = getFingerPrintFilePath();
+	const fingerPrintFile = getFingerPrintFilePath();
 	try {
-		return await fs.readFile(finger_print_file, 'utf8');
+		return await fs.readFile(fingerPrintFile, 'utf8');
 	} catch (e) {
 		if (e.code === 'ENOENT') {
 			return await writeFingerprint();
 		}
 
-		log.error(`Error writing fingerprint file to ${finger_print_file}`);
+		log.error(`Error writing fingerprint file to ${fingerPrintFile}`);
 		log.error(e);
 		throw new Error('There was an error generating the fingerprint');
 	}
@@ -62,26 +62,26 @@ async function generateFingerPrint() {
 
 async function writeFingerprint() {
 	let hash = uuidV4();
-	let hashed_hash = password.hash(hash, password.HASH_FUNCTION.MD5);
-	const finger_print_file = getFingerPrintFilePath();
+	let hashedHash = password.hash(hash, password.HASH_FUNCTION.MD5);
+	const fingerPrintFile = getFingerPrintFilePath();
 
 	try {
 		await fs.mkdirp(getLicenseDirPath());
-		await fs.writeFile(finger_print_file, hashed_hash);
+		await fs.writeFile(fingerPrintFile, hashedHash);
 	} catch (err) {
 		if (err.code === 'EEXIST') {
-			return hashed_hash;
+			return hashedHash;
 		}
-		log.error(`Error writing fingerprint file to ${finger_print_file}`);
+		log.error(`Error writing fingerprint file to ${fingerPrintFile}`);
 		log.error(err);
 		throw new Error('There was an error generating the fingerprint');
 	}
 
-	return hashed_hash;
+	return hashedHash;
 }
 
-function validateLicense(license_key, company) {
-	let license_validation_object = {
+function validateLicense(licenseKey, company) {
+	let licenseValidationObject = {
 		valid_license: false,
 		valid_date: false,
 		valid_machine: false,
@@ -89,51 +89,51 @@ function validateLicense(license_key, company) {
 		ram_allocation: terms.RAM_ALLOCATION_ENUM.DEFAULT,
 		version: terms.LICENSE_VALUES.VERSION_DEFAULT,
 	};
-	if (!license_key) {
+	if (!licenseKey) {
 		log.error(`empty license key passed to validate.`);
-		return license_validation_object;
+		return licenseValidationObject;
 	}
 
-	const finger_print_file = getFingerPrintFilePath();
-	let is_exist = false;
+	const fingerPrintFile = getFingerPrintFilePath();
+	let isExist = false;
 
 	try {
-		is_exist = fs.statSync(finger_print_file);
+		isExist = fs.statSync(fingerPrintFile);
 	} catch (err) {
 		log.error(err);
 	}
 
-	if (is_exist) {
+	if (isExist) {
 		let fingerprint;
 		try {
-			fingerprint = fs.readFileSync(finger_print_file, 'utf8');
+			fingerprint = fs.readFileSync(fingerPrintFile, 'utf8');
 		} catch (e) {
 			log.error('error validating this machine in the license');
-			license_validation_object.valid_machine = false;
+			licenseValidationObject.valid_machine = false;
 			return;
 		}
 
-		let license_tokens = license_key.split(LICENSE_KEY_DELIMITER);
-		let iv = license_tokens[1];
+		let licenseTokens = licenseKey.split(LICENSE_KEY_DELIMITER);
+		let iv = licenseTokens[1];
 		iv = Buffer.concat([Buffer.from(iv)], IV_LENGTH);
 		let key = Buffer.concat([Buffer.from(fingerprint)], KEY_LENGTH);
 		let decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
 
-		license_validation_object.valid_date = true;
-		license_validation_object.valid_license = true;
-		license_validation_object.valid_machine = true;
+		licenseValidationObject.valid_date = true;
+		licenseValidationObject.valid_license = true;
+		licenseValidationObject.valid_machine = true;
 		let decrypted = null;
 		try {
-			decrypted = decipher.update(license_tokens[0], 'hex', 'utf8');
+			decrypted = decipher.update(licenseTokens[0], 'hex', 'utf8');
 			decrypted.trim();
 			decrypted += decipher.final('utf8');
 		} catch (e) {
-			let old_license = checkOldLicense(license_tokens[0], fingerprint);
-			if (old_license) {
-				decrypted = old_license;
+			let oldLicense = checkOldLicense(licenseTokens[0], fingerprint);
+			if (oldLicense) {
+				decrypted = oldLicense;
 			} else {
-				license_validation_object.valid_license = false;
-				license_validation_object.valid_machine = false;
+				licenseValidationObject.valid_license = false;
+				licenseValidationObject.valid_machine = false;
 
 				console.error(INVALID_LICENSE_FORMAT_MSG);
 				log.error(INVALID_LICENSE_FORMAT_MSG);
@@ -141,20 +141,20 @@ function validateLicense(license_key, company) {
 			}
 		}
 
-		let license_obj;
+		let licenseObj;
 
 		if (isNaN(decrypted)) {
 			try {
-				license_obj = JSON.parse(decrypted);
-				license_validation_object.version = license_obj.version;
-				license_validation_object.exp_date = license_obj.exp_date;
+				licenseObj = JSON.parse(decrypted);
+				licenseValidationObject.version = licenseObj.version;
+				licenseValidationObject.exp_date = licenseObj.exp_date;
 
-				if (isNaN(license_validation_object.exp_date)) {
-					license_validation_object.exp_date = new Date(license_validation_object.exp_date).getTime();
+				if (isNaN(licenseValidationObject.exp_date)) {
+					licenseValidationObject.exp_date = new Date(licenseValidationObject.exp_date).getTime();
 				}
 
-				if (license_obj.ram_allocation) {
-					license_validation_object.ram_allocation = license_obj.ram_allocation;
+				if (licenseObj.ram_allocation) {
+					licenseValidationObject.ram_allocation = licenseObj.ram_allocation;
 				}
 			} catch (e) {
 				console.error(INVALID_LICENSE_FORMAT_MSG);
@@ -162,38 +162,38 @@ function validateLicense(license_key, company) {
 				throw new Error(INVALID_LICENSE_FORMAT_MSG);
 			}
 		} else {
-			license_validation_object.exp_date = decrypted;
+			licenseValidationObject.exp_date = decrypted;
 		}
 
-		if (license_validation_object.exp_date < moment().valueOf()) {
-			license_validation_object.valid_date = false;
+		if (licenseValidationObject.exp_date < moment().valueOf()) {
+			licenseValidationObject.valid_date = false;
 		}
 
 		if (
 			!password.validate(
-				license_tokens[1],
+				licenseTokens[1],
 				`${LICENSE_HASH_PREFIX}${fingerprint}${company}`,
 				password.HASH_FUNCTION.MD5
 			)
 		) {
-			license_validation_object.valid_license = false;
+			licenseValidationObject.valid_license = false;
 		}
 	} else {
-		license_validation_object.valid_license = false;
-		license_validation_object.valid_machine = false;
+		licenseValidationObject.valid_license = false;
+		licenseValidationObject.valid_machine = false;
 	}
 
 	if (
 		!(
-			license_validation_object.valid_license &&
-			license_validation_object.valid_machine &&
-			license_validation_object.valid_date
+			licenseValidationObject.valid_license &&
+			licenseValidationObject.valid_machine &&
+			licenseValidationObject.valid_date
 		)
 	) {
 		log.error('Invalid licence');
 	}
 
-	return license_validation_object;
+	return licenseValidationObject;
 }
 
 /**
@@ -218,12 +218,12 @@ function checkOldLicense(license, fingerprint) {
  * search for the hdb license, validate & return
  */
 function licenseSearch() {
-	let license_values = new License();
+	let licenseValues = new License();
 	let licenses = [];
 
 	try {
-		let file_licenses = fs.readFileSync(getLicenseFilePath(), 'utf-8');
-		licenses = file_licenses.split('\r\n');
+		let fileLicenses = fs.readFileSync(getLicenseFilePath(), 'utf-8');
+		licenses = fileLicenses.split('\r\n');
 	} catch (e) {
 		if (e.code === 'ENOENT') {
 			log.debug('no license file found');
@@ -233,33 +233,33 @@ function licenseSearch() {
 	}
 
 	for (let i = 0; i < licenses.length; ++i) {
-		let license_string = licenses[i];
+		let licenseString = licenses[i];
 		try {
-			if (hdb_utils.isEmptyOrZeroLength(license_string)) {
+			if (hdbUtils.isEmptyOrZeroLength(licenseString)) {
 				continue;
 			}
-			let license = JSON.parse(license_string);
-			let license_validation = validateLicense(license.license_key, license.company);
+			let license = JSON.parse(licenseString);
+			let licenseValidation = validateLicense(license.license_key, license.company);
 			if (
-				license_validation.valid_machine === true &&
-				license_validation.valid_date === true &&
-				license_validation.valid_machine === true
+				licenseValidation.valid_machine === true &&
+				licenseValidation.valid_date === true &&
+				licenseValidation.valid_machine === true
 			) {
-				license_values.exp_date =
-					license_validation.exp_date > license_values.exp_date ? license_validation.exp_date : license_values.exp_date;
-				license_values.ram_allocation = license_validation.ram_allocation;
-				license_values.enterprise = true;
+				licenseValues.exp_date =
+					licenseValidation.exp_date > licenseValues.exp_date ? licenseValidation.exp_date : licenseValues.exp_date;
+				licenseValues.ram_allocation = licenseValidation.ram_allocation;
+				licenseValues.enterprise = true;
 			}
 		} catch (e) {
 			log.error('There was an error parsing the license string.');
 			log.error(e);
-			license_values.ram_allocation = terms.RAM_ALLOCATION_ENUM.DEFAULT;
-			license_values.enterprise = false;
+			licenseValues.ram_allocation = terms.RAM_ALLOCATION_ENUM.DEFAULT;
+			licenseValues.enterprise = false;
 		}
 	}
 
-	current_license = license_values;
-	return license_values;
+	currentLicense = licenseValues;
+	return licenseValues;
 }
 
 /**
@@ -268,16 +268,16 @@ function licenseSearch() {
  * @returns {Promise<undefined>}
  */
 async function getLicense() {
-	if (!current_license) {
+	if (!currentLicense) {
 		await licenseSearch();
 	}
-	return current_license;
+	return currentLicense;
 }
 function checkMemoryLimit() {
-	const licensed_memory = licenseSearch().ram_allocation;
-	let total_memory = process.constrainedMemory?.() || totalmem();
-	total_memory = Math.round(Math.min(total_memory, totalmem()) / 2 ** 20);
-	if (total_memory > licensed_memory) {
-		return `This server has more memory (${total_memory}MB) than HarperDB is licensed for (${licensed_memory}MB), this should only be used for educational and development purposes.`;
+	const licensedMemory = licenseSearch().ram_allocation;
+	let totalMemory = process.constrainedMemory?.() || totalmem();
+	totalMemory = Math.round(Math.min(totalMemory, totalmem()) / 2 ** 20);
+	if (totalMemory > licensedMemory) {
+		return `This server has more memory (${totalMemory}MB) than HarperDB is licensed for (${licensedMemory}MB), this should only be used for educational and development purposes.`;
 	}
 }

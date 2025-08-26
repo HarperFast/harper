@@ -1,4 +1,4 @@
-name: 'Run Build Package CI Tests'
+name: 'Run Build Package CI Tests with Postman'
 
 on:
   push:
@@ -82,10 +82,14 @@ jobs:
           - arm
     timeout-minutes: 20
     steps:
-      - name: Run Integration Tests on Instances
+      - name: Run Integration Tests with Postman on Instances
         env:
           CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
           public_dns_names: ${{ matrix.arch == 'amd' && needs.createInstances-amd.outputs.publicDnsNames || needs.createInstances-arm.outputs.publicDnsNames }}
+          HDB_ADMIN_USERNAME: ${{ secrets.HDB_ADMIN_USERNAME }}
+          HDB_ADMIN_PASSWORD: ${{ secrets.HDB_ADMIN_PASSWORD }}
+          S3_KEY: ${{ secrets.AWS_S3_CI_CLUSTER_KEY }}
+          S3_SECRET: ${{ secrets.AWS_S3_CI_CLUSTER_SECRET }}
         run: |
           #!/bin/bash
           cd ../
@@ -95,7 +99,7 @@ jobs:
           do 
             echo "Starting work on: $public_dns_name"
             ssh -i private_key -o ConnectTimeout=10 -o ConnectionAttempts=5 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR ubuntu@"$public_dns_name" \
-                  "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh && /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh"
+                  "sudo chmod +x /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh && HDB_ADMIN_USERNAME='${HDB_ADMIN_USERNAME}' HDB_ADMIN_PASSWORD='${HDB_ADMIN_PASSWORD}' S3_KEY='${S3_KEY}' S3_SECRET='${S3_SECRET}' /home/ubuntu/harperdb/test/ci-tests/ci-tests.sh"
             echo "Ending work on: $public_dns_name"
           done
         shell: bash
