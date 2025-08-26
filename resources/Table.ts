@@ -3381,8 +3381,10 @@ export function makeTable(options) {
 			if (options.transaction?.isDone) return withEntry(null, id);
 			const entry = primaryStore.getEntry(id, options);
 
-			if (databaseName !== 'system') {
-				harperLogger.trace?.('Recording db-read action for', tableName);
+			// skip recording reads for most system tables except hdb_analytics
+			// we want to track analytics reads in licensing, etc.
+			if (databaseName !== 'system' || tableName === 'hdb_analytics') {
+				harperLogger.trace?.('Recording db-read action for', `${databaseName}.${tableName}`);
 				recordAction(entry?.size ?? 1, 'db-read', tableName, null);
 			}
 
