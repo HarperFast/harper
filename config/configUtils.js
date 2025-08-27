@@ -117,10 +117,8 @@ function createConfigFile(args, skipFsValidation = false) {
 			if (configParam === 'rootPath' && value?.endsWith('/')) value = value.slice(0, -1);
 			try {
 				// Remove parent structure if it's a boolean to avoid type conflicts when setting the new value
-				if (splitParam.length > 1) {
-					if (typeof configDoc.getIn(splitParam.slice(0, -1)) === 'boolean') {
-						configDoc.deleteIn(splitParam.slice(0, -1));
-					}
+				if (splitParam.length > 1 && typeof configDoc.getIn(splitParam.slice(0, -1)) === 'boolean') {
+					configDoc.deleteIn(splitParam.slice(0, -1));
 				}
 
 				configDoc.setIn([...splitParam], value);
