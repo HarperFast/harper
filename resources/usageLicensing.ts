@@ -199,7 +199,7 @@ async function loadLicenseFile(path: string) {
 }
 
 export function loadAndWatchLicensesDir() {
-	const licensesPath = path.dirname(configUtils.getConfigFilePath()) + '/licenses';
+	const licensesPath = path.join(path.dirname(configUtils.getConfigFilePath()), 'licenses');
 	// chokidar w/ ignoreInitial: false emits add events on watch creation for existing files
 	const watchOptions = {
 		persistent: false,
