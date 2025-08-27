@@ -31,6 +31,69 @@ describe('usageLicensing', () => {
 			const result = ul.validateLicense(license);
 			expect(result).to.deep.equal(payload);
 		});
+
+		it('should throw if missing id attribute', () => {
+			const payload = {
+				level: 42,
+				region: 'test',
+				reads: 2000,
+				writes: 3000,
+				readBytes: -1,
+				writeBytes: -1,
+				realTimeMessages: 1000,
+				realTimeBytes: -1,
+				cpuTime: -1,
+				storage: -1,
+				expiration: '2030-01-01T00:00:00.000Z',
+			};
+			const license = utils.signTestLicense(payload);
+			expect(() => ul.validateLicense(license)).to.throw(
+				ul.InvalidLicenseError,
+				/required attribute 'id' must be a string/
+			);
+		});
+
+		it('should tolerate missing region attribute', () => {
+			const payload = {
+				id: 'test',
+				level: 42,
+				reads: 2000,
+				writes: 3000,
+				readBytes: -1,
+				writeBytes: -1,
+				realTimeMessages: 1000,
+				realTimeBytes: -1,
+				cpuTime: -1,
+				storage: -1,
+				expiration: '2030-01-01T00:00:00.000Z',
+			};
+			const license = utils.signTestLicense(payload);
+			const result = ul.validateLicense(license);
+			expect(result).to.deep.equal(payload);
+		});
+
+		it('should throw if region attribute present but wrong type', () => {
+			const payload = {
+				id: 'test',
+				level: 42,
+				region: 37,
+				reads: 2000,
+				writes: 3000,
+				readBytes: -1,
+				writeBytes: -1,
+				realTimeMessages: 1000,
+				realTimeBytes: -1,
+				cpuTime: -1,
+				storage: -1,
+				expiration: '2030-01-01T00:00:00.000Z',
+			};
+			const license = utils.signTestLicense(payload);
+			expect(() => ul.validateLicense(license)).to.throw(
+				ul.InvalidLicenseError,
+				/optional attribute 'region', when present, must be a string/
+			);
+		});
+
 		it('should throw on non-string license arg', () => {
 			expect(() => ul.validateLicense({ not: 'a license' })).to.throw(
 				ul.LicenseEncodingError,
