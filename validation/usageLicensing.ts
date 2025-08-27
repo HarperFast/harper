@@ -45,7 +45,7 @@ export interface LicenseHeader {
 export interface LicensePayload {
 	id: string;
 	level: number;
-	region: string;
+	region?: string;
 	reads: number;
 	writes: number;
 	readBytes: number;
@@ -117,27 +117,38 @@ function validateLicenseHeader(header: LicenseHeader): void {
 	}
 }
 
-function validateLicensePayload(payload: LicensePayload): void {
-	const stringAttrs = ['id', 'region', 'expiration'];
-	const numberAttrs = [
-		'level',
-		'reads',
-		'writes',
-		'readBytes',
-		'writeBytes',
-		'realTimeMessages',
-		'realTimeBytes',
-		'cpuTime',
-		'storage',
-	];
-	for (const attr of stringAttrs) {
-		if (typeof payload[attr] !== 'string') {
-			throw new InvalidPayloadError(`Invalid license payload; ${attr} must be a string; got: ${typeof payload[attr]}`);
-		}
+type AttrSchema = { required: boolean; type: string };
+
+function valid(schema: AttrSchema, value: any) {
+	if (schema.required) {
+		return typeof value === schema.type;
 	}
-	for (const attr of numberAttrs) {
-		if (typeof payload[attr] !== 'number') {
-			throw new InvalidPayloadError(`Invalid license payload; ${attr} must be a number; got: ${typeof payload[attr]}`);
+	return typeof value === 'undefined' || typeof value === schema.type;
+}
+
+function validateLicensePayload(payload: LicensePayload): void {
+	const attrs = {
+		id: { required: true, type: 'string' },
+		region: { required: false, type: 'string' },
+		expiration: { required: true, type: 'string' },
+		level: { required: true, type: 'number' },
+		reads: { required: true, type: 'number' },
+		writes: { required: true, type: 'number' },
+		readBytes: { required: true, type: 'number' },
+		writeBytes: { required: true, type: 'number' },
+		realTimeMessages: { required: true, type: 'number' },
+		realTimeBytes: { required: true, type: 'number' },
+		cpuTime: { required: true, type: 'number' },
+		storage: { required: true, type: 'number' },
+		autoRenew: { required: false, type: 'boolean' },
+	};
+	for (const attr in attrs) {
+		const { required, type } = attrs[attr];
+		const attrDesc = required ? `required attribute '${attr}'` : `optional attribute '${attr}', when present,`;
+		if (!valid(attrs[attr], payload[attr])) {
+			throw new InvalidPayloadError(
+				`Invalid license payload; ${attrDesc} must be a ${type}; got: ${typeof payload[attr]}`
+			);
 		}
 	}
 }
