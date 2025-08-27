@@ -33,7 +33,7 @@ async function loadRootComponents(isWorkerThread = false) {
 	resources.isWorker = isWorkerThread;
 
 	if (isMainThread) {
-		await loadAndWatchLicensesDir();
+		loadAndWatchLicensesDir();
 	}
 
 	await loadCertificates();
