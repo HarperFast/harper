@@ -1581,7 +1581,7 @@ export function makeTable(options) {
 					this.#changes = undefined; // once we are committing to write this update, we no longer should track the changes, and want to avoid double application (of any CRDTs)
 					this.#version = txnTime;
 					const existingRecord = existingEntry?.value;
-					let updateToApply = recordUpdate;
+					let incrementalUpdateToApply;
 
 					this.#saveMode = 0;
 					let omitLocalRecord = false;
@@ -1658,8 +1658,12 @@ export function makeTable(options) {
 									newerUpdate,
 									auditRecord
 								);
-								updateToApply = rebuildUpdateBefore(updateToApply, newerUpdate, fullUpdate);
-								if (!updateToApply) return; // if all changes are overwritten, nothing left to do
+								incrementalUpdateToApply = rebuildUpdateBefore(
+									incrementalUpdateToApply ?? recordUpdate,
+									newerUpdate,
+									fullUpdate
+								);
+								if (!incrementalUpdateToApply) return; // if all changes are overwritten, nothing left to do
 							}
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
@@ -1668,19 +1672,23 @@ export function makeTable(options) {
 							return;
 						} else {
 							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist
-							updateToApply = rebuildUpdateBefore(updateToApply, existingRecord, fullUpdate);
-							logger.debug?.('Rebuilding update without audit:', updateToApply);
+							incrementalUpdateToApply = rebuildUpdateBefore(
+								incrementalUpdateToApply ?? recordUpdate,
+								existingRecord,
+								fullUpdate
+							);
+							logger.debug?.('Rebuilding update without audit:', incrementalUpdateToApply);
 						}
-						logger.trace?.('Rebuilt record to save:', updateToApply, ' is full update:', fullUpdate);
+						logger.trace?.('Rebuilt record to save:', incrementalUpdateToApply, ' is full update:', fullUpdate);
 					}
 					let recordToStore: any;
-					if (fullUpdate) recordToStore = updateToApply;
+					if (fullUpdate && !incrementalUpdateToApply) recordToStore = recordUpdate;
 					else {
 						if (this.constructor.loadAsInstance === false)
-							recordToStore = updateAndFreeze(existingRecord, updateToApply);
+							recordToStore = updateAndFreeze(existingRecord, incrementalUpdateToApply ?? recordUpdate);
 						else {
 							this.#record = existingRecord;
-							recordToStore = updateAndFreeze(this, updateToApply);
+							recordToStore = updateAndFreeze(this, incrementalUpdateToApply ?? recordUpdate);
 						}
 					}
 					this.#record = recordToStore;

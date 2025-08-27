@@ -206,6 +206,18 @@ describe('Transactions', () => {
 			assert.equal(record.name, 'newer');
 			assert.equal(record.count, 3);
 		});
+		it('Apply out of order patch and put', async function () {
+			const context = {};
+			await transaction(context, () => {
+				TxnTest.put(61, { name: 'original' }, context);
+			});
+			let now = Date.now();
+			await TxnTest.patch(61, { name: 'newer', count: 3 }, { timestamp: now + 10 });
+			await TxnTest.put(61, { name: 'older' }, { timestamp: now + 4 });
+			let record = await TxnTest.get(61);
+			assert.equal(record.name, 'newer');
+			assert.equal(record.count, 3);
+		});
 
 		it('Can merge replication updates', async function () {
 			const context = {};
