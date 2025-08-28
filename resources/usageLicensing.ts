@@ -7,6 +7,11 @@ import { transaction } from './transaction.ts';
 import * as env from '../utility/environment/environmentManager.js';
 import * as terms from '../utility/hdbTerms.ts';
 import { databases } from './databases.ts';
+import path from 'node:path';
+import * as configUtils from '../config/configUtils.js';
+import * as fs from 'node:fs/promises';
+import type { Stats } from 'node:fs';
+import { watch } from 'chokidar';
 
 class ExistingLicenseError extends Error {}
 
@@ -181,4 +186,25 @@ export function getUsageLicenses(params?: GetUsageLicenseParams): AsyncIterable<
 		sort: { attribute: '__createdtime__' },
 		conditions,
 	});
+}
+
+async function loadLicenseFile(path: string) {
+	harperLogger.trace?.('Loading usage license from file:', path);
+	const encodedLicense = await fs.readFile(path, {encoding: 'utf-8'});
+	try {
+		await installUsageLicense(encodedLicense);
+	} catch (err) {
+		harperLogger.error?.('Failed to install usage license from file:', path, err);
+	}
+}
+
+export function loadAndWatchLicensesDir() {
+	const licensesPath = path.join(path.dirname(configUtils.getConfigFilePath()), 'licenses');
+	// chokidar w/ ignoreInitial: false emits add events on watch creation for existing files
+	const watchOptions = {
+		persistent: false,
+		ignoreInitial: false,
+		depth: 0,
+		ignored: (file: string, stats: Stats) => stats?.isFile() && !file.endsWith('.txt')};
+	watch(licensesPath, watchOptions).on('add', loadLicenseFile);
 }

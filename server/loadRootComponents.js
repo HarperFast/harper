@@ -9,6 +9,7 @@ const { getConnection } = require('./nats/utility/natsUtils.js');
 const envMgr = require('../utility/environment/environmentManager.js');
 const { CONFIG_PARAMS } = require('../utility/hdbTerms.ts');
 const { loadCertificates } = require('../security/keys.js');
+const { loadAndWatchLicensesDir } = require('../resources/usageLicensing');
 
 let loadedComponents = new Map();
 /**
@@ -18,7 +19,7 @@ let loadedComponents = new Map();
 async function loadRootComponents(isWorkerThread = false) {
 	// Create and cache the nats client connection
 	if (!isMainThread && envMgr.get(CONFIG_PARAMS.CLUSTERING_ENABLED)) {
-		// The await is purposely omitted here so that is doesnt slow down startup time
+		// The await is purposely omitted here so that it doesn't slow down startup time
 		getConnection();
 	}
 	try {
@@ -30,6 +31,10 @@ async function loadRootComponents(isWorkerThread = false) {
 	let resources = resetResources();
 	getTables();
 	resources.isWorker = isWorkerThread;
+
+	if (isMainThread) {
+		loadAndWatchLicensesDir();
+	}
 
 	await loadCertificates();
 	// the HarperDB root component
