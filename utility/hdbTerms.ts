@@ -145,9 +145,6 @@ export const UNICODE_FORWARD_SLASH = 'U+002F';
 /** Regex for matching an escaped `/` character */
 export const ESCAPED_FORWARD_SLASH_REGEX = /U\+002F/g;
 
-/** CLI Argument for setting the memory value */
-export const MEM_SETTING_KEY = '--max-old-space-size=';
-
 /** Name of the System schema */
 export const SYSTEM_SCHEMA_NAME = 'system';
 
