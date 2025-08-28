@@ -343,27 +343,6 @@ describe('Test serverUtilities.js module ', () => {
 			assert.deepStrictEqual(result.job_operation_function, undefined);
 		});
 
-		it('test GET_FINGERPRINT', () => {
-			let result = serverUtilities.getOperationFunction({ operation: 'get_fingerprint' });
-
-			assert.deepStrictEqual(result.operation_function.name, 'getFingerprint');
-			assert.deepStrictEqual(result.job_operation_function, undefined);
-		});
-
-		it('test SET_LICENSE', () => {
-			let result = serverUtilities.getOperationFunction({ operation: 'set_license' });
-
-			assert.deepStrictEqual(result.operation_function.name, 'setLicense');
-			assert.deepStrictEqual(result.job_operation_function, undefined);
-		});
-
-		it('test GET_REGISTRATION_INFO', () => {
-			let result = serverUtilities.getOperationFunction({ operation: 'registration_info' });
-
-			assert.deepStrictEqual(result.operation_function.name, 'getRegistrationInfo');
-			assert.deepStrictEqual(result.job_operation_function, undefined);
-		});
-
 		it('test RESTART', () => {
 			let result = serverUtilities.getOperationFunction({ operation: 'restart' });
 

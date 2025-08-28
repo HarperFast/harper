@@ -24,7 +24,6 @@ import jobs from '../jobs/jobs.js';
 import * as terms from '../../utility/hdbTerms.ts';
 import { hdbErrors, handleHDBError } from '../../utility/errors/hdbError.js';
 const { HTTP_STATUS_CODES } = hdbErrors;
-import reg from '../../utility/registration/registrationHandler.js';
 import restart from '../../bin/restart.js';
 import * as util from 'util';
 import insert from '../../dataLayer/insert.js';
@@ -371,9 +370,6 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		new OperationFunctionObject(jobs.handleGetJobsByStartDate)
 	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_JOB, new OperationFunctionObject(jobs.handleGetJob));
-	opFuncMap.set(terms.OPERATIONS_ENUM.GET_FINGERPRINT, new OperationFunctionObject(reg.getFingerprint));
-	opFuncMap.set(terms.OPERATIONS_ENUM.SET_LICENSE, new OperationFunctionObject(reg.setLicense));
-	opFuncMap.set(terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO, new OperationFunctionObject(reg.getRegistrationInfo));
 	opFuncMap.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(restart.restart));
 	opFuncMap.set(terms.OPERATIONS_ENUM.RESTART_SERVICE, new OperationFunctionObject(executeJob, restart.restartService));
 	opFuncMap.set(terms.OPERATIONS_ENUM.CATCHUP, new OperationFunctionObject(catchup));

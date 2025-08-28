@@ -6,7 +6,6 @@ const path = require('path');
 const os = require('os');
 const rewire = require('rewire');
 const { expect } = chai;
-const hdb_license = require('../../../utility/registration/hdb_license');
 const env_mangr = require('../../../utility/environment/environmentManager');
 const services_config = rewire('../../../utility/processManagement/servicesConfig');
 const hdb_terms = require('../../../utility/hdbTerms');
@@ -27,7 +26,6 @@ describe('Test processManagement servicesConfig module', () => {
 
 	before(() => {
 		os_cpus_stub = sandbox.stub(os, 'cpus').returns([1, 2, 3, 4, 5, 6]);
-		sandbox.stub(hdb_license, 'licenseSearch').returns({ ram_allocation: 512 });
 		env_mangr.initTestEnvironment();
 		LOG_PATH = env.get(hdb_terms.HDB_SETTINGS_NAMES.LOG_PATH_KEY);
 		try {

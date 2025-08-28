@@ -13,7 +13,6 @@ import { PACKAGE_ROOT } from '../utility/packageUtils.js';
 import globalSchema from '../utility/globalSchema.js';
 import commonUtils from '../utility/common_utils.js';
 import userSchema from '../security/user.js';
-import hdbLicense from '../utility/registration/hdb_license.js';
 import { server as serverRegistration, type ServerOptions } from '../server/Server.ts';
 import {
 	authHandler,
@@ -88,8 +87,7 @@ async function operationsServer(options: ServerOptions) {
 async function setUp() {
 	harperLogger.trace('Configuring HarperDB process.');
 	globalSchema.setSchemaDataToGlobal();
-	await userSchema.setUsersWithRolesCache();
-	await hdbLicense.getLicense();
+	return userSchema.setUsersWithRolesCache();
 }
 
 interface BaseOperationRequestBody {
