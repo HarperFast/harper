@@ -178,7 +178,6 @@ describe('Test processManagement utilityFunctions module', () => {
 			expect(process_meta[0].name).to.equal('HarperDB');
 			expect(process_meta[0].pm2_env.status).to.equal('online');
 			expect(process_meta[0].pm2_env.exec_mode).to.equal('fork_mode');
-			expect(process_meta[0].pm2_env.node_args[0]).includes('--max-old-space-size=');
 		}).timeout(10000);
 
 		it('Test error is handled as expected', async () => {

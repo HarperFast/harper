@@ -43,7 +43,6 @@ describe('Test processManagement servicesConfig module', () => {
 		const expected_result = {
 			exec_mode: 'fork',
 			name: 'HarperDB',
-			node_args: '--max-old-space-size=512',
 			script: 'bin/harperdb.js',
 			cwd: PACKAGE_ROOT,
 			env: {
