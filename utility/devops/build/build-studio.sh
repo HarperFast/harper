@@ -17,32 +17,9 @@ export default {
   is_local_studio: true,
 };
 EOF
-cat <<EOF > ./studio/public/manifest.json
-{
-  "short_name": "HarperDB Studio",
-  "name": "HarperDB Studio",
-  "icons": [
-    {
-      "src": "favicon.ico",
-      "sizes": "16x16",
-      "type": "image/x-icon"
-    },
-    {
-      "src": "images/logo_vertical_white.png",
-      "type": "image/png",
-      "sizes": "536x672"
-    }
-  ],
-  "start_url": "https://studio.harperdb.io",
-  "display": "standalone",
-  "theme_color": "#480b8a",a
-  "background_color": "#ffffff"
-}
-EOF
 
 cd studio
-npm install -g yarn
-yarn
-yarn lint-prod
-yarn build:local
+npm install -g pnpm
+pnpm
+pnpm run build:local
 cd ..
