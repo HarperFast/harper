@@ -11,11 +11,6 @@ npm run cover:test
 
 npx pm2 kill
 
-
-# Re-register HarperDB after unit tests
-cd /home/ubuntu/harperdb/utility/devops
-node register.js --reset_license --ram_allocation=16384
-
 cd /home/ubuntu/harperdb
 sudo chmod +x ./utility/devops/build/build-studio.sh
 ./utility/devops/build/build-studio.sh
