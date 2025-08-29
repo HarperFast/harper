@@ -6,7 +6,7 @@ import { Scope } from '../components/Scope.ts';
 import { Socket } from 'node:net';
 import harperLogger from '../utility/logging/harper_logger.js';
 import { parentPort } from 'node:worker_threads';
-import env from '../utility/environment/environmentManager';
+import env from '../utility/environment/environmentManager.js';
 import * as terms from '../utility/hdbTerms.ts';
 import { resolvePath } from '../config/configUtils.js';
 import { getTicketKeys } from './threads/manageThreads.js';
@@ -22,8 +22,9 @@ import { Readable } from 'node:stream';
 import { server } from './Server.ts';
 import { setPortServerMap, SERVERS } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
-import { throttle } from './throttle';
+import { throttle } from './throttle.ts';
 import { WebSocketServer } from 'ws';
+import { isLicensed } from '../resources/usageLicensing.ts';
 
 const { errorToString } = harperLogger;
 server.http = httpServer;
@@ -268,7 +269,11 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 				if (!response.headers?.set) {
 					response.headers = new Headers(response.headers);
 				}
-				response.headers.set('Server', 'HarperDB');
+				if (await isLicensed()) {
+					response.headers.set('Server', 'HarperDB');
+				} else {
+					response.headers.set('Server', 'Unlicensed HarperDB, this should only be used for educational and development purposes');
+				}
 
 				if (response.status === -1) {
 					// This means the HDB stack didn't handle the request, and we can then cascade the request
