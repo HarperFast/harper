@@ -8,7 +8,7 @@ import { setupTestApp } from './setupTestApp.mjs';
 import { request } from 'http';
 import why_is_node_running from 'why-is-node-still-running';
 
-describe('test REST with property updates', () => {
+describe('test REST with property updates', function (options) {
 	let available_records;
 	before(async function () {
 		available_records = await setupTestApp();
@@ -328,5 +328,32 @@ describe('test REST with property updates', () => {
 			});
 			assert(response.data.some((record) => record.subObject?.name === 'another sub-object'));
 		});
+	});
+});
+
+describe('test REST with property updates with loadAsInstance=false', function (options) {
+	let available_records;
+	let namespace;
+	before(async function () {
+		available_records = await setupTestApp();
+		({ namespace } = await import('../testApp/resources.js'));
+		namespace.SubObject.loadAsInstance = false;
+	});
+	it('get with sub-property access via ?select', async () => {
+		let response = await axios.put('http://localhost:9926/namespace/SubObject/6', {
+			id: '5',
+			any: { name: 'can be an object' },
+			subObject: { name: 'a sub-object' },
+			subArray: [{ name: 'a sub-object of an array' }],
+		});
+		assert.equal(response.status, 204);
+		response = await axios.get('http://localhost:9926/namespace/SubObject/6?select(subObject)');
+		assert.equal(response.status, 200);
+		assert.equal(response.data.name, 'a sub-object');
+		response = await axios.get('http://localhost:9926/namespace/SubObject/6?select(any,)');
+		assert.equal(response.data.any.name, 'can be an object');
+	});
+	after(() => {
+		delete namespace.SubObject.loadAsInstance;
 	});
 });
