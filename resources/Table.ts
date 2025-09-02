@@ -19,7 +19,7 @@ import type {
 	RequestTargetOrId,
 } from './ResourceInterface.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
-import { Resource, contextStorage } from './Resource.ts';
+import { Resource, contextStorage, transformForSelect } from './Resource.ts';
 import { DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
 import { addSubscription } from './transactionBroadcast.ts';
@@ -983,28 +983,38 @@ export function makeTable(options) {
 					// requesting authorization verification
 					allowed = this.allowRead(context.user, target);
 				}
-				return when(allowed, (allowed: boolean) => {
-					if (!allowed) {
-						throw new AccessViolation(context.user);
-					}
-					const ensureLoaded = true;
-					return loadLocalRecord(id, context, { transaction: readTxn, ensureLoaded }, false, (entry) => {
-						if (context.onlyIfCached) {
-							// don't go into the loading from source condition, but HTTP spec says to
-							// return 504 (rather than 404) if there is no content and the cache-control header
-							// dictates not to go to source
-							if (!entry?.value) throw new ServerError('Entry is not cached', 504);
-						} else if (ensureLoaded) {
-							const loadingFromSource = ensureLoadedFromSource(id, entry, context);
-							if (loadingFromSource) {
-								txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
-								context.loadedFromSource = true;
-								return loadingFromSource.then((entry) => entry?.value);
-							}
+				return when(
+					when(allowed, (allowed: boolean) => {
+						if (!allowed) {
+							throw new AccessViolation(context.user);
 						}
-						return entry?.value;
-					});
-				});
+						const ensureLoaded = true;
+						return loadLocalRecord(id, context, { transaction: readTxn, ensureLoaded }, false, (entry) => {
+							if (context.onlyIfCached) {
+								// don't go into the loading from source condition, but HTTP spec says to
+								// return 504 (rather than 404) if there is no content and the cache-control header
+								// dictates not to go to source
+								if (!entry?.value) throw new ServerError('Entry is not cached', 504);
+							} else if (ensureLoaded) {
+								const loadingFromSource = ensureLoadedFromSource(id, entry, context);
+								if (loadingFromSource) {
+									txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
+									context.loadedFromSource = true;
+									return loadingFromSource.then((entry) => entry?.value);
+								}
+							}
+							return entry?.value;
+						});
+					}),
+					(record) => {
+						let select = target?.select;
+						if (select && record != null) {
+							const transform = transformForSelect(select, this.constructor);
+							return transform(record);
+						}
+						return record;
+					}
+				);
 			}
 			if (target?.property) return this.getProperty(target.property);
 			if (this.doesExist() || target?.ensureLoaded === false || this.getContext()?.returnNonexistent) {
