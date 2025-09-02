@@ -158,45 +158,7 @@ describe('12. Configuration', () => {
 			})
 			.expect(200);
 	});
-
-	it('Get Fingerprint', () => {
-		return req()
-			.send({ operation: 'get_fingerprint' })
-			.expect((r) => assert.ok(r.body.hasOwnProperty('message'), r.text))
-			.expect((r) => assert.ok(r.body.message, r.text))
-			.expect(200);
-	});
-
-	it('Set License', () => {
-		return req()
-			.send({
-				operation: 'set_license',
-				key: 'uFFG7xAZG11ec9d335bfe27c4ec5555310bd4a27f',
-				company: 'harperdb.io',
-			})
-			.expect((r) => assert.equal(r.body['error'], 'There was an error parsing the license key.', r.text))
-			.expect(500);
-	});
-
-	it('Get Registration Info', () => {
-		return req()
-			.send({ operation: 'registration_info' })
-			.expect((r) => {
-				assert.ok(r.body.hasOwnProperty('registered'), r.text);
-				assert.ok(r.body.hasOwnProperty('version'), r.text);
-				assert.ok(r.body.hasOwnProperty('ram_allocation'), r.text);
-				assert.ok(r.body.hasOwnProperty('license_expiration_date'), r.text);
-			})
-			.expect(200);
-	});
-
-	it('Set License Bad Key', () => {
-		return req()
-			.send({ operation: 'set_license', key: '', company: 'harperdb.io' })
-			.expect((r) => assert.equal(r.body['error'], 'Invalid key or company specified for license file.', r.text))
-			.expect(500);
-	});
-
+	
 	it('Get Configuration', () => {
 		return req()
 			.send({ operation: 'get_configuration' })

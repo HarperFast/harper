@@ -19,8 +19,6 @@ const server_utilities = require('../../../server/serverHelpers/serverUtilities'
 const OperationFunctionCaller = require('../../../utility/OperationFunctionCaller');
 const harper_logger = require('../../../utility/logging/harper_logger');
 const user_schema = require('../../../security/user');
-const global_schema = require('../../../utility/globalSchema');
-const hdb_license = require('../../../utility/registration/hdb_license');
 const env = require('../../../utility/environment/environmentManager');
 const config_utils = require('../../../config/configUtils');
 require('../../../server/threads/threadServer');
@@ -55,7 +53,6 @@ const DEFAULT_FASTIFY_PLUGIN_ARR = [
 let setUsersToGlobal_stub;
 let setSchemaGlobal_stub;
 let handlePostRequest_spy;
-let getLicense_stub;
 let logger_error_spy;
 
 const test_op_resp = [];
@@ -91,7 +88,6 @@ describe('Test hdbServer module', () => {
 		setUsersToGlobal_stub = sandbox.stub(user_schema, 'setUsersWithRolesCache').resolves();
 		//setSchemaGlobal_stub = sandbox.stub(global_schema, 'setSchemaDataToGlobal').callsArg(0);
 		handlePostRequest_spy = sandbox.spy(serverHandlers, 'handlePostRequest');
-		getLicense_stub = sandbox.stub(hdb_license, 'getLicense').resolves();
 		logger_error_spy = sandbox.stub(harper_logger, 'error').callsFake(() => {});
 		sandbox.stub().callsFake(() => {});
 

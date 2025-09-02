@@ -58,7 +58,7 @@ interface UsageLicense extends ValidatedLicense {
 	usedStorage?: number;
 }
 
-interface UsageLicenseRecord extends UsageLicense {
+interface UpdatableUsageLicense extends UsageLicense {
 	addTo: (field: string, value: number) => void;
 }
 
@@ -84,28 +84,33 @@ export function isActiveLicense(license: UsageLicense): boolean {
 	);
 }
 
-export async function recordUsage(analytics: any) {
-	harperLogger.trace?.('Recording usage into license from analytics');
-	let updatableActiveLicense: UpdatableRecord<UsageLicenseRecord>;
-	const now = new Date().toISOString();
+export async function getActiveLicense(): Promise<UsageLicense | undefined> {
+	const region = env.get(terms.CONFIG_PARAMS.LICENSE_REGION);
 	const licenseQuery = {
 		sort: { attribute: '__createdtime__' },
-		conditions: [{ attribute: 'expiration', comparator: 'greater_than', value: now }],
+		conditions: [{ attribute: 'expiration', comparator: 'greater_than', value: new Date().toISOString() }],
 	};
-	const region = env.get(terms.CONFIG_PARAMS.LICENSE_REGION);
 	if (region !== undefined) {
 		licenseQuery.conditions.push({ attribute: 'region', comparator: 'equals', value: region });
-	} else {
-		harperLogger.warn?.('No region specified for usage license, selecting any valid license');
 	}
 	const results = databases.system.hdb_license?.search(licenseQuery);
-	let activeLicenseId: string;
 	for await (const license of results) {
 		if (isActiveLicense(license)) {
-			activeLicenseId = license.id;
-			break;
+			return license;
 		}
 	}
+	return undefined;
+}
+
+export async function isLicensed(): Promise<boolean> {
+	const activeLicense = await getActiveLicense();
+	return activeLicense !== undefined;
+}
+
+export async function recordUsage(analytics: any) {
+	harperLogger.trace?.('Recording usage into license from analytics');
+	let updatableActiveLicense: UpdatableRecord<UpdatableUsageLicense>;
+	const activeLicenseId = (await getActiveLicense())?.id;
 	if (activeLicenseId) {
 		harperLogger.trace?.('Found license to record usage into:', activeLicenseId);
 		const context = {};
@@ -166,7 +171,7 @@ interface GetUsageLicensesReq extends GetUsageLicenseParams {
 	operation: 'get_usage_licenses';
 }
 
-export function getUsageLicensesOp(req: GetUsageLicensesReq): AsyncIterable<UsageLicenseRecord> {
+export function getUsageLicensesOp(req: GetUsageLicensesReq): AsyncIterable<UsageLicense> {
 	const params: GetUsageLicenseParams = {};
 	if (req.region) {
 		params.region = req.region;
@@ -174,7 +179,7 @@ export function getUsageLicensesOp(req: GetUsageLicensesReq): AsyncIterable<Usag
 	return getUsageLicenses(params);
 }
 
-export function getUsageLicenses(params?: GetUsageLicenseParams): AsyncIterable<UsageLicenseRecord> {
+export function getUsageLicenses(params?: GetUsageLicenseParams): AsyncIterable<UsageLicense> {
 	const conditions = [];
 	const attrs = typeof params === 'object' ? Object.keys(params) : [];
 	if (attrs.length > 0) {

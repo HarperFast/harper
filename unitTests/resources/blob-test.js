@@ -161,7 +161,7 @@ describe('Blob test', () => {
 		await BlobTest.delete(3);
 		assert(existsSync(filePath)); // should not immediately be deleted
 		BlobTest.auditStore.scheduleAuditCleanup(1); // prune audit log, so the blob is actually deleted
-		await delay(60); // wait for audit log removal and deletion
+		await delay(100); // wait for audit log removal and deletion
 		assert(!existsSync(filePath));
 
 		blob = await createBlob(Readable.from(testString));

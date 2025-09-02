@@ -145,9 +145,6 @@ export const UNICODE_FORWARD_SLASH = 'U+002F';
 /** Regex for matching an escaped `/` character */
 export const ESCAPED_FORWARD_SLASH_REGEX = /U\+002F/g;
 
-/** CLI Argument for setting the memory value */
-export const MEM_SETTING_KEY = '--max-old-space-size=';
-
 /** Name of the System schema */
 export const SYSTEM_SCHEMA_NAME = 'system';
 
@@ -307,9 +304,6 @@ export const OPERATIONS_ENUM = {
 	GET_JOB: 'get_job',
 	DELETE_JOB: 'delete_job',
 	UPDATE_JOB: 'update_job',
-	GET_FINGERPRINT: 'get_fingerprint',
-	SET_LICENSE: 'set_license',
-	GET_REGISTRATION_INFO: 'registration_info',
 	CONFIGURE_CLUSTER: 'configure_cluster',
 	SET_CONFIGURATION: 'set_configuration',
 	CLUSTER_STATUS: 'cluster_status',
@@ -415,7 +409,6 @@ export const SERVICE_ACTIONS_ENUM = {
 	RUN: 'run',
 	START: 'start',
 	INSTALL: 'install',
-	REGISTER: 'register',
 	STOP: 'stop',
 	RESTART: 'restart',
 	VERSION: 'version',

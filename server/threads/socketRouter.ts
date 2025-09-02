@@ -3,7 +3,6 @@ import {
 	setMonitorListener,
 	setMainIsWorker,
 	shutdownWorkers,
-	onMessageFromWorkers,
 	threadsHaveStarted,
 } from './manageThreads.js';
 import { createServer, Socket } from 'net';
@@ -12,7 +11,6 @@ import * as harperLogger from '../../utility/logging/harper_logger.js';
 import { unlinkSync, existsSync } from 'fs';
 import { recordHostname, recordAction } from '../../resources/analytics/write.ts';
 import { isMainThread } from 'worker_threads';
-import { checkMemoryLimit } from '../../utility/registration/hdb_license.js';
 import { packageJson } from '../../utility/packageUtils.js';
 
 const workers = [];
@@ -21,7 +19,6 @@ const handleSocket = [];
 let directThreadServer;
 let currentThreadCount = 0;
 const workersReady = [];
-let licenseWarningIntervalId;
 
 if (isMainThread) {
 	process.on('uncaughtException', (error) => {
@@ -30,16 +27,8 @@ if (isMainThread) {
 		if (error.message === 'write EIO') return; // that means the terminal is closed
 		console.error('uncaughtException', error);
 	});
-
-	onMessageFromWorkers((message) => {
-		if (message.type === hdbTerms.ITC_EVENT_TYPES.RESTART && licenseWarningIntervalId) {
-			clearInterval(licenseWarningIntervalId);
-			licenseWarning();
-		}
-	});
 }
 
-const LICENSE_NAG_PERIOD = 600000; // ten minutes
 export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean) {
 	recordHostname().catch(err => harperLogger.error?.('Error recording hostname for analytics:', err));
 	try {
@@ -54,23 +43,12 @@ export async function startHTTPThreads(threadCount = 2, dynamicThreads?: boolean
 			}
 			await loadRootComponents();
 		}
-		licenseWarning();
 		for (let i = 0; i < threadCount; i++) {
 			startHTTPWorker(i, threadCount);
 		}
 		return Promise.all(workersReady);
 	} finally {
 		threadsHaveStarted();
-	}
-}
-
-function licenseWarning() {
-	const license_warning = checkMemoryLimit();
-	if (license_warning && !process.env.DEV_MODE) {
-		console.error(license_warning);
-		licenseWarningIntervalId = setInterval(() => {
-			harperLogger.notify(license_warning);
-		}, LICENSE_NAG_PERIOD).unref();
 	}
 }
 

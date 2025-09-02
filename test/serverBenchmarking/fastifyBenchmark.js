@@ -4,11 +4,9 @@ const { promisify } = require('util');
 const chalk = require('chalk');
 const axios = require('axios');
 const instance = axios.create();
-const lmdbUtil = require('../../utility/lmdb/commonUtility.js');
 const envMngr = require('../../utility/environment/environmentManager.js');
 const globalSchema = require('../../utility/globalSchema.js');
 
-const regInfo = require('../../utility/registration/registrationHandler.js');
 const schemaDescribe = require('../../dataLayer/schemaDescribe.js');
 const search = require('../../dataLayer/search.js');
 const sql = require('../../sqlTranslator/index.js');
@@ -33,7 +31,6 @@ const REQS_KEYS = Object.keys(REQUEST_JSON);
 const REQS_LENGTH = REQS_KEYS.length;
 
 const OP_FUNC_MAP = {
-	REG_INFO: regInfo.getRegistrationInfo,
 	DESCRIBE_ALL: schemaDescribe.describeAll,
 	DESCRIBE_SCHEMA: schemaDescribe.describeSchema,
 	DESCRIBE_TABLE: schemaDescribe.describeTable,
