@@ -78,6 +78,7 @@ async function restart(req) {
 		if (process.env.HARPER_EXIT_ON_RESTART) {
 			// use this to exit the process so that it will be restarted by the
 			// PM/container/orchestrator.
+			hdbLogger.warn('Exiting Harper process to trigger a container restart');
 			process.exit(0);
 		}
 		setTimeout(async () => {
@@ -88,7 +89,7 @@ async function restart(req) {
 			// and shut down.
 			hdbLogger.debug('Shutdown workers');
 			await shutdownWorkersNow();
-			processMan.killChildrenProcesses(false);
+			await processMan.killChildrenProcesses(false);
 			// remove pid file so it doesn't trip up the launch
 			await unlinkSync(path.join(envMgr.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), hdbTerms.HDB_PID_FILE), `${process.pid}`);
 			hdbLogger.debug('Starting new process...');
