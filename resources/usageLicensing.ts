@@ -94,7 +94,7 @@ export async function getActiveLicense(): Promise<UsageLicense | undefined> {
 		licenseQuery.conditions.push({ attribute: 'region', comparator: 'equals', value: region });
 	}
 	const results = databases.system.hdb_license?.search(licenseQuery);
-	for await (const license of results) {
+	for await (const license of results ?? []) {
 		if (isActiveLicense(license)) {
 			return license;
 		}

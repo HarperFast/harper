@@ -1,4 +1,4 @@
-name: Install and Register HDB on instances
+name: Install Harper on instances
 
 on:
   workflow_call:
@@ -29,11 +29,11 @@ on:
         default: false
 
 jobs:
-  installAndRegister:
+  install:
     runs-on: ubuntu-latest
     timeout-minutes: 10
     steps:
-      - name: Install and Register
+      - name: Install Harper
         env:
           HDB_ADMIN_USERNAME: ${{ secrets.HDB_ADMIN_USERNAME }}
           HDB_ADMIN_PASSWORD: ${{ secrets.HDB_ADMIN_PASSWORD }}
@@ -42,6 +42,9 @@ jobs:
           CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
         run: |
           #!/bin/bash
+          
+          set -e
+          
           pwd
           cd ../
           echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
@@ -113,15 +116,6 @@ jobs:
             echo "HarperDB install..."
             cd /home/ubuntu/harperdb/bin
             node harperdb.js start \$CLI_ARGS
-            
-            echo "Register HarperDB..."
-            cd /home/ubuntu/harperdb/utility/devops
-            node register.js --reset_license --ram_allocation=16384
-            cd /home/ubuntu/harperdb/bin/
-            sleep 2
-            node harperdb.js stop
-            sleep 2
-            node harperdb.js start
           elif [ "${{ inputs.installType }}" == "buildPackage" ];
           then
             echo "hdb_install_type paramater set to ${{ inputs.installType }}. Installing HarperDB from build package..."
