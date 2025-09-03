@@ -58,6 +58,7 @@ import { Blob, deleteBlobsInObject, findBlobsInObject } from './blob.ts';
 import { onStorageReclamation } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.js';
+import { throttle } from '../server/throttle';
 
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
@@ -1015,7 +1016,7 @@ export function makeTable(options) {
 						});
 					}),
 					(record) => {
-						let select = target?.select;
+						const select = target?.select;
 						if (select && record != null) {
 							const transform = transformForSelect(select, this.constructor);
 							return transform(record);
@@ -2038,7 +2039,7 @@ export function makeTable(options) {
 			// counts are done in the same read transaction because they are just estimates) until the search
 			// results have been iterated and finished.
 			const readTxn = txn.useReadTxn();
-			let entries = executeConditions(
+			const entries = executeConditions(
 				conditions,
 				operator,
 				TableResource,
@@ -2049,7 +2050,6 @@ export function makeTable(options) {
 				filtered
 			);
 			const ensure_loaded = target.ensureLoaded !== false;
-			if (!postOrdering) entries = applyOffset(entries); // if there is no post ordering, we can apply the offset now
 			const transformToRecord = TableResource.transformEntryForSelect(
 				select,
 				context,
@@ -2066,15 +2066,12 @@ export function makeTable(options) {
 				readTxn,
 				transformToRecord
 			);
-			function applyOffset(entries: any[]) {
-				if (target.offset || target.limit !== undefined)
-					return entries.slice(
-						target.offset,
-						target.limit !== undefined ? (target.offset || 0) + target.limit : undefined
-					);
-				return entries;
-			}
-			if (postOrdering) results = applyOffset(results); // if there is post ordering, we have to apply the offset after sorting
+			// apply any offset/limit after all the sorting and filtering
+			if (target.offset || target.limit !== undefined)
+				results = results.slice(
+					target.offset,
+					target.limit !== undefined ? (target.offset || 0) + target.limit : undefined
+				);
 			results.onDone = () => {
 				results.onDone = null; // ensure that it isn't called twice
 				txn.doneReadTxn();
@@ -3273,6 +3270,23 @@ export function makeTable(options) {
 			deleteCallbackHandle?.remove();
 		}
 	}
+	const throttledCallToSource = throttle(
+		async (id, sourceContext, existingEntry) => {
+			// find the first data source that will fulfill our request for data
+			for (const source of TableResource.sources) {
+				if (source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
+					if (source.available?.(existingEntry) === false) continue;
+					sourceContext.source = source;
+					const resolvedData = await source.get(id, sourceContext);
+					if (resolvedData) return resolvedData;
+				}
+			}
+		},
+		() => {
+			throw new ServerError('Service unavailable, exceeded request queue limit for resolving cache record', 503);
+		}
+	);
+
 	TableResource.updatedAttributes(); // on creation, update accessors as well
 	const prototype = TableResource.prototype;
 	if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
@@ -3769,15 +3783,7 @@ export function makeTable(options) {
 					let updatedRecord;
 					let hasChanges, invalidated;
 					try {
-						// find the first data source that will fulfill our request for data
-						for (const source of TableResource.sources) {
-							if (source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
-								if (source.available?.(existingEntry) === false) continue;
-								sourceContext.source = source;
-								updatedRecord = await source.get(id, sourceContext);
-								if (updatedRecord) break;
-							}
-						}
+						updatedRecord = await throttledCallToSource(id, sourceContext, existingEntry);
 						invalidated = metadataFlags & INVALIDATED;
 						let version = sourceContext.lastModified || (invalidated && existingVersion);
 						hasChanges = invalidated || version > existingVersion || !existingRecord;
