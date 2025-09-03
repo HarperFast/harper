@@ -42,6 +42,9 @@ jobs:
           CI_INSTANCES_PRIVATE_KEY: ${{ secrets.CI_INSTANCES_PRIVATE_KEY }}
         run: |
           #!/bin/bash
+          
+          set -e
+          
           pwd
           cd ../
           echo "$CI_INSTANCES_PRIVATE_KEY" > private_key && chmod 600 private_key
