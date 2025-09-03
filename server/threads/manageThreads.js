@@ -320,6 +320,7 @@ function shutdownWorkers(name) {
 	return restartWorkers(name, Infinity, false);
 }
 function shutdownWorkersNow(name) {
+	shutdownWorkers(name); // set the state of all the workers to shut down. this should finish the important stuff synchronously
 	return Promise.all(workers.map((worker) => worker.terminate()));
 }
 
