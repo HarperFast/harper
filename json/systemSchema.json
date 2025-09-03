@@ -98,7 +98,7 @@
 		]
 	},
 	"hdb_license": {
-		"primaryKey": "id",
+		"hash_attribute": "id",
 		"table": "hdb_license",
 		"database": "system",
 		"audit": true,
@@ -165,10 +165,15 @@
 				"name": "expiration"
 			},
 			{
-				"name": "__createdtime__"
+				"name": "autoRenew"
 			},
 			{
-				"name": "__updatedtime__"
+				"name": "__createdtime__",
+				"indexed": true
+			},
+			{
+				"name": "__updatedtime__",
+				"indexed": true
 			}
 		]
 	},

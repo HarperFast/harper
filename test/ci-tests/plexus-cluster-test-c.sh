@@ -39,6 +39,10 @@ for var in HDB_ADMIN_USERNAME HDB_ADMIN_PASSWORD S3_KEY S3_SECRET; do
 	fi
 done
 
+# Escape special characters
+S3_KEY=$(printf '%s\n' "$S3_KEY" | sed 's/[\/&\\]/\\&/g')
+S3_SECRET=$(printf '%s\n' "$S3_SECRET" | sed 's/[\/&\\]/\\&/g')
+
 # Inject credentials from environment variables
 sed -i "s/\"value\": \"PLACEHOLDER_USERNAME\"/\"value\": \"${HDB_ADMIN_USERNAME}\"/" clusterTests/clusterTestCPlexus/cluster_test_c_env.json
 sed -i "s/\"value\": \"PLACEHOLDER_PASSWORD\"/\"value\": \"${HDB_ADMIN_PASSWORD}\"/" clusterTests/clusterTestCPlexus/cluster_test_c_env.json

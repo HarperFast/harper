@@ -6,10 +6,14 @@ import { table } from '../resources/databases.ts';
 import { v4 as uuid } from 'uuid';
 import * as env from '../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/hdbTerms.ts';
-import { AuthAuditLog, forComponent } from '../utility/logging/harper_logger.js';
-import { user } from '../server/itc/serverHandlers.js';
+import harperLogger from '../utility/logging/harper_logger.js';
+const { forComponent, AuthAuditLog } = harperLogger;
+import serverHandlers from '../server/itc/serverHandlers.js';
+const { user } = serverHandlers;
 import { Headers } from '../server/serverHelpers/Headers.ts';
 import { convertToMS } from '../utility/common_utils.js';
+import { verifyCertificate } from './certificateVerification.ts';
+import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
 const authLogger = forComponent('authentication');
 const { debug } = authLogger;
 const authEventLog = authLogger.withTag('auth-event');
@@ -115,8 +119,8 @@ export async function authentication(request, nextHandler) {
 			if (headers['referer']) log.referer = headers['referer'];
 			if (headers['origin']) log.origin = headers['origin'];
 
-			if (status === AUTH_AUDIT_STATUS.SUCCESS) authEventLog.notify(log);
-			else authEventLog.error(log);
+			if (status === AUTH_AUDIT_STATUS.SUCCESS) authEventLog.info?.(log);
+			else authEventLog.error?.(log);
 		};
 
 		if (
@@ -125,9 +129,30 @@ export async function authentication(request, nextHandler) {
 			request.peerCertificate.subject &&
 			request?._nodeRequest?.socket?.authorizationError
 		)
-			authEventLog.error('Authorization error:', request._nodeRequest.socket.authorizationError);
+			authEventLog.error?.('Authorization error:', request._nodeRequest.socket.authorizationError);
 
 		if (request.mtlsConfig && request.authorized && request.peerCertificate.subject) {
+			const verificationResult = await verifyCertificate(request.peerCertificate, request.mtlsConfig);
+			if (!verificationResult.valid) {
+				authEventLog.error?.(
+					'Certificate verification failed:',
+					verificationResult.status,
+					'for',
+					request.peerCertificate.subject.CN
+				);
+				return applyResponseHeaders({
+					status: 401,
+					body: serializeMessage({ error: 'Certificate revoked or verification failed' }, request),
+				});
+			}
+
+			// Alternative behavior: Instead of returning 401 above, we could just not set the user
+			// and let authentication fall through to other methods (Basic auth, etc.):
+			// if (verificationResult.valid) {
+			//     // Only extract user from certificate if verification passed
+			//     let username = ...
+			// }
+
 			let username = request.mtlsConfig.user;
 			if (username !== null) {
 				// null means no user is defined from certificate, need regular authentication as well
@@ -223,7 +248,17 @@ export async function authentication(request, nextHandler) {
 					const expiresString = expires
 						? new Date(Date.now() + convertToMS(expires)).toUTCString()
 						: DEFAULT_COOKIE_EXPIRES;
-					const domain = domains?.find((domain) => headers.host?.endsWith(domain));
+					const domain =
+						headers.host &&
+						domains?.find((domain) => {
+							// find a domain that matches the host header
+							// the configured cookie domain starts with a dot, that indicates a wildcard, so we need to remove it
+							if (domain.startsWith('.')) domain = domain.slice(1);
+							// host can have a port, so we need to remove it because we are comparing domain names
+							const portStart = headers.host.indexOf(':');
+							const host = portStart !== -1 ? headers.host.slice(0, portStart) : headers.host;
+							return host.endsWith(domain);
+						});
 					const cookiePrefix =
 						(origin ? origin.replace(/^https?:\/\//, '').replace(/\W/, '_') + '-' : '') + 'hdb-session=';
 					// "Secure" can work with localhost/127.0.0.1 in certain browsers.
@@ -232,7 +267,7 @@ export async function authentication(request, nextHandler) {
 					if (domain) {
 						cookie += `; Domain=${domain}`;
 					}
-					
+
 					if (useSecure) {
 						cookie += `; SameSite=None; Secure`;
 					}
@@ -326,4 +361,3 @@ export async function logout(logoutObject) {
 	await logoutObject.baseRequest.session.update({ user: null });
 	return 'Logout successful';
 }
-import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';

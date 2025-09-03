@@ -2,6 +2,7 @@ import { dirname } from 'path';
 import { Script } from 'node:vm';
 import { table } from './databases.ts';
 import { getWorkerIndex } from '../server/threads/manageThreads.js';
+import { Resources } from './Resources.ts';
 
 const PRIMITIVE_TYPES = ['ID', 'Int', 'Float', 'Long', 'String', 'Boolean', 'Date', 'Bytes', 'Any', 'BigInt', 'Blob'];
 
@@ -54,6 +55,7 @@ export function start({ ensureTable }) {
 					const properties = [];
 					const typeDef = { table: null, database: null, properties };
 					types.set(typeName, typeDef);
+					resources.allTypes.set(typeName, typeDef);
 					for (const directive of definition.directives) {
 						const directiveName = directive.name.value;
 						if (directiveName === 'table') {
@@ -214,4 +216,5 @@ export function start({ ensureTable }) {
 
 export const startOnMainThread = start;
 // useful for testing
-export const loadGQLSchema = start({ ensureTable: table }).handleFile;
+export const loadGQLSchema = (content) =>
+	start({ ensureTable: table }).handleFile(content, null, null, new Resources());

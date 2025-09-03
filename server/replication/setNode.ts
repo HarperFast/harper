@@ -108,8 +108,7 @@ export async function setNode(req: object) {
 		cert_auth,
 		authorization: req.retain_authorization ? req.authorization : null,
 	};
-	if (get(CONFIG_PARAMS.REPLICATION_SHARD) !== undefined)
-		targetAddNodeObj.shard = get(CONFIG_PARAMS.REPLICATION_SHARD);
+	if (get(CONFIG_PARAMS.REPLICATION_SHARD) !== undefined) targetAddNodeObj.shard = get(CONFIG_PARAMS.REPLICATION_SHARD);
 
 	if (req.subscriptions) {
 		targetAddNodeObj.subscriptions = req.subscriptions.map(reverseSubscription);
@@ -136,10 +135,7 @@ export async function setNode(req: object) {
 		targetNodeResponseError = err;
 	}
 
-	if (
-		csr &&
-		(!targetNodeResponse?.certificate || !targetNodeResponse?.certificate?.includes?.('BEGIN CERTIFICATE'))
-	) {
+	if (csr && (!targetNodeResponse?.certificate || !targetNodeResponse?.certificate?.includes?.('BEGIN CERTIFICATE'))) {
 		if (targetNodeResponseError) {
 			targetNodeResponseError.message += ' and connection was required to sign certificate';
 			throw targetNodeResponseError;
@@ -180,7 +176,8 @@ export async function setNode(req: object) {
 	}
 	if (req.retain_authorization) nodeRecord.authorization = req.authorization;
 	if (req.revoked_certificates) nodeRecord.revoked_certificates = req.revoked_certificates;
-	if (req.shard !== undefined) nodeRecord.shard = req.shard;
+	if (targetNodeResponse?.shard !== undefined) nodeRecord.shard = targetNodeResponse.shard;
+	else if (req.shard !== undefined) nodeRecord.shard = req.shard;
 
 	if (nodeRecord.replicates) {
 		const thisNode = {
@@ -251,7 +248,10 @@ export async function addNodeBack(req) {
 			replicates: true,
 			subscriptions: null,
 		};
-		if (get(CONFIG_PARAMS.REPLICATION_SHARD) !== undefined) thisNode.shard = get(CONFIG_PARAMS.REPLICATION_SHARD);
+		if (get(CONFIG_PARAMS.REPLICATION_SHARD) !== undefined) {
+			thisNode.shard = get(CONFIG_PARAMS.REPLICATION_SHARD);
+			certs.shard = thisNode.shard;
+		}
 
 		if (req.start_time) thisNode.start_time = req.start_time;
 		if (req.authorization) thisNode.authorization = req.authorization;

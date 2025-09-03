@@ -145,9 +145,6 @@ export const UNICODE_FORWARD_SLASH = 'U+002F';
 /** Regex for matching an escaped `/` character */
 export const ESCAPED_FORWARD_SLASH_REGEX = /U\+002F/g;
 
-/** CLI Argument for setting the memory value */
-export const MEM_SETTING_KEY = '--max-old-space-size=';
-
 /** Name of the System schema */
 export const SYSTEM_SCHEMA_NAME = 'system';
 
@@ -307,9 +304,6 @@ export const OPERATIONS_ENUM = {
 	GET_JOB: 'get_job',
 	DELETE_JOB: 'delete_job',
 	UPDATE_JOB: 'update_job',
-	GET_FINGERPRINT: 'get_fingerprint',
-	SET_LICENSE: 'set_license',
-	GET_REGISTRATION_INFO: 'registration_info',
 	CONFIGURE_CLUSTER: 'configure_cluster',
 	SET_CONFIGURATION: 'set_configuration',
 	CLUSTER_STATUS: 'cluster_status',
@@ -371,6 +365,8 @@ export const OPERATIONS_ENUM = {
 	GET_STATUS: 'get_status',
 	SET_STATUS: 'set_status',
 	CLEAR_STATUS: 'clear_status',
+	INSTALL_USAGE_LICENSE: 'install_usage_license',
+	GET_USAGE_LICENSES: 'get_usage_licenses',
 } as const;
 
 /** Defines valid file types that we are able to handle in 'import_from_s3' ops */
@@ -413,7 +409,6 @@ export const SERVICE_ACTIONS_ENUM = {
 	RUN: 'run',
 	START: 'start',
 	INSTALL: 'install',
-	REGISTER: 'register',
 	STOP: 'stop',
 	RESTART: 'restart',
 	VERSION: 'version',
@@ -568,9 +563,16 @@ export const CONFIG_PARAMS = {
 	HTTP_MTLS: 'http_mtls',
 	HTTP_MTLS_REQUIRED: 'http_mtls_required',
 	HTTP_MTLS_USER: 'http_mtls_user',
+	HTTP_MTLS_CERTIFICATEVERIFICATION: 'http_mtls_certificateVerification',
+	HTTP_MTLS_CERTIFICATEVERIFICATION_TIMEOUT: 'http_mtls_certificateVerification_timeout',
+	HTTP_MTLS_CERTIFICATEVERIFICATION_CACHETTL: 'http_mtls_certificateVerification_cacheTtl',
+	HTTP_MTLS_CERTIFICATEVERIFICATION_FAILUREMODE: 'http_mtls_certificateVerification_failureMode',
 	HTTP_MAXHEADERSIZE: 'http_maxHeaderSize',
 	HTTP_THREADRANGE: 'http_threadRange',
+	HTTP_REQUESTQUEUELIMIT: 'http_requestQueueLimit',
 	HTTP_HTTP2: 'http_http2',
+	LICENSE_MODE: 'license_mode',
+	LICENSE_REGION: 'license_region',
 	LOCALSTUDIO_ENABLED: 'localStudio_enabled',
 	LOGGING_CONSOLE: 'logging_console',
 	LOGGING_FILE: 'logging_file',
@@ -615,7 +617,8 @@ export const CONFIG_PARAMS = {
 	REPLICATION_DATABASES: 'replication_databases',
 	REPLICATION_ENABLEROOTCAS: 'replication_enableRootCAs',
 	REPLICATION_SHARD: 'replication_shard',
-	REPLICATION_COPYTABLESTOCATCHUP: 'replication_copyTablesToCatchUp',
+	REPLICATION_BLOBTIMEOUT: 'replication_blobTimeout',
+	REPLICATION_FAILOVER: 'replication_failOver',
 	ROOTPATH: 'rootPath',
 	SERIALIZATION_BIGINT: 'serialization_bigInt',
 	STORAGE_WRITEASYNC: 'storage_writeAsync',

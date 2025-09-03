@@ -1,11 +1,11 @@
 /**
  * ComponentStatus Class
- * 
+ *
  * This module contains the ComponentStatus class which represents an individual
  * component's status with methods for status management.
  */
 
-import { ComponentStatusLevel, COMPONENT_STATUS_LEVELS } from './types.ts';
+import { type ComponentStatusLevel, COMPONENT_STATUS_LEVELS } from './types.ts';
 
 /**
  * Component status information class
@@ -20,11 +20,7 @@ export class ComponentStatus {
 	/** Error information if status is 'error' */
 	public error?: Error | string;
 
-	constructor(
-		status: ComponentStatusLevel,
-		message?: string,
-		error?: Error | string
-	) {
+	constructor(status: ComponentStatusLevel, message?: string, error?: Error | string) {
 		this.lastChecked = new Date();
 		this.status = status;
 		this.message = message;

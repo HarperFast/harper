@@ -1,0 +1,32 @@
+import { describe } from 'node:test';
+
+describe('Main Test Suite', async () => {
+	await import('./0_envCleanup.mjs');
+	await import('./1_environmentSetup.mjs');
+	await import('./2_dataLoad.mjs');
+	await import('./3_sqlTests.mjs');
+	await import('./4_noSqlTests.mjs');
+	await import('./5_noSqlRoleTesting.mjs');
+	await import('./6_sqlRoleTesting.mjs');
+	await import('./7_jobsAndJobRoleTesting.mjs');
+	await import('./8_deleteTests.mjs');
+	await import('./8a_restartHdbToUpdateConfig.mjs');
+	await import('./9_transactions.mjs');
+	await import('./10_otherRoleTests.mjs');
+	await import('./11_alterUserTests.mjs');
+	await import('./12_configuration.mjs');
+	await import('./13_systemInformation.mjs');
+	await import('./14_tokenAuth.mjs');
+	await import('./15_customFunctionsAndComponents.mjs');
+	await import('./16_terminologyUpdates.mjs');
+	await import('./17_environmentCleanUp.mjs');
+	await import('./17a_addComponents.mjs');
+	await import('./18_computedIndexedProperties.mjs');
+	await import('./19_graphQlTests.mjs');
+	await import('./20_restTests.mjs');
+	await import('./21_authenticationTests.mjs');
+	await import('./22_openApi.mjs');
+	await import('./23_blob.mjs');
+	await import('./24_ocspVerification.mjs');
+	await import('./25_usageLicensingTest.mjs');
+});

@@ -39,8 +39,10 @@ then
 else
   if [[ "${EXTRA_TAGS}" == "none" ]]
   then
-    # don't add a tag to npm publish
-    npm publish ./package/ "${NPM_ACCESS}" --dry-run="${NPM_DRYRUN}"
+    # Publish with a version-specific tag to avoid publishing with "latest" or "next"
+    # Extract major.minor version (e.g., "3.2" from "3.2.1")
+    MAJOR_MINOR=$(echo "${HARPERDB_VERSION}" | cut -d. -f1-2)
+    npm publish ./package/ "${NPM_ACCESS}" --tag="latest-v${MAJOR_MINOR}" --dry-run="${NPM_DRYRUN}"
   else
     # tag defaults to next if not specified otherwise
     NPM_TAG="next"

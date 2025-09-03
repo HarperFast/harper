@@ -19,7 +19,7 @@ import type {
 	RequestTargetOrId,
 } from './ResourceInterface.ts';
 import lmdbProcessRows from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbProcessRows.js';
-import { Resource, contextStorage } from './Resource.ts';
+import { Resource, contextStorage, transformForSelect } from './Resource.ts';
 import { DatabaseTransaction, ImmediateTransaction } from './DatabaseTransaction.ts';
 import * as envMngr from '../utility/environment/environmentManager.js';
 import { addSubscription } from './transactionBroadcast.ts';
@@ -42,7 +42,14 @@ import { MAXIMUM_KEY, writeKey, compareKeys } from 'ordered-binary';
 import { getWorkerIndex, getWorkerCount } from '../server/threads/manageThreads.js';
 import { HAS_BLOBS, readAuditEntry, removeAuditEntry } from './auditStore.ts';
 import { autoCast, convertToMS } from '../utility/common_utils.js';
-import { recordUpdater, removeEntry, PENDING_LOCAL_TIME, RecordObject, type Entry, entryMap } from './RecordEncoder.ts';
+import {
+	recordUpdater,
+	removeEntry,
+	PENDING_LOCAL_TIME,
+	type RecordObject,
+	type Entry,
+	entryMap,
+} from './RecordEncoder.ts';
 import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
@@ -50,6 +57,7 @@ import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject } from './blob.ts';
 import { onStorageReclamation } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
+import harperLogger from '../utility/logging/harper_logger.js';
 
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
@@ -65,8 +73,7 @@ export type Attribute = {
 
 const NULL_WITH_TIMESTAMP = new Uint8Array(9);
 NULL_WITH_TIMESTAMP[8] = 0xc0; // null
-let serverUtilities;
-let node_name: string;
+const UNCACHEABLE_TIMESTAMP = Infinity; // we use this when dynamic content is accessed that we can't safely cache, and this prevents earlier timestamps from change the "last" modification
 const RECORD_PRUNING_INTERVAL = 60000; // one minute
 const DELETED_RECORD_EXPIRATION = 86400000; // one day for non-audit records that have been deleted
 envMngr.initSync();
@@ -357,6 +364,7 @@ export function makeTable(options) {
 						isNotification: true,
 						ensureLoaded: false,
 						nodeId: event.nodeId,
+						async: true,
 					};
 					const id = event.id;
 					const resource: TableResource = await Table.getResource(id, context, options);
@@ -449,7 +457,9 @@ export function makeTable(options) {
 											logger.trace?.(
 												'Received txn',
 												databaseName,
+												seqId,
 												new Date(seqId),
+												event.localTime,
 												new Date(event.localTime),
 												event.remoteNodeIds
 											);
@@ -568,6 +578,7 @@ export function makeTable(options) {
 		 */
 		static getResource(id: Id, request: Context, resourceOptions?: any): Promise<TableResource> | TableResource {
 			const resource: TableResource = super.getResource(id, request, resourceOptions) as any;
+			if (this.loadAsInstance === false) request._freezeRecords = true;
 			if (id != null && this.loadAsInstance !== false) {
 				checkValidId(id);
 				try {
@@ -980,28 +991,38 @@ export function makeTable(options) {
 					// requesting authorization verification
 					allowed = this.allowRead(context.user, target);
 				}
-				return when(allowed, (allowed: boolean) => {
-					if (!allowed) {
-						throw new AccessViolation(context.user);
-					}
-					const ensureLoaded = true;
-					return loadLocalRecord(id, context, { transaction: readTxn, ensureLoaded }, false, (entry) => {
-						if (context.onlyIfCached) {
-							// don't go into the loading from source condition, but HTTP spec says to
-							// return 504 (rather than 404) if there is no content and the cache-control header
-							// dictates not to go to source
-							if (!entry?.value) throw new ServerError('Entry is not cached', 504);
-						} else if (ensureLoaded) {
-							const loadingFromSource = ensureLoadedFromSource(id, entry, context);
-							if (loadingFromSource) {
-								txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
-								context.loadedFromSource = true;
-								return loadingFromSource.then((entry) => entry?.value);
-							}
+				return when(
+					when(allowed, (allowed: boolean) => {
+						if (!allowed) {
+							throw new AccessViolation(context.user);
 						}
-						return entry?.value;
-					});
-				});
+						const ensureLoaded = true;
+						return loadLocalRecord(id, context, { transaction: readTxn, ensureLoaded }, false, (entry) => {
+							if (context.onlyIfCached) {
+								// don't go into the loading from source condition, but HTTP spec says to
+								// return 504 (rather than 404) if there is no content and the cache-control header
+								// dictates not to go to source
+								if (!entry?.value) throw new ServerError('Entry is not cached', 504);
+							} else if (ensureLoaded) {
+								const loadingFromSource = ensureLoadedFromSource(id, entry, context);
+								if (loadingFromSource) {
+									txn?.disregardReadTxn(); // this could take some time, so don't keep the transaction open if possible
+									context.loadedFromSource = true;
+									return loadingFromSource.then((entry) => entry?.value);
+								}
+							}
+							return entry?.value;
+						});
+					}),
+					(record) => {
+						let select = target?.select;
+						if (select && record != null) {
+							const transform = transformForSelect(select, this.constructor);
+							return transform(record);
+						}
+						return record;
+					}
+				);
 			}
 			if (target?.property) return this.getProperty(target.property);
 			if (this.doesExist() || target?.ensureLoaded === false || this.getContext()?.returnNonexistent) {
@@ -1269,7 +1290,12 @@ export function makeTable(options) {
 						txnTime,
 						INVALIDATED,
 						audit,
-						{ user: context?.user, residencyId: options?.residencyId, nodeId: options?.nodeId },
+						{
+							user: context?.user,
+							residencyId: options?.residencyId,
+							nodeId: options?.nodeId,
+							tableToTrack: tableName,
+						},
 						'invalidate'
 					);
 					// TODO: recordDeletion?
@@ -1297,7 +1323,7 @@ export function makeTable(options) {
 						for (const name in indices) {
 							if (!newRecord) newRecord = {};
 							// if there are any indices, we need to preserve a partial invalidated record to ensure we can still do searches
-							newRecord[name] = existingRecord(name);
+							newRecord[name] = existingRecord[name];
 						}
 						metadata = INVALIDATED;
 					} else {
@@ -1344,6 +1370,7 @@ export function makeTable(options) {
 				residencyId = getResidencyId(residency);
 			}
 			const metadata = 0;
+			logger.debug?.('Performing a relocate of an entry', existing_entry.key, entry.value, residency);
 			const record = updateRecord(
 				existingEntry.key,
 				entry.value, // store the record we downloaded
@@ -1407,7 +1434,7 @@ export function makeTable(options) {
 		static operation(operation, context) {
 			operation.table ||= tableName;
 			operation.schema ||= databaseName;
-			return serverUtilities.operation(operation, context);
+			return global.operation(operation, context);
 		}
 
 		/**
@@ -1564,7 +1591,7 @@ export function makeTable(options) {
 					this.#changes = undefined; // once we are committing to write this update, we no longer should track the changes, and want to avoid double application (of any CRDTs)
 					this.#version = txnTime;
 					const existingRecord = existingEntry?.value;
-					let updateToApply = recordUpdate;
+					let incrementalUpdateToApply: bool;
 
 					this.#saveMode = 0;
 					let omitLocalRecord = false;
@@ -1624,14 +1651,13 @@ export function makeTable(options) {
 								localTime = auditRecord.previousLocalTime;
 							}
 							if (!localTime) {
-								// if we don't have a local time, we can't apply the update, so we need to drop it
+								// if we reached the end of the audit trail, we can just apply the update
 								logger.debug?.(
-									'No further audit history, must drop update',
+									'No further audit history, applying incremental updates based on available history',
 									id,
 									'existing version preserved',
 									existingEntry
 								);
-								return;
 							}
 							succeedingUpdates.sort((a, b) => a.version - b.version); // order the patches
 							for (const auditRecord of succeedingUpdates) {
@@ -1642,8 +1668,12 @@ export function makeTable(options) {
 									newerUpdate,
 									auditRecord
 								);
-								updateToApply = rebuildUpdateBefore(updateToApply, newerUpdate, fullUpdate);
-								if (!updateToApply) return; // if all changes are overwritten, nothing left to do
+								incrementalUpdateToApply = rebuildUpdateBefore(
+									incrementalUpdateToApply ?? recordUpdate,
+									newerUpdate,
+									fullUpdate
+								);
+								if (!incrementalUpdateToApply) return; // if all changes are overwritten, nothing left to do
 							}
 						} else if (fullUpdate) {
 							// if no audit, we can't accurately do incremental updates, so we just assume the last update
@@ -1652,19 +1682,23 @@ export function makeTable(options) {
 							return;
 						} else {
 							// no audit, assume updates are overwritten except CRDT operations or properties that didn't exist
-							updateToApply = rebuildUpdateBefore(updateToApply, existingRecord, fullUpdate);
-							logger.debug?.('Rebuilding update without audit:', updateToApply);
+							incrementalUpdateToApply = rebuildUpdateBefore(
+								incrementalUpdateToApply ?? recordUpdate,
+								existingRecord,
+								fullUpdate
+							);
+							logger.debug?.('Rebuilding update without audit:', incrementalUpdateToApply);
 						}
-						logger.trace?.('Rebuilt record to save:', updateToApply, ' is full update:', fullUpdate);
+						logger.trace?.('Rebuilt record to save:', incrementalUpdateToApply, ' is full update:', fullUpdate);
 					}
 					let recordToStore: any;
-					if (fullUpdate) recordToStore = updateToApply;
+					if (fullUpdate && !incrementalUpdateToApply) recordToStore = recordUpdate;
 					else {
 						if (this.constructor.loadAsInstance === false)
-							recordToStore = updateAndFreeze(existingRecord, updateToApply);
+							recordToStore = updateAndFreeze(existingRecord, incrementalUpdateToApply ?? recordUpdate);
 						else {
 							this.#record = existingRecord;
-							recordToStore = updateAndFreeze(this, updateToApply);
+							recordToStore = updateAndFreeze(this, incrementalUpdateToApply ?? recordUpdate);
 						}
 					}
 					this.#record = recordToStore;
@@ -1734,6 +1768,7 @@ export function makeTable(options) {
 							expiresAt,
 							nodeId: options?.nodeId,
 							originatingOperation: context?.originatingOperation,
+							tableToTrack: databaseName === 'system' ? null : tableName, // don't track analytics on system tables
 						},
 						type,
 						false,
@@ -1801,7 +1836,7 @@ export function makeTable(options) {
 							txnTime,
 							0,
 							audit,
-							{ user: context?.user, nodeId: options?.nodeId },
+							{ user: context?.user, nodeId: options?.nodeId, tableToTrack: tableName },
 							'delete'
 						);
 						if (!audit) scheduleCleanup();
@@ -1825,6 +1860,7 @@ export function makeTable(options) {
 					throw new AccessViolation(context.user);
 				}
 			}
+			if (context) context.lastModified = UNCACHEABLE_TIMESTAMP;
 
 			let conditions = target.conditions;
 			if (!conditions) conditions = Array.isArray(target) ? target : target[Symbol.iterator] ? Array.from(target) : [];
@@ -2167,11 +2203,11 @@ export function makeTable(options) {
 						},
 						return() {
 							if (results.onDone) results.onDone();
-							dbIterator.return();
+							return dbIterator.return();
 						},
 						throw() {
 							if (results.onDone) results.onDone();
-							dbIterator.throw();
+							return dbIterator.throw();
 						},
 					};
 				};
@@ -2432,7 +2468,6 @@ export function makeTable(options) {
 			if (!request) request = {};
 			const getFullRecord = !request.rawEvents;
 			let pendingRealTimeQueue = []; // while we are servicing a loop for older messages, we have to queue up real-time messages and deliver them in order
-			const tableReference = this;
 			const subscription = addSubscription(
 				TableResource,
 				this.getId() ?? null, // treat undefined and null as the root
@@ -2461,7 +2496,10 @@ export function makeTable(options) {
 							beginTxn,
 						};
 						if (pendingRealTimeQueue) pendingRealTimeQueue.push(event);
-						else this.send(event);
+						else {
+							recordAction(auditRecord.size ?? 1, 'db-message', tableName, null);
+							this.send(event);
+						}
 					} catch (error) {
 						logger.error?.(error);
 					}
@@ -2495,12 +2533,13 @@ export function makeTable(options) {
 							const id = auditRecord.recordId;
 							if (thisId == null || isDescendantId(thisId, id)) {
 								const value = auditRecord.getValue(primaryStore, getFullRecord, key);
-								subscription.send({
+								send({
 									id,
 									localTime: key,
 									value,
 									version: auditRecord.version,
 									type: auditRecord.type,
+									size: auditRecord.size,
 								});
 								if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 									// if we have too many messages, we need to pause and let the client catch up
@@ -2531,18 +2570,18 @@ export function makeTable(options) {
 							//await rest(); // yield for fairness
 						}
 						for (let i = history.length; i > 0; ) {
-							subscription.send(history[--i]);
+							send(history[--i]);
 						}
 						if (history[0]) subscription.startTime = history[0].localTime; // update so don't double send
 					} else if (!request.omitCurrent) {
-						for (const { key: id, value, version, localTime } of primaryStore.getRange({
+						for (const { key: id, value, version, localTime, size } of primaryStore.getRange({
 							start: thisId ?? false,
 							end: thisId == null ? undefined : [thisId, MAXIMUM_KEY],
 							versions: true,
 							snapshot: false, // no need for a snapshot, just want the latest data
 						})) {
 							if (!value) continue;
-							subscription.send({ id, localTime, value, version, type: 'put' });
+							send({ id, localTime, value, version, type: 'put', size });
 							if (subscription.queue?.length > EVENT_HIGH_WATER_MARK) {
 								// if we have too many messages, we need to pause and let the client catch up
 								if ((await subscription.waitForDrain()) === false) return;
@@ -2574,19 +2613,24 @@ export function makeTable(options) {
 								const auditRecord = readAuditEntry(auditEntry);
 								const value = auditRecord.getValue(primaryStore, getFullRecord, nextTime);
 								if (getFullRecord) auditRecord.type = 'put';
-								history.push({ id: thisId, value, localTime: nextTime, ...auditRecord });
+								history.push({
+									id: thisId,
+									value,
+									localTime: nextTime,
+									...auditRecord,
+								});
 								nextTime = auditRecord.previousLocalTime;
 							} else break;
 							if (count) count--;
 						} while (nextTime > startTime && count !== 0);
 						for (let i = history.length; i > 0; ) {
-							subscription.send(history[--i]);
+							send(history[--i]);
 						}
 						subscription.startTime = localTime; // make sure we don't re-broadcast the current version that we already sent
 					}
 					if (!request.omitCurrent && this.doesExist()) {
 						// if retain and it exists, send the current value first
-						subscription.send({
+						send({
 							id: thisId,
 							localTime,
 							value: this.#record,
@@ -2597,10 +2641,14 @@ export function makeTable(options) {
 				}
 				// now send any queued messages
 				for (const event of pendingRealTimeQueue) {
-					subscription.send(event);
+					send(event);
 				}
 				pendingRealTimeQueue = null;
 			})();
+			function send(event: any) {
+				recordAction(event.size ?? 1, 'db-message', tableName, null);
+				subscription.send(event);
+			}
 			if (request.listener) subscription.on('data', request.listener);
 			return subscription;
 		}
@@ -2685,6 +2733,7 @@ export function makeTable(options) {
 							residencyId: options?.residencyId,
 							expiresAt: context?.expiresAt,
 							nodeId: options?.nodeId,
+							tableToTrack: tableName,
 						},
 						'message',
 						false,
@@ -3053,6 +3102,8 @@ export function makeTable(options) {
 											transaction: txnForContext(context).getReadTxn(),
 										});
 										if (value?.then) hasPromises = true;
+										// for now, we shouldn't be getting promises until rocksdb
+										if (TableResource.loadAsInstance === false) Object.freeze(returnEntry ? value?.value : value);
 										return value;
 									});
 									return relationship.filterMissing
@@ -3063,9 +3114,12 @@ export function makeTable(options) {
 											? Promise.all(results)
 											: results;
 								}
-								return definition.tableClass.primaryStore[returnEntry ? 'getEntry' : 'get'](ids, {
+								const value = definition.tableClass.primaryStore[returnEntry ? 'getEntry' : 'get'](ids, {
 									transaction: txnForContext(context).getReadTxn(),
 								});
+								// for now, we shouldn't be getting promises until rocksdb
+								if (TableResource.loadAsInstance === false) Object.freeze(returnEntry ? value?.value : value);
+								return value;
 							};
 							attribute.set = (object, related) => {
 								if (Array.isArray(related)) {
@@ -3248,6 +3302,7 @@ export function makeTable(options) {
 			// determine what index values need to be removed and added
 			let valuesToAdd = getIndexedValues(value, indexNulls);
 			let valuesToRemove = getIndexedValues(existingValue, indexNulls);
+			if (tableName === 'OrganizationRole') logger.error?.({ tableName, id, key, valuesToAdd, valuesToRemove });
 			if (valuesToRemove?.length > 0) {
 				// put this in a conditional so we can do a faster version for new records
 				// determine the changes/diff from new values and old values
@@ -3343,6 +3398,18 @@ export function makeTable(options) {
 			// through query results and the iterator ends (abruptly)
 			if (options.transaction?.isDone) return withEntry(null, id);
 			const entry = primaryStore.getEntry(id, options);
+
+			// skip recording reads for most system tables except hdb_analytics
+			// we want to track analytics reads in licensing, etc.
+			if (databaseName !== 'system' || tableName === 'hdb_analytics') {
+				harperLogger.trace?.('Recording db-read action for', `${databaseName}.${tableName}`);
+				recordAction(entry?.size ?? 1, 'db-read', tableName, null);
+			}
+
+			// we need to freeze entry records to ensure the integrity of the cache;
+			// but we only do this when users have opted into loadAsInstance/freezeRecords to avoid back-compat
+			// issues
+			if (context?._freezeRecords) Object.freeze(entry?.value);
 			if (
 				entry?.residencyId &&
 				entry.metadataFlags & INVALIDATED &&
@@ -3834,7 +3901,12 @@ export function makeTable(options) {
 									txnTime,
 									omitLocalRecord ? INVALIDATED : 0,
 									(audit && (hasChanges || omitLocalRecord)) || null,
-									{ user: sourceContext?.user, expiresAt: sourceContext.expiresAt, residencyId },
+									{
+										user: sourceContext?.user,
+										expiresAt: sourceContext.expiresAt,
+										residencyId,
+										tableToTrack: tableName,
+									},
 									'put',
 									Boolean(invalidated),
 									auditRecord
@@ -3852,7 +3924,7 @@ export function makeTable(options) {
 										txnTime,
 										0,
 										(audit && hasChanges) || null,
-										{ user: sourceContext?.user },
+										{ user: sourceContext?.user, tableToTrack: tableName },
 										'delete',
 										Boolean(invalidated)
 									);
@@ -4087,9 +4159,7 @@ function attributesAsObject(attribute_permissions, type) {
 function noop() {
 	// prefetch callback
 }
-export function setServerUtilities(utilities) {
-	serverUtilities = utilities;
-}
+
 const ENDS_WITH_TIMEZONE = /[+-][0-9]{2}:[0-9]{2}|[a-zA-Z]$/;
 /**
  * Coerce a string to the type defined by the attribute
@@ -4196,4 +4266,3 @@ function hasOtherProcesses(store) {
 			return +line.match(/\d+/)?.[0] != pid;
 		});
 }
-export { clearStatus as clear, getStatus as get, setStatus as set };

@@ -10,9 +10,9 @@ These tests primarily use [supertest](https://www.npmjs.com/package/supertest) f
 ## How to run the tests
 
 > [!Note]
-> The tests are not currently independent or idempotent. Until the entire suite is updated, it is recommended to run them via the `tests/testSuite.js` file (which runs them in the correct order). Furthermore, we recommend a clean Harper instance as sometimes existing artifacts can cause failures.
+> The tests are not currently independent or idempotent. Until the entire suite is updated, it is recommended to run them via the `tests/testSuite.mjs` file (which runs them in the correct order). Furthermore, we recommend a clean Harper instance as sometimes existing artifacts can cause failures.
 
-1. Run Harper: `harperdb start`
+1. Run Harper: `env LICENSE_MODE=test harperdb start`
 2. Ensure the environment variables `HDB_ADMIN_USERNAME`, `HDB_ADMIN_PASSWORD`, `S3_KEY`, and `S3_SECRET` are set
    1. They can be set in the path directly, or via a `.env` file in the `integrationTests/apiTests/` directory. For an example, see the `.env.test.example` file.
    2. Values set in the path take precedence over those in a `.env` file.
@@ -20,7 +20,7 @@ These tests primarily use [supertest](https://www.npmjs.com/package/supertest) f
       1. The values for these keys can be found in the `integration-test-s3` item in LastPass.
 3. Run the tests using the Node.js test runner
    1. Included npm script: `npm run test:integration`
-   2. Directly using the Node.js test runner command `node --test <path>/tests/testSuite.js`
+   2. Directly using the Node.js test runner command `node --test <path>/tests/testSuite.mjs`
 
 > [!Note]
 > On Node.js versions less than v22, you need to include the `--experimental-default-type=module` flag to support ESM syntax.
@@ -43,7 +43,7 @@ node --test \
      --test-reporter-destination=report.txt \
      --test-reporter=spec \
      --test-reporter-destination=stdout \
-     tests/testSuite.js
+     tests/testSuite.mjs
 ```
 
 ## JetBrains Test Execution File

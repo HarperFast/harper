@@ -11,7 +11,7 @@
  *   - Note that for compressed data, the size is the uncompressed size, and the compressed size in the file
  */
 
-import { addExtension, pack, unpack } from 'msgpackr';
+import { addExtension, pack, Packr } from 'msgpackr';
 import { readFile, statfs, readdir, rmdir, unlink as unlinkPromised } from 'node:fs/promises';
 import {
 	close,
@@ -26,6 +26,7 @@ import {
 	watch,
 	write,
 } from 'node:fs';
+import type { StatsFs } from 'node:fs';
 import { createDeflate, deflate } from 'node:zlib';
 import { Readable } from 'node:stream';
 import { ensureDirSync } from 'fs-extra';
@@ -178,12 +179,13 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 					// the file is not finished being written, wait for the write lock to complete
 					const store = storageInfo.store;
 					const lockKey = storageInfo.fileId + ':blob';
-					if (writeFinished) throw new Error('Incomplete blob');
+					if (writeFinished) {
+						throw new Error(`Incomplete blob for ${filePath}`);
+					}
 					return new Promise((resolve, reject) => {
 						if (
 							store.attemptLock(lockKey, 0, () => {
 								writeFinished = true;
-								store.unlock(lockKey, 0);
 								return resolve(readContents());
 							})
 						) {
@@ -328,7 +330,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 										if (watcher) {
 											// already watching, but add a timer to make sure we don't wait forever
 											timer = setTimeout(() => {
-												onError(new Error('File read timed out'));
+												onError(new Error(`File read timed out reading from ${filePath}`));
 											}, FILE_READ_TIMEOUT).unref();
 										} else {
 											// set up a watcher to be notified of file changes
@@ -408,7 +410,6 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 				const lockKey = storageInfo.fileId + ':blob';
 				isBeingWritten = !store.attemptLock(lockKey, 0, () => {
 					isBeingWritten = false;
-					store.unlock(lockKey, 0);
 				});
 				if (!isBeingWritten) store.unlock(lockKey, 0);
 			}
@@ -504,14 +505,17 @@ function saveBlob(blob: FileBackedBlob) {
 		storageInfo = { storageIndex: 0, fileId: null, store: currentStore };
 		storageInfoForBlob.set(blob, storageInfo);
 	} else {
-		if (storageInfo.saving) return storageInfo;
+		if (storageInfo.fileId) return storageInfo; // if there is any file id, we are already saving and can return the info
 		storageInfo.store = currentStore;
 	}
 
 	generateFilePath(storageInfo);
 	if (storageInfo.source) writeBlobWithStream(blob, storageInfo.source, storageInfo);
 	else if (storageInfo.contentBuffer) writeBlobWithBuffer(blob, storageInfo);
-	else writeBlobWithStream(blob, Readable.from(blob.stream()), storageInfo); // for native blobs, we have to read them from the stream
+	else {
+		// for native blobs, we have to read them from the stream
+		writeBlobWithStream(blob, Readable.from(blob.stream()), storageInfo);
+	}
 	return storageInfo;
 }
 
@@ -530,7 +534,8 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 		if (stream.errored) {
 			// if starts in an error state, record that immediately
 			const error = Buffer.from(stream.errored.toString());
-			writeStream.end(Buffer.concat([createHeader(BigInt(error.length) + 0xff000000000000n), error]));
+			writeStream.write(Buffer.concat([createHeader(BigInt(error.length) + 0xff000000000000n), error]));
+			finished(stream.errored);
 			return;
 		}
 		let wroteSize = false;
@@ -764,11 +769,20 @@ function getNextStorageIndex(blobStoragePaths: string[], fileId: number) {
  * and can be assigned quickly and consistently across threads (all threads will usually incrementally assign ids to the same alternating set of storage paths)
  * @param blobStoragePaths
  */
-async function createFrequencyTableForStoragePaths(blobStoragePaths) {
+async function createFrequencyTableForStoragePaths(blobStoragePaths: string[]) {
 	if (!statfs) return; // statfs is not available on all older node versions
 	const availableSpaces = await Promise.all(
 		blobStoragePaths.map(async (path, index) => {
-			const stats = await statfs(path);
+			let stats: StatsFs;
+			try {
+				stats = await statfs(path);
+			} catch (error) {
+				if (error.code !== 'ENOENT') throw error;
+				// if the path doesn't exist, go ahead and create it
+				ensureDirSync(path);
+				// try again after the path is created
+				stats = await statfs(path);
+			}
 			const availableSpace = stats.bavail * stats.bsize;
 			return Math.pow(availableSpace, 0.8); // we don't want this to be quite linear, so we use a power function to reduce the impact of large differences in available space
 		})
@@ -912,11 +926,13 @@ export function findBlobsInObject(object: any, callback: (blob: Blob) => void) {
 	}
 }
 
+const copyingUnpacker = new Packr({ copyBuffers: true, mapsAsObjects: true });
+
 addExtension({
 	Class: Blob,
 	type: 11,
 	unpack: function (buffer) {
-		const blobInfo = unpack(buffer);
+		const blobInfo = copyingUnpacker.unpack(buffer);
 		const blob = new FileBackedBlob();
 		Object.assign(blob, blobInfo[0]); // copy any properties
 		if (typeof blobInfo[1] !== 'object') {
@@ -970,6 +986,10 @@ addExtension({
 			return pack([options, storageInfo.storageIndex, storageInfo.fileId]);
 		}
 		if (storageInfo) {
+			if (currentBlobCallback) {
+				currentBlobCallback(blob);
+				return pack([options, storageInfo.storageIndex, storageInfo.fileId]);
+			}
 			// if we want to encode as binary (necessary for replication), we need to encode as a buffer, not sure if we should always do that
 			// also, for replication, we would presume that this is most likely in OS cache, and sync will be fast. For other situations, a large sync call could be
 			// unpleasant

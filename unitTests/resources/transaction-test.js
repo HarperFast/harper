@@ -10,7 +10,6 @@ const {
 	publishToStream,
 	setSubscription,
 } = require('../../server/nats/natsReplicator');
-const { resolve } = require('path');
 
 // might want to enable an iteration with NATS being assigned as a source
 describe('Transactions', () => {
@@ -181,6 +180,44 @@ describe('Transactions', () => {
 			assert.equal(published_messages.length, 4);
 			assert(entity.getUpdatedTime() > 1);
 		});
+		it('Can use update and get with different arguments', async function () {
+			const context = {};
+			await transaction(context, () => {
+				TxnTest.put(45, { name: 'a counter', count: 1, countInt: 100, countBigInt: 4611686018427388000n }, context);
+			});
+			await transaction(async (txn) => {
+				let updatable = await TxnTest.update(45, txn);
+				updatable.count = 4;
+			});
+			await transaction(async (txn) => {
+				assert.equal((await TxnTest.get(45, {}, txn)).count, 4);
+			});
+		});
+
+		it('Apply out of order patch', async function () {
+			const context = {};
+			await transaction(context, () => {
+				TxnTest.put(61, { name: 'original' }, context);
+			});
+			let now = Date.now();
+			await TxnTest.patch(61, { name: 'newer' }, { timestamp: now + 10 });
+			await TxnTest.patch(61, { name: 'older', count: 3 }, { timestamp: now + 4 });
+			let record = await TxnTest.get(61);
+			assert.equal(record.name, 'newer');
+			assert.equal(record.count, 3);
+		});
+		it('Apply out of order patch and put', async function () {
+			const context = {};
+			await transaction(context, () => {
+				TxnTest.put(61, { name: 'original' }, context);
+			});
+			let now = Date.now();
+			await TxnTest.patch(61, { name: 'newer', count: 3 }, { timestamp: now + 10 });
+			await TxnTest.put(61, { name: 'older' }, { timestamp: now + 4 });
+			let record = await TxnTest.get(61);
+			assert.equal(record.name, 'newer');
+			assert.equal(record.count, 3);
+		});
 
 		it('Can merge replication updates', async function () {
 			const context = {};
@@ -295,6 +332,19 @@ describe('Transactions', () => {
 			assert.equal(entity['new prop 0'], 'new value 0');
 			assert.equal(entity['new prop 1'], 'new value 1');
 			assert.equal(entity['new prop 2'], 'new value 2');
+		});
+		it('Can use update and get with different arguments', async function () {
+			const context = {};
+			await transaction(context, () => {
+				TxnTest.put(45, { name: 'a counter', count: 1, countInt: 100, countBigInt: 4611686018427388000n }, context);
+			});
+			await transaction(async (txn) => {
+				let updatable = await TxnTest.update(45, txn);
+				updatable.count = 4;
+			});
+			await transaction(async (txn) => {
+				assert.equal((await TxnTest.get(45, {}, txn)).count, 4);
+			});
 		});
 		it('Can update with patch', async function () {
 			const context = {};

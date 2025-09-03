@@ -190,7 +190,7 @@ export function removeAuditEntry(auditStore: any, key: number, value: any): Prom
 		auditRecord = auditRecord || readAuditEntry(value);
 		const tableId = auditRecord.tableId;
 		const primaryStore = auditStore.tableStores[auditRecord.tableId];
-		if (primaryStore?.getEntry(auditRecord.recordId).version === auditRecord.version)
+		if (primaryStore?.getEntry(auditRecord.recordId)?.version === auditRecord.version)
 			auditStore.deleteCallbacks?.[tableId]?.(auditRecord.recordId, auditRecord.version);
 	}
 	return auditStore.remove(key);
@@ -295,7 +295,9 @@ export function createAuditEntry(
 		position = 9;
 	}
 	if (extendedType) {
-		if (extendedType & 0xff) throw new Error('Illegal extended type');
+		if (extendedType & 0xff) {
+			throw new Error('Illegal extended type');
+		}
 		position += 3;
 	}
 
@@ -442,6 +444,9 @@ export function readAuditEntry(buffer: Uint8Array, start = 0, end = undefined) {
 			},
 			get encoded() {
 				return start ? buffer.subarray(start, end) : buffer;
+			},
+			get size() {
+				return start !== undefined && end !== undefined ? end - start : buffer.byteLength;
 			},
 			getValue(store, fullRecord?, auditTime?) {
 				if (action & HAS_RECORD || (action & HAS_PARTIAL_RECORD && !fullRecord)) {

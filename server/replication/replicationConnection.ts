@@ -8,7 +8,6 @@ import {
 import {
 	createAuditEntry,
 	Decoder,
-	getLastRemoved,
 	HAS_CURRENT_RESIDENCY_ID,
 	HAS_PREVIOUS_RESIDENCY_ID,
 	REMOTE_SEQUENCE_UPDATE,
@@ -31,18 +30,20 @@ import { HAS_STRUCTURE_UPDATE, lastMetadata, METADATA } from '../../resources/Re
 import { decode, encode, Packr } from 'msgpackr';
 import { WebSocket } from 'ws';
 import { threadId } from 'worker_threads';
-import { forComponent, errorToString } from '../../utility/logging/harper_logger.js';
+import harperLogger from '../../utility/logging/harper_logger.js';
+const { forComponent, errorToString } = harperLogger;
 import { disconnectedFromNode, connectedToNode, ensureNode } from './subscriptionManager.ts';
 import { EventEmitter } from 'events';
 import { createTLSSelector } from '../../security/keys.js';
 import * as tls from 'node:tls';
-import { getHDBNodeTable, getReplicationSharedStatus } from './knownNodes.ts';
+import { getHDBNodeTable, getReplicationSharedStatus, type Node } from './knownNodes.ts';
 import * as process from 'node:process';
 import { isIP } from 'node:net';
 import { recordAction } from '../../resources/analytics/write.ts';
 import { decodeBlobsWithWrites, decodeWithBlobCallback, deleteBlob, getFileId } from '../../resources/blob.ts';
 import { PassThrough } from 'node:stream';
 import { getLastVersion } from 'lmdb';
+import minimist from 'minimist';
 const logger = forComponent('replication').conditional;
 
 // these are the codes we use for the different commands
@@ -65,7 +66,11 @@ export const RECEIVED_VERSION_POSITION = 1;
 export const RECEIVED_TIME_POSITION = 2;
 export const SENDING_TIME_POSITION = 3;
 export const LATENCY_POSITION = 4;
-const runClone = process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL');
+export const RECEIVING_STATUS_POSITION = 5;
+export const RECEIVING_STATUS_WAITING = 0;
+export const RECEIVING_STATUS_RECEIVING = 1;
+const cli_args = minimist(process.argv);
+const leaderUrl: string = cli_args.HDB_LEADER_URL ?? process.env.HDB_LEADER_URL;
 
 export const tableUpdateListeners = new Map();
 // This a map of the database name to the subscription object, for the subscriptions from our tables to the replication module
@@ -84,6 +89,16 @@ let secureContexts: Map<string, tls.SecureContext>;
 /**
  * Handles reconnection, and requesting catch-up
  */
+
+type NodeSubscription = {
+	name: string;
+	replicateByDefault: boolean;
+	tables: string[];
+	startTime: number;
+	endTime: number;
+};
+
+let replicationSecureContext: tls.SecureContext & { caCount?: number };
 
 export async function createWebSocket(
 	url: string,
@@ -129,15 +144,21 @@ export async function createWebSocket(
 		secureContext: undefined,
 	};
 	if (secureContext) {
-		wsOptions.secureContext = tls.createSecureContext({
-			...secureContext.options,
-			ca: [...replicationCertificateAuthorities, ...secureContext.options.availableCAs.values()], // add CA if secure context had one
-		});
+		// check to see if our cached secure context is still valid
+		if (replicationSecureContext?.caCount !== replicationCertificateAuthorities.size) {
+			// create a secure context and cache by the number of replication CAs (if that changes, we need to create a new secure context)
+			replicationSecureContext = tls.createSecureContext({
+				...secureContext.options,
+				ca: [...replicationCertificateAuthorities, ...secureContext.options.availableCAs.values()], // add CA if secure context had one
+			});
+			replicationSecureContext.caCount = replicationCertificateAuthorities.size;
+		}
+		wsOptions.secureContext = replicationSecureContext;
 	}
 	return new WebSocket(url, 'harperdb-replication-v1', wsOptions);
 }
 
-const INITIAL_RETRY_TIME = 1000;
+const INITIAL_RETRY_TIME = 500;
 /**
  * This represents a persistent connection to a node for replication, which handles
  * sockets that may be disconnected and reconnected
@@ -149,7 +170,7 @@ export class NodeReplicationConnection extends EventEmitter {
 	retries = 0;
 	isConnected = true; // we start out assuming we will be connected
 	isFinished = false;
-	nodeSubscriptions = [];
+	nodeSubscriptions?: NodeSubscription[];
 	latency = 0;
 	replicateTablesByDefault: boolean;
 	session: any; // this is a promise that resolves to the session object, which is the object that handles the replication
@@ -184,11 +205,13 @@ export class NodeReplicationConnection extends EventEmitter {
 			this.retries = 0;
 			this.retryTime = INITIAL_RETRY_TIME;
 			// if we have already connected, we need to send a reconnected event
-			connectedToNode({
-				name: this.nodeName,
-				database: this.databaseName,
-				url: this.url,
-			});
+			if (this.nodeSubscriptions) {
+				connectedToNode({
+					name: this.nodeName,
+					database: this.databaseName,
+					url: this.url,
+				});
+			}
 			this.isConnected = true;
 			session = replicateOverWS(
 				this.socket,
@@ -197,6 +220,7 @@ export class NodeReplicationConnection extends EventEmitter {
 					subscription: this.subscription,
 					url: this.url,
 					connection: this,
+					isSubscriptionConnection: this.nodeSubscriptions !== undefined,
 				},
 				{ replicates: true } // pre-authorized, but should only make publish: true if we are allowing reverse subscriptions
 			);
@@ -220,14 +244,17 @@ export class NodeReplicationConnection extends EventEmitter {
 		this.socket.on('close', (code, reasonBuffer) => {
 			// if we get disconnected, notify subscriptions manager so we can reroute through another node
 			if (this.isConnected) {
-				disconnectedFromNode({
-					name: this.nodeName,
-					database: this.databaseName,
-					url: this.url,
-					finished: this.socket.isFinished,
-				});
+				if (this.nodeSubscriptions) {
+					disconnectedFromNode({
+						name: this.nodeName,
+						database: this.databaseName,
+						url: this.url,
+						finished: this.socket.isFinished,
+					});
+				}
 				this.isConnected = false;
 			}
+			this.removeAllListeners('subscriptions-updated');
 
 			if (this.socket.isFinished) {
 				this.isFinished = true;
@@ -249,7 +276,7 @@ export class NodeReplicationConnection extends EventEmitter {
 			setTimeout(() => {
 				this.connect();
 			}, this.retryTime).unref();
-			this.retryTime += this.retryTime >> 3; // increase by 12% each time
+			this.retryTime += this.retryTime >> 8; // increase by 0.4% each time
 		});
 	}
 	resetSession() {
@@ -278,7 +305,7 @@ export class NodeReplicationConnection extends EventEmitter {
 /**
  * This handles both incoming and outgoing WS allowing either one to issue a subscription and get replication and/or handle subscription requests
  */
-export function replicateOverWS(ws, options, authorization) {
+export function replicateOverWS(ws: WebSocket, options: any, authorization: Promise<Node | undefined>) {
 	const p = options.port || options.securePort;
 	const connectionId =
 		(process.pid % 1000) +
@@ -307,12 +334,6 @@ export function replicateOverWS(ws, options, authorization) {
 		});
 	let tables = options.tables || (databaseName && getDatabases()[databaseName]);
 	let remoteNodeName: string;
-	if (!authorization) {
-		logger.error?.(connectionId, 'No authorization provided');
-		// don't send disconnect because we want the client to potentially retry
-		close(1008, 'Unauthorized');
-		return;
-	}
 	const awaitingResponse = new Map();
 	let receivingDataFromNodeIds = [];
 	remoteNodeName = authorization.name;
@@ -320,12 +341,13 @@ export function replicateOverWS(ws, options, authorization) {
 	let lastSequenceIdReceived, lastSequenceIdCommitted;
 	let sendPingInterval, receivePingTimer, lastPingTime, skippedMessageSequenceUpdateTimer;
 	let blobsTimer;
-	const DELAY_CLOSE_TIME = 5000;
+	const DELAY_CLOSE_TIME = 60000; // amount of time to wait before closing the connection if we haven't any activity and there are no subscriptions
 	let delayedClose: NodeJS.Timeout;
 	let lastMessageTime = 0;
 	// track bytes read and written so we can verify if a connection is really dead on pings
 	let bytesRead = 0;
 	let bytesWritten = 0;
+	const blobTimeout = env.get(CONFIG_PARAMS.REPLICATION_BLOBTIMEOUT) ?? 120000;
 	const blobsInFlight = new Map();
 	const outstandingBlobsToFinish: Promise<void>[] = [];
 	let outstandingBlobsBeingSent = 0;
@@ -387,7 +409,22 @@ export function replicateOverWS(ws, options, authorization) {
 	let subscriptionRequest, auditSubscription;
 	let nodeSubscriptions;
 	let remoteShortIdToLocalId: Map<number, number>;
-	ws.on('message', (body) => {
+	ws.on('message', onWSMessageWhenAuthorized);
+	// handle messages that we receive before authorization is complete/resolved
+	async function onWSMessageWhenAuthorized(body: Buffer) {
+		authorization = await authorization;
+		if (!authorization) {
+			logger.error?.(connectionId, 'No authorization provided');
+			// don't send disconnect because we want the client to potentially retry
+			close(1008, 'Unauthorized');
+			return;
+		}
+		onWSMessage(body);
+		// once resolved, we can skip this whole function and go directly to the message handler
+		ws.off('message', onWSMessageWhenAuthorized);
+		ws.on('message', onWSMessage);
+	}
+	function onWSMessage(body: Buffer) {
 		// A replication header should begin with either a transaction timestamp or messagepack message of
 		// of an array that begins with the command code
 		lastMessageTime = performance.now();
@@ -455,19 +492,25 @@ export function replicateOverWS(ws, options, authorization) {
 							data.map((t) => t.table)
 						);
 						for (const tableDefinition of data) {
-							const databaseName = message[2];
-							tableDefinition.database = databaseName;
+							const newDatabaseName = message[2];
+							tableDefinition.database = newDatabaseName;
 							let table: any;
-							if (checkDatabaseAccess(databaseName)) {
+							if (checkDatabaseAccess(newDatabaseName)) {
 								if (databaseName === 'system') {
-									// for system connection, we only update new tables
-									if (!databases[databaseName]?.[tableDefinition.table])
-										table = ensureTableIfChanged(tableDefinition, databases[databaseName]?.[tableDefinition.table]);
+									// the system connection allows us to create new databases (which wouldn't otherwise have an existing connection)
+									if (!databases[newDatabaseName]?.[tableDefinition.table]) {
+										table = ensureTableIfChanged(tableDefinition, databases[newDatabaseName]?.[tableDefinition.table]);
+									}
 								} else {
-									table = ensureTableIfChanged(tableDefinition, databases[databaseName]?.[tableDefinition.table]);
+									// a database connection is not allowed to create new databases, so we need to check if the database exists
+									if (newDatabaseName !== 'data' && !databases[newDatabaseName]) {
+										logger.warn?.('Database not found', newDatabaseName);
+										return;
+									}
+									table = ensureTableIfChanged(tableDefinition, databases[newDatabaseName]?.[tableDefinition.table]);
 								}
 								if (!auditStore) auditStore = table?.auditStore;
-								if (!tables) tables = getDatabases()?.[databaseName];
+								if (!tables) tables = getDatabases()?.[newDatabaseName];
 							}
 						}
 						break;
@@ -481,6 +524,7 @@ export function replicateOverWS(ws, options, authorization) {
 							logger.debug?.('Received operation request', data, 'from', remoteNodeName);
 							server.operation(data, { user: authorization }, !isAuthorizedNode).then(
 								(response) => {
+									logger.debug?.('Requested request from finished', remoteNodeName, response);
 									if (Array.isArray(response)) {
 										// convert an array to an object so we can have a top-level requestId properly serialized
 										response = { results: response };
@@ -489,6 +533,7 @@ export function replicateOverWS(ws, options, authorization) {
 									ws.send(encode([OPERATION_RESPONSE, response]));
 								},
 								(error) => {
+									logger.debug?.('Failed requested operation from', remoteNodeName, error);
 									ws.send(
 										encode([
 											OPERATION_RESPONSE,
@@ -514,6 +559,7 @@ export function replicateOverWS(ws, options, authorization) {
 						break;
 					case OPERATION_RESPONSE:
 						const { resolve, reject } = awaitingResponse.get(data.requestId);
+						logger.debug?.('Received completed operation request', remoteNodeName, data);
 						if (data.error) reject(new Error(data.error));
 						else resolve(data);
 						awaitingResponse.delete(data.requestId);
@@ -607,13 +653,38 @@ export function replicateOverWS(ws, options, authorization) {
 							blobsInFlight.set(fileId, stream);
 						}
 						stream.lastChunk = Date.now();
-						if (finished) {
-							if (error) {
-								stream.on('error', () => {}); // don't treat this as an uncaught error
-								stream.destroy(new Error('Blob error: ' + error));
-							} else stream.end(message[2]);
-							if (stream.connectedToBlob) blobsInFlight.delete(fileId);
-						} else stream.write(message[2]);
+						const blobBody = message[2];
+						recordAction(
+							blobBody.byteLength,
+							'bytes-received',
+							`${remoteNodeName}.${databaseName}`,
+							'replication',
+							'blob'
+						);
+						try {
+							if (finished) {
+								if (error) {
+									stream.on('error', () => {}); // don't treat this as an uncaught error
+									stream.destroy(
+										new Error(
+											'Blob error: ' +
+												error +
+												' for record ' +
+												(stream.recordId ?? 'unknown') +
+												' from ' +
+												remote_node_name
+										)
+									);
+								} else stream.end(blobBody);
+								if (stream.connectedToBlob) blobsInFlight.delete(fileId);
+							} else stream.write(blobBody);
+						} catch (error) {
+							logger.error?.(
+								`Error receiving blob for ${stream.recordId} from ${remoteNodeName} and streaming to storage`,
+								error
+							);
+							blobsInFlight.delete(fileId);
+						}
 						break;
 					}
 					case GET_RECORD: {
@@ -631,7 +702,7 @@ export function replicateOverWS(ws, options, authorization) {
 							// has changed. It will only grow, so we can just check the length.
 							const structuresBinary = table.primaryStore.getBinaryFast(Symbol.for('structures'));
 							const structureLength = structuresBinary?.length ?? 0;
-							if (structureLength !== lastStructureLength) {
+							if (structureLength > 0 && structureLength !== lastStructureLength) {
 								lastStructureLength = structureLength;
 								const structure = decode(structuresBinary);
 								ws.send(
@@ -658,7 +729,7 @@ export function replicateOverWS(ws, options, authorization) {
 									valueBuffer = Buffer.from(valueBuffer);
 									decodeWithBlobCallback(
 										() => table.primaryStore.decoder.decode(binaryEntry),
-										sendBlobs,
+										(blob) => sendBlobs(blob, recordId),
 										table.primaryStore.rootStore
 									);
 								}
@@ -703,11 +774,16 @@ export function replicateOverWS(ws, options, authorization) {
 									entry.key = key;
 									if (!resolve(entry)) {
 										// if it was not moved locally, clean up any blobs that were written
-										if (blobsToDelete) blobsToDelete.forEach(deleteBlob);
+										if (blobsToDelete) {
+											// The blobs are asynchronously used, and it is very difficult to actually know
+											// when they can be safely deleted (we might be able to use a WeakRef with CleanupRegistry).
+											// For now, this should give us plenty of time and provide adequate cleanup measures
+											setTimeout(() => blobsToDelete.forEach(deleteBlob), 60000).unref();
+										}
 									}
 								},
 								(remoteBlob) => {
-									const localBlob = receiveBlobs(remoteBlob); // receive the blob;
+									const localBlob = receiveBlobs(remoteBlob, key); // receive the blob;
 									// track the blobs that were written in case we need to delete them if the record is not moved locally
 									if (!blobsToDelete) blobsToDelete = [];
 									blobsToDelete.push(localBlob);
@@ -949,6 +1025,7 @@ export function replicateOverWS(ws, options, authorization) {
 										}
 									}, SKIPPED_MESSAGE_SEQUENCE_UPDATE_DELAY).unref();
 								}
+								return new Promise(setImmediate); // we still need to yield (otherwise we might never send a sequence id update)
 							}
 
 							const typedStructs = encoder.typedStructs;
@@ -994,7 +1071,11 @@ export function replicateOverWS(ws, options, authorization) {
 								const encoded = auditRecord.encoded;
 								if (auditRecord.extendedType & HAS_BLOBS) {
 									// if there are blobs, we need to find them and send their contents
-									decodeWithBlobCallback(() => auditRecord.getValue(primaryStore), sendBlobs, primaryStore.rootStore);
+									decodeWithBlobCallback(
+										() => auditRecord.getValue(primaryStore),
+										(blob) => sendBlobs(blob, auditRecord.recordId),
+										primaryStore.rootStore
+									);
 								}
 								// If it starts with the previous local time, we omit that
 								const start = encoded[0] === 66 ? 8 : 0;
@@ -1002,12 +1083,34 @@ export function replicateOverWS(ws, options, authorization) {
 								writeBytes(encoded, start);
 								logger.trace?.('wrote record', auditRecord.recordId, 'length:', encoded.length);
 							}
+							// wait if there is back-pressure
+							if (ws._socket.writableNeedDrain) {
+								return new Promise<void>((resolve) => {
+									logger.debug?.(
+										`Waiting for remote node ${remoteNodeName} to allow more commits ${ws._socket.writableNeedDrain ? 'due to network backlog' : 'due to requested flow directive'}`
+									);
+									ws._socket.once('drain', resolve);
+								});
+							} else if (outstandingBlobsBeingSent > MAX_OUTSTANDING_BLOBS_BEING_SENT) {
+								return new Promise((resolve) => {
+									blobSentCallback = resolve;
+								});
+							} else return new Promise(setImmediate); // yield on each turn for fairness and letting other things run
 						};
 						const sendQueuedData = () => {
 							if (position - encodingStart > 8) {
 								// if we have more than just a txn time, send it
 								ws.send(encodingBuffer.subarray(encodingStart, position));
 								logger.debug?.(connectionId, 'Sent message, size:', position - encodingStart);
+								if (databaseName !== 'system') {
+									recordAction(
+										position - encodingStart,
+										'bytes-sent',
+										`${remoteNodeName}.${databaseName}`,
+										'replication',
+										'egress'
+									);
+								}
 							} else logger.debug?.(connectionId, 'skipping empty transaction');
 						};
 
@@ -1077,61 +1180,77 @@ export function replicateOverWS(ws, options, authorization) {
 									let queuedEntries;
 									if (isFirst && !closed) {
 										isFirst = false;
-										const lastRemoved = getLastRemoved(auditStore);
-										// note that lastRemoved may be undefined, in which case we want the comparison to go into this branch (hence !(<=))
-										if (
-											!(lastRemoved <= currentSequenceId) &&
-											(env.get(CONFIG_PARAMS.REPLICATION_COPYTABLESTOCATCHUP) ?? runClone)
-										) {
-											// This means the audit log doesn't extend far enough back, so we need to replicate all the tables
-											// This should only be done on a single node, we don't want full table replication from all the
-											// nodes that are connected to this one:
-											if (server.nodes[0]?.name === remoteNodeName) {
-												logger.info?.('Replicating all tables to', remoteNodeName);
-												let lastSequenceId = currentSequenceId;
-												const nodeId = getThisNodeId(auditStore);
-												for (const tableName in tables) {
-													if (!tableToTableEntry(tableName)) continue; // if we aren't replicating this table, skip it
-													const table = tables[tableName];
-													for (const entry of table.primaryStore.getRange({
-														snapshot: false,
-														// values: false, // TODO: eventually, we don't want to decode, we want to use fast binary transfer
-													})) {
-														if (closed) return;
-														if (entry.localTime >= currentSequenceId) {
-															logger.trace?.(
-																connectionId,
-																'Copying record from',
-																databaseName,
-																tableName,
-																entry.key,
-																entry.localTime
-															);
-															lastSequenceId = Math.max(entry.localTime, lastSequenceId);
-															queuedEntries = true;
-															getSharedStatus()[SENDING_TIME_POSITION] = 1;
-															sendAuditRecord(
-																{
-																	// make it look like an audit record
-																	recordId: entry.key,
-																	tableId: table.tableId,
-																	type: 'put',
-																	getValue() {
-																		return entry.value;
-																	},
-																	encoded: table.primaryStore.getBinary(entry.key), // directly transfer binary data
-																	version: entry.version,
-																	residencyId: entry.residencyId,
-																	nodeId,
-																	extendedType: entry.metadataFlags,
+										if (currentSequenceId === 0) {
+											logger.info?.('Replicating all tables to', remoteNodeName);
+											let lastSequenceId = currentSequenceId;
+											const nodeId = getThisNodeId(auditStore);
+											for (const tableName in tables) {
+												if (!tableToTableEntry(tableName)) continue; // if we aren't replicating this table, skip it
+												const table = tables[tableName];
+												for (const entry of table.primaryStore.getRange({
+													snapshot: false,
+													versions: true,
+													// values: false, // TODO: eventually, we don't want to decode, we want to use fast binary transfer
+												})) {
+													if (closed) return;
+													if (entry.localTime >= currentSequenceId) {
+														logger.trace?.(
+															connectionId,
+															'Copying record from',
+															databaseName,
+															tableName,
+															entry.key,
+															entry.localTime
+														);
+														lastSequenceId = Math.max(entry.localTime, lastSequenceId);
+														queuedEntries = true;
+														getSharedStatus()[SENDING_TIME_POSITION] = 1;
+														const encoded = createAuditEntry(
+															entry.version,
+															table.tableId,
+															entry.key,
+															null,
+															nodeId,
+															null,
+															'put',
+															decodeWithBlobCallback(
+																() => table.primaryStore.encoder.encode(entry.value),
+																(blob) => sendBlobs(blob, entry.key)
+															),
+															entry.metadataFlags & ~0xff, // exclude the lower bits that define the type
+															entry.residencyId,
+															null,
+															entry.expiresAt
+														);
+														await sendAuditRecord(
+															{
+																// make it look like an audit record
+																recordId: entry.key,
+																tableId: table.tableId,
+																type: 'put',
+																getValue() {
+																	return entry.value;
 																},
-																entry.localTime
-															);
-														}
+																encoded,
+																version: entry.version,
+																residencyId: entry.residencyId,
+																nodeId,
+																extendedType: entry.metadataFlags,
+															},
+															entry.localTime
+														);
 													}
 												}
-												currentSequenceId = lastSequenceId;
 											}
+											if (queuedEntries)
+												sendAuditRecord(
+													{
+														type: 'end_txn',
+													},
+													currentSequenceId
+												);
+											getSharedStatus()[SENDING_TIME_POSITION] = 0;
+											currentSequenceId = lastSequenceId;
 										}
 									}
 									for (const { key, value: auditEntry } of auditStore.getRange({
@@ -1144,20 +1263,7 @@ export function replicateOverWS(ws, options, authorization) {
 										logger.debug?.('sending audit record', new Date(key));
 										getSharedStatus()[SENDING_TIME_POSITION] = key;
 										currentSequenceId = key;
-										sendAuditRecord(auditRecord, key);
-										// wait if there is back-pressure
-										if (ws._socket.writableNeedDrain) {
-											await new Promise<void>((resolve) => {
-												logger.debug?.(
-													`Waiting for remote node ${remoteNodeName} to allow more commits ${ws._socket.writableNeedDrain ? 'due to network backlog' : 'due to requested flow directive'}`
-												);
-												ws._socket.once('drain', resolve);
-											});
-										} else if (outstandingBlobsBeingSent > MAX_OUTSTANDING_BLOBS_BEING_SENT) {
-											await new Promise((resolve) => {
-												blobSentCallback = resolve;
-											});
-										} else await new Promise(setImmediate); // yield on each turn for fairness and letting other things run
+										await sendAuditRecord(auditRecord, key);
 										auditSubscription.startTime = key; // update so don't double send
 										queuedEntries = true;
 									}
@@ -1196,6 +1302,7 @@ export function replicateOverWS(ws, options, authorization) {
 					lastSequenceIdReceived = sequenceIdReceived = decoder.readFloat64();
 					replicationSharedStatus[RECEIVED_VERSION_POSITION] = lastSequenceIdReceived;
 					replicationSharedStatus[RECEIVED_TIME_POSITION] = Date.now();
+					replicationSharedStatus[RECEIVING_STATUS_POSITION] = RECEIVING_STATUS_WAITING;
 					logger.trace?.('received remote sequence update', lastSequenceIdReceived, databaseName);
 					break;
 				}
@@ -1217,20 +1324,24 @@ export function replicateOverWS(ws, options, authorization) {
 					);
 				}
 				try {
-					decodeBlobsWithWrites(() => {
-						event = {
-							table: tableDecoder.name,
-							id: auditRecord.recordId,
-							type: auditRecord.type,
-							nodeId: remoteShortIdToLocalId.get(auditRecord.nodeId),
-							residencyList,
-							timestamp: auditRecord.version,
-							value: auditRecord.getValue(tableDecoder),
-							user: auditRecord.user,
-							beginTxn,
-							expiresAt: auditRecord.expiresAt,
-						};
-					}, receiveBlobs);
+					const id = auditRecord.recordId;
+					decodeBlobsWithWrites(
+						() => {
+							event = {
+								table: tableDecoder.name,
+								id: auditRecord.recordId,
+								type: auditRecord.type,
+								nodeId: remoteShortIdToLocalId.get(auditRecord.nodeId),
+								residencyList,
+								timestamp: auditRecord.version,
+								value: auditRecord.getValue(tableDecoder),
+								user: auditRecord.user,
+								beginTxn,
+								expiresAt: auditRecord.expiresAt,
+							};
+						},
+						(blob) => receiveBlobs(blob, id)
+					);
 				} catch (error) {
 					error.message += 'typed structures for current decoder' + JSON.stringify(tableDecoder.decoder.typedStructs);
 					throw error;
@@ -1250,18 +1361,21 @@ export function replicateOverWS(ws, options, authorization) {
 				);
 				replicationSharedStatus[RECEIVED_VERSION_POSITION] = auditRecord.version;
 				replicationSharedStatus[RECEIVED_TIME_POSITION] = Date.now();
+				replicationSharedStatus[RECEIVING_STATUS_POSITION] = RECEIVING_STATUS_RECEIVING;
 
 				tableSubscriptionToReplicator.send(event);
 				decoder.position = start + eventLength;
 			} while (decoder.position < body.byteLength);
 			outstandingCommits++;
-			recordAction(
-				body.byteLength,
-				'bytes-received',
-				`${remoteNodeName}.${databaseName}.${event?.table || 'unknown_table'}`,
-				'replication',
-				'ingest'
-			);
+			if (databaseName !== 'system') {
+				recordAction(
+					body.byteLength,
+					'bytes-received',
+					`${remoteNodeName}.${databaseName}.${event?.table || 'unknown_table'}`,
+					'replication',
+					'ingest'
+				);
+			}
 			if (outstandingCommits > MAX_OUTSTANDING_COMMITS && !replicationPaused) {
 				replicationPaused = true;
 				ws.pause();
@@ -1276,13 +1390,15 @@ export function replicateOverWS(ws, options, authorization) {
 				async onCommit() {
 					if (event) {
 						const latency = Date.now() - event.timestamp;
-						recordAction(
-							latency,
-							'replication-latency',
-							remoteNodeName + '.' + databaseName + '.' + event.table,
-							event.type,
-							'ingest'
-						);
+						if (databaseName !== 'system') {
+							recordAction(
+								latency,
+								'replication-latency',
+								remoteNodeName + '.' + databaseName + '.' + event.table,
+								event.type,
+								'ingest'
+							);
+						}
 					}
 					outstandingCommits--;
 					if (replicationPaused) {
@@ -1309,7 +1425,7 @@ export function replicateOverWS(ws, options, authorization) {
 		} catch (error) {
 			logger.error?.(connectionId, 'Error handling incoming replication message', error);
 		}
-	});
+	}
 	ws.on('ping', resetPingTimer);
 	ws.on('pong', () => {
 		if (options.connection) {
@@ -1320,12 +1436,14 @@ export function replicateOverWS(ws, options, authorization) {
 				replicationSharedStatus[LATENCY_POSITION] = latency;
 			}
 			// update the manager with latest connection information
-			connectedToNode({
-				name: remoteNodeName,
-				database: databaseName,
-				url: options.url,
-				latency,
-			});
+			if (options.isSubscriptionConnection) {
+				connectedToNode({
+					name: remoteNodeName,
+					database: databaseName,
+					url: options.url,
+					latency,
+				});
+			}
 		}
 		lastPingTime = null;
 	});
@@ -1352,10 +1470,18 @@ export function replicateOverWS(ws, options, authorization) {
 			logger.error?.(connectionId, 'Error closing connection', error);
 		}
 	}
-
-	async function sendBlobs(blob) {
+	// Track the blobs being sent, so we can wait for them to finish before sending the next blob.
+	// The same blobs can't be sent concurrently of the packets will get mixed up. The receiving
+	// end should handle aggregated the results of the same blob for separate record requests.
+	const blobsBeingSent = new Set();
+	async function sendBlobs(blob: Blob, recordId: any) {
 		// found a blob, start sending it
 		const id = getFileId(blob);
+		if (blobsBeingSent.has(id)) {
+			logger.debug?.('Blob already being sent', id);
+			return;
+		}
+		blobsBeingSent.add(id);
 		try {
 			let lastBuffer: Buffer;
 			outstandingBlobsBeingSent++;
@@ -1380,6 +1506,7 @@ export function replicateOverWS(ws, options, authorization) {
 					await new Promise((resolve) => ws._socket.once('drain', resolve));
 					logger.debug?.('drained', id);
 				}
+				recordAction(buffer.length, 'bytes-sent', `${remoteNodeName}.${databaseName}`, 'replication', 'blob');
 			}
 			logger.debug?.('Sending final blob chunk', id, 'length', lastBuffer.length);
 			ws.send(
@@ -1394,7 +1521,7 @@ export function replicateOverWS(ws, options, authorization) {
 				])
 			);
 		} catch (error) {
-			logger.debug?.('Error sending blob', error);
+			logger.warn?.('Error sending blob', error, 'blob id', id, 'for record', recordId);
 			ws.send(
 				encode([
 					BLOB_CHUNK,
@@ -1407,11 +1534,12 @@ export function replicateOverWS(ws, options, authorization) {
 				])
 			);
 		} finally {
+			blobsBeingSent.delete(id);
 			outstandingBlobsBeingSent--;
 			if (outstandingBlobsBeingSent < MAX_OUTSTANDING_BLOBS_BEING_SENT) blobSentCallback?.();
 		}
 	}
-	function receiveBlobs(remoteBlob: Blob) {
+	function receiveBlobs(remoteBlob: Blob, id: string | number) {
 		// write the blob to the blob store
 		const blobId = getFileId(remoteBlob);
 		let stream = blobsInFlight.get(blobId);
@@ -1426,8 +1554,10 @@ export function replicateOverWS(ws, options, authorization) {
 		}
 		stream.connectedToBlob = true;
 		stream.lastChunk = Date.now();
+		stream.recordId = id;
 		if (remoteBlob.size === undefined && stream.expectedSize) remoteBlob.size = stream.expectedSize;
-		const localBlob = createBlob(stream, remoteBlob);
+		const localBlob = stream.blob ?? createBlob(stream, remoteBlob);
+		stream.blob = localBlob; // record the blob so we can reuse it if another request uses the same blob
 
 		// start the save immediately
 		const finished = localBlob.save({
@@ -1455,6 +1585,9 @@ export function replicateOverWS(ws, options, authorization) {
 		if (options.connection?.isFinished)
 			throw new Error('Can not make a subscription request on a connection that is already closed');
 		const lastTxnTimes = new Map();
+		if (!auditStore)
+			// if it hasn't been set yet, do so now
+			auditStore = tableSubscriptionToReplicator?.auditStore;
 		// iterate through all the sequence entries and find the newest txn time for each node
 		try {
 			for (const entry of tableSubscriptionToReplicator?.dbisDB?.getRange({
@@ -1524,13 +1657,30 @@ export function replicateOverWS(ws, options, authorization) {
 					}
 				}
 			}
-			receivingDataFromNodeIds.push(nodeId);
+			if (nodeId === undefined) {
+				logger.warn('Starting subscription request from node', node, 'but no node id found');
+			} else receivingDataFromNodeIds.push(nodeId);
 			// if another node had previously acted as a proxy, it may not have the same sequence ids, but we can use the last
 			// originating txn time, and sequence ids should always be higher than their originating txn time, and starting from them should overlap
 			if (lastTxnTimes.get(nodeId) > startTime) {
 				startTime = lastTxnTimes.get(nodeId);
 				logger.debug?.('Updating start time from more recent txn recorded', connectedNode.name, startTime);
 			}
+			if (startTime === 1 && leaderUrl) {
+				// if we are starting from scratch and we have a leader URL, we directly ask for a copy from that database
+				try {
+					if (new URL(leaderUrl).hostname === node.name) {
+						logger.warn?.(`Requesting full copy of database ${databaseName} from ${leaderUrl}`);
+						startTime = 0; // use this to indicate that we want to fully copy
+					} else {
+						// for all other nodes, start at right now (minus a minute for overlap)
+						startTime = Date.now() - 60000;
+					}
+				} catch (error) {
+					logger.error?.('Error parsing leader URL', leaderUrl, error);
+				}
+			}
+			logger.trace?.(connectionId, 'defining subscription request', node.name, databaseName, new Date(startTime));
 			return {
 				name: node.name,
 				replicateByDefault,
@@ -1653,13 +1803,15 @@ export function replicateOverWS(ws, options, authorization) {
 	}
 	blobsTimer = setInterval(() => {
 		for (const [blobId, stream] of blobsInFlight) {
-			if (stream.lastChunk + 30000 < Date.now()) {
-				logger.warn?.(`Timeout waiting for blob stream to finish ${blobId} from ${remoteNodeName}`);
+			if (stream.lastChunk + blobTimeout < Date.now()) {
+				logger.warn?.(
+					`Timeout waiting for blob stream to finish ${blobId} for record ${stream.recordId ?? 'unknown'} from ${remoteNodeName}`
+				);
 				blobsInFlight.delete(blobId);
 				stream.end();
 			}
 		}
-	}, 30000).unref();
+	}, blobTimeout).unref();
 
 	let nextId = 1;
 	const sentTableNames = [];
@@ -1753,10 +1905,6 @@ export function replicateOverWS(ws, options, authorization) {
 	// Check the attributes in the msg vs the table and if they dont match call ensureTable to create them
 	function ensureTableIfChanged(tableDefinition: any, existingTable: any) {
 		const dbName = tableDefinition.database ?? 'data';
-		if (dbName !== 'data' && !databases[dbName]) {
-			logger.warn?.('Database not found', tableDefinition.database);
-			return;
-		}
 		if (!existingTable) existingTable = {};
 		const wasSchemaDefined = existingTable.schemaDefined;
 		let hasChanges = false;
@@ -1770,9 +1918,9 @@ export function replicateOverWS(ws, options, authorization) {
 				if (wasSchemaDefined) {
 					// if the schema is defined, we will not change, we will honor our local definition, as it is just going to cause a battle between nodes if there are differences that we try to propagate
 					logger.error?.(
-						`Schema for '${database_name}.${table_definition.table}' is defined locally, but attribute '${ensure_attribute.name}: ${ensure_attribute.type}' from '${
+						`Schema for '${databaseName}.${tableDefinition.table}' is defined locally, but attribute '${ensureAttribute.name}: ${ensureAttribute.type}' from '${
 							remoteNodeName
-						}' does not match local attribute ${existing_attribute ? "'" + existingAttribute.name + ': ' + existingAttribute.type + "'" : 'which does not exist'}`
+						}' does not match local attribute ${existingAttribute ? "'" + existingAttribute.name + ': ' + existingAttribute.type + "'" : 'which does not exist'}`
 					);
 				} else {
 					hasChanges = true;

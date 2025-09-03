@@ -2,7 +2,8 @@ import { parentPort, threadId } from 'worker_threads';
 import { setChildListenerByType } from '../../server/threads/manageThreads.js';
 import { getDatabases, table } from '../databases.ts';
 import type { Databases, Table, Tables } from '../databases.ts';
-import { getLogFilePath, forComponent } from '../../utility/logging/harper_logger.js';
+import harperLogger from '../../utility/logging/harper_logger.js';
+const { getLogFilePath, forComponent } = harperLogger;
 import { dirname, join } from 'path';
 import { open } from 'fs/promises';
 import { getNextMonotonicTime } from '../../utility/lmdb/commonUtility.js';
@@ -34,9 +35,12 @@ interface Action {
 
 let activeActions = new Map<string, Action>();
 let analyticsEnabled = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) > -1;
+let sendAnalyticsTimeout: NodeJS.Timeout;
 
 export function setAnalyticsEnabled(enabled: boolean) {
 	analyticsEnabled = enabled;
+	clearTimeout(sendAnalyticsTimeout); // reset this
+	sendAnalyticsTimeout = null;
 }
 
 function recordExistingAction(value: Value, action: Action) {
@@ -106,7 +110,7 @@ export function recordAction(value: Value, metric: string, path?: string, method
 	} else {
 		recordNewAction(key, value, metric, path, method, type);
 	}
-	if (!analyticsStart) sendAnalytics();
+	if (!sendAnalyticsTimeout) sendAnalytics();
 }
 
 server.recordAnalytics = recordAction;
@@ -116,9 +120,10 @@ export function recordActionBinary(value, metric, path?, method?, type?) {
 }
 
 let analyticsStart = 0;
-const ANALYTICS_DELAY = 1000;
+export const analyticsDelay = 1000;
 const ANALYTICS_REPORT_TYPE = 'analytics-report';
 const analyticsListeners = [];
+const analyticsAggregateListeners = [];
 
 export function addAnalyticsListener(callback) {
 	analyticsListeners.push(callback);
@@ -130,8 +135,9 @@ const IDEAL_PERCENTILES = [0.01, 0.1, 0.25, 0.5, 0.75, 0.9, 0.95, 0.99, 0.999, 1
  * Periodically send analytics data back to the main thread for storage
  */
 function sendAnalytics() {
-	analyticsStart = performance.now();
-	setTimeout(async () => {
+	analyticsStart ||= performance.now();
+	sendAnalyticsTimeout = setTimeout(async () => {
+		sendAnalyticsTimeout = null;
 		const period = performance.now() - analyticsStart;
 		analyticsStart = 0;
 		const metrics = [];
@@ -202,7 +208,7 @@ function sendAnalytics() {
 				report,
 			});
 		else recordAnalytics({ report });
-	}, ANALYTICS_DELAY).unref();
+	}, analyticsDelay).unref();
 }
 
 export async function recordHostname() {
@@ -268,10 +274,7 @@ export function calculateCPUUtilization(resourceUsage: ResourceUsage, period: nu
  *  process.resourceUsage() return value and normalizes and diffs the two values to return the
  *  new values for this time period.
  */
-export function diffResourceUsage(
-	lastResourceUsage: ResourceUsage,
-	resourceUsage: ResourceUsage
-): ResourceUsage {
+export function diffResourceUsage(lastResourceUsage: ResourceUsage, resourceUsage: ResourceUsage): ResourceUsage {
 	return {
 		userCPUTime: resourceUsage.userCPUTime - (lastResourceUsage?.userCPUTime ?? 0),
 		systemCPUTime: resourceUsage.systemCPUTime - (lastResourceUsage?.systemCPUTime ?? 0),
@@ -502,6 +505,11 @@ async function aggregation(fromPeriod, toPeriod = 60000) {
 		storeMetric(analyticsTable, value);
 		hasUpdates = true;
 	}
+	if (hasUpdates) {
+		for (const listener of analyticsAggregateListeners) {
+			listener(aggregateActions.values());
+		}
+	}
 	const now = Date.now();
 	const { idle, active } = performance.eventLoopUtilization();
 	// don't record boring entries
@@ -630,7 +638,7 @@ function startScheduledTasks() {
 	if (AGGREGATE_PERIOD) {
 		setInterval(
 			async () => {
-				await aggregation(ANALYTICS_DELAY, AGGREGATE_PERIOD);
+				await aggregation(analyticsDelay, AGGREGATE_PERIOD);
 				await cleanup(getRawAnalyticsTable(), RAW_EXPIRATION);
 				await cleanup(getAnalyticsTable(), AGGREGATE_EXPIRATION);
 			},
@@ -689,6 +697,11 @@ async function logAnalytics(report) {
 	await analyticsLog.write(JSON.stringify(report) + '\n', position);
 }
 
+export function onAnalyticsAggregate(callback) {
+	if (callback) {
+		analyticsAggregateListeners.push(callback);
+	}
+}
 /**
  * This section contains a possible/experimental approach to bucketing values as they come instead of pushing all into an array and sorting.
  *

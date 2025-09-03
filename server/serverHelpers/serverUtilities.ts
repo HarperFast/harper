@@ -24,7 +24,6 @@ import jobs from '../jobs/jobs.js';
 import * as terms from '../../utility/hdbTerms.ts';
 import { hdbErrors, handleHDBError } from '../../utility/errors/hdbError.js';
 const { HTTP_STATUS_CODES } = hdbErrors;
-import reg from '../../utility/registration/registrationHandler.js';
 import restart from '../../bin/restart.js';
 import * as util from 'util';
 import insert from '../../dataLayer/insert.js';
@@ -36,7 +35,6 @@ import * as auth from '../../security/auth.ts';
 import configUtils from '../../config/configUtils.js';
 import transactionLog from '../../utility/logging/transactionLog.js';
 import npmUtilities from '../../utility/npmUtilities.js';
-import { setServerUtilities } from '../../resources/Table.ts';
 import { _assignPackageExport } from '../../globals.js';
 import { transformReq } from '../../utility/common_utils.js';
 import { server } from '../Server.ts';
@@ -46,9 +44,11 @@ import * as setNode from '../../server/replication/setNode.ts';
 import * as analytics from '../../resources/analytics/read.ts';
 import operationFunctionCaller from '../../utility/OperationFunctionCaller.js';
 import type { OperationRequest, OperationRequestBody, OperationResult } from '../operationsServer.ts';
-import { transactToClusteringUtils } from '../../utility/clustering/transactToClusteringUtilities.js';
+import tcu from '../../utility/clustering/transactToClusteringUtilities.js';
+const { transactToClusteringUtils } = tcu;
 import type { Context } from '../../resources/ResourceInterface.ts';
 import * as status from '../status/index.ts';
+import * as usageLicensing from '../../resources/usageLicensing.ts';
 
 const pSearchSearch = util.promisify(search.search);
 const pSqlEvaluateSql = util.promisify(sql.evaluateSQL);
@@ -111,7 +111,6 @@ export async function processLocalTransaction(req: OperationRequest, operationFu
 
 const OPERATION_FUNCTION_MAP = initializeOperationFunctionMap();
 
-setServerUtilities(exports);
 server.operation = operation;
 
 export function chooseOperation(json: OperationRequestBody) {
@@ -290,7 +289,7 @@ export async function executeJob(json: OperationRequestBody): Promise<JobResult>
 		}
 	} catch (err) {
 		const error = err instanceof Error ? err : null;
-		const message = `There was an error executing job: ${(error && 'http_resp_msg' in error) ? error.http_resp_msg : err}`;
+		const message = `There was an error executing job: ${error && 'http_resp_msg' in error ? error.http_resp_msg : err}`;
 		operationLog.error(message);
 		throw handleHDBError(err, message);
 	}
@@ -371,9 +370,6 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		new OperationFunctionObject(jobs.handleGetJobsByStartDate)
 	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_JOB, new OperationFunctionObject(jobs.handleGetJob));
-	opFuncMap.set(terms.OPERATIONS_ENUM.GET_FINGERPRINT, new OperationFunctionObject(reg.getFingerprint));
-	opFuncMap.set(terms.OPERATIONS_ENUM.SET_LICENSE, new OperationFunctionObject(reg.setLicense));
-	opFuncMap.set(terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO, new OperationFunctionObject(reg.getRegistrationInfo));
 	opFuncMap.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(restart.restart));
 	opFuncMap.set(terms.OPERATIONS_ENUM.RESTART_SERVICE, new OperationFunctionObject(executeJob, restart.restartService));
 	opFuncMap.set(terms.OPERATIONS_ENUM.CATCHUP, new OperationFunctionObject(catchup));
@@ -482,10 +478,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		terms.OPERATIONS_ENUM.DELETE_SSH_KEY,
 		new OperationFunctionObject(customFunctionOperations.deleteSSHKey)
 	);
-	opFuncMap.set(
-		terms.OPERATIONS_ENUM.LIST_SSH_KEYS,
-		new OperationFunctionObject(customFunctionOperations.listSSHKeys)
-	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.LIST_SSH_KEYS, new OperationFunctionObject(customFunctionOperations.listSSHKeys));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.SET_SSH_KNOWN_HOSTS,
 		new OperationFunctionObject(customFunctionOperations.setSSHKnownHosts)
@@ -497,11 +490,20 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_ANALYTICS, new OperationFunctionObject(analytics.getOp));
 	opFuncMap.set(terms.OPERATIONS_ENUM.LIST_METRICS, new OperationFunctionObject(analytics.listMetricsOp));
 	opFuncMap.set(terms.OPERATIONS_ENUM.DESCRIBE_METRIC, new OperationFunctionObject(analytics.describeMetricOp));
-	
+
 	// set status operations
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_STATUS, new OperationFunctionObject(status.get));
 	opFuncMap.set(terms.OPERATIONS_ENUM.SET_STATUS, new OperationFunctionObject(status.set));
 	opFuncMap.set(terms.OPERATIONS_ENUM.CLEAR_STATUS, new OperationFunctionObject(status.clear));
+
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.INSTALL_USAGE_LICENSE,
+		new OperationFunctionObject(usageLicensing.installUsageLicenseOp)
+	);
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.GET_USAGE_LICENSES,
+		new OperationFunctionObject(usageLicensing.getUsageLicensesOp)
+	);
 
 	return opFuncMap;
 }

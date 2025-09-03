@@ -18,6 +18,7 @@
 	"rules": {
 		"no-console": "off",
 		"no-constant-condition": "off",
+		"prefer-const": "off",
 		"sonarjs/cognitive-complexity": ["error", 250],
 		"sonarjs/no-useless-catch": "off",
 		"sonarjs/no-identical-functions": "off",

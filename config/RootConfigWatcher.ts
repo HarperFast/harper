@@ -8,10 +8,12 @@ export class RootConfigWatcher extends EventEmitter {
 	#configFilePath: string;
 	#watcher: FSWatcher;
 	#config: any;
+	ready: Promise<any[]>;
 
 	constructor() {
 		super();
 		this.#configFilePath = getConfigFilePath();
+		this.ready = once(this, 'ready');
 		this.#watcher = chokidar
 			.watch(this.#configFilePath, { persistent: false })
 			.on('add', this.handleChange.bind(this))
@@ -41,10 +43,6 @@ export class RootConfigWatcher extends EventEmitter {
 			.catch((error) => {
 				// if yaml parse error ignore?
 			});
-	}
-
-	ready() {
-		return once(this, 'ready');
 	}
 
 	close() {

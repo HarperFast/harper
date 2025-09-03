@@ -161,7 +161,7 @@ describe('Blob test', () => {
 		await BlobTest.delete(3);
 		assert(existsSync(filePath)); // should not immediately be deleted
 		BlobTest.auditStore.scheduleAuditCleanup(1); // prune audit log, so the blob is actually deleted
-		await delay(60); // wait for audit log removal and deletion
+		await delay(100); // wait for audit log removal and deletion
 		assert(!existsSync(filePath));
 
 		blob = await createBlob(Readable.from(testString));
@@ -327,6 +327,24 @@ describe('Blob test', () => {
 				record.blob = 'not a blob either';
 			});
 		}
+	});
+	it('sequential embedded blob reads', async () => {
+		for (let i = 0; i < 10; i++) {
+			let bytes = new Uint8Array(1000).fill(0);
+			bytes[0] = i;
+			const blob = createBlob(bytes);
+			await BlobTest.put({ id: i, blob });
+		}
+		let promises = [];
+		for (let i = 0; i < 10; i++) {
+			promises.push(
+				Promise.resolve(BlobTest.get(i)).then(async (record) => {
+					let bytes = await record.blob.bytes();
+					assert.equal(bytes[0], i);
+				})
+			);
+		}
+		await Promise.all(promises);
 	});
 	afterEach(function () {
 		setAuditRetention(60000);

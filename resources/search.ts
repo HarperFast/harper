@@ -6,7 +6,7 @@ import { INVALIDATED, EVICTED } from './Table.ts';
 import type { DirectCondition, Id } from './ResourceInterface.ts';
 import { MultiPartId } from './Resource.ts';
 import { RequestTarget } from './RequestTarget.ts';
-import { lastMetadata } from './RecordEncoder';
+import { lastMetadata } from './RecordEncoder.ts';
 // these are ratios/percentages of overall table size
 const OPEN_RANGE_ESTIMATE = 0.3;
 const BETWEEN_ESTIMATE = 0.1;
@@ -338,6 +338,7 @@ export function searchByIndex(
 					}
 				: (entry) => {
 						if (entry.value == null && !(entry.metadataFlags & (INVALIDATED | EVICTED))) return SKIP;
+						if (context?._freezeRecords) Object.freeze(entry.value);
 						return entry;
 					}
 		);
@@ -350,6 +351,7 @@ export function searchByIndex(
 				if (typeof entry === 'object' && entry) {
 					const { key, ...otherProps } = entry;
 					const loadedEntry = Table.primaryStore.getEntry(key);
+					if (context?._freezeRecords) Object.freeze(loadedEntry?.value);
 					return { ...otherProps, ...loadedEntry };
 				}
 				return entry;

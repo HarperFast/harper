@@ -18,6 +18,9 @@ on:
       httpsOn:
         type: boolean
         default: false
+      httpsAlso:
+        type: boolean
+        default: false
       generatePassword:
         type: boolean
         default: false
@@ -84,8 +87,13 @@ jobs:
           echo "Using secure ports"
           export HTTP_VARS="--HTTP_SECUREPORT 9926 --OPERATIONSAPI_NETWORK_SECUREPORT 9925"
           fi
+          if [ "${{ inputs.httpsAlso }}" == "true" ];
+          then
+          echo "Adding HTTPS ports alongside HTTP"
+          export HTTP_VARS="--HTTP_PORT 9926 --OPERATIONSAPI_NETWORK_PORT 9925 --HTTP_SECUREPORT 9953 --OPERATIONSAPI_NETWORK_SECUREPORT 9943 --HTTP_MTLS true"
+          fi
 
-          export CLI_ARGS="--TC_AGREEMENT yes --ROOTPATH /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --LOGGING_LEVEL trace --THREADS_COUNT 3 --LOGGING_ROTATION_ENABLED false --REPLICATION_HOSTNAME "node-$CURRENT_NODE" --REPLICATION_URL wss://\$SERVER_IP:9933 --CLUSTERING_ENABLED false --CLUSTERING true --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PORT 12345 --CLUSTERING_LOGLEVEL info --CLUSTERING_REPUBLISHMESSAGES true --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) \$HTTP_VARS"
+          export CLI_ARGS="--TC_AGREEMENT yes --ROOTPATH /home/ubuntu/hdb --HDB_ADMIN_USERNAME $HDB_ADMIN_USERNAME --HDB_ADMIN_PASSWORD $HDB_ADMIN_PASSWORD --LOGGING_LEVEL trace --THREADS_COUNT 3 --LOGGING_ROTATION_ENABLED false --REPLICATION_HOSTNAME "node-$CURRENT_NODE" --REPLICATION_URL wss://\$SERVER_IP:9933 --CLUSTERING_ENABLED false --CLUSTERING true --CLUSTERING_PASSWORD $CLUSTERING_PASSWORD --CLUSTERING_USER $CLUSTERING_USERNAME --CLUSTERING_PORT 12345 --CLUSTERING_LOGLEVEL info --CLUSTERING_REPUBLISHMESSAGES true --NODE_NAME $(echo "$public_dns_name" | cut -d '.' -f 1) --LICENSE_MODE test \$HTTP_VARS"
 
           if [ "${{ inputs.installType }}" == "sourceCode" ];
           then

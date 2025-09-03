@@ -6,12 +6,11 @@ import { Scope } from '../components/Scope.ts';
 import { Socket } from 'node:net';
 import harperLogger from '../utility/logging/harper_logger.js';
 import { parentPort } from 'node:worker_threads';
-import env from '../utility/environment/environmentManager';
+import env from '../utility/environment/environmentManager.js';
 import * as terms from '../utility/hdbTerms.ts';
 import { resolvePath } from '../config/configUtils.js';
 import { getTicketKeys } from './threads/manageThreads.js';
 import { createTLSSelector } from '../security/keys.js';
-import { checkMemoryLimit } from '../utility/registration/hdb_license.js';
 import { createSecureServer } from 'node:http2';
 import { createServer as createSecureServerHttp1 } from 'node:https';
 import { createServer, IncomingMessage } from 'node:http';
@@ -23,7 +22,9 @@ import { Readable } from 'node:stream';
 import { server } from './Server.ts';
 import { setPortServerMap, SERVERS } from './serverRegistry.ts';
 import { getComponentName } from '../components/componentLoader.ts';
+import { throttle } from './throttle.ts';
 import { WebSocketServer } from 'ws';
+import { isLicensed } from '../resources/usageLicensing.ts';
 
 const { errorToString } = harperLogger;
 server.http = httpServer;
@@ -247,10 +248,7 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 				ciphers: tlsConfig.ciphers ?? tlsConfig[0]?.ciphers,
 			});
 		}
-		const licenseWarning = checkMemoryLimit();
-		const server = (httpServers[port] = (
-			secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer
-		)(options, async (nodeRequest: IncomingMessage, nodeResponse: any) => {
+		const requestHandler = async (nodeRequest: IncomingMessage, nodeResponse: any) => {
 			const startTime = performance.now();
 			let requestId = 0;
 			try {
@@ -271,12 +269,11 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 				if (!response.headers?.set) {
 					response.headers = new Headers(response.headers);
 				}
-				if (licenseWarning)
-					response.headers?.set?.(
-						'Server',
-						'Unlicensed HarperDB, this should only be used for educational and development purposes'
-					);
-				else response.headers?.set?.('Server', 'HarperDB');
+				if (await isLicensed()) {
+					response.headers.set('Server', 'HarperDB');
+				} else {
+					response.headers.set('Server', 'Unlicensed HarperDB, this should only be used for educational and development purposes');
+				}
 
 				if (response.status === -1) {
 					// This means the HDB stack didn't handle the request, and we can then cascade the request
@@ -290,6 +287,7 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 					return httpServers[port].emit('unhandled', nodeRequest, nodeResponse);
 				}
 				const status = response.status || 200;
+				nodeResponse.statusCode = status;
 				const endTime = performance.now();
 				const executionTime = endTime - startTime;
 				let body = response.body;
@@ -327,7 +325,7 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 						if (deferWriteHead) {
 							// if we are deferring, we need to set the statusCode and headers, let any other headers be set later
 							// until the first write
-							nodeResponse.statusCode = status;
+
 							if (headers) {
 								if (headers[Symbol.iterator]) {
 									for (const [name, value] of headers) {
@@ -398,6 +396,26 @@ function getHTTPServer(port, secure, isOperationsServer, isMtls) {
 					else harperLogger.info(error);
 				} else harperLogger.error(error);
 			}
+		};
+		// create a throttled version of the request handler, so we can throttle POST requests
+		const throttledRequestHandler = throttle(
+			requestHandler,
+			(nodeRequest: IncomingMessage, nodeResponse: any) => {
+				// if the request queue is taking too long, we want to return an error
+				nodeResponse.statusCode = 503;
+				nodeResponse.end('Service unavailable, exceeded request queue limit');
+				recordAction(true, 'service-unavailable', port);
+			},
+			env.get(serverPrefix + '_requestQueueLimit')
+		);
+		const server = (httpServers[port] = (
+			secure ? (http2 ? createSecureServer : createSecureServerHttp1) : createServer
+		)(options, (nodeRequest: IncomingMessage, nodeResponse: any) => {
+			// throttle the requests that can make data modifications because they are more likely to be slow and we don't
+			// want to block or slow down other activity
+			const method = nodeRequest.method;
+			if (method === 'GET' || method === 'OPTIONS' || method === 'HEAD') requestHandler(nodeRequest, nodeResponse);
+			else throttledRequestHandler(nodeRequest, nodeResponse);
 		}));
 
 		// Node v16 and earlier required setting this as a property; but carefully, we must only set if it is actually a

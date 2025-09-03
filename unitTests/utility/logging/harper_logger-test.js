@@ -481,7 +481,9 @@ describe('Test harper_logger module', () => {
 		it('Test root dir used if home dir undefined', () => {
 			const homedir_stub = sandbox.stub(os, 'homedir').returns(undefined);
 			const result = getPropsFilePath();
-			expect(result.includes(`harperdb${path.sep}utility${path.sep}hdb_boot_properties.file`)).to.be.true;
+			expect(
+				result.endsWith(`${path.sep}utility${path.sep}hdb_boot_properties.file`),
+				result).to.be.true;
 			homedir_stub.restore();
 		});
 	});

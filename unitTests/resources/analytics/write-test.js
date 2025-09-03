@@ -59,7 +59,7 @@ describe('diffResourceUsage', () => {
 			...resourceUsage,
 			userCPUTime: 1000,
 			systemCPUTime: 2000,
-		})
+		});
 	});
 });
 

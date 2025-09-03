@@ -31,9 +31,9 @@ const { sendOperationToNode } = require('../../server/replication/replicator.ts'
 const { updateConfigCert } = require('../../security/keys.js');
 const { restartWorkers } = require('../../server/threads/manageThreads.js');
 const { databases } = require('../../resources/databases.ts');
-const { clusterStatus } = require('../clustering/clusterStatus.js');
 const { set: setStatus } = require('../../server/status/index.ts');
 const { HTTP_STATUS_CODES } = require('../errors/commonErrors.js');
+const { cliOperations } = require('../../bin/cliOperations.js');
 
 // Custom error class for clone node operations
 class CloneNodeError extends Error {
@@ -422,7 +422,7 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
  */
 async function checkSyncStatus(targetTimestamps) {
 	// Get cluster status
-	const clusterResponse = await clusterStatus();
+	const clusterResponse = await cliOperations({ operation: 'cluster_status' });
 
 	// There should always be a response with at least an empty connections []
 	for (const connection of clusterResponse.connections) {

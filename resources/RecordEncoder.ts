@@ -19,6 +19,7 @@ import {
 import * as harperLogger from '../utility/logging/harper_logger.js';
 import './blob.ts';
 import { blobsWereEncoded, decodeFromDatabase, deleteBlobsInObject, encodeBlobsWithFilePath } from './blob.ts';
+import { recordAction } from './analytics/write.ts';
 export type Entry = {
 	key: any;
 	value: any;
@@ -50,6 +51,7 @@ export const HAS_RESIDENCY_ID = 32;
 export const PENDING_LOCAL_TIME = 1;
 export const HAS_STRUCTURE_UPDATE = 0x100;
 
+const TRACKED_WRITE_TYPES = new Set(['put', 'patch', 'delete', 'message', 'publish']);
 // For now we use this as the private property mechanism for mapping records to entries.
 // WeakMaps are definitely not the fastest form of private properties, but they are the only
 // way to do this with how the objects are frozen for now.
@@ -214,6 +216,7 @@ export class RecordEncoder extends Encoder {
 					[METADATA]: metadataFlags,
 					expiresAt,
 					residencyId,
+					size: end - start,
 				};
 				return value;
 			} // else a normal entry
@@ -245,6 +248,7 @@ export function handleLocalTimeForGets(store, rootStore) {
 				entry.metadataFlags = lastMetadata[METADATA];
 				entry.localTime = lastMetadata.localTime;
 				entry.residencyId = lastMetadata.residencyId;
+				entry.size = lastMetadata.size;
 				if (lastMetadata.expiresAt >= 0) {
 					entry.expiresAt = lastMetadata.expiresAt;
 				}
@@ -470,6 +474,10 @@ export function recordUpdater(store, tableId, auditStore) {
 					}
 				);
 			}
+			if (options?.tableToTrack && TRACKED_WRITE_TYPES.has(type)) {
+				recordAction(lastValueEncoding?.length ?? 1, 'db-write', options.tableToTrack, null);
+			}
+
 			return result;
 		} catch (error) {
 			error.message += ' id: ' + id + ' options: ' + putOptions;

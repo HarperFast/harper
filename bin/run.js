@@ -47,6 +47,12 @@ const HDB_NOT_FOUND_MSG = 'HarperDB not found, starting install process.';
 const INSTALL_ERR = 'There was an error during install, check install_log.log for more details.  Exiting.';
 const HDB_STARTED = 'HarperDB successfully started.';
 
+function addUnhandleRejectionListener() {
+	process.on('unhandledRejection', (reason, promise) => {
+		hdbLogger.error('Unhandled promise rejection: Promise', promise, 'reason:', reason);
+	});
+}
+
 function addExitListeners() {
 	if (!skipExitListeners) {
 		const removeHdbPid = () => {
@@ -71,11 +77,15 @@ function addExitListeners() {
 /**
  * Do the initial checks and potential upgrades/installation
  * @param calledByInstall
+ * @param calledByMain
  * @returns {Promise<void>}
  */
 async function initialize(calledByInstall = false, calledByMain = false) {
 	// Check to see if HDB is installed, if it isn't we call install.
 	console.log(chalk.magenta('Starting HarperDB...'));
+
+	addUnhandleRejectionListener();
+
 	hdbLogger.suppressLogging?.(() => {
 		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'utility/install/ascii_logo.txt'))));
 	});

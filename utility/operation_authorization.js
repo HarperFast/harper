@@ -31,7 +31,6 @@ const clusterNetwork = require('../utility/clustering/clusterNetwork.js');
 const routes = require('../utility/clustering/routes.js');
 const commonUtils = require('./common_utils.js');
 const bucket = require('../sqlTranslator/sql_statement_bucket.js');
-const reg = require('./registration/registrationHandler.js');
 const restart = require('../bin/restart.js');
 const terms = require('./hdbTerms.ts');
 const permsTranslator = require('../security/permissionsTranslator.js');
@@ -47,6 +46,7 @@ const keys = require('../security/keys.js');
 const setNode = require('../server/replication/setNode.ts');
 const analytics = require('../resources/analytics/read.ts');
 const status = require('../server/status/index.ts');
+const usageLicensing = require('../resources/usageLicensing.ts');
 
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject.js');
 const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
@@ -150,8 +150,6 @@ requiredPermissions.set(routes.deleteRoutes.name, new permission(true, []));
 requiredPermissions.set(configUtils.setConfiguration.name, new permission(true, []));
 requiredPermissions.set(clusterStatus.clusterStatus.name, new permission(true, []));
 requiredPermissions.set(clusterNetwork.name, new permission(true, []));
-requiredPermissions.set(reg.getFingerprint.name, new permission(true, []));
-requiredPermissions.set(reg.setLicense.name, new permission(true, []));
 requiredPermissions.set(delete_.deleteFilesBefore.name, new permission(true, []));
 requiredPermissions.set(delete_.deleteAuditLogsBefore.name, new permission(true, []));
 requiredPermissions.set(restart.restart.name, new permission(true, []));
@@ -178,6 +176,8 @@ requiredPermissions.set(analytics.describeMetricOp.name, new permission(false, [
 requiredPermissions.set(status.clear.name, new permission(true, []));
 requiredPermissions.set(status.get.name, new permission(true, []));
 requiredPermissions.set(status.set.name, new permission(true, []));
+requiredPermissions.set(usageLicensing.installUsageLicenseOp.name, new permission(true, []));
+requiredPermissions.set(usageLicensing.getUsageLicensesOp.name, new permission(true, []));
 
 //this operation must be available to all users so they can create authentication tokens and login
 requiredPermissions.set(tokenAuthentication.createTokens.name, new permission(false, []));
@@ -207,7 +207,6 @@ requiredPermissions.set(functionsOperations.setSSHKnownHosts.name, new permissio
 requiredPermissions.set(functionsOperations.getSSHKnownHosts.name, new permission(true, []));
 
 //Below are functions that are currently open to all roles
-requiredPermissions.set(reg.getRegistrationInfo.name, new permission(false, []));
 requiredPermissions.set(user.userInfo.name, new permission(false, []));
 //DescribeAll will only return the schema values a user has permissions for
 requiredPermissions.set(schemaDescribe.describeAll.name, new permission(false, []));
@@ -223,7 +222,7 @@ requiredPermissions.set(BULK_OPS.IMPORT_FROM_S3, new permission(false, [INSERT_P
 requiredPermissions.set(DATA_EXPORT.EXPORT_TO_S3, new permission(true, []));
 requiredPermissions.set(DATA_EXPORT.EXPORT_LOCAL, new permission(true, []));
 
-//NOTE: 'registration_info' and 'user_info' operations are intentionally left off here since both should be accessible
+//NOTE: 'user_info' operation is intentionally left off here since it should be accessible
 // for all roles/users no matter what their permissions are
 
 // SQL operations are distinct from operations above, so we need to store required perms for both.
@@ -267,11 +266,7 @@ function verifyPermsAst(ast, userObject, operation) {
 
 		// Should not continue if there are no schemas defined and there are table columns defined.
 		// This is defined so we can do calc selects like : SELECT ABS(-12)
-		if (
-			(!schemas || schemas.length === 0) &&
-			parsedAst.affected_attributes &&
-			parsedAst.affected_attributes.size > 0
-		) {
+		if ((!schemas || schemas.length === 0) && parsedAst.affected_attributes && parsedAst.affected_attributes.size > 0) {
 			harperLogger.info(`No schemas defined in verifyPermsAst(), will not continue.`);
 			throw handleHDBError(new Error());
 		}
@@ -460,11 +455,7 @@ function verifyPerms(requestJson, operation) {
 
 	//For a NoSQL search op with `get_attributes: '*'` - as long as the role has READ permissions on the table,
 	//we will convert the * to the specific attributes the user has READ permissions for via their role.
-	if (
-		!isSuperUser &&
-		requestJson.get_attributes &&
-		terms.SEARCH_WILDCARDS.includes(requestJson.get_attributes[0])
-	) {
+	if (!isSuperUser && requestJson.get_attributes && terms.SEARCH_WILDCARDS.includes(requestJson.get_attributes[0])) {
 		let finalGetAttrs = [];
 		const table_perms = fullRolePerms[operationSchema].tables[table];
 
@@ -680,12 +671,7 @@ function checkAttributePerms(
 	const unauthorizedTableAttributes = Object.keys(requiredAttrPerms);
 
 	if (unauthorizedTableAttributes.length > 0) {
-		permsResponse.addUnauthorizedAttributes(
-			unauthorizedTableAttributes,
-			schemaName,
-			tableName,
-			requiredAttrPerms
-		);
+		permsResponse.addUnauthorizedAttributes(unauthorizedTableAttributes, schemaName, tableName, requiredAttrPerms);
 	}
 }
 
@@ -704,28 +690,36 @@ function getRecordAttributes(json) {
 		}
 		if (json.operation === terms.OPERATIONS_ENUM.SEARCH_BY_CONDITIONS) {
 			json.conditions.forEach((condition) => {
-				affectedAttributes.add(condition.search_attribute);
+				let attribute = condition.attribute;
+				if (condition.search_attribute !== undefined) {
+					attribute = condition.search_attribute;
+				}
+				affectedAttributes.add(attribute);
 			});
 		}
 
-		if (json && json.search_attribute) {
-			affectedAttributes.add(json.search_attribute);
+		if (json && (json.attribute || json.search_attribute)) {
+			let attribute = json.attribute;
+			if (json.search_attribute !== undefined) {
+				attribute = json.search_attribute;
+			}
+			affectedAttributes.add(attribute);
 		}
 
 		if (!json.records || json.records.length === 0) {
-			if (!json.get_attributes || !json.get_attributes.length === 0) {
+			if (!json.get_attributes || json.get_attributes.length === 0) {
 				return affectedAttributes;
 			}
 
-			for (let record = 0; record < json.get_attributes.length; record++) {
-				affectedAttributes.add(json.get_attributes[record]);
+			for (const attr of json.get_attributes) {
+				affectedAttributes.add(attr);
 			}
 		} else {
 			// get unique affectedAttributes
-			for (let record = 0; record < json.records.length; record++) {
-				let keys = Object.keys(json.records[record]);
-				for (let att = 0; att < keys.length; att++) {
-					affectedAttributes.add(keys[att]);
+			for (const record of json.records) {
+				let keys = Object.keys(record);
+				for (const key of keys) {
+					affectedAttributes.add(key);
 				}
 			}
 		}

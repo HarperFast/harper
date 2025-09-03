@@ -1,6 +1,6 @@
-import type { ResourceInterface, SubscriptionRequest, Id, Context, Query } from './ResourceInterface.ts';
+import type { ResourceInterface, SubscriptionRequest, Id, Context, Query, SourceContext } from './ResourceInterface.ts';
 import { randomUUID } from 'crypto';
-import { DatabaseTransaction, Transaction } from './DatabaseTransaction.ts';
+import { DatabaseTransaction, type Transaction } from './DatabaseTransaction.ts';
 import { IterableEventQueue } from './IterableEventQueue.ts';
 import { _assignPackageExport } from '../globals.js';
 import { ClientError, AccessViolation } from '../utility/errors/hdbError.js';
@@ -50,6 +50,8 @@ export class Resource implements ResourceInterface {
 	static get = transactional(
 		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			const result = resource.get?.(query);
+			// for the new API we always apply select in the instance method
+			if (resource.constructor.loadAsInstance === false) return result;
 			if (result?.then) return result.then(handleSelect);
 			return handleSelect(result);
 			function handleSelect(result) {
@@ -188,7 +190,7 @@ export class Resource implements ResourceInterface {
 		function (resource: Resource, query?: RequestTarget, request: Context, data?: any) {
 			return resource.update(query, data);
 		},
-		{ hasContent: true, type: 'create' }
+		{ hasContent: false, type: 'update' }
 	);
 
 	static connect = transactional(
@@ -325,7 +327,7 @@ export class Resource implements ResourceInterface {
 	 * @param options
 	 * @returns
 	 */
-	static getResource(id: Id, request: Context, options?: any): Resource | Promise<Resource> {
+	static getResource(id: Id, request: Context | SourceContext, options?: any): Resource | Promise<Resource> {
 		let resource;
 		let context = request.getContext?.();
 		let isCollection;
@@ -418,7 +420,7 @@ export class Resource implements ResourceInterface {
 	 * Get the context for this resource
 	 * @returns context object with information about the current transaction, user, and more
 	 */
-	getContext(): Context {
+	getContext(): Context | SourceContext {
 		return this.#context;
 	}
 }
@@ -522,8 +524,14 @@ function transactional(action, options) {
 			// otherwise handle methods for get, delete, etc.
 			// first, check to see if it is two argument
 		} else if (dataOrContext) {
-			// (id, context), preferred form used for methods without a body
-			context = dataOrContext.getContext?.() || dataOrContext;
+			if (context) {
+				// (id, data, context), this a method that doesn't normally have a body/data, but with the three arguments, we have explicit data
+				data = dataOrContext;
+				context = context.getContext?.() || context;
+			} else {
+				// (id, context), preferred form used for methods without a body
+				context = dataOrContext.getContext?.() || dataOrContext;
+			}
 		} else if (idOrQuery && typeof idOrQuery === 'object' && !Array.isArray(idOrQuery)) {
 			// (request) a structured id/query, which we will use as the context
 			context = idOrQuery;

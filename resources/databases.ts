@@ -8,7 +8,6 @@ import {
 	getTransactionAuditStoreBasePath,
 } from '../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js';
 import { makeTable } from './Table.ts';
-import OpenDBIObject from '../utility/lmdb/OpenDBIObject.js';
 import OpenEnvironmentObject from '../utility/lmdb/OpenEnvironmentObject.js';
 import { CONFIG_PARAMS, LEGACY_DATABASES_DIR_NAME, DATABASES_DIR_NAME } from '../utility/hdbTerms.ts';
 import * as fs from 'fs-extra';
@@ -16,13 +15,20 @@ import { _assignPackageExport } from '../globals.js';
 import { getIndexedValues } from '../utility/lmdb/commonUtility.js';
 import * as signalling from '../utility/signalling.js';
 import { SchemaEventMsg } from '../server/threads/itc.js';
-import { workerData, threadId } from 'worker_threads';
-import { forComponent } from '../utility/logging/harper_logger.js';
+import { workerData } from 'worker_threads';
+import harperLogger from '../utility/logging/harper_logger.js';
+const { forComponent } = harperLogger;
 import * as manageThreads from '../server/threads/manageThreads.js';
-import { openAuditStore, transactionKeyEncoder } from './auditStore.ts';
+import { openAuditStore } from './auditStore.ts';
 import { handleLocalTimeForGets } from './RecordEncoder.ts';
 import { deleteRootBlobPathsForDB } from './blob.ts';
 import { CUSTOM_INDEXES } from './indexes/customIndexes.ts';
+import * as OpenDBIObjectModule from '../utility/lmdb/OpenDBIObject.js';
+function OpenDBIObject(dupSort, isPrimary) {
+	// what is going on with esbuild, it suddenly is randomly flip-flopping the module record for OpenDBIObject, sometimes return the correct exports object and sometimes returning the exports as the `default`.
+	let OpenDBIObject = OpenDBIObjectModule.OpenDBIObject ?? OpenDBIObjectModule.default.OpenDBIObject;
+	return new OpenDBIObject(dupSort, isPrimary);
+}
 const logger = forComponent('storage');
 
 const DEFAULT_DATABASE_NAME = 'data';

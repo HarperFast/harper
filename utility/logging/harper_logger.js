@@ -105,7 +105,7 @@ async function updateLogSettings() {
 		// set up the initial watcher
 		rootConfig = new RootConfigWatcher();
 		// wait for it to be ready
-		await rootConfig.ready();
+		await rootConfig.ready;
 		// TODO: Any way to differentiate changes that we can and can't handle?
 		rootConfig.on('change', updateLogSettings);
 	}

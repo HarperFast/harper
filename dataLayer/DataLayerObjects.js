@@ -21,10 +21,10 @@ class NoSQLSeachObject {
 	) {
 		this.schema = schemaString;
 		this.table = tableString;
-		this.search_attribute = searchAttributeString;
+		this.attribute = searchAttributeString;
 		this.hash_attribute = hashAttributeString;
 		this.get_attributes = getAttributesStringArray;
-		this.search_value = searchValueString;
+		this.value = searchValueString;
 	}
 }
 

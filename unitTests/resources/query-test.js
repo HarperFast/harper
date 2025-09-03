@@ -1476,6 +1476,23 @@ describe('Querying through Resource API', () => {
 			assert(!result.aFlag);
 		}
 	});
+	it('Query should remove any lastModified on context', async function () {
+		let results = [];
+		let context = {};
+		await RelatedTable.get(1, context); // This will set the lastModified on the context
+		assert(isFinite(context.lastModified));
+		for await (let record of RelatedTable.search(
+			{
+				url: '?aFlag==true',
+			},
+			context
+		)) {
+			results.push(record);
+		}
+		assert(!isFinite(context.lastModified));
+		await RelatedTable.get(2, context); // This should _not_ reset the lastModified on the context
+		assert(!isFinite(context.lastModified));
+	});
 
 	it('Query data in a table with bad attribute', async function () {
 		let caught_error;

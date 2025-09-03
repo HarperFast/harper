@@ -73,13 +73,12 @@ async function harperdb() {
 	switch (service) {
 		case SERVICE_ACTIONS_ENUM.OPERATION:
 			logger.trace('calling cli operations with:', cliApiOp);
-			return cliOperations.cliOperations(cliApiOp);
+			await cliOperations.cliOperations(cliApiOp);
+			return;
 		case SERVICE_ACTIONS_ENUM.START:
 			return runClone ? require('../utility/cloneNode/cloneNode.js')(true) : require('./run.js').launch();
 		case SERVICE_ACTIONS_ENUM.INSTALL:
 			return require('./install.js')();
-		case SERVICE_ACTIONS_ENUM.REGISTER:
-			return require('./register.js').register();
 		case SERVICE_ACTIONS_ENUM.STOP:
 			return require('./stop.js')().then(() => {
 				process.exit(0);

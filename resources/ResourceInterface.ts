@@ -1,9 +1,10 @@
 import { DatabaseTransaction } from './DatabaseTransaction.ts';
-import { OperationFunctionName } from '../server/serverHelpers/serverUtilities.ts';
-import { RequestTarget } from './RequestTarget';
+import type { OperationFunctionName } from '../server/serverHelpers/serverUtilities.ts';
+import { RequestTarget } from './RequestTarget.ts';
+import type { Entry } from './RecordEncoder.ts';
 
 export interface ResourceInterface<Key = any, Record = any> {
-	get?(id: Id): Promise<UpdatableRecord<Record>>;
+	get?(id: Id): Promise<Record>;
 	get?(query: RequestTargetOrId): Promise<AsyncIterable<Record>>;
 	put?(target: RequestTargetOrId, record: any): void;
 	post?(target: RequestTargetOrId, record: any): void;
@@ -24,25 +25,25 @@ export interface User {
 }
 
 export interface Context {
-	/**	 The user making the request	 */
+	/**	 The user making the request */
 	user?: User;
-	/**	 The database transaction object	 */
+	/**	 The database transaction object */
 	transaction?: DatabaseTransaction;
-	/**	 If the operation that will be performed with this context should check user authorization	 */
+	/**	 If the operation that will be performed with this context should check user authorization */
 	authorize?: number;
-	/**	 The last modification time of any data that has been accessed with this context	 */
+	/**	 The last modification time of any data that has been accessed with this context */
 	lastModified?: number;
 	/**	 The time	at which a saved record should expire */
 	expiresAt?: number;
-	/**	 Indicates that caching should not be applied	 */
+	/**	 Indicates that caching should not be applied */
 	noCache?: boolean;
-	/**	 Indicates that values from the source data should be stored as a cached value	 */
+	/**	 Indicates that values from the source data should be stored as a cached value */
 	noCacheStore?: boolean;
 	/**	 Only return values from the table, and don't use data from the source */
 	onlyIfCached?: boolean;
 	/**	 Allows data from a caching table to be used if there is an error retrieving data from the source */
 	staleIfError?: boolean;
-	/**	 Indicates any cached data must be revalidated	 */
+	/**	 Indicates any cached data must be revalidated */
 	mustRevalidate?: boolean;
 	/**	 An array of nodes to replicate to */
 	replicateTo?: string[];
@@ -53,11 +54,35 @@ export interface Context {
 	loadedFromSource?: boolean;
 	nodeName?: string;
 	resourceCache?: Map<Id, any>;
+	_freezeRecords?: boolean; // until v5, we conditionally freeze records for back-compat
+}
+
+export interface SourceContext<TRequestContext = Context> {
+	/** The original request context passed from the caching layer */
+	requestContext: TRequestContext;
+	/** The existing record, from the existing entry (if any) */
+	replacingRecord?: any;
+	/** The existing database entry (if any) */
+	replacingEntry?: Entry;
+	/** The version/timestamp of the existing record */
+	replacingVersion?: number;
+	/** Indicates that values from the source data should NOT be stored as a cached value */
+	noCacheStore?: boolean;
+	/** Reference to the source Resource instance */
+	source?: ResourceInterface;
+	/** Shared resource cache from parent context for visibility of modifications */
+	resourceCache?: Map<Id, any>;
+	/** Database transaction for the context */
+	transaction?: DatabaseTransaction;
+	/** The time at which the cached entry should expire (ms since epoch) */
+	expiresAt?: number;
+	/** The last modification time of any data accessed with this context */
+	lastModified?: number;
 }
 
 export type Operator = 'and' | 'or';
 
-type SearchType =
+type Comparator =
 	| 'equals'
 	| 'contains'
 	| 'starts_with'
@@ -71,16 +96,16 @@ type SearchType =
 export interface DirectCondition {
 	attribute?: string;
 	search_attribute?: string;
-	comparator?: SearchType;
-	search_type?: SearchType;
+	comparator?: Comparator;
+	search_type?: Comparator;
 	value?: any;
 	search_value?: any;
 }
 interface ConditionGroup {
-	conditions: Conditions;
+	conditions?: Conditions;
 	operator?: Operator;
 }
-export type Condition = DirectCondition | ConditionGroup;
+export type Condition = DirectCondition & ConditionGroup;
 export type Conditions = Condition[];
 
 export interface Sort {
@@ -110,5 +135,5 @@ export type Query = RequestTarget; // for back-compat
 export type RequestTargetOrId = RequestTarget | Id;
 
 export type Id = number | string | (number | string | null)[] | null;
-type UpdatableRecord<T> = T;
+export type UpdatableRecord<T> = T;
 interface Subscription {}

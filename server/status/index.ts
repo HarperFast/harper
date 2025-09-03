@@ -1,25 +1,17 @@
-import { table } from '../../resources/databases.js';
+import { table } from '../../resources/databases.ts';
 import { handleHDBError, hdbErrors } from '../../utility/errors/hdbError.js';
 import { loggerWithTag } from '../../utility/logging/logger.js';
-import { validateStatus } from '../../validation/statusValidator.js';
-import { StatusId, StatusValueMap, StatusRecord, DEFAULT_STATUS_ID } from './definitions.js';
-import { internal as statusInternal } from '../../components/status/index.ts';
-import type { AggregatedComponentStatus } from '../../components/status/index.ts';
+import { validateStatus } from '../../validation/statusValidator.ts';
+import { type StatusId, type StatusValueMap, type StatusRecord, DEFAULT_STATUS_ID } from './definitions.ts';
+import { internal as statusInternal, type AggregatedComponentStatus } from '../../components/status/index.ts';
 import { restartNeeded } from '../../components/requestRestart.ts';
 
 export { clearStatus as clear, getStatus as get, setStatus as set };
 
 // Re-export types for convenience
-export type { 
-	StatusId, 
-	StatusRecord, 
-	StatusValueMap
-} from './definitions.js';
+export type { StatusId, StatusRecord, StatusValueMap } from './definitions.ts';
 
-export { 
-	STATUS_IDS,
-	DEFAULT_STATUS_ID
-} from './definitions.js';
+export { STATUS_IDS, DEFAULT_STATUS_ID } from './definitions.ts';
 
 const { HTTP_STATUS_CODES } = hdbErrors;
 
@@ -66,7 +58,7 @@ function getStatusTable() {
 export const Status = {
 	get primaryStore() {
 		return getStatusTable().primaryStore;
-	}
+	},
 };
 
 const statusLogger = loggerWithTag('status');
@@ -89,21 +81,23 @@ interface AllStatusSummary {
 async function getAllStatus(): Promise<AllStatusSummary> {
 	statusLogger.debug?.('getAllStatus');
 	const statusRecords = getStatusTable().get({});
-	
+
 	// Get aggregated component statuses from all threads
 	const aggregatedStatuses = await statusInternal.query.allThreads();
-	const componentStatusArray: AggregatedComponentStatusWithName[] = Array.from(aggregatedStatuses.entries()).map(([name, status]) => ({
-		name,
-		...status
-	}));
-	
+	const componentStatusArray: AggregatedComponentStatusWithName[] = Array.from(aggregatedStatuses.entries()).map(
+		([name, status]) => ({
+			name,
+			...status,
+		})
+	);
+
 	// Get restart flag status
 	const restartRequired = restartNeeded();
-	
+
 	return {
 		systemStatus: statusRecords as Promise<AsyncIterable<StatusRecord>>,
 		componentStatus: componentStatusArray,
-		restartRequired
+		restartRequired,
 	};
 }
 
@@ -117,9 +111,9 @@ function getStatus({ id }: Partial<StatusRequestBody>): Promise<StatusRecord | A
 	return getStatusTable().get(id) as unknown as Promise<StatusRecord>;
 }
 
-function setStatus<T extends StatusId = StatusId>({ 
-	status, 
-	id = DEFAULT_STATUS_ID as T 
+function setStatus<T extends StatusId = StatusId>({
+	status,
+	id = DEFAULT_STATUS_ID as T,
 }: StatusWriteRequestBody<T>): Promise<StatusRecord<T>> {
 	const validation = validateStatus({ status, id });
 	if (validation) {

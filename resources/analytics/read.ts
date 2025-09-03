@@ -1,5 +1,6 @@
 import type { Metric } from './write.ts';
-import { forComponent } from '../../utility/logging/harper_logger.js';
+import harperLogger from '../../utility/logging/harper_logger.js';
+const { forComponent } = harperLogger;
 import { getAnalyticsHostnameTable } from './hostnames.ts';
 import type { Resource } from 'harperdb';
 import type { Condition, Conditions } from '../ResourceInterface.ts';

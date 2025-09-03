@@ -10,11 +10,9 @@ const path = require('path');
 const env_mgr = require('../../utility/environment/environmentManager');
 const keys = rewire('../../security/keys');
 const config_utils = require('../../config/configUtils');
-const certificates_terms = require('../../utility/terms/certificates');
 const mkcert = require('mkcert');
 const forge = require('node-forge');
 const pki = forge.pki;
-const { X509Certificate, createPrivateKey, createPublicKey } = require('crypto');
 
 describe('Test keys module', () => {
 	const sandbox = sinon.createSandbox();
@@ -22,12 +20,8 @@ describe('Test keys module', () => {
 	const test_cert_path = path.join(test_dir, 'test-certificate.pem');
 	const test_ca_path = path.join(test_dir, 'test-ca.pem');
 	const test_private_key_path = path.join(test_dir, 'test-private-key.pem');
-	const get_this_node_name_stub = sandbox.stub().returns('Unit Test');
 
-	let write_file_stub;
-	let console_error_stub;
 	let update_config_value_stub;
-	let get_config_from_file_stub;
 	let test_private_key;
 	let test_cert;
 	let test_ca;
@@ -65,7 +59,9 @@ describe('Test keys module', () => {
 		root_path = config_utils.getConfigFromFile('rootPath');
 		env_mgr.setHdbBasePath(root_path);
 		env_mgr.setProperty('storage_path', path.join(config_utils.getConfigFromFile('rootPath'), 'database'));
+
 		await keys.loadCertificates();
+
 		const all_certs = await keys.listCertificates();
 		all_certs.forEach((cert) => {
 			if (!cert.is_authority && cert?.details?.issuer?.includes('HarperDB-Certificate-Authority')) {
@@ -116,6 +112,7 @@ describe('Test keys module', () => {
 	it('Test getReplicationCert returns the correct cert', async () => {
 		env_mgr.setProperty('rootPath', root_path);
 		const rep_cert = await keys.getReplicationCert();
+		expect(rep_cert).to.exist;
 		expect(rep_cert.name).to.equal(actual_cert.name);
 		expect(rep_cert.issuer.includes('HarperDB-Certificate-Authority')).to.be.true;
 	});
@@ -221,9 +218,11 @@ describe('Test keys module', () => {
 			subjectAltName: 'DirName:"CN=test-1.name\\u002cO=1999710",' + ' DirName:CN=test-2.org,IP-Address:1.2.3.4',
 		};
 		const hostnames = keys.hostnamesFromCert(test_cert);
+		// eslint-disable-next-line sonarjs/no-hardcoded-ip
 		expect(hostnames).to.eql(['test-1.name', 'test-2.org', '1.2.3.4']);
 		expect(keys.getPrimaryHostName(test_cert)).to.eql('test-1.name');
 	});
+
 	it('getPrimaryHostName with subject', async () => {
 		const test_cert = {
 			subject: 'CN=test-1.name',
@@ -261,6 +260,7 @@ describe('Test keys module', () => {
 		const hostnames = await keys.getHostnamesFromCertificate(cert);
 		expect(hostnames).to.have.members(['127.0.0.1', 'localhost']);
 	});
+
 	/*	it('Test SNI with wildcards', async () => {
 		let cert1 = await mkcert.createCert({
 			domains: ['host-one.com', 'default'],
@@ -300,4 +300,157 @@ describe('Test keys module', () => {
 		});
 		expect(context.options.cert).to.eql(cert2.cert);
 	});*/
+
+	it('Test setCertTable with malformed certificate - illegal ASN.1 padding', async () => {
+		// Test various malformed certificate scenarios that could cause the X509Certificate error
+		const malformedCerts = [
+			// Certificate with corrupted base64 padding
+			{
+				name: 'corrupted-base64-padding',
+				certificate: '-----BEGIN CERTIFICATE-----\nMIIEFzCCAv+gAwIBAgIUBg==\n-----END CERTIFICATE-----',
+			},
+			// Certificate with truncated data
+			{
+				name: 'truncated-cert',
+				certificate: '-----BEGIN CERTIFICATE-----\nMIIEFzCCAv+gAwIBAgIU',
+			},
+			// Certificate with invalid characters
+			{
+				name: 'invalid-chars',
+				certificate: '-----BEGIN CERTIFICATE-----\n!!!INVALID!!!DATA!!!\n-----END CERTIFICATE-----',
+			},
+			// Certificate missing end marker
+			{
+				name: 'missing-end-marker',
+				certificate: '-----BEGIN CERTIFICATE-----\nMIIEFzCCAv+gAwIBAgIUBg==',
+			},
+			// Empty certificate data
+			{
+				name: 'empty-cert',
+				certificate: '-----BEGIN CERTIFICATE-----\n\n-----END CERTIFICATE-----',
+			},
+			// Certificate with extra padding
+			{
+				name: 'extra-padding',
+				certificate: '-----BEGIN CERTIFICATE-----\nMIIEFzCCAv+gAwIBAgIUBg====\n-----END CERTIFICATE-----',
+			},
+			// Certificate with illegal padding (specific case from CI error)
+			{
+				name: 'illegal-padding',
+				certificate: '-----BEGIN CERTIFICATE-----\nMIIBkTCB+wIJAKHN\n-----END CERTIFICATE-----',
+			},
+			// Certificate with malformed ASN.1 structure
+			{
+				name: 'malformed-asn1',
+				certificate:
+					'-----BEGIN CERTIFICATE-----\nMIICEjCCAXsCAg36MA0GCSqGSIb3DQEBBQUAMIGbMQswCQYDVQQGEwJKUDEOMAwG\n-----END CERTIFICATE-----',
+			},
+			// Certificate with broken DER encoding
+			{
+				name: 'broken-der',
+				certificate:
+					'-----BEGIN CERTIFICATE-----\nAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA\n-----END CERTIFICATE-----',
+			},
+		];
+
+		for (const malformedCert of malformedCerts) {
+			let error;
+			try {
+				await keys.setCertTable(malformedCert);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error).to.exist;
+			// Now expecting our custom error code
+			expect(error.code).to.equal('INVALID_CERTIFICATE_FORMAT');
+
+			// Log the specific error for debugging
+			// console.log(`Test case '${malformedCert.name}' error:`, error.code, error.message.substring(0, 80) + '...');
+		}
+	});
+
+	it('Test setCertTable with valid certificate should work', async () => {
+		// Ensure a valid certificate still works
+		const validCert = {
+			name: 'valid-test-cert',
+			certificate: test_cert,
+			uses: ['https'],
+			is_authority: false,
+			private_key_name: 'test.pem',
+		};
+
+		// This should not throw
+		await keys.setCertTable(validCert);
+
+		// Verify it was added
+		const certs = await keys.listCertificates();
+		const found = certs.find((c) => c.name === 'valid-test-cert');
+		expect(found).to.exist;
+
+		// Clean up
+		await keys.removeCertificate({ name: 'valid-test-cert' });
+	});
+
+	it('Test setCertTable error handling suggestion for cloneNode issue', async () => {
+		// This test demonstrates the need for better error handling in setCertTable
+		// The cloneNode CI error shows that certificates can be corrupted during transfer
+
+		// Simulate what might happen during cloneNode with corrupted cert data
+		const scenarios = [
+			{
+				name: 'cert-corrupted-during-transfer',
+				certificate: test_cert.substring(0, test_cert.length - 100), // Truncated cert
+			},
+			{
+				name: 'cert-with-wrong-line-endings',
+				certificate: test_cert.replace(/\n/g, '\r'), // Wrong line endings
+			},
+			{
+				name: 'cert-with-encoding-issues',
+				certificate: Buffer.from(test_cert).toString('hex'), // Wrong encoding
+			},
+		];
+
+		for (const scenario of scenarios) {
+			let error;
+			try {
+				await keys.setCertTable(scenario);
+			} catch (err) {
+				error = err;
+			}
+
+			expect(error).to.exist;
+			// console.log(`Scenario '${scenario.name}' error:`, error.message);
+
+			// The error should be from X509Certificate constructor
+			expect(error.message).to.match(/asn1|certificate|invalid|wrong|PEM|bad/i);
+		}
+	});
+
+	it('Test generateCertAuthority includes subjectKeyIdentifier extension for OCSP support', async () => {
+		// Get the private generateCertAuthority function
+		const generateCertAuthority = keys.__get__('generateCertAuthority');
+		const { privateKey, publicKey } = await keys.generateKeys();
+
+		// Generate a CA certificate
+		const caCert = await generateCertAuthority(privateKey, publicKey, false);
+
+		// Verify the certificate has the required extensions
+		const extensions = caCert.extensions;
+
+		// Check that subjectKeyIdentifier extension is present
+		const hasSubjectKeyIdentifier = extensions.some((ext) => ext.name === 'subjectKeyIdentifier');
+		expect(hasSubjectKeyIdentifier).to.be.true;
+
+		// Also verify other required extensions are still present
+		const hasBasicConstraints = extensions.some((ext) => ext.name === 'basicConstraints' && ext.cA === true);
+		const hasKeyUsage = extensions.some((ext) => ext.name === 'keyUsage' && ext.keyCertSign === true);
+
+		expect(hasBasicConstraints).to.be.true;
+		expect(hasKeyUsage).to.be.true;
+
+		// Verify the extension count to ensure nothing was accidentally removed
+		expect(extensions.length).to.equal(3);
+	});
 });

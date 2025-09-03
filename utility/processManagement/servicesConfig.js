@@ -1,7 +1,6 @@
 'use strict';
 
 const env = require('../environment/environmentManager.js');
-const hdbLicense = require('../../utility/registration/hdb_license.js');
 const hdbTerms = require('../hdbTerms.ts');
 const natsTerms = require('../../server/nats/utility/natsTerms.js');
 const path = require('path');
