@@ -55,7 +55,7 @@ jobs:
       - build
       - createInstances-amd
       - createInstances-arm
-    uses: ./.github/workflows/install-and-register.yaml
+    uses: ./.github/workflows/install-harper.yaml
     strategy:
       matrix:
         arch:
