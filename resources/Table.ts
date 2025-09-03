@@ -50,6 +50,7 @@ import fs from 'node:fs';
 import { Blob, deleteBlobsInObject, findBlobsInObject } from './blob.ts';
 import { onStorageReclamation } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
+import { throttle } from '../server/throttle';
 
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
@@ -3237,6 +3238,23 @@ export function makeTable(options) {
 			deleteCallbackHandle?.remove();
 		}
 	}
+	const throttledCallToSource = throttle(
+		async (id, sourceContext, existingEntry) => {
+			// find the first data source that will fulfill our request for data
+			for (const source of TableResource.sources) {
+				if (source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
+					if (source.available?.(existingEntry) === false) continue;
+					sourceContext.source = source;
+					const resolvedData = await source.get(id, sourceContext);
+					if (resolvedData) return resolvedData;
+				}
+			}
+		},
+		() => {
+			throw new ServerError('Service unavailable, exceeded request queue limit for resolving cache record', 503);
+		}
+	);
+
 	TableResource.updatedAttributes(); // on creation, update accessors as well
 	const prototype = TableResource.prototype;
 	if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
@@ -3725,15 +3743,7 @@ export function makeTable(options) {
 					let updatedRecord;
 					let hasChanges, invalidated;
 					try {
-						// find the first data source that will fulfill our request for data
-						for (const source of TableResource.sources) {
-							if (source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
-								if (source.available?.(existingEntry) === false) continue;
-								sourceContext.source = source;
-								updatedRecord = await source.get(id, sourceContext);
-								if (updatedRecord) break;
-							}
-						}
+						updatedRecord = await throttledCallToSource(id, sourceContext, existingEntry);
 						invalidated = metadataFlags & INVALIDATED;
 						let version = sourceContext.lastModified || (invalidated && existingVersion);
 						hasChanges = invalidated || version > existingVersion || !existingRecord;
