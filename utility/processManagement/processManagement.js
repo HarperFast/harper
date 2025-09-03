@@ -16,6 +16,7 @@ const childProcess = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const terms = require('../hdbTerms');
+const { setTimeout: delay } = require('node:timers/promises');
 const { execFile, fork } = childProcess;
 
 module.exports = {
@@ -142,9 +143,10 @@ function start(procConfig, noKill = false) {
 function killChildrenProcesses(exit = true) {
 	shuttingDown = true;
 	if (!childProcesses) return;
-	console.error('killing children');
+	hdbLogger.error('killing children');
 	childProcesses.map((proc) => proc.kill());
 	if (exit) process.exit(0);
+	else return delay(2000); // give these processes some time to exit
 }
 
 /**
