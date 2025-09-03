@@ -1008,7 +1008,7 @@ export function makeTable(options) {
 						});
 					}),
 					(record) => {
-						let select = target?.select;
+						const select = target?.select;
 						if (select && record != null) {
 							const transform = transformForSelect(select, this.constructor);
 							return transform(record);
@@ -2016,7 +2016,7 @@ export function makeTable(options) {
 			// counts are done in the same read transaction because they are just estimates) until the search
 			// results have been iterated and finished.
 			const readTxn = txn.useReadTxn();
-			let entries = executeConditions(
+			const entries = executeConditions(
 				conditions,
 				operator,
 				TableResource,
@@ -2027,7 +2027,6 @@ export function makeTable(options) {
 				filtered
 			);
 			const ensure_loaded = target.ensureLoaded !== false;
-			if (!postOrdering) entries = applyOffset(entries); // if there is no post ordering, we can apply the offset now
 			const transformToRecord = TableResource.transformEntryForSelect(
 				select,
 				context,
@@ -2044,15 +2043,12 @@ export function makeTable(options) {
 				readTxn,
 				transformToRecord
 			);
-			function applyOffset(entries: any[]) {
-				if (target.offset || target.limit !== undefined)
-					return entries.slice(
-						target.offset,
-						target.limit !== undefined ? (target.offset || 0) + target.limit : undefined
-					);
-				return entries;
-			}
-			if (postOrdering) results = applyOffset(results); // if there is post ordering, we have to apply the offset after sorting
+			// apply any offset/limit after all the sorting and filtering
+			if (target.offset || target.limit !== undefined)
+				results = results.slice(
+					target.offset,
+					target.limit !== undefined ? (target.offset || 0) + target.limit : undefined
+				);
 			results.onDone = () => {
 				results.onDone = null; // ensure that it isn't called twice
 				txn.doneReadTxn();
