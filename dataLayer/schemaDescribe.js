@@ -42,16 +42,16 @@ async function describeAll(opObj = {}) {
 		let schemaPerms = {};
 		let tResults = [];
 		const exactCount = opObj?.exact_count;
+		const includeComputed = opObj?.include_computed;
 		for (let schema in databases) {
 			schemaList[schema] = true;
-			if (!sysCall && !isSu && !bypassAuth)
-				schemaPerms[schema] = opObj.hdb_user?.role?.permission[schema]?.describe;
+			if (!sysCall && !isSu && !bypassAuth) schemaPerms[schema] = opObj.hdb_user?.role?.permission[schema]?.describe;
 			let tables = databases[schema];
 			for (let table in tables) {
 				try {
 					let desc;
 					if (sysCall || isSu || bypassAuth) {
-						desc = await descTable({ schema, table, exactCount });
+						desc = await descTable({ schema, table, exactCount, includeComputed });
 					} else if (rolePerms && rolePerms[schema].describe && rolePerms[schema].tables[table].describe) {
 						const tAttrPerms = rolePerms[schema].tables[table].attribute_permissions;
 						desc = await descTable({ schema, table, exactCount }, tAttrPerms);
@@ -154,21 +154,23 @@ async function descTable(describeTableObject, attrPerms) {
 		);
 
 	function pushAtt(att) {
-		attributes.push({
-			attribute: att.attribute,
-			type: att.type,
-			elements: att.elements?.type,
-			indexed: att.indexed,
-			is_primary_key: att.isPrimaryKey,
-			assigned_created_time: att.assignCreatedTime,
-			assigned_updated_time: att.assignUpdatedTime,
-			nullable: att.nullable,
-			properties: att.properties
-				? att.properties.map((prop) => {
-						return { type: prop.type, name: prop.name };
-					})
-				: undefined,
-		});
+		if (!att.computed || describeTableObject.includeComputed)
+			attributes.push({
+				attribute: att.attribute,
+				type: att.type,
+				elements: att.elements?.type,
+				indexed: att.indexed,
+				is_primary_key: att.isPrimaryKey,
+				assigned_created_time: att.assignCreatedTime,
+				assigned_updated_time: att.assignUpdatedTime,
+				nullable: att.nullable,
+				computed: att.computed ? true : undefined, // only include if computed
+				properties: att.properties
+					? att.properties.map((prop) => {
+							return { type: prop.type, name: prop.name };
+						})
+					: undefined,
+			});
 	}
 
 	let attributes = [];
