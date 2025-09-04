@@ -1,4 +1,4 @@
-import { readdirSync, readFileSync, existsSync, symlinkSync, rmSync, mkdirSync, realpathSync } from 'node:fs';
+import { readdirSync, readFileSync, existsSync, realpathSync, mkdirSync, rmSync, symlinkSync } from 'node:fs';
 import { join, basename, dirname } from 'node:path';
 import { isMainThread } from 'node:worker_threads';
 import { parseDocument } from 'yaml';
@@ -110,26 +110,45 @@ export function setErrorReporter(reporter) {
 let compName: string;
 export const getComponentName = () => compName;
 
-function symlinkHarperModule(componentDirectory: string, harperModule: string) {
+function symlinkHarperModule(componentDirectory: string) {
 	return new Promise<void>((resolve, reject) => {
+		// Create timeout to avoid deadlocks
 		const timeout = setTimeout(() => {
 			Status.primaryStore.unlock(componentDirectory, 0);
 			reject(new Error('symlinking harperdb module timed out'));
 		}, 10_000);
 		if (
+			// Get lock for this component
 			Status.primaryStore.attemptLock(componentDirectory, 0, () => {
 				clearTimeout(timeout);
 				resolve();
 			})
 		) {
 			try {
-				rmSync(harperModule, { recursive: true, force: true });
-				if (!existsSync(join(componentDirectory, 'node_modules'))) {
-					mkdirSync(join(componentDirectory, 'node_modules'));
+				// validate node_modules directory exists
+				const nodeModulesDir = join(componentDirectory, 'node_modules');
+				if (!existsSync(nodeModulesDir)) {
+					// create it if not
+					mkdirSync(nodeModulesDir);
 				}
+
+				// validate harperdb module
+				const harperModule = join(nodeModulesDir, 'harperdb');
+				if (existsSync(harperModule)) {
+					if (realpathSync(harperModule) === realpathSync(PACKAGE_ROOT)) {
+						// if it exists and correctly linked, resolve
+						return resolve();
+					}
+
+					// Otherwise remove it then link
+					rmSync(harperModule, { recursive: true, force: true });
+				}
+
+				// create link to harperdb module
 				symlinkSync(PACKAGE_ROOT, harperModule, 'dir');
 				resolve();
 			} finally {
+				// finally release the lock
 				Status.primaryStore.unlock(componentDirectory, 0);
 			}
 		}
@@ -212,21 +231,16 @@ export async function loadComponent(
 			config = DEFAULT_CONFIG;
 		}
 
-		try {
-			const harperModule = join(componentDirectory, 'node_modules', 'harperdb');
-			if (
-				isRoot ||
-				((existsSync(harperModule) || !componentDirectory.startsWith(getHdbBasePath())) &&
-					(!existsSync(harperModule) || realpathSync(PACKAGE_ROOT) !== realpathSync(harperModule)))
-			) {
-				await symlinkHarperModule(componentDirectory, harperModule);
-			}
-		} catch (error) {
-			harperLogger.error('Error symlinking harperdb module', error);
-			if (error.code == 'EPERM' && process.platform === 'win32') {
-				harperLogger.error(
-					'You may need to enable developer mode in "Settings" / "System" (or "Update & Security") / "For developers", in order to enable symlinks so components can use `import from "harperdb"`'
-				);
+		if (!isRoot) {
+			try {
+				await symlinkHarperModule(componentDirectory);
+			} catch (error) {
+				harperLogger.error('Error symlinking harperdb module', error);
+				if (error.code == 'EPERM' && process.platform === 'win32') {
+					harperLogger.error(
+						'You may need to enable developer mode in "Settings" / "System" (or "Update & Security") / "For developers", in order to enable symlinks so components can use `import from "harperdb"`'
+					);
+				}
 			}
 		}
 
@@ -244,13 +258,17 @@ export async function loadComponent(
 			const pkg = componentConfig.package;
 			try {
 				if (pkg) {
-					let containerFolder = componentDirectory;
 					let componentPath;
-					while (!existsSync((componentPath = join(containerFolder, 'node_modules', componentName)))) {
-						containerFolder = dirname(containerFolder);
-						if (containerFolder.length < getHdbBasePath().length) {
-							componentPath = null;
-							break;
+					if (isRoot) {
+						componentPath = join(componentDirectory, 'components', componentName);
+					} else {
+						let containerFolder = componentDirectory;
+						while (!existsSync((componentPath = join(containerFolder, 'node_modules', componentName)))) {
+							containerFolder = dirname(containerFolder);
+							if (containerFolder.length < getHdbBasePath().length) {
+								componentPath = null;
+								break;
+							}
 						}
 					}
 					if (componentPath) {

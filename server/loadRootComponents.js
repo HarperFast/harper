@@ -1,14 +1,14 @@
 const { isMainThread } = require('worker_threads');
-const { getTables, getDatabases, table } = require('../resources/databases.ts');
+const { getTables } = require('../resources/databases.ts');
 const { loadComponentDirectories, loadComponent } = require('../components/componentLoader.ts');
 const { resetResources } = require('../resources/Resources.ts');
-const installComponents = require('../components/installComponents.js');
 const configUtils = require('../config/configUtils.js');
 const { dirname } = require('path');
 const { getConnection } = require('./nats/utility/natsUtils.js');
 const envMgr = require('../utility/environment/environmentManager.js');
 const { CONFIG_PARAMS } = require('../utility/hdbTerms.ts');
 const { loadCertificates } = require('../security/keys.js');
+const { installApplications } = require('../components/Application.ts');
 const { loadAndWatchLicensesDir } = require('../resources/usageLicensing');
 
 let loadedComponents = new Map();
@@ -23,7 +23,7 @@ async function loadRootComponents(isWorkerThread = false) {
 		getConnection();
 	}
 	try {
-		if (isMainThread) await installComponents();
+		if (isMainThread) await installApplications();
 	} catch (error) {
 		console.error(error);
 	}

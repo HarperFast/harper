@@ -467,7 +467,6 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		new OperationFunctionObject(executeJob, transactionLog.deleteTransactionLogsBefore)
 	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.INSTALL_NODE_MODULES, new OperationFunctionObject(npmUtilities.installModules));
-	opFuncMap.set(terms.OPERATIONS_ENUM.AUDIT_NODE_MODULES, new OperationFunctionObject(npmUtilities.auditModules));
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_BACKUP, new OperationFunctionObject(schema.getBackup));
 	opFuncMap.set(terms.OPERATIONS_ENUM.ADD_SSH_KEY, new OperationFunctionObject(customFunctionOperations.addSSHKey));
 	opFuncMap.set(
