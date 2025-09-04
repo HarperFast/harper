@@ -74,6 +74,7 @@ export const RECEIVED_TIME_POSITION = 2;
 export const SENDING_TIME_POSITION = 3;
 export const LATENCY_POSITION = 4;
 export const RECEIVING_STATUS_POSITION = 5;
+export const BACK_PRESSURE_RATIO_POSITION = 6;
 export const RECEIVING_STATUS_WAITING = 0;
 export const RECEIVING_STATUS_RECEIVING = 1;
 const cli_args = minimist(process.argv);
@@ -389,6 +390,24 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 			}
 		}, PING_INTERVAL * 2).unref();
 	}
+	let ratioOfBackPressureTime = 0;
+	let lastBackPressureCheck = 0;
+	let isPausedForBackPressure = false;
+	const BACK_PRESSURE_INTERVAL = 30_000;
+	function updateBackPressureRatio() {
+		// we only want to track/record backpressure for sending data for incoming subscriptions
+		if (nodeSubscriptions?.length > 0) {
+			const now = performance.now();
+			const durationSinceCheck = now - lastBackPressureCheck;
+			// calculate the running average ratio of back-pressure time, logarithmically decaying towards 1 if paused, towards 0 if not paused
+			ratioOfBackPressureTime =
+				(ratioOfBackPressureTime * BACK_PRESSURE_INTERVAL + (isPausedForBackPressure ? durationSinceCheck : 0)) /
+				(BACK_PRESSURE_INTERVAL + durationSinceCheck);
+			replicationSharedStatus[BACK_PRESSURE_RATIO_POSITION] = ratioOfBackPressureTime;
+			lastBackPressureCheck = now;
+		}
+	}
+	setInterval(updateBackPressureRatio, BACK_PRESSURE_INTERVAL).unref();
 	function getSharedStatus() {
 		if (!remoteNodeName || !databaseName) {
 			return;
@@ -1093,11 +1112,18 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 							}
 							// wait if there is back-pressure
 							if (ws._socket.writableNeedDrain) {
+								let startOfBackPressure = performance.now();
+								isPausedForBackPressure = true;
+								updateBackPressureRatio();
 								return new Promise<void>((resolve) => {
 									logger.debug?.(
 										`Waiting for remote node ${remoteNodeName} to allow more commits ${ws._socket.writableNeedDrain ? 'due to network backlog' : 'due to requested flow directive'}`
 									);
-									ws._socket.once('drain', resolve);
+									ws._socket.once('drain', () => {
+										resolve();
+										isPausedForBackPressure = false;
+										updateBackPressureRatio();
+									});
 								});
 							} else if (outstandingBlobsBeingSent > MAX_OUTSTANDING_BLOBS_BEING_SENT) {
 								return new Promise((resolve) => {
