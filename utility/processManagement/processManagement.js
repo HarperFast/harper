@@ -142,7 +142,7 @@ function start(procConfig, noKill = false) {
 }
 function killChildrenProcesses(exit = true) {
 	shuttingDown = true;
-	if (!childProcesses) return;
+	if (!childProcesses || childProcesses.length === 0) return;
 	hdbLogger.error('killing children');
 	childProcesses.map((proc) => proc.kill());
 	if (exit) process.exit(0);
