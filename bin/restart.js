@@ -83,7 +83,7 @@ async function restart(req) {
 		}
 		setTimeout(async () => {
 			// It seems like you should just be able to start the other process and kill this process and everything should
-			// be cleaned up. That's not the works for some reason; the socket listening fds somehow get transferred to the
+			// be cleaned up, however that doesn't work for some reason; the socket listening fds somehow get transferred to the
 			// child process if they are not explicitly closed. And when transferred they are orphaned listening, accepting
 			// connections and hanging. So we need to explicitly close down all the workers and then start the new process
 			// and shut down.
