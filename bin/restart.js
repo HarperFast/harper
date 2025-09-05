@@ -97,7 +97,7 @@ async function restart(req) {
 			require('./run.js').launch(true);
 		}, 50); // can't await this because it is going to do an exit()
 	} else {
-		// Post msg to main parent thread requesting it restart (on the main thread can process.exit())
+		// Post msg to main parent thread requesting it restart (so the main thread can process.exit())
 		parentPort.postMessage({
 			type: hdbTerms.ITC_EVENT_TYPES.RESTART,
 		});
