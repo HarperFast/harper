@@ -222,7 +222,7 @@ requiredPermissions.set(BULK_OPS.IMPORT_FROM_S3, new permission(false, [INSERT_P
 requiredPermissions.set(DATA_EXPORT.EXPORT_TO_S3, new permission(true, []));
 requiredPermissions.set(DATA_EXPORT.EXPORT_LOCAL, new permission(true, []));
 
-//NOTE: 'user_info' operation is intentionally left off here since it should be accessible
+//NOTE: 'registration_info' and 'user_info' operations are intentionally left off here since both should be accessible
 // for all roles/users no matter what their permissions are
 
 // SQL operations are distinct from operations above, so we need to store required perms for both.

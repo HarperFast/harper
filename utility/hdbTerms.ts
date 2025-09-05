@@ -304,6 +304,7 @@ export const OPERATIONS_ENUM = {
 	GET_JOB: 'get_job',
 	DELETE_JOB: 'delete_job',
 	UPDATE_JOB: 'update_job',
+	GET_REGISTRATION_INFO: 'registration_info',
 	CONFIGURE_CLUSTER: 'configure_cluster',
 	SET_CONFIGURATION: 'set_configuration',
 	CLUSTER_STATUS: 'cluster_status',
