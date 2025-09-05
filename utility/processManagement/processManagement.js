@@ -12,12 +12,11 @@ const clusteringUtils = require('../clustering/clusterUtilities.js');
 const { startWorker, onMessageFromWorkers } = require('../../server/threads/manageThreads.js');
 const sysInfo = require('../environment/systemInformation.js');
 const util = require('util');
-const childProcess = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const terms = require('../hdbTerms');
 const { setTimeout: delay } = require('node:timers/promises');
-const { execFile, fork } = childProcess;
+const { execFile, fork } = require('child_process');
 
 module.exports = {
 	start,
