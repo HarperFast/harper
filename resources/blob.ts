@@ -92,12 +92,14 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 	type = '';
 	size: number;
 	declare finished: Promise<void>;
+	declare saveBeforeCommit: boolean;
 	#onError: ((error: Error) => void)[];
 	#onSize: ((size: number) => void)[];
 	constructor(options?: BlobCreationOptions) {
 		super();
 		if (options?.type) this.type = options.type;
 		if (options?.size != undefined) this.size = options.size;
+		if (options?.saveBeforeCommit != undefined) this.saveBeforeCommit = options.saveBeforeCommit;
 	}
 
 	on(type: string, callback: (error: Error) => void) {
@@ -441,10 +443,10 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 		}
 		return slicedBlob;
 	}
-	save(targetTable: any): Promise<void> {
-		currentStore = targetTable?.primaryStore?.rootStore;
-		if (!currentStore) throw new Error('No target table specified');
-		return saveBlob(this).saving ?? Promise.resolve();
+	save(): Promise<void> {
+		// TODO: Deprecate this and just use the flag
+		this.saveBeforeCommit = true;
+		return Promise.resolve();
 	}
 }
 let deletionDelay = 500;
@@ -473,6 +475,7 @@ export type BlobCreationOptions = {
 	compress?: boolean; // compress the data with deflate
 	flush?: boolean; // flush to disk after writing and before resolving the finished promise
 	size?: number; // the size of the data, if known ahead of time
+	saveBeforeCommit?: boolean; // save the blob before the transaction is committed
 };
 /**
  * Create a blob from a readable stream or a buffer by creating a file in the blob storage path with a new unique internal id, that
@@ -598,6 +601,11 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 export function getFileId(blob: Blob): string {
 	return storageInfoForBlob.get(blob)?.fileId;
 }
+
+export function isSaving(blob: Blob): string {
+	return storageInfoForBlob.get(blob)?.saving;
+}
+
 export function getFilePathForBlob(blob: FileBackedBlob): string {
 	const storageInfo = storageInfoForBlob.get(blob);
 	return storageInfo?.fileId && getFilePath(storageInfo);
@@ -924,6 +932,24 @@ export function findBlobsInObject(object: any, callback: (blob: Blob) => void) {
 			if (typeof value === 'object' && value) findBlobsInObject(object[key], callback);
 		}
 	}
+}
+
+/**
+ * Do a shallow/fast search for blobs on the record and start saving them if they are supposed to be saved before a commit
+ * @param record
+ * @param store
+ */
+export function startPreCommitBlobsForRecord(record: any, store: LMDBStore) {
+	let completion;
+	for (const key in record) {
+		const value = record[key];
+		if (value instanceof FileBackedBlob && value.saveBeforeCommit) {
+			currentStore = store;
+			const saving = saveBlob(value).saving ?? Promise.resolve();
+			completion = completion ? Promise.all(completion, saving) : saving;
+		}
+	}
+	return completion;
 }
 
 const copyingUnpacker = new Packr({ copyBuffers: true, mapsAsObjects: true });
