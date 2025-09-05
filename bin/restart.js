@@ -62,11 +62,8 @@ async function restart(req) {
 
 	if (calledFromCli) {
 		const isHarperRunning = processMan.isHdbRunning();
-		if (!isHarperRunning) console.error('Harper must be running to restart it');
-		else {
-			console.error('Restarting Harper...');
-			require('./run.js').launch(true);
-		}
+		console.error(isHarperRunning ? 'Restarting Harper...' : 'Starting Harper...');
+		require('./run.js').launch(true);
 		return RESTART_RESPONSE;
 	}
 
