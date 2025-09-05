@@ -47,6 +47,7 @@ const setNode = require('../server/replication/setNode.ts');
 const analytics = require('../resources/analytics/read.ts');
 const status = require('../server/status/index.ts');
 const usageLicensing = require('../resources/usageLicensing.ts');
+const regDeprecated = require('../resources/registrationDeprecated.ts');
 
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject.js');
 const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
@@ -207,6 +208,7 @@ requiredPermissions.set(functionsOperations.setSSHKnownHosts.name, new permissio
 requiredPermissions.set(functionsOperations.getSSHKnownHosts.name, new permission(true, []));
 
 //Below are functions that are currently open to all roles
+requiredPermissions.set(regDeprecated.getRegistrationInfo.name, new permission(false, []));
 requiredPermissions.set(user.userInfo.name, new permission(false, []));
 //DescribeAll will only return the schema values a user has permissions for
 requiredPermissions.set(schemaDescribe.describeAll.name, new permission(false, []));
@@ -221,9 +223,6 @@ requiredPermissions.set(BULK_OPS.CSV_FILE_LOAD, new permission(false, [INSERT_PE
 requiredPermissions.set(BULK_OPS.IMPORT_FROM_S3, new permission(false, [INSERT_PERM, UPDATE_PERM]));
 requiredPermissions.set(DATA_EXPORT.EXPORT_TO_S3, new permission(true, []));
 requiredPermissions.set(DATA_EXPORT.EXPORT_LOCAL, new permission(true, []));
-
-//NOTE: 'registration_info' and 'user_info' operations are intentionally left off here since both should be accessible
-// for all roles/users no matter what their permissions are
 
 // SQL operations are distinct from operations above, so we need to store required perms for both.
 requiredPermissions.set(terms.VALID_SQL_OPS_ENUM.DELETE, new permission(false, [DELETE_PERM]));
