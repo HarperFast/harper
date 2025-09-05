@@ -1544,7 +1544,8 @@ export function replicateOverWS(ws, options, authorization) {
 		const localBlob = stream.blob ?? createBlob(stream, remoteBlob);
 		stream.blob = localBlob; // record the blob so we can reuse it if another request uses the same blob
 
-		// start the save immediately
+		// start the save immediately. TODO: If we could add support for blobs to directly pass on a stream to the consumer
+		// we would skip this
 		const finished = decodeFromDatabase(
 			() => saveBlob(localBlob).saving,
 			tableSubscriptionToReplicator.auditStore?.rootStore
