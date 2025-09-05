@@ -502,7 +502,7 @@ global.createBlob = function (source: NodeJS.ReadableStream | NodeJS.Buffer, opt
 	return blob;
 };
 
-function saveBlob(blob: FileBackedBlob) {
+export function saveBlob(blob: FileBackedBlob) {
 	let storageInfo = storageInfoForBlob.get(blob);
 	if (!storageInfo) {
 		storageInfo = { storageIndex: 0, fileId: null, store: currentStore };
@@ -856,10 +856,11 @@ export function encodeBlobsAsBuffers<T>(callback: () => T): Promise<T> {
  * Decode blobs, creating local storage to hold the blogs and returning a promise that resolves when all the blobs are written to disk
  * @param callback
  */
-export function decodeBlobsWithWrites(callback: () => void, blobCallback?: (blob: Blob) => void) {
+export function decodeBlobsWithWrites(callback: () => void, store?: LMDBStore, blobCallback?: (blob: Blob) => void) {
 	try {
 		promisedWrites = [];
 		currentBlobCallback = blobCallback;
+		currentStore = store;
 		callback();
 	} catch (error) {
 		// if anything throws, we want to make sure we clear the promise aggregator
@@ -895,7 +896,7 @@ export function decodeWithBlobCallback(
  * Decode with a callback for when blobs are encountered, allowing for detecting of blobs
  * @param callback
  */
-export function decodeFromDatabase(callback: () => void, rootStore: LMDBStore) {
+export function decodeFromDatabase<T>(callback: () => T, rootStore: LMDBStore) {
 	// note that this is actually called recursively (but always the same root store), so we don't clear afterwards
 	currentStore = rootStore;
 	return callback();

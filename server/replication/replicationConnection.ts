@@ -40,7 +40,14 @@ import { getHDBNodeTable, getReplicationSharedStatus } from './knownNodes.ts';
 import * as process from 'node:process';
 import { isIP } from 'node:net';
 import { recordAction } from '../../resources/analytics/write.ts';
-import { decodeBlobsWithWrites, decodeWithBlobCallback, deleteBlob, getFileId } from '../../resources/blob.ts';
+import {
+	decodeBlobsWithWrites,
+	decodeFromDatabase,
+	decodeWithBlobCallback,
+	deleteBlob,
+	saveBlob,
+	getFileId,
+} from '../../resources/blob.ts';
 import { PassThrough } from 'node:stream';
 import { getLastVersion } from 'lmdb';
 import minimist from 'minimist';
@@ -764,6 +771,7 @@ export function replicateOverWS(ws, options, authorization) {
 										}
 									}
 								},
+								auditStore?.rootStore,
 								(remoteBlob) => {
 									const localBlob = receiveBlobs(remoteBlob, key); // receive the blob;
 									// track the blobs that were written in case we need to delete them if the record is not moved locally
@@ -1320,6 +1328,7 @@ export function replicateOverWS(ws, options, authorization) {
 								expiresAt: auditRecord.expiresAt,
 							};
 						},
+						auditStore?.rootStore,
 						(blob) => receiveBlobs(blob, id)
 					);
 				} catch (error) {
@@ -1536,10 +1545,10 @@ export function replicateOverWS(ws, options, authorization) {
 		stream.blob = localBlob; // record the blob so we can reuse it if another request uses the same blob
 
 		// start the save immediately
-		const finished = localBlob.save({
-			// need to pass in the table, but this is table-like enough for it to get the root store
-			primaryStore: tableSubscriptionToReplicator.auditStore,
-		});
+		const finished = decodeFromDatabase(
+			() => saveBlob(localBlob).saving,
+			tableSubscriptionToReplicator.auditStore?.rootStore
+		);
 		if (finished) {
 			finished.blobId = blobId;
 			outstandingBlobsToFinish.push(finished);
