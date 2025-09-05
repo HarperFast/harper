@@ -18,7 +18,7 @@ const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
 const { HTTP_STATUS_CODES } = hdbErrors;
 const envMgr = require('../utility/environment/environmentManager.js');
 const { sendOperationToNode, getThisNodeName, monitorNodeCAs } = require('../server/replication/replicator.ts');
-const path = require('path');
+const path = require('node:path');
 const { unlinkSync } = require('node:fs');
 envMgr.initSync();
 
