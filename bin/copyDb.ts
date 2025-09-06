@@ -127,14 +127,31 @@ async function getTotalDBRecordCount(database: string) {
 	return total;
 }
 
+// we replace the write functions with a noop during this process, just in case they get called
+function noop() {
+	// if there are any attempts to write to the db, ignore them
+}
+
 export async function copyDb(source_database: string, target_database_path: string) {
-	console.log('copyDb start');
+	console.log(`Copying database ${source_database} to ${target_database_path}`);
 	const source_db = getDatabases()[source_database];
+	if (!source_db) throw new Error(`Source database not found: ${source_database}`);
 	let root_store;
 	for (const table_name in source_db) {
-		root_store = source_db[table_name].primaryStore.rootStore;
-		break;
+		const table = source_db[table_name];
+		// ensure that writes aren't occurring
+		table.primaryStore.put = noop;
+		table.primaryStore.remove = noop;
+		for (const attributeName in table.indices) {
+			const index = table.indices[attributeName];
+			index.put = noop;
+			index.remove = noop;
+		}
+		table.auditStore.put = noop;
+		table.auditStore.remove = noop;
+		root_store = table.primaryStore.rootStore;
 	}
+	if (!root_store) throw new Error(`Source database does not have any tables: ${source_database}`);
 	// this contains the list of all the dbis
 	const source_dbis_db = root_store.dbisDb;
 	const source_audit_store = root_store.auditStore;

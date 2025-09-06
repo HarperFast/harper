@@ -83,8 +83,19 @@ describe('Test database copy and compact', () => {
 	it('Test copyDB copies and compacts a DB', async () => {
 		const compacted_db = path.join(storage_path, 'db-copy.mdb');
 		await copyDB.copyDb('copy-test', compacted_db);
+		await TestTable.put(105, {
+			// should not be written
+			id: 105,
+			name: 'Should not be written',
+			about: 'about',
+			notIndexed: 'I am a non-indexed value',
+		});
 		const stat_after = await fs.stat(compacted_db);
 		assert((stat_after.size / stat_before_compact.size) * 100 < 10);
+		assert(!(await TestTable.get(105)));
+		let matches = [];
+		for await (let entry of TestTable.search([{ name: 'about', value: 'about' }])) matches.push(entry);
+		assert.equal(matches.length, 0);
 		await fs.remove(compacted_db);
 		await fs.remove(compacted_db + '-lock');
 	});
