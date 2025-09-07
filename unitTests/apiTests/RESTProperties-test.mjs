@@ -328,6 +328,29 @@ describe('test REST with property updates', function (options) {
 			});
 			assert(response.data.some((record) => record.subObject?.name === 'another sub-object'));
 		});
+		it('describe_table returns all attributes', async function () {
+			let response = await axios.post('http://localhost:9925', {
+				operation: 'describe_table',
+				schema: 'data',
+				table: 'FourProp',
+			});
+			assert(response.data.attributes.find((attr) => attr.attribute === 'title'));
+			assert(response.data.attributes.find((attr) => attr.attribute === 'age'));
+			// should not have computed properties
+			assert(!response.data.attributes.find((attr) => attr.attribute === 'ageInMonths'));
+		});
+		it('describe_table with include_computed returns all attributes', async function () {
+			let response = await axios.post('http://localhost:9925', {
+				operation: 'describe_table',
+				schema: 'data',
+				table: 'FourProp',
+				include_computed: true,
+			});
+			assert(response.data.attributes.find((attr) => attr.attribute === 'title'));
+			assert(response.data.attributes.find((attr) => attr.attribute === 'age'));
+			// should not have computed properties
+			assert(response.data.attributes.find((attr) => attr.attribute === 'ageInMonths'));
+		});
 	});
 });
 

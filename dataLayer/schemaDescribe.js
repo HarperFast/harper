@@ -41,8 +41,8 @@ async function describeAll(opObj = {}) {
 		let schemaList = {};
 		let schemaPerms = {};
 		let tResults = [];
-		const exactCount = opObj?.exact_count;
-		const includeComputed = opObj?.include_computed;
+		const exact_count = opObj?.exact_count;
+		const include_computed = opObj?.include_computed;
 		for (let schema in databases) {
 			schemaList[schema] = true;
 			if (!sysCall && !isSu && !bypassAuth) schemaPerms[schema] = opObj.hdb_user?.role?.permission[schema]?.describe;
@@ -51,10 +51,10 @@ async function describeAll(opObj = {}) {
 				try {
 					let desc;
 					if (sysCall || isSu || bypassAuth) {
-						desc = await descTable({ schema, table, exactCount, includeComputed });
+						desc = await descTable({ schema, table, exact_count, include_computed });
 					} else if (rolePerms && rolePerms[schema].describe && rolePerms[schema].tables[table].describe) {
 						const tAttrPerms = rolePerms[schema].tables[table].attribute_permissions;
-						desc = await descTable({ schema, table, exactCount }, tAttrPerms);
+						desc = await descTable({ schema, table, exact_count, include_computed }, tAttrPerms);
 					}
 					if (desc) {
 						tResults.push(desc);
@@ -132,6 +132,7 @@ async function descTable(describeTableObject, attrPerms) {
 			database: Joi.string(),
 			table: Joi.string().required(),
 			exact_count: Joi.boolean().strict(),
+			include_computed: Joi.boolean().strict(),
 		})
 	);
 	if (validation) throw new ClientError(validation.message);
@@ -154,7 +155,7 @@ async function descTable(describeTableObject, attrPerms) {
 		);
 
 	function pushAtt(att) {
-		if (!att.computed || describeTableObject.includeComputed)
+		if (!att.computed || describeTableObject.include_computed)
 			attributes.push({
 				attribute: att.attribute,
 				type: att.type,
@@ -251,6 +252,7 @@ async function describeSchema(describeSchemaObject) {
 		Joi.object({
 			database: Joi.string(),
 			exact_count: Joi.boolean().strict(),
+			include_computed: Joi.boolean().strict(),
 		})
 	);
 	if (validation) throw new ClientError(validation.message);
@@ -279,7 +281,12 @@ async function describeSchema(describeSchemaObject) {
 		}
 		if (hdbUtils.isEmpty(table_perms) || table_perms.describe) {
 			let data = await descTable(
-				{ schema: describeSchemaObject.schema, table: tableName, exact_count: describeSchemaObject.exact_count },
+				{
+					schema: describeSchemaObject.schema,
+					table: tableName,
+					exact_count: describeSchemaObject.exact_count,
+					include_computed: describeSchemaObject.include_computed,
+				},
 				table_perms ? table_perms.attribute_permissions : null
 			);
 			if (data) {
