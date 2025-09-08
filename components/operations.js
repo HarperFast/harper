@@ -26,7 +26,7 @@ const sshDir = path.join(rootDir, 'ssh');
 const knownHostsFile = path.join(sshDir, 'known_hosts');
 const { Resources } = require('../resources/Resources.ts');
 
-const { Application, extractAndInstallApplication } = require('./Application.ts')
+const { Application, prepareApplication } = require('./Application.ts');
 
 /**
  * Read the settings.js file and return the
@@ -366,7 +366,7 @@ async function deployComponent(req) {
 		if (req.install_command || req.install_timeout) {
 			applicationConfig.install = {
 				command: req.install_command,
-				timeout: req.install_timeout
+				timeout: req.install_timeout,
 			};
 		}
 		await configUtils.addConfig(req.project, applicationConfig);
@@ -378,11 +378,11 @@ async function deployComponent(req) {
 		packageIdentifier: req.package,
 		install: {
 			command: req.install_command,
-			timeout: req.install_timeout
-		}
+			timeout: req.install_timeout,
+		},
 	});
 
-	await extractAndInstallApplication(application);
+	await prepareApplication(application);
 
 	// the main thread should never actually load component, just do a deploy
 	if (isMainThread) return;
