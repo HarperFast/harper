@@ -158,7 +158,7 @@ describe('12. Configuration', () => {
 			})
 			.expect(200);
 	});
-	
+
 	it('Get Configuration', () => {
 		return req()
 			.send({ operation: 'get_configuration' })
@@ -275,7 +275,7 @@ describe('12. Configuration', () => {
 			.expect('content-type', 'text/html; charset=UTF-8')
 			.expect((r) => {
 				assert.ok(r.text.includes('<!doctype html>'), r.text);
-				assert.ok(r.text.includes('Studio :: HarperDB'), r.text);
+				assert.ok(r.text.includes('Harper Studio'), r.text);
 			})
 			.expect(200);
 	});
