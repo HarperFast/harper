@@ -125,7 +125,7 @@ describe('Blob test', () => {
 			await transaction({}, async () => {
 				let random = randomBytes(5000 * Math.random() + 20000);
 				blob = createBlob(random);
-				await blob.save(BlobTest);
+				blob.save(BlobTest);
 				throw new Error('test error'); // abort the transaction
 			});
 		} catch (error) {}
