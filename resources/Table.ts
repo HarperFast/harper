@@ -909,6 +909,7 @@ export function makeTable(options) {
 		 * Turn on auditing at runtime
 		 */
 		static enableAuditing(auditEnabled = true) {
+			if (audit) return; // already enabled
 			audit = auditEnabled;
 			if (auditEnabled) addDeleteRemoval();
 			TableResource.audit = auditEnabled;
@@ -2493,7 +2494,9 @@ export function makeTable(options) {
 						};
 						if (pendingRealTimeQueue) pendingRealTimeQueue.push(event);
 						else {
-							recordAction(auditRecord.size ?? 1, 'db-message', tableName, null);
+							if (databaseName !== 'system') {
+								recordAction(auditRecord.size ?? 1, 'db-message', tableName, null);
+							}
 							this.send(event);
 						}
 					} catch (error) {
@@ -2642,7 +2645,9 @@ export function makeTable(options) {
 				pendingRealTimeQueue = null;
 			})();
 			function send(event: any) {
-				recordAction(event.size ?? 1, 'db-message', tableName, null);
+				if (databaseName !== 'system') {
+					recordAction(event.size ?? 1, 'db-message', tableName, null);
+				}
 				subscription.send(event);
 			}
 			if (request.listener) subscription.on('data', request.listener);
@@ -4014,7 +4019,7 @@ export function makeTable(options) {
 									Math.pow(cleanupPriority, 8) *
 									(envMngr.get(CONFIG_PARAMS.STORAGE_RECLAMATION_EVICTIONFACTOR) ?? 100000);
 								const adjustedEviction = evictionMs / Math.pow(Math.max(cleanupPriority, 1), 4);
-								logger.info?.(
+								logger.debug?.(
 									`Starting cleanup scan for ${tableName}, evict threshold ${evictThreshold}, adjusted eviction ${adjustedEviction}ms`
 								);
 								function shouldEvict(expiresAt: number, version: number, metadataFlags: number, record: any) {
@@ -4066,7 +4071,7 @@ export function makeTable(options) {
 										}
 										await rest();
 									}
-									logger.info?.(`Finished cleanup scan for ${tableName}, evicted ${count} entries`);
+									logger.debug?.(`Finished cleanup scan for ${tableName}, evicted ${count} entries`);
 								} catch (error) {
 									logger.warn?.(`Error in cleanup scan for ${tableName}:`, error);
 								}

@@ -13,6 +13,10 @@ import { server } from '../../server/Server.ts';
 import * as fs from 'node:fs';
 import { getAnalyticsHostnameTable, nodeIds, stableNodeId } from './hostnames.ts';
 import { METRIC } from './metadata.ts';
+setTimeout(() => {
+	// let everything load before we actually load and start the profiler
+	import('./profile.ts');
+}, 1000);
 
 const log = forComponent('analytics').conditional;
 

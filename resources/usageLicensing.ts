@@ -107,41 +107,43 @@ export async function isLicensed(): Promise<boolean> {
 	return activeLicense !== undefined;
 }
 
+let licenseLogger: any;
 export async function recordUsage(analytics: any) {
-	harperLogger.trace?.('Recording usage into license from analytics');
+	licenseLogger = harperLogger.forComponent('license');
+	licenseLogger.trace?.('Recording usage into license from analytics');
 	let updatableActiveLicense: UpdatableRecord<UpdatableUsageLicense>;
 	const activeLicenseId = (await getActiveLicense())?.id;
 	if (activeLicenseId) {
-		harperLogger.trace?.('Found license to record usage into:', activeLicenseId);
+		licenseLogger.trace?.('Found license to record usage into:', activeLicenseId);
 		const context = {};
 		transaction(context, () => {
 			updatableActiveLicense = databases.system.hdb_license.update(activeLicenseId, context);
 			for (const analyticsRecord of analytics) {
-				harperLogger.trace?.('Processing analytics record:', analyticsRecord);
+				licenseLogger.trace?.('Processing analytics record:', analyticsRecord);
 				switch (analyticsRecord.metric) {
 					case 'db-read':
-						harperLogger.trace?.('Recording read usage into license');
+						licenseLogger.trace?.('Recording read usage into license');
 						updatableActiveLicense.addTo('usedReads', analyticsRecord.count);
 						updatableActiveLicense.addTo('usedReadBytes', analyticsRecord.mean * analyticsRecord.count);
 						break;
 					case 'db-write':
-						harperLogger.trace?.('Recording write usage into license');
+						licenseLogger.trace?.('Recording write usage into license');
 						updatableActiveLicense.addTo('usedWrites', analyticsRecord.count);
 						updatableActiveLicense.addTo('usedWriteBytes', analyticsRecord.mean * analyticsRecord.count);
 						break;
 					case 'db-message':
-						harperLogger.trace?.('Recording message usage into license');
+						licenseLogger.trace?.('Recording message usage into license');
 						updatableActiveLicense.addTo('usedRealTimeMessages', analyticsRecord.count);
 						updatableActiveLicense.addTo('usedRealTimeBytes', analyticsRecord.mean * analyticsRecord.count);
 						break;
 					case 'cpu-usage':
 						if (analyticsRecord.path === 'user') {
-							harperLogger.trace?.('Recording CPU usage into license');
+							licenseLogger.trace?.('Recording CPU usage into license');
 							updatableActiveLicense.addTo('usedCpuTime', analyticsRecord.mean * analyticsRecord.count);
 						}
 						break;
 					default:
-						harperLogger.trace?.('Skipping metric:', analyticsRecord.metric);
+						licenseLogger.trace?.('Skipping metric:', analyticsRecord.metric);
 				}
 			}
 		});
@@ -195,7 +197,7 @@ export function getUsageLicenses(params?: GetUsageLicenseParams): AsyncIterable<
 
 async function loadLicenseFile(path: string) {
 	harperLogger.trace?.('Loading usage license from file:', path);
-	const encodedLicense = await fs.readFile(path, {encoding: 'utf-8'});
+	const encodedLicense = await fs.readFile(path, { encoding: 'utf-8' });
 	try {
 		await installUsageLicense(encodedLicense);
 	} catch (err) {
@@ -210,6 +212,7 @@ export function loadAndWatchLicensesDir() {
 		persistent: false,
 		ignoreInitial: false,
 		depth: 0,
-		ignored: (file: string, stats: Stats) => stats?.isFile() && !file.endsWith('.txt')};
+		ignored: (file: string, stats: Stats) => stats?.isFile() && !file.endsWith('.txt'),
+	};
 	watch(licensesPath, watchOptions).on('add', loadLicenseFile);
 }

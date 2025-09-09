@@ -35,6 +35,16 @@ const DEFAULT_DATABASE_NAME = 'data';
 const DEFINED_TABLES = Symbol('defined-tables');
 const DEFAULT_COMPRESSION_THRESHOLD = (envGet(CONFIG_PARAMS.STORAGE_PAGESIZE) || 4096) - 60; // larger than this requires multiple pages
 initSync();
+// I don't know if this is the best place for this, but somewhere we need to specify which tables
+// replicate by default:
+export const NON_REPLICATING_SYSTEM_TABLES = [
+	'hdb_temp',
+	'hdb_certificate',
+	'hdb_raw_analytics',
+	'hdb_session_will',
+	'hdb_job',
+	'hdb_info',
+];
 
 export type Table = ReturnType<typeof makeTable>;
 export interface Tables {
@@ -168,22 +178,13 @@ export function getDatabases(): Databases {
 			}
 		}
 	}
-	// I don't know if this is the best place for this, but somewhere we need to specify which tables
-	// replicate by default:
-	const NON_REPLICATING_SYSTEM_TABLES = [
-		'hdb_temp',
-		'hdb_certificate',
-		'hdb_raw_analytics',
-		'hdb_session_will',
-		'hdb_job',
-		'hdb_info',
-	];
 	if (envGet(CONFIG_PARAMS.ANALYTICS_REPLICATE) === false) {
-		NON_REPLICATING_SYSTEM_TABLES.push('hdb_analytics');
+		if (!NON_REPLICATING_SYSTEM_TABLES.includes('hdb_analytics')) NON_REPLICATING_SYSTEM_TABLES.push('hdb_analytics');
 	} else {
 		// auditing must be enabled for replication
 		databases.system?.hdb_analytics?.enableAuditing();
 		databases.system?.hdb_analytics_hostname?.enableAuditing();
+		databases.system?.hdb_license?.enableAuditing();
 	}
 	if (databases.system) {
 		for (const tableName of NON_REPLICATING_SYSTEM_TABLES) {

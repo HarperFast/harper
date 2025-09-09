@@ -8,6 +8,7 @@ const hdbLogger = require('../utility/logging/harper_logger.js');
 const bridge = require('../dataLayer/harperBridge/harperBridge.js');
 const systemSchema = require('../json/systemSchema.json');
 const initPaths = require('../dataLayer/harperBridge/lmdbBridge/lmdbUtility/initializePaths.js');
+const { NON_REPLICATING_SYSTEM_TABLES } = require('../resources/databases.ts');
 
 module.exports = mountHdb;
 
@@ -46,7 +47,7 @@ async function createLMDBTables() {
 			primaryKeyAttribute.isPrimaryKey = true;
 
 			// Array of tables to enable audit store, config file doesn't exist yet so we need to manually set which tables to audit
-			if (['hdb_user', 'hdb_role', 'hdb_nodes'].includes(tableName)) createTable.audit = true;
+			if (!NON_REPLICATING_SYSTEM_TABLES.includes(tableName)) createTable.audit = true;
 			await bridge.createTable(tableName, createTable);
 		} catch (e) {
 			hdbLogger.error(`issue creating environment for ${terms.SYSTEM_SCHEMA_NAME}.${tableName}: ${e}`);

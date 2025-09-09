@@ -10,6 +10,10 @@ import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 import { pathToFileURL } from 'node:url';
 import * as log from '../../utility/logging/harper_logger.js';
 
+export const userCodeFolders = [pathToFileURL(getHdbBasePath()).toString()];
+if (process.env.RUN_HDB_APP) userCodeFolders.push(pathToFileURL(process.env.RUN_HDB_APP).toString());
+
+const SAMPLING_INTERVAL_IN_MICROSECONDS = 1000;
 const session = new Session();
 // We create an inspector session with ourself
 // TODO: Running this on the thread itself can be problematic because the profiler snapshots are expensive
@@ -20,34 +24,37 @@ session.connect();
 (async () => {
 	// start the profiler
 	await session.post('Profiler.enable');
-	await session.post('Profiler.setSamplingInterval', { interval: 1000 });
+	await session.post('Profiler.setSamplingInterval', { interval: SAMPLING_INTERVAL_IN_MICROSECONDS });
 	await session.post('Profiler.start');
 	const PROFILE_PERIOD = envGet(CONFIG_PARAMS.ANALYTICS_AGGREGATEPERIOD) * 1000;
 	setInterval(() => {
-		try {
-			profile();
-		} catch (error) {
-			log.error?.('analytics profiler error:', error);
-		}
+		profile();
 	}, PROFILE_PERIOD).unref();
 })();
 
-// TODO: If a user starts with harperdb run ., we should add that path/url to the userCodeFolders
-export const userCodeFolders = [pathToFileURL(getHdbBasePath()).toString()];
 export async function profile() {
 	const HARPER_URL = pathToFileURL(PACKAGE_ROOT).toString();
-	const { profile } = await session.post('Profiler.stop');
-	const hitCountThreshold = 100;
 	const nodeById = new Map();
+	const hitCountThreshold = 100;
+	const secondsPerHit = SAMPLING_INTERVAL_IN_MICROSECONDS / 1_000_000;
 	let totalUserCount = 0;
 	let totalHarperCount = 0;
-	for (const node of profile.nodes) {
-		nodeById.set(node.id, node);
+	try {
+		const { profile } = await session.post('Profiler.stop');
+		for (const node of profile.nodes) {
+			nodeById.set(node.id, node);
+		}
+		for (const node of profile.nodes) {
+			getUserHitCount(node);
+		}
+		recordAction(totalHarperCount * secondsPerHit, 'cpu-usage', 'harper');
+		recordAction(totalUserCount * secondsPerHit, 'cpu-usage', 'user');
+	} catch (error) {
+		log.error?.('analytics profiler error:', error);
+	} finally {
+		// and start the profiler again
+		await session.post('Profiler.start');
 	}
-	for (const node of profile.nodes) {
-		getUserHitCount(node);
-	}
-
 	// this traverses the nodes and returns the number of sampling hits for the descendants that has been attributed
 	// to harper or user code (execution of things like node internal modules or native code)
 	function getUserHitCount(node: any): number {
@@ -62,7 +69,7 @@ export async function profile() {
 		if (isUserCode(node)) {
 			totalUserCount += unassignedCount;
 			if (unassignedCount > hitCountThreshold) {
-				recordAction(unassignedCount, 'cpu-usage', node.callFrame.url);
+				recordAction(unassignedCount * secondsPerHit, 'cpu-usage', node.callFrame.url);
 			}
 			// assigned/attributed counts, nothing to return
 			node.unassignedCount = 0;
@@ -71,7 +78,7 @@ export async function profile() {
 		if (isHarperCode(node)) {
 			totalHarperCount += unassignedCount;
 			if (unassignedCount > hitCountThreshold) {
-				recordAction(unassignedCount, 'cpu-usage', node.callFrame.url);
+				recordAction(unassignedCount * secondsPerHit, 'cpu-usage', node.callFrame.url);
 			}
 			// assigned/attributed counts, nothing to return
 			node.unassignedCount = 0;
@@ -86,8 +93,4 @@ export async function profile() {
 	function isUserCode(node: any) {
 		if (userCodeFolders.some((userCodeFolder) => node.callFrame?.url.startsWith(userCodeFolder))) return true;
 	}
-	recordAction(totalHarperCount, 'cpu-usage', 'harper');
-	recordAction(totalUserCount, 'cpu-usage', 'user');
-	// and start the profiler again
-	await session.post('Profiler.start');
 }
