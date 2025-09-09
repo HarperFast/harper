@@ -25,27 +25,30 @@ export function assertApplicationConfig(
 	applicationConfig: object & Record<'package', unknown>
 ): asserts applicationConfig is ApplicationConfig {
 	if (typeof applicationConfig.package !== 'string') {
-		throw new Error(
+		throw new TypeError(
 			`Invalid 'package' property for application ${applicationName}: expected string, got ${typeof applicationConfig.package}`
 		);
 	}
 
 	if ('install' in applicationConfig) {
 		if (typeof applicationConfig.install !== 'object' || applicationConfig.install === null) {
-			throw new Error(
+			throw new TypeError(
 				`Invalid 'install' property for application ${applicationName}: expected object, got ${typeof applicationConfig.install}`
 			);
 		}
 
 		if ('command' in applicationConfig.install && typeof applicationConfig.install.command !== 'string') {
-			throw new Error(
+			throw new TypeError(
 				`Invalid 'install.command' property for application ${applicationName}: expected string, got ${typeof applicationConfig.install.command}`
 			);
 		}
 
-		if ('timeout' in applicationConfig.install && typeof applicationConfig.install.timeout !== 'number') {
-			throw new Error(
-				`Invalid 'install.timeout' property for application ${applicationName}: expected number, got ${typeof applicationConfig.install.timeout}`
+		if (
+			'timeout' in applicationConfig.install &&
+			(typeof applicationConfig.install.timeout !== 'number' || applicationConfig.install.timeout < 0)
+		) {
+			throw new TypeError(
+				`Invalid 'install.timeout' property for application ${applicationName}: expected non-negativenumber, got ${typeof applicationConfig.install.timeout}`
 			);
 		}
 	}
@@ -142,7 +145,7 @@ export async function extractApplication(application: Application) {
  * package manager, `npm`.
  *
  * Will return early if `node_modules` already exists within the `application.dirPath`
- * 
+ *
  * This method should only be called from the main thread
  */
 export async function installApplication(application: Application) {
@@ -294,14 +297,9 @@ export class Application {
 }
 
 /**
- * This is based on an old implementation for a method called `getPkgPrefix()` that was used
+ * Based on an old implementation for a method called `getPkgPrefix()` that was used
  * during the installation process in order to actually resolve what the user specifies for a
- * component.
- *
- * This utility causes more confusion than the shortcut it provides.
- *
- * We will likely deprecate this in v5 and enforce user to specify the package identifier as
- * they would in a package.json#dependencies value.
+ * component matching some of npm's package resolution rules.
  */
 function derivePackageIdentifier(packageIdentifier: string) {
 	if (packageIdentifier.includes(':')) {
@@ -319,20 +317,19 @@ function derivePackageIdentifier(packageIdentifier: string) {
 
 /**
  * Extract and install the specified application.
- * 
+ *
  * This method should only be called from the main thread
  *
  * @param application The application to prepare.
  * @returns A promise that resolves when all preparation steps complete.
  */
 export function prepareApplication(application: Application) {
-	return extractApplication(application)
-		.then(() => installApplication(application))
+	return extractApplication(application).then(() => installApplication(application));
 }
 
 /**
  * Install all applications specified in the root config.
- * 
+ *
  * This method should only be called from the main thread otherwise certain
  * operations may conflict with each other (such as writing to the same directory).
  */
