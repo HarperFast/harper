@@ -1,8 +1,11 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { reqRest } from '../utils/request.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
 
 describe('22. OpenAPI', () => {
+	beforeEach(timestamp);
+
 	//OpenAPI Folder
 
 	it('Get open api', () => {

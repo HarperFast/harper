@@ -1,11 +1,12 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import request from 'supertest';
 import { envUrl, testData, headers, headersTestUser } from '../config/envConfig.mjs';
 import { req, reqAsNonSU } from '../utils/request.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
 
 describe('12. Configuration', () => {
-	//Configuration Folder
+	beforeEach(timestamp);	
 
 	//Create_Attribute tests
 

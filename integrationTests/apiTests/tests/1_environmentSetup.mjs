@@ -1,11 +1,14 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { checkTableInSchema, createSchema, describeSchema } from '../utils/schema.mjs';
 import { testData } from '../config/envConfig.mjs';
 import { createTable } from '../utils/table.mjs';
 import { req } from '../utils/request.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
 
 describe('1. Environment Setup', () => {
+	beforeEach(timestamp);
+
 	it(`Create schema ${testData.schema}`, () => {
 		return createSchema(testData.schema);
 	});

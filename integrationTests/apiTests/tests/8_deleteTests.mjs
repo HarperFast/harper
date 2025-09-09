@@ -1,11 +1,14 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { testData } from '../config/envConfig.mjs';
 import { checkJob, getJobId } from '../utils/jobs.mjs';
 import { setTimeout } from 'node:timers/promises';
 import { req } from '../utils/request.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
 
 describe('8. Delete Tests', () => {
+	beforeEach(timestamp);
+	
 	//Delete Tests Folder
 
 	//Delete Records Before Tests
