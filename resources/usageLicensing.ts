@@ -139,7 +139,7 @@ export async function recordUsage(analytics: any) {
 					case 'cpu-usage':
 						if (analyticsRecord.path === 'user') {
 							licenseLogger.trace?.('Recording CPU usage into license');
-							updatableActiveLicense.addTo('usedCpuTime', analyticsRecord.mean * analyticsRecord.count);
+							updatableActiveLicense.addTo('usedCpuTime', (analyticsRecord.mean * analyticsRecord.count) / 3600);
 						}
 						break;
 					default:
