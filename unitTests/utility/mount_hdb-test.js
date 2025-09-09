@@ -80,6 +80,7 @@ describe('test mount_hdb module', () => {
 			{
 				schema: 'system',
 				table: 'cat',
+				audit: true,
 				hash_attribute: 'cat_id',
 				attributes: [
 					{
@@ -97,6 +98,7 @@ describe('test mount_hdb module', () => {
 			{
 				schema: 'system',
 				table: 'bird',
+				audit: true,
 				hash_attribute: 'bird_id',
 				attributes: [
 					{
