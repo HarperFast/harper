@@ -54,7 +54,7 @@ import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
-import { Blob, deleteBlobsInObject, findBlobsInObject } from './blob.ts';
+import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.ts';
 import { onStorageReclamation } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.js';
@@ -1271,7 +1271,10 @@ export function makeTable(options) {
 				invalidated: true,
 				entry: this.#entry,
 				before: applyToSources.invalidate?.bind(this, context, id),
-				beforeIntermediate: applyToSourcesIntermediate.invalidate?.bind(this, context, id),
+				beforeIntermediate: preCommitBlobsForRecordBefore(
+					partialRecord,
+					applyToSourcesIntermediate.invalidate?.bind(this, context, id)
+				),
 				commit: (txnTime, existingEntry) => {
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) return;
 					partialRecord ??= null;
@@ -1523,6 +1526,18 @@ export function makeTable(options) {
 			checkValidId(id);
 			const entry = this.#entry ?? primaryStore.getEntry(id);
 			this.#saveMode = fullUpdate ? SAVING_FULL_UPDATE : SAVING_CRDT_UPDATE; // mark that this resource is being saved so doesExist return true
+			const writeToSources = (sources) => {
+				return fullUpdate
+					? sources.put // full update is a put, so we can use the put method if available
+						? () => sources.put(context, id, recordUpdate)
+						: null
+					: sources.patch // otherwise, we need to use the patch method if available
+						? () => sources.patch(context, id, recordUpdate)
+						: sources.put // if this is incremental, but only have put, we can use that by generating the full record (at least the expected one)
+							? () => sources.put(context, id, updateAndFreeze(this))
+							: null;
+			};
+
 			const write = {
 				key: id,
 				store: primaryStore,
@@ -1562,24 +1577,8 @@ export function makeTable(options) {
 						transaction.removeWrite(write);
 					}
 				},
-				before: fullUpdate
-					? applyToSources.put // full update is a put, so we can use the put method if available
-						? () => applyToSources.put(context, id, recordUpdate)
-						: null
-					: applyToSources.patch // otherwise, we need to use the patch method if available
-						? () => applyToSources.patch(context, id, recordUpdate)
-						: applyToSources.put // if this is incremental, but only have put, we can use that by generating the full record (at least the expected one)
-							? () => applyToSources.put(context, id, updateAndFreeze(this))
-							: null,
-				beforeIntermediate: fullUpdate
-					? applyToSourcesIntermediate.put
-						? () => applyToSourcesIntermediate.put(context, id, recordUpdate)
-						: null
-					: applyToSourcesIntermediate.patch
-						? () => applyToSourcesIntermediate.patch(context, id, recordUpdate)
-						: applyToSourcesIntermediate.put
-							? () => applyToSourcesIntermediate.put(context, id, updateAndFreeze(this))
-							: null,
+				before: writeToSources(applyToSources),
+				beforeIntermediate: preCommitBlobsForRecordBefore(recordUpdate, writeToSources(applyToSourcesIntermediate)),
 				commit: (txnTime, existingEntry, retry) => {
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
@@ -2706,7 +2705,10 @@ export function makeTable(options) {
 					}
 				},
 				before: applyToSources.publish?.bind(this, context, id, message),
-				beforeIntermediate: applyToSourcesIntermediate.publish?.bind(this, context, id, message),
+				beforeIntermediate: preCommitBlobsForRecordBefore(
+					message,
+					applyToSourcesIntermediate.publish?.bind(this, context, id, message)
+				),
 				commit: (txnTime, existingEntry, retries) => {
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
@@ -3859,6 +3861,7 @@ export function makeTable(options) {
 						store: primaryStore,
 						entry: existingEntry,
 						nodeName: 'source',
+						before: preCommitBlobsForRecordBefore(updatedRecord),
 						commit: (txnTime, existingEntry) => {
 							if (existingEntry?.version !== existingVersion) {
 								// don't do anything if the version has changed
@@ -4149,6 +4152,22 @@ export function makeTable(options) {
 			dbisDb.put([Symbol.for('residency_by_id'), residencyId], ownerNodeNames);
 			return residencyId;
 		}
+	}
+	function preCommitBlobsForRecordBefore(record: any, before?: () => Promise<void>): Promise<void> | void {
+		const blobCompletion = startPreCommitBlobsForRecord(record, primaryStore.rootStore);
+		if (blobCompletion) {
+			// if there are blobs that we have started saving, they need to be saved and completed before we commit, so we need to wait for
+			// them to finish and we return a new callback for the before phase of the commit
+			const callSources = before;
+			return callSources
+				? async () => {
+						// if we are calling the sources first and waiting for blobs, do those in order
+						await callSources();
+						await blobCompletion;
+					}
+				: () => blobCompletion;
+		}
+		return before;
 	}
 }
 

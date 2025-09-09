@@ -40,7 +40,14 @@ import { getHDBNodeTable, getReplicationSharedStatus, type Node } from './knownN
 import * as process from 'node:process';
 import { isIP } from 'node:net';
 import { recordAction } from '../../resources/analytics/write.ts';
-import { decodeBlobsWithWrites, decodeWithBlobCallback, deleteBlob, getFileId } from '../../resources/blob.ts';
+import {
+	decodeBlobsWithWrites,
+	decodeFromDatabase,
+	decodeWithBlobCallback,
+	deleteBlob,
+	saveBlob,
+	getFileId,
+} from '../../resources/blob.ts';
 import { PassThrough } from 'node:stream';
 import { getLastVersion } from 'lmdb';
 import minimist from 'minimist';
@@ -782,6 +789,7 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 										}
 									}
 								},
+								auditStore?.rootStore,
 								(remoteBlob) => {
 									const localBlob = receiveBlobs(remoteBlob, key); // receive the blob;
 									// track the blobs that were written in case we need to delete them if the record is not moved locally
@@ -1340,6 +1348,7 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 								expiresAt: auditRecord.expiresAt,
 							};
 						},
+						auditStore?.rootStore,
 						(blob) => receiveBlobs(blob, id)
 					);
 				} catch (error) {
@@ -1559,11 +1568,12 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 		const localBlob = stream.blob ?? createBlob(stream, remoteBlob);
 		stream.blob = localBlob; // record the blob so we can reuse it if another request uses the same blob
 
-		// start the save immediately
-		const finished = localBlob.save({
-			// need to pass in the table, but this is table-like enough for it to get the root store
-			primaryStore: tableSubscriptionToReplicator.auditStore,
-		});
+		// start the save immediately. TODO: If we could add support for blobs to directly pass on a stream to the consumer
+		// we would skip this
+		const finished = decodeFromDatabase(
+			() => saveBlob(localBlob).saving,
+			tableSubscriptionToReplicator.auditStore?.rootStore
+		);
 		if (finished) {
 			finished.blobId = blobId;
 			outstandingBlobsToFinish.push(finished);
