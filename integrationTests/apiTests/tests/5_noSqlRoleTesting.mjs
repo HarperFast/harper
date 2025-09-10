@@ -1,11 +1,14 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { createHeaders, testData, getCsvPath, headersBulkLoadUser, headersTestUser } from '../config/envConfig.mjs';
 import { csvDataLoad } from '../utils/csv.mjs';
 import { checkJobCompleted, getJobId } from '../utils/jobs.mjs';
 import { req, reqAsNonSU } from '../utils/request.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
 
 describe('5. NoSQL Role Testing', () => {
+	beforeEach(timestamp);
+		
 	//NoSQL Role Testing Folder
 
 	//Bulk Load Perms Tests

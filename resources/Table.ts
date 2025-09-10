@@ -54,10 +54,11 @@ import { recordAction, recordActionBinary } from './analytics/write.ts';
 import { rebuildUpdateBefore } from './crdt.ts';
 import { appendHeader } from '../server/serverHelpers/Headers.ts';
 import fs from 'node:fs';
-import { Blob, deleteBlobsInObject, findBlobsInObject } from './blob.ts';
+import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRecord } from './blob.ts';
 import { onStorageReclamation } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.js';
+import { throttle } from '../server/throttle';
 
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
@@ -1015,7 +1016,7 @@ export function makeTable(options) {
 						});
 					}),
 					(record) => {
-						let select = target?.select;
+						const select = target?.select;
 						if (select && record != null) {
 							const transform = transformForSelect(select, this.constructor);
 							return transform(record);
@@ -1270,7 +1271,10 @@ export function makeTable(options) {
 				invalidated: true,
 				entry: this.#entry,
 				before: applyToSources.invalidate?.bind(this, context, id),
-				beforeIntermediate: applyToSourcesIntermediate.invalidate?.bind(this, context, id),
+				beforeIntermediate: preCommitBlobsForRecordBefore(
+					partialRecord,
+					applyToSourcesIntermediate.invalidate?.bind(this, context, id)
+				),
 				commit: (txnTime, existingEntry) => {
 					if (precedesExistingVersion(txnTime, existingEntry, options?.nodeId) <= 0) return;
 					partialRecord ??= null;
@@ -1522,6 +1526,18 @@ export function makeTable(options) {
 			checkValidId(id);
 			const entry = this.#entry ?? primaryStore.getEntry(id);
 			this.#saveMode = fullUpdate ? SAVING_FULL_UPDATE : SAVING_CRDT_UPDATE; // mark that this resource is being saved so doesExist return true
+			const writeToSources = (sources) => {
+				return fullUpdate
+					? sources.put // full update is a put, so we can use the put method if available
+						? () => sources.put(context, id, recordUpdate)
+						: null
+					: sources.patch // otherwise, we need to use the patch method if available
+						? () => sources.patch(context, id, recordUpdate)
+						: sources.put // if this is incremental, but only have put, we can use that by generating the full record (at least the expected one)
+							? () => sources.put(context, id, updateAndFreeze(this))
+							: null;
+			};
+
 			const write = {
 				key: id,
 				store: primaryStore,
@@ -1561,24 +1577,8 @@ export function makeTable(options) {
 						transaction.removeWrite(write);
 					}
 				},
-				before: fullUpdate
-					? applyToSources.put // full update is a put, so we can use the put method if available
-						? () => applyToSources.put(context, id, recordUpdate)
-						: null
-					: applyToSources.patch // otherwise, we need to use the patch method if available
-						? () => applyToSources.patch(context, id, recordUpdate)
-						: applyToSources.put // if this is incremental, but only have put, we can use that by generating the full record (at least the expected one)
-							? () => applyToSources.put(context, id, updateAndFreeze(this))
-							: null,
-				beforeIntermediate: fullUpdate
-					? applyToSourcesIntermediate.put
-						? () => applyToSourcesIntermediate.put(context, id, recordUpdate)
-						: null
-					: applyToSourcesIntermediate.patch
-						? () => applyToSourcesIntermediate.patch(context, id, recordUpdate)
-						: applyToSourcesIntermediate.put
-							? () => applyToSourcesIntermediate.put(context, id, updateAndFreeze(this))
-							: null,
+				before: writeToSources(applyToSources),
+				beforeIntermediate: preCommitBlobsForRecordBefore(recordUpdate, writeToSources(applyToSourcesIntermediate)),
 				commit: (txnTime, existingEntry, retry) => {
 					if (retry) {
 						if (context && existingEntry?.version > (context.lastModified || 0))
@@ -2038,7 +2038,7 @@ export function makeTable(options) {
 			// counts are done in the same read transaction because they are just estimates) until the search
 			// results have been iterated and finished.
 			const readTxn = txn.useReadTxn();
-			let entries = executeConditions(
+			const entries = executeConditions(
 				conditions,
 				operator,
 				TableResource,
@@ -2049,7 +2049,6 @@ export function makeTable(options) {
 				filtered
 			);
 			const ensure_loaded = target.ensureLoaded !== false;
-			if (!postOrdering) entries = applyOffset(entries); // if there is no post ordering, we can apply the offset now
 			const transformToRecord = TableResource.transformEntryForSelect(
 				select,
 				context,
@@ -2066,15 +2065,12 @@ export function makeTable(options) {
 				readTxn,
 				transformToRecord
 			);
-			function applyOffset(entries: any[]) {
-				if (target.offset || target.limit !== undefined)
-					return entries.slice(
-						target.offset,
-						target.limit !== undefined ? (target.offset || 0) + target.limit : undefined
-					);
-				return entries;
-			}
-			if (postOrdering) results = applyOffset(results); // if there is post ordering, we have to apply the offset after sorting
+			// apply any offset/limit after all the sorting and filtering
+			if (target.offset || target.limit !== undefined)
+				results = results.slice(
+					target.offset,
+					target.limit !== undefined ? (target.offset || 0) + target.limit : undefined
+				);
 			results.onDone = () => {
 				results.onDone = null; // ensure that it isn't called twice
 				txn.doneReadTxn();
@@ -2709,7 +2705,10 @@ export function makeTable(options) {
 					}
 				},
 				before: applyToSources.publish?.bind(this, context, id, message),
-				beforeIntermediate: applyToSourcesIntermediate.publish?.bind(this, context, id, message),
+				beforeIntermediate: preCommitBlobsForRecordBefore(
+					message,
+					applyToSourcesIntermediate.publish?.bind(this, context, id, message)
+				),
 				commit: (txnTime, existingEntry, retries) => {
 					// just need to update the version number of the record so it points to the latest audit record
 					// but have to update the version number of the record
@@ -3273,6 +3272,23 @@ export function makeTable(options) {
 			deleteCallbackHandle?.remove();
 		}
 	}
+	const throttledCallToSource = throttle(
+		async (id, sourceContext, existingEntry) => {
+			// find the first data source that will fulfill our request for data
+			for (const source of TableResource.sources) {
+				if (source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
+					if (source.available?.(existingEntry) === false) continue;
+					sourceContext.source = source;
+					const resolvedData = await source.get(id, sourceContext);
+					if (resolvedData) return resolvedData;
+				}
+			}
+		},
+		() => {
+			throw new ServerError('Service unavailable, exceeded request queue limit for resolving cache record', 503);
+		}
+	);
+
 	TableResource.updatedAttributes(); // on creation, update accessors as well
 	const prototype = TableResource.prototype;
 	if (expirationMs) TableResource.setTTLExpiration(expirationMs / 1000);
@@ -3769,15 +3785,7 @@ export function makeTable(options) {
 					let updatedRecord;
 					let hasChanges, invalidated;
 					try {
-						// find the first data source that will fulfill our request for data
-						for (const source of TableResource.sources) {
-							if (source.get && (!source.get.reliesOnPrototype || source.prototype.get)) {
-								if (source.available?.(existingEntry) === false) continue;
-								sourceContext.source = source;
-								updatedRecord = await source.get(id, sourceContext);
-								if (updatedRecord) break;
-							}
-						}
+						updatedRecord = await throttledCallToSource(id, sourceContext, existingEntry);
 						invalidated = metadataFlags & INVALIDATED;
 						let version = sourceContext.lastModified || (invalidated && existingVersion);
 						hasChanges = invalidated || version > existingVersion || !existingRecord;
@@ -3853,6 +3861,7 @@ export function makeTable(options) {
 						store: primaryStore,
 						entry: existingEntry,
 						nodeName: 'source',
+						before: preCommitBlobsForRecordBefore(updatedRecord),
 						commit: (txnTime, existingEntry) => {
 							if (existingEntry?.version !== existingVersion) {
 								// don't do anything if the version has changed
@@ -4143,6 +4152,22 @@ export function makeTable(options) {
 			dbisDb.put([Symbol.for('residency_by_id'), residencyId], ownerNodeNames);
 			return residencyId;
 		}
+	}
+	function preCommitBlobsForRecordBefore(record: any, before?: () => Promise<void>): Promise<void> | void {
+		const blobCompletion = startPreCommitBlobsForRecord(record, primaryStore.rootStore);
+		if (blobCompletion) {
+			// if there are blobs that we have started saving, they need to be saved and completed before we commit, so we need to wait for
+			// them to finish and we return a new callback for the before phase of the commit
+			const callSources = before;
+			return callSources
+				? async () => {
+						// if we are calling the sources first and waiting for blobs, do those in order
+						await callSources();
+						await blobCompletion;
+					}
+				: () => blobCompletion;
+		}
+		return before;
 	}
 }
 

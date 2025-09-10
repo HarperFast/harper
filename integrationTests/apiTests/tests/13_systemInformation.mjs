@@ -1,8 +1,12 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { req } from '../utils/request.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
+
 
 describe('13. System Information', () => {
+	beforeEach(timestamp);	
+
 	//System Information Folder
 
 	it('Get all System Information', () => {

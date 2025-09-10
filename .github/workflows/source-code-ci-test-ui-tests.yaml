@@ -45,7 +45,7 @@ jobs:
     needs:
       - createInstances
       - getNodeVersion
-    uses: ./.github/workflows/install-and-register.yaml
+    uses: ./.github/workflows/install-harper.yaml
     with:
       publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
       harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}
@@ -108,12 +108,19 @@ jobs:
             ls -al playwright-report
           done
         shell: bash
-      - name: Upload artifact
+      - name: Upload report
         if: ${{ !cancelled() }}
         uses: actions/upload-artifact@v4
         with:
           name: playwright-report
           path: playwright-report
+          retention-days: 10
+      - name: Upload screenshots 
+        if: ${{ !cancelled() }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: screenshots
+          path: screenshots/
           retention-days: 10
   downloadLogs:
     if: always()

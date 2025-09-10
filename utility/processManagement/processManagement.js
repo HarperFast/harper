@@ -12,12 +12,11 @@ const clusteringUtils = require('../clustering/clusterUtilities.js');
 const { startWorker, onMessageFromWorkers } = require('../../server/threads/manageThreads.js');
 const sysInfo = require('../environment/systemInformation.js');
 const util = require('util');
-const childProcess = require('child_process');
 const fs = require('fs');
 const path = require('path');
 const terms = require('../hdbTerms');
 const { setTimeout: delay } = require('node:timers/promises');
-const { execFile, fork } = childProcess;
+const { execFile, fork } = require('child_process');
 
 module.exports = {
 	start,
@@ -30,7 +29,7 @@ module.exports = {
 	startClusteringThreads,
 	isHdbRestartRunning,
 	isHdbRunning,
-	killChildrenProcesses,
+	cleanupChildrenProcesses,
 	reloadClustering,
 	expectedRestartOfChildren,
 };
@@ -39,7 +38,7 @@ onMessageFromWorkers((message) => {
 	if (message.type === 'restart') envMangr.initSync(true);
 });
 
-let childProcesses;
+let childProcesses = [];
 const MAX_RESTARTS = 10;
 let shuttingDown;
 /**
@@ -129,21 +128,21 @@ function start(procConfig, noKill = false) {
 	subprocess.unref();
 
 	// if we are running in standard mode, then we want to clean up our child processes when we exit
-	if (!childProcesses) {
-		childProcesses = [];
+	if (childProcesses.length === 0) {
 		if (!noKill) {
-			process.on('exit', killChildrenProcesses);
-			process.on('SIGINT', killChildrenProcesses);
-			process.on('SIGQUIT', killChildrenProcesses);
-			process.on('SIGTERM', killChildrenProcesses);
+			process.on('exit', cleanupChildrenProcesses);
+			process.on('SIGINT', cleanupChildrenProcesses);
+			process.on('SIGQUIT', cleanupChildrenProcesses);
+			process.on('SIGTERM', cleanupChildrenProcesses);
 		}
 	}
 	childProcesses.push(subprocess);
 }
-function killChildrenProcesses(exit = true) {
+function cleanupChildrenProcesses(exit = true) {
+	if (shuttingDown) return;
 	shuttingDown = true;
-	if (!childProcesses) return;
-	hdbLogger.error('killing children');
+	if (childProcesses.length === 0) return;
+	hdbLogger.info('Killing child processes...');
 	childProcesses.map((proc) => proc.kill());
 	if (exit) process.exit(0);
 	else return delay(2000); // give these processes some time to exit
@@ -156,7 +155,7 @@ function killChildrenProcesses(exit = true) {
  */
 function restart(serviceName) {
 	expectedRestartOfChildren();
-	for (let childProcess of childProcesses || []) {
+	for (let childProcess of childProcesses) {
 		// kill the child process and let it (auto) restart
 		if (childProcess.name === serviceName) {
 			childProcess.kill();
@@ -168,7 +167,7 @@ function restart(serviceName) {
  * Reset the restart counts for all child processes because we are doing an intentional restart
  */
 function expectedRestartOfChildren() {
-	for (let childProcess of childProcesses || []) {
+	for (let childProcess of childProcesses) {
 		if (childProcess.config) childProcess.config.restarts = 0; // reset the restart count
 	}
 }
@@ -205,7 +204,7 @@ function isHdbRunning() {
 	return harperPath && fs.existsSync(path.join(harperPath, terms.HDB_PID_FILE));
 }
 function kill() {
-	for (let process of childProcesses || []) {
+	for (let process of childProcesses) {
 		process.kill();
 	}
 	childProcesses = [];

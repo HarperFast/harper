@@ -1,10 +1,13 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { testData } from '../config/envConfig.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
 import { restartServiceHttpWorkersWithTimeout } from '../utils/restart.mjs';
 import { req } from '../utils/request.mjs';
 
 describe('17a. Add components for computed props, graphQL, and open api', () => {
+	beforeEach(timestamp);
+	
 	it('Add component for computed properties', () => {
 		return req()
 			.send({ operation: 'add_component', project: 'computed' })

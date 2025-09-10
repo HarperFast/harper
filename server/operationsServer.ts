@@ -157,7 +157,7 @@ function buildServer(isHttps: boolean): FastifyInstance {
 
 	// This handles all get requests for the studio
 	app.register(fastifyCompress);
-	app.register(fastifyStatic, { root: guidePath.join(PACKAGE_ROOT, 'studio/build-local') });
+	app.register(fastifyStatic, { root: guidePath.join(PACKAGE_ROOT, 'studio/web') });
 	registerContentHandlers(app);
 
 	const studioOn = env.get(terms.HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON);

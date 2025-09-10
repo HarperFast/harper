@@ -110,11 +110,11 @@ N/A
 
 ---
 
-## install-and-register.yaml
+## install-harper.yaml
 
 ### Description
 
-This workflow is for completing a registered install of harperdb on every instance for the tests
+This workflow is for installing Harper on every instance for the tests
 
 ### Trigger
 
@@ -201,7 +201,7 @@ N/A
 ### Uses
 
 1. create-instances
-2. install-and-register
+2. install-harper
 3. download-logs
 4. destroy-instances
 
@@ -233,7 +233,7 @@ N/A
 
 1. build
 2. create-instances
-3. install-and-register
+3. install-harper
 4. download-logs
 5. destroy-instances
 
@@ -265,6 +265,6 @@ N/A
 
 1. build
 2. create-instances
-3. install-and-register
+3. install-harper
 4. download-logs
 5. destroy-instances

@@ -2,6 +2,3 @@
 	path = application-template
 	url = https://github.com/HarperDB/application-template.git
 
-[submodule "studio"]
-	path = studio
-	url = https://github.com/harperdb/hdbms.git

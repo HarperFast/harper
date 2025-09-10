@@ -1,8 +1,11 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { req, reqRest } from '../utils/request.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
 
 describe('18. Computed indexed properties', () => {
+	beforeEach(timestamp);
+
 	//Computed indexed properties Folder
 
 	it('Insert data', () => {

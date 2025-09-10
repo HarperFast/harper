@@ -18,7 +18,7 @@ const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
 const { HTTP_STATUS_CODES } = hdbErrors;
 const envMgr = require('../utility/environment/environmentManager.js');
 const { sendOperationToNode, getThisNodeName, monitorNodeCAs } = require('../server/replication/replicator.ts');
-const path = require('path');
+const path = require('node:path');
 const { unlinkSync } = require('node:fs');
 envMgr.initSync();
 
@@ -62,11 +62,8 @@ async function restart(req) {
 
 	if (calledFromCli) {
 		const isHarperRunning = processMan.isHdbRunning();
-		if (!isHarperRunning) console.error('Harper must be running to restart it');
-		else {
-			console.error('Restarting Harper...');
-			require('./run.js').launch(true);
-		}
+		console.error(isHarperRunning ? 'Restarting Harper...' : 'Starting Harper...');
+		require('./run.js').launch(true);
 		return RESTART_RESPONSE;
 	}
 
@@ -83,7 +80,7 @@ async function restart(req) {
 		}
 		setTimeout(async () => {
 			// It seems like you should just be able to start the other process and kill this process and everything should
-			// be cleaned up. That's not the works for some reason; the socket listening fds somehow get transferred to the
+			// be cleaned up, however that doesn't work for some reason; the socket listening fds somehow get transferred to the
 			// child process if they are not explicitly closed. And when transferred they are orphaned listening, accepting
 			// connections and hanging. So we need to explicitly close down all the workers and then start the new process
 			// and shut down.
@@ -97,7 +94,7 @@ async function restart(req) {
 			require('./run.js').launch(true);
 		}, 50); // can't await this because it is going to do an exit()
 	} else {
-		// Post msg to main parent thread requesting it restart (on the main thread can process.exit())
+		// Post msg to main parent thread requesting it restart (so the main thread can process.exit())
 		parentPort.postMessage({
 			type: hdbTerms.ITC_EVENT_TYPES.RESTART,
 		});

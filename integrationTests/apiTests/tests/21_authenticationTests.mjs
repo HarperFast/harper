@@ -1,11 +1,15 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import request from 'supertest';
 import { envUrl, testData } from '../config/envConfig.mjs';
 import { isDevEnv } from '../utils/env.mjs';
 import { req } from '../utils/request.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
+
 
 describe('21. Authentication Tests', () => {
+	beforeEach(timestamp);
+
 	//Authentication Tests Folder
 
 	it('Describe all with valid credentials', () => {

@@ -1674,5 +1674,28 @@ describe('Querying through Resource API', () => {
 		await new Promise((resolve) => setTimeout(resolve, 100));
 		await QueryTable.delete('test-txn');
 	});
+	describe('Query after deletes', () => {
+		before(async () => {
+			for await (let id of QueryTable.search({
+				select: 'id',
+				conditions: [{ attribute: 'relatedId', comparator: 'equals', value: 3 }],
+				limit: 2,
+			})) {
+				await QueryTable.delete(id);
+			}
+		});
+		it('Query property in a table with limit after deletes', async function () {
+			let results = [];
+			for await (let id of QueryTable.search({
+				select: 'id',
+				conditions: [{ attribute: 'relatedId', comparator: 'equals', value: 3 }],
+				limit: 2,
+			})) {
+				results.push(id);
+			}
+			assert.equal(results.length, 2);
+		});
+	});
+
 	after(() => {});
 });

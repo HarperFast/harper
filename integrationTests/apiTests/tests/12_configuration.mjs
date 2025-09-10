@@ -1,11 +1,12 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import request from 'supertest';
 import { envUrl, testData, headers, headersTestUser } from '../config/envConfig.mjs';
 import { req, reqAsNonSU } from '../utils/request.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
 
 describe('12. Configuration', () => {
-	//Configuration Folder
+	beforeEach(timestamp);	
 
 	//Create_Attribute tests
 
@@ -158,7 +159,7 @@ describe('12. Configuration', () => {
 			})
 			.expect(200);
 	});
-	
+
 	it('Get Configuration', () => {
 		return req()
 			.send({ operation: 'get_configuration' })
@@ -275,7 +276,7 @@ describe('12. Configuration', () => {
 			.expect('content-type', 'text/html; charset=UTF-8')
 			.expect((r) => {
 				assert.ok(r.text.includes('<!doctype html>'), r.text);
-				assert.ok(r.text.includes('Studio :: HarperDB'), r.text);
+				assert.ok(r.text.includes('Harper Studio'), r.text);
 			})
 			.expect(200);
 	});

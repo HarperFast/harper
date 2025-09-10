@@ -1,4 +1,4 @@
-import { describe, it, before, after } from 'node:test';
+import { describe, it, before, after, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn, execSync } from 'node:child_process';
 import { readFileSync, existsSync, mkdirSync, rmSync } from 'node:fs';
@@ -6,6 +6,7 @@ import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { testData } from '../config/envConfig.mjs';
 import { req, secureReq, secureReqRest } from '../utils/request.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
 
 /**
  * OCSP Certificate Verification Tests
@@ -31,6 +32,8 @@ import { req, secureReq, secureReqRest } from '../utils/request.mjs';
  */
 
 describe('24. OCSP Certificate Verification Tests', () => {
+	beforeEach(timestamp);
+	
 	let httpsAvailable = true;
 	let ocspResponder;
 	let ocspPort = 8888;

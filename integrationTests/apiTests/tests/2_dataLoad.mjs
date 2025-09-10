@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { testData, getCsvPath, headers } from '../config/envConfig.mjs';
 import { createTable } from '../utils/table.mjs';
@@ -14,8 +14,11 @@ import ownerOnlyJson from '../json/ownerOnly.json' with { type: 'json' };
 import { searchByHash } from '../utils/search.mjs';
 import { checkJobCompleted, getJobId } from '../utils/jobs.mjs';
 import { req } from '../utils/request.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
 
 describe('2. Data Load', () => {
+	beforeEach(timestamp);
+
 	//CSV Folder
 
 	it('1 Upload Suppliers.csv', () => {

@@ -1,9 +1,12 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { setTimeout } from 'node:timers/promises';
 import { req } from '../utils/request.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
 
 describe('17. Environment Clean Up', () => {
+	beforeEach(timestamp);
+	
 	//Environment Clean Up Folder
 
 	it('drop schema northnwd', async () => {

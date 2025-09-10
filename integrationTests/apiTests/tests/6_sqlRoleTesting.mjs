@@ -1,9 +1,12 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { testData, headersTestUser } from '../config/envConfig.mjs';
 import { req, reqAsNonSU } from '../utils/request.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
 
 describe('6. SQL Role Testing', () => {
+	beforeEach(timestamp);	
+	
 	//SQL Role Testing Folder
 
 	it('SQL Add non SU role', () => {

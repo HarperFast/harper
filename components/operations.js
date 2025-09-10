@@ -452,6 +452,7 @@ function getProjectNameFromPackage(pkg) {
 async function getComponents() {
 	// Recursive function that will traverse the components dir and build json
 	// directory tree as it goes.
+	const rootConfig = configUtils.getConfiguration();
 	const walkDir = async (dir, result) => {
 		try {
 			const list = await fs.readdir(dir, { withFileTypes: true });
@@ -487,6 +488,10 @@ async function getComponents() {
 		name: env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT).split(path.sep).slice(-1).pop(),
 		entries: [],
 	});
+	for (let entry of results.entries) {
+		const sourcePackage = rootConfig[entry.name]?.package;
+		if (sourcePackage) entry.package = sourcePackage;
+	}
 
 	const { internal: statusInternal } = require('./status/index.ts');
 	let consolidatedStatuses;

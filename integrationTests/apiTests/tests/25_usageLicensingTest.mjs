@@ -1,10 +1,13 @@
-import { describe, it, before } from 'node:test';
+import { describe, it, before, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { req } from '../utils/request.mjs';
 import * as utils from '../../../unitTests/testLicenseUtils.js';
 import { randomUUID } from 'crypto';
+import { timestamp } from '../utils/timestamp.mjs';
 
 describe('Usage license installation', () => {
+	beforeEach(timestamp);
+
 	it('should install a valid license', async () => {
 		const licensePayload = utils.generateValidLicensePayload();
 		const uuid = randomUUID();

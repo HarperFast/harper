@@ -13,6 +13,7 @@ const env = require('../../../utility/environment/environmentManager');
 const { TEST_DATA_BASE64_CF_PROJECT } = require('../../test_data');
 const { expect } = chai;
 const assert = require('assert');
+const configUtils = require('../../../config/configUtils');
 
 describe('Test custom functions operations', () => {
 	let sandbox = sinon.createSandbox();
@@ -128,6 +129,12 @@ describe('Test custom functions operations', () => {
 			await fs.ensureFile(path.join(CF_DIR_ROOT, 'my-cool-component', '.hidden'));
 			await fs.ensureFile(path.join(CF_DIR_ROOT, 'my-cool-component', 'utils', 'utils.js'));
 			await fs.outputFile(path.join(CF_DIR_ROOT, 'my-other-component', 'config.yaml'), test_yaml_string);
+			const rootConfig = configUtils.getConfiguration();
+			sandbox.stub(configUtils, 'getConfiguration').returns({
+				'my-other-component': {
+					package: '@my-org/my-other-component',
+				},
+			});
 		}
 
 		before(async () => {
@@ -139,8 +146,10 @@ describe('Test custom functions operations', () => {
 			expect(result.name).to.equal('custom_functions');
 			expect(result.entries[0].name).to.equal('my-cool-component');
 			expect(result.entries[0].entries.length).to.equal(2);
+			expect(result.entries[0].package).to.be.undefined;
 			expect(result.entries[1].name).to.equal('my-other-component');
 			expect(result.entries[1].entries[0].name).to.equal('config.yaml');
+			expect(result.entries[1].package).to.equal('@my-org/my-other-component');
 		});
 
 		it('Test getComponents includes status information when component status exists', async () => {
@@ -151,8 +160,8 @@ describe('Test custom functions operations', () => {
 				status: 'healthy',
 				message: 'Component loaded successfully',
 				lastChecked: {
-					workers: { 0: new Date('2023-01-01').getTime() }
-				}
+					workers: { 0: new Date('2023-01-01').getTime() },
+				},
 			});
 			mockComponentStatus.set('my-other-component', {
 				componentName: 'my-other-component',
@@ -160,19 +169,19 @@ describe('Test custom functions operations', () => {
 				latestMessage: 'Failed to load',
 				error: 'Configuration error',
 				lastChecked: {
-					workers: { 1: new Date('2023-01-01').getTime() }
-				}
+					workers: { 1: new Date('2023-01-01').getTime() },
+				},
 			});
 
 			const mockComponentStatusModule = {
 				internal: {
 					ComponentStatusRegistry: {
-						getAggregatedFromAllThreads: async () => mockComponentStatus
+						getAggregatedFromAllThreads: async () => mockComponentStatus,
 					},
-					componentStatusRegistry: {} // Mock registry object
-				}
+					componentStatusRegistry: {}, // Mock registry object
+				},
 			};
-			
+
 			// Store original require
 			const originalRequire = operations.__get__('require');
 			operations.__set__('require', (path) => {
@@ -183,9 +192,9 @@ describe('Test custom functions operations', () => {
 			});
 
 			const result = await operations.getComponents();
-			
+
 			// Check that status is included for healthy component
-			const healthyComponent = result.entries.find(e => e.name === 'my-cool-component');
+			const healthyComponent = result.entries.find((e) => e.name === 'my-cool-component');
 			expect(healthyComponent.status).to.exist;
 			expect(healthyComponent.status).to.be.an('object');
 			expect(healthyComponent.status.status).to.equal('healthy');
@@ -195,7 +204,7 @@ describe('Test custom functions operations', () => {
 			expect(healthyComponent.status.lastChecked.workers[0]).to.exist;
 
 			// Check that status and error are included for error component
-			const errorComponent = result.entries.find(e => e.name === 'my-other-component');
+			const errorComponent = result.entries.find((e) => e.name === 'my-other-component');
 			expect(errorComponent.status).to.exist;
 			expect(errorComponent.status).to.be.an('object');
 			expect(errorComponent.status.status).to.equal('error');
@@ -204,7 +213,7 @@ describe('Test custom functions operations', () => {
 			expect(errorComponent.status.lastChecked).to.exist;
 			expect(errorComponent.status.lastChecked.workers).to.exist;
 			expect(errorComponent.status.lastChecked.workers[1]).to.exist;
-			
+
 			// Restore original require
 			operations.__set__('require', originalRequire);
 		});
@@ -213,11 +222,11 @@ describe('Test custom functions operations', () => {
 			// Mock getAggregatedFromAllThreads with empty status map
 			const mockComponentStatusModule = {
 				ComponentStatusRegistry: {
-					getAggregatedFromAllThreads: async () => new Map()
+					getAggregatedFromAllThreads: async () => new Map(),
 				},
-				componentStatusRegistry: {} // Mock registry object
+				componentStatusRegistry: {}, // Mock registry object
 			};
-			
+
 			// Store original require
 			const originalRequire = operations.__get__('require');
 			operations.__set__('require', (path) => {
@@ -228,7 +237,7 @@ describe('Test custom functions operations', () => {
 			});
 
 			const result = await operations.getComponents();
-			
+
 			// All components should have unknown status
 			for (const component of result.entries) {
 				expect(component.status).to.exist;
@@ -239,7 +248,7 @@ describe('Test custom functions operations', () => {
 				expect(component.status.lastChecked.workers).to.be.an('object');
 				expect(Object.keys(component.status.lastChecked.workers)).to.have.length(0);
 			}
-			
+
 			// Restore original require
 			operations.__set__('require', originalRequire);
 		});
@@ -273,11 +282,11 @@ describe('Test custom functions operations', () => {
 				ComponentStatusRegistry: {
 					getAggregatedFromAllThreads: async () => {
 						throw new Error('Failed to collect status from threads');
-					}
+					},
 				},
-				componentStatusRegistry: {} // Mock registry object
+				componentStatusRegistry: {}, // Mock registry object
 			};
-			
+
 			// Store original require
 			const originalRequire = operations.__get__('require');
 			operations.__set__('require', (path) => {
@@ -288,11 +297,11 @@ describe('Test custom functions operations', () => {
 			});
 
 			const result = await operations.getComponents();
-			
+
 			// Should still return components but with unknown status
 			expect(result.entries).to.exist;
 			expect(result.entries.length).to.equal(2);
-			
+
 			// All components should have unknown status
 			for (const component of result.entries) {
 				expect(component.status).to.exist;
@@ -300,7 +309,7 @@ describe('Test custom functions operations', () => {
 				expect(component.status.message).to.equal('The component has not been loaded yet (may need a restart)');
 				expect(component.status.lastChecked).to.deep.equal({ workers: {} });
 			}
-			
+
 			// Restore original require
 			operations.__set__('require', originalRequire);
 		});
@@ -309,11 +318,11 @@ describe('Test custom functions operations', () => {
 			// Mock getAggregatedFromAllThreads to return undefined
 			const mockComponentStatusModule = {
 				ComponentStatusRegistry: {
-					getAggregatedFromAllThreads: async () => undefined
+					getAggregatedFromAllThreads: async () => undefined,
 				},
-				componentStatusRegistry: {} // Mock registry object
+				componentStatusRegistry: {}, // Mock registry object
 			};
-			
+
 			// Store original require
 			const originalRequire = operations.__get__('require');
 			operations.__set__('require', (path) => {
@@ -324,11 +333,11 @@ describe('Test custom functions operations', () => {
 			});
 
 			const result = await operations.getComponents();
-			
+
 			// Should still return components but with unknown status
 			expect(result.entries).to.exist;
 			expect(result.entries.length).to.equal(2);
-			
+
 			// All components should have unknown status
 			for (const component of result.entries) {
 				expect(component.status).to.exist;
@@ -336,7 +345,7 @@ describe('Test custom functions operations', () => {
 				expect(component.status.message).to.equal('The component has not been loaded yet (may need a restart)');
 				expect(component.status.lastChecked).to.deep.equal({ workers: {} });
 			}
-			
+
 			// Restore original require
 			operations.__set__('require', originalRequire);
 		});

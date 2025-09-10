@@ -1,8 +1,11 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { req, reqGraphQl } from '../utils/request.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
 
 describe('19. GraphQL tests', () => {
+	beforeEach(timestamp);
+
 	//GraphQL tests Folder
 
 	it('Insert one null into SubObject', () => {
