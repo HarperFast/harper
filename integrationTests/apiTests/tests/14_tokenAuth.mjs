@@ -1,11 +1,14 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import request from 'supertest';
 import { envUrl, testData } from '../config/envConfig.mjs';
 import { isDevEnv } from '../utils/env.mjs';
 import { req } from '../utils/request.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
 
 describe('14. Token Auth', () => {
+	beforeEach(timestamp);
+
 	//Token Auth Folder
 
 	it('Call create_authentication_tokens no username/pw', async () => {

@@ -1,11 +1,14 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { dateTomorrow, dateYesterday, testData, getCsvPath, headersTestUser } from '../config/envConfig.mjs';
 import { checkJob, checkJobCompleted, getJobId } from '../utils/jobs.mjs';
 import { setTimeout } from 'node:timers/promises';
 import { req, reqAsNonSU } from '../utils/request.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
 
 describe('7. Jobs & Job Role Testing', () => {
+	beforeEach(timestamp);
+	
 	//Jobs & Job Role Testing Folder
 
 	//S3 Operations

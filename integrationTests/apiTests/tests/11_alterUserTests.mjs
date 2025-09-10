@@ -1,9 +1,12 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { testData } from '../config/envConfig.mjs';
 import { req } from '../utils/request.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
 
 describe('11. Alter User Tests', () => {
+	beforeEach(timestamp);	
+
 	//Alter User Tests Folder
 
 	it('Add non-SU role', () => {

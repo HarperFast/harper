@@ -1,4 +1,4 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { req, reqRest } from '../utils/request.mjs';
 import { restartServiceHttpWorkersWithTimeout } from '../utils/restart.mjs';
@@ -12,8 +12,12 @@ import { dropSchema } from '../utils/schema.mjs';
 import { verifyFilesDoNotExist } from '../utils/file.mjs';
 import { createBlobCustom } from '../utils/blob.mjs';
 import { exec } from 'node:child_process';
+import { timestamp } from '../utils/timestamp.mjs';
+
 
 describe('23. Blob', () => {
+	beforeEach(timestamp);
+
 	const blobId = randomInt(1000000);
 	let blobsPath;
 

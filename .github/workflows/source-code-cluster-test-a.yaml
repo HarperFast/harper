@@ -34,7 +34,7 @@ jobs:
     needs:
       - createInstances
       - getNodeVersion
-    uses: ./.github/workflows/install-and-register.yaml
+    uses: ./.github/workflows/install-harper.yaml
     with:
       publicDns: ${{ needs.createInstances.outputs.publicDnsNames }}
       harperdbVersion: ${{ needs.getNodeVersion.outputs.harperdbVersion }}

@@ -49,6 +49,7 @@ const { transactToClusteringUtils } = tcu;
 import type { Context } from '../../resources/ResourceInterface.ts';
 import * as status from '../status/index.ts';
 import * as usageLicensing from '../../resources/usageLicensing.ts';
+import * as regDeprecated from '../../resources/registrationDeprecated.ts';
 
 const pSearchSearch = util.promisify(search.search);
 const pSqlEvaluateSql = util.promisify(sql.evaluateSQL);
@@ -370,6 +371,9 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		new OperationFunctionObject(jobs.handleGetJobsByStartDate)
 	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_JOB, new OperationFunctionObject(jobs.handleGetJob));
+	opFuncMap.set(terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO, new OperationFunctionObject(regDeprecated.getRegistrationInfo));
+	opFuncMap.set(terms.OPERATIONS_ENUM.GET_FINGERPRINT, new OperationFunctionObject(regDeprecated.getFingerprint));
+	opFuncMap.set(terms.OPERATIONS_ENUM.SET_LICENSE, new OperationFunctionObject(regDeprecated.setLicense));
 	opFuncMap.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(restart.restart));
 	opFuncMap.set(terms.OPERATIONS_ENUM.RESTART_SERVICE, new OperationFunctionObject(executeJob, restart.restartService));
 	opFuncMap.set(terms.OPERATIONS_ENUM.CATCHUP, new OperationFunctionObject(catchup));

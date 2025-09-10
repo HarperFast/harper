@@ -1,8 +1,12 @@
-import { describe, it } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { reqRest } from '../utils/request.mjs';
+import { timestamp } from '../utils/timestamp.mjs';
+
 
 describe('20. REST tests', () => {
+	beforeEach(timestamp);
+
 	//REST tests Folder
 
 	it('[rest] Named query Get Related', () => {
