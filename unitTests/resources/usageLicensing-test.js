@@ -70,7 +70,7 @@ describe('recordUsage', () => {
 		expect(licenseWithUsage.usedWriteBytes).to.equal(129);
 		expect(licenseWithUsage.usedRealTimeMessages).to.equal(44);
 		expect(licenseWithUsage.usedRealTimeBytes).to.equal(176);
-		expect(licenseWithUsage.usedCpuTime).to.equal(42);
+		expect(licenseWithUsage.usedCpuTime).to.equal(42 / 3600);
 	});
 });
 
@@ -89,9 +89,7 @@ describe('getUsageLicenses', () => {
 		const license4 = { ...generateValidLicensePayload(), expiration: new Date(Date.now() + 1000).toISOString() };
 		const allLicenses = [license1, license2, license3, license4];
 
-		const installations = allLicenses.map((l) =>
-			ul.installUsageLicense(signTestLicense(l))
-		);
+		const installations = allLicenses.map((l) => ul.installUsageLicense(signTestLicense(l)));
 		await Promise.all(installations);
 
 		const licenses = ul.getUsageLicenses();
@@ -104,13 +102,23 @@ describe('getUsageLicenses', () => {
 			const actualLicense = actualLicenses.get(license.id);
 			expect(actualLicense.level, licenseErrMsg(allLicenses, actualLicense, 'level')).to.equal(license.level);
 			expect(actualLicense.region, licenseErrMsg(allLicenses, actualLicense, 'region')).to.equal(license.region);
-			expect(actualLicense.expiration, licenseErrMsg(allLicenses, actualLicense, 'expiration')).to.equal(license.expiration);
+			expect(actualLicense.expiration, licenseErrMsg(allLicenses, actualLicense, 'expiration')).to.equal(
+				license.expiration
+			);
 			expect(actualLicense.reads, licenseErrMsg(allLicenses, actualLicense, 'reads')).to.equal(license.reads);
-			expect(actualLicense.readBytes, licenseErrMsg(allLicenses, actualLicense, 'readBytes')).to.equal(license.readBytes);
+			expect(actualLicense.readBytes, licenseErrMsg(allLicenses, actualLicense, 'readBytes')).to.equal(
+				license.readBytes
+			);
 			expect(actualLicense.writes, licenseErrMsg(allLicenses, actualLicense, 'writes')).to.equal(license.writes);
-			expect(actualLicense.writeBytes, licenseErrMsg(allLicenses, actualLicense, 'writeBytes')).to.equal(license.writeBytes);
-			expect(actualLicense.realTimeMessages, licenseErrMsg(allLicenses, actualLicense, 'realTimeMessages')).to.equal(license.realTimeMessages);
-			expect(actualLicense.realTimeBytes, licenseErrMsg(allLicenses, actualLicense, 'realTimeBytes')).to.equal(license.realTimeBytes);
+			expect(actualLicense.writeBytes, licenseErrMsg(allLicenses, actualLicense, 'writeBytes')).to.equal(
+				license.writeBytes
+			);
+			expect(actualLicense.realTimeMessages, licenseErrMsg(allLicenses, actualLicense, 'realTimeMessages')).to.equal(
+				license.realTimeMessages
+			);
+			expect(actualLicense.realTimeBytes, licenseErrMsg(allLicenses, actualLicense, 'realTimeBytes')).to.equal(
+				license.realTimeBytes
+			);
 			expect(actualLicense.cpuTime, licenseErrMsg(allLicenses, actualLicense, 'cpuTime')).to.equal(license.cpuTime);
 			expect(actualLicense.storage, licenseErrMsg(allLicenses, actualLicense, 'storage')).to.equal(license.storage);
 		});
@@ -119,8 +127,16 @@ describe('getUsageLicenses', () => {
 	it('should return all licenses in the requested region', async () => {
 		const license1 = { ...generateValidLicensePayload(), region: 'test1' };
 		const license2 = { ...generateValidLicensePayload(), region: 'test2' };
-		const license3 = { ...generateValidLicensePayload(), region: 'test1', expiration: new Date(Date.now() - 1000).toISOString() };
-		const license4 = { ...generateValidLicensePayload(), region: 'test2', expiration: new Date(Date.now() + 1000).toISOString() };
+		const license3 = {
+			...generateValidLicensePayload(),
+			region: 'test1',
+			expiration: new Date(Date.now() - 1000).toISOString(),
+		};
+		const license4 = {
+			...generateValidLicensePayload(),
+			region: 'test2',
+			expiration: new Date(Date.now() + 1000).toISOString(),
+		};
 
 		const installations = [license1, license2, license3, license4].map((l) =>
 			ul.installUsageLicense(signTestLicense(l))
