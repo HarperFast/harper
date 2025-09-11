@@ -17,6 +17,7 @@ const path = require('path');
 const terms = require('../hdbTerms');
 const { setTimeout: delay } = require('node:timers/promises');
 const { execFile, fork } = require('child_process');
+const env = require('../environment/environmentManager');
 
 module.exports = {
 	start,
@@ -196,12 +197,14 @@ async function isHdbRestartRunning() {
 	return false;
 }
 /**
- * Checks to see if Harper is currently running.
- * @returns {Promise<boolean>}
+ * Checks to see if Harper is currently running, returning the pid if it is
+ * @returns {number|undefined}
  */
 function isHdbRunning() {
 	const harperPath = envMangr.getHdbBasePath();
-	return harperPath && fs.existsSync(path.join(harperPath, terms.HDB_PID_FILE));
+	const pidFile = path.join(harperPath, terms.HDB_PID_FILE);
+	const hdbPid = readPidFile(pidFile);
+	return hdbPid && hdbPid !== 1 && isProcessRunning(hdbPid) && hdbPid;
 }
 function kill() {
 	for (let process of childProcesses) {
@@ -359,4 +362,37 @@ async function reloadClustering() {
 	// For security reasons remove the Hub & Leaf config after they have been reloaded
 	await natsConfig.removeNatsConfig(hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_HUB.toLowerCase());
 	await natsConfig.removeNatsConfig(hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF.toLowerCase());
+}
+/**
+ * Reads the HarperDB PID file and returns the PID as a number.
+ * @param {string} pidFile - The path to the HarperDB PID file
+ * @returns {number|null} - The PID as a number, or null if the file is not found or cannot be read
+ */
+function readPidFile(pidFile) {
+	try {
+		return Number.parseInt(fs.readFileSync(pidFile, 'utf8'), 10);
+	} catch (err) {
+		return null;
+	}
+}
+
+/**
+ * Checks if a process is running by attempting to send a signal 0 to the process.
+ * @param {number} pid - The process ID to check
+ * @returns {boolean} - True if the process is running, false otherwise
+ */
+function isProcessRunning(pid) {
+	try {
+		// process.kill with signal 0 tests if process exists
+		// throws error if process doesn't exist
+		process.kill(pid, 0);
+		return true;
+	} catch (err) {
+		// EPERM means process exists but we don't have permission
+		// which still indicates the process is running
+		if (err.code === 'EPERM') {
+			return true;
+		}
+		return false;
+	}
 }
