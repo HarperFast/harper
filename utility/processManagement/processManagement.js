@@ -55,7 +55,7 @@ function start(procConfig, noKill = false) {
 		: execFile(procConfig.binFile, args, procConfig);
 	subprocess.name = procConfig.name;
 	subprocess.config = procConfig;
-	subprocess.on('error', async (code, message) => {
+	subprocess.on('error', (code, message) => {
 		console.error(code, message);
 	});
 	subprocess.on('exit', async (code) => {
