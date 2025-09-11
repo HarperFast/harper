@@ -160,6 +160,7 @@
 		"@tsconfig/node16": "^1.0.3",
 		"@types/micromatch": "^4.0.9",
 		"@types/node": "20.14.8",
+		"@types/tar-fs": "^2.0.4",
 		"@typescript-eslint/eslint-plugin": "^7.18.0",
 		"@typescript-eslint/parser": "^7.18.0",
 		"axios": "1.9.0",

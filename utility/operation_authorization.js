@@ -162,7 +162,6 @@ requiredPermissions.set(configUtils.getConfiguration.name, new permission(true, 
 requiredPermissions.set(transactionLog.readTransactionLog.name, new permission(true, []));
 requiredPermissions.set(transactionLog.deleteTransactionLogsBefore.name, new permission(true, []));
 requiredPermissions.set(npmUtilities.installModules.name, new permission(true, []));
-requiredPermissions.set(npmUtilities.auditModules.name, new permission(true, []));
 requiredPermissions.set(keys.createCsr.name, new permission(true, []));
 requiredPermissions.set(keys.signCertificate.name, new permission(true, []));
 requiredPermissions.set(keys.listCertificates.name, new permission(true, []));
