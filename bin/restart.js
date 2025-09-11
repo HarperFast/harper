@@ -86,7 +86,7 @@ async function restart(req) {
 			// and shut down.
 			hdbLogger.debug('Shutdown workers');
 			await shutdownWorkersNow();
-			await processMan.killChildrenProcesses(false);
+			await processMan.cleanupChildrenProcesses(false);
 			// remove pid file so it doesn't trip up the launch
 			await unlinkSync(path.join(envMgr.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), hdbTerms.HDB_PID_FILE), `${process.pid}`);
 			hdbLogger.debug('Starting new process...');
