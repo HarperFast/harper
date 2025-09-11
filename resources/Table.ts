@@ -908,11 +908,11 @@ export function makeTable(options) {
 		/**
 		 * Turn on auditing at runtime
 		 */
-		static enableAuditing(auditEnabled = true) {
+		static enableAuditing() {
 			if (audit) return; // already enabled
-			audit = auditEnabled;
-			if (auditEnabled) addDeleteRemoval();
-			TableResource.audit = auditEnabled;
+			audit = true;
+			addDeleteRemoval();
+			TableResource.audit = true;
 		}
 		/**
 		 * Coerce the id as a string to the correct type for the primary key
