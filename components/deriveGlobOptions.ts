@@ -1,4 +1,4 @@
-interface FilesOptionObject {
+export interface FilesOptionObject {
 	source: string | string[];
 	// TODO: @Ethan-Arrowood - https://harperdb.atlassian.net/browse/CORE-2815
 	only?: 'all' | 'files' | 'directories';

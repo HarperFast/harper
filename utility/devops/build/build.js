@@ -3,6 +3,7 @@ const fg = require('fast-glob');
 const fs = require('fs-extra');
 const path = require('path');
 const { exec } = require('child_process');
+
 let cwdPath = path.resolve(__dirname, '../../../');
 process.chdir(cwdPath);
 // we define externals to ensure that we don't load packages (from nodeModules)
@@ -43,7 +44,7 @@ for (let entryModule of entryModules) {
 }
 
 (async () => {
-	await fs.ensureDir('npm_pack/json');
+	fs.ensureDirSync('npm_pack/json');
 	for (let filename of await fg([
 		'package.json',
 		'json/*.json',
@@ -56,32 +57,20 @@ for (let entryModule of entryModules) {
 		'docs/**',
 		'logs/*',
 		'studio/**',
+		'index.d.ts',
 	])) {
 		let target = path.join('npm_pack', filename);
-		await fs.copy(filename, target);
+		fs.copySync(filename, target);
 	}
 })();
-fs.copy('index.js', 'npm_pack/index.js');
+fs.copySync('index.js', 'npm_pack/index.js');
 
-/* This seems like it would be better, but the exec is working
-spawnSync(
-	process.argv[0],
-	[
-		path.join(PACKAGE_ROOT, 'node_modules/.bin/tsc'),
-		'--outFile',
-		'npm_pack/index.d.ts',
-		'--declaration',
-		'--emitDeclarationOnly',
-	],
-	{ cwd: PACKAGE_ROOT }
-);*/
-let result = exec('npx tsc entry.ts --outDir npm_pack --declaration --emitDeclarationOnly', async (error, result) => {
+// eslint-disable-next-line sonarjs/no-os-command-from-path
+exec('npx tsc index.d.ts --outDir npm_pack --declaration --emitDeclarationOnly', (error, result) => {
 	if (error) {
 		if (error.code !== 2) console.error(error);
 	} else {
 		if (result.stdout.length) console.log(result.stdout.toString());
 		if (result.stderr.length) console.log(result.stderr.toString());
 	}
-	await fs.copy('npm_pack/entry.d.ts', 'npm_pack/index.d.ts');
-	fs.unlink('npm_pack/entry.d.ts');
 });
