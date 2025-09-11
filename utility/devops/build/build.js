@@ -56,32 +56,10 @@ for (let entryModule of entryModules) {
 		'docs/**',
 		'logs/*',
 		'studio/**',
+		'index.d.ts',
 	])) {
 		let target = path.join('npm_pack', filename);
 		await fs.copy(filename, target);
 	}
 })();
 fs.copy('index.js', 'npm_pack/index.js');
-
-/* This seems like it would be better, but the exec is working
-spawnSync(
-	process.argv[0],
-	[
-		path.join(PACKAGE_ROOT, 'node_modules/.bin/tsc'),
-		'--outFile',
-		'npm_pack/index.d.ts',
-		'--declaration',
-		'--emitDeclarationOnly',
-	],
-	{ cwd: PACKAGE_ROOT }
-);*/
-let result = exec('npx tsc entry.ts --outDir npm_pack --declaration --emitDeclarationOnly', async (error, result) => {
-	if (error) {
-		if (error.code !== 2) console.error(error);
-	} else {
-		if (result.stdout.length) console.log(result.stdout.toString());
-		if (result.stderr.length) console.log(result.stderr.toString());
-	}
-	await fs.copy('npm_pack/entry.d.ts', 'npm_pack/index.d.ts');
-	fs.unlink('npm_pack/entry.d.ts');
-});
