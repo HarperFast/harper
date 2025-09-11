@@ -10,14 +10,11 @@ const envMangr = require('../environment/environmentManager.js');
 const hdbLogger = require('../../utility/logging/harper_logger.js');
 const clusteringUtils = require('../clustering/clusterUtilities.js');
 const { startWorker, onMessageFromWorkers } = require('../../server/threads/manageThreads.js');
-const sysInfo = require('../environment/systemInformation.js');
-const util = require('util');
 const fs = require('fs');
-const path = require('path');
+const path = require('node:path');
 const terms = require('../hdbTerms');
 const { setTimeout: delay } = require('node:timers/promises');
-const { execFile, fork } = require('child_process');
-const env = require('../environment/environmentManager');
+const { execFile, fork } = require('node:child_process');
 
 module.exports = {
 	start,
@@ -51,12 +48,12 @@ function start(procConfig, noKill = false) {
 	const args = typeof procConfig.args === 'string' ? procConfig.args.split(' ') : procConfig.args;
 	procConfig.silent = true;
 	procConfig.detached = true;
-	let subprocess = procConfig.script
+	const subprocess = procConfig.script
 		? fork(procConfig.script, args, procConfig)
 		: execFile(procConfig.binFile, args, procConfig);
 	subprocess.name = procConfig.name;
 	subprocess.config = procConfig;
-	subprocess.on('error', async (code, message) => {
+	subprocess.on('error', (code, message) => {
 		console.error(code, message);
 	});
 	subprocess.on('exit', async (code) => {
