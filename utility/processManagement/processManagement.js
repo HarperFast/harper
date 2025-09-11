@@ -50,7 +50,7 @@ function start(procConfig, noKill = false) {
 	const args = typeof procConfig.args === 'string' ? procConfig.args.split(' ') : procConfig.args;
 	procConfig.silent = true;
 	procConfig.detached = true;
-	let subprocess = procConfig.script
+	const subprocess = procConfig.script
 		? fork(procConfig.script, args, procConfig)
 		: execFile(procConfig.binFile, args, procConfig);
 	subprocess.name = procConfig.name;
