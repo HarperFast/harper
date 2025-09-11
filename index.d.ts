@@ -8,20 +8,20 @@ import { tables as dbTables, databases as dbDatabases } from './resources/databa
 import { BlobCreationOptions } from './resources/blob.ts';
 export { Scope } from './components/Scope.ts';
 export type { FilesOption, FilesOptionObject } from './components/deriveGlobOptions.ts';
-export { FileAndURLPathConfig } from './components/Component.ts';
-export { OptionsWatcher, Config, ConfigValue } from './components/OptionsWatcher.ts';
+export type { FileAndURLPathConfig } from './components/Component.ts';
+export { OptionsWatcher, type Config, type ConfigValue } from './components/OptionsWatcher.ts';
 export {
 	EntryHandler,
-	BaseEntry,
-	FileEntry,
-	EntryEvent,
-	AddFileEvent,
-	ChangeFileEvent,
-	UnlinkFileEvent,
-	FileEntryEvent,
-	AddDirectoryEvent,
-	UnlinkDirectoryEvent,
-	DirectoryEntryEvent } from './components/EntryHandler.ts';
+	type BaseEntry,
+	type FileEntry,
+	type EntryEvent,
+	type AddFileEvent,
+	type ChangeFileEvent,
+	type UnlinkFileEvent,
+	type FileEntryEvent,
+	type AddDirectoryEvent,
+	type UnlinkDirectoryEvent,
+	type DirectoryEntryEvent } from './components/EntryHandler.ts';
 declare global {
 	const tables: typeof dbTables;
 	const databases: typeof dbDatabases;
