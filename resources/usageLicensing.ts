@@ -107,7 +107,7 @@ export async function isLicensed(): Promise<boolean> {
 	return activeLicense !== undefined;
 }
 
-let licenseLogger: any;
+let licenseLogger: any; // HarperLogger
 export async function recordUsage(analytics: any) {
 	licenseLogger = harperLogger.forComponent('license');
 	licenseLogger.trace?.('Recording usage into license from analytics');
