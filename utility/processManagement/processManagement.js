@@ -16,7 +16,7 @@ const fs = require('fs');
 const path = require('node:path');
 const terms = require('../hdbTerms');
 const { setTimeout: delay } = require('node:timers/promises');
-const { execFile, fork } = require('child_process');
+const { execFile, fork } = require('node:child_process');
 
 module.exports = {
 	start,
