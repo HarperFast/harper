@@ -64,3 +64,12 @@ for (let entryModule of entryModules) {
 	}
 })();
 fs.copySync('index.js', 'npm_pack/index.js');
+
+exec('npx tsc index.d.ts --outDir npm_pack --declaration --emitDeclarationOnly', (error, result) => {
+	if (error) {
+		if (error.code !== 2) console.error(error);
+	} else {
+		if (result.stdout.length) console.log(result.stdout.toString());
+		if (result.stderr.length) console.log(result.stderr.toString());
+	}
+});
