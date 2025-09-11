@@ -102,10 +102,13 @@ jobs:
           for public_dns_name in ${public_dns_names[@]}
           do
             echo "Copy back the test report"
-            scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/ui-tests/playwright-report" .
             pwd
             ls -al
+            scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/ui-tests/playwright-report" .
+            scp -r -i private_key -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR "ubuntu@$public_dns_name:/home/ubuntu/ui-tests/screenshots" .
+            ls -al
             ls -al playwright-report
+            ls -al screenshots
           done
         shell: bash
       - name: Upload report
