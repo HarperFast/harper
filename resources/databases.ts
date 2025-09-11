@@ -184,7 +184,6 @@ export function getDatabases(): Databases {
 		// auditing must be enabled for replication
 		databases.system?.hdb_analytics?.enableAuditing();
 		databases.system?.hdb_analytics_hostname?.enableAuditing();
-		databases.system?.hdb_license?.enableAuditing();
 	}
 	if (databases.system) {
 		for (const tableName of NON_REPLICATING_SYSTEM_TABLES) {
