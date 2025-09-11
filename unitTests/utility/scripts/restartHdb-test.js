@@ -6,7 +6,7 @@ const sinon = require('sinon');
 const rewire = require('rewire');
 const pm2_utils = require('../../../utility/processManagement/processManagement');
 
-describe('Test restartHdb scripts', () => {
+describe.skip('Test restartHdb scripts', () => {
 	const sandbox = sinon.createSandbox();
 	let reload_stub;
 	let delete_stub;

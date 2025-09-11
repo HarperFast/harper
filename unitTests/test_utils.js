@@ -717,7 +717,7 @@ async function launchTestLeafServer(ls_net_port = 9991, node_name = 'testLeafSer
 
 	const pm2_leaf_server_config = {
 		name: 'nats_test_leaf_server',
-		script: NATS_SERVER_PATH,
+		binFile: NATS_SERVER_PATH,
 		args: `-c ${leaf_config_path}`,
 		exec_mode: 'fork',
 		env: { [terms.PROCESS_NAME_ENV_PROP]: terms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF },

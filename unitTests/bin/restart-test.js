@@ -14,7 +14,6 @@ const restart = rewire('../../bin/restart');
 
 describe('Test restart module', () => {
 	const sandbox = sinon.createSandbox();
-	let is_service_reg_stub;
 	let console_error_stub;
 	let process_man_restart_stub;
 	let remove_nats_config_stub;
@@ -23,7 +22,6 @@ describe('Test restart module', () => {
 	let process_exit_stub;
 
 	before(() => {
-		is_service_reg_stub = sandbox.stub(process_man, 'isServiceRegistered');
 		console_error_stub = sandbox.stub(console, 'error');
 		process_man_restart_stub = sandbox.stub(process_man, 'restart');
 		remove_nats_config_stub = sandbox.stub(nats_config, 'removeNatsConfig');
@@ -39,30 +37,6 @@ describe('Test restart module', () => {
 
 	after(() => {
 		sandbox.restore();
-	});
-
-	describe('Test restart function', () => {
-		let restart_clustering_stub = sandbox.stub();
-
-		before(() => {
-			restart.__set__('restartClustering', restart_clustering_stub);
-		});
-
-		it('Test error logged when calling restart from CLI in no-pm2 mode', async () => {
-			is_service_reg_stub.resolves(false);
-			await restart.restart({});
-			expect(console_error_stub.args[0][0]).to.equal(
-				'Restart is not available from the CLI when running in non-pm2 mode. Either call restart from the API or stop and start HarperDB.'
-			);
-		});
-
-		it('Test in PM2 mode restart PM2 is called', async () => {
-			is_service_reg_stub.resolves(true);
-			const result = await restart.restart({});
-			expect(result).to.equal('Restarting HarperDB. This may take up to 60 seconds.');
-			expect(restart_clustering_stub.called).to.be.true;
-			expect(process_man_restart_stub.args[0][0]).to.equal('HarperDB');
-		});
 	});
 
 	describe('Test restartService function', () => {
@@ -87,7 +61,6 @@ describe('Test restart module', () => {
 		});
 
 		it('Test http_workers service is restarted', async () => {
-			is_service_reg_stub.resolves(false);
 			restart.__set__('calledFromCli', false);
 			const result = await restart.restartService({ service: 'http_workers' });
 			expect(result).to.equal('Restarting http_workers');
@@ -95,16 +68,12 @@ describe('Test restart module', () => {
 		});
 
 		it('Test restarting http_workers from CLI error', async () => {
-			is_service_reg_stub.resolves(false);
 			restart.__set__('calledFromCli', true);
 			const result = await restart.restartService({ service: 'http_workers' });
-			expect(result).to.equal(
-				'Restart http_workers is not available from the CLI when running in non-pm2 mode. Either call restart http_workers from the API or stop and start HarperDB.'
-			);
+			expect(result).to.equal('Restarting http_workers');
 		});
 
 		it('Test unrecognized service error', async () => {
-			is_service_reg_stub.resolves(true);
 			const result = await restart.restartService({ service: 'clustering leaf' });
 			expect(result).to.equal('Unrecognized service: clustering leaf');
 		});
@@ -146,23 +115,9 @@ describe('Test restart module', () => {
 			sandbox.restore();
 		});
 
-		it('Test clustering restart PM2 mode happy path ', async () => {
-			sandbox.resetHistory();
-			restart.__set__('pm2Mode', true);
-			await restart_clustering();
-			expect(generate_nats_config_stub.called).to.be.true;
-			expect(process_man_restart_stub.getCall(0).args[0]).to.equal('Clustering Hub');
-			expect(process_man_restart_stub.getCall(1).args[0]).to.equal('Clustering Leaf');
-			expect(remove_nats_config_stub.getCall(0).args[0]).to.equal('Clustering Hub');
-			expect(remove_nats_config_stub.getCall(1).args[0]).to.equal('Clustering Leaf');
-			expect(update_local_stream_stub.called).to.be.true;
-			expect(restart_workers_stub.called);
-		}).timeout(10000);
-
 		it('Test clustering restart non-PM2 mode happy path ', async () => {
 			let process_kill_stub = sandbox.stub(process, 'kill');
 			sandbox.resetHistory();
-			restart.__set__('pm2Mode', false);
 			await restart_clustering();
 			process_kill_stub.restore();
 			expect(generate_nats_config_stub.called).to.be.true;

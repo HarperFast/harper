@@ -20,7 +20,11 @@ const NATS_SERVER_BINARY_PATH = path.resolve(
 );
 
 function generateMainServerConfig() {
-	const envVars = { [hdbTerms.PROCESS_NAME_ENV_PROP]: hdbTerms.PROCESS_DESCRIPTORS.HDB, IS_SCRIPTED_SERVICE: true };
+	const envVars = {
+		[hdbTerms.PROCESS_NAME_ENV_PROP]: hdbTerms.PROCESS_DESCRIPTORS.HDB,
+		IS_SCRIPTED_SERVICE: true,
+		...process.env,
+	};
 	if (hdbUtils.noBootFile()) envVars[hdbTerms.CONFIG_PARAMS.ROOTPATH.toUpperCase()] = hdbUtils.getEnvCliRootPath();
 
 	// We are using launch scripts here because something was happening with the build where stdout/err was
@@ -30,6 +34,7 @@ function generateMainServerConfig() {
 		script: hdbTerms.LAUNCH_SERVICE_SCRIPTS.MAIN,
 		exec_mode: 'fork',
 		env: envVars,
+		execArgv: process.execArgv,
 		cwd: PACKAGE_ROOT,
 	};
 }
@@ -41,11 +46,10 @@ function generateNatsHubServerConfig() {
 	const hubConfigPath = path.join(hdbRoot, 'clustering', natsTerms.NATS_CONFIG_FILES.HUB_SERVER);
 	const hubLogs = path.join(env.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY), hdbTerms.LOG_NAMES.HDB);
 	const hubPort = envManager.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_HUBSERVER_NETWORK_PORT);
-	const natsLoggingFlag =
-		natsTerms.LOG_LEVEL_FLAGS[env.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_LOGLEVEL)] ?? undefined;
+	const natsLoggingFlag = natsTerms.LOG_LEVEL_FLAGS[env.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_LOGLEVEL)] ?? undefined;
 	const hsConfig = {
 		name: hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_HUB + (hubPort !== ELIDED_HUB_PORT ? '-' + hubPort : ''),
-		script: NATS_SERVER_BINARY_PATH,
+		binFile: NATS_SERVER_BINARY_PATH,
 		args: natsLoggingFlag ? `${natsLoggingFlag} -c ${hubConfigPath}` : `-c ${hubConfigPath}`,
 		exec_mode: 'fork',
 		env: { [hdbTerms.PROCESS_NAME_ENV_PROP]: hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_HUB },
@@ -70,13 +74,12 @@ function generateNatsLeafServerConfig() {
 	const leafConfigPath = path.join(hdbRoot, 'clustering', natsTerms.NATS_CONFIG_FILES.LEAF_SERVER);
 	const leafLogs = path.join(env.get(hdbTerms.HDB_SETTINGS_NAMES.LOG_PATH_KEY), hdbTerms.LOG_NAMES.HDB);
 	const leafPort = envManager.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_LEAFSERVER_NETWORK_PORT);
-	const natsLoggingFlag =
-		natsTerms.LOG_LEVEL_FLAGS[env.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_LOGLEVEL)] ?? undefined;
+	const natsLoggingFlag = natsTerms.LOG_LEVEL_FLAGS[env.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_LOGLEVEL)] ?? undefined;
 	const lsConfig = {
 		// we assign a unique name per port if it is not the default, so we can run multiple NATS instances for
 		// multiple HDB instances
 		name: hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF + (leafPort !== ELIDED_LEAF_PORT ? '-' + leafPort : ''),
-		script: NATS_SERVER_BINARY_PATH,
+		binFile: NATS_SERVER_BINARY_PATH,
 		args: natsLoggingFlag ? `${natsLoggingFlag} -c ${leafConfigPath}` : `-c ${leafConfigPath}`,
 		exec_mode: 'fork',
 		env: { [hdbTerms.PROCESS_NAME_ENV_PROP]: hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_LEAF },
@@ -103,7 +106,7 @@ function generateClusteringUpgradeV4ServiceConfig() {
 	const clusteringUpgradeLogs = path.join(env.get(hdbTerms.CONFIG_PARAMS.LOGGING_ROOT), hdbTerms.LOG_NAMES.HDB);
 	const clusteringUpgradeConfig = {
 		name: hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_UPGRADE_4_0_0,
-		script: hdbTerms.LAUNCH_SERVICE_SCRIPTS.NODES_UPGRADE_4_0_0,
+		binFile: hdbTerms.LAUNCH_SERVICE_SCRIPTS.NODES_UPGRADE_4_0_0,
 		exec_mode: 'fork',
 		env: { [hdbTerms.PROCESS_NAME_ENV_PROP]: hdbTerms.PROCESS_DESCRIPTORS.CLUSTERING_UPGRADE_4_0_0 },
 		merge_logs: true,

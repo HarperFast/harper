@@ -73,9 +73,6 @@ async function upgrade(upgradeObj) {
 		process.exit(1);
 	}
 
-	// check if already running, ends process if error caught.
-	await checkIfRunning();
-
 	let startUpgrade;
 
 	let exitCode = 0;
@@ -101,43 +98,6 @@ async function upgrade(upgradeObj) {
 		`HarperDB was successfully upgraded to version ${hdbUpgradeInfo[UPGRADE_VERSION]}`,
 		hdbTerms.LOG_LEVELS.INFO
 	);
-}
-
-/**
- * Check to see if an instance of HDB is running. Throws an error if running, otherwise it will just return to resolve the promise.
- * @throws
- */
-async function checkIfRunning() {
-	let hdbRunning = false;
-
-	// This is here to accommodate any HDB process that might have been started with old versions of HDB that dont use processManagement.
-	const listHdbServer = await psList.findPs(hdbTerms.HDB_PROC_NAME);
-	if (!hdbUtils.isEmptyOrZeroLength(listHdbServer)) {
-		hdbRunning = true;
-	}
-
-	if (!hdbRunning) {
-		// This is here to accommodate any HDB process that might have been started with old versions of HDB that dont use processManagement.
-		const listHdbExpress = await psList.findPs('hdb_express');
-		if (!hdbUtils.isEmptyOrZeroLength(listHdbExpress)) {
-			hdbRunning = true;
-		}
-	}
-
-	if (!hdbRunning) {
-		const processList = await pm2Utils.list();
-		if (!hdbUtils.isEmptyOrZeroLength(processList)) {
-			hdbRunning = true;
-		}
-	}
-
-	if (hdbRunning) {
-		let runErr =
-			"HarperDB is running, please stop all HarperDB services with 'harperdb stop' and run the upgrade command again.";
-		console.log(chalk.red(runErr));
-		hdbLogger.error(runErr);
-		process.exit(1);
-	}
 }
 
 /**

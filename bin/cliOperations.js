@@ -9,6 +9,7 @@ const fs = require('fs-extra');
 const YAML = require('yaml');
 const { packageDirectory } = require('../components/packageComponent.ts');
 const { encode } = require('cbor-x');
+const { isHdbRunning } = require('../utility/processManagement/processManagement.js');
 const { initConfig } = require('../config/configUtils.js');
 
 const SUPPORTED_OPS = [
@@ -158,7 +159,7 @@ async function cliOperations(req) {
 		// if we aren't doing a targeted operation (like deploy), we initialize the config and verify that local harper
 		// is running and that we can communicate with it.
 		initConfig();
-		if (!fs.existsSync(path.join(envMgr.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE))) {
+		if (!isHdbRunning()) {
 			console.error('HarperDB must be running to perform this operation');
 			process.exit();
 		}

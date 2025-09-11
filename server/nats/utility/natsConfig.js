@@ -75,7 +75,7 @@ async function generateNatsConfig(isRestart = false, processName = undefined) {
 	const cluster_user = await user.getClusterUser();
 	if (hdbUtils.isEmpty(cluster_user) || cluster_user.active !== true) {
 		generateNatsConfigError(
-			`Invalid cluster user '${cluster_username}'. A valid user with the role 'cluster_user' must be defined under clustering.user in harperdb-config.yaml`
+			`Invalid cluster user '${clusterUsername}'. A valid user with the role 'cluster_user' must be defined under clustering.user in harperdb-config.yaml`
 		);
 	}
 

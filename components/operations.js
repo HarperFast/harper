@@ -1,10 +1,10 @@
 'use strict';
 
+const path = require('node:path');
+const { isMainThread } = require('node:worker_threads');
+
 const fs = require('fs-extra');
 const fg = require('fast-glob');
-const path = require('path');
-const tar = require('tar-fs');
-const gunzip = require('gunzip-maybe');
 const normalize = require('normalize-path');
 
 const validator = require('./operationsValidation.js');
@@ -15,21 +15,18 @@ const configUtils = require('../config/configUtils.js');
 const hdbUtils = require('../utility/common_utils.js');
 const { PACKAGE_ROOT } = require('../utility/packageUtils.js');
 const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
-const { basename } = require('path');
-const installComponents = require('../components/installComponents.js');
 const engMgr = require('../utility/environment/environmentManager.js');
-const { Readable } = require('stream');
-const { isMainThread } = require('worker_threads');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
 const manageThreads = require('../server/threads/manageThreads.js');
 const { replicateOperation } = require('../server/replication/replicator.ts');
 const { packageDirectory } = require('../components/packageComponent.ts');
-const npmUtils = require('../utility/npmUtilities.js');
 const APPLICATION_TEMPLATE = path.join(PACKAGE_ROOT, 'application-template');
 const rootDir = env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH);
 const sshDir = path.join(rootDir, 'ssh');
 const knownHostsFile = path.join(sshDir, 'known_hosts');
 const { Resources } = require('../resources/Resources.ts');
+
+const { Application, prepareApplication } = require('./Application.ts');
 
 /**
  * Read the settings.js file and return the
@@ -361,56 +358,31 @@ async function deployComponent(req) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	const cfDir = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
-	let { project, payload, package: pkg, install_command: installCommand } = req;
-	log.trace(`deploying component`, project);
-
-	if (!payload && !pkg) {
-		throw new Error("'payload' or 'package' must be provided");
+	// Write to root config if the request contains a package identifier
+	// TODO: how can we keep record of the `payload`? Its often too large to stuff into a config file; especially the root config. Maybe we can write it to a file and reference that way?
+	if (req.package) {
+		const applicationConfig = { package: req.package };
+		// Avoid writing an empty `install:` block
+		if (req.install_command || req.install_timeout) {
+			applicationConfig.install = {
+				command: req.install_command,
+				timeout: req.install_timeout,
+			};
+		}
+		await configUtils.addConfig(req.project, applicationConfig);
 	}
-	let pathToProject;
-	if (payload) {
-		pathToProject = path.join(cfDir, project);
-		pkg = 'file:' + pathToProject;
-		// check if the project exists, if it doesn't, create it, if it does, empty it.
-		await fs.emptyDir(pathToProject);
 
-		// extract the reconstituted file to the proper project directory
-		const stream = Readable.from(payload instanceof Buffer ? payload : Buffer.from(payload, 'base64'));
-		await new Promise((resolve, reject) => {
-			stream
-				.pipe(gunzip())
-				.pipe(tar.extract(pathToProject, { finish: resolve }))
-				.on('error', reject);
-		});
+	const application = new Application({
+		name: req.project,
+		payload: req.payload,
+		packageIdentifier: req.package,
+		install: {
+			command: req.install_command,
+			timeout: req.install_timeout,
+		},
+	});
 
-		const compDir = await fs.readdir(pathToProject);
-		if (compDir.length === 1 && compDir[0] === 'package') {
-			await fs.copy(path.join(pathToProject, 'package'), pathToProject);
-			await fs.remove(path.join(pathToProject, 'package'));
-		}
-		const nodeModulesPath = path.join(pathToProject, 'node_modules');
-		if (installCommand) {
-			// if the user provided an install command, we run that instead of npm install at the root
-			// TODO: When we support untrusted packages in a secure mode, we will need to deny this
-			await npmUtils.runCommand(installCommand, pathToProject);
-		}
-		// if we have a nodeModules folder, we assume we have our own modules, and we don't need to npm install them
-		else if (!fs.existsSync(nodeModulesPath)) {
-			// if the package came with nodeModules, we don't need to npm install
-			// them, but otherwise we do
-			await npmUtils.installAllRootModules(false, pathToProject);
-		}
-	} else {
-		// Adds package to harperdb-config and then relies on restart to call install on the new app
-		await configUtils.addConfig(project, { package: pkg });
-
-		// The main thread can install the components, but we do it here and now so that if it fails, we can immediately
-		// know about it and report it.
-		await installComponents();
-		const rootPath = engMgr.get(hdbTerms.CONFIG_PARAMS.ROOTPATH);
-		pathToProject = path.join(rootPath, 'node_modules', project);
-	}
+	await prepareApplication(application);
 
 	// the main thread should never actually load component, just do a deploy
 	if (isMainThread) return;
@@ -423,10 +395,9 @@ async function deployComponent(req) {
 
 	let lastError;
 	componentLoader.setErrorReporter((error) => (lastError = error));
-	await componentLoader.loadComponent(pathToProject, pseudoResources);
+	await componentLoader.loadComponent(application.dirPath, pseudoResources);
 
 	if (lastError) throw lastError;
-	log.info('Installed component');
 
 	const rollingRestart = req.restart === 'rolling';
 	// if doing a rolling restart set restart to false so that other nodes don't also restart.
@@ -434,7 +405,7 @@ async function deployComponent(req) {
 	let response = await replicateOperation(req);
 	if (req.restart === true) {
 		manageThreads.restartWorkers('http');
-		response.message = `Successfully deployed: ${project}, restarting HarperDB`;
+		response.message = `Successfully deployed: ${application.name}, restarting HarperDB`;
 	} else if (rollingRestart) {
 		const serverUtilities = require('../server/serverHelpers/serverUtilities.ts');
 		const jobResponse = await serverUtilities.executeJob({
@@ -444,8 +415,8 @@ async function deployComponent(req) {
 		});
 
 		response.restartJobId = jobResponse.job_id;
-		response.message = `Successfully deployed: ${project}, restarting HarperDB`;
-	} else response.message = `Successfully deployed: ${project}`;
+		response.message = `Successfully deployed: ${application.name}, restarting HarperDB`;
+	} else response.message = `Successfully deployed: ${application.name}`;
 
 	return response;
 }

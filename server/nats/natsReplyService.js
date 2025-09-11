@@ -1,4 +1,5 @@
 'use strict';
+require('../../bin/dev.js');
 
 const envManager = require('../../utility/environment/environmentManager.js');
 envManager.initSync();

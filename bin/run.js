@@ -33,6 +33,7 @@ const schemaDescribe = require('../dataLayer/schemaDescribe.js');
 const lmdbCreateTxnEnvironment = require('../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment.js');
 const CreateTableObject = require('../dataLayer/CreateTableObject.js');
 const hdbTerms = require('../utility/hdbTerms.ts');
+const { isHdbRunning } = require('../utility/processManagement/processManagement.js');
 
 let pmUtils;
 let cmdArgs;
@@ -89,7 +90,7 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 	hdbLogger.suppressLogging?.(() => {
 		console.log(chalk.magenta('' + fs.readFileSync(path.join(PACKAGE_ROOT, 'utility/install/ascii_logo.txt'))));
 	});
-
+	hdbLogger.debug('Checking to make sure hdb is installed');
 	if (installation.isHdbInstalled(env, hdbLogger) === false) {
 		console.log(HDB_NOT_FOUND_MSG);
 		try {
@@ -111,32 +112,30 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 		}
 	}
 
-	// Check to see if HarperDB is already running by checking for a pid file
-	// If found confirm it matches a currently running processes
-	let isHdbRunning;
 	let serviceClustering = cmdArgs?.service === 'clustering';
 	if (cmdArgs?.service && !serviceClustering) {
 		console.error('Unrecognized service argument');
+		hdbLogger.debug('Unrecognized service argument');
 		process.exit(1);
 	}
 
-	const pidFile = path.join(env.get(terms.CONFIG_PARAMS.ROOTPATH), terms.HDB_PID_FILE);
-	const hdbPid = readPidFile(pidFile);
-	if (hdbPid && hdbPid !== 1 && isProcessRunning(hdbPid)) {
+	// Check to see if HarperDB is already running by checking for a pid file
+	// If found confirm it matches a currently running processes
+	let hdbPid = isHdbRunning();
+	if (hdbPid) {
 		if (!serviceClustering) {
+			hdbLogger.debug('Error: HarperDB is already running');
 			console.error(`Error: HarperDB is already running (pid: ${hdbPid})`);
 			process.exit(4);
-		} else {
-			isHdbRunning = true;
 		}
 	}
 
 	// Requiring the processManagement mod will create the .pm2 dir. This code is here to allow install to set
 	// pm2 env vars before that is done.
 	if (pmUtils === undefined) pmUtils = require('../utility/processManagement/processManagement.js');
-
+	hdbLogger.debug('Checking for service clustering');
 	if (serviceClustering) {
-		if (!isHdbRunning) {
+		if (!hdbPid) {
 			console.error('HarperDB must be running to start clustering.');
 			process.exit();
 		}
@@ -155,8 +154,10 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 
 	addExitListeners();
 
-	// Write HarperDB PID to file for tracking purposes
-	await fs.writeFile(path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), hdbTerms.HDB_PID_FILE), `${process.pid}`);
+	if (calledByMain) {
+		// Write HarperDB PID to file for tracking purposes
+		await fs.writeFile(path.join(env.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), hdbTerms.HDB_PID_FILE), `${process.pid}`);
+	}
 	hdbLogger.info('HarperDB PID', process.pid);
 
 	// Check to see if an upgrade is needed based on existing hdbInfo data.  If so, we need to force the user to upgrade
@@ -213,7 +214,7 @@ async function main(calledByInstall = false) {
 		const isScripted = process.env.IS_SCRIPTED_SERVICE && !cmdArgs.service;
 
 		if (hdbUtils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY))) {
-			if (!isScripted) await pmUtils.startClusteringProcesses();
+			await pmUtils.startClusteringProcesses();
 			await pmUtils.startClusteringThreads();
 		}
 		await startHTTPThreads(
@@ -246,11 +247,11 @@ async function launch(exit = true) {
 	skipExitListeners = !exit;
 	try {
 		if (pmUtils === undefined) pmUtils = require('../utility/processManagement/processManagement.js');
-		pmUtils.enterPM2Mode();
+		hdbLogger.debug('initializing processManagement...');
 		await initialize();
-		const clusteringEnabled = hdbUtils.autoCastBoolean(env.get(terms.HDB_SETTINGS_NAMES.CLUSTERING_ENABLED_KEY));
-		if (clusteringEnabled) await pmUtils.startClusteringProcesses();
-		await pmUtils.startService(terms.PROCESS_DESCRIPTORS.HDB);
+		hdbLogger.debug('Starting new main process');
+
+		await pmUtils.startService(terms.PROCESS_DESCRIPTORS.HDB, true);
 		started();
 		if (exit) process.exit(0);
 	} catch (err) {
@@ -471,39 +472,5 @@ function startupLog(portResolutions) {
 				`Note that log messages are being sent to the console (stdout and stderr) in addition to the log file ${logFilePath}. This can be disabled by setting logging.stdStreams to false, and the log file can be directly monitored/tailed.`
 			);
 		});
-	}
-}
-
-/**
- * Reads the HarperDB PID file and returns the PID as a number.
- * @param {string} pidFile - The path to the HarperDB PID file
- * @returns {number|null} - The PID as a number, or null if the file is not found or cannot be read
- */
-function readPidFile(pidFile) {
-	try {
-		return Number.parseInt(fs.readFileSync(pidFile, 'utf8'), 10);
-	} catch (err) {
-		return null;
-	}
-}
-
-/**
- * Checks if a process is running by attempting to send a signal 0 to the process.
- * @param {number} pid - The process ID to check
- * @returns {boolean} - True if the process is running, false otherwise
- */
-function isProcessRunning(pid) {
-	try {
-		// process.kill with signal 0 tests if process exists
-		// throws error if process doesn't exist
-		process.kill(pid, 0);
-		return true;
-	} catch (err) {
-		// EPERM means process exists but we don't have permission
-		// which still indicates the process is running
-		if (err.code === 'EPERM') {
-			return true;
-		}
-		return false;
 	}
 }
