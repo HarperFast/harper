@@ -26,7 +26,7 @@ module.exports = {
 	startClusteringProcesses,
 	startClusteringThreads,
 	isHdbRestartRunning,
-	isHdbRunning,
+	getHdbPid,
 	cleanupChildrenProcesses,
 	reloadClustering,
 	expectedRestartOfChildren,
@@ -197,13 +197,13 @@ async function isHdbRestartRunning() {
  * Checks to see if Harper is currently running, returning the pid if it is
  * @returns {number|undefined}
  */
-function isHdbRunning() {
+function getHdbPid() {
 	const harperPath = envMangr.getHdbBasePath();
 	if (!harperPath) return;
 	const pidFile = path.join(harperPath, terms.HDB_PID_FILE);
 	const hdbPid = readPidFile(pidFile);
 	if (!hdbPid) return;
-	if (hdbPid === 1 || isProcessRunning(hdbPid)) return hdbPid;
+	if (isProcessRunning(hdbPid)) return hdbPid;
 	// return undefined
 }
 function kill() {

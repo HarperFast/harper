@@ -61,8 +61,8 @@ async function restart(req) {
 	}
 
 	if (calledFromCli) {
-		const isHarperRunning = processMan.isHdbRunning();
-		console.error(isHarperRunning ? 'Restarting Harper...' : 'Starting Harper...');
+		const hdbPid = processMan.getHdbPid();
+		console.error(hdbPid ? 'Restarting Harper...' : 'Starting Harper...');
 		require('./run.js').launch(true);
 		return RESTART_RESPONSE;
 	}

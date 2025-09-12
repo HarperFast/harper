@@ -33,7 +33,7 @@ const schemaDescribe = require('../dataLayer/schemaDescribe.js');
 const lmdbCreateTxnEnvironment = require('../dataLayer/harperBridge/lmdbBridge/lmdbUtility/lmdbCreateTransactionsAuditEnvironment.js');
 const CreateTableObject = require('../dataLayer/CreateTableObject.js');
 const hdbTerms = require('../utility/hdbTerms.ts');
-const { isHdbRunning } = require('../utility/processManagement/processManagement.js');
+const { getHdbPid } = require('../utility/processManagement/processManagement.js');
 
 let pmUtils;
 let cmdArgs;
@@ -121,7 +121,7 @@ async function initialize(calledByInstall = false, calledByMain = false) {
 
 	// Check to see if HarperDB is already running by checking for a pid file
 	// If found confirm it matches a currently running processes
-	let hdbPid = isHdbRunning();
+	let hdbPid = getHdbPid();
 	if (hdbPid) {
 		if (!serviceClustering) {
 			hdbLogger.debug('Error: HarperDB is already running');
