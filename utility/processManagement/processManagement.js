@@ -199,9 +199,12 @@ async function isHdbRestartRunning() {
  */
 function isHdbRunning() {
 	const harperPath = envMangr.getHdbBasePath();
+	if (!harperPath) return;
 	const pidFile = path.join(harperPath, terms.HDB_PID_FILE);
 	const hdbPid = readPidFile(pidFile);
-	return hdbPid && hdbPid !== 1 && isProcessRunning(hdbPid) && hdbPid;
+	if (!hdbPid) return;
+	if (hdbPid === 1 || isProcessRunning(hdbPid)) return hdbPid;
+	// return undefined
 }
 function kill() {
 	for (let process of childProcesses) {
