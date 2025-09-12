@@ -230,6 +230,7 @@ module.exports = {
 	getLogFilePath: () => logFilePath,
 	forComponent: (name) => mainLogger.forComponent(name),
 	setMainLogger,
+	setLogLevel,
 	OUTPUTS,
 	AuthAuditLog,
 	// for now these functions at least notify us of when the component system is ready so
