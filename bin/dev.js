@@ -2,7 +2,7 @@
 if (__filename.endsWith('dev.js') && !process.env.HARPER_SKIP_COMPILE) {
 	const fg = require('fast-glob');
 	const { tmpdir } = require('node:os');
-	const { relative, join } = require('node:path');
+	const { relative, join, basename } = require('node:path');
 	const { existsSync, statSync, readFileSync, writeFileSync, unlinkSync } = require('node:fs');
 	const { isMainThread } = require('node:worker_threads');
 	const { spawnSync, spawn } = require('node:child_process');
@@ -122,7 +122,7 @@ if (__filename.endsWith('dev.js') && !process.env.HARPER_SKIP_COMPILE) {
 			let baseFilename = join(alternate, request);
 			let filename = baseFilename + '.js';
 			if (existsSync(filename)) return filename;
-			if (baseFilename.includes('.') && existsSync(baseFilename)) return baseFilename;
+			if (basename(baseFilename).includes('.') && existsSync(baseFilename)) return baseFilename;
 		}
 		return findPath(request, paths, isMain);
 	};
