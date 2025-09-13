@@ -79,6 +79,7 @@ const FILE_READ_TIMEOUT = 60000;
 function InstanceOfBlobWithNoConstructor() {}
 InstanceOfBlobWithNoConstructor.prototype = Blob.prototype;
 
+let warnedSaveDeprecation = false;
 // @ts-ignore
 /**
  * A blob that is backed by a file, and can be saved to the database as a reference
@@ -444,7 +445,12 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 		return slicedBlob;
 	}
 	save(): Promise<void> {
-		// TODO: Deprecate this and just use the flag
+		if (!warnedSaveDeprecation) {
+			warnedSaveDeprecation = true;
+			logger.warn?.(
+				`save() method on Blob is deprecated, use the 'saveBeforeCommit' flag on the Blob constructor instead`
+			);
+		}
 		this.saveBeforeCommit = true;
 		return Promise.resolve();
 	}
