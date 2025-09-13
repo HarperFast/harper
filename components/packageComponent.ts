@@ -20,6 +20,12 @@ export function packageDirectory(
 				ignore: options.skip_node_modules ? (name: string) => {
 					return name.includes('node_modules') || name.includes(join('cache', 'webpack'));
 				} : undefined,
+				map: (header) => {
+					if (header.type === 'directory') {
+						header.mode = 0o755;
+					}
+					return header;
+				}
 			})
 			.pipe(createGzip())
 			.on('data', (chunk: Buffer) => chunks.push(chunk))
