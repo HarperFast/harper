@@ -10,10 +10,12 @@ const {
 	setDeletionDelay,
 	encodeBlobsAsBuffers,
 	findBlobsInObject,
+	isSaving,
 } = require('../../resources/blob');
 const { existsSync } = require('fs');
 const { pack } = require('msgpackr');
 const { randomBytes } = require('crypto');
+const { transaction } = require('../../resources/transaction');
 
 // might want to enable an iteration with NATS being assigned as a source
 //const { setNATSReplicator } = require('../../server/nats/natsReplicator');
@@ -96,8 +98,18 @@ describe('Blob test', () => {
 		retrievedBytes = await sliced.bytes();
 		assert(retrievedBytes.equals(random.slice(300, 400)));
 	});
-	it('create a blob from a buffer and save it before committing it', async () => {
-		let random = randomBytes(25000);
+	it('create a blob from a buffer and save it before committing', async () => {
+		let random = randomBytes(5000 * Math.random() + 20000);
+		let blob = createBlob(random, { saveBeforeCommit: true });
+		await BlobTest.put({ id: 1, blob });
+		let record = await BlobTest.get(1);
+		assert.equal(record.id, 1);
+		let retrievedBytes = await record.blob.bytes();
+		assert(retrievedBytes.equals(random));
+		assert.equal(record.blob.size, random.length);
+	});
+	it('create a blob from a buffer and save it before committing it using save() method', async () => {
+		let random = randomBytes(5000 * Math.random() + 20000);
 		let blob = createBlob(random);
 		await blob.save(BlobTest);
 		await BlobTest.put({ id: 1, blob });
@@ -106,6 +118,19 @@ describe('Blob test', () => {
 		let retrievedBytes = await record.blob.bytes();
 		assert(retrievedBytes.equals(random));
 		assert.equal(record.blob.size, random.length);
+	});
+	it('create a blob from a buffer and call save() but then abort', async () => {
+		let blob;
+		try {
+			await transaction({}, async () => {
+				let random = randomBytes(5000 * Math.random() + 20000);
+				blob = createBlob(random);
+				blob.save(BlobTest);
+				throw new Error('test error'); // abort the transaction
+			});
+		} catch (error) {}
+		assert(blob);
+		assert(!isSaving(blob)); // ensure that it is not saving or saved
 	});
 	it('create a small blob from a buffer and save it', async () => {
 		let random = randomBytes(250);
