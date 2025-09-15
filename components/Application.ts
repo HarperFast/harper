@@ -3,7 +3,7 @@ import { CONFIG_PARAMS } from '../utility/hdbTerms.js';
 import logger from '../utility/logging/harper_logger.js';
 
 import { dirname, extname, join } from 'node:path';
-import { access, constants, cp, mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
+import { access, constants, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
 import { createReadStream, existsSync } from 'node:fs';
 import { Readable } from 'node:stream';
@@ -83,17 +83,52 @@ export async function extractApplication(application: Application) {
 			application.payload instanceof Buffer ? application.payload : Buffer.from(application.payload, 'base64')
 		);
 	} else {
+		// Given a package, there are a a couple options
 		const parentDirPath = dirname(application.dirPath);
-		// Given a package, resolve using `npm pack` (downloads the package as a tarball and writes the path to stdout)
-		const { stdout: tarballFilePath } = await nonInteractiveSpawn(
-			application.name,
-			'npm',
-			['pack', application.packageIdentifier],
-			parentDirPath
-		);
-		tarballPath = join(parentDirPath, tarballFilePath.trim());
-		// Create a Readable from the tarball
-		tarball = createReadStream(tarballPath);
+
+		// If the package identifier is a file path we need to check if its a tarball or a directory
+		if (application.packageIdentifier.startsWith('file:')) {
+			const packagePath = application.packageIdentifier.slice(5);
+			try {
+				// Have to remove the 'file:' prefix in order to use fs methods
+				const stats = await stat(packagePath);
+
+				if (stats.isDirectory()) {
+					// If its a directory, symlink
+					await symlink(packagePath, application.dirPath, 'dir');
+					// And return early since we're done; no extraction needed
+					return;
+				}
+
+				if (!stats.isFile()) {
+					throw new Error(`File path specified in package identifier is not a file or directory: ${packagePath}`);
+				}
+
+				// If its a file, we assume it can be unzipped and extracted.
+				// We are using maybe-gunzip to handle both gzipped and non-gzipped tarballs
+				// And then we are happy to let the `tar-fs` library handle the extraction.
+				// Maybe worth adding some detection or at least some error handling if that step below fails.
+				tarballPath = packagePath;
+				tarball = createReadStream(tarballPath);
+			} catch (err) {
+				if (err.code === 'ENOENT') {
+					throw new Error(`File path specified in package identifier does not exist: ${packagePath}`);
+				} else {
+					throw err;
+				}
+			}
+		} else {
+			// Given a package, resolve using `npm pack` (downloads the package as a tarball and writes the path to stdout)
+			const { stdout: tarballFilePath } = await nonInteractiveSpawn(
+				application.name,
+				'npm',
+				['pack', application.packageIdentifier],
+				parentDirPath
+			);
+			tarballPath = join(parentDirPath, tarballFilePath.trim());
+			// Create a Readable from the tarball
+			tarball = createReadStream(tarballPath);
+		}
 	}
 
 	// Create the application directory
@@ -150,9 +185,17 @@ export async function extractApplication(application: Application) {
  */
 export async function installApplication(application: Application) {
 	try {
+		await access(join(application.dirPath, 'package.json'), constants.F_OK);
+	} catch (err) {
+		if (err.code !== 'ENOENT') throw err;
+		// If no package.json, nothing to install
+		application.logger.debug(`Application ${application.name} has no package.json; skipping install`);
+		return;
+	}
+	try {
 		// Does node_modules exist?
 		await access(join(application.dirPath, 'node_modules'), constants.F_OK);
-		application.logger.debug(`Application ${application.name} already has node_modules installed`);
+		application.logger.debug(`Application ${application.name} already has node_modules; skipping install`);
 		return;
 	} catch (err) {
 		if (err.code !== 'ENOENT') throw err;
