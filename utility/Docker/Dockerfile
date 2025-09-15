@@ -74,10 +74,10 @@ ENV LOGGING_STDSTREAMS=true
 
 USER root
 
-# Install ps, git, and wget
+# Install git and wget
 RUN <<-EOF
     apt-get update
-    apt-get install -y procps git wget
+    apt-get install -y git wget
 EOF
 
 # Add Licensing files
