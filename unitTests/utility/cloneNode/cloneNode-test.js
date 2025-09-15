@@ -84,7 +84,7 @@ describe('cloneNode', () => {
 			delete process.env.CLONE_NODE_UPDATE_STATUS;
 			process.env.HDB_CLONE_CHECK_INTERVAL = '100';
 
-			const targetTimestamps = { database1: 1234567890 };
+			const targetTimestamps = { database1: 1234567890.5678 };
 
 			// Mock cluster status to show sync is complete
 			clusterStatusStub.resolves({
@@ -93,7 +93,8 @@ describe('cloneNode', () => {
 						database_sockets: [
 							{
 								database: 'database1',
-								lastReceivedRemoteTime: new Date(1234567891),
+								lastReceivedRemoteTime: new Date(1234567891.8456).toUTCString(),
+								lastReceivedVersion: 1234567891.8456,
 							},
 						],
 					},
@@ -111,7 +112,7 @@ describe('cloneNode', () => {
 			process.env.CLONE_NODE_UPDATE_STATUS = 'true';
 			process.env.HDB_CLONE_CHECK_INTERVAL = '100'; // 100ms for faster test
 
-			const targetTimestamps = { database1: 1234567890 };
+			const targetTimestamps = { database1: 1234567890.5678 };
 
 			// Mock cluster status to show sync is complete
 			clusterStatusStub.resolves({
@@ -120,7 +121,8 @@ describe('cloneNode', () => {
 						database_sockets: [
 							{
 								database: 'database1',
-								lastReceivedRemoteTime: new Date(1234567891), // Later than target
+								lastReceivedRemoteTime: new Date(1234567891.8456).toUTCString(),
+								lastReceivedVersion: 1234567891.8456, // Later than target
 							},
 						],
 					},
@@ -139,7 +141,7 @@ describe('cloneNode', () => {
 			process.env.HDB_CLONE_SYNC_TIMEOUT = '200'; // 200ms timeout
 			process.env.HDB_CLONE_CHECK_INTERVAL = '50'; // 50ms interval
 
-			const targetTimestamps = { database1: 1234567890 };
+			const targetTimestamps = { database1: 1234567890.5678 };
 
 			// Mock cluster status to show sync is never complete
 			clusterStatusStub.resolves({
@@ -148,7 +150,8 @@ describe('cloneNode', () => {
 						database_sockets: [
 							{
 								database: 'database1',
-								lastReceivedRemoteTime: new Date(1234567889), // Earlier than target
+								lastReceivedRemoteTime: new Date(1234567889.1234).toUTCString(), // Earlier than target
+								lastReceivedVersion: 1234567889.1234,
 							},
 						],
 					},
@@ -173,7 +176,7 @@ describe('cloneNode', () => {
 			process.env.HDB_CLONE_CHECK_INTERVAL = '50';
 			process.env.HDB_CLONE_SYNC_TIMEOUT = '200';
 
-			const targetTimestamps = { database1: 1234567890 };
+			const targetTimestamps = { database1: 1234567890.5678 };
 
 			// First call fails, second succeeds
 			clusterStatusStub.onFirstCall().rejects(new Error('Network error'));
@@ -183,7 +186,8 @@ describe('cloneNode', () => {
 						database_sockets: [
 							{
 								database: 'database1',
-								lastReceivedRemoteTime: new Date(1234567891),
+								lastReceivedRemoteTime: new Date(1234567891.8456).toUTCString(),
+								lastReceivedVersion: 1234567891.8456,
 							},
 						],
 					},
@@ -229,7 +233,7 @@ describe('cloneNode', () => {
 			process.env.HDB_CLONE_SYNC_TIMEOUT = '0'; // Invalid, should become 1
 			process.env.HDB_CLONE_CHECK_INTERVAL = '-100'; // Invalid, should become 1
 
-			const targetTimestamps = { database1: 1234567890 };
+			const targetTimestamps = { database1: 1234567890.5678 };
 
 			// Mock immediate sync completion
 			clusterStatusStub.resolves({
@@ -238,7 +242,8 @@ describe('cloneNode', () => {
 						database_sockets: [
 							{
 								database: 'database1',
-								lastReceivedRemoteTime: new Date(1234567891),
+								lastReceivedRemoteTime: new Date(1234567891.8456).toUTCString(),
+								lastReceivedVersion: 1234567891.8456,
 							},
 						],
 					},
@@ -261,7 +266,7 @@ describe('cloneNode', () => {
 			process.env.HDB_CLONE_SYNC_TIMEOUT = 'not-a-number';
 			process.env.HDB_CLONE_CHECK_INTERVAL = 'invalid';
 
-			const targetTimestamps = { database1: 1234567890 };
+			const targetTimestamps = { database1: 1234567890.5678 };
 
 			// Mock immediate sync completion
 			clusterStatusStub.resolves({
@@ -270,7 +275,8 @@ describe('cloneNode', () => {
 						database_sockets: [
 							{
 								database: 'database1',
-								lastReceivedRemoteTime: new Date(1234567891),
+								lastReceivedRemoteTime: new Date(1234567891.8456).toUTCString(),
+								lastReceivedVersion: 1234567891.8456,
 							},
 						],
 					},
@@ -316,10 +322,12 @@ describe('cloneNode', () => {
 							{
 								database: 'db1',
 								lastReceivedRemoteTime: new Date('2024-01-01T12:00:00Z'),
+								lastReceivedVersion: new Date('2024-01-01T12:00:00Z').getTime(),
 							},
 							{
 								database: 'db2',
 								lastReceivedRemoteTime: new Date('2024-01-01T12:00:00Z'),
+								lastReceivedVersion: new Date('2024-01-01T12:00:00Z').getTime(),
 							},
 						],
 					},
@@ -343,6 +351,7 @@ describe('cloneNode', () => {
 							{
 								database: 'db1',
 								lastReceivedRemoteTime: null,
+								lastReceivedVersion: null,
 							},
 						],
 					},
@@ -365,6 +374,7 @@ describe('cloneNode', () => {
 							{
 								database: 'db1',
 								lastReceivedRemoteTime: new Date('2024-01-01T11:00:00Z'),
+								lastReceivedVersion: new Date('2024-01-01T11:00:00Z').getTime(),
 							},
 						],
 					},
@@ -387,10 +397,12 @@ describe('cloneNode', () => {
 							{
 								database: 'db1',
 								lastReceivedRemoteTime: new Date('2024-01-01T12:00:00Z'),
+								lastReceivedVersion: new Date('2024-01-01T12:00:00Z').getTime(),
 							},
 							{
 								database: 'db2',
-								lastReceivedRemoteTime: null, // This would normally fail
+								lastReceivedRemoteTime: null,
+								lastReceivedVersion: null, // This would normally fail
 							},
 						],
 					},
@@ -403,6 +415,35 @@ describe('cloneNode', () => {
 			};
 
 			const result = await checkSyncStatus(targetTimestamps);
+			assert.strictEqual(result, true);
+		});
+
+		it('should handle sub-millisecond precision correctly (precision loss test)', async () => {
+			// This test would fail before the precision fix
+			// Target has sub-millisecond precision, received version matches exactly
+			const targetTime = 1757517636009.8606; // High precision target (safe float64)
+			const receivedVersion = 1757517636009.8606; // Exact match with sub-millisecond precision
+
+			clusterStatusStub.resolves({
+				connections: [
+					{
+						database_sockets: [
+							{
+								database: 'database1',
+								// The UTC string loses sub-millisecond precision (truncated to 1757517636009)
+								lastReceivedRemoteTime: new Date(receivedVersion).toUTCString(),
+								// But the raw version preserves full precision (1757517636009.8606)
+								lastReceivedVersion: receivedVersion,
+							},
+						],
+					},
+				],
+			});
+
+			const targetTimestamps = { database1: targetTime };
+			const result = await checkSyncStatus(targetTimestamps);
+
+			// Should be synchronized because raw versions match exactly
 			assert.strictEqual(result, true);
 		});
 	});

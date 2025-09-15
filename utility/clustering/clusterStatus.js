@@ -63,6 +63,8 @@ async function clusterStatus() {
 					socket.lastCommitConfirmed = asDate(replicationSharedStatus[CONFIRMATION_STATUS_POSITION]);
 					socket.lastReceivedRemoteTime = asDate(replicationSharedStatus[RECEIVED_VERSION_POSITION]);
 					socket.lastReceivedLocalTime = asDate(replicationSharedStatus[RECEIVED_TIME_POSITION]);
+					// Raw version timestamp for precise sync comparison (preserves float64 precision)
+					socket.lastReceivedVersion = replicationSharedStatus[RECEIVED_VERSION_POSITION];
 					socket.sendingMessage = asDate(replicationSharedStatus[SENDING_TIME_POSITION]);
 					socket.lastReceivedStatus =
 						replicationSharedStatus[RECEIVING_STATUS_POSITION] === RECEIVING_STATUS_RECEIVING ? 'Receiving' : 'Waiting';

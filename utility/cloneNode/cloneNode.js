@@ -377,10 +377,10 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 	console.log('Starting sync monitoring');
 	console.log(`Max wait time: ${maxWaitTime}ms, Check interval: ${checkInterval}ms`);
 
-	const startTime = Date.now();
+	const timeoutAt = Date.now() + maxWaitTime;
 	let syncComplete = false;
 
-	while (!syncComplete && Date.now() - startTime < maxWaitTime) {
+	while (!syncComplete && Date.now() < timeoutAt) {
 		try {
 			// Check if all databases are synchronized
 			syncComplete = await checkSyncStatus(targetTimestamps);
@@ -438,19 +438,18 @@ async function checkSyncStatus(targetTimestamps) {
 			// Skip if no target time for this database
 			if (!targetTime) continue;
 
-			const receivedTime = socket.lastReceivedRemoteTime;
+			// Raw version timestamp from RECEIVED_VERSION_POSITION (high-precision float64)
+			// This preserves sub-millisecond precision needed for accurate sync comparison
+			const receivedVersion = socket.lastReceivedVersion;
 
 			// Check if we have received data and if it's up to date
-			if (!receivedTime) {
+			if (!receivedVersion) {
 				console.log(`Database ${dbName}: No data received yet`);
 				return false;
 			}
 
-			// Convert timestamps to numbers for comparison
-			const receivedTimeNum = new Date(receivedTime).getTime();
-
-			if (receivedTimeNum < targetTime) {
-				console.log(`Database ${dbName}: Not synchronized (received: ${receivedTimeNum}, target: ${targetTime})`);
+			if (receivedVersion < targetTime) {
+				console.log(`Database ${dbName}: Not yet synchronized (received: ${receivedVersion}, target: ${targetTime})`);
 				return false;
 			}
 
