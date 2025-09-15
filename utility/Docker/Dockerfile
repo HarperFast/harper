@@ -74,10 +74,10 @@ ENV LOGGING_STDSTREAMS=true
 
 USER root
 
-# Install ps and git
+# Install git and wget
 RUN <<-EOF
     apt-get update
-    apt-get install -y procps git
+    apt-get install -y git wget
 EOF
 
 # Add Licensing files
@@ -102,9 +102,15 @@ RUN <<-EOF
     rm -rf /home/node
 EOF
 
+# Create /usr/local/bin/pnpm symlink before we drop privileges
+RUN ln -nsf /home/harperdb/.local/share/pnpm/pnpm /usr/local/bin/pnpm
+
 # Set the user for the below instructions (respected by RUN, CMD, ENTRYPOINT only)
 USER harperdb
 COPY --chown=harperdb:harperdb --from=builder /home/harperdb/ /home/harperdb/
+
+# Install pnpm
+RUN wget -qO- https://get.pnpm.io/install.sh | ENV="$HOME/.bashrc" SHELL="$(which bash)" bash -
 
 # Set the  working directory
 WORKDIR /home/harperdb/
