@@ -67,7 +67,7 @@ async function clusterStatus() {
 					// Raw version timestamp for precise sync comparison (preserves float64 precision)
 					socket.lastReceivedVersion = replicationSharedStatus[RECEIVED_VERSION_POSITION];
 					socket.sendingMessage = asDate(replicationSharedStatus[SENDING_TIME_POSITION]);
-					socket.backPressurePercent = replicationSharedStatus[BACK_PRESSURE_RATIO_POSITION]) * 100;
+					socket.backPressurePercent = replicationSharedStatus[BACK_PRESSURE_RATIO_POSITION] * 100;
 					socket.lastReceivedStatus =
 						replicationSharedStatus[RECEIVING_STATUS_POSITION] === RECEIVING_STATUS_RECEIVING ? 'Receiving' : 'Waiting';
 				}

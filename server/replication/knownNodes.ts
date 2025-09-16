@@ -68,7 +68,7 @@ export function getReplicationSharedStatus(
 	return new Float64Array(
 		auditStore.getUserSharedBuffer(
 			['replicated', databaseName, node_name],
-			new ArrayBuffer(48),
+			new ArrayBuffer(64),
 			callback && { callback }
 		)
 	);
