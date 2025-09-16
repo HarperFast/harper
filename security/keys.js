@@ -884,7 +884,7 @@ function createTLSSelector(type, mtlsOptions) {
 								continue;
 							}
 							let isOperations = type === 'operations-api';
-							let quality = cert.is_self_signed ? 1 : 2;
+							let quality = cert.is_self_signed ? 1 : 3;
 							// prefer operations certificates for operations API
 							if (isOperations && cert.uses?.includes?.('operations')) quality += 1;
 
@@ -909,6 +909,11 @@ function createTLSSelector(type, mtlsOptions) {
 								is_self_signed: cert.is_self_signed,
 							};
 							if (server) secureOptions.sessionIdContext = server.sessionIdContext;
+							let hostnames = cert.hostnames ?? hostnamesFromCert(certParsed);
+							if (!Array.isArray(hostnames)) hostnames = [hostnames];
+							for (let hostname of hostnames) {
+								if (hostname === getHost()) quality += 1; // prefer a certificate that has our hostname in the SANs
+							}
 							let secureContext = tls.createSecureContext(secureOptions);
 							secureContext.name = cert.name;
 							secureContext.options = secureOptions;
@@ -918,8 +923,6 @@ function createTLSSelector(type, mtlsOptions) {
 							secureContext.certStart = certificate.toString().slice(0, 100);
 							// we want to configure SNI handling to pick the right certificate based on all the registered SANs
 							// in the certificate
-							let hostnames = cert.hostnames ?? hostnamesFromCert(certParsed);
-							if (!Array.isArray(hostnames)) hostnames = [hostnames];
 							let hasIpAddress;
 							for (let hostname of hostnames) {
 								if (hostname) {
@@ -927,10 +930,10 @@ function createTLSSelector(type, mtlsOptions) {
 										hasWildcards = true;
 										hostname = hostname.slice(1);
 									}
-									if (hostname === getHost()) quality += 2; // prefer a certificate with our hostname as the default
 									if (net.isIP(hostname)) hasIpAddress = true;
 									// we use this certificate if it has a higher quality than the existing one for this hostname
 									let existingCertQuality = secureContexts.get(hostname)?.quality ?? 0;
+									logger.trace?.('Assigning TLS for hostname', hostname, 'if', quality, '>', existingCertQuality);
 									if (quality > existingCertQuality) {
 										secureContexts.set(hostname, secureContext);
 									}
