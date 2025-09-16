@@ -351,6 +351,12 @@ jobs:
     strategy:
       matrix:
         nodeVersion: [16, 22]
+        include:
+          - nodeVersion: 22
+            dockerFile: 'utility/Docker/Dockerfile'
+          - nodeVersion: 16
+            dockerFile: 'utility/Docker/Dockerfile-node16'
+
     timeout-minutes: 30
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -516,6 +522,8 @@ jobs:
             file: 'utility/Docker/Dockerfile-chrome'
             buildPlatforms: 'linux/amd64'
             nodeVersion: 22
+          - nodeVersion: 16
+            dockerFile: 'utility/Docker/Dockerfile-node16'
     steps:
       - name: checkout repo
         uses: actions/checkout@v4
