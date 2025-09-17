@@ -3323,7 +3323,6 @@ export function makeTable(options) {
 			// determine what index values need to be removed and added
 			let valuesToAdd = getIndexedValues(value, indexNulls);
 			let valuesToRemove = getIndexedValues(existingValue, indexNulls);
-			if (tableName === 'OrganizationRole') logger.error?.({ tableName, id, key, valuesToAdd, valuesToRemove });
 			if (valuesToRemove?.length > 0) {
 				// put this in a conditional so we can do a faster version for new records
 				// determine the changes/diff from new values and old values
