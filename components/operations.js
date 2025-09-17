@@ -535,12 +535,7 @@ async function getComponentFile(req) {
 		throw handleHDBError(validation, validation.message, HTTP_STATUS_CODES.BAD_REQUEST);
 	}
 
-	// If comp is in config we know it is a referenced comp and lives in nodeModules
-	const configObj = configUtils.getConfigObj();
-	const compRoot =
-		configObj[req.project] || req.project === 'harperdb'
-			? path.join(engMgr.get(hdbTerms.CONFIG_PARAMS.ROOTPATH), 'node_modules')
-			: env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
+	const compRoot = env.get(hdbTerms.CONFIG_PARAMS.COMPONENTSROOT);
 	const options = req.encoding ? { encoding: req.encoding } : { encoding: 'utf8' };
 
 	try {
