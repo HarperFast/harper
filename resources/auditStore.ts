@@ -177,10 +177,13 @@ export function removeAuditEntry(auditStore: any, key: number, value: any): Prom
 		// if it has blobs, and isn't in use from the main record, we need to delete them as well
 		auditRecord = readAuditEntry(value);
 		const primaryStore = auditStore.tableStores[auditRecord.tableId];
-		const entry = primaryStore?.getEntry(auditRecord.recordId);
-		if (!entry || entry.version !== auditRecord.version || !entry.value) {
-			// if the versions don't match or the record has been removed/null-ed, then this should be the only/last reference to any blob
-			decodeFromDatabase(() => deleteBlobsInObject(auditRecord.getValue(primaryStore)), primaryStore.rootStore);
+		// if the table has been deleted, this might not be there
+		if (primaryStore) {
+			const entry = primaryStore.getEntry(auditRecord.recordId);
+			if (!entry || entry.version !== auditRecord.version || !entry.value) {
+				// if the versions don't match or the record has been removed/null-ed, then this should be the only/last reference to any blob
+				decodeFromDatabase(() => deleteBlobsInObject(auditRecord.getValue(primaryStore)), primaryStore.rootStore);
+			}
 		}
 	}
 
