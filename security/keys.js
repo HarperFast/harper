@@ -80,7 +80,7 @@ const CERT_ATTRIBUTES = [
  */
 function generateSerialNumber() {
 	const bytes = randomBytes(8);
-	bytes[0] = bytes[0] & 0x7f; // Clear high bit with bitmask 0x7F (01111111)
+	bytes[0] = bytes[0] & 0x7f | 0x01; // Clear high bit with bitmask 0x7F (01111111) and ensure that it is non-zero
 	return bytes.toString('hex');
 }
 
