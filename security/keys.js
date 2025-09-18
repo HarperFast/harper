@@ -5,7 +5,7 @@ const { watch } = require('chokidar');
 const fs = require('fs-extra');
 const forge = require('node-forge');
 const net = require('net');
-let { generateKeyPair, X509Certificate, createPrivateKey } = require('crypto');
+let { generateKeyPair, X509Certificate, createPrivateKey, randomBytes } = require('node:crypto');
 const util = require('util');
 generateKeyPair = util.promisify(generateKeyPair);
 const pki = forge.pki;
@@ -47,6 +47,7 @@ exports.hostnamesFromCert = hostnamesFromCert;
 exports.getKey = getKey;
 exports.getHostnamesFromCertificate = getHostnamesFromCertificate;
 exports.getPrimaryHostName = getPrimaryHostName;
+exports.generateSerialNumber = generateSerialNumber;
 
 const {
 	urlToNodeName,
@@ -68,6 +69,21 @@ const CERT_ATTRIBUTES = [
 	{ name: 'localityName', value: 'Denver' },
 	{ name: 'organizationName', value: 'HarperDB, Inc.' },
 ];
+
+/**
+ * Generates a cryptographically secure serial number for X.509 certificates.
+ *
+ * Returns a hex string as expected by node-forge. Ensures the high bit is cleared
+ * to create a positive ASN.1 INTEGER per RFC 5280 requirements.
+ *
+ * @returns {string} 16-character hex string
+ */
+function generateSerialNumber() {
+	const bytes = randomBytes(8);
+	bytes[0] = bytes[0] & 0x7f | 0x01; // Clear high bit with bitmask 0x7F (01111111) and ensure that it is non-zero
+	return bytes.toString('hex');
+}
+
 onMessageFromWorkers(async (message) => {
 	if (message.type === hdbTerms.ITC_EVENT_TYPES.RESTART) {
 		envManager.initSync(true);
@@ -424,7 +440,7 @@ async function signCertificate(req) {
 		}
 
 		const cert = forge.pki.createCertificate();
-		cert.serialNumber = '0' + Math.random().toString().slice(2, 9);
+		cert.serialNumber = generateSerialNumber();
 		cert.validity.notBefore = new Date();
 		const notAfter = new Date();
 		cert.validity.notAfter = notAfter;
@@ -538,7 +554,7 @@ async function generateCertificates(caPrivateKey, publicKey, caCert) {
 	}
 
 	publicCert.publicKey = publicKey;
-	publicCert.serialNumber = '0' + Math.random().toString().slice(2, 9);
+	publicCert.serialNumber = generateSerialNumber();
 	publicCert.validity.notBefore = new Date();
 	const notAfter = new Date();
 	publicCert.validity.notAfter = notAfter;
@@ -584,7 +600,7 @@ async function generateCertAuthority(private_key, publicKey, writeKey = true) {
 	const caCert = pki.createCertificate();
 
 	caCert.publicKey = publicKey;
-	caCert.serialNumber = '0' + Math.random().toString().slice(2, 9);
+	caCert.serialNumber = generateSerialNumber();
 	caCert.validity.notBefore = new Date();
 	const notAfter = new Date();
 	caCert.validity.notAfter = notAfter;

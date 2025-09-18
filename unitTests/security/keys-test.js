@@ -9,6 +9,7 @@ const rewire = require('rewire');
 const path = require('path');
 const env_mgr = require('../../utility/environment/environmentManager');
 const keys = rewire('../../security/keys');
+const { generateSerialNumber } = require('../../security/keys');
 const config_utils = require('../../config/configUtils');
 const mkcert = require('mkcert');
 const forge = require('node-forge');
@@ -368,6 +369,32 @@ describe('Test keys module', () => {
 			// Log the specific error for debugging
 			// console.log(`Test case '${malformedCert.name}' error:`, error.code, error.message.substring(0, 80) + '...');
 		}
+	});
+
+	describe('generateSerialNumber', () => {
+		it('should generate valid hex serial numbers', () => {
+			const serial = generateSerialNumber();
+			expect(serial).to.be.a('string');
+			expect(serial).to.match(/^[0-9a-f]{16}$/); // 16 hex chars (8 bytes)
+		});
+
+		it('should generate positive ASN.1 integers (high bit cleared)', () => {
+			// Test multiple serials to ensure high bit is always cleared
+			for (let i = 0; i < 100; i++) {
+				const serial = generateSerialNumber();
+				const firstByte = parseInt(serial.substring(0, 2), 16);
+				expect(firstByte).to.be.lessThan(0x80); // High bit must be 0
+			}
+		});
+
+		it('should generate unique serial numbers', () => {
+			const serials = new Set();
+			for (let i = 0; i < 1000; i++) {
+				const serial = generateSerialNumber();
+				expect(serials.has(serial)).to.be.false;
+				serials.add(serial);
+			}
+		});
 	});
 
 	it('Test setCertTable with valid certificate should work', async () => {
