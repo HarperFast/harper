@@ -31,7 +31,6 @@ Object.assign(
 		initSync,
 		setProperty,
 		initTestEnvironment,
-		setCloneVar,
 	})
 );
 
@@ -120,7 +119,7 @@ function doesPropFileExist() {
 function initSync(force = false) {
 	try {
 		// If readPropsFile returns false, we are installing and don't need to read anything yet.
-		if (((propFileExists || doesPropFileExist() || commonUtils.noBootFile()) && !cloneNodeRunning) || force) {
+		if (((propFileExists || doesPropFileExist() || commonUtils.noBootFile())) || force) {
 			configUtils.initConfig(force);
 			installProps[hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY] = configUtils.getConfigValue(
 				hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY
@@ -132,11 +131,6 @@ function initSync(force = false) {
 		console.error(err);
 		process.exit(1);
 	}
-}
-
-let cloneNodeRunning = false;
-function setCloneVar(bool) {
-	cloneNodeRunning = bool;
 }
 
 /**
