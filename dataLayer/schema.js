@@ -9,14 +9,7 @@ const uuidV4 = require('uuid').v4;
 const signalling = require('../utility/signalling.js');
 const hdbTerms = require('../utility/hdbTerms.ts');
 const util = require('util');
-const harperBridge = require('./harperBridge/harperBridge.js');
-const { handleHDBError, hdbErrors, ClientError } = require('../utility/errors/hdbError.js');
-const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
-const { SchemaEventMsg } = require('../server/threads/itc.js');
-const natsUtils = require('../server/nats/utility/natsUtils.js');
-const { getDatabases } = require('../resources/databases.ts');
-const { transformReq } = require('../utility/common_utils.js');
-const { replicateOperation } = require('../server/replication/replicator.ts');
+const { cleanupOrphans } = require('../resources/blob.ts');
 
 const DB_NAME_CONSTRAINTS = Joi.string()
 	.min(1)
@@ -52,6 +45,7 @@ module.exports = {
 	dropTable,
 	dropAttribute,
 	getBackup,
+	cleanupOrphanBlobs,
 };
 
 /** EXPORTED FUNCTIONS **/
@@ -192,9 +186,7 @@ async function dropSchema(dropSchemaObject) {
 	const tables = Object.keys(global.hdb_schema[dropSchemaObject.schema]);
 
 	await harperBridge.dropSchema(dropSchemaObject);
-	signalling.signalSchemaChange(
-		new SchemaEventMsg(process.pid, dropSchemaObject.operation, dropSchemaObject.schema)
-	);
+	signalling.signalSchemaChange(new SchemaEventMsg(process.pid, dropSchemaObject.operation, dropSchemaObject.schema));
 
 	//delete global.hdb_schema[dropSchemaObject.schema];
 
@@ -372,4 +364,13 @@ async function createAttribute(createAttributeObject) {
 
 function getBackup(getBackupObject) {
 	return harperBridge.getBackup(getBackupObject);
+}
+
+function cleanupOrphanBlobs(request) {
+	if (!request.database) throw new ClientError('Must provide "database" name for search for orphaned blobs');
+	const database = databases[request.database];
+	if (!database) throw new ClientError(`Unknown database '${request.database}'`);
+	// don't await, it will probably take hours
+	cleanupOrphans(databases[request.database]);
+	return { message: 'Orphaned blobs cleanup started, check logs for progress' };
 }
