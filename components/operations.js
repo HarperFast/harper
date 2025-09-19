@@ -329,7 +329,9 @@ async function packageComponent(req) {
 	} catch (err) {
 		if (err.code !== hdb_terms.NODE_ERROR_CODES.ENOENT) throw err;
 		try {
-			path_to_project = await fs.realpath(path.join(env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project));
+			path_to_project = await fs.realpath(
+				path.join(env.get(hdb_terms.CONFIG_PARAMS.ROOTPATH), 'node_modules', project)
+			);
 		} catch (err) {
 			if (err.code === hdb_terms.NODE_ERROR_CODES.ENOENT) throw new Error(`Unable to locate project '${project}'`);
 		}

@@ -17,6 +17,7 @@ const nats_utils = require('../server/nats/utility/natsUtils');
 const { getDatabases } = require('../resources/databases');
 const { transformReq } = require('../utility/common_utils');
 const { replicateOperation } = require('../server/replication/replicator');
+const { cleanupOrphans } = require('../resources/blob');
 
 const DB_NAME_CONSTRAINTS = Joi.string()
 	.min(1)
@@ -52,6 +53,7 @@ module.exports = {
 	dropTable: dropTable,
 	dropAttribute: dropAttribute,
 	getBackup,
+	cleanupOrphanBlobs,
 };
 
 /** EXPORTED FUNCTIONS **/
@@ -372,4 +374,14 @@ async function createAttribute(create_attribute_object) {
 
 function getBackup(get_backup_object) {
 	return harperBridge.getBackup(get_backup_object);
+}
+
+function cleanupOrphanBlobs(request) {
+	if (!request.database) throw new ClientError('Must provide "database" name for search for orphaned blobs');
+	const database = databases[request.database];
+	if (!database) throw new ClientError(`Unknown database '${request.database}'`);
+	const { cleanupOrphans } = require('../resources/blob');
+	// don't await, it will probably take hours
+	cleanupOrphans(databases[request.database]);
+	return { message: 'Orphaned blobs cleanup started, check logs for progress' };
 }

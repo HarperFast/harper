@@ -36,6 +36,8 @@ import { join, dirname } from 'path';
 import logger from '../utility/logging/logger';
 import type { LMDBStore } from 'lmdb';
 import { asyncSerialization, hasAsyncSerialization } from '../server/serverHelpers/contentTypes';
+import { HAS_BLOBS, readAuditEntry } from './auditStore';
+import { getHeapStatistics } from 'node:v8';
 
 type StorageInfo = {
 	storageIndex: number;
@@ -1091,4 +1093,113 @@ function polyfillBlob() {
 			return '';
 		}
 	};
+}
+
+export async function cleanupOrphans(database: any) {
+	const MAX_PATHS_TO_REMEMBER = 10_000_000;
+	let store;
+	let auditStore;
+	let orphansDeleted = 0;
+	for (const tableName in database) {
+		const table = database[tableName];
+		store = table.primaryStore.rootStore;
+		auditStore = table.auditStore;
+		if (auditStore) break;
+	}
+	const pathsToCheck = new Set<string>();
+	const rootPaths = getRootBlobPathsForDB(store);
+	if (rootPaths) {
+		// search all the root paths
+		for (const rootPath of rootPaths) {
+			await searchPath(rootPath);
+		}
+	}
+	// remove all remaining paths are not referenced
+	await removePathsThatAreNotReferenced();
+	return orphansDeleted;
+	async function searchPath(path) {
+		try {
+			if (!existsSync(path)) return;
+			for (const entry of await readdir(path, { withFileTypes: true })) {
+				const entryPath = join(path, entry.name);
+				if (entry.isDirectory()) {
+					// keep recursively searching
+					await searchPath(entryPath);
+				} else {
+					if (pathsToCheck.size % 1_000_000 === 0)
+						logger.info?.('Finding all blobs for orphan check, paths accumulated', pathsToCheck.size);
+					pathsToCheck.add(entryPath);
+					if (pathsToCheck.size % 2 === 0) {
+						// this might be a bit expensive, so only check occasionally
+						const stats = getHeapStatistics();
+						if (stats.used_heap_size > stats.heap_size_limit * 0.8) {
+							// if our array gets too big and we are running out of space, we can start the db search for references before running out of memory
+							await removePathsThatAreNotReferenced();
+						}
+					}
+				}
+			}
+		} catch (error) {
+			logger.error?.('Error searching path for blobs', path, error);
+		}
+	}
+	async function removePathsThatAreNotReferenced() {
+		// search all the tables for references
+		for (const tableName in database) {
+			logger.warn?.('Checking for references to potential orphaned blobs in table', tableName);
+			const table = database[tableName];
+			for (const entry of table.primaryStore.getRange({ versions: true, snapshot: false, lazy: true })) {
+				try {
+					if (entry.metadataFlags & HAS_BLOBS && entry.value) {
+						checkObjectForReferences(entry.value);
+					}
+					await new Promise(setImmediate);
+				} catch (error) {
+					logger.error?.(
+						'Error searching table',
+						tableName,
+						' for references to potential orphaned blobs failed',
+						error
+					);
+				}
+			}
+		}
+		logger.warn?.('Checking for references to potential orphaned blobs in the audit log');
+		// search the audit store for references
+		for (const { value } of auditStore.getRange({ start: 1, snapshot: false, lazy: true })) {
+			try {
+				const auditRecord = readAuditEntry(value);
+				const primaryStore = auditStore.tableStores[auditRecord.tableId];
+				const entry = primaryStore?.getEntry(auditRecord.recordId);
+				if (!entry || entry.version !== auditRecord.version || !entry.value) {
+					checkObjectForReferences(auditRecord.getValue(primaryStore));
+				}
+			} catch (error) {
+				logger.error?.('Error searching audit log for references to potential orphaned blobs failed', error);
+			}
+		}
+		logger.warn?.('Deleting', pathsToCheck.size, 'orphaned blobs');
+		orphansDeleted += pathsToCheck.size;
+		for (const path of pathsToCheck) {
+			unlink(path, (error) => {
+				if (error) logger.debug?.('Error trying to remove blob file', error);
+			});
+			await new Promise(setImmediate);
+		}
+		logger.warn?.('Finished deleting', pathsToCheck.size, 'orphaned blobs');
+		pathsToCheck.clear();
+	}
+	function checkObjectForReferences(value) {
+		findBlobsInObject(value, (blob) => {
+			if (blob instanceof FileBackedBlob) {
+				const storageInfo = storageInfoForBlob.get(blob);
+				if (storageInfo.fileId != null) {
+					const path = getFilePath(storageInfo);
+					if (pathsToCheck.has(path)) {
+						pathsToCheck.delete(path);
+					}
+				}
+			}
+		});
+	}
 }

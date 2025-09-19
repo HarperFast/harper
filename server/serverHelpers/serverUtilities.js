@@ -455,6 +455,10 @@ function initializeOperationFunctionMap() {
 		new OperationFunctionObject(custom_function_operations.deployComponent)
 	);
 	op_func_map.set(
+		terms.OPERATIONS_ENUM.DEPLOY_COMPONENT,
+		new OperationFunctionObject(custom_function_operations.cleanupOrphanedBlobs)
+	);
+	op_func_map.set(
 		terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG,
 		new OperationFunctionObject(transaction_log.readTransactionLog)
 	);
@@ -468,6 +472,7 @@ function initializeOperationFunctionMap() {
 	);
 	op_func_map.set(terms.OPERATIONS_ENUM.AUDIT_NODE_MODULES, new OperationFunctionObject(npm_utilities.auditModules));
 	op_func_map.set(terms.OPERATIONS_ENUM.GET_BACKUP, new OperationFunctionObject(schema.getBackup));
+	op_func_map.set(terms.OPERATIONS_ENUM.CLEANUP_ORPHAN_BLOBS, new OperationFunctionObject(schema.cleanupOrphanBlobs));
 	op_func_map.set(terms.OPERATIONS_ENUM.ADD_SSH_KEY, new OperationFunctionObject(custom_function_operations.addSSHKey));
 	op_func_map.set(
 		terms.OPERATIONS_ENUM.UPDATE_SSH_KEY,

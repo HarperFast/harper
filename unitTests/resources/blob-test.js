@@ -11,6 +11,7 @@ const {
 	encodeBlobsAsBuffers,
 	findBlobsInObject,
 	isSaving,
+	cleanupOrphans,
 } = require('../../resources/blob');
 const { existsSync } = require('fs');
 const { pack } = require('msgpackr');
@@ -370,6 +371,10 @@ describe('Blob test', () => {
 			);
 		}
 		await Promise.all(promises);
+	});
+	it('cleanupOrphans', async () => {
+		let orphansDeleted = await cleanupOrphans(databases.test);
+		assert(orphansDeleted < 2);
 	});
 	afterEach(function () {
 		setAuditRetention(60000);
