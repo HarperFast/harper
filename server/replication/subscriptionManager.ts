@@ -23,9 +23,31 @@ const { cloneDeep } = lodash;
 import env from '../../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { X509Certificate } from 'crypto';
-
+type ConnectedWorkerStatus = {
+	worker: Worker | null;
+	connected?: boolean;
+	latency?: number;
+};
+type ReplicationConnectionStatus = {
+	nodes: ({
+		name: string;
+		url: string;
+		replicates: boolean;
+		replicateByDefault: boolean;
+		startTime?: number;
+		endTime?: number;
+		shard?: string;
+	} & ConnectedWorkerStatus)[];
+} & ConnectedWorkerStatus;
+type DBReplicationStatusMap = Map<string, ReplicationConnectionStatus> & { iterator: any };
+const workers = [];
+let whenThreadsStarted = Promise.resolve();
+export function whenThreadsStartedPromise() {
+	return whenThreadsStarted;
+}
+export function whenThreadsStartedResolvePromise() {}
 const NODE_SUBSCRIBE_DELAY = 200; // delay before sending node subscribe to other nodes, so operations can complete first
-const connectionReplicationMap = new Map();
+const connectionReplicationMap = new Map<string, DBReplicationStatusMap>();
 export let disconnectedFromNode; // this is set by thread to handle when a node is disconnected (or notify main thread so it can handle)
 export let connectedToNode; // this is set by thread to handle when a node is connected (or notify main thread so it can handle)
 const nodeMap = new Map(); // this is a map of all nodes that are available to connect to
@@ -47,6 +69,7 @@ export async function startOnMainThread(options) {
 			}
 		}
 	}
+	let assignEachSubscriptionToOwnConnection = !env.get(CONFIG_PARAMS.REPLICATION_SHARED_CONNECTIONS);
 	// we need to wait for the threads to start before we can start adding nodes
 	// but don't await this because this start function has to finish before the threads can start
 	whenThreadsStarted.then(async () => {
