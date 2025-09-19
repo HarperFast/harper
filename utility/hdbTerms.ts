@@ -352,6 +352,7 @@ export const OPERATIONS_ENUM = {
 	AUDIT_NODE_MODULES: 'audit_node_modules',
 	PURGE_STREAM: 'purge_stream',
 	GET_BACKUP: 'get_backup',
+	CLEANUP_ORPHAN_BLOBS: 'cleanup_orphan_blobs',
 	SIGN_CERTIFICATE: 'sign_certificate',
 	CREATE_CSR: 'create_csr',
 	LIST_CERTIFICATES: 'list_certificates',

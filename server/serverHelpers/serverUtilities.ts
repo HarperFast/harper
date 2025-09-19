@@ -288,7 +288,7 @@ export async function executeJob(json: OperationRequestBody): Promise<JobResult>
 		}
 	} catch (err) {
 		const error = err instanceof Error ? err : null;
-		const message = `There was an error executing job: ${(error && 'http_resp_msg' in error) ? error.http_resp_msg : err}`;
+		const message = `There was an error executing job: ${error && 'http_resp_msg' in error ? error.http_resp_msg : err}`;
 		operationLog.error(message);
 		throw handleHDBError(err, message);
 	}
@@ -471,6 +471,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.INSTALL_NODE_MODULES, new OperationFunctionObject(npmUtilities.installModules));
 	opFuncMap.set(terms.OPERATIONS_ENUM.AUDIT_NODE_MODULES, new OperationFunctionObject(npmUtilities.auditModules));
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_BACKUP, new OperationFunctionObject(schema.getBackup));
+	opFuncMap.set(terms.OPERATIONS_ENUM.CLEANUP_ORPHAN_BLOBS, new OperationFunctionObject(schema.cleanupOrphanBlobs));
 	opFuncMap.set(terms.OPERATIONS_ENUM.ADD_SSH_KEY, new OperationFunctionObject(customFunctionOperations.addSSHKey));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.UPDATE_SSH_KEY,
@@ -480,10 +481,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		terms.OPERATIONS_ENUM.DELETE_SSH_KEY,
 		new OperationFunctionObject(customFunctionOperations.deleteSSHKey)
 	);
-	opFuncMap.set(
-		terms.OPERATIONS_ENUM.LIST_SSH_KEYS,
-		new OperationFunctionObject(customFunctionOperations.listSSHKeys)
-	);
+	opFuncMap.set(terms.OPERATIONS_ENUM.LIST_SSH_KEYS, new OperationFunctionObject(customFunctionOperations.listSSHKeys));
 	opFuncMap.set(
 		terms.OPERATIONS_ENUM.SET_SSH_KNOWN_HOSTS,
 		new OperationFunctionObject(customFunctionOperations.setSSHKnownHosts)
@@ -495,7 +493,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_ANALYTICS, new OperationFunctionObject(analytics.getOp));
 	opFuncMap.set(terms.OPERATIONS_ENUM.LIST_METRICS, new OperationFunctionObject(analytics.listMetricsOp));
 	opFuncMap.set(terms.OPERATIONS_ENUM.DESCRIBE_METRIC, new OperationFunctionObject(analytics.describeMetricOp));
-	
+
 	// set status operations
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_STATUS, new OperationFunctionObject(status.get));
 	opFuncMap.set(terms.OPERATIONS_ENUM.SET_STATUS, new OperationFunctionObject(status.set));
