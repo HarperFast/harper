@@ -339,7 +339,6 @@ jobs:
           EXTRA_TAGS: "${{ needs.meta.outputs.npm_extra_tags }}"
           DRYRUN: "${{ needs.meta.outputs.dryrun }}"
         run: ./.github/scripts/npm-publish.sh
-        #continue-on-error: true
 
   #########################################
   #  Release to dockerhub harperdb/private
@@ -351,6 +350,12 @@ jobs:
     strategy:
       matrix:
         nodeVersion: [16, 22]
+        include:
+          - nodeVersion: 22
+            dockerFile: 'utility/Docker/Dockerfile'
+          - nodeVersion: 16
+            dockerFile: 'utility/Docker/Dockerfile-node16'
+
     timeout-minutes: 30
     runs-on: ubuntu-latest
     continue-on-error: true
@@ -362,6 +367,7 @@ jobs:
         with:
           harperdbVersion: ${{ needs.meta.outputs.harperdbVersion }}
           nodeVersion: ${{ matrix.nodeVersion }}
+          dockerFile: ${{ matrix.dockerFile }}
           containerImage: 'harperdb/private'
           tagLatest: ${{ needs.meta.outputs.dockerhub_tag_latest == 'true' && true || false }}
           buildPlatforms: 'linux/amd64,linux/arm64'
@@ -507,15 +513,17 @@ jobs:
         nodeVersion: [ 16, 22 ]
         include:
           - container: 'harpersystems/harper'
-            file: 'utility/Docker/Dockerfile'
+            dockerFile: 'utility/Docker/Dockerfile'
             buildPlatforms: 'linux/amd64,linux/arm64'
           - container: 'harpersystems/harper-openshift'
-            file: 'utility/Docker/Dockerfile-openshift'
+            dockerFile: 'utility/Docker/Dockerfile-openshift'
             buildPlatforms: 'linux/amd64,linux/arm64'
           - container: 'harpersystems/harper-chrome'
-            file: 'utility/Docker/Dockerfile-chrome'
+            dockerFile: 'utility/Docker/Dockerfile-chrome'
             buildPlatforms: 'linux/amd64'
             nodeVersion: 22
+          - nodeVersion: 16
+            dockerFile: 'utility/Docker/Dockerfile-node16'
     steps:
       - name: checkout repo
         uses: actions/checkout@v4
@@ -524,12 +532,12 @@ jobs:
         with:
           harperdbVersion: ${{ needs.meta.outputs.harperdbVersion }}
           nodeVersion: ${{ matrix.nodeVersion }}
+          dockerFile: ${{ matrix.dockerFile }}
           containerImage: ${{ matrix.container }}
           tagLatest: ${{ needs.meta.outputs.dockerhub_tag_latest == 'true' && true || false }}
           buildPlatforms: 'linux/amd64,linux/arm64'
           push: ${{ needs.meta.outputs.push == 'true' && 'true' || 'false' }}
-          #pushRedhatConnect: ${{ matrix.nodeVersion == 22 && 'true' || 'false' }} # only checking node version here, docker-build action will check if harpersystems/harper-openshift
-          pushRedhatConnect: false # temporarily disabled
+          pushRedhatConnect: ${{ matrix.nodeVersion == 22 && 'true' || 'false' }} # only checking node version here, docker-build action will check if harpersystems/harper-openshift
           dockerUsername: ${{ secrets.DOCKER_USERNAME }}
           dockerPassword: ${{ secrets.DOCKER_PASSWORD }}
 
