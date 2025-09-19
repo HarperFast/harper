@@ -202,7 +202,7 @@ function getHdbPid() {
 	if (!harperPath) return;
 	const pidFile = path.join(harperPath, terms.HDB_PID_FILE);
 	const hdbPid = readPidFile(pidFile);
-	if (!hdbPid) return;
+	if (!hdbPid || hdbPid === process.pid) return;
 	if (isProcessRunning(hdbPid)) return hdbPid;
 	// return undefined
 }
