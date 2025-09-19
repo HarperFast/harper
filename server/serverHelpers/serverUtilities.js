@@ -455,10 +455,6 @@ function initializeOperationFunctionMap() {
 		new OperationFunctionObject(custom_function_operations.deployComponent)
 	);
 	op_func_map.set(
-		terms.OPERATIONS_ENUM.DEPLOY_COMPONENT,
-		new OperationFunctionObject(custom_function_operations.cleanupOrphanedBlobs)
-	);
-	op_func_map.set(
 		terms.OPERATIONS_ENUM.READ_TRANSACTION_LOG,
 		new OperationFunctionObject(transaction_log.readTransactionLog)
 	);

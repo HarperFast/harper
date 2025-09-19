@@ -1095,10 +1095,14 @@ function polyfillBlob() {
 	};
 }
 
+/**
+ * Scans for blobs on the file system and then checks to verify they are referenced
+ * from the database, and if not, deletes them
+ * @param database
+ */
 export async function cleanupOrphans(database: any) {
-	const MAX_PATHS_TO_REMEMBER = 10_000_000;
-	let store;
-	let auditStore;
+	let store: LMDBStore;
+	let auditStore: LMDBStore;
 	let orphansDeleted = 0;
 	for (const tableName in database) {
 		const table = database[tableName];
@@ -1117,7 +1121,7 @@ export async function cleanupOrphans(database: any) {
 	// remove all remaining paths are not referenced
 	await removePathsThatAreNotReferenced();
 	return orphansDeleted;
-	async function searchPath(path) {
+	async function searchPath(path: string) {
 		try {
 			if (!existsSync(path)) return;
 			for (const entry of await readdir(path, { withFileTypes: true })) {
@@ -1189,6 +1193,7 @@ export async function cleanupOrphans(database: any) {
 		logger.warn?.('Finished deleting', pathsToCheck.size, 'orphaned blobs');
 		pathsToCheck.clear();
 	}
+	// check each object for any blob references and removes from the paths to check if found
 	function checkObjectForReferences(value) {
 		findBlobsInObject(value, (blob) => {
 			if (blob instanceof FileBackedBlob) {
