@@ -16,7 +16,7 @@
 
 // Apply PKI.js Ed25519 patch before importing easy-ocsp
 import './pkijs-ed25519-patch.ts';
-import { getCertStatus } from 'easy-ocsp';
+import { getCertStatus, getCertURLs } from 'easy-ocsp';
 import { createHash } from 'node:crypto';
 import { loggerWithTag } from '../utility/logging/logger.js';
 import { table } from '../resources/databases.ts';
@@ -64,6 +64,36 @@ class CertificateVerificationSource extends Resource {
 
 			logger.debug?.('OCSP check result:', result);
 
+			// Check if the result indicates an error (for fail-open/fail-closed handling)
+			const isError = result.status === 'unknown' && (result.reason === 'ocsp-error' || result.reason === 'timeout' || result.reason === 'no-ocsp-url');
+
+			if (isError) {
+				// Handle as an error for fail-open/fail-closed logic
+				const failureMode = config?.failureMode ?? VERIFICATION_DEFAULTS.failureMode;
+				logger.error?.('OCSP check failed:', result.reason);
+
+				if (failureMode === 'fail-closed') {
+					// Return an error status that will be cached
+					if (context) {
+						context.expiresAt = Date.now() + 300000; // Cache errors for 5 minutes
+					}
+
+					return {
+						certificate_id: id,
+						status: result.status,
+						reason: result.reason,
+						checked_at: Date.now(),
+						expiresAt: Date.now() + 300000,
+						method: 'ocsp',
+					};
+				} else {
+					// Fail open - return null to not cache
+					logger.warn?.('OCSP check failed, allowing connection (fail-open mode)');
+					return null;
+				}
+			}
+
+			// Successful result - cache it
 			const ttl = config?.cacheTtl ?? VERIFICATION_DEFAULTS.cacheTtl;
 
 			// Set expiration on the context if available
@@ -321,6 +351,34 @@ export async function verifyOCSP(
 		const wasLoadedFromSource = (cacheEntry as any).wasLoadedFromSource?.();
 		logger.trace?.(`OCSP ${wasLoadedFromSource ? 'source fetch' : 'cache hit'} for certificate`);
 
+		// Check if this is an error result that should trigger fail-open/fail-closed behavior
+		const isErrorResult = cached.status === 'unknown' && wasLoadedFromSource &&
+			(cached.reason === 'ocsp-error' || cached.reason === 'timeout' || cached.reason === 'OCSP timeout');
+
+
+		if (isErrorResult) {
+			// Apply fail-open/fail-closed logic for fresh error results
+			const failureMode = config?.failureMode ?? VERIFICATION_DEFAULTS.failureMode;
+
+			if (failureMode === 'fail-closed') {
+				return {
+					valid: false,
+					status: cached.status,
+					cached: !wasLoadedFromSource,
+					method: cached.method || 'ocsp',
+				};
+			} else {
+				// Fail-open: log warning and allow connection
+				logger.warn?.('OCSP check failed, allowing connection (fail-open mode)');
+				return {
+					valid: true,
+					status: 'error-allowed',
+					cached: !wasLoadedFromSource,
+					method: cached.method || 'ocsp',
+				};
+			}
+		}
+
 		return {
 			valid: cached.status === 'good',
 			status: cached.status,
@@ -346,28 +404,52 @@ export async function verifyOCSP(
  * Perform the actual OCSP check using easy-ocsp
  */
 async function performOCSPCheck(certPem: string, issuerPem: string, timeout: number): Promise<OCSPCheckResult> {
-	logger.trace?.('Calling getCertStatus with timeout:', timeout);
-	const response = await getCertStatus(certPem, {
-		ca: issuerPem,
-		timeout,
-	});
+	logger.trace?.('Performing OCSP check with timeout:', timeout);
 
-	logger.debug?.('OCSP response from easy-ocsp:', {
-		status: response.status,
-		revocationReason: response.revocationReason,
-		responseData: response,
-	});
+	// First, check if the certificate contains OCSP URLs
+	try {
+		getCertURLs(certPem);
+		logger.trace?.('Certificate contains OCSP URL, proceeding with check');
+	} catch (urlError) {
+		// If getCertURLs fails, the certificate doesn't have OCSP URLs
+		logger.debug?.('Certificate does not contain OCSP URL:', (urlError as Error).message);
+		return { status: 'unknown', reason: 'no-ocsp-url' };
+	}
 
-	// Map the response to our internal format
-	if (response.status === 'good') {
-		return { status: 'good' };
-	} else if (response.status === 'revoked') {
-		return {
-			status: 'revoked',
-			reason: response.revocationReason?.toString() || 'unspecified',
-		};
-	} else {
-		return { status: 'unknown', reason: 'unknown-status' };
+	try {
+		const response = await getCertStatus(certPem, {
+			ca: issuerPem,
+			timeout,
+		});
+
+		logger.debug?.('OCSP response from easy-ocsp:', {
+			status: response.status,
+			revocationReason: response.revocationReason,
+			responseData: response,
+		});
+
+		// Map the response to our internal format
+		if (response.status === 'good') {
+			return { status: 'good' };
+		} else if (response.status === 'revoked') {
+			return {
+				status: 'revoked',
+				reason: response.revocationReason?.toString() || 'unspecified',
+			};
+		} else {
+			return { status: 'unknown', reason: 'unknown-status' };
+		}
+	} catch (error) {
+		const err = error as Error;
+		logger.debug?.('OCSP check failed:', err.message);
+
+		// Handle specific AbortError (timeout) case
+		if (err.name === 'AbortError') {
+			return { status: 'unknown', reason: 'timeout' };
+		} else {
+			// Handle all other OCSP library errors gracefully
+			return { status: 'unknown', reason: 'ocsp-error' };
+		}
 	}
 }
 
