@@ -49,6 +49,7 @@ const set_node = require('../server/replication/setNode');
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject');
 const { handleHDBError, hdb_errors } = require('../utility/errors/hdbError');
 const { addNodeBack, removeNodeBack } = require('../server/replication/setNode');
+const { cleanupOrphanBlobs } = require('../dataLayer/schema');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdb_errors;
 
 const required_permissions = new Map();
@@ -157,6 +158,7 @@ required_permissions.set(restart.restart.name, new permission(true, []));
 required_permissions.set(restart.restartService.name, new permission(true, []));
 required_permissions.set(read_audit_log.name, new permission(true, []));
 required_permissions.set(get_backup.name, new permission(true, [READ_PERM]));
+required_permissions.set(cleanupOrphanBlobs.name, new permission(true, []));
 required_permissions.set(system_information.systemInformation.name, new permission(true, []));
 required_permissions.set(config_utils.getConfiguration.name, new permission(true, []));
 required_permissions.set(transaction_log.readTransactionLog.name, new permission(true, []));
