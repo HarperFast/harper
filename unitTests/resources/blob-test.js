@@ -374,11 +374,14 @@ describe('Blob test', () => {
 	});
 	it('cleanupOrphans', async () => {
 		let orphansDeleted = await cleanupOrphans(databases.test);
-		assert(orphansDeleted < 2);
+		assert.equal(orphansDeleted, 0);
 	});
 	afterEach(function () {
 		setAuditRetention(60000);
-		setDeletionDelay(500);
+		setDeletionDelay(50); // restore shorter, but need to have it happen for the last test
+	});
+	after(function () {
+		setDeletionDelay(500); // restore original
 	});
 });
 function delay(ms) {
