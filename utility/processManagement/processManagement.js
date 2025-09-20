@@ -202,6 +202,9 @@ function getHdbPid() {
 	if (!harperPath) return;
 	const pidFile = path.join(harperPath, terms.HDB_PID_FILE);
 	const hdbPid = readPidFile(pidFile);
+	// If the pid file doesn't exist or the pid is the same as the current process, return.
+	// In a Docker container, the pid is usually 1, and so if a previous process crashed, there will still
+	// be a pid file with 1, even though this process is also 1 (and is running, but is not another harper process).
 	if (!hdbPid || hdbPid === process.pid) return;
 	if (isProcessRunning(hdbPid)) return hdbPid;
 	// return undefined
