@@ -570,6 +570,7 @@ export const CONFIG_PARAMS = {
 	HTTP_MTLS_CERTIFICATEVERIFICATION: 'http_mtls_certificateVerification',
 	HTTP_MTLS_CERTIFICATEVERIFICATION_TIMEOUT: 'http_mtls_certificateVerification_timeout',
 	HTTP_MTLS_CERTIFICATEVERIFICATION_CACHETTL: 'http_mtls_certificateVerification_cacheTtl',
+	HTTP_MTLS_CERTIFICATEVERIFICATION_ERRORCACHETTL: 'http_mtls_certificateVerification_errorCacheTtl',
 	HTTP_MTLS_CERTIFICATEVERIFICATION_FAILUREMODE: 'http_mtls_certificateVerification_failureMode',
 	HTTP_MAXHEADERSIZE: 'http_maxHeaderSize',
 	HTTP_THREADRANGE: 'http_threadRange',

@@ -543,6 +543,23 @@ describe('certificateVerification', function() {
 			assert(Math.abs(cacheEntry.expiresAt - expectedExpiry) < 1000);
 		});
 
+		it('should respect custom error cache TTL', async function () {
+			const customErrorTtl = 60000; // 1 minute
+			getCertStatusStub.rejects(new Error('Network error'));
+
+			await certificateVerification.verifyOCSP(certPem, issuerPem, {
+				failureMode: 'fail-closed',
+				errorCacheTtl: customErrorTtl
+			});
+
+			// Check that error was cached with custom TTL
+			const cacheKey = computeCacheKey(certPem, issuerPem);
+			assert(mockCacheEntries.has(cacheKey));
+			const cacheEntry = mockCacheEntries.get(cacheKey);
+			const expectedExpiry = Date.now() + customErrorTtl;
+			assert(Math.abs(cacheEntry.expiresAt - expectedExpiry) < 1000);
+		});
+
 		it('should fail-open by default on errors', async function () {
 			getCertStatusStub.rejects(new Error('Network error'));
 
@@ -711,7 +728,8 @@ describe('certificateVerification', function() {
 
 			const certPem = '-----BEGIN CERTIFICATE-----\nY2VydA==\n-----END CERTIFICATE-----';
 			const issuerPem = '-----BEGIN CERTIFICATE-----\naXNzdWVy\n-----END CERTIFICATE-----';
-			const result = await certificateVerification.verifyOCSP(certPem, issuerPem);
+			// Use fail-closed to prevent fail-open behavior in this error handling test
+			const result = await certificateVerification.verifyOCSP(certPem, issuerPem, { failureMode: 'fail-closed' });
 
 			// Should return unknown status with no-ocsp-url reason
 			assert.strictEqual(result.valid, false);
@@ -744,7 +762,8 @@ describe('certificateVerification', function() {
 
 			const certPem = '-----BEGIN CERTIFICATE-----\nY2VydA==\n-----END CERTIFICATE-----';
 			const issuerPem = '-----BEGIN CERTIFICATE-----\naXNzdWVy\n-----END CERTIFICATE-----';
-			const result = await certificateVerification.verifyOCSP(certPem, issuerPem);
+			// Use fail-closed to prevent fail-open behavior in this error handling test
+			const result = await certificateVerification.verifyOCSP(certPem, issuerPem, { failureMode: 'fail-closed' });
 
 			// Should return unknown status with timeout reason
 			assert.strictEqual(result.valid, false);

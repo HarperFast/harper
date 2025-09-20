@@ -42,7 +42,8 @@ Harper must be configured with mTLS enabled. Example configuration:
     mtls:
       certificateVerification:
         timeout: 5000        # OCSP timeout in milliseconds (default: 5000)
-        cacheTtl: 3600000    # Cache TTL in milliseconds (default: 1 hour)
+        cacheTtl: 3600000    # Cache TTL for success in milliseconds (default: 1 hour)
+        errorCacheTtl: 300000 # Cache TTL for errors in milliseconds (default: 5 minutes)
         failureMode: fail-open  # or fail-closed (default: fail-open)
 ```
 
@@ -108,7 +109,8 @@ http:
   mtls:
     certificateVerification:
       timeout: 5000           # OCSP timeout (ms)
-      cacheTtl: 3600000      # Cache TTL (ms) - 1 hour
+      cacheTtl: 3600000      # Cache TTL for success (ms) - 1 hour
+      errorCacheTtl: 300000  # Cache TTL for errors (ms) - 5 minutes
       failureMode: fail-open # Allow on OCSP failure
 ```
 
