@@ -116,7 +116,6 @@ class permission {
 	}
 }
 
-<<<<<<< HEAD
 requiredPermissions.set(write.insert.name, new permission(false, [INSERT_PERM]));
 requiredPermissions.set(write.update.name, new permission(false, [UPDATE_PERM]));
 requiredPermissions.set(write.upsert.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));

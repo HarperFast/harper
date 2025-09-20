@@ -1191,10 +1191,11 @@ export async function cleanupOrphans(database: any) {
 		logger.warn?.('Deleting', pathsToCheck.size, 'orphaned blobs');
 		orphansDeleted += pathsToCheck.size;
 		for (const path of pathsToCheck) {
-			unlink(path, (error) => {
-				if (error) logger.debug?.('Error trying to remove blob file', error);
-			});
-			await new Promise(setImmediate);
+			try {
+				await unlinkPromised(path);
+			} catch (error) {
+				logger.warn?.('Error deleting file', error);
+			}
 		}
 		logger.warn?.('Finished deleting', pathsToCheck.size, 'orphaned blobs');
 		pathsToCheck.clear();
