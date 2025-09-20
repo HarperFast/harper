@@ -111,7 +111,6 @@ class permission {
 	}
 }
 
-<<<<<<< HEAD
 requiredPermissions.set(write.insert.name, new permission(false, [INSERT_PERM]));
 requiredPermissions.set(write.update.name, new permission(false, [UPDATE_PERM]));
 requiredPermissions.set(write.upsert.name, new permission(false, [INSERT_PERM, UPDATE_PERM]));
@@ -266,11 +265,7 @@ function verifyPermsAst(ast, userObject, operation) {
 
 		// Should not continue if there are no schemas defined and there are table columns defined.
 		// This is defined so we can do calc selects like : SELECT ABS(-12)
-		if (
-			(!schemas || schemas.length === 0) &&
-			parsedAst.affected_attributes &&
-			parsedAst.affected_attributes.size > 0
-		) {
+		if ((!schemas || schemas.length === 0) && parsedAst.affected_attributes && parsedAst.affected_attributes.size > 0) {
 			harperLogger.info(`No schemas defined in verifyPermsAst(), will not continue.`);
 			throw handleHDBError(new Error());
 		}
@@ -459,11 +454,7 @@ function verifyPerms(requestJson, operation) {
 
 	//For a NoSQL search op with `get_attributes: '*'` - as long as the role has READ permissions on the table,
 	//we will convert the * to the specific attributes the user has READ permissions for via their role.
-	if (
-		!isSuperUser &&
-		requestJson.get_attributes &&
-		terms.SEARCH_WILDCARDS.includes(requestJson.get_attributes[0])
-	) {
+	if (!isSuperUser && requestJson.get_attributes && terms.SEARCH_WILDCARDS.includes(requestJson.get_attributes[0])) {
 		let finalGetAttrs = [];
 		const table_perms = fullRolePerms[operationSchema].tables[table];
 
@@ -679,12 +670,7 @@ function checkAttributePerms(
 	const unauthorizedTableAttributes = Object.keys(requiredAttrPerms);
 
 	if (unauthorizedTableAttributes.length > 0) {
-		permsResponse.addUnauthorizedAttributes(
-			unauthorizedTableAttributes,
-			schemaName,
-			tableName,
-			requiredAttrPerms
-		);
+		permsResponse.addUnauthorizedAttributes(unauthorizedTableAttributes, schemaName, tableName, requiredAttrPerms);
 	}
 }
 
