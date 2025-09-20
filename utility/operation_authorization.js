@@ -47,7 +47,10 @@ const keys = require('../security/keys.js');
 const setNode = require('../server/replication/setNode.ts');
 const analytics = require('../resources/analytics/read.ts');
 const status = require('../server/status/index.ts');
-const { cleanupOrphanBlobs } = require('../dataLayer/schema.ts');
+const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject.js');
+const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
+const { cleanupOrphanBlobs } = require('../dataLayer/schema.js');
 
 const requiredPermissions = new Map();
 const DELETE_PERM = 'delete';
