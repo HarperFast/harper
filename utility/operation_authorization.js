@@ -48,11 +48,10 @@ const analytics = require('../resources/analytics/read.ts');
 const status = require('../server/status/index.ts');
 const usageLicensing = require('../resources/usageLicensing.ts');
 const regDeprecated = require('../resources/registrationDeprecated.ts');
-
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject.js');
 const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
-const { cleanupOrphanBlobs } = require('../dataLayer/schema.ts');
+const { cleanupOrphanBlobs } = require('../dataLayer/schema.js');
 
 const requiredPermissions = new Map();
 const DELETE_PERM = 'delete';

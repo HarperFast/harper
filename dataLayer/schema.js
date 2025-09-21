@@ -9,6 +9,14 @@ const uuidV4 = require('uuid').v4;
 const signalling = require('../utility/signalling.js');
 const hdbTerms = require('../utility/hdbTerms.ts');
 const util = require('util');
+const harperBridge = require('./harperBridge/harperBridge.js');
+const { handleHDBError, hdbErrors, ClientError } = require('../utility/errors/hdbError.js');
+const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
+const { SchemaEventMsg } = require('../server/threads/itc.js');
+const natsUtils = require('../server/nats/utility/natsUtils.js');
+const { getDatabases } = require('../resources/databases.ts');
+const { transformReq } = require('../utility/common_utils.js');
+const { replicateOperation } = require('../server/replication/replicator.ts');
 const { cleanupOrphans } = require('../resources/blob.ts');
 
 const DB_NAME_CONSTRAINTS = Joi.string()

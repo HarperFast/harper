@@ -1,7 +1,7 @@
 require('../test_utils');
 const assert = require('assert');
 const { getMockLMDBPath } = require('../test_utils');
-const { table } = require('../../resources/databases');
+const { table, getDatabases } = require('../../resources/databases');
 const { Readable, PassThrough } = require('node:stream');
 const { setAuditRetention } = require('../../resources/auditStore');
 const { setMainIsWorker } = require('../../server/threads/manageThreads');
@@ -373,7 +373,7 @@ describe('Blob test', () => {
 		await Promise.all(promises);
 	});
 	it('cleanupOrphans', async () => {
-		let orphansDeleted = await cleanupOrphans(databases.test);
+		let orphansDeleted = await cleanupOrphans(getDatabases().test);
 		assert.equal(orphansDeleted, 0);
 	});
 	afterEach(function () {
