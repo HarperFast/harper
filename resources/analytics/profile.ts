@@ -10,7 +10,8 @@ import { PACKAGE_ROOT } from '../../utility/packageUtils.js';
 import { pathToFileURL } from 'node:url';
 import * as log from '../../utility/logging/harper_logger.js';
 
-export const userCodeFolders = [pathToFileURL(getHdbBasePath()).toString()];
+const basePath = getHdbBasePath();
+export const userCodeFolders = basePath ? [pathToFileURL(basePath).toString()] : [];
 if (process.env.RUN_HDB_APP) userCodeFolders.push(pathToFileURL(process.env.RUN_HDB_APP).toString());
 
 const SAMPLING_INTERVAL_IN_MICROSECONDS = 1000;
@@ -22,6 +23,7 @@ const session = new Session();
 //  and we would probably need to connect to all the child threads with WebSockets.
 session.connect();
 (async () => {
+	if (userCodeFolders.length === 0) return;
 	// start the profiler
 	await session.post('Profiler.enable');
 	await session.post('Profiler.setSamplingInterval', { interval: SAMPLING_INTERVAL_IN_MICROSECONDS });
