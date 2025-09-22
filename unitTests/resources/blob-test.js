@@ -201,6 +201,18 @@ describe('Blob test', () => {
 		await delay(50); // wait for deletion
 		assert(!existsSync(filePath));
 
+		setAuditRetention(10); // give us time to check the blob file that is written
+		blob = await createBlob(Readable.from(testString));
+		await BlobTest.publish(4, { id: 4, blob });
+		await isSaving(blob);
+		assert.notEqual(filePath, getFilePathForBlob(blob)); // it should be a new file path
+		filePath = getFilePathForBlob(blob);
+		assert(existsSync(filePath));
+		setAuditRetention(0.01);
+		BlobTest.auditStore.scheduleAuditCleanup(1); // prune audit log, so the blob is actually deleted
+		await delay(50); // wait for audit log removal and deletion
+		assert(!existsSync(filePath));
+
 		blob = await createBlob(Readable.from(testString));
 		await BlobTest.put({ id: 4, blob });
 		assert.notEqual(filePath, getFilePathForBlob(blob)); // it should be a new file path
