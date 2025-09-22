@@ -51,7 +51,6 @@ const regDeprecated = require('../resources/registrationDeprecated.ts');
 const PermissionResponseObject = require('../security/data_objects/PermissionResponseObject.js');
 const { handleHDBError, hdbErrors } = require('../utility/errors/hdbError.js');
 const { HDB_ERROR_MSGS, HTTP_STATUS_CODES } = hdbErrors;
-const { cleanupOrphanBlobs } = require('../dataLayer/schema.js');
 
 const requiredPermissions = new Map();
 const DELETE_PERM = 'delete';
@@ -157,7 +156,7 @@ requiredPermissions.set(restart.restart.name, new permission(true, []));
 requiredPermissions.set(restart.restartService.name, new permission(true, []));
 requiredPermissions.set(readAuditLog.name, new permission(true, []));
 requiredPermissions.set(getBackup.name, new permission(true, [READ_PERM]));
-requiredPermissions.set(cleanupOrphanBlobs.name, new permission(true, []));
+requiredPermissions.set(schema.cleanupOrphanBlobs.name, new permission(true, []));
 requiredPermissions.set(systemInformation.systemInformation.name, new permission(true, []));
 requiredPermissions.set(configUtils.getConfiguration.name, new permission(true, []));
 requiredPermissions.set(transactionLog.readTransactionLog.name, new permission(true, []));
