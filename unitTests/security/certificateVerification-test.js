@@ -30,8 +30,9 @@ function createMockResource(data, wasLoadedFromSource = false) {
 	};
 }
 
-// Create stub for getCertStatus
+// Create stubs for easy-ocsp functions
 const getCertStatusStub = sinon.stub();
+const getCertURLsStub = sinon.stub();
 
 // Helper to compute cache key like the real implementation
 const { createHash } = require('node:crypto');
@@ -87,7 +88,8 @@ describe('certificateVerification', function() {
 			filename: easyOcspPath,
 			loaded: true,
 			exports: {
-				getCertStatus: getCertStatusStub
+				getCertStatus: getCertStatusStub,
+				getCertURLs: getCertURLsStub
 			}
 		};
 		
@@ -117,6 +119,7 @@ describe('certificateVerification', function() {
 		mockTable.sourcedFrom.resetHistory();
 		mockTable.setTTLExpiration.resetHistory();
 		getCertStatusStub.resetHistory();
+		getCertURLsStub.resetHistory();
 		mockCacheEntries.clear();
 
 		// Set default behaviors
@@ -156,11 +159,30 @@ describe('certificateVerification', function() {
 					try {
 						// Call get with just the id - context comes from getContext()
 						const data = await source.get(cacheKey);
+
+						// Handle fail-open logic for OCSP errors based on failureMode
+						if (data && data.status === 'unknown' && data.reason === 'ocsp-error') {
+							const config = context.config || {};
+							const failureMode = config.failureMode || 'fail-open';
+
+							// Always log the error (simulates source logging)
+							mockLogger.error('OCSP verification error:', data.reason);
+
+							if (failureMode === 'fail-open') {
+								// Return null to trigger fail-open behavior in verifyOCSP
+								return null;
+							}
+							// For fail-closed, fall through to cache the error
+						}
+
 						if (data) {
 							mockCacheEntries.set(cacheKey, data);
 							return data;
 						}
 						// Source returned null (fail-open), don't cache
+						return null;
+					} catch (sourceError) {
+						// Source threw an error - return null to trigger fail-open
 						return null;
 					} finally {
 						// Clean up the pending fetch
@@ -188,6 +210,7 @@ describe('certificateVerification', function() {
 
 		mockTable.put.resolves();
 		getCertStatusStub.resolves({ status: 'good' });
+		getCertURLsStub.returns({ ocspUrl: 'http://ocsp.example.com', issuerUrl: 'http://issuer.example.com' });
 	});
 
 	describe('getCertificateVerificationConfig', function () {
@@ -520,6 +543,23 @@ describe('certificateVerification', function() {
 			assert(Math.abs(cacheEntry.expiresAt - expectedExpiry) < 1000);
 		});
 
+		it('should respect custom error cache TTL', async function () {
+			const customErrorTtl = 60000; // 1 minute
+			getCertStatusStub.rejects(new Error('Network error'));
+
+			await certificateVerification.verifyOCSP(certPem, issuerPem, {
+				failureMode: 'fail-closed',
+				errorCacheTtl: customErrorTtl
+			});
+
+			// Check that error was cached with custom TTL
+			const cacheKey = computeCacheKey(certPem, issuerPem);
+			assert(mockCacheEntries.has(cacheKey));
+			const cacheEntry = mockCacheEntries.get(cacheKey);
+			const expectedExpiry = Date.now() + customErrorTtl;
+			assert(Math.abs(cacheEntry.expiresAt - expectedExpiry) < 1000);
+		});
+
 		it('should fail-open by default on errors', async function () {
 			getCertStatusStub.rejects(new Error('Network error'));
 
@@ -668,13 +708,112 @@ describe('certificateVerification', function() {
 			// Clear the default stub behavior
 			getCertStatusStub.reset();
 			getCertStatusStub.resolves({ status: 'invalid-status' });
-			
+
 			const result = await certificateVerification.verifyOCSP('cert', 'issuer');
-			
+
 			assert.strictEqual(result.valid, false);
 			assert.strictEqual(result.status, 'unknown');
 			assert.strictEqual(result.cached, false);
 			assert.strictEqual(result.method, 'ocsp');
+		});
+
+		it('should handle certificates without OCSP URLs', async function() {
+			// Reset stubs to clear default behavior
+			getCertURLsStub.reset();
+			getCertStatusStub.reset();
+			mockCacheEntries.clear();
+
+			// Mock getCertURLs to throw error for no OCSP URL
+			getCertURLsStub.throws(new Error('Certificate does not contain OCSP url'));
+
+			const certPem = '-----BEGIN CERTIFICATE-----\nY2VydA==\n-----END CERTIFICATE-----';
+			const issuerPem = '-----BEGIN CERTIFICATE-----\naXNzdWVy\n-----END CERTIFICATE-----';
+			// Use fail-closed to prevent fail-open behavior in this error handling test
+			const result = await certificateVerification.verifyOCSP(certPem, issuerPem, { failureMode: 'fail-closed' });
+
+			// Should return unknown status with no-ocsp-url reason
+			assert.strictEqual(result.valid, false);
+			assert.strictEqual(result.status, 'unknown');
+			assert.strictEqual(result.cached, false);
+			assert.strictEqual(result.method, 'ocsp');
+
+			// getCertStatus should not be called since we detected no OCSP URL
+			assert(!getCertStatusStub.called);
+			assert(getCertURLsStub.calledOnce);
+
+			// Should have cached the result
+			const cacheKey = computeCacheKey(certPem, issuerPem);
+			assert(mockCacheEntries.has(cacheKey));
+			const cacheEntry = mockCacheEntries.get(cacheKey);
+			assert.strictEqual(cacheEntry.status, 'unknown');
+			assert.strictEqual(cacheEntry.reason, 'no-ocsp-url');
+		});
+
+		it('should handle AbortError (timeout) from OCSP library', async function() {
+			// Reset stubs to clear default behavior
+			getCertURLsStub.reset();
+			getCertStatusStub.reset();
+			mockCacheEntries.clear();
+
+			// Mock getCertURLs to succeed, then getCertStatus to throw AbortError
+			getCertURLsStub.returns({ ocspUrl: 'http://ocsp.example.com', issuerUrl: 'http://issuer.example.com' });
+			const abortError = new DOMException('The operation was aborted', 'AbortError');
+			getCertStatusStub.throws(abortError);
+
+			const certPem = '-----BEGIN CERTIFICATE-----\nY2VydA==\n-----END CERTIFICATE-----';
+			const issuerPem = '-----BEGIN CERTIFICATE-----\naXNzdWVy\n-----END CERTIFICATE-----';
+			// Use fail-closed to prevent fail-open behavior in this error handling test
+			const result = await certificateVerification.verifyOCSP(certPem, issuerPem, { failureMode: 'fail-closed' });
+
+			// Should return unknown status with timeout reason
+			assert.strictEqual(result.valid, false);
+			assert.strictEqual(result.status, 'unknown');
+			assert.strictEqual(result.cached, false);
+			assert.strictEqual(result.method, 'ocsp');
+
+			// Both functions should have been called
+			assert(getCertURLsStub.calledOnce);
+			assert(getCertStatusStub.calledOnce);
+
+			// Should have cached the result
+			const cacheKey = computeCacheKey(certPem, issuerPem);
+			assert(mockCacheEntries.has(cacheKey));
+			const cacheEntry = mockCacheEntries.get(cacheKey);
+			assert.strictEqual(cacheEntry.status, 'unknown');
+			assert.strictEqual(cacheEntry.reason, 'timeout');
+		});
+
+		it('should handle other OCSP library errors generically', async function() {
+			// Reset stubs to clear default behavior
+			getCertURLsStub.reset();
+			getCertStatusStub.reset();
+			mockCacheEntries.clear();
+
+			// Mock getCertURLs to succeed, then getCertStatus to throw generic error
+			getCertURLsStub.returns({ ocspUrl: 'http://ocsp.example.com', issuerUrl: 'http://issuer.example.com' });
+			getCertStatusStub.throws(new Error('Some other OCSP error'));
+
+			const certPem = '-----BEGIN CERTIFICATE-----\nY2VydA==\n-----END CERTIFICATE-----';
+			const issuerPem = '-----BEGIN CERTIFICATE-----\naXNzdWVy\n-----END CERTIFICATE-----';
+			// Use fail-closed to prevent fail-open behavior in this error handling test
+			const result = await certificateVerification.verifyOCSP(certPem, issuerPem, { failureMode: 'fail-closed' });
+
+			// Should return unknown status with ocsp-error reason
+			assert.strictEqual(result.valid, false);
+			assert.strictEqual(result.status, 'unknown');
+			assert.strictEqual(result.cached, false);
+			assert.strictEqual(result.method, 'ocsp');
+
+			// Both functions should have been called
+			assert(getCertURLsStub.calledOnce);
+			assert(getCertStatusStub.calledOnce);
+
+			// Should have cached the result
+			const cacheKey = computeCacheKey(certPem, issuerPem);
+			assert(mockCacheEntries.has(cacheKey));
+			const cacheEntry = mockCacheEntries.get(cacheKey);
+			assert.strictEqual(cacheEntry.status, 'unknown');
+			assert.strictEqual(cacheEntry.reason, 'ocsp-error');
 		});
 	});
 	
