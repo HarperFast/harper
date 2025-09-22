@@ -193,8 +193,8 @@ export async function startOnMainThread(options) {
 			const nodes = [{ replicateByDefault: tablesReplicateByDefault, ...node }];
 			// Self catchup is done in case we have replicated any records that weren't actually written to our storage
 			// before a crash.
-			if (selfCatchupOfDatabase.has(databaseName)) {
-				// if we have a self catchup, we need to add this node to the list of nodes that need to catch up
+			if (selfCatchupOfDatabase.has(databaseName) && env.get(CONFIG_PARAMS.REPLICATION_FAILOVER)) {
+				// if we have a self catchup (only do if we have failover enabled), we need to add this node to the list of nodes that need to catch up
 				// and then we will remove it when it is done
 				nodes.push({
 					replicateByDefault: tablesReplicateByDefault,
@@ -375,6 +375,11 @@ export async function startOnMainThread(options) {
 			logger.debug('Connected node is not named yet', connection.database, mainWorkerEntry);
 			return;
 		}
+		if (!env.get(CONFIG_PARAMS.REPLICATION_FAILOVER)) {
+			// if failover is disabled, immediately return, we don't need to restore anything
+			return;
+		}
+
 		mainWorkerEntry.nodes = [restoredNode]; // restart with just our own connection
 		let hasChanges = false;
 		for (const nodeWorkers of connectionReplicationMap.values()) {
