@@ -79,3 +79,18 @@ export interface WorkerComponentStatuses {
 	isMainThread: boolean;
 	statuses: Array<[string, ComponentStatusSummary]>;
 }
+
+/**
+ * Aggregated application-level component status
+ * Used for components that may have multiple sub-components (e.g., application-template.rest, application-template.static)
+ */
+export interface ComponentApplicationStatus {
+	/** Overall aggregated status (error > loading > loaded > healthy) */
+	status: ComponentStatusLevel;
+	/** Descriptive message with details when not healthy */
+	message: string;
+	/** Detailed breakdown when issues exist */
+	details?: Record<string, { status: ComponentStatusLevel; message?: string }>;
+	/** Last checked time information */
+	lastChecked: { workers: Record<number, number> };
+}

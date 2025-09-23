@@ -153,32 +153,30 @@ describe('Test custom functions operations', () => {
 		});
 
 		it('Test getComponents includes status information when component status exists', async () => {
-			// Mock getAggregatedFromAllThreads to return aggregated status information
-			const mockComponentStatus = new Map();
-			mockComponentStatus.set('my-cool-component', {
-				componentName: 'my-cool-component',
+			// Mock getAggregatedStatusFor to return status information
+			const mockGetAggregatedStatusFor = sinon.stub();
+			mockGetAggregatedStatusFor.withArgs('my-cool-component').resolves({
 				status: 'healthy',
 				message: 'Component loaded successfully',
-				lastChecked: {
-					workers: { 0: new Date('2023-01-01').getTime() },
-				},
+				lastChecked: { workers: { 0: new Date('2023-01-01').getTime() } }
 			});
-			mockComponentStatus.set('my-other-component', {
-				componentName: 'my-other-component',
+			mockGetAggregatedStatusFor.withArgs('my-other-component').resolves({
 				status: 'error',
-				latestMessage: 'Failed to load',
-				error: 'Configuration error',
-				lastChecked: {
-					workers: { 1: new Date('2023-01-01').getTime() },
+				message: 'my-other-component: Failed to load',
+				details: {
+					'my-other-component': { status: 'error', message: 'Failed to load' }
 				},
+				lastChecked: { workers: { 1: new Date('2023-01-01').getTime() } }
 			});
 
 			const mockComponentStatusModule = {
 				internal: {
 					ComponentStatusRegistry: {
-						getAggregatedFromAllThreads: async () => mockComponentStatus,
+						getAggregatedFromAllThreads: async () => new Map(),
 					},
-					componentStatusRegistry: {}, // Mock registry object
+					componentStatusRegistry: {
+						getAggregatedStatusFor: mockGetAggregatedStatusFor
+					},
 				},
 			};
 
@@ -208,8 +206,9 @@ describe('Test custom functions operations', () => {
 			expect(errorComponent.status).to.exist;
 			expect(errorComponent.status).to.be.an('object');
 			expect(errorComponent.status.status).to.equal('error');
-			expect(errorComponent.status.latestMessage).to.equal('Failed to load');
-			expect(errorComponent.status.error).to.equal('Configuration error');
+			expect(errorComponent.status.message).to.equal('my-other-component: Failed to load');
+			expect(errorComponent.status.details).to.exist;
+			expect(errorComponent.status.details['my-other-component'].status).to.equal('error');
 			expect(errorComponent.status.lastChecked).to.exist;
 			expect(errorComponent.status.lastChecked.workers).to.exist;
 			expect(errorComponent.status.lastChecked.workers[1]).to.exist;
@@ -219,12 +218,23 @@ describe('Test custom functions operations', () => {
 		});
 
 		it('Test getComponents shows unknown status when component not in status map', async () => {
-			// Mock getAggregatedFromAllThreads with empty status map
+			// Mock getAggregatedStatusFor to return unknown status
+			const mockGetAggregatedStatusFor = sinon.stub();
+			mockGetAggregatedStatusFor.resolves({
+				status: 'unknown',
+				message: 'The component has not been loaded yet (may need a restart)',
+				lastChecked: { workers: {} }
+			});
+
 			const mockComponentStatusModule = {
-				ComponentStatusRegistry: {
-					getAggregatedFromAllThreads: async () => new Map(),
+				internal: {
+					ComponentStatusRegistry: {
+						getAggregatedFromAllThreads: async () => new Map(),
+					},
+					componentStatusRegistry: {
+						getAggregatedStatusFor: mockGetAggregatedStatusFor
+					},
 				},
-				componentStatusRegistry: {}, // Mock registry object
 			};
 
 			// Store original require
@@ -277,14 +287,25 @@ describe('Test custom functions operations', () => {
 		});
 
 		it('Test getComponents handles error from getAggregatedFromAllThreads gracefully', async () => {
-			// Mock getAggregatedFromAllThreads to throw an error
+			// Mock getAggregatedStatusFor to return unknown status when there's an error
+			const mockGetAggregatedStatusFor = sinon.stub();
+			mockGetAggregatedStatusFor.resolves({
+				status: 'unknown',
+				message: 'The component has not been loaded yet (may need a restart)',
+				lastChecked: { workers: {} }
+			});
+
 			const mockComponentStatusModule = {
-				ComponentStatusRegistry: {
-					getAggregatedFromAllThreads: async () => {
-						throw new Error('Failed to collect status from threads');
+				internal: {
+					ComponentStatusRegistry: {
+						getAggregatedFromAllThreads: async () => {
+							throw new Error('Failed to collect status from threads');
+						},
+					},
+					componentStatusRegistry: {
+						getAggregatedStatusFor: mockGetAggregatedStatusFor
 					},
 				},
-				componentStatusRegistry: {}, // Mock registry object
 			};
 
 			// Store original require
@@ -315,12 +336,23 @@ describe('Test custom functions operations', () => {
 		});
 
 		it('Test getComponents handles undefined return from getAggregatedFromAllThreads gracefully', async () => {
-			// Mock getAggregatedFromAllThreads to return undefined
+			// Mock getAggregatedStatusFor to return unknown status when consolidatedStatuses is undefined
+			const mockGetAggregatedStatusFor = sinon.stub();
+			mockGetAggregatedStatusFor.resolves({
+				status: 'unknown',
+				message: 'The component has not been loaded yet (may need a restart)',
+				lastChecked: { workers: {} }
+			});
+
 			const mockComponentStatusModule = {
-				ComponentStatusRegistry: {
-					getAggregatedFromAllThreads: async () => undefined,
+				internal: {
+					ComponentStatusRegistry: {
+						getAggregatedFromAllThreads: async () => undefined,
+					},
+					componentStatusRegistry: {
+						getAggregatedStatusFor: mockGetAggregatedStatusFor
+					},
 				},
-				componentStatusRegistry: {}, // Mock registry object
 			};
 
 			// Store original require
@@ -345,6 +377,123 @@ describe('Test custom functions operations', () => {
 				expect(component.status.message).to.equal('The component has not been loaded yet (may need a restart)');
 				expect(component.status.lastChecked).to.deep.equal({ workers: {} });
 			}
+
+			// Restore original require
+			operations.__set__('require', originalRequire);
+		});
+
+		it('Test getComponents uses getAggregatedStatusFor method correctly', async () => {
+			// Mock the registry with getAggregatedStatusFor method
+			const mockGetAggregatedStatusFor = sinon.stub();
+
+			// Mock different return values for different components
+			mockGetAggregatedStatusFor.withArgs('my-cool-component').resolves({
+				status: 'healthy',
+				message: 'All components loaded successfully',
+				lastChecked: { workers: { 0: 1000 } }
+			});
+
+			mockGetAggregatedStatusFor.withArgs('my-other-component').resolves({
+				status: 'error',
+				message: 'my-other-component.rest: Database connection failed',
+				details: {
+					'my-other-component.rest': {
+						status: 'error',
+						message: 'Database connection failed'
+					}
+				},
+				lastChecked: { workers: { 1: 2000 } }
+			});
+
+			const mockComponentStatusModule = {
+				internal: {
+					ComponentStatusRegistry: {
+						getAggregatedFromAllThreads: async () => new Map([
+							['my-cool-component', { status: 'healthy' }],
+							['my-other-component.rest', { status: 'error' }]
+						]),
+					},
+					componentStatusRegistry: {
+						getAggregatedStatusFor: mockGetAggregatedStatusFor
+					},
+				},
+			};
+
+			// Store original require
+			const originalRequire = operations.__get__('require');
+			operations.__set__('require', (path) => {
+				if (path === './status/index.ts') {
+					return mockComponentStatusModule;
+				}
+				return originalRequire(path);
+			});
+
+			const result = await operations.getComponents();
+
+			// Verify getAggregatedStatusFor was called for each component
+			expect(mockGetAggregatedStatusFor.calledTwice).to.be.true;
+			expect(mockGetAggregatedStatusFor.firstCall.args[0]).to.equal('my-cool-component');
+			expect(mockGetAggregatedStatusFor.secondCall.args[0]).to.equal('my-other-component');
+
+			// Verify the consolidated statuses were passed as second argument
+			expect(mockGetAggregatedStatusFor.firstCall.args[1]).to.be.instanceOf(Map);
+			expect(mockGetAggregatedStatusFor.secondCall.args[1]).to.be.instanceOf(Map);
+
+			// Verify component status matches what getAggregatedStatusFor returned
+			const healthyComponent = result.entries.find((e) => e.name === 'my-cool-component');
+			expect(healthyComponent.status.status).to.equal('healthy');
+			expect(healthyComponent.status.message).to.equal('All components loaded successfully');
+
+			const errorComponent = result.entries.find((e) => e.name === 'my-other-component');
+			expect(errorComponent.status.status).to.equal('error');
+			expect(errorComponent.status.message).to.equal('my-other-component.rest: Database connection failed');
+			expect(errorComponent.status.details).to.exist;
+			expect(errorComponent.status.details['my-other-component.rest'].status).to.equal('error');
+
+			// Restore original require
+			operations.__set__('require', originalRequire);
+		});
+
+		it('Test getComponents handles getAggregatedStatusFor errors gracefully', async () => {
+			// Mock getAggregatedStatusFor to throw an error for one component
+			const mockGetAggregatedStatusFor = sinon.stub();
+			mockGetAggregatedStatusFor.withArgs('my-cool-component').resolves({
+				status: 'healthy',
+				message: 'All components loaded successfully',
+				lastChecked: { workers: { 0: 1000 } }
+			});
+			mockGetAggregatedStatusFor.withArgs('my-other-component').rejects(new Error('Status aggregation failed'));
+
+			const mockComponentStatusModule = {
+				internal: {
+					ComponentStatusRegistry: {
+						getAggregatedFromAllThreads: async () => new Map(),
+					},
+					componentStatusRegistry: {
+						getAggregatedStatusFor: mockGetAggregatedStatusFor
+					},
+				},
+			};
+
+			// Store original require
+			const originalRequire = operations.__get__('require');
+			operations.__set__('require', (path) => {
+				if (path === './status/index.ts') {
+					return mockComponentStatusModule;
+				}
+				return originalRequire(path);
+			});
+
+			const result = await operations.getComponents();
+
+			// First component should have successful status
+			const healthyComponent = result.entries.find((e) => e.name === 'my-cool-component');
+			expect(healthyComponent.status.status).to.equal('healthy');
+
+			// Second component should have fallback unknown status due to error
+			const errorComponent = result.entries.find((e) => e.name === 'my-other-component');
+			expect(errorComponent.status.status).to.equal('unknown');
+			expect(errorComponent.status.message).to.equal('Failed to retrieve component status');
 
 			// Restore original require
 			operations.__set__('require', originalRequire);

@@ -248,27 +248,34 @@ export async function loadComponent(
 		const componentFunctionality = {};
 		// iterate through the app handlers so they can each do their own loading process
 		for (const componentName in config) {
-			const componentStatusName = `${basename(componentDirectory)}.${componentName}`;
+			// For root components, use just the component name
+			// For application components, use applicationName.componentName format (directoryName.componentName)
+			const componentStatusName = isRoot ? componentName : `${basename(componentDirectory)}.${componentName}`;
 
 			compName = componentName;
 			const componentConfig = config[componentName];
 			if (!componentConfig) continue;
 
-			let extensionModule;
+			// Initialize loading status for all components (applications and extensions)
+			componentLifecycle.loading(componentStatusName);
+
+			let extensionModule: any;
 			const pkg = componentConfig.package;
 			try {
 				if (pkg) {
-					let componentPath;
+					let componentPath: string | null = null;
 					if (isRoot) {
 						componentPath = join(componentDirectory, 'components', componentName);
 					} else {
 						let containerFolder = componentDirectory;
-						while (!existsSync((componentPath = join(containerFolder, 'node_modules', componentName)))) {
+						componentPath = join(containerFolder, 'node_modules', componentName);
+						while (!existsSync(componentPath)) {
 							containerFolder = dirname(containerFolder);
 							if (containerFolder.length < getHdbBasePath().length) {
 								componentPath = null;
 								break;
 							}
+							componentPath = join(containerFolder, 'node_modules', componentName);
 						}
 					}
 					if (componentPath) {
@@ -279,10 +286,12 @@ export async function loadComponent(
 					}
 				} else extensionModule = TRUSTED_RESOURCE_LOADERS[componentName];
 
-				if (!extensionModule) continue;
-
-				// Only initialize loading status for actual components
-				componentLifecycle.loading(componentStatusName);
+				if (!extensionModule) {
+					// This is an application-only component (no extension module)
+					// Mark it as loaded since it exists in the config
+					componentLifecycle.loaded(componentStatusName, `Application component '${componentStatusName}' processed`);
+					continue;
+				}
 
 				// our own trusted modules can be directly retrieved from our map, otherwise use the (configurable) secure module loader
 				const ensureTable = (options: any) => {
