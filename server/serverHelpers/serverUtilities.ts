@@ -1,5 +1,4 @@
 import search from '../../dataLayer/search.js';
-import sql from '../../sqlTranslator/index.js';
 import bulkLoad from '../../dataLayer/bulkLoad.js';
 import schema from '../../dataLayer/schema.js';
 import schemaDescribe from '../../dataLayer/schemaDescribe.js';
@@ -52,7 +51,10 @@ import * as usageLicensing from '../../resources/usageLicensing.ts';
 import * as regDeprecated from '../../resources/registrationDeprecated.ts';
 
 const pSearchSearch = util.promisify(search.search);
-const pSqlEvaluateSql = util.promisify(sql.evaluateSQL);
+function pSqlEvaluateSql(command) {
+	const sql = require('../../sqlTranslator/index.js');
+	return util.promisify(sql.evaluateSQL)(command);
+}
 
 const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
 	[terms.OPERATIONS_ENUM.CREATE_ATTRIBUTE]: true,
@@ -129,6 +131,7 @@ export function chooseOperation(json: OperationRequestBody) {
 	// on all affected tables/attributes.
 	try {
 		if (json.operation === 'sql' || (json.search_operation && json.search_operation.operation === 'sql')) {
+			const sql = require('../../sqlTranslator/index.js');
 			const sqlStatement = json.operation === 'sql' ? json.sql : json.search_operation.sql;
 			const parsedSqlObject = sql.convertSQLToAST(sqlStatement);
 			json.parsed_sql_object = parsedSqlObject;
@@ -371,7 +374,10 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 		new OperationFunctionObject(jobs.handleGetJobsByStartDate)
 	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_JOB, new OperationFunctionObject(jobs.handleGetJob));
-	opFuncMap.set(terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO, new OperationFunctionObject(regDeprecated.getRegistrationInfo));
+	opFuncMap.set(
+		terms.OPERATIONS_ENUM.GET_REGISTRATION_INFO,
+		new OperationFunctionObject(regDeprecated.getRegistrationInfo)
+	);
 	opFuncMap.set(terms.OPERATIONS_ENUM.GET_FINGERPRINT, new OperationFunctionObject(regDeprecated.getFingerprint));
 	opFuncMap.set(terms.OPERATIONS_ENUM.SET_LICENSE, new OperationFunctionObject(regDeprecated.setLicense));
 	opFuncMap.set(terms.OPERATIONS_ENUM.RESTART, new OperationFunctionObject(restart.restart));

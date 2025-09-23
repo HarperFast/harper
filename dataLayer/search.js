@@ -1,7 +1,5 @@
 'use strict';
 
-const SelectValidator = require('../sqlTranslator/SelectValidator.js');
-
 module.exports = {
 	searchByConditions,
 	searchByHash,
@@ -11,7 +9,6 @@ module.exports = {
 
 const harperBridge = require('./harperBridge/harperBridge.js');
 const { transformReq } = require('../utility/common_utils.js');
-const SQLSearch = require('./SQLSearch.js');
 
 async function searchByConditions(searchObject) {
 	transformReq(searchObject);
@@ -42,6 +39,8 @@ async function searchByValue(searchObject) {
 
 function search(statement, callback) {
 	try {
+		const SelectValidator = require('../sqlTranslator/SelectValidator.js');
+		const SQLSearch = require('./SQLSearch.js');
 		let validator = new SelectValidator(statement);
 		validator.validate();
 

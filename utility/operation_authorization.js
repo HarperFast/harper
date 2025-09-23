@@ -30,7 +30,6 @@ const clusterStatus = require('../utility/clustering/clusterStatus.js');
 const clusterNetwork = require('../utility/clustering/clusterNetwork.js');
 const routes = require('../utility/clustering/routes.js');
 const commonUtils = require('./common_utils.js');
-const bucket = require('../sqlTranslator/sql_statement_bucket.js');
 const restart = require('../bin/restart.js');
 const terms = require('./hdbTerms.ts');
 const permsTranslator = require('../security/permissionsTranslator.js');
@@ -39,7 +38,6 @@ const tokenAuthentication = require('../security/tokenAuthentication.ts');
 const auth = require('../security/auth.ts');
 const configUtils = require('../config/configUtils.js');
 const functionsOperations = require('../components/operations.js');
-const alasql = require('alasql');
 const transactionLog = require('../utility/logging/transactionLog.js');
 const npmUtilities = require('./npmUtilities.js');
 const keys = require('../security/keys.js');
@@ -259,6 +257,9 @@ function verifyPermsAst(ast, userObject, operation) {
 		throw handleHDBError(new Error());
 	}
 	try {
+		const bucket = require('../sqlTranslator/sql_statement_bucket.js');
+		const alasql = require('alasql');
+
 		const permsResponse = new PermissionResponseObject();
 		let parsedAst = new bucket(ast);
 		let schemas = parsedAst.getSchemas();

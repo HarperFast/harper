@@ -19,7 +19,6 @@ const Insert_Object = require('../../dataLayer/InsertObject.js');
 const hdbUtil = require('../../utility/common_utils.js');
 const { promisify } = require('util');
 const moment = require('moment');
-const hdbSql = require('../../sqlTranslator');
 const fileLoadValidator = require('../../validation/fileLoadValidator.js');
 const bulkDeleteValidator = require('../../validation/bulkDeleteValidator.js');
 const { deleteTransactionLogsBeforeValidator } = require('../../validation/transactionLogValidator.js');
@@ -30,7 +29,6 @@ const { HTTP_STATUS_CODES } = hdbErrors;
 const pSearchByValue = search.searchByValue;
 const pSearchSearchByHash = search.searchByHash;
 const pInsert = insert.insert;
-const pSqlEvaluate = promisify(hdbSql.evaluateSQL);
 const pInsertUpdate = insert.update;
 
 module.exports = {
@@ -196,12 +194,9 @@ async function addJob(jsonBody) {
 	// Sending the request via IPC to the job process was causing some messages to be lost under load.
 	newJob.request = jsonBody;
 
-	let insertObject = new Insert_Object(
-		hdbTerms.SYSTEM_SCHEMA_NAME,
-		hdbTerms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME,
-		'id',
-		[newJob]
-	);
+	let insertObject = new Insert_Object(hdbTerms.SYSTEM_SCHEMA_NAME, hdbTerms.SYSTEM_TABLE_NAMES.JOB_TABLE_NAME, 'id', [
+		newJob,
+	]);
 	let insertResult;
 	try {
 		insertResult = await pInsert(insertObject);
@@ -243,6 +238,8 @@ async function getJobsInDateRange(jsonBody) {
 	let sqlSearchObj = new SQL_Search_Object(jobSearchSql, jsonBody.hdb_user);
 
 	try {
+		const hdbSql = require('../../sqlTranslator');
+		const pSqlEvaluate = promisify(hdbSql.evaluateSQL);
 		return await pSqlEvaluate(sqlSearchObj);
 	} catch (e) {
 		log.error(
@@ -291,10 +288,7 @@ async function updateJob(jobObject) {
 		throw new Error('invalid ID passed to updateJob');
 	}
 
-	if (
-		jobObject.status === hdbTerms.JOB_STATUS_ENUM.COMPLETE ||
-		jobObject.status === hdbTerms.JOB_STATUS_ENUM.ERROR
-	) {
+	if (jobObject.status === hdbTerms.JOB_STATUS_ENUM.COMPLETE || jobObject.status === hdbTerms.JOB_STATUS_ENUM.ERROR) {
 		jobObject.end_datetime = moment().valueOf();
 	}
 
