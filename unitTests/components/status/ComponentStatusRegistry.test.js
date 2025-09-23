@@ -10,18 +10,15 @@ const manageThreadsModule = require('../../../server/threads/manageThreads.js');
 describe('ComponentStatusRegistry', function() {
 	let registry;
 	let clock;
-	let sendItcEventStub;
-	let onMessageByTypeStub;
-	let getWorkerIndexStub;
 
 	beforeEach(function() {
 		registry = new ComponentStatusRegistry();
 		clock = sinon.useFakeTimers();
-		
+
 		// Stub ITC functions
-		sendItcEventStub = sinon.stub(itcModule, 'sendItcEvent').resolves();
-		onMessageByTypeStub = sinon.stub(manageThreadsModule, 'onMessageByType');
-		getWorkerIndexStub = sinon.stub(manageThreadsModule, 'getWorkerIndex').returns(0);
+		sinon.stub(itcModule, 'sendItcEvent').resolves();
+		sinon.stub(manageThreadsModule, 'onMessageByType');
+		sinon.stub(manageThreadsModule, 'getWorkerIndex').returns(0);
 	});
 
 	afterEach(function() {
@@ -478,36 +475,429 @@ describe('ComponentStatusRegistry', function() {
 
 	describe('static getAggregatedFromAllThreads method', function() {
 		it('should collect and aggregate statuses', async function() {
-			// Don't use fake timers for this test since crossThread uses real timers
-			clock.restore();
-			
+			// Mock the crossThreadCollector to avoid actual ITC communication
+			const { crossThreadCollector } = require('../../../components/status/crossThread.ts');
+			const originalCollect = crossThreadCollector.collect;
+
 			// Create a fresh registry for this test
 			const testRegistry = new ComponentStatusRegistry();
-			getWorkerIndexStub.returns(0);
 			testRegistry.setStatus('sharedComp', 'healthy');
-			
-			// Don't send any remote responses - test with timeout
-			onMessageByTypeStub.callsFake(() => {});
-			
-			// Set very short timeout
-			process.env.COMPONENT_STATUS_TIMEOUT = '50';
-			
+
+			// Mock the collector to return local statuses only
+			crossThreadCollector.collect = async () => {
+				return new Map([
+					['sharedComp@main', {
+						status: 'healthy',
+						lastChecked: new Date(),
+						message: 'Local component healthy'
+					}]
+				]);
+			};
+
 			try {
 				const aggregated = await ComponentStatusRegistry.getAggregatedFromAllThreads(testRegistry);
-				
+
 				// Should have aggregated the local status only
 				assert.equal(aggregated.size, 1);
 				const aggStatus = aggregated.get('sharedComp');
 				assert.ok(aggStatus);
 				assert.equal(aggStatus.componentName, 'sharedComp');
-				assert.equal(aggStatus.status, 'healthy'); // Only local status
+				assert.equal(aggStatus.status, 'healthy');
 				assert.equal(aggStatus.abnormalities, undefined); // No abnormalities with single thread
 			} finally {
-				delete process.env.COMPONENT_STATUS_TIMEOUT;
+				// Restore original collector
+				crossThreadCollector.collect = originalCollect;
 				testRegistry.reset();
-				// Recreate fake timers for other tests
-				clock = sinon.useFakeTimers();
 			}
+		});
+	});
+
+	describe('getAggregatedStatusFor method', function() {
+		describe('basic aggregation scenarios', function() {
+			it('should return status for exact component match only', async function() {
+				const consolidatedStatuses = new Map([
+					['application-template', {
+						componentName: 'application-template',
+						status: COMPONENT_STATUS_LEVELS.HEALTHY,
+						latestMessage: 'Application loaded successfully',
+						lastChecked: { workers: { 0: 1000 } }
+					}]
+				]);
+
+				const result = await registry.getAggregatedStatusFor('application-template', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.HEALTHY);
+				assert.equal(result.message, 'All components loaded successfully');
+				assert.equal(result.details, undefined);
+				assert.deepEqual(result.lastChecked, { workers: { 0: 1000 } });
+			});
+
+			it('should return aggregated status for sub-components only', async function() {
+				const consolidatedStatuses = new Map([
+					['application-template.rest', {
+						componentName: 'application-template.rest',
+						status: COMPONENT_STATUS_LEVELS.HEALTHY,
+						latestMessage: 'REST component loaded',
+						lastChecked: { workers: { 0: 1000 } }
+					}],
+					['application-template.static', {
+						componentName: 'application-template.static',
+						status: COMPONENT_STATUS_LEVELS.HEALTHY,
+						latestMessage: 'Static component loaded',
+						lastChecked: { workers: { 0: 2000 } }
+					}]
+				]);
+
+				const result = await registry.getAggregatedStatusFor('application-template', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.HEALTHY);
+				assert.equal(result.message, 'All components loaded successfully');
+				assert.equal(result.details, undefined);
+				assert.deepEqual(result.lastChecked, { workers: { 0: 1000 } });
+			});
+
+			it('should combine exact match with sub-components', async function() {
+				const consolidatedStatuses = new Map([
+					['application-template', {
+						componentName: 'application-template',
+						status: COMPONENT_STATUS_LEVELS.HEALTHY,
+						latestMessage: 'Main application healthy',
+						lastChecked: { workers: { 0: 1000 } }
+					}],
+					['application-template.rest', {
+						componentName: 'application-template.rest',
+						status: COMPONENT_STATUS_LEVELS.HEALTHY,
+						latestMessage: 'REST component healthy',
+						lastChecked: { workers: { 0: 2000 } }
+					}]
+				]);
+
+				const result = await registry.getAggregatedStatusFor('application-template', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.HEALTHY);
+				assert.equal(result.message, 'All components loaded successfully');
+				assert.equal(result.details, undefined);
+				assert.deepEqual(result.lastChecked, { workers: { 0: 1000 } });
+			});
+
+			it('should return unknown status when component not found', async function() {
+				const consolidatedStatuses = new Map([
+					['other-component', {
+						componentName: 'other-component',
+						status: COMPONENT_STATUS_LEVELS.HEALTHY,
+						latestMessage: 'Other component healthy',
+						lastChecked: { workers: { 0: 1000 } }
+					}]
+				]);
+
+				const result = await registry.getAggregatedStatusFor('missing-component', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.UNKNOWN);
+				assert.equal(result.message, 'The component has not been loaded yet (may need a restart)');
+				assert.deepEqual(result.lastChecked, { workers: {} });
+			});
+		});
+
+		describe('status priority and aggregation logic', function() {
+			it('should prioritize error over other statuses', async function() {
+				const consolidatedStatuses = new Map([
+					['app.component1', {
+						componentName: 'app.component1',
+						status: COMPONENT_STATUS_LEVELS.HEALTHY,
+						latestMessage: 'Component 1 healthy',
+						lastChecked: { workers: { 0: 1000 } }
+					}],
+					['app.component2', {
+						componentName: 'app.component2',
+						status: COMPONENT_STATUS_LEVELS.ERROR,
+						latestMessage: 'Component 2 failed',
+						lastChecked: { workers: { 0: 2000 } }
+					}],
+					['app.component3', {
+						componentName: 'app.component3',
+						status: COMPONENT_STATUS_LEVELS.LOADING,
+						latestMessage: 'Component 3 loading',
+						lastChecked: { workers: { 0: 3000 } }
+					}]
+				]);
+
+				const result = await registry.getAggregatedStatusFor('app', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.ERROR);
+				assert.ok(result.message.includes('app.component2: Component 2 failed'));
+				assert.ok(result.details);
+				assert.equal(result.details['app.component2'].status, COMPONENT_STATUS_LEVELS.ERROR);
+			});
+
+			it('should prioritize loading over healthy statuses', async function() {
+				const consolidatedStatuses = new Map([
+					['service.api', {
+						componentName: 'service.api',
+						status: COMPONENT_STATUS_LEVELS.HEALTHY,
+						latestMessage: 'API healthy',
+						lastChecked: { workers: { 0: 1000 } }
+					}],
+					['service.database', {
+						componentName: 'service.database',
+						status: COMPONENT_STATUS_LEVELS.LOADING,
+						latestMessage: 'Database connecting',
+						lastChecked: { workers: { 0: 2000 } }
+					}]
+				]);
+
+				const result = await registry.getAggregatedStatusFor('service', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.LOADING);
+				assert.ok(result.message.includes('service.database: Database connecting'));
+				assert.ok(result.details);
+				assert.equal(result.details['service.database'].status, COMPONENT_STATUS_LEVELS.LOADING);
+			});
+
+			it('should return healthy when all components healthy', async function() {
+				const consolidatedStatuses = new Map([
+					['webapp.frontend', {
+						componentName: 'webapp.frontend',
+						status: COMPONENT_STATUS_LEVELS.HEALTHY,
+						latestMessage: 'Frontend ready',
+						lastChecked: { workers: { 0: 1000 } }
+					}],
+					['webapp.backend', {
+						componentName: 'webapp.backend',
+						status: COMPONENT_STATUS_LEVELS.HEALTHY,
+						latestMessage: 'Backend ready',
+						lastChecked: { workers: { 0: 2000 } }
+					}]
+				]);
+
+				const result = await registry.getAggregatedStatusFor('webapp', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.HEALTHY);
+				assert.equal(result.message, 'All components loaded successfully');
+				assert.equal(result.details, undefined);
+			});
+
+			it('should handle mixed status scenarios correctly', async function() {
+				const consolidatedStatuses = new Map([
+					['mixed', {
+						componentName: 'mixed',
+						status: COMPONENT_STATUS_LEVELS.HEALTHY,
+						latestMessage: 'Main component healthy',
+						lastChecked: { workers: { 0: 1000 } }
+					}],
+					['mixed.sub1', {
+						componentName: 'mixed.sub1',
+						status: COMPONENT_STATUS_LEVELS.ERROR,
+						latestMessage: 'Sub component 1 failed',
+						lastChecked: { workers: { 0: 2000 } }
+					}],
+					['mixed.sub2', {
+						componentName: 'mixed.sub2',
+						status: COMPONENT_STATUS_LEVELS.LOADING,
+						latestMessage: 'Sub component 2 loading',
+						lastChecked: { workers: { 0: 3000 } }
+					}],
+					['mixed.sub3', {
+						componentName: 'mixed.sub3',
+						status: COMPONENT_STATUS_LEVELS.HEALTHY,
+						latestMessage: 'Sub component 3 healthy',
+						lastChecked: { workers: { 0: 4000 } }
+					}]
+				]);
+
+				const result = await registry.getAggregatedStatusFor('mixed', consolidatedStatuses);
+
+				// Error should take priority
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.ERROR);
+
+				// Message should include both error and loading components
+				assert.ok(result.message.includes('mixed.sub1: Sub component 1 failed'));
+				assert.ok(result.message.includes('mixed.sub2: Sub component 2 loading'));
+
+				// Details should include non-healthy components
+				assert.ok(result.details);
+				assert.equal(result.details['mixed.sub1'].status, COMPONENT_STATUS_LEVELS.ERROR);
+				assert.equal(result.details['mixed.sub2'].status, COMPONENT_STATUS_LEVELS.LOADING);
+				assert.equal(result.details['mixed.sub3'], undefined); // Healthy component not in details
+			});
+		});
+
+		describe('details and message generation', function() {
+			it('should include details when components have issues', async function() {
+				const consolidatedStatuses = new Map([
+					['app.good', {
+						componentName: 'app.good',
+						status: COMPONENT_STATUS_LEVELS.HEALTHY,
+						latestMessage: 'Working fine',
+						lastChecked: { workers: { 0: 1000 } }
+					}],
+					['app.bad', {
+						componentName: 'app.bad',
+						status: COMPONENT_STATUS_LEVELS.ERROR,
+						latestMessage: 'Database connection failed',
+						lastChecked: { workers: { 0: 2000 } }
+					}]
+				]);
+
+				const result = await registry.getAggregatedStatusFor('app', consolidatedStatuses);
+
+				assert.ok(result.details);
+				assert.equal(Object.keys(result.details).length, 1);
+				assert.equal(result.details['app.bad'].status, COMPONENT_STATUS_LEVELS.ERROR);
+				assert.equal(result.details['app.bad'].message, 'Database connection failed');
+				assert.equal(result.details['app.good'], undefined); // Healthy components not included
+			});
+
+			it('should not include details when all components healthy', async function() {
+				const consolidatedStatuses = new Map([
+					['service.web', {
+						componentName: 'service.web',
+						status: COMPONENT_STATUS_LEVELS.HEALTHY,
+						latestMessage: 'Web server ready',
+						lastChecked: { workers: { 0: 1000 } }
+					}],
+					['service.api', {
+						componentName: 'service.api',
+						status: COMPONENT_STATUS_LEVELS.HEALTHY,
+						latestMessage: 'API ready',
+						lastChecked: { workers: { 0: 2000 } }
+					}]
+				]);
+
+				const result = await registry.getAggregatedStatusFor('service', consolidatedStatuses);
+
+				assert.equal(result.details, undefined);
+				assert.equal(result.message, 'All components loaded successfully');
+			});
+
+			it('should generate descriptive messages for problem components', async function() {
+				const consolidatedStatuses = new Map([
+					['system.auth', {
+						componentName: 'system.auth',
+						status: COMPONENT_STATUS_LEVELS.ERROR,
+						latestMessage: 'Authentication server timeout',
+						lastChecked: { workers: { 0: 1000 } }
+					}],
+					['system.cache', {
+						componentName: 'system.cache',
+						status: COMPONENT_STATUS_LEVELS.LOADING,
+						latestMessage: 'Redis connecting',
+						lastChecked: { workers: { 0: 2000 } }
+					}]
+				]);
+
+				const result = await registry.getAggregatedStatusFor('system', consolidatedStatuses);
+
+				// Message should include both components with their specific messages
+				const expectedMessage = 'system.auth: Authentication server timeout; system.cache: Redis connecting';
+				assert.equal(result.message, expectedMessage);
+			});
+
+			it('should format component keys correctly in messages', async function() {
+				const consolidatedStatuses = new Map([
+					['my-app.long-component-name', {
+						componentName: 'my-app.long-component-name',
+						status: COMPONENT_STATUS_LEVELS.ERROR,
+						latestMessage: 'Component failed initialization',
+						lastChecked: { workers: { 0: 1000 } }
+					}]
+				]);
+
+				const result = await registry.getAggregatedStatusFor('my-app', consolidatedStatuses);
+
+				assert.ok(result.message.includes('my-app.long-component-name: Component failed initialization'));
+			});
+		});
+
+		describe('edge cases and error handling', function() {
+			it('should handle empty consolidated statuses gracefully', async function() {
+				const consolidatedStatuses = new Map();
+
+				const result = await registry.getAggregatedStatusFor('any-component', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.UNKNOWN);
+				assert.equal(result.message, 'The component has not been loaded yet (may need a restart)');
+				assert.deepEqual(result.lastChecked, { workers: {} });
+			});
+
+			it('should handle null/undefined consolidated statuses', async function() {
+				// Mock the static method to avoid cross-thread communication in tests
+				const originalMethod = ComponentStatusRegistry.getAggregatedFromAllThreads;
+				ComponentStatusRegistry.getAggregatedFromAllThreads = async () => new Map();
+
+				try {
+					// Test with null
+					let result = await registry.getAggregatedStatusFor('test-component', null);
+					assert.equal(result.status, COMPONENT_STATUS_LEVELS.UNKNOWN);
+
+					// Test with undefined
+					result = await registry.getAggregatedStatusFor('test-component', undefined);
+					assert.equal(result.status, COMPONENT_STATUS_LEVELS.UNKNOWN);
+				} finally {
+					// Restore original method
+					ComponentStatusRegistry.getAggregatedFromAllThreads = originalMethod;
+				}
+			});
+
+			it('should work with pre-provided consolidated statuses', async function() {
+				const consolidatedStatuses = new Map([
+					['provided.test', {
+						componentName: 'provided.test',
+						status: COMPONENT_STATUS_LEVELS.HEALTHY,
+						latestMessage: 'Pre-provided status',
+						lastChecked: { workers: { 0: 1000 } }
+					}]
+				]);
+
+				const result = await registry.getAggregatedStatusFor('provided', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.HEALTHY);
+				assert.equal(result.message, 'All components loaded successfully');
+			});
+
+			it('should fetch consolidated statuses when not provided', async function() {
+				// This test ensures the method works without pre-provided statuses
+				// It will attempt to fetch from ComponentStatusRegistry.getAggregatedFromAllThreads
+				registry.setStatus('test-fetch', COMPONENT_STATUS_LEVELS.HEALTHY, 'Local component');
+
+				// Mock the static method to return our local status
+				const originalMethod = ComponentStatusRegistry.getAggregatedFromAllThreads;
+				ComponentStatusRegistry.getAggregatedFromAllThreads = async () => {
+					return new Map([
+						['test-fetch', {
+							componentName: 'test-fetch',
+							status: COMPONENT_STATUS_LEVELS.HEALTHY,
+							latestMessage: 'Fetched status',
+							lastChecked: { workers: { 0: 1000 } }
+						}]
+					]);
+				};
+
+				try {
+					const result = await registry.getAggregatedStatusFor('test-fetch'); // No consolidatedStatuses provided
+
+					assert.equal(result.status, COMPONENT_STATUS_LEVELS.HEALTHY);
+					assert.equal(result.message, 'All components loaded successfully');
+				} finally {
+					// Restore original method
+					ComponentStatusRegistry.getAggregatedFromAllThreads = originalMethod;
+				}
+			});
+
+			it('should handle missing latestMessage gracefully', async function() {
+				const consolidatedStatuses = new Map([
+					['no-msg.component', {
+						componentName: 'no-msg.component',
+						status: COMPONENT_STATUS_LEVELS.ERROR,
+						// No latestMessage property
+						lastChecked: { workers: { 0: 1000 } }
+					}]
+				]);
+
+				const result = await registry.getAggregatedStatusFor('no-msg', consolidatedStatuses);
+
+				assert.equal(result.status, COMPONENT_STATUS_LEVELS.ERROR);
+				assert.ok(result.message.includes('no-msg.component: error')); // Should fallback to status
+			});
 		});
 	});
 });

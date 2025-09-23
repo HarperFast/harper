@@ -6,7 +6,7 @@
  */
 
 import { ComponentStatus } from './ComponentStatus.ts';
-import { type ComponentStatusLevel, COMPONENT_STATUS_LEVELS, type AggregatedComponentStatus } from './types.ts';
+import { type ComponentStatusLevel, COMPONENT_STATUS_LEVELS, type AggregatedComponentStatus, type ComponentApplicationStatus } from './types.ts';
 import { crossThreadCollector, StatusAggregator } from './crossThread.ts';
 import { ComponentStatusOperationError } from './errors.ts';
 
@@ -160,5 +160,87 @@ export class ComponentStatusRegistry {
 	): Promise<Map<string, AggregatedComponentStatus>> {
 		const allStatuses = await crossThreadCollector.collect(registry);
 		return StatusAggregator.aggregate(allStatuses);
+	}
+
+	/**
+	 * Get aggregated status for a specific component and all its sub-components
+	 * This method handles both exact matches and sub-component aggregation
+	 *
+	 * @param componentName - The component name to look up (e.g., "application-template", "http")
+	 * @param consolidatedStatuses - Pre-fetched consolidated statuses from all threads (optional, will fetch if not provided)
+	 * @returns Aggregated status information for the component
+	 */
+	public async getAggregatedStatusFor(
+		componentName: string,
+		consolidatedStatuses?: Map<string, AggregatedComponentStatus>
+	): Promise<ComponentApplicationStatus> {
+		// Get consolidated statuses from all threads if not provided
+		if (!consolidatedStatuses) {
+			consolidatedStatuses = await ComponentStatusRegistry.getAggregatedFromAllThreads(this);
+		}
+
+		// Collect all statuses related to this component
+		const allStatuses = [];
+		const componentPrefix = componentName + '.';
+
+		// Add exact match if exists
+		const exactMatch = consolidatedStatuses.get(componentName);
+		if (exactMatch) {
+			allStatuses.push({ key: componentName, ...exactMatch });
+		}
+
+		// Add sub-component statuses
+		for (const [statusKey, statusValue] of consolidatedStatuses) {
+			if (statusKey.startsWith(componentPrefix)) {
+				allStatuses.push({ key: statusKey, ...statusValue });
+			}
+		}
+
+		if (allStatuses.length === 0) {
+			// No status found at all
+			return {
+				status: COMPONENT_STATUS_LEVELS.UNKNOWN,
+				message: 'The component has not been loaded yet (may need a restart)',
+				lastChecked: { workers: {} },
+			};
+		}
+
+		// Aggregate all statuses
+		const hasErrors = allStatuses.some(s => s.status === COMPONENT_STATUS_LEVELS.ERROR);
+		const hasLoading = allStatuses.some(s => s.status === COMPONENT_STATUS_LEVELS.LOADING);
+
+		const overallStatus = hasErrors
+			? COMPONENT_STATUS_LEVELS.ERROR
+			: hasLoading
+			? COMPONENT_STATUS_LEVELS.LOADING
+			: COMPONENT_STATUS_LEVELS.HEALTHY;
+
+		// Show details if anything is not healthy
+		let overallMessage = 'All components loaded successfully';
+		const details: Record<string, { status: ComponentStatusLevel; message?: string }> = {};
+
+		if (hasErrors || hasLoading) {
+			const problemStatuses = allStatuses.filter(s =>
+				s.status === COMPONENT_STATUS_LEVELS.ERROR || s.status === COMPONENT_STATUS_LEVELS.LOADING
+			);
+			overallMessage = problemStatuses.map(s => `${s.key}: ${s.latestMessage || s.status}`).join('; ');
+
+			// Include details for debugging
+			for (const status of allStatuses) {
+				if (status.status !== COMPONENT_STATUS_LEVELS.HEALTHY) {
+					details[status.key] = {
+						status: status.status,
+						message: status.latestMessage
+					};
+				}
+			}
+		}
+
+		return {
+			status: overallStatus,
+			message: overallMessage,
+			...(Object.keys(details).length > 0 && { details }),
+			lastChecked: allStatuses[0]?.lastChecked || { workers: {} },
+		};
 	}
 }

@@ -506,17 +506,16 @@ async function getComponents() {
 	}
 
 	for (const component of results.entries) {
-		// Look for this component in the consolidated statuses
-		const componentStatus = consolidatedStatuses?.get(component.name);
-
-		if (componentStatus) {
-			// Component found - use consolidated status (deep copy to avoid mutation)
-			component.status = structuredClone(componentStatus);
-		} else {
-			// Component not found in any worker or consolidatedStatuses is undefined
+		try {
+			component.status = await statusInternal.componentStatusRegistry.getAggregatedStatusFor(
+				component.name,
+				consolidatedStatuses
+			);
+		} catch (error) {
+			log.debug(`Failed to get aggregated status for component ${component.name}: ${error.message}`);
 			component.status = {
 				status: 'unknown',
-				message: 'The component has not been loaded yet (may need a restart)',
+				message: 'Failed to retrieve component status',
 				lastChecked: { workers: {} },
 			};
 		}
