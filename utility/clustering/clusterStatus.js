@@ -21,8 +21,8 @@ const {
 	SENDING_TIME_POSITION,
 	RECEIVING_STATUS_POSITION,
 	RECEIVING_STATUS_RECEIVING,
+	BACK_PRESSURE_RATIO_POSITION,
 } = require('../../server/replication/replicationConnection.ts');
-const { BACK_PRESSURE_RATIO_POSITION } = require('../../server/replication/replicationConnection');
 
 const clusteringEnabled = envMgr.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_ENABLED);
 const thisNodeName = envMgr.get(hdbTerms.CONFIG_PARAMS.CLUSTERING_NODENAME);
