@@ -51,9 +51,13 @@ import * as usageLicensing from '../../resources/usageLicensing.ts';
 import * as regDeprecated from '../../resources/registrationDeprecated.ts';
 
 const pSearchSearch = util.promisify(search.search);
+let pEvaluateSql: (sql: string) => Promise<any>;
 function evaluateSQL(command) {
-	const sql = require('../../sqlTranslator/index.js');
-	return util.promisify(sql.evaluateSQL)(command);
+	if (!pEvaluateSql) {
+		const sql = require('../../sqlTranslator/index.js');
+		pEvaluateSql = util.promisify(sql.evaluateSQL);
+	}
+	return pEvaluateSql(command);
 }
 
 const GLOBAL_SCHEMA_UPDATE_OPERATIONS_ENUM = {
