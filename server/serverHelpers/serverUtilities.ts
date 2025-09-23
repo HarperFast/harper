@@ -51,7 +51,7 @@ import * as usageLicensing from '../../resources/usageLicensing.ts';
 import * as regDeprecated from '../../resources/registrationDeprecated.ts';
 
 const pSearchSearch = util.promisify(search.search);
-function pSqlEvaluateSql(command) {
+function evaluateSQL(command) {
 	const sql = require('../../sqlTranslator/index.js');
 	return util.promisify(sql.evaluateSQL)(command);
 }
@@ -310,7 +310,7 @@ function initializeOperationFunctionMap(): Map<OperationFunctionName, OperationF
 	opFuncMap.set(terms.OPERATIONS_ENUM.SEARCH_BY_ID, new OperationFunctionObject(search.searchByHash));
 	opFuncMap.set(terms.OPERATIONS_ENUM.SEARCH_BY_VALUE, new OperationFunctionObject(search.searchByValue));
 	opFuncMap.set(terms.OPERATIONS_ENUM.SEARCH, new OperationFunctionObject(pSearchSearch));
-	opFuncMap.set(terms.OPERATIONS_ENUM.SQL, new OperationFunctionObject(pSqlEvaluateSql));
+	opFuncMap.set(terms.OPERATIONS_ENUM.SQL, new OperationFunctionObject(evaluateSQL));
 	opFuncMap.set(terms.OPERATIONS_ENUM.CSV_DATA_LOAD, new OperationFunctionObject(executeJob, bulkLoad.csvDataLoad));
 	opFuncMap.set(terms.OPERATIONS_ENUM.CSV_FILE_LOAD, new OperationFunctionObject(executeJob, bulkLoad.csvFileLoad));
 	opFuncMap.set(terms.OPERATIONS_ENUM.CSV_URL_LOAD, new OperationFunctionObject(executeJob, bulkLoad.csvURLLoad));

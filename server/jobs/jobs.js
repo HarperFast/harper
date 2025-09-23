@@ -30,6 +30,7 @@ const pSearchByValue = search.searchByValue;
 const pSearchSearchByHash = search.searchByHash;
 const pInsert = insert.insert;
 const pInsertUpdate = insert.update;
+let pSqlEvaluate;
 
 module.exports = {
 	addJob,
@@ -238,8 +239,10 @@ async function getJobsInDateRange(jsonBody) {
 	let sqlSearchObj = new SQL_Search_Object(jobSearchSql, jsonBody.hdb_user);
 
 	try {
-		const hdbSql = require('../../sqlTranslator');
-		const pSqlEvaluate = promisify(hdbSql.evaluateSQL);
+		if (!pSqlEvaluate) {
+			const hdbSql = require('../../sqlTranslator');
+			pSqlEvaluate = promisify(hdbSql.evaluateSQL);
+		}
 		return await pSqlEvaluate(sqlSearchObj);
 	} catch (e) {
 		log.error(
