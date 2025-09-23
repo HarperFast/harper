@@ -32,8 +32,8 @@ const TRUE_COMPARE_VAL = 'TRUE';
 const { CONFIG_PARAMS } = terms;
 let server;
 
-export {operationsServer as hdbServer};
-export {operationsServer as start};
+export { operationsServer as hdbServer };
+export { operationsServer as start };
 
 /**
  * Builds a HarperDB server.
@@ -195,6 +195,7 @@ function buildServer(isHttps: boolean): FastifyInstance {
 
 interface HttpServerOptions extends FastifyServerOptions {
 	https?: boolean;
+	http2?: boolean;
 }
 
 /**
@@ -209,7 +210,7 @@ function getServerOptions(isHttps: boolean): HttpServerOptions {
 		keepAliveTimeout: keep_alive_timeout,
 		forceCloseConnections: true,
 		return503OnClosing: false,
-		// http2: isHttps, // for now we are not enabling HTTP/2 since it seems to show slower performance
+		http2: env.get(CONFIG_PARAMS.OPERATIONSAPI_NETWORK_HTTP2),
 		https: isHttps /* && {
 			allowHTTP1: true,
 		},*/,
