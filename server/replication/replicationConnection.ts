@@ -1294,7 +1294,7 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 									})) {
 										if (closed) return;
 										const auditRecord = readAuditEntry(auditEntry);
-										logger.debug?.('sending audit record', new Date(key));
+										logger.debug?.('sending audit record', key, auditRecord.recordId);
 										getSharedStatus()[SENDING_TIME_POSITION] = key;
 										currentSequenceId = key;
 										await sendAuditRecord(auditRecord, key);
@@ -1383,7 +1383,7 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 				}
 				beginTxn = false;
 				// TODO: Once it is committed, also record the localtime in the table with symbol metadata, so we can resume from that point
-				logger.trace?.(
+				logger.debug?.(
 					connectionId,
 					'received replication message',
 					auditRecord.type,
