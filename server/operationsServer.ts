@@ -1,5 +1,5 @@
 import cluster from 'cluster';
-import { Resources } from '../resources/Resources.ts';
+
 import env from '../utility/environment/environmentManager.js';
 env.initSync();
 import * as terms from '../utility/hdbTerms.ts';
@@ -17,6 +17,7 @@ import userSchema from '../security/user.js';
 import { server as serverRegistration, type ServerOptions } from '../server/Server.ts';
 import {
 	authHandler,
+	authAndEnsureUserOnRequest,
 	handlePostRequest,
 	serverErrorHandler,
 	reqBodyValidationHandler,
@@ -25,6 +26,9 @@ import { registerContentHandlers } from './serverHelpers/contentTypes.ts';
 import type { OperationFunctionName } from './serverHelpers/serverUtilities.ts';
 import type { ParsedSqlObject } from '../sqlTranslator/index.js';
 import type { User } from '../resources/ResourceInterface.ts';
+import { generateJsonApi } from '../resources/openApi.ts';
+import { Resources } from '../resources/Resources.ts';
+import { ServerError } from '../utility/errors/hdbError.js';
 
 const DEFAULT_HEADERS_TIMEOUT = 60000;
 const REQ_MAX_BODY_SIZE = 1024 * 1024 * 1024; //this is 1GB in bytes
@@ -166,6 +170,10 @@ function buildServer(isHttps: boolean, resources: Resources): FastifyInstance {
 		app.get('/', (req, res) => res.sendFile('running.html'));
 	}
 
+
+	// Describe the APIs.
+	app.get('/api/openapi/rest', { preValidation: [authAndEnsureUserOnRequest] }, restOpenAPIHandler(resources));
+
 	// Add the top-level POST handler.
 	app.post<{ Body: OperationRequestBody }, { isOperation?: boolean }>(
 		'/',
@@ -179,6 +187,36 @@ function buildServer(isHttps: boolean, resources: Resources): FastifyInstance {
 	harperLogger.debug(`HarperDB process starting up ${isHttps ? 'HTTPS' : 'HTTP'} server listener.`);
 
 	return app;
+}
+
+function restOpenAPIHandler(resources: Resources) {
+	const httpPort = env.get(terms.CONFIG_PARAMS.HTTP_PORT);
+	const httpSecurePort = env.get(terms.CONFIG_PARAMS.HTTP_SECUREPORT);
+	return (req: FastifyRequest & { hdb_user?: { role?: { permission?: { super_user: boolean } } } }) => {
+		if (req.hdb_user?.role?.permission?.super_user) {
+			const httpURL = new URL(`${req.protocol}://${req.hostname}`);
+			if (req.hostname.toLowerCase() === 'localhost' || req.hostname.match(/[\d.]+/)) {
+				// Only use ports when running against localhost, or an ip address.
+				if (httpSecurePort) {
+					httpURL.port = httpSecurePort;
+					httpURL.protocol = 'https:';
+				} else if (httpPort) {
+					httpURL.port = httpPort;
+					httpURL.protocol = 'http:';
+				}
+			} else {
+				// Otherwise, assume that port forwarding is happening, and possibly SSL termination.
+				httpURL.port = undefined;
+				httpURL.protocol = 'https:';
+			}
+			return generateJsonApi(resources, httpURL.toString());
+		} else {
+			harperLogger.warn(
+				`{"ip":"${req.socket.remoteAddress}", "error":"attempt to access /api/openapi/rest without being super_user"`
+			);
+			return new ServerError(`Forbidden`, 403);
+		}
+	};
 }
 
 function handler(req: FastifyRequest<{ Body?: OperationRequestBody }>, reply: FastifyReply) {

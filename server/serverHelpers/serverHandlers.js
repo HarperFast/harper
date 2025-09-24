@@ -93,6 +93,20 @@ function authHandler(req, resp, done) {
 	}
 }
 
+function authAndEnsureUserOnRequest(req, resp, done) {
+	pAuthorize(req, resp)
+		.then((userData) => {
+			req.hdb_user = userData;
+			done();
+		})
+		.catch((err) => {
+			harperLogger.warn(err);
+			harperLogger.warn(`{"ip":"${req.socket.remoteAddress}", "error":"${err.stack}"`);
+			let errMsg = typeof err === 'string' ? { error: err } : { error: err.message };
+			done(handleHDBError(err, errMsg, hdbErrors.HTTP_STATUS_CODES.UNAUTHORIZED), null);
+		});
+}
+
 async function handlePostRequest(req, res, bypassAuth = false) {
 	let operation_function;
 
@@ -122,6 +136,7 @@ async function handlePostRequest(req, res, bypassAuth = false) {
 
 module.exports = {
 	authHandler,
+	authAndEnsureUserOnRequest,
 	handlePostRequest,
 	handleServerUncaughtException,
 	serverErrorHandler,
