@@ -82,6 +82,9 @@ export class Request {
 	get host() {
 		return this._nodeRequest.authority || this._nodeRequest.headers.host;
 	}
+	get hostname() {
+		return this._nodeRequest.headers.host;
+	}
 	get httpVersion() {
 		return this._nodeRequest.httpVersion;
 	}
@@ -114,7 +117,7 @@ class RequestBody {
 
 class Headers {
 	private asObject: Record<string, string | string[]>;
-	
+
 	constructor(asObject: Record<string, string | string[]>) {
 		this.asObject = asObject;
 	}

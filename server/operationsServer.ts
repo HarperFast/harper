@@ -1,9 +1,10 @@
 import cluster from 'cluster';
+import { Resources } from '../resources/Resources.ts';
 import env from '../utility/environment/environmentManager.js';
 env.initSync();
 import * as terms from '../utility/hdbTerms.ts';
 import harperLogger from '../utility/logging/harper_logger.js';
-import fastify, { FastifyInstance, type FastifyServerOptions } from 'fastify';
+import fastify, { FastifyInstance, FastifyReply, FastifyRequest, FastifyServerOptions } from 'fastify';
 import fastifyCors, { type FastifyCorsOptions } from '@fastify/cors';
 import fastifyCompress from '@fastify/compress';
 import fastifyStatic from '@fastify/static';
@@ -38,7 +39,7 @@ export { operationsServer as start };
 /**
  * Builds a HarperDB server.
  */
-async function operationsServer(options: ServerOptions) {
+async function operationsServer(options: ServerOptions & { resources?: Resources }) {
 	try {
 		harperLogger.debug('In Fastify server' + process.cwd());
 		harperLogger.debug(`Running with NODE_ENV set as: ${process.env.NODE_ENV}`);
@@ -52,7 +53,7 @@ async function operationsServer(options: ServerOptions) {
 		const isHttps = options.securePort > 0;
 
 		//generate a Fastify server instance
-		server = buildServer(isHttps);
+		server = buildServer(isHttps, options.resources);
 
 		//make sure the process waits for the server to be fully instantiated before moving forward
 		await server.ready();
@@ -94,19 +95,22 @@ interface BaseOperationRequestBody {
 	operation: OperationFunctionName;
 	bypassAuth: boolean;
 	hdb_user?: User;
+	hdbAuthHeader?: unknown;
+	bypass_auth?: boolean;
 	password?: string;
 	payload?: string;
 	sql?: string;
 	parsedSqlObject?: ParsedSqlObject;
+	[key: string]: unknown;
 }
 
 type SearchOperation = BaseOperationRequestBody;
 
 interface SearchOperationRequestBody {
-	searchOperation: SearchOperation;
+	search_operation: SearchOperation;
 }
 
-export type OperationRequestBody = BaseOperationRequestBody & SearchOperationRequestBody;
+export type OperationRequestBody = BaseOperationRequestBody & Partial<SearchOperationRequestBody>;
 
 export interface OperationRequest {
 	body: OperationRequestBody;
@@ -117,28 +121,19 @@ export interface OperationResult {
 }
 
 /**
- * This method configures and returns a Fastify server - for either HTTP or HTTPS  - based on the provided config settings
+ * This method configures and returns a Fastify server - for either HTTP or HTTPS - based on the provided config settings
  */
-function buildServer(isHttps: boolean): FastifyInstance {
+function buildServer(isHttps: boolean, resources: Resources): FastifyInstance {
 	harperLogger.debug(`HarperDB process starting to build ${isHttps ? 'HTTPS' : 'HTTP'} server.`);
 	const serverOpts = getServerOptions(isHttps);
-	/*
-	TODO: Eventually we may want to directly forward requests to fastify rather than having it create a
-	(pseudo) server.
-	let requestHandler;
-	serverOpts.serverFactory = (handler) => {
-		requestHandler = (request) => {
-			return handler(request[nodeRequestKey], request[nodeResponseKey]);
-		};
-		return { on() {} };
-	};*/
+
 	const app = fastify(serverOpts);
 
-	//Fastify does not set this property in the initial app construction
+	// Fastify does not set this property in the initial app construction
 	app.server.headersTimeout = getHeaderTimeoutConfig();
 
-	// set top-level error handler for server - all errors caught/thrown within the API will bubble up to this
-	// handler so they can be handled in a coordinated way
+	// Set a top-level error handler for the server - all errors caught/thrown within the API will bubble up to this
+	// handler so that they can be handled in a coordinated way
 	app.setErrorHandler(serverErrorHandler);
 
 	const corsOptions = getCORSOpts();
@@ -157,40 +152,43 @@ function buildServer(isHttps: boolean): FastifyInstance {
 
 	// This handles all get requests for the studio
 	app.register(fastifyCompress);
-	app.register(fastifyStatic, { root: guidePath.join(PACKAGE_ROOT, 'studio/web') });
 	registerContentHandlers(app);
 
-	const studioOn = env.get(terms.HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON);
-	app.get('/', function (req, res) {
-		//if the local studio is enabled we will serve it, otherwise return 404
-		if (!commonUtils.isEmpty(studioOn) && studioOn.toString().toLowerCase() === 'true') {
-			return res.sendFile('index.html');
-		}
-		return res.sendFile('running.html');
-	});
+	// Add a simple health check
+	app.get('/health', () => 'HarperDB is running.');
 
-	// This handles all POST requests
-	app.post<{ Body: OperationRequestBody }>(
+	// Add a top-level GET handler for browsers.
+	app.register(fastifyStatic, { root: guidePath.join(PACKAGE_ROOT, 'studio/web') });
+	const studioOn = env.get(terms.HDB_SETTINGS_NAMES.LOCAL_STUDIO_ON);
+	if (!commonUtils.isEmpty(studioOn) && studioOn.toString().toLowerCase() === 'true') {
+		app.get('/', (req, res) => res.sendFile('index.html'));
+	} else {
+		app.get('/', (req, res) => res.sendFile('running.html'));
+	}
+
+	// Add the top-level POST handler.
+	app.post<{ Body: OperationRequestBody }, { isOperation?: boolean }>(
 		'/',
 		{
 			preValidation: [reqBodyValidationHandler, authHandler],
 			config: { isOperation: true },
 		},
-		async function (req, res) {
-			// if the operation is a restart, we have to tell the client not to use keep alive on this connection
-			// anymore; it needs to be closed because this thread is going to be terminated
-			if (req.body?.operation?.startsWith('restart')) res.header('Connection', 'close');
-			//if no error is thrown below, the response 'data' returned from the handler will be returned with 200/OK code
-			return handlePostRequest(req, res);
-		}
+		handler
 	);
-	app.get('/health', () => {
-		return 'HarperDB is running.';
-	});
 
 	harperLogger.debug(`HarperDB process starting up ${isHttps ? 'HTTPS' : 'HTTP'} server listener.`);
 
 	return app;
+}
+
+function handler(req: FastifyRequest<{ Body?: OperationRequestBody }>, reply: FastifyReply) {
+	// if the operation is a restart, we have to tell the client not to use keep alive on this connection
+	// anymore; it needs to be closed because this thread is going to be terminated
+	if (req.body?.operation?.startsWith('restart')) {
+		reply.header('Connection', 'close');
+	}
+	//if no error is thrown below, the response 'data' returned from the handler will be returned with 200/OK code
+	return handlePostRequest(req, reply);
 }
 
 interface HttpServerOptions extends FastifyServerOptions {

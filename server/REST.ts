@@ -104,7 +104,7 @@ async function http(request: Context & Request, nextHandler) {
 
 			if (url === OPENAPI_DOMAIN && method === 'GET') {
 				if (request?.user?.role?.permission?.super_user) {
-					return generateJsonApi(resources);
+					return generateJsonApi(resources, `${request.protocol}://${request.hostname}`);
 				} else {
 					throw new ServerError(`Forbidden`, 403);
 				}
@@ -238,7 +238,7 @@ let resources: Resources;
 let addedMetrics;
 let connectionCount = 0;
 
-export function start(options: ServerOptions & { path: string; port: number; server: any; resources: any }) {
+export function start(options: ServerOptions & { path: string; port: number; server: any; resources: Resources }) {
 	httpOptions = options;
 	if (options.includeExpensiveRecordCountEstimates) {
 		// If they really want to enable expensive record count estimates
