@@ -35,7 +35,7 @@ describe('CRUD operations with the Resource API', () => {
 				{ name: 'relatedId', indexed: true },
 				{ name: 'notIndexed' },
 				relationship_attribute,
-				{ name: 'computed', computed: true, indexed: true },
+				{ name: 'computed', enumerable: true, computed: true, indexed: true },
 				{
 					name: 'nestedData',
 					properties: [
@@ -169,6 +169,8 @@ describe('CRUD operations with the Resource API', () => {
 				assert(Object.isFrozen(record));
 				assert(Object.isFrozen(record.nestedData));
 				assert(Object.isFrozen(record.related));
+				const jsonCopy = JSON.parse(JSON.stringify(record));
+				assert(Object.keys(jsonCopy).includes('computed')); // verify that this computed attribute was marked as enumerable
 				assert.equal(record.name, 'One');
 				for await (let record of CRUDTable.search([])) {
 					assert(Object.isFrozen(record));

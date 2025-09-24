@@ -15,7 +15,7 @@ type FourProp @table(audit: "1d", replicated: false) @export {
 	title: String
 	birthday: Date @indexed
 	ageInMonths: Int @computed @indexed
-	nameTitle: Int @computed(from: "name + ' ' + title")
+	nameTitle: Int @computed(from: "name + ' ' + title") @enumerable
 }
 type Related @table @export(rest: true, mqtt: false) {
 	id: ID @primaryKey

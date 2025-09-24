@@ -253,7 +253,8 @@ describe('test REST calls', () => {
 			assert.equal(response.data.length, 5);
 			assert.equal(response.data[4].age, 24);
 			assert.equal(response.data[4].ageInMonths, undefined); // computed property shouldn't be returned by default
-			assert.equal(response.data[4].nameTitle, undefined); // computed property shouldn't be returned by default
+			assert.equal(response.data[4].nameTitle, 'name4 title4'); // enumerable computed property should be returned by
+			// default
 		});
 		it('do query by numeric computed index and return computed property', async () => {
 			let response = await axios(
@@ -382,6 +383,7 @@ describe('test REST calls', () => {
 		assert.equal(response.status, 200);
 		assert(response.headers['server-timing'].includes('miss'));
 		assert.equal(response.data.name, 'name3');
+		assert.equal(response.data.nameTitle, 'name3 title3'); // should include enumerable
 		response = await axios('http://localhost:9926/SimpleCache/3');
 		assert.equal(response.status, 200);
 		assert(!response.headers['server-timing'].includes('miss'));

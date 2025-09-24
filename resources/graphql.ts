@@ -19,6 +19,7 @@ if (server.knownGraphQLDirectives) {
 		'updatedTime',
 		'expiresAt',
 		'allow',
+		'enumerable',
 	];
 }
 /**
@@ -144,6 +145,8 @@ export function start({ ensureTable }) {
 								property.assignUpdatedTime = true;
 							} else if (directiveName === 'expiresAt') {
 								property.expiresAt = true;
+							} else if (directiveName === 'enumerable') {
+								property.enumerable = true;
 							} else if (directiveName === 'allow') {
 								const authorizedRoles = (property.authorizedRoles = []);
 								for (const arg of directive.arguments) {

@@ -3187,7 +3187,21 @@ export function makeTable(options) {
 							return attribute.set(this, related);
 						},
 						configurable: true,
+						enumerable: attribute.enumerable,
 					});
+					if (attribute.enumerable && !primaryStore.encoder.structPrototype.toJSON) {
+						Object.defineProperty(primaryStore.encoder.structPrototype, 'toJSON', {
+							configurable: true,
+							value() {
+								const json = {};
+								for (const key in this) {
+									// copy all enumerable properties, including from prototype
+									json[key] = this[key];
+								}
+								return json;
+							},
+						});
+					}
 				}
 			}
 		}

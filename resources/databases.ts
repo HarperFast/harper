@@ -766,6 +766,7 @@ export function table<TableResourceType>(tableDefinition: TableDefinition): Tabl
 				JSON.stringify(attributeDescriptor.indexed) !== JSON.stringify(attribute.indexed) ||
 				attributeDescriptor.nullable !== attribute.nullable ||
 				attributeDescriptor.version !== attribute.version ||
+				attributeDescriptor.enumerable !== attribute.enumerable ||
 				JSON.stringify(attributeDescriptor.properties) !== JSON.stringify(attribute.properties) ||
 				JSON.stringify(attributeDescriptor.elements) !== JSON.stringify(attribute.elements);
 			if (attribute.indexed) {
