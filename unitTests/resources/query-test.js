@@ -1701,7 +1701,7 @@ describe('Querying through Resource API', () => {
 
 		before(async () => {
 			for (const record of records) {
-				QueryTable.put(record.id, record);
+				await QueryTable.put(record.id, record);
 			}
 		});
 
