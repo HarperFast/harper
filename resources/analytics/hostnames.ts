@@ -1,11 +1,13 @@
 import { table, type Table } from '../databases.ts';
 import crypto from 'crypto';
 import { isIPv6 } from 'node:net';
-import * as log from '../../utility/logging/harper_logger.js';
+import { Resource } from '../Resource.ts';
 
 export const nodeIds = new Map<string, number>();
 
-let AnalyticsHostnameTable: Table;
+type AnalyticsHostnameResource = Resource & { hostname: string };
+
+let AnalyticsHostnameTable: AnalyticsHostnameResource;
 export function getAnalyticsHostnameTable() {
 	if (!AnalyticsHostnameTable) {
 		AnalyticsHostnameTable = table({
