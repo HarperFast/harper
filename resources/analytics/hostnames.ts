@@ -1,4 +1,4 @@
-import { table, type Table } from '../databases.ts';
+import { table } from '../databases.ts';
 import crypto from 'crypto';
 import { isIPv6 } from 'node:net';
 import type { Resource } from '../Resource.ts';
