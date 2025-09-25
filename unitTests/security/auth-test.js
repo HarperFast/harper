@@ -18,7 +18,7 @@ describe('auth.ts - certificate verification integration', function() {
 		
 		// Stub certificate verification before loading auth module
 		certificateVerificationStub = sandbox.stub();
-		const certificateVerification = require('../../security/certificateVerification.ts');
+		const certificateVerification = require('../../security/certificateVerification/index.ts');
 		sandbox.stub(certificateVerification, 'verifyCertificate').callsFake(certificateVerificationStub);
 		
 		// Stub server getUser method

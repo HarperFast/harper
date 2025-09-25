@@ -12,7 +12,7 @@ import serverHandlers from '../server/itc/serverHandlers.js';
 const { user } = serverHandlers;
 import { Headers } from '../server/serverHelpers/Headers.ts';
 import { convertToMS } from '../utility/common_utils.js';
-import { verifyCertificate } from './certificateVerification.ts';
+import { verifyCertificate } from './certificateVerification/index.ts';
 import { serializeMessage } from '../server/serverHelpers/contentTypes.ts';
 const authLogger = forComponent('authentication');
 const { debug } = authLogger;

@@ -11,7 +11,7 @@ import { CONFIG_PARAMS, AUTH_AUDIT_STATUS, AUTH_AUDIT_TYPES } from '../utility/h
 import { loggerWithTag } from '../utility/logging/logger.js';
 import { forComponent as loggerForComponent } from '../utility/logging/harper_logger.js';
 import { EventEmitter } from 'events';
-import { verifyCertificate } from '../security/certificateVerification.ts';
+import { verifyCertificate } from '../security/certificateVerification/index.ts';
 const authEventLog = loggerWithTag('auth-event');
 const mqttLog = loggerForComponent('mqtt');
 

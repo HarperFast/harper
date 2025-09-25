@@ -15,7 +15,6 @@
 import * as pkijs from 'pkijs';
 import { webcrypto, X509Certificate } from 'node:crypto';
 
-
 // Ed25519/Ed448 OIDs (these are standardized object identifiers, not IP addresses)
 const ED25519_OID = '1.3.101.112' as const; // eslint-disable-line sonarjs/no-hardcoded-ip
 const ED448_OID = '1.3.101.113' as const; // eslint-disable-line sonarjs/no-hardcoded-ip
@@ -169,7 +168,8 @@ export function applyEd25519Patch(): void {
 
 					// Handle BIT STRING signature value
 					let signatureValue = signature.valueBlock.valueHexView;
-					if (signature.valueBlock.unusedBits > 0) {
+					// Check if this is a BIT STRING with unused bits
+					if ('unusedBits' in signature.valueBlock && signature.valueBlock.unusedBits > 0) {
 						signatureValue = signatureValue.slice(0, signatureValue.length - 1);
 					}
 

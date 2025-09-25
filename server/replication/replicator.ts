@@ -24,7 +24,7 @@ import { server } from '../Server.ts';
 import env from '../../utility/environment/environmentManager.js';
 import * as logger from '../../utility/logging/harper_logger.js';
 import { X509Certificate } from 'crypto';
-import { verifyCertificate } from '../../security/certificateVerification.ts';
+import { verifyCertificate } from '../../security/certificateVerification/index.ts';
 import { readFileSync } from 'fs';
 export { startOnMainThread } from './subscriptionManager.ts';
 import {
