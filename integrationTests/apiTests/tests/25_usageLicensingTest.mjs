@@ -1,4 +1,4 @@
-import { describe, it, before, beforeEach } from 'node:test';
+import { describe, it, beforeEach } from 'node:test';
 import assert from 'node:assert/strict';
 import { req } from '../utils/request.mjs';
 import * as utils from '../../../unitTests/testLicenseUtils.js';

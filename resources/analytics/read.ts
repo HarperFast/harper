@@ -2,16 +2,13 @@ import type { Metric } from './write.ts';
 import harperLogger from '../../utility/logging/harper_logger.js';
 const { forComponent } = harperLogger;
 import { getAnalyticsHostnameTable } from './hostnames.ts';
-import type { Resource } from 'harperdb';
 import type { Condition, Conditions } from '../ResourceInterface.ts';
 import { METRIC, type BuiltInMetricName } from './metadata.ts';
 
 const log = forComponent('analytics').conditional;
 
-type AnalyticsHostnameResource = Resource & { hostname: string };
-
 async function lookupHostname(nodeId: number): Promise<string> {
-	const result: AnalyticsHostnameResource = await getAnalyticsHostnameTable().get(nodeId);
+	const result = await getAnalyticsHostnameTable().get(nodeId);
 	return result.hostname;
 }
 
@@ -81,7 +78,7 @@ export async function get(
 		});
 	}
 
-	const request = { conditions };
+	const request = { conditions, allowConditionsOnDynamicAttributes: true };
 	if (select.length > 0) {
 		request['select'] = select;
 	}
