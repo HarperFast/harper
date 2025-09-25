@@ -49,6 +49,9 @@ export class RequestTarget extends URLSearchParams {
 
 	declare checkPermission?: Permission | boolean;
 
+	declare allowFullScan?: boolean;
+	declare allowConditionsOnDynamicAttributes?: boolean;
+
 	constructor(target?: string) {
 		let searchIndex: number | undefined;
 		let path: string | undefined;
