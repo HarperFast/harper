@@ -58,7 +58,7 @@ import { Blob, deleteBlobsInObject, findBlobsInObject, startPreCommitBlobsForRec
 import { onStorageReclamation } from '../server/storageReclamation.ts';
 import { RequestTarget } from './RequestTarget.ts';
 import harperLogger from '../utility/logging/harper_logger.js';
-import { throttle } from '../server/throttle';
+import { throttle } from '../server/throttle.ts';
 
 const { sortBy } = lodash;
 const { validateAttribute } = lmdbProcessRows;
