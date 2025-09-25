@@ -29,7 +29,7 @@ describe('cloneNode', () => {
 		setStatusStub = sinon.stub().resolves();
 
 		// Replace the imported functions with our stubs
-		cloneNode.__set__('cliOperations', clusterStatusStub);
+		cloneNode.__set__('clusterStatus', clusterStatusStub);
 		cloneNode.__set__('setStatus', setStatusStub);
 	});
 
@@ -445,6 +445,137 @@ describe('cloneNode', () => {
 
 			// Should be synchronized because raw versions match exactly
 			assert.strictEqual(result, true);
+		});
+	});
+
+	describe('checkSyncStatus with enhanced cluster status responses', () => {
+		let checkSyncStatus;
+
+		beforeEach(() => {
+			checkSyncStatus = cloneNode.__get__('checkSyncStatus');
+		});
+
+		it('should handle cluster response with enhanced replication data', async () => {
+			// Mock clusterStatus to return enhanced response with replication data
+			clusterStatusStub.resolves({
+				connections: [{
+					name: 'remote-node',
+					database_sockets: [{
+						database: 'testdb',
+						connected: true,
+						latency: 50,
+						// Enhanced replication data
+						lastReceivedVersion: 1234567890123.456,
+						lastReceivedRemoteTime: new Date(1234567890123.456).toUTCString(),
+						lastCommitConfirmed: new Date(1234567890120.0).toUTCString(),
+						backPressurePercent: 10.5,
+						lastReceivedStatus: 'Waiting'
+					}]
+				}]
+			});
+
+			const targetTimestamps = { testdb: 1234567890000.0 };
+			const result = await checkSyncStatus(targetTimestamps);
+
+			// Should call cluster status
+			assert(clusterStatusStub.called);
+
+			// Should return true since received version (1234567890123.456) > target (1234567890000.0)
+			assert.strictEqual(result, true);
+		});
+
+		it('should handle cluster response without lastReceivedVersion', async () => {
+			// Mock cluster response missing the enhanced replication data
+			clusterStatusStub.resolves({
+				connections: [{
+					name: 'remote-node',
+					database_sockets: [{
+						database: 'testdb',
+						connected: true,
+						latency: 50
+						// Missing lastReceivedVersion - should be undefined
+					}]
+				}]
+			});
+
+			const targetTimestamps = { testdb: 1234567890000.0 };
+			const result = await checkSyncStatus(targetTimestamps);
+
+			// Should return false since no lastReceivedVersion means no data received yet
+			assert.strictEqual(result, false);
+			assert(consoleLogStub.calledWith('Database testdb: No data received yet'));
+		});
+
+		it('should handle multiple databases with mixed sync status', async () => {
+			clusterStatusStub.resolves({
+				connections: [{
+					name: 'remote-node',
+					database_sockets: [
+						{
+							database: 'db1',
+							lastReceivedVersion: 1234567891000.0 // Synced
+						},
+						{
+							database: 'db2',
+							lastReceivedVersion: 1234567889000.0 // Behind
+						},
+						{
+							database: 'db3' // Missing lastReceivedVersion
+						}
+					]
+				}]
+			});
+
+			const targetTimestamps = {
+				db1: 1234567890000.0, // Should be synced
+				db2: 1234567890000.0, // Should be behind
+				db3: 1234567890000.0  // Should be missing
+			};
+
+			const result = await checkSyncStatus(targetTimestamps);
+
+			// Should return false because db2 is behind and db3 has no data
+			assert.strictEqual(result, false);
+		});
+
+		it('should handle connection with undefined database_sockets', async () => {
+			clusterStatusStub.resolves({
+				connections: [{
+					name: 'remote-node',
+					database_sockets: undefined
+				}]
+			});
+
+			const targetTimestamps = { testdb: 1234567890000.0 };
+			const result = await checkSyncStatus(targetTimestamps);
+
+			// Should return true since no database_sockets to check
+			assert.strictEqual(result, true);
+		});
+
+		it('should handle cluster status with backPressurePercent and status info', async () => {
+			clusterStatusStub.resolves({
+				connections: [{
+					name: 'remote-node',
+					database_sockets: [{
+						database: 'testdb',
+						connected: true,
+						latency: 25,
+						lastReceivedVersion: 1234567891000.0,
+						lastReceivedRemoteTime: new Date(1234567891000.0).toUTCString(),
+						lastCommitConfirmed: new Date(1234567890000.0).toUTCString(),
+						backPressurePercent: 25.5,
+						lastReceivedStatus: 'Receiving'
+					}]
+				}]
+			});
+
+			const targetTimestamps = { testdb: 1234567890000.0 };
+			const result = await checkSyncStatus(targetTimestamps);
+
+			// Should be synchronized
+			assert.strictEqual(result, true);
+			assert(consoleLogStub.calledWith('Database testdb: Synchronized'));
 		});
 	});
 });
