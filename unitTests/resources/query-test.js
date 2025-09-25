@@ -1739,7 +1739,7 @@ describe('Querying through Resource API', () => {
 			})) {
 				results.push(record);
 			}
-			assert.equal(results.length, 2);
+			assert.equal(results.length, 2, `results: ${JSON.stringify(results)}`);
 			assert.equal(results[0].name, 'another-one');
 			assert.equal(results[1].name, 'yet-another-one');
 		});
