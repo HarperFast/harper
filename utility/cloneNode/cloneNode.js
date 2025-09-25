@@ -33,7 +33,7 @@ const { restartWorkers } = require('../../server/threads/manageThreads.js');
 const { databases } = require('../../resources/databases.ts');
 const { set: setStatus } = require('../../server/status/index.ts');
 const { HTTP_STATUS_CODES } = require('../errors/commonErrors.js');
-const { cliOperations } = require('../../bin/cliOperations.js');
+const { clusterStatus } = require('../clustering/clusterStatus.js');
 
 // Custom error class for clone node operations
 class CloneNodeError extends Error {
@@ -412,13 +412,12 @@ async function monitorSyncAndUpdateStatus(targetTimestamps) {
 
 /**
  * Check if all databases are synchronized by comparing timestamps
- * @param {Object} clusterResponse - Response from clusterStatus()
  * @param {Object} targetTimestamps - Target timestamps to check against
  * @returns {Promise<boolean>} - True if all databases are synchronized
  */
 async function checkSyncStatus(targetTimestamps) {
 	// Get cluster status
-	const clusterResponse = await cliOperations({ operation: 'cluster_status' });
+	const clusterResponse = await clusterStatus();
 
 	// There should always be a response with at least an empty connections []
 	for (const connection of clusterResponse.connections) {

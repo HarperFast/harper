@@ -43,6 +43,7 @@ onMessageByType('cluster-status', async (message) => {
  * @returns {Promise<{is_enabled: *, node_name: *, connections: *[]}>}
  */
 async function clusterStatus() {
+	// If replication is enabled, get cluster status from replication module and early return the response
 	if (envMgr.get(hdbTerms.CONFIG_PARAMS.REPLICATION_URL) || envMgr.get(hdbTerms.CONFIG_PARAMS.REPLICATION_HOSTNAME)) {
 		let response;
 		if (parentPort) {
@@ -50,39 +51,45 @@ async function clusterStatus() {
 			response = await new Promise((resolve) => {
 				clusterStatusResolve = resolve;
 			});
-			for (let connection of response.connections) {
-				const remoteNodeName = connection.name;
-				for (let socket of connection.database_sockets) {
-					const databaseName = socket.database;
-					let auditStore;
-					for (let table of Object.values(databases[databaseName] || {})) {
-						auditStore = table.auditStore;
-						if (auditStore) break;
-					}
-					if (!auditStore) continue;
-					let replicationSharedStatus = getReplicationSharedStatus(auditStore, databaseName, remoteNodeName);
-					socket.lastCommitConfirmed = asDate(replicationSharedStatus[CONFIRMATION_STATUS_POSITION]);
-					socket.lastReceivedRemoteTime = asDate(replicationSharedStatus[RECEIVED_VERSION_POSITION]);
-					socket.lastReceivedLocalTime = asDate(replicationSharedStatus[RECEIVED_TIME_POSITION]);
-					// Raw version timestamp for precise sync comparison (preserves float64 precision)
-					socket.lastReceivedVersion = replicationSharedStatus[RECEIVED_VERSION_POSITION];
-					socket.sendingMessage = asDate(replicationSharedStatus[SENDING_TIME_POSITION]);
-					socket.backPressurePercent = replicationSharedStatus[BACK_PRESSURE_RATIO_POSITION] * 100;
-					socket.lastReceivedStatus =
-						replicationSharedStatus[RECEIVING_STATUS_POSITION] === RECEIVING_STATUS_RECEIVING ? 'Receiving' : 'Waiting';
-				}
-			}
 		} else {
 			response = requestClusterStatus();
 		}
+
+		// Augument the response with replication status information
+		for (let connection of response.connections) {
+			const remoteNodeName = connection.name;
+			for (let socket of connection.database_sockets) {
+				const databaseName = socket.database;
+				let auditStore;
+				for (let table of Object.values(databases[databaseName] || {})) {
+					auditStore = table.auditStore;
+					if (auditStore) break;
+				}
+				if (!auditStore) continue;
+				let replicationSharedStatus = getReplicationSharedStatus(auditStore, databaseName, remoteNodeName);
+				socket.lastCommitConfirmed = asDate(replicationSharedStatus[CONFIRMATION_STATUS_POSITION]);
+				socket.lastReceivedRemoteTime = asDate(replicationSharedStatus[RECEIVED_VERSION_POSITION]);
+				socket.lastReceivedLocalTime = asDate(replicationSharedStatus[RECEIVED_TIME_POSITION]);
+				// Raw version timestamp for precise sync comparison (preserves float64 precision)
+				socket.lastReceivedVersion = replicationSharedStatus[RECEIVED_VERSION_POSITION];
+				socket.sendingMessage = asDate(replicationSharedStatus[SENDING_TIME_POSITION]);
+				socket.backPressurePercent = replicationSharedStatus[BACK_PRESSURE_RATIO_POSITION] * 100;
+				socket.lastReceivedStatus =
+					replicationSharedStatus[RECEIVING_STATUS_POSITION] === RECEIVING_STATUS_RECEIVING ? 'Receiving' : 'Waiting';
+			}
+		}
+
+		// Add node name and shard/url info for this node
 		response.node_name = getThisNodeName();
 		// If it doesn't exist and or needs to be updated.
 		const thisNode = getHDBNodeTable().primaryStore.get(response.node_name);
 		if (thisNode?.shard) response.shard = thisNode.shard;
 		if (thisNode?.url) response.url = thisNode.url;
 		response.is_enabled = true; // if we have replication, replication is enabled
+
 		return response;
 	}
+
 	const response = {
 		node_name: thisNodeName,
 		is_enabled: clusteringEnabled,
