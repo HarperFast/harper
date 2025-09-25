@@ -569,7 +569,7 @@ function openIndex(dbiKey: string, rootStore: Database, attribute: any): Databas
  * @param splitSegments
  * @param replicate
  */
-export function table(tableDefinition: TableDefinition) {
+export function table<TableResourceType>(tableDefinition: TableDefinition): TableResourceType {
 	// eslint-disable-next-line prefer-const
 	let {
 		table: tableName,
@@ -829,7 +829,7 @@ export function table(tableDefinition: TableDefinition) {
 		});
 	logger.trace(`${tableName} table loaded`);
 
-	return Table;
+	return Table as TableResourceType;
 	function startTxn() {
 		if (txnCommit) return;
 		rootStore.transactionSync(() => {
