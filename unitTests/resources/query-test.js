@@ -1680,5 +1680,68 @@ describe('Querying through Resource API', () => {
 		});
 	});
 
-	after(() => {});
+	describe('Setting conditions on dynamic attributes', () => {
+		const records = [
+			{
+				id: 'zzz-10000',
+				name: 'the-one-with-the-dynamic-attr',
+				dynamic: 'foo',
+			},
+			{
+				id: 'zzz-10001',
+				name: 'another-one',
+				dynamic: 'bar',
+			},
+			{
+				id: 'zzz-10002',
+				name: 'yet-another-one',
+				dynamic: 'baz',
+			}
+		];
+
+		before(async () => {
+			for (const record of records) {
+				QueryTable.put(record.id, record);
+			}
+		});
+
+		after(async () => {
+			for (const record of records) {
+				await QueryTable.delete(record.id);
+			}
+		});
+
+		it('throws an error if not requested', async () => {
+			await assert.rejects(async () => {
+				QueryTable.search({
+					conditions: [{ attribute: 'dynamic', comparator: 'equals', value: 'foo' }],
+				});
+			});
+		});
+		it('works if requested', async () => {
+			let results = [];
+			for await (let record of QueryTable.search({
+				allowConditionsOnDynamicAttributes: true,
+				conditions: [{ attribute: 'dynamic', comparator: 'equals', value: 'foo' }],
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 1);
+			assert.equal(results[0].name, 'the-one-with-the-dynamic-attr');
+		});
+		it('works if requested with starts_with', async () => {
+			let results = [];
+			for await (let record of QueryTable.search({
+				allowConditionsOnDynamicAttributes: true,
+				conditions: [
+					{ attribute: 'dynamic', comparator: 'starts_with', value: 'ba' },
+				],
+			})) {
+				results.push(record);
+			}
+			assert.equal(results.length, 2);
+			assert.equal(results[0].name, 'another-one');
+			assert.equal(results[1].name, 'yet-another-one');
+		});
+	});
 });
