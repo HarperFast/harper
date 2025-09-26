@@ -31,7 +31,7 @@ replication:
   routes: null
 componentsRoot: null
 localStudio:
-  enabled: false
+  enabled: true
 logging:
   auditAuthEvents:
     logFailed: false
