@@ -342,7 +342,7 @@ export async function startOnMainThread(options) {
 					nextIndex = (nextIndex + 1) % nodeNames.length;
 					continue;
 				}
-				const { worker, nodes } = failoverWorkerEntry;
+				const { nodes } = failoverWorkerEntry;
 				// record which node we are now redirecting to
 				let hasMovedNodes = false;
 				for (const node of existingWorkerEntry.nodes) {
@@ -351,22 +351,25 @@ export async function startOnMainThread(options) {
 						continue;
 					}
 					if (node.endTime < Date.now()) continue; // already expired
+					const httpWorkers = workers.filter((worker: any) => worker.name === 'http');
+					nextWorkerIndex = nextWorkerIndex % httpWorkers.length; // wrap around as necessary
+					const worker = httpWorkers[nextWorkerIndex++];
+					node.worker = worker;
 					nodes.push(node);
+					logger.info(`Failing over ${connection.database} from ${connection.name} to ${nextNodeName}`);
+					if (worker) {
+						worker.postMessage({
+							type: 'subscribe-to-node',
+							database: connection.database,
+							nodes,
+						});
+					} else subscribeToNode({ database: connection.database, nodes });
 					hasMovedNodes = true;
 				}
 				existingWorkerEntry.nodes = [existingWorkerEntry.nodes[0]]; // only keep our own subscription
 				if (!hasMovedNodes) {
 					logger.info(`Disconnected node ${connection.name} has no nodes to fail over to ${nextNodeName}`);
-					return;
 				}
-				logger.info(`Failing over ${connection.database} from ${connection.name} to ${nextNodeName}`);
-				if (worker) {
-					worker.postMessage({
-						type: 'subscribe-to-node',
-						database: connection.database,
-						nodes,
-					});
-				} else subscribeToNode({ database: connection.database, nodes });
 				return;
 			}
 			logger.warn('Unable to find any other node to fail over to', connection.name, connection.url);
