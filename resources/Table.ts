@@ -1880,7 +1880,7 @@ export function makeTable(options) {
 					const attribute_name = condition[0] ?? condition.attribute;
 					const attribute = attribute_name == null ? primaryKeyAttribute : findAttribute(attributes, attribute_name);
 					if (!attribute) {
-						if (attribute_name != null)
+						if (attribute_name != null && !target.allowConditionsOnDynamicAttributes)
 							throw handleHDBError(new Error(), `${attribute_name} is not a defined attribute`, 404);
 					} else if (attribute.type || COERCIBLE_OPERATORS[condition.comparator]) {
 						// Do auto-coercion or coercion as required by the attribute type
