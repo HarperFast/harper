@@ -81,7 +81,7 @@ export function extractCRLDistributionPoints(certPem: string): string[] {
 
 		// Parse the extension value
 		// We need to decode the extension value first
-		const asn1 = asn1js.fromBER(crlDistExt.extnValue.valueBlock.valueHex);
+		const asn1 = asn1js.fromBER(crlDistExt.extnValue.valueBlock.valueHexView);
 		if (asn1.offset === -1) {
 			throw new Error('Failed to parse ASN.1 structure in CRL Distribution Points extension');
 		}
@@ -135,7 +135,7 @@ export function extractRevocationUrls(certPem: string): { crlUrls: string[]; ocs
 			if (ext.extnID === '2.5.29.31') {
 				// CRL Distribution Points extension
 				try {
-					const asn1 = asn1js.fromBER(ext.extnValue.valueBlock.valueHex);
+					const asn1 = asn1js.fromBER(ext.extnValue.valueBlock.valueHexView);
 					if (asn1.offset !== -1) {
 						const crlDistPoints = new pkijs.CRLDistributionPoints({
 							schema: asn1.result,
@@ -163,7 +163,7 @@ export function extractRevocationUrls(certPem: string): { crlUrls: string[]; ocs
 			} else if (ext.extnID === '1.3.6.1.5.5.7.1.1') {
 				// Authority Information Access extension
 				try {
-					const asn1 = asn1js.fromBER(ext.extnValue.valueBlock.valueHex);
+					const asn1 = asn1js.fromBER(ext.extnValue.valueBlock.valueHexView);
 					if (asn1.offset !== -1 && asn1.result instanceof asn1js.Sequence) {
 						for (const accessDesc of asn1.result.valueBlock.value) {
 							if (accessDesc instanceof asn1js.Sequence && accessDesc.valueBlock.value.length >= 2) {
@@ -178,7 +178,7 @@ export function extractRevocationUrls(certPem: string): { crlUrls: string[]; ocs
 									// Check if accessLocation is a URI (context tag 6)
 									if (accessLocation.idBlock.tagNumber === 6) {
 										const url = String.fromCharCode(
-											...Array.from(new Uint8Array((accessLocation.valueBlock as any).valueHex))
+											...Array.from((accessLocation.valueBlock as any).valueHexView)
 										);
 										if (url.startsWith('http://') || url.startsWith('https://')) {
 											ocspUrls.push(url);
@@ -222,7 +222,7 @@ export function extractOCSPUrls(certPem: string): string[] {
 		}
 
 		// Parse the extension value using asn1js
-		const asn1 = asn1js.fromBER(aiaExt.extnValue.valueBlock.valueHex);
+		const asn1 = asn1js.fromBER(aiaExt.extnValue.valueBlock.valueHexView);
 		if (asn1.offset === -1) {
 			throw new Error('Failed to parse ASN.1 structure in Authority Information Access extension');
 		}
@@ -245,7 +245,7 @@ export function extractOCSPUrls(certPem: string): string[] {
 						// Check if accessLocation is a URI (context tag 6)
 						if (accessLocation.idBlock.tagNumber === 6) {
 							const url = String.fromCharCode(
-								...Array.from(new Uint8Array((accessLocation.valueBlock as any).valueHex))
+								...Array.from((accessLocation.valueBlock as any).valueHexView)
 							);
 							if (url.startsWith('http://') || url.startsWith('https://')) {
 								ocspUrls.push(url);
@@ -343,8 +343,8 @@ export function extractSerialNumber(certPem: string): string {
 		const cert = pkijs.Certificate.fromBER(certBuffer);
 
 		// Convert serial number to string
-		const serialNumber = cert.serialNumber.valueBlock.valueHex;
-		return Array.from(new Uint8Array(serialNumber))
+		const serialNumber = cert.serialNumber.valueBlock.valueHexView;
+		return Array.from(serialNumber)
 			.map((b) => b.toString(16).padStart(2, '0'))
 			.join('');
 	} catch (error) {
@@ -372,7 +372,7 @@ export function extractIssuerKeyId(certPem: string): string {
 			});
 
 			if (aki.keyIdentifier) {
-				const keyId = new Uint8Array(aki.keyIdentifier.valueBlock.valueHex);
+				const keyId = aki.keyIdentifier.valueBlock.valueHexView;
 				return Array.from(keyId)
 					.map((b) => b.toString(16).padStart(2, '0'))
 					.join('');

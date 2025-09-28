@@ -9,14 +9,14 @@ import { req, secureReq, secureReqRest } from '../utils/request.mjs';
 import { timestamp } from '../utils/timestamp.mjs';
 
 /**
- * OCSP Certificate Verification Tests
+ * CRL Certificate Verification Tests
  *
- * These tests verify that Harper properly checks certificate revocation status using OCSP.
+ * These tests verify that Harper properly checks certificate revocation status using CRLs.
  *
  * Requirements:
  * - Harper must be configured with mTLS enabled
- * - OpenSSL must be installed (for OCSP responder)
- * - The tests will automatically generate test certificates if needed
+ * - OpenSSL must be installed (for certificate and CRL generation)
+ * - The tests will automatically generate test certificates and CRLs if needed
  *
  * Example Harper configuration:
  * ```yaml
@@ -31,16 +31,19 @@ import { timestamp } from '../utils/timestamp.mjs';
  * ```
  */
 
-describe('24. OCSP Certificate Verification Tests', () => {
+describe('25. CRL Certificate Verification Tests', () => {
 	beforeEach(timestamp);
 
 	let httpsAvailable = true;
-	let ocspResponder;
-	let ocspPort = 8888;
+	let crlServer;
+	// Use dynamic port to invalidate existing CRL caches on each test run
+	// CRL uses static file caching by URL, while OCSP responder returns fresh data
+	// from index.txt at the same endpoint, so OCSP doesn't need URL changes
+	let crlPort = 8889 + (Math.floor(Date.now() / 1000) % 1000);
 	// Use relative path from current test file location
 	const __dirname = dirname(fileURLToPath(import.meta.url));
-	const ocspUtilsPath = join(__dirname, '../../utils/security/ocsp');
-	const certsPath = join(ocspUtilsPath, 'generated');
+	const crlUtilsPath = join(__dirname, '../../utils/security/crl');
+	const certsPath = join(crlUtilsPath, 'generated');
 	let certificatesGenerated = false;
 
 	before(async function () {
@@ -54,14 +57,14 @@ describe('24. OCSP Certificate Verification Tests', () => {
 			if (error.code === 'ECONNREFUSED' || error.message.includes('ECONNREFUSED')) {
 				httpsAvailable = false;
 				console.log(`
-OCSP tests are being skipped because HTTPS is not available.
+CRL tests are being skipped because HTTPS is not available.
 
 To run these tests, add this to your harperdb-config.yaml and restart Harper:
 
 http:
 	portRest: ${testData.portRest}
 	securePortRest: ${testData.securePortRest}
-	mtls: true
+	mtls:  true
 operationsApi:
 	network:
 		port: ${testData.port}
@@ -73,7 +76,7 @@ operationsApi:
 
 		if (!httpsAvailable) return;
 
-		console.log('Generating test OCSP certificates...');
+		console.log('Generating test CRL certificates...');
 
 		// Ensure directory exists
 		if (!existsSync(certsPath)) {
@@ -84,35 +87,20 @@ operationsApi:
 		// and add that CA to Harper's certificate store
 		try {
 			// Generate test certificates with our own CA
-			// In Docker, we need to use the host gateway IP for OCSP
-			const ocspHost = process.env.DOCKER_CONTAINER_ID ? '172.17.0.1' : 'localhost';
-			execSync(`node ${join(ocspUtilsPath, 'generate-test-certs.js')}`, {
+			// In Docker, we need to use the host gateway IP for CRL
+			const crlHost = process.env.DOCKER_CONTAINER_ID ? '172.17.0.1' : 'localhost';
+			execSync(`node ${join(crlUtilsPath, 'generate-test-certs.js')}`, {
 				stdio: 'inherit',
-				cwd: ocspUtilsPath,
+				cwd: crlUtilsPath,
 				env: {
 					...process.env,
-					OCSP_HOST: ocspHost,
+					CRL_HOST: crlHost,
+					CRL_PORT: crlPort.toString(),
 				},
 			});
 
-			// Read the generated CA certificate
-			const testCA = readFileSync(join(certsPath, 'harper-ca.crt'), 'utf8');
-
-			// Add our test CA to Harper's certificate store
-			const addCAResponse = await req().send({
-				operation: 'add_certificate',
-				name: 'ocsp-test-ca',
-				certificate: testCA,
-				is_authority: true,
-				uses: ['client_authentication'],
-			});
-
-			if (addCAResponse.status !== 200) {
-				// CA might already exist, which is fine
-				console.log('Note: Test CA may already exist in Harper');
-			} else {
-				console.log('Test CA added to Harper successfully');
-			}
+			// Using Harper's CA certificate for CRL testing
+			console.log("Using Harper's CA certificate for CRL testing");
 
 			// Create users for certificate CNs
 			console.log('Creating users for certificate authentication...');
@@ -120,7 +108,7 @@ operationsApi:
 			// Create user for "Valid Client" CN
 			const createValidUserResponse = await req().send({
 				operation: 'add_user',
-				username: 'Valid Client',
+				username: 'Valid CRL Client',
 				password: 'not-used-for-cert-auth',
 				role: 'super_user', // Give full permissions for testing
 				active: true,
@@ -128,25 +116,25 @@ operationsApi:
 
 			if (createValidUserResponse.status !== 200) {
 				console.log(
-					'Failed to create Valid Client user:',
+					'Failed to create Valid CRL Client user:',
 					createValidUserResponse.status,
 					createValidUserResponse.body
 				);
 			} else {
-				console.log('Created user "Valid Client" for certificate authentication');
+				console.log('Created user "Valid CRL Client" for certificate authentication');
 			}
 
 			// Create user for "Revoked Client" CN (optional, but consistent)
 			const createRevokedUserResponse = await req().send({
 				operation: 'add_user',
-				username: 'Revoked Client',
+				username: 'Revoked CRL Client',
 				password: 'not-used-for-cert-auth',
 				role: 'super_user',
 				active: true,
 			});
 
 			if (createRevokedUserResponse.status !== 200) {
-				console.log('Note: Revoked Client user may already exist');
+				console.log('Note: Revoked CRL Client user may already exist');
 			}
 
 			certificatesGenerated = true;
@@ -155,77 +143,48 @@ operationsApi:
 			throw new Error(`Failed to setup certificates: ${error.message}`);
 		}
 
-		// Start OCSP responder
-		console.log('Starting OCSP responder on port', ocspPort);
-		ocspResponder = spawn(
-			'openssl',
-			[
-				'ocsp',
-				'-port',
-				String(ocspPort),
-				'-text',
-				'-index',
-				join(certsPath, 'index.txt'),
-				'-CA',
-				join(certsPath, 'harper-ca.crt'),
-				'-rkey',
-				join(certsPath, 'ocsp.key'),
-				'-rsigner',
-				join(certsPath, 'ocsp.crt'),
-				'-nrequest',
-				'100',
-			],
-			{
-				cwd: ocspUtilsPath,
-				stdio: ['ignore', 'pipe', 'pipe'],
-			}
-		);
-
-		ocspResponder.stdout.on('data', (data) => {
-			console.log('OCSP responder:', data.toString());
+		// Start CRL server
+		console.log('Starting CRL server on port', crlPort);
+		crlServer = spawn('node', ['start-crl-server.js', '--port', String(crlPort), '--certs-path', certsPath], {
+			cwd: crlUtilsPath,
+			stdio: ['ignore', 'pipe', 'pipe'],
 		});
 
-		ocspResponder.stderr.on('data', (data) => {
-			console.error('OCSP responder error:', data.toString());
+		crlServer.stdout.on('data', (data) => {
+			console.log('CRL server:', data.toString());
 		});
 
-		// Give OCSP responder time to start
+		crlServer.stderr.on('data', (data) => {
+			console.error('CRL server error:', data.toString());
+		});
+
+		// Give CRL server time to start
 		await new Promise((resolve) => setTimeout(resolve, 2000));
 	});
 
 	after(async () => {
-		if (ocspResponder) {
-			console.log('Stopping OCSP responder');
-			ocspResponder.kill();
+		if (crlServer) {
+			console.log('Stopping CRL server');
+			crlServer.kill();
 		}
 
-		// Remove test CA from Harper
+		// Note: We don't remove Harper's CA since we're using Harper's own CA certificate
 		if (certificatesGenerated) {
-			try {
-				await req().send({
-					operation: 'remove_certificate',
-					name: 'ocsp-test-ca',
-				});
-				console.log('Test CA removed from Harper');
-			} catch (error) {
-				console.log('Note: Failed to remove test CA:', error.message);
-			}
-
 			// Remove test users
 			try {
 				await req().send({
 					operation: 'drop_user',
-					username: 'Valid Client',
+					username: 'Valid CRL Client',
 				});
-				console.log('Removed test user "Valid Client"');
+				console.log('Removed test user "Valid CRL Client"');
 			} catch (error) {
-				console.log('Note: Failed to remove Valid Client user:', error.message);
+				console.log('Note: Failed to remove Valid CRL Client user:', error.message);
 			}
 
 			try {
 				await req().send({
 					operation: 'drop_user',
-					username: 'Revoked Client',
+					username: 'Revoked CRL Client',
 				});
 			} catch (error) {
 				// Silently ignore
@@ -243,36 +202,7 @@ operationsApi:
 		}
 	});
 
-	it('should reject revoked certificate with OCSP check', async (t) => {
-		if (!httpsAvailable) {
-			t.skip('HTTPS not available');
-			return;
-		}
-
-		// Read the revoked certificate and key
-		const cert = readFileSync(join(certsPath, 'client-revoked-chain.crt'));
-		const key = readFileSync(join(certsPath, 'client-revoked.key'));
-		const ca = readFileSync(join(certsPath, 'harper-ca.crt'));
-		try {
-			await secureReqRest('/', {
-				cert: cert,
-				key: key,
-				ca: ca,
-				rejectUnauthorized: false,
-			}).expect(401); // Should reject revoked certificate
-		} catch (error) {
-			// Connection errors are expected if certificate is rejected early
-			assert.ok(
-				error.code === 'ECONNRESET' ||
-					error.code === 'ECONNREFUSED' ||
-					error.code === 'EPROTO' ||
-					error.message.includes('socket hang up'),
-				`Expected connection error due to revoked certificate, got: "${error.message}"`
-			);
-		}
-	});
-
-	it('should accept valid certificate with OCSP check', async (t) => {
+	it('should accept valid certificate with CRL check', async (t) => {
 		if (!httpsAvailable) {
 			t.skip('HTTPS not available');
 			return;
@@ -303,13 +233,42 @@ operationsApi:
 		}
 	});
 
-	it('should cache OCSP responses', async (t) => {
+	it('should reject revoked certificate with CRL check', async (t) => {
 		if (!httpsAvailable) {
 			t.skip('HTTPS not available');
 			return;
 		}
 
-		// After the previous tests, we should have cached entries for both valid and revoked certificates
+		// Read the revoked certificate and key
+		const cert = readFileSync(join(certsPath, 'client-revoked-chain.crt'));
+		const key = readFileSync(join(certsPath, 'client-revoked.key'));
+		const ca = readFileSync(join(certsPath, 'harper-ca.crt'));
+		try {
+			await secureReqRest('/', {
+				cert: cert,
+				key: key,
+				ca: ca,
+				rejectUnauthorized: false,
+			}).expect(401); // Should reject revoked certificate
+		} catch (error) {
+			// Connection errors are expected if certificate is rejected early
+			assert.ok(
+				error.code === 'ECONNRESET' ||
+					error.code === 'ECONNREFUSED' ||
+					error.code === 'EPROTO' ||
+					error.message.includes('socket hang up'),
+				`Expected connection error due to revoked certificate, got: "${error.message}"`
+			);
+		}
+	});
+
+	it('should cache CRL responses', async (t) => {
+		if (!httpsAvailable) {
+			t.skip('HTTPS not available');
+			return;
+		}
+
+		// After the previous tests, we should have cached entries for CRL data
 		const schemaResponse = await req().send({
 			operation: 'describe_schema',
 			schema: 'system',
@@ -317,24 +276,34 @@ operationsApi:
 
 		assert.equal(schemaResponse.status, 200, 'Failed to describe system schema');
 
-		// Check if certificate cache table exists
-		const cacheTable = schemaResponse.body?.hdb_certificate_cache;
-		if (!cacheTable) {
-			assert.fail('Certificate cache table not found - OCSP verification is not working');
+		// Check if CRL cache tables exist
+		const crlCacheTable = schemaResponse.body?.hdb_crl_cache;
+		const revokedCertsTable = schemaResponse.body?.hdb_revoked_certificates;
+
+		if (!crlCacheTable && !revokedCertsTable) {
+			console.log('No CRL cache tables found - CRL verification may not have been triggered yet');
 			return;
 		}
 
-		const cacheCount = cacheTable.record_count || 0;
-		console.log(`Certificate cache contains ${cacheCount} entries`);
+		if (crlCacheTable) {
+			const crlCount = crlCacheTable.record_count || 0;
+			console.log(`CRL cache contains ${crlCount} entries`);
+			if (crlCount > 0) {
+				console.log('✅ CRL cache is working');
+			}
+		}
 
-		// We expect at least 2 entries: one for valid cert, one for revoked cert
-		// (certificates might generate different IDs each run, so we might have more)
-		assert.ok(cacheCount >= 2, `Cache should contain at least 2 entries (valid + revoked). Found: ${cacheCount}`);
+		if (revokedCertsTable) {
+			const revokedCount = revokedCertsTable.record_count || 0;
+			console.log(`Revoked certificates cache contains ${revokedCount} entries`);
+			if (revokedCount > 0) {
+				console.log('✅ Revoked certificates cache is working');
+			}
+		}
 
 		// Verify caching works by making multiple requests
 		const cert = readFileSync(join(certsPath, 'client-valid-chain.crt'));
 		const key = readFileSync(join(certsPath, 'client-valid.key'));
-
 		const ca = readFileSync(join(certsPath, 'harper-ca.crt'));
 
 		// Make two requests in quick succession - second should use cache

@@ -38,7 +38,6 @@ export interface CertificateCacheEntry {
 }
 
 export interface CRLCacheEntry {
-	crl_id: string;
 	distribution_point: string;
 	issuer_dn: string;
 	crl_blob: Buffer;

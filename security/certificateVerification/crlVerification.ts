@@ -14,7 +14,6 @@ import {
 	createRevokedCertificateId,
 	bufferToPem,
 	createCacheKey,
-	createCRLCacheKey,
 	getCertificateCacheTable as getSharedCertificateCacheTable,
 	pemToBuffer,
 } from './verificationUtils.ts';
@@ -37,10 +36,14 @@ const logger = loggerWithTag('crl-verification');
  */
 class CertificateRevocationListSource extends Resource {
 	async get(id: string) {
-		logger.debug?.(`CertificateRevocationListSource.get called for: ${id}`);
+		logger.debug?.(`CertificateRevocationListSource.get called for ID: '${id}' (length: ${id?.length ?? 'null'})`);
 
 		const context = this.getContext() as SourceContext<CRLVerificationContext>;
 		const requestContext = context?.requestContext;
+
+		logger.debug?.(
+			`CRL source context - distributionPoint: ${requestContext?.distributionPoint}, issuerPem length: ${requestContext?.issuerPem?.length ?? 'null'}`
+		);
 
 		if (!requestContext?.distributionPoint || !requestContext?.issuerPem) {
 			throw new Error(`No CRL data provided for cache key: ${id}`);
@@ -121,12 +124,8 @@ function getCRLCacheTable() {
 			database: 'system',
 			attributes: [
 				{
-					name: 'crl_id',
-					isPrimaryKey: true,
-				},
-				{
 					name: 'distribution_point',
-					indexed: true,
+					isPrimaryKey: true,
 				},
 				{
 					name: 'issuer_dn',
@@ -202,81 +201,9 @@ function getRevokedCertificateTable() {
 	return revokedCertificateTable;
 }
 
-// CRL Certificate Verification Source class that extends Resource
-class CRLCertificateVerificationSource extends Resource {
-	async get(id: string) {
-		logger.debug?.(`CRLCertificateVerificationSource.get called for: ${id}`);
-
-		// Get the certificate data from requestContext
-		const context = this.getContext() as SourceContext<CertificateVerificationContext>;
-		const requestContext = context?.requestContext;
-
-		if (!requestContext || !requestContext.certPem || !requestContext.issuerPem) {
-			throw new Error(`No certificate data provided for cache key: ${id}`);
-		}
-
-		const { certPem: certPemStr, issuerPem: issuerPemStr, config } = requestContext;
-		const crlConfig = config?.crl ?? {};
-		logger.trace?.(`Performing CRL check with config: ${JSON.stringify(crlConfig)}`);
-
-		try {
-			const result = await performCRLCheck(certPemStr, issuerPemStr, crlConfig);
-			logger.debug?.(`CRL check result: ${JSON.stringify(result)}`);
-
-			const ttl = crlConfig.cacheTtl ?? CRL_DEFAULTS.cacheTtl;
-
-			// Set expiration on the context if available
-			if (context) {
-				context.expiresAt = Date.now() + ttl;
-			}
-
-			return {
-				certificate_id: id,
-				status: result.status,
-				reason: result.reason,
-				checked_at: Date.now(),
-				expiresAt: Date.now() + ttl,
-				method: 'crl',
-			};
-		} catch (error) {
-			logger.error?.(`CRL verification error: ${error}`);
-
-			// Check failure mode
-			const failureMode = crlConfig.failureMode ?? CRL_DEFAULTS.failureMode;
-			if (failureMode === 'fail-closed') {
-				// Return an error status that will be cached for faster recovery from errors
-				const expiresAt = Date.now() + ERROR_CACHE_TTL;
-
-				if (context) {
-					context.expiresAt = expiresAt;
-				}
-
-				return {
-					certificate_id: id,
-					status: 'unknown',
-					reason: (error as Error).message,
-					checked_at: Date.now(),
-					expiresAt,
-					method: 'crl',
-				};
-			}
-
-			// Fail open - return null to not cache
-			logger.warn?.('CRL check failed, allowing connection (fail-open mode)');
-			return null;
-		}
-	}
-}
-
-// Lazy-load the certificate verification cache table
-let certCacheTable: ReturnType<typeof getSharedCertificateCacheTable>;
+// Get the shared certificate verification cache table
 function getCertificateCacheTable() {
-	if (!certCacheTable) {
-		certCacheTable = getSharedCertificateCacheTable();
-		// Configure the caching source using CRLCertificateVerificationSource class
-		(certCacheTable as any).sourcedFrom(CRLCertificateVerificationSource);
-	}
-	return certCacheTable;
+	return getSharedCertificateCacheTable();
 }
 
 /**
@@ -292,6 +219,12 @@ export async function verifyCRL(
 	config?: CRLConfig
 ): Promise<CertificateVerificationResult> {
 	logger.debug?.('verifyCRL called');
+
+	// Check if CRL verification is disabled
+	if (config?.enabled === false) {
+		logger.debug?.('CRL verification is disabled, allowing certificate');
+		return { valid: true, status: 'disabled', method: 'disabled' };
+	}
 
 	try {
 		// Convert DER buffers to PEM strings for certificate parsing libraries
@@ -361,7 +294,7 @@ export async function verifyCRL(
  * @param config - CRL configuration
  * @returns CRL check result
  */
-async function performCRLCheck(certPem: string, issuerPem: string, config: CRLConfig): Promise<CRLCheckResult> {
+export async function performCRLCheck(certPem: string, issuerPem: string, config: CRLConfig): Promise<CRLCheckResult> {
 	// Extract CRL distribution points from the certificate
 	const distributionPoints = extractCRLDistributionPoints(certPem);
 
@@ -374,11 +307,14 @@ async function performCRLCheck(certPem: string, issuerPem: string, config: CRLCo
 	const serialNumber = extractSerialNumber(certPem);
 	const issuerKeyId = extractIssuerKeyId(issuerPem);
 	const compositeId = createRevokedCertificateId(issuerKeyId, serialNumber);
-	logger.trace?.(`Performing CRL check for composite ID: ${compositeId}`);
+	logger.debug?.(`CRL check - serialNumber: ${serialNumber}, issuerKeyId: ${issuerKeyId}, compositeId: ${compositeId}`);
 
 	try {
 		// Get the revoked certificates table
 		const revokedTable = getRevokedCertificateTable();
+
+		// Look up certificate in revoked table
+		logger.debug?.(`Looking up certificate in revoked table: ${compositeId}`);
 
 		// Look up the certificate in the revoked list
 		const revokedEntry = await revokedTable.get(compositeId);
@@ -460,64 +396,72 @@ async function checkCRLFreshness(
 	const gracePeriod = config.gracePeriod ?? CRL_DEFAULTS.gracePeriod;
 	const now = Date.now();
 
-	const crlTable = getCRLCacheTable();
-
 	// Check each distribution point
 	for (const distributionPoint of distributionPoints) {
 		try {
-			// Create cache key for this distribution point
-			const cacheKey = createCRLCacheKey(distributionPoint);
+			logger.debug?.(`Checking CRL freshness for: ${distributionPoint}`);
 
-			// Use Harper's caching mechanism to get CRL data (will fetch if not cached)
-			const crlEntry = await crlTable.get(cacheKey, {
-				requestContext: {
-					distributionPoint,
-					issuerPem,
-					config,
-				},
-			} as any);
+			// First, check if we have a cached CRL that's still valid
+			const crlTable = getCRLCacheTable();
+			let crlData: CRLCacheEntry | null = null;
+			let cachedCRL: CRLCacheEntry | null = null;
 
-			if (crlEntry) {
-				const entry = crlEntry as any;
-				if (entry.next_update > now) {
-					// CRL is current
-					return { upToDate: true, source: distributionPoint };
-				} else if (entry.next_update + gracePeriod > now) {
-					// CRL is expired but within grace period
-					logger.warn?.(`Using expired CRL within grace period for: ${distributionPoint}`);
-					return { upToDate: true, source: distributionPoint };
+			try {
+				const cached = await crlTable.get(distributionPoint);
+				cachedCRL = cached as unknown as CRLCacheEntry;
+				if (cachedCRL && cachedCRL.next_update > now) {
+					logger.debug?.(`Using cached CRL from ${distributionPoint}, expires: ${new Date(cachedCRL.next_update)}`);
+					crlData = cachedCRL;
+				} else if (cachedCRL && cachedCRL.next_update + gracePeriod > now) {
+					logger.debug?.(`Using expired cached CRL within grace period from ${distributionPoint}`);
+					crlData = cachedCRL;
+				} else if (cachedCRL) {
+					logger.debug?.(`Cached CRL from ${distributionPoint} is too old, will re-download`);
 				} else {
-					// CRL is too old - try to refresh it
-					logger.debug?.(`CRL expired beyond grace period, attempting refresh for: ${distributionPoint}`);
+					logger.debug?.(`No cached CRL found for ${distributionPoint}, will download`);
+				}
+			} catch (cacheError) {
+				logger.debug?.(`Failed to check CRL cache for ${distributionPoint}: ${cacheError}`);
+			}
 
-					// Force a cache refresh by calling get with a new context
+			// If no valid cached CRL, download and parse fresh
+			if (!crlData) {
+				logger.debug?.(`Downloading CRL from: ${distributionPoint}`);
+				const timeout = config?.timeout ?? CRL_DEFAULTS.timeout;
+				crlData = await downloadAndParseCRL(distributionPoint, issuerPem, timeout);
+				logger.debug?.(`Successfully downloaded and parsed CRL from ${distributionPoint}`);
+			}
+
+			// Check if CRL is current
+			const crlExpiry = crlData.next_update;
+			if (crlExpiry > now) {
+				logger.debug?.(`CRL is current: expires ${new Date(crlExpiry)}`);
+
+				// Store in cache for future use (only if we downloaded it fresh)
+				if (!cachedCRL) {
 					try {
-						const refreshedEntry = await crlTable.get(cacheKey, {
-							requestContext: {
-								distributionPoint,
-								issuerPem,
-								config,
-							},
-							// Force refresh by clearing any existing cache entry
-							refresh: true,
-						} as any);
-
-						if (refreshedEntry && (refreshedEntry as any).next_update > now) {
-							return { upToDate: true, source: distributionPoint };
-						}
-					} catch (refreshError) {
-						logger.warn?.(`Failed to refresh expired CRL: ${distributionPoint} - ${refreshError}`);
+						await crlTable.put(distributionPoint, crlData);
+						logger.debug?.(`Cached fresh CRL data for ${distributionPoint}`);
+					} catch (cacheError) {
+						logger.debug?.(`Failed to cache CRL (continuing anyway): ${cacheError}`);
 					}
 				}
+
+				return { upToDate: true, source: distributionPoint };
+			} else if (crlExpiry + gracePeriod > now) {
+				logger.debug?.(`Using CRL within grace period for: ${distributionPoint}`);
+				return { upToDate: true, source: distributionPoint };
 			} else {
-				logger.debug?.(`No CRL data found in cache for: ${distributionPoint}`);
+				logger.debug?.(`CRL is expired beyond grace period for: ${distributionPoint}`);
+				return { upToDate: false, reason: 'crl-expired' };
 			}
 		} catch (error) {
-			logger.debug?.(`Error checking CRL freshness for: ${distributionPoint} - ${error}`);
+			logger.debug?.(`Failed to download/process CRL from ${distributionPoint}: ${error}`);
 			// Continue to next distribution point
 		}
 	}
 
+	logger.debug?.(`No current CRL data found for any distribution points: ${distributionPoints.join(', ')}`);
 	return { upToDate: false, reason: 'no-current-crl-data' };
 }
 
@@ -536,9 +480,8 @@ async function downloadAndParseCRL(
 	logger.debug?.(`Downloading CRL from: ${distributionPoint}`);
 
 	// Download the CRL
-	// Note: Using fetch instead of undici here (which is currently a dev dep)
-	// since CRL downloads are cached and infrequent (typically one per CA),
-	// so this is not a hot path
+	// Note: Using fetch here since CRL downloads are cached and infrequent
+	// (typically one per CA), so this is not a hot path
 	const controller = new AbortController();
 	const timeoutId = setTimeout(() => controller.abort(), timeout);
 
@@ -552,20 +495,36 @@ async function downloadAndParseCRL(
 
 		clearTimeout(timeoutId);
 
+		logger.debug?.(`CRL download response: ${response.status} ${response.statusText} from ${distributionPoint}`);
+
 		if (!response.ok) {
 			throw new Error(`CRL download failed: ${response.status}`);
 		}
 
 		const crlBuffer = Buffer.from(await response.arrayBuffer());
 
-		logger.debug?.(`Downloaded CRL: ${crlBuffer.length} bytes`);
+		logger.debug?.(`Downloaded CRL: ${crlBuffer.length} bytes from ${distributionPoint}`);
+
+		// Convert PEM to DER format if needed (PKI.js expects DER)
+		let crlDerBuffer: Buffer;
+		const crlText = crlBuffer.toString('utf8');
+		if (crlText.includes('-----BEGIN X509 CRL-----')) {
+			logger.debug?.('Converting PEM CRL to DER format for parsing');
+			crlDerBuffer = Buffer.from(pemToBuffer(crlText));
+		} else {
+			logger.debug?.('CRL already in DER format');
+			crlDerBuffer = crlBuffer;
+		}
 
 		// Parse and validate the CRL
-		const crl = pkijs.CertificateRevocationList.fromBER(crlBuffer);
+		const crl = pkijs.CertificateRevocationList.fromBER(crlDerBuffer);
+		logger.debug?.(`Parsed CRL successfully, revoked certificates: ${crl.revokedCertificates?.length ?? 0}`);
 
 		// Verify CRL signature
 		const issuerCert = pkijs.Certificate.fromBER(pemToBuffer(issuerPemStr));
 		const signatureValid = await crl.verify({ issuerCertificate: issuerCert });
+
+		logger.debug?.(`CRL signature verification: ${signatureValid ? 'VALID' : 'INVALID'} for ${distributionPoint}`);
 
 		if (!signatureValid) {
 			logger.warn?.(`CRL signature verification failed for: ${distributionPoint}`);
@@ -575,13 +534,21 @@ async function downloadAndParseCRL(
 		const thisUpdate = crl.thisUpdate.value.getTime();
 		const nextUpdate = crl.nextUpdate?.value.getTime() ?? thisUpdate + CRL_DEFAULT_VALIDITY_PERIOD;
 
+		logger.debug?.(
+			`CRL timing - thisUpdate: ${new Date(thisUpdate)}, nextUpdate: ${new Date(nextUpdate)}, now: ${new Date()}`
+		);
+
+		const now = Date.now();
+		if (nextUpdate < now) {
+			logger.debug?.(`CRL is expired: nextUpdate ${new Date(nextUpdate)} < now ${new Date(now)}`);
+		} else {
+			logger.debug?.(`CRL is current: nextUpdate ${new Date(nextUpdate)} > now ${new Date(now)}`);
+		}
+
 		// Extract issuer DN
 		const issuerDN = issuerCert.issuer.typesAndValues.map((tv) => `${tv.type}=${tv.value.valueBlock.value}`).join(',');
 
-		const cacheKey = createCRLCacheKey(distributionPoint);
-
 		const cacheEntry: CRLCacheEntry = {
-			crl_id: cacheKey,
 			distribution_point: distributionPoint,
 			issuer_dn: issuerDN,
 			crl_blob: crlBuffer,
@@ -619,7 +586,7 @@ async function processRevokedCertificates(
 
 	const revokedTable = getRevokedCertificateTable();
 	const issuerKeyId = extractIssuerKeyId(issuerPemStr);
-	const cacheKey = createCRLCacheKey(distributionPoint);
+	const cacheKey = distributionPoint;
 
 	// Clear existing entries for this CRL to ensure data consistency
 	// This prevents stale revocation data when certificates are removed from updated CRLs
@@ -634,18 +601,16 @@ async function processRevokedCertificates(
 	if (crl.revokedCertificates) {
 		for (const revokedCert of crl.revokedCertificates) {
 			try {
-				// Extract serial number - handle both old and new PKI.js APIs
-				const serialHex =
-					(revokedCert.userCertificate as any).valueBeforeDecode ||
-					(revokedCert.userCertificate as any).valueBlock?.valueHexView ||
-					(revokedCert.userCertificate as any).valueBlock?.valueHex;
+				// Extract serial number using PKI.js - same method as extractSerialNumber() function
+				// This gives us the clean serial number without ASN.1 encoding
+				const serialHex = revokedCert.userCertificate.valueBlock.valueHexView;
 
 				if (!serialHex) {
 					logger.warn?.('Could not extract serial number from revoked certificate');
 					continue;
 				}
 
-				const serialNumber = Array.from(new Uint8Array(serialHex))
+				const serialNumber = Array.from(serialHex)
 					.map((b) => b.toString(16).padStart(2, '0'))
 					.join('');
 
@@ -668,6 +633,7 @@ async function processRevokedCertificates(
 					expiresAt: nextUpdate,
 				};
 
+				logger.debug?.(`Storing revoked certificate: ${entry.serial_number} (composite_id: ${entry.composite_id})`);
 				await revokedTable.create(entry.composite_id, entry);
 			} catch (error) {
 				logger.warn?.(`Failed to process revoked certificate: ${error}`);
@@ -691,8 +657,7 @@ async function clearExistingCRLEntries(
 ): Promise<void> {
 	logger.debug?.(`Clearing existing entries for CRL: ${crlSource}`);
 
-	// Since Harper doesn't have a direct "delete by field" operation,
-	// we need to find all entries with the matching crl_source and delete them individually
+	// We need to find all entries with the matching crl_source and delete them individually
 	try {
 		// Use Harper's search capabilities to find entries by crl_source
 		// Note: This assumes the crl_source field is indexed (which it is)

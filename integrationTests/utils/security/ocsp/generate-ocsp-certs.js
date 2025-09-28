@@ -7,78 +7,36 @@
 const fs = require('node:fs');
 const path = require('node:path');
 const { execSync } = require('node:child_process');
-const http = require('node:http');
+const { getHarperCA } = require('../harperCA.js');
+
+// Function to find Harper keys directory in common locations
+function findHarperKeysDir() {
+  const { homedir } = require('os');
+  const possiblePaths = [
+    // Local development path
+    path.join(homedir(), 'hdb', 'keys'),
+    // CI or different installation paths
+    path.join(homedir(), '.harperdb', 'keys'),
+    path.join(process.cwd(), '..', '..', '..', '..', 'keys'),
+    path.join('/tmp', 'harperdb', 'keys'),
+    path.join('/var', 'harperdb', 'keys'),
+    // Check HARPERDB_ROOT env var if set
+    ...(process.env.HARPERDB_ROOT ? [path.join(process.env.HARPERDB_ROOT, 'keys')] : [])
+  ];
+
+  for (const keyPath of possiblePaths) {
+    if (fs.existsSync(keyPath)) {
+      console.log(`Found Harper keys directory at: ${keyPath}`);
+      return keyPath;
+    }
+  }
+
+  return null;
+}
 
 const OUTPUT_DIR = path.join(__dirname, 'generated');
 const OCSP_PORT = process.env.OCSP_PORT || 8888;
 
-// Harper connection details - use standard env vars from integration tests
-const HARPER_URL = process.env.HARPER_URL || 'http://localhost:9925';
-const HARPER_USER = process.env.HDB_ADMIN_USERNAME || 'admin';
-const HARPER_PASS = process.env.HDB_ADMIN_PASSWORD || 'password';
-
-async function harperQuery(operation) {
-  return new Promise((resolve, reject) => {
-    const auth = Buffer.from(`${HARPER_USER}:${HARPER_PASS}`).toString('base64');
-    const data = JSON.stringify(operation);
-    
-    const url = new URL(HARPER_URL);
-    const options = {
-      hostname: url.hostname,
-      port: url.port || 9925,
-      path: '/',
-      method: 'POST',
-      headers: {
-        'Content-Type': 'application/json',
-        'Authorization': `Basic ${auth}`,
-        'Content-Length': data.length
-      }
-    };
-    
-    const req = http.request(options, (res) => {
-      let body = '';
-      res.on('data', (chunk) => body += chunk);
-      res.on('end', () => {
-        try {
-          resolve(JSON.parse(body));
-        } catch (e) {
-          reject(new Error(`Failed to parse response: ${body}`));
-        }
-      });
-    });
-    
-    req.on('error', reject);
-    req.write(data);
-    req.end();
-  });
-}
-
-async function getHarperCA() {
-  console.log('Fetching Harper\'s CA from database...');
-  
-  const result = await harperQuery({
-    operation: 'search_by_conditions',
-    database: 'system',
-    table: 'hdb_certificate',
-    get_attributes: ['*'],
-    conditions: [{
-      search_attribute: 'is_authority',
-      search_type: 'equals',
-      search_value: true
-    }]
-  });
-  
-  if (!result || result.length === 0) {
-    throw new Error('No CA found in Harper database');
-  }
-  
-  // Get the first CA (should be Harper's self-generated CA)
-  const ca = result[0];
-  console.log(`Found CA: ${ca.name}`);
-  console.log(`Private key file: ${ca.private_key_name}`);
-  
-  return ca;
-}
 
 async function generateOCSPCerts() {
   // Create output directory
@@ -96,12 +54,25 @@ async function generateOCSPCerts() {
     console.log(`\nCA certificate saved to: ${caCertPath}`);
     
     // Step 2: Find CA private key
-    const harperKeysDir = path.join('/Users/nathan/hdb/keys'); // Adjust path as needed
+    const harperKeysDir = findHarperKeysDir();
+    if (!harperKeysDir) {
+      console.error('\nERROR: Harper keys directory not found');
+      console.error('Tried the following locations:');
+      console.error('- ~/hdb/keys');
+      console.error('- ~/.harperdb/keys');
+      console.error('- /tmp/harperdb/keys');
+      console.error('- /var/harperdb/keys');
+      if (process.env.HARPERDB_ROOT) {
+        console.error(`- ${process.env.HARPERDB_ROOT}/keys`);
+      }
+      throw new Error('Harper keys directory not found');
+    }
+
     const caKeyPath = path.join(harperKeysDir, ca.private_key_name);
-    
     if (!fs.existsSync(caKeyPath)) {
       console.error(`\nERROR: CA private key not found at: ${caKeyPath}`);
       console.error('Please check the path to Harper\'s keys directory');
+      console.error(`Expected Harper keys directory: ${harperKeysDir}`);
       return;
     }
     
@@ -115,19 +86,13 @@ async function generateOCSPCerts() {
     execSync(`openssl genpkey -algorithm ED25519 -out ${ocspKeyPath}`);
     execSync(`openssl req -new -key ${ocspKeyPath} -out ${OUTPUT_DIR}/ocsp.csr -subj "/CN=OCSP Responder/O=Harper OCSP Test"`);
     
-    // First, extract the Subject Key Identifier from the CA certificate
-    const caDetails = execSync(`openssl x509 -in ${caCertPath} -text -noout`).toString();
-    let skiMatch = caDetails.match(/X509v3 Subject Key Identifier:\s*\n\s*([A-F0-9:]+)/i);
-    
     // OCSP responder extensions
-    let ocspExt = `[v3_ocsp]
+    const ocspExt = `[v3_ocsp]
 basicConstraints = CA:FALSE
 keyUsage = nonRepudiation, digitalSignature, keyEncipherment
 extendedKeyUsage = OCSPSigning
-subjectKeyIdentifier = hash`;
-    
-    // Always use keyid,issuer format - OpenSSL will extract the keyid from the CA cert
-    ocspExt += `\nauthorityKeyIdentifier = keyid,issuer`;
+subjectKeyIdentifier = hash
+authorityKeyIdentifier = keyid,issuer`;
     
     fs.writeFileSync(path.join(OUTPUT_DIR, 'ocsp.ext'), ocspExt);
     
