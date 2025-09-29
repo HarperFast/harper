@@ -31,7 +31,6 @@ Object.assign(
 		initSync,
 		setProperty,
 		initTestEnvironment,
-		setCloneVar,
 	})
 );
 
@@ -135,9 +134,6 @@ function initSync(force = false) {
 }
 
 let clone_node_running = false;
-function setCloneVar(bool) {
-	clone_node_running = bool;
-}
 
 /**
  * Initializes a test environment.

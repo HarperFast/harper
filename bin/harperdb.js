@@ -4,11 +4,6 @@
 require('./dev');
 
 const run_clone = process.env.HDB_LEADER_URL || process.argv.includes('--HDB_LEADER_URL');
-if (run_clone) {
-	const env_mgr = require('../utility/environment/environmentManager');
-	env_mgr.setCloneVar(true);
-}
-
 const fs = require('node:fs');
 const path = require('node:path');
 const logger = require('../utility/logging/harper_logger');
