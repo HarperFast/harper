@@ -119,7 +119,7 @@ function doesPropFileExist() {
 function initSync(force = false) {
 	try {
 		// If readPropsFile returns false, we are installing and don't need to read anything yet.
-		if (((prop_file_exists || doesPropFileExist() || common_utils.noBootFile()) && !clone_node_running) || force) {
+		if (prop_file_exists || doesPropFileExist() || common_utils.noBootFile() || force) {
 			config_utils.initConfig(force);
 			install_props[hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY] = config_utils.getConfigValue(
 				hdb_terms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY
@@ -132,8 +132,6 @@ function initSync(force = false) {
 		process.exit(1);
 	}
 }
-
-let clone_node_running = false;
 
 /**
  * Initializes a test environment.
