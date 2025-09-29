@@ -330,6 +330,73 @@ describe('Test serverHandlers.js module ', () => {
 		});
 	});
 
+	describe('authAndEnsureUserOnRequest()', () => {
+		const TEST_AUTH_REQ = {
+			headers: {
+				authorization: 'BASIC hashyhash',
+			},
+			body: {
+				operation: 'create_authentication_tokens',
+			},
+		};
+
+		const TEST_REQ = {
+			headers: {
+				authorization: 'BASIC hashyhash',
+			},
+			body: {
+				operation: 'create_schema',
+			},
+		};
+		let auth_stub;
+		let TEST_USER = 'This is user data!';
+
+		before(() => {
+			auth_stub = sandbox.stub().resolves(TEST_USER);
+			serverHandlers_rw.__set__('pAuthorize', auth_stub);
+		});
+
+		it('Should pass auth for valid nominal request', () => {
+			const test_req = test_utils.deepClone(TEST_REQ);
+
+			serverHandlers_rw.authAndEnsureUserOnRequest(test_req, {}, (err, data) => {
+				assert.ok(data === undefined, 'Should not return anything for valid auth');
+				assert.ok(test_req.hdb_user === TEST_USER, 'Method should assign user to request');
+			});
+		});
+
+		it('Should pass auth for valid request for create auth tokens operation', () => {
+			const test_req = test_utils.deepClone(TEST_AUTH_REQ);
+			test_req.body.username = 'norm';
+			test_req.body.password = 'let-me-in';
+
+			serverHandlers_rw.authHandler(test_req, {}, (err, data) => {
+				assert.ok(data === undefined, 'Should not return anything for valid auth');
+				assert.ok(test_req.hdb_user === undefined, 'Method should assign undefined for hdb_user on request');
+			});
+		});
+
+		it('Should throw error if thrown from auth', () => {
+			auth_stub.rejects(TEST_ERR);
+
+			const test_req = test_utils.deepClone(TEST_REQ);
+			test_req.socket = { remoteAddress: 'remote address' };
+
+			serverHandlers_rw.authHandler(test_req, {}, (err, data) => {
+				assert.ok(data === null, 'Should not return anything for valid auth');
+				assert.ok(err.statusCode === 401, 'Method should return an error with 401 status code');
+				assert.ok(err.http_resp_msg.error === TEST_ERR.message, 'Method should return correct error message');
+
+				assert.ok(warn_log_stub.calledTwice === true, 'Warning logged twice');
+				assert.ok(warn_log_stub.firstCall.args[0] === TEST_ERR, 'Warning logged error');
+				assert.ok(
+					warn_log_stub.secondCall.args[0].includes(test_req.socket.remoteAddress) === true,
+					'Warning logged error with socket remote address'
+				);
+			});
+		});
+	});
+
 	describe('handlePostRequest()', () => {
 		const test_op_result = 'op result';
 		const test_op = 'chooseOperation';

@@ -194,22 +194,7 @@ function restOpenAPIHandler(resources: Resources) {
 	const httpSecurePort = env.get(terms.CONFIG_PARAMS.HTTP_SECUREPORT);
 	return (req: FastifyRequest & { hdb_user?: { role?: { permission?: { super_user: boolean } } } }) => {
 		if (req.hdb_user?.role?.permission?.super_user) {
-			const httpURL = new URL(`${req.protocol}://${req.hostname}`);
-			if (req.hostname.toLowerCase() === 'localhost' || req.hostname.match(/[\d.]+/)) {
-				// Only use ports when running against localhost, or an ip address.
-				if (httpSecurePort) {
-					httpURL.port = httpSecurePort;
-					httpURL.protocol = 'https:';
-				} else if (httpPort) {
-					httpURL.port = httpPort;
-					httpURL.protocol = 'http:';
-				}
-			} else {
-				// Otherwise, assume that port forwarding is happening, and possibly SSL termination.
-				httpURL.port = undefined;
-				httpURL.protocol = 'https:';
-			}
-			return generateJsonApi(resources, httpURL.toString());
+			return generateJsonApi(resources, calculateRestHttpURL(httpPort, httpSecurePort, req));
 		} else {
 			harperLogger.warn(
 				`{"ip":"${req.socket.remoteAddress}", "error":"attempt to access /api/openapi/rest without being super_user"`
@@ -217,6 +202,29 @@ function restOpenAPIHandler(resources: Resources) {
 			return new ServerError(`Forbidden`, 403);
 		}
 	};
+}
+
+export function calculateRestHttpURL(
+	httpPort: string | undefined,
+	httpSecurePort: string | undefined,
+	req: { hostname: string; protocol: string }
+): string {
+	const httpURL = new URL(`${req.protocol}://${req.hostname}`);
+	if (req.hostname.toLowerCase() === 'localhost' || req.hostname.match(/^[\d.:]+$/)) {
+		// Only use ports when running against localhost, or an ip address.
+		if (httpSecurePort) {
+			httpURL.port = httpSecurePort;
+			httpURL.protocol = 'https:';
+		} else if (httpPort) {
+			httpURL.port = httpPort;
+			httpURL.protocol = 'http:';
+		}
+	} else {
+		// Otherwise, assume that port forwarding is happening, and possibly SSL termination.
+		httpURL.port = '443';
+		httpURL.protocol = 'https:';
+	}
+	return httpURL.toString();
 }
 
 function handler(req: FastifyRequest<{ Body?: OperationRequestBody }>, reply: FastifyReply) {

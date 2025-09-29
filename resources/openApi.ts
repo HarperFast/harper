@@ -151,10 +151,13 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 		const hasDelete = typeof prototype.delete === 'function';
 		const hasPatch = typeof prototype.patch === 'function';
 
-		// API for path structure /my-resource/
-		let url = '/' + path + '/';
-		if (hasPost) {
+		const url = `/${path}/`;
+		if (!api.paths[url]) {
 			api.paths[url] = {};
+		}
+
+		// API for path structure /my-resource/
+		if (hasPost) {
 			api.paths[url].post = new Post(
 				strippedPath,
 				security,
@@ -176,8 +179,14 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 			);
 		}
 
+		api.paths[url].options = new Options(
+			queryParamsArray,
+			security,
+			{ '200': new ResponseOptions200() },
+			'retrieve information about the communication options available for a target resource or the server as a whole, without performing any resource action'
+		);
+
 		if (hasGet) {
-			if (!api.paths[url]) api.paths[url] = {};
 			api.paths[url].get = new Get(
 				queryParamsArray,
 				security,
@@ -186,16 +195,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 			);
 		}
 
-		if (!api.paths[url]) api.paths[url] = {};
-		api.paths[url].options = new Options(
-			queryParamsArray,
-			security,
-			{ '200': new ResponseOptions200() },
-			'retrieve information about the communication options available for a target resource or the server as a whole, without performing any resource action'
-		);
-
 		if (hasDelete) {
-			if (!api.paths[url]) api.paths[url] = {};
 			api.paths[url].delete = new Delete(
 				queryParamsArray,
 				security,
@@ -207,10 +207,20 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 		}
 
 		// API for path structure /my-resource/<record-id>
-		url = '/' + path + '/{' + primaryKey + '}';
+		const urlById = '/' + path + '/{' + primaryKey + '}';
+		if (!api.paths[urlById]) {
+			api.paths[urlById] = {};
+		}
+
+		api.paths[urlById].options = new Options(
+			queryParamsArray,
+			security,
+			{ '200': new ResponseOptions200() },
+			'retrieve information about the communication options available for a target resource or the server as a whole, without performing any resource action'
+		);
+
 		if (hasGet) {
-			api.paths[url] = {};
-			api.paths[url].get = new Get(
+			api.paths[urlById].get = new Get(
 				[primaryKeyParam],
 				security,
 				{ '200': new Response200({ $ref: SCHEMA_COMP_REF + strippedPath }) },
@@ -219,8 +229,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 		}
 
 		if (hasPut) {
-			if (!api.paths[url]) api.paths[url] = {};
-			api.paths[url].put = new Put(
+			api.paths[urlById].put = new Put(
 				[primaryKeyParam],
 				security,
 				strippedPath,
@@ -230,8 +239,7 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 		}
 
 		if (hasPatch) {
-			if (!api.paths[url]) api.paths[url] = {};
-			api.paths[url].patch = new Patch(
+			api.paths[urlById].patch = new Patch(
 				[primaryKeyParam],
 				security,
 				strippedPath,
@@ -241,17 +249,18 @@ export function generateJsonApi(resources: Resources, serverHttpURL: string) {
 		}
 
 		if (hasDelete) {
-			if (!api.paths[url]) api.paths[url] = {};
-			api.paths[url].delete = new Delete([primaryKeyParam], security, 'delete a record with the given primary key', {
+			api.paths[urlById].delete = new Delete([primaryKeyParam], security, 'delete a record with the given primary key', {
 				'204': new Response204(),
 			});
 		}
 
 		// API for path structure /my-resource/<record-id>.property
 		if (hasGet && propertyParamPath.schema.enum.length > 0) {
-			url = '/' + path + '/{' + primaryKey + '}.{property}';
-			api.paths[url] = {};
-			api.paths[url].get = new Get(
+			const urlByProperty = `/${path}/{${primaryKey}}.{property}`;
+			if (!api.paths[urlByProperty]) {
+				api.paths[urlByProperty] = {};
+			}
+			api.paths[urlByProperty].get = new Get(
 				[primaryKeyParam, propertyParamPath],
 				security,
 				{
