@@ -114,8 +114,6 @@ export async function verifyCertificate(
 	}
 
 	// All methods tried or skipped - determine failure handling
-	logger.warn?.('No verification method provided definitive result');
-
 	if (config.failureMode === 'fail-closed') {
 		return { valid: false, status: 'no-verification-available', method: 'disabled' };
 	}
