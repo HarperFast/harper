@@ -54,6 +54,7 @@ type StorageInfo = {
 	end?: number;
 	saving?: Promise<void>;
 	asString?: string;
+	deleteOnFailure?: boolean;
 };
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
 // We want to keep the file path private (but accessible to the extension)
@@ -504,7 +505,7 @@ global.createBlob = function (source: NodeJS.ReadableStream | NodeJS.Buffer, opt
 	return blob;
 };
 
-export function saveBlob(blob: FileBackedBlob) {
+export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 	let storageInfo = storageInfoForBlob.get(blob);
 	if (!storageInfo) {
 		storageInfo = { storageIndex: 0, fileId: null, store: currentStore };
@@ -513,6 +514,7 @@ export function saveBlob(blob: FileBackedBlob) {
 		if (storageInfo.fileId) return storageInfo; // if there is any file id, we are already saving and can return the info
 		storageInfo.store = currentStore;
 	}
+	if (deleteOnFailure) storageInfo.deleteOnFailure = true;
 
 	generateFilePath(storageInfo);
 	if (storageInfo.source) writeBlobWithStream(blob, storageInfo.source, storageInfo);
@@ -574,6 +576,7 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 			const fd = writeStream.fd;
 			if (error) {
 				if (fd) close(fd);
+				if (storageInfo.deleteOnFailure) unlink(filePath, (error) => {});
 				reject(error);
 			} else if (flush) {
 				// we just use fdatasync because we really aren't that concerned with flushing file metadata
@@ -948,7 +951,7 @@ export function startPreCommitBlobsForRecord(record: any, store: LMDBStore) {
 		const value = record[key];
 		if (value instanceof FileBackedBlob && value.saveBeforeCommit) {
 			currentStore = store;
-			const saving = saveBlob(value).saving ?? Promise.resolve();
+			const saving = saveBlob(value, true).saving ?? Promise.resolve();
 			completion = completion ? Promise.all(completion, saving) : saving;
 		}
 	}
