@@ -3,9 +3,8 @@
  * subscriptions that are needed and delegates them to the available threads. It also manages when connections are
  * lost and delegating subscriptions through other nodes
  */
-import { getDatabases, onUpdatedTable, table } from '../../resources/databases.ts';
+import { getDatabases } from '../../resources/databases.ts';
 import { workers, onMessageByType, whenThreadsStarted } from '../threads/manageThreads.js';
-import { tableUpdateListeners } from './replicationConnection.ts';
 import {
 	getThisNodeName,
 	getThisNodeUrl,
@@ -40,7 +39,7 @@ type ReplicationConnectionStatus = {
 	} & ConnectedWorkerStatus)[];
 } & ConnectedWorkerStatus;
 type DBReplicationStatusMap = Map<string, ReplicationConnectionStatus> & { iterator: any };
-const workers = [];
+
 let whenThreadsStarted = Promise.resolve();
 export function whenThreadsStartedPromise() {
 	return whenThreadsStarted;
@@ -236,7 +235,9 @@ export async function startOnMainThread(options) {
 			} else if (shouldSubscribe) {
 				nextWorkerIndex = nextWorkerIndex % httpWorkers.length; // wrap around as necessary
 				worker = httpWorkers[nextWorkerIndex++];
-
+				if (!worker) {
+					logger.warn('No http workers available to subscribe to node', node.name, node.url);
+				}
 				dbReplicationWorkers.set(databaseName, {
 					worker,
 					nodes,

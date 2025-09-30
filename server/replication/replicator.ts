@@ -460,7 +460,7 @@ export async function sendOperationToNode(node, operation, options) {
 export function subscribeToNode(request) {
 	try {
 		if (isMainThread) {
-			logger.trace(
+			logger.warn(
 				`Subscribing on main thread (should not happen in multi-threaded instance)`,
 				request.nodes[0].url,
 				request.database
