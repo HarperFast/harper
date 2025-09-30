@@ -40,11 +40,6 @@ type ReplicationConnectionStatus = {
 } & ConnectedWorkerStatus;
 type DBReplicationStatusMap = Map<string, ReplicationConnectionStatus> & { iterator: any };
 
-let whenThreadsStarted = Promise.resolve();
-export function whenThreadsStartedPromise() {
-	return whenThreadsStarted;
-}
-export function whenThreadsStartedResolvePromise() {}
 const NODE_SUBSCRIBE_DELAY = 200; // delay before sending node subscribe to other nodes, so operations can complete first
 const connectionReplicationMap = new Map<string, DBReplicationStatusMap>();
 export let disconnectedFromNode; // this is set by thread to handle when a node is disconnected (or notify main thread so it can handle)
@@ -68,7 +63,6 @@ export async function startOnMainThread(options) {
 			}
 		}
 	}
-	let assignEachSubscriptionToOwnConnection = !env.get(CONFIG_PARAMS.REPLICATION_SHARED_CONNECTIONS);
 	// we need to wait for the threads to start before we can start adding nodes
 	// but don't await this because this start function has to finish before the threads can start
 	whenThreadsStarted.then(async () => {
@@ -352,19 +346,9 @@ export async function startOnMainThread(options) {
 						continue;
 					}
 					if (node.endTime < Date.now()) continue; // already expired
-					const httpWorkers = workers.filter((worker: any) => worker.name === 'http');
-					nextWorkerIndex = nextWorkerIndex % httpWorkers.length; // wrap around as necessary
-					const worker = httpWorkers[nextWorkerIndex++];
-					node.worker = worker;
 					nodes.push(node);
 					logger.info(`Failing over ${connection.database} from ${connection.name} to ${nextNodeName}`);
-					if (worker) {
-						worker.postMessage({
-							type: 'subscribe-to-node',
-							database: connection.database,
-							nodes,
-						});
-					} else subscribeToNode({ database: connection.database, nodes });
+					connectToNextWorker(node, connection.database);
 					hasMovedNodes = true;
 				}
 				existingWorkerEntry.nodes = [existingWorkerEntry.nodes[0]]; // only keep our own subscription
@@ -416,19 +400,29 @@ export async function startOnMainThread(options) {
 			if (!failOverNodes) continue;
 			if (connected === false && failOverNodes[0].shard === restoredNode.shard) {
 				// if it is not connected and has extra nodes, grab them
+				for (let node of failOverNodes) {
+					connectToNextWorker(node, connection.database);
+				}
+
 				hasChanges = true;
 				mainWorkerEntry.nodes.push(failOverNodes[0]);
 			} else {
 				// remove the restored node from any other connections list of node
-				const filtered = failOverNodes.filter((node) => node && node.name !== restoredNode.name);
+				const filtered = failOverNodes.filter((node) => {
+					if (node) {
+						if (node.name === restoredNode.name && node.worker) {
+							node.worker.postMessage({
+								type: 'unsubscribe-to-node',
+								database: connection.database,
+							});
+							return false;
+						}
+						return true;
+					}
+				});
 				if (filtered.length < failOverNodes.length) {
-					// if we were in the list, reset the subscription
+					// if we were in the list, reset the nodes list
 					failOverConnections.nodes = filtered;
-					failOverWorker.postMessage({
-						type: 'subscribe-to-node',
-						database: connection.database,
-						nodes: failOverNodes,
-					});
 				}
 			}
 		}
@@ -441,6 +435,19 @@ export async function startOnMainThread(options) {
 			});
 		}
 	};
+	function connectToNextWorker(node, database) {
+		const httpWorkers = workers.filter((worker: any) => worker.name === 'http');
+		nextWorkerIndex = nextWorkerIndex % httpWorkers.length; // wrap around as necessary
+		const worker = httpWorkers[nextWorkerIndex++];
+		node.worker = worker;
+		if (worker) {
+			worker.postMessage({
+				type: 'subscribe-to-node',
+				database,
+				nodes: [node],
+			});
+		} else subscribeToNode({ database, nodes: [node] });
+	}
 	onMessageByType('disconnected-from-node', disconnectedFromNode);
 	onMessageByType('connected-to-node', connectedToNode);
 	onMessageByType('request-cluster-status', requestClusterStatus);
