@@ -6,10 +6,9 @@
 	"extends": [
 		"eslint:recommended",
 		"plugin:@typescript-eslint/recommended",
-		"plugin:sonarjs/recommended-legacy",
 		"prettier"
 	],
-	"plugins": ["@typescript-eslint", "sonarjs"],
+	"plugins": ["@typescript-eslint"],
 	"parser": "@typescript-eslint/parser",
 	"parserOptions": {
 		"projectService": true
@@ -19,19 +18,6 @@
 		"no-console": "off",
 		"no-constant-condition": "off",
 		"prefer-const": "off",
-		"sonarjs/cognitive-complexity": ["error", 250],
-		"sonarjs/no-useless-catch": "off",
-		"sonarjs/no-identical-functions": "off",
-		"sonarjs/no-inverted-boolean-check": "off",
-		"sonarjs/no-duplicated-branches": "off",
-		"sonarjs/no-redundant-jump": "off",
-		"sonarjs/new-cap": "off",
-		"sonarjs/public-static-readonly": "off",
-		"sonarjs/pseudo-random": "off",
-		"sonarjs/assertions-in-tests": "off",
-		"sonarjs/todo-tag": "off",
-		"sonarjs/no-nested-functions": "off",
-		"sonarjs/no-nested-template-literals": "off",
 		"@typescript-eslint/no-explicit-any": "off",
 		"@typescript-eslint/no-var-requires": "off"
 	},

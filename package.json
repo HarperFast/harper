@@ -170,7 +170,6 @@
 		"esbuild": "^0.25.5",
 		"eslint": "^8.57.1",
 		"eslint-config-prettier": "^9.1.0",
-		"eslint-plugin-sonarjs": "^3.0.1",
 		"eventsource": "^3.0.5",
 		"graphql-http": "^1.22.3",
 		"hook-std": "3.0.0",
