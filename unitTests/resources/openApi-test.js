@@ -7,10 +7,10 @@ describe('test openApi module', () => {
 	let resources;
 
 	before(async function () {
-		/*this.timeout(10000); // this seems to be causing a syntax error?
+		this.timeout(10000);
 		const { setupTestApp } = await import('../apiTests/setupTestApp.mjs');
 		await setupTestApp();
-		({ resources } = require('../../resources/Resources'));*/
+		({ resources } = require('../../resources/Resources'));
 	});
 
 	// TODO: this tests a zillion things that are irrelevant to the actual test, needs to be fixed to
