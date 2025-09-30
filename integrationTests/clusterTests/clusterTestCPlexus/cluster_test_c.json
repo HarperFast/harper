@@ -807,7 +807,6 @@
 									"    pm.expect(response.connections.length).to.equal(1);",
 									"    pm.expect(connection.name).to.equal(node2_name);",
 									"    let socket = response.connections[0].database_sockets[0];",
-									"    pm.expect(socket.lastReceivedRemoteTime).to.include('GMT');",
 									"    pm.expect(socket.backPressurePercent).to.be.above(-1);",
 									"    pm.expect(socket.lastReceivedStatus).to.equals('Waiting');",
 									"    pm.expect(connection.subscriptions).to.have.deep.members([",

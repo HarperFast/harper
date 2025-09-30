@@ -403,7 +403,7 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 			ratioOfBackPressureTime =
 				(ratioOfBackPressureTime * BACK_PRESSURE_INTERVAL + (isPausedForBackPressure ? durationSinceCheck : 0)) /
 				(BACK_PRESSURE_INTERVAL + durationSinceCheck);
-			replicationSharedStatus[BACK_PRESSURE_RATIO_POSITION] = ratioOfBackPressureTime;
+			if (replicationSharedStatus) replicationSharedStatus[BACK_PRESSURE_RATIO_POSITION] = ratioOfBackPressureTime;
 			lastBackPressureCheck = now;
 		}
 	}
