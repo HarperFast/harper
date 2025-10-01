@@ -31,7 +31,6 @@ Object.assign(
 		initSync,
 		setProperty,
 		initTestEnvironment,
-		setCloneVar,
 	})
 );
 
@@ -98,9 +97,7 @@ function doesPropFileExist() {
 		propFileExists = true;
 		const hdbPropsFile = PropertiesReader(bootPropPath);
 
-		installProps[hdbTerms.HDB_SETTINGS_NAMES.INSTALL_USER] = hdbPropsFile.get(
-			hdbTerms.HDB_SETTINGS_NAMES.INSTALL_USER
-		);
+		installProps[hdbTerms.HDB_SETTINGS_NAMES.INSTALL_USER] = hdbPropsFile.get(hdbTerms.HDB_SETTINGS_NAMES.INSTALL_USER);
 		installProps[hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY] = hdbPropsFile.get(
 			hdbTerms.HDB_SETTINGS_NAMES.SETTINGS_PATH_KEY
 		);
@@ -120,7 +117,7 @@ function doesPropFileExist() {
 function initSync(force = false) {
 	try {
 		// If readPropsFile returns false, we are installing and don't need to read anything yet.
-		if (((propFileExists || doesPropFileExist() || commonUtils.noBootFile()) && !cloneNodeRunning) || force) {
+		if (propFileExists || doesPropFileExist() || commonUtils.noBootFile() || force) {
 			configUtils.initConfig(force);
 			installProps[hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY] = configUtils.getConfigValue(
 				hdbTerms.HDB_SETTINGS_NAMES.HDB_ROOT_KEY
@@ -132,11 +129,6 @@ function initSync(force = false) {
 		console.error(err);
 		process.exit(1);
 	}
-}
-
-let cloneNodeRunning = false;
-function setCloneVar(bool) {
-	cloneNodeRunning = bool;
 }
 
 /**
@@ -174,10 +166,7 @@ function initTestEnvironment(testConfigObj = {}) {
 		setProperty(hdbTerms.CONFIG_PARAMS.HTTP_PORT, 9926);
 		setProperty(hdbTerms.HDB_SETTINGS_NAMES.SERVER_PORT_KEY, 9925);
 		setProperty(hdbTerms.CONFIG_PARAMS.OPERATIONSAPI_NETWORK_PORT, 9925);
-		setProperty(
-			hdbTerms.HDB_SETTINGS_NAMES.CORS_ENABLED_KEY,
-			commonUtils.isEmpty(cors_enabled) ? false : cors_enabled
-		);
+		setProperty(hdbTerms.HDB_SETTINGS_NAMES.CORS_ENABLED_KEY, commonUtils.isEmpty(cors_enabled) ? false : cors_enabled);
 		setProperty(hdbTerms.CONFIG_PARAMS.HTTP_CORS, commonUtils.isEmpty(cors_enabled) ? false : cors_enabled);
 		setProperty(hdbTerms.HDB_SETTINGS_NAMES.MAX_CUSTOM_FUNCTION_PROCESSES, 2);
 		setProperty(hdbTerms.HDB_SETTINGS_NAMES.MAX_HDB_PROCESSES, 4);

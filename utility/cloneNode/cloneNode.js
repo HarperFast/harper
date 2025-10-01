@@ -201,7 +201,6 @@ module.exports = async function cloneNode(background = false, run = false) {
 
 	if (hdbConfig?.cloned && clonedVar !== 'false') {
 		console.log('Instance marked as cloned, clone will not run');
-		envMgr.setCloneVar(false);
 		envMgr.initSync();
 		return main();
 	}
@@ -210,7 +209,6 @@ module.exports = async function cloneNode(background = false, run = false) {
 	leaderDbs = await leaderReq({ operation: OPERATIONS_ENUM.DESCRIBE_ALL });
 
 	await cloneConfig();
-	envMgr.setCloneVar(false);
 
 	fs.ensureDir(envMgr.get(hdbTerms.CONFIG_PARAMS.LOGGING_ROOT));
 	hdbLog.initLogSettings();
@@ -238,7 +236,6 @@ module.exports = async function cloneNode(background = false, run = false) {
 async function cloneUsingWS() {
 	if (hdbConfig?.cloned && clonedVar !== 'false') {
 		console.log('Instance marked as cloned, clone will not run');
-		envMgr.setCloneVar(false);
 		envMgr.initSync();
 		// Start HDB
 		return main();
@@ -258,7 +255,6 @@ async function cloneUsingWS() {
 		setIgnoreExisting(true);
 		await install();
 	} else {
-		envMgr.setCloneVar(false);
 		envMgr.initSync();
 	}
 

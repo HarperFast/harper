@@ -163,7 +163,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 					rawBytes.copy(HEADER, 0, 0, HEADER_SIZE);
 					const headerValue = headerView.getBigUint64(0);
 					if (Number(headerValue >> 48n) === ERROR_TYPE) {
-						throw new Error('Error in blob: ' + buffer.subarray(HEADER_SIZE));
+						throw new Error('Error in blob: ' + rawBytes.subarray(HEADER_SIZE));
 					}
 
 					size = Number(headerValue & 0xffffffffffffn);
@@ -312,7 +312,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 							buffer.copy(HEADER, 0, 0, HEADER_SIZE);
 							const headerValue = headerView.getBigUint64(0);
 							if (Number(headerValue >> 48n) === ERROR_TYPE) {
-								return onError(new Error('Error in blob: ' + buffer.subarray(HEADER_SIZE)));
+								return onError(new Error('Error in blob: ' + buffer.subarray(HEADER_SIZE, bytesRead)));
 							}
 							size = Number(headerValue & 0xffffffffffffn);
 							if (size < UNKNOWN_SIZE && blob.size !== size) {
