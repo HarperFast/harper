@@ -120,6 +120,25 @@ describe('Blob test', () => {
 		assert(retrievedBytes.equals(random));
 		assert.equal(record.blob.size, random.length);
 	});
+	it('create a blob from a stream with saveBeforeCommit and abort it', async () => {
+		let testString = 'this is a test string for deletion'.repeat(12);
+		let blob = await createBlob(
+			Readable.from(
+				(async function* () {
+					for (let i = 0; i < 5; i++) {
+						yield testString + i;
+					}
+					throw new Error('test error');
+				})()
+			),
+			{ saveBeforeCommit: true }
+		);
+		let caughtError;
+		await assert.rejects(() => BlobTest.put({ id: 111, blob }));
+		let filePath = getFilePathForBlob(blob);
+		await delay(20); // wait for the file to be deleted
+		assert(!existsSync(filePath));
+	});
 	it('create a blob from a buffer and call save() but then abort', async () => {
 		let blob;
 		try {

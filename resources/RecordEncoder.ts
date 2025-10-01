@@ -354,7 +354,7 @@ export function recordUpdater(store, table_id, audit_store) {
 			if (options?.originatingOperation) extended_type |= HAS_ORIGINATING_OPERATION;
 			// we use resolve_record outside of transaction, so must explicitly make it conditional
 			if (resolve_record) put_options.ifVersion = if_version = existing_entry?.version ?? null;
-			if (existing_entry && existing_entry.value && existing_entry.metadataFlags & HAS_BLOBS) {
+			if (existing_entry && existing_entry.value && type !== 'message' && existing_entry.metadataFlags & HAS_BLOBS) {
 				if (!audit_store.getBinaryFast(existing_entry.localTime)) {
 					// if it used to have blobs, and it doesn't exist in the audit store, we need to delete the old blobs
 					deleteBlobsInObject(existing_entry.value);
