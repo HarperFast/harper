@@ -514,7 +514,7 @@ export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 		if (storageInfo.fileId) return storageInfo; // if there is any file id, we are already saving and can return the info
 		storageInfo.store = currentStore;
 	}
-	if (deleteOnFailure) storageInfo.deleteOnFailure = true;
+	storageInfo.deleteOnFailure = deleteOnFailure;
 
 	generateFilePath(storageInfo);
 	if (storageInfo.source) writeBlobWithStream(blob, storageInfo.source, storageInfo);
