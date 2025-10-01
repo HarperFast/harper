@@ -310,7 +310,6 @@ describe('Blob test', () => {
 			console.log('received error event');
 			eventError = err;
 		});
-		console.log('testing stream of aborted blob');
 		try {
 			for await (let entry of blob.stream()) {
 				console.log('got entry');
@@ -322,7 +321,6 @@ describe('Blob test', () => {
 		assert(eventError);
 		thrownError = null;
 		eventError = null;
-		console.log('testing retrieval of aborted blob');
 		let record = await BlobTest.get(5);
 		record.blob.on('error', (err) => {
 			eventError = err;
@@ -402,6 +400,15 @@ describe('Blob test', () => {
 			);
 		}
 		await Promise.all(promises);
+	});
+	it('publishing over a record with blobs should not leave orphans', async () => {
+		let testString = 'this is a test string for deletion'.repeat(256);
+		let blob = await createBlob(Readable.from(testString));
+		await BlobTest.put({ id: 20, blob });
+		for (let i = 0; i < 5; i++) {
+			await BlobTest.publish(20, { id: 20, noBlobs: true });
+		}
+		// hopefully no orphans below
 	});
 	it('cleanupOrphans', async () => {
 		let orphansDeleted = await cleanupOrphans(getDatabases().test);
