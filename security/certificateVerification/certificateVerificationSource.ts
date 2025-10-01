@@ -6,7 +6,6 @@ import { Resource } from '../../resources/Resource.ts';
 import type { SourceContext, Query } from '../../resources/ResourceInterface.ts';
 import { loggerWithTag } from '../../utility/logging/logger.js';
 import type { CertificateVerificationContext } from './types.ts';
-import { CRL_DEFAULTS, OCSP_DEFAULTS } from './verificationConfig.ts';
 
 const logger = loggerWithTag('cert-verification-source');
 
@@ -32,7 +31,6 @@ async function loadVerificationFunctions() {
 export class CertificateVerificationSource extends Resource {
 	async get(query: Query) {
 		const id = query.id as string;
-		logger.debug?.(`CertificateVerificationSource.get called for ID: "${id}"`);
 
 		// Get the certificate data from requestContext
 		const context = this.getContext() as SourceContext<CertificateVerificationContext>;
@@ -40,7 +38,6 @@ export class CertificateVerificationSource extends Resource {
 
 		if (!requestContext || !requestContext.certPem || !requestContext.issuerPem) {
 			// Likely a source request for an expired entry - we can't verify without cert and issuer data
-			logger.debug?.(`No requestContext for cache key: ${id} - cannot refresh without cert data, returning null`);
 			return null;
 		}
 
@@ -55,7 +52,6 @@ export class CertificateVerificationSource extends Resource {
 		} else {
 			method = 'unknown';
 		}
-		logger.debug?.(`Detected verification method: ${method} for ID: ${id}`);
 
 		// Load verification functions
 		await loadVerificationFunctions();
@@ -63,23 +59,21 @@ export class CertificateVerificationSource extends Resource {
 		// Perform verification based on method
 		let result;
 		let methodConfig;
-		let defaults;
 
 		if (method === 'crl') {
-			methodConfig = config?.crl ?? {};
-			defaults = CRL_DEFAULTS;
-			result = await performCRLCheck(certPemStr, issuerPemStr, methodConfig);
+			methodConfig = config.crl;
+			// Pass distributionPoint as an array if available (for CRL fetch)
+			const crlUrls = requestContext.distributionPoint ? [requestContext.distributionPoint] : undefined;
+			result = await performCRLCheck(certPemStr, issuerPemStr, methodConfig, crlUrls);
 		} else if (method === 'ocsp') {
-			methodConfig = config?.ocsp ?? {};
-			defaults = OCSP_DEFAULTS;
+			methodConfig = config.ocsp;
 			result = await performOCSPCheck(certPemStr, issuerPemStr, methodConfig, ocspUrls);
 		} else {
 			throw new Error(`Unsupported verification method: ${method} for ID: ${id}`);
 		}
 
 		// Handle result consistently
-		const ttl = methodConfig.cacheTtl ?? defaults.cacheTtl;
-		const expiresAt = Date.now() + ttl;
+		const expiresAt = Date.now() + methodConfig.cacheTtl;
 
 		return {
 			certificate_id: id,

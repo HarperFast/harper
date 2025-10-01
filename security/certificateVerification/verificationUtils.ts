@@ -178,7 +178,7 @@ export function extractRevocationUrls(certPem: string): { crlUrls: string[]; ocs
 									// Check if accessLocation is a URI (context tag 6)
 									if (accessLocation.idBlock.tagNumber === 6) {
 										const url = String.fromCharCode(
-											...Array.from((accessLocation.valueBlock as any).valueHexView)
+											...Array.from((accessLocation.valueBlock as any).valueHexView as Uint8Array)
 										);
 										if (url.startsWith('http://') || url.startsWith('https://')) {
 											ocspUrls.push(url);
@@ -245,7 +245,7 @@ export function extractOCSPUrls(certPem: string): string[] {
 						// Check if accessLocation is a URI (context tag 6)
 						if (accessLocation.idBlock.tagNumber === 6) {
 							const url = String.fromCharCode(
-								...Array.from((accessLocation.valueBlock as any).valueHexView)
+								...Array.from((accessLocation.valueBlock as any).valueHexView as Uint8Array)
 							);
 							if (url.startsWith('http://') || url.startsWith('https://')) {
 								ocspUrls.push(url);
@@ -393,32 +393,38 @@ export function extractIssuerKeyId(certPem: string): string {
  * Get shared certificate verification cache table
  * @returns Harper table instance for certificate verification cache
  */
+// Cache the certificate cache table instance to avoid recreating it
+let certificateCacheTable: ReturnType<typeof table> | null = null;
+
 export function getCertificateCacheTable() {
-	return table({
-		table: 'hdb_certificate_cache',
-		database: 'system',
-		attributes: [
-			{
-				name: 'certificate_id',
-				isPrimaryKey: true,
-			},
-			{
-				name: 'status', // 'good', 'revoked', 'unknown'
-			},
-			{
-				name: 'reason',
-			},
-			{
-				name: 'checked_at',
-			},
-			{
-				name: 'expiresAt',
-				expiresAt: true,
-				indexed: true,
-			},
-			{
-				name: 'method', // 'ocsp' or 'crl'
-			},
-		],
-	});
+	if (!certificateCacheTable) {
+		certificateCacheTable = table({
+			table: 'hdb_certificate_cache',
+			database: 'system',
+			attributes: [
+				{
+					name: 'certificate_id',
+					isPrimaryKey: true,
+				},
+				{
+					name: 'status', // 'good', 'revoked', 'unknown'
+				},
+				{
+					name: 'reason',
+				},
+				{
+					name: 'checked_at',
+				},
+				{
+					name: 'expiresAt',
+					expiresAt: true,
+					indexed: true,
+				},
+				{
+					name: 'method', // 'ocsp' or 'crl'
+				},
+			],
+		});
+	}
+	return certificateCacheTable;
 }

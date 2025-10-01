@@ -11,7 +11,6 @@ import {
 	createCacheKey,
 	getCertificateCacheTable as getSharedCertificateCacheTable,
 } from './verificationUtils.ts';
-import { OCSP_DEFAULTS } from './verificationConfig.ts';
 import type {
 	CertificateVerificationResult,
 	CertificateVerificationContext,
@@ -50,11 +49,8 @@ export async function verifyOCSP(
 	config?: OCSPConfig,
 	ocspUrls?: string[]
 ): Promise<CertificateVerificationResult> {
-	logger.debug?.('verifyOCSP called');
-
 	// Check if OCSP verification is disabled
 	if (config?.enabled === false) {
-		logger.debug?.('OCSP verification is disabled, allowing certificate');
 		return { valid: true, status: 'disabled', method: 'disabled' };
 	}
 
@@ -66,12 +62,11 @@ export async function verifyOCSP(
 
 		// Create a cache key that includes all verification parameters
 		const cacheKey = createCacheKey(certPemStr, issuerPemStr, 'ocsp');
-		logger.trace?.(`OCSP cache key: ${cacheKey}`);
 
 		// Get the cache table - Harper will automatically handle
 		// concurrent requests and cache stampede prevention
 		// Pass certificate data as context - Harper will make it available as requestContext in the source
-		const cacheEntry = await getCertificateCacheTable().get(cacheKey, {
+		const cacheEntry = await (getCertificateCacheTable() as any).get(cacheKey, {
 			certPem: certPemStr,
 			issuerPem: issuerPemStr,
 			ocspUrls,
@@ -81,8 +76,7 @@ export async function verifyOCSP(
 		if (!cacheEntry) {
 			// This should not happen if the source is configured correctly
 			// but handle it gracefully
-			const failureMode = config?.failureMode ?? OCSP_DEFAULTS.failureMode;
-			if (failureMode === 'fail-closed') {
+			if (config.failureMode === 'fail-closed') {
 				return { valid: false, status: 'error', error: 'Cache fetch failed', method: 'ocsp' };
 			}
 
@@ -104,8 +98,7 @@ export async function verifyOCSP(
 		logger.error?.(`OCSP verification error: ${error}`);
 
 		// Check failure mode
-		const failureMode = config?.failureMode ?? OCSP_DEFAULTS.failureMode;
-		if (failureMode === 'fail-closed') {
+		if (config.failureMode === 'fail-closed') {
 			return { valid: false, status: 'error', error: (error as Error).message, method: 'ocsp' };
 		}
 
@@ -123,21 +116,18 @@ export async function verifyOCSP(
  * @param ocspUrls - Optional pre-extracted OCSP responder URLs (avoids re-parsing)
  * @returns OCSP check result
  */
-export async function performOCSPCheck(certPem: string, issuerPem: string, config: any, ocspUrls?: string[]): Promise<OCSPCheckResult> {
-	const timeout = config?.timeout ?? OCSP_DEFAULTS.timeout;
-	logger.debug?.(`Performing OCSP check with timeout: ${timeout}`);
-	logger.debug?.(`Client certificate length: ${certPem.length}, Issuer certificate length: ${issuerPem.length}`);
-	logger.debug?.(`Client cert start: ${certPem.substring(0, 50)}...`);
-	logger.debug?.(`Issuer cert start: ${issuerPem.substring(0, 50)}...`);
-
+export async function performOCSPCheck(
+	certPem: string,
+	issuerPem: string,
+	config: any,
+	ocspUrls?: string[]
+): Promise<OCSPCheckResult> {
 	try {
-		logger.debug?.(`Calling getCertStatus with timeout: ${timeout}${ocspUrls?.length ? `, using provided URL: ${ocspUrls[0]}` : ''}`);
 		const response = await getCertStatus(certPem, {
 			ca: issuerPem,
-			timeout,
-			...(ocspUrls?.length && { ocspUrl: ocspUrls[0] })
+			timeout: config.timeout,
+			...(ocspUrls?.length && { ocspUrl: ocspUrls[0] }),
 		});
-		logger.debug?.(`OCSP response: ${response.status}`);
 
 		// Map response status to internal format
 		switch (response.status) {
@@ -150,8 +140,6 @@ export async function performOCSPCheck(certPem: string, issuerPem: string, confi
 		}
 	} catch (error) {
 		const err = error as Error;
-		logger.debug?.(`OCSP check failed: ${err.message}`);
-		logger.debug?.(`Error stack: ${err.stack}`);
 
 		// Return appropriate error based on type
 		const reason = err.name === 'AbortError' ? 'timeout' : 'ocsp-error';

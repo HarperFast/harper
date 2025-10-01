@@ -243,15 +243,24 @@ operationsApi:
 		const cert = readFileSync(join(certsPath, 'client-revoked-chain.crt'));
 		const key = readFileSync(join(certsPath, 'client-revoked.key'));
 		const ca = readFileSync(join(certsPath, 'harper-ca.crt'));
+
+		// With fail-closed mode (default), revoked certificates should be rejected
+		let rejected = false;
+		let response;
 		try {
-			await secureReqRest('/', {
+			response = await secureReqRest('/', {
 				cert: cert,
 				key: key,
 				ca: ca,
 				rejectUnauthorized: false,
-			}).expect(401); // Should reject revoked certificate
+			});
+			// If we get here without error, check for 401 status
+			if (response.status === 401) {
+				rejected = true;
+			}
 		} catch (error) {
-			// Connection errors are expected if certificate is rejected early
+			rejected = true;
+			// Connection errors are also acceptable for rejection
 			assert.ok(
 				error.code === 'ECONNRESET' ||
 					error.code === 'ECONNREFUSED' ||
@@ -260,6 +269,8 @@ operationsApi:
 				`Expected connection error due to revoked certificate, got: "${error.message}"`
 			);
 		}
+
+		assert.ok(rejected, 'Revoked certificate should have been rejected (401 or connection error)');
 	});
 
 	it('should cache CRL responses', async (t) => {

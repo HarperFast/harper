@@ -4,7 +4,8 @@
 
 import { loggerWithTag } from '../../utility/logging/logger.js';
 import { packageJson } from '../../utility/packageUtils.js';
-import type { CertificateVerificationConfig, OCSPConfig, CRLConfig, OCSPDefaults, CRLDefaults } from './types.ts';
+import type { CertificateVerificationConfig } from './types.ts';
+import { validateAndParseCertificateVerificationConfig } from './configValidation.ts';
 
 const logger = loggerWithTag('cert-verification-config');
 
@@ -20,21 +21,10 @@ const configCache = new WeakMap<Record<string, any>, CertificateVerificationConf
 let lastPrimitiveConfig: boolean | null | undefined = null;
 let lastPrimitiveResult: CertificateVerificationConfig | false | null = null;
 
-// Default configuration values for OCSP
-export const OCSP_DEFAULTS: OCSPDefaults = {
-	timeout: 5000, // 5 seconds
-	cacheTtl: 3600000, // 1 hour
-	errorCacheTtl: 300000, // 5 minutes (shorter for faster recovery)
-	failureMode: 'fail-open',
-};
-
-// Default configuration values for CRL
-export const CRL_DEFAULTS: CRLDefaults = {
-	timeout: 10000, // 10 seconds
-	cacheTtl: 86400000, // 24 hours
-	failureMode: 'fail-open',
-	gracePeriod: 86400000, // 24 hours after nextUpdate
-};
+// Track validation errors to prevent repeated error logging and provide graceful degradation
+// Maps config object to the error that occurred during validation
+const validationErrorCache = new WeakMap<Record<string, any>, Error>();
+let lastPrimitiveValidationError: Error | null = null;
 
 /**
  * Cached version of getCertificateVerificationConfig to avoid redundant parsing
@@ -46,14 +36,28 @@ export const CRL_DEFAULTS: CRLDefaults = {
  * - Primitive values (boolean, null, undefined) use simple reference equality
  * - No strong references held to config objects, preventing memory accumulation
  *
+ * ERROR HANDLING:
+ * - Invalid config causes validation errors to be thrown on first access
+ * - Validation errors are logged once and then cached
+ * - Subsequent accesses with the same invalid config return false (disabled) to prevent
+ *   repeated error logging and allow the application to continue running
+ * - This provides fail-safe behavior: invalid security config defaults to disabled
+ *   rather than crashing on every request
+ *
  * @param mtlsConfig - The mTLS configuration from env.get()
- * @returns Configuration object or false if verification is disabled
+ * @returns Configuration object or false if verification is disabled or invalid
  */
 export function getCachedCertificateVerificationConfig(
 	mtlsConfig?: boolean | Record<string, any> | null
 ): false | CertificateVerificationConfig {
 	// Handle primitive values (boolean, null, undefined) with simple caching
 	if (typeof mtlsConfig === 'boolean' || mtlsConfig == null) {
+		// Check if we've already seen a validation error for this primitive config
+		if (mtlsConfig === lastPrimitiveConfig && lastPrimitiveValidationError) {
+			logger.trace?.('Using cached validation error result (primitive) - returning disabled');
+			return false;
+		}
+
 		if (mtlsConfig === lastPrimitiveConfig && lastPrimitiveResult !== null) {
 			logger.trace?.('Using cached certificate verification config (primitive)');
 			return lastPrimitiveResult;
@@ -61,8 +65,25 @@ export function getCachedCertificateVerificationConfig(
 
 		logger.trace?.('Parsing and caching certificate verification config (primitive)');
 		lastPrimitiveConfig = mtlsConfig as boolean | null | undefined;
-		lastPrimitiveResult = getCertificateVerificationConfig(mtlsConfig);
-		return lastPrimitiveResult;
+		try {
+			lastPrimitiveResult = getCertificateVerificationConfig(mtlsConfig);
+			lastPrimitiveValidationError = null; // Clear any previous error
+			return lastPrimitiveResult;
+		} catch (error) {
+			// Cache the validation error to prevent repeated logging
+			lastPrimitiveValidationError = error as Error;
+			logger.error?.(
+				`Certificate verification config validation failed - defaulting to disabled: ${(error as Error).message}`
+			);
+			return false; // Fail-safe: invalid config = disabled verification
+		}
+	}
+
+	// Check for cached validation error
+	const cachedError = validationErrorCache.get(mtlsConfig);
+	if (cachedError) {
+		logger.trace?.('Using cached validation error result (object) - returning disabled');
+		return false;
 	}
 
 	const cached = configCache.get(mtlsConfig);
@@ -73,9 +94,18 @@ export function getCachedCertificateVerificationConfig(
 
 	// Cache miss: parse and store the result
 	logger.trace?.('Parsing and caching certificate verification config (object)');
-	const result = getCertificateVerificationConfig(mtlsConfig);
-	configCache.set(mtlsConfig, result);
-	return result;
+	try {
+		const result = getCertificateVerificationConfig(mtlsConfig);
+		configCache.set(mtlsConfig, result);
+		return result;
+	} catch (error) {
+		// Cache the validation error to prevent repeated logging
+		validationErrorCache.set(mtlsConfig, error as Error);
+		logger.error?.(
+			`Certificate verification config validation failed - defaulting to disabled: ${(error as Error).message}`
+		);
+		return false; // Fail-safe: invalid config = disabled verification
+	}
 }
 
 /**
@@ -89,158 +119,20 @@ function getCertificateVerificationConfig(
 	logger.trace?.(`getCertificateVerificationConfig called with: ${JSON.stringify({ mtlsConfig })}`);
 
 	if (!mtlsConfig) return false;
-	if (mtlsConfig === true) {
-		logger.debug?.('mTLS enabled with default certificate verification');
-		return {
-			failureMode: CRL_DEFAULTS.failureMode,
-		};
-	}
 
-	const verificationConfig = mtlsConfig.certificateVerification;
+	const verificationConfig = mtlsConfig === true ? undefined : mtlsConfig.certificateVerification;
 	logger.trace?.(`Certificate verification config: ${JSON.stringify({ verificationConfig })}`);
 
-	if (verificationConfig == null) {
-		// Default to enabled
-		return {
-			failureMode: CRL_DEFAULTS.failureMode,
-		};
-	}
-	if (verificationConfig === false) return false;
+	// Default to disabled for initial rollout to allow intentional real-world testing
+	// Users must explicitly enable certificate verification with certificateVerification: true or config object
+	if (verificationConfig == null || verificationConfig === false) return false;
 
-	// Return config object for true, otherwise return the parsed config object
-	if (verificationConfig === true) {
-		return {
-			failureMode: CRL_DEFAULTS.failureMode,
-		};
-	}
+	// Pass through validator for enabled cases (true or object)
+	// Convert true to empty object so validator applies all defaults
+	// This ensures we always get a complete config with crl and ocsp defaults
+	const configToValidate = verificationConfig === true ? {} : verificationConfig;
 
-	return parseVerificationConfig(verificationConfig);
-}
-
-/**
- * Parse and validate the certificate verification configuration
- * @param config - Raw configuration object
- * @returns Parsed and validated configuration
- */
-function parseVerificationConfig(config: Record<string, any>): CertificateVerificationConfig {
-	const parsed: CertificateVerificationConfig = {
-		failureMode: config.failureMode ?? CRL_DEFAULTS.failureMode,
-	};
-
-	// Parse OCSP configuration
-	if (config.ocsp !== undefined) {
-		parsed.ocsp = parseOCSPConfig(config.ocsp);
-	}
-
-	// Parse CRL configuration
-	if (config.crl !== undefined) {
-		parsed.crl = parseCRLConfig(config.crl);
-	}
-
-	// Validate global failure mode
-	if (parsed.failureMode && !['fail-open', 'fail-closed'].includes(parsed.failureMode)) {
-		logger.warn?.(`Invalid failureMode: ${parsed.failureMode}, using default: ${CRL_DEFAULTS.failureMode}`);
-		parsed.failureMode = CRL_DEFAULTS.failureMode;
-	}
-
-	return parsed;
-}
-
-/**
- * Parse OCSP-specific configuration
- * @param ocspConfig - OCSP configuration object or boolean
- * @returns Parsed OCSP configuration
- */
-function parseOCSPConfig(ocspConfig: boolean | Record<string, any>): OCSPConfig {
-	if (ocspConfig === false) {
-		return { enabled: false };
-	}
-
-	if (ocspConfig === true || ocspConfig == null) {
-		return {
-			enabled: true,
-			timeout: OCSP_DEFAULTS.timeout,
-			cacheTtl: OCSP_DEFAULTS.cacheTtl,
-			failureMode: OCSP_DEFAULTS.failureMode,
-		};
-	}
-
-	return {
-		enabled: ocspConfig.enabled !== false, // Default to enabled unless explicitly disabled
-		timeout: ocspConfig.timeout ?? OCSP_DEFAULTS.timeout,
-		cacheTtl: ocspConfig.cacheTtl ?? OCSP_DEFAULTS.cacheTtl,
-		failureMode: ocspConfig.failureMode ?? OCSP_DEFAULTS.failureMode,
-	};
-}
-
-/**
- * Parse CRL-specific configuration
- * @param crlConfig - CRL configuration object or boolean
- * @returns Parsed CRL configuration
- */
-function parseCRLConfig(crlConfig: boolean | Record<string, any>): CRLConfig {
-	if (crlConfig === false) {
-		return { enabled: false };
-	}
-
-	if (crlConfig === true || crlConfig == null) {
-		return {
-			enabled: true,
-			timeout: CRL_DEFAULTS.timeout,
-			cacheTtl: CRL_DEFAULTS.cacheTtl,
-			failureMode: CRL_DEFAULTS.failureMode,
-			gracePeriod: CRL_DEFAULTS.gracePeriod,
-		};
-	}
-
-	return {
-		enabled: crlConfig.enabled !== false, // Default to enabled unless explicitly disabled
-		timeout: crlConfig.timeout ?? CRL_DEFAULTS.timeout,
-		cacheTtl: crlConfig.cacheTtl ?? CRL_DEFAULTS.cacheTtl,
-		failureMode: crlConfig.failureMode ?? CRL_DEFAULTS.failureMode,
-		gracePeriod: crlConfig.gracePeriod ?? CRL_DEFAULTS.gracePeriod,
-	};
-}
-
-/**
- * Get the effective OCSP configuration with defaults applied
- * @param config - Certificate verification configuration
- * @returns OCSP configuration with defaults
- */
-export function getOCSPConfig(config?: CertificateVerificationConfig): OCSPConfig {
-	if (!config?.ocsp) {
-		return {
-			enabled: true,
-			timeout: OCSP_DEFAULTS.timeout,
-			cacheTtl: OCSP_DEFAULTS.cacheTtl,
-			failureMode: config?.failureMode ?? OCSP_DEFAULTS.failureMode,
-		};
-	}
-
-	return {
-		...config.ocsp,
-		failureMode: config.ocsp.failureMode ?? config.failureMode ?? OCSP_DEFAULTS.failureMode,
-	};
-}
-
-/**
- * Get the effective CRL configuration with defaults applied
- * @param config - Certificate verification configuration
- * @returns CRL configuration with defaults
- */
-export function getCRLConfig(config?: CertificateVerificationConfig): CRLConfig {
-	if (!config?.crl) {
-		return {
-			enabled: true,
-			timeout: CRL_DEFAULTS.timeout,
-			cacheTtl: CRL_DEFAULTS.cacheTtl,
-			failureMode: config?.failureMode ?? CRL_DEFAULTS.failureMode,
-			gracePeriod: CRL_DEFAULTS.gracePeriod,
-		};
-	}
-
-	return {
-		...config.crl,
-		failureMode: config.crl.failureMode ?? config.failureMode ?? CRL_DEFAULTS.failureMode,
-	};
+	// Let validation errors propagate up to getCachedCertificateVerificationConfig
+	// which will log them once and cache the error
+	return validateAndParseCertificateVerificationConfig(configToValidate);
 }

@@ -23,7 +23,7 @@
 
 import { loggerWithTag } from '../../utility/logging/logger.js';
 import { extractCertificateChain, extractRevocationUrls, bufferToPem } from './verificationUtils.ts';
-import { getCachedCertificateVerificationConfig, getOCSPConfig, getCRLConfig } from './verificationConfig.ts';
+import { getCachedCertificateVerificationConfig } from './verificationConfig.ts';
 import { verifyOCSP } from './ocspVerification.ts';
 import { verifyCRL } from './crlVerification.ts';
 import type { PeerCertificate, CertificateVerificationResult } from './types.ts';
@@ -69,11 +69,10 @@ export async function verifyCertificate(
 
 	// Try CRL first (can provide definitive results)
 	if (crlUrls.length > 0) {
-		const crlConfig = getCRLConfig(config);
-		if (crlConfig.enabled) {
+		if (config.crl.enabled) {
 			try {
 				logger.debug?.('Attempting CRL verification');
-				const result = await verifyCRL(certChain[0].cert, certChain[0].issuer, crlConfig, crlUrls);
+				const result = await verifyCRL(certChain[0].cert, certChain[0].issuer, config.crl, crlUrls);
 
 				// Return on definitive result (good or revoked)
 				if (result.status === 'good' || result.status === 'revoked') {
@@ -94,11 +93,10 @@ export async function verifyCertificate(
 
 	// Fall back to OCSP if available (real-time status)
 	if (ocspUrls.length > 0) {
-		const ocspConfig = getOCSPConfig(config);
-		if (ocspConfig.enabled) {
+		if (config.ocsp.enabled) {
 			try {
 				logger.debug?.('Attempting OCSP verification');
-				const result = await verifyOCSP(certChain[0].cert, certChain[0].issuer, ocspConfig, ocspUrls);
+				const result = await verifyOCSP(certChain[0].cert, certChain[0].issuer, config.ocsp, ocspUrls);
 
 				// Return result (definitive or not)
 				logger.debug?.(`OCSP verification result: ${result.status}`);
