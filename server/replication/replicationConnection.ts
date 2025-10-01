@@ -78,7 +78,7 @@ export const BACK_PRESSURE_RATIO_POSITION = 6;
 export const RECEIVING_STATUS_WAITING = 0;
 export const RECEIVING_STATUS_RECEIVING = 1;
 const cli_args = minimist(process.argv);
-const leaderUrl: string = cli_args.HDB_LEADER_URL ?? process.env.HDB_LEADER_URL;
+let leaderUrl: string = cli_args.HDB_LEADER_URL ?? process.env.HDB_LEADER_URL;
 
 export const tableUpdateListeners = new Map();
 // This a map of the database name to the subscription object, for the subscriptions from our tables to the replication module
@@ -698,7 +698,7 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 												' for record ' +
 												(stream.recordId ?? 'unknown') +
 												' from ' +
-												remote_node_name
+												remoteNodeName
 										)
 									);
 								} else stream.end(blobBody);
@@ -1701,6 +1701,10 @@ export function replicateOverWS(ws: WebSocket, options: any, authorization: Prom
 			if (lastTxnTimes.get(nodeId) > startTime) {
 				startTime = lastTxnTimes.get(nodeId);
 				logger.debug?.('Updating start time from more recent txn recorded', connectedNode.name, startTime);
+			}
+			if (!leaderUrl) {
+				// if it is not explicitly specified, choose the first available node as the server we will copy from
+				leaderUrl = server.nodes[0]?.url;
 			}
 			if (startTime === 1 && leaderUrl) {
 				// if we are starting from scratch and we have a leader URL, we directly ask for a copy from that database
