@@ -101,6 +101,7 @@ export interface CertificateVerificationConfig {
 export interface CertificateVerificationContext extends Context {
 	certPem: string;
 	issuerPem: string;
+	ocspUrls?: string[];
 	config?: CertificateVerificationConfig;
 }
 

@@ -73,7 +73,7 @@ export async function verifyCertificate(
 		if (crlConfig.enabled) {
 			try {
 				logger.debug?.('Attempting CRL verification');
-				const result = await verifyCRL(certChain[0].cert, certChain[0].issuer, crlConfig);
+				const result = await verifyCRL(certChain[0].cert, certChain[0].issuer, crlConfig, crlUrls);
 
 				// Return on definitive result (good or revoked)
 				if (result.status === 'good' || result.status === 'revoked') {

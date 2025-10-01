@@ -39,10 +39,12 @@ export class CertificateVerificationSource extends Resource {
 		const requestContext = context?.requestContext;
 
 		if (!requestContext || !requestContext.certPem || !requestContext.issuerPem) {
-			throw new Error(`No certificate data provided for cache key: ${id}`);
+			// Likely a source request for an expired entry - we can't verify without cert and issuer data
+			logger.debug?.(`No requestContext for cache key: ${id} - cannot refresh without cert data, returning null`);
+			return null;
 		}
 
-		const { certPem: certPemStr, issuerPem: issuerPemStr, config } = requestContext;
+		const { certPem: certPemStr, issuerPem: issuerPemStr, ocspUrls, config } = requestContext;
 
 		// Determine method from cache key
 		let method: string;
@@ -70,7 +72,7 @@ export class CertificateVerificationSource extends Resource {
 		} else if (method === 'ocsp') {
 			methodConfig = config?.ocsp ?? {};
 			defaults = OCSP_DEFAULTS;
-			result = await performOCSPCheck(certPemStr, issuerPemStr, methodConfig);
+			result = await performOCSPCheck(certPemStr, issuerPemStr, methodConfig, ocspUrls);
 		} else {
 			throw new Error(`Unsupported verification method: ${method} for ID: ${id}`);
 		}
@@ -78,10 +80,6 @@ export class CertificateVerificationSource extends Resource {
 		// Handle result consistently
 		const ttl = methodConfig.cacheTtl ?? defaults.cacheTtl;
 		const expiresAt = Date.now() + ttl;
-
-		if (context) {
-			context.expiresAt = expiresAt;
-		}
 
 		return {
 			certificate_id: id,

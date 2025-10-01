@@ -339,5 +339,35 @@
 				"attribute": "id"
 			}
 		]
+	},
+	"hdb_certificate_cache": {
+		"hash_attribute": "certificate_id",
+		"name": "hdb_certificate_cache",
+		"schema": "system",
+		"attributes": [
+			{
+				"name": "certificate_id"
+			}
+		]
+	},
+	"hdb_crl_cache": {
+		"hash_attribute": "distribution_point",
+		"name": "hdb_crl_cache",
+		"schema": "system",
+		"attributes": [
+			{
+				"name": "distribution_point"
+			}
+		]
+	},
+	"hdb_revoked_certificates": {
+		"hash_attribute": "composite_id",
+		"name": "hdb_revoked_certificates",
+		"schema": "system",
+		"attributes": [
+			{
+				"name": "composite_id"
+			}
+		]
 	}
 }

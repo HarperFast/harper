@@ -41,12 +41,14 @@ function getCertificateCacheTable() {
  * @param certPem - Client certificate as Buffer (DER format)
  * @param issuerPem - Issuer (CA) certificate as Buffer (DER format)
  * @param config - OCSP configuration
+ * @param ocspUrls - Optional pre-extracted OCSP responder URLs (avoids re-parsing)
  * @returns Promise resolving to verification result
  */
 export async function verifyOCSP(
 	certPem: Buffer,
 	issuerPem: Buffer,
-	config?: OCSPConfig
+	config?: OCSPConfig,
+	ocspUrls?: string[]
 ): Promise<CertificateVerificationResult> {
 	logger.debug?.('verifyOCSP called');
 
@@ -72,6 +74,7 @@ export async function verifyOCSP(
 		const cacheEntry = await getCertificateCacheTable().get(cacheKey, {
 			certPem: certPemStr,
 			issuerPem: issuerPemStr,
+			ocspUrls,
 			config: { ocsp: config ?? {} },
 		} as CertificateVerificationContext);
 
@@ -116,10 +119,11 @@ export async function verifyOCSP(
  * Perform the actual OCSP check using easy-ocsp
  * @param certPem - Certificate in PEM format
  * @param issuerPem - Issuer certificate in PEM format
- * @param timeout - Timeout in milliseconds
+ * @param config - OCSP configuration
+ * @param ocspUrls - Optional pre-extracted OCSP responder URLs (avoids re-parsing)
  * @returns OCSP check result
  */
-export async function performOCSPCheck(certPem: string, issuerPem: string, config: any): Promise<OCSPCheckResult> {
+export async function performOCSPCheck(certPem: string, issuerPem: string, config: any, ocspUrls?: string[]): Promise<OCSPCheckResult> {
 	const timeout = config?.timeout ?? OCSP_DEFAULTS.timeout;
 	logger.debug?.(`Performing OCSP check with timeout: ${timeout}`);
 	logger.debug?.(`Client certificate length: ${certPem.length}, Issuer certificate length: ${issuerPem.length}`);
@@ -127,8 +131,12 @@ export async function performOCSPCheck(certPem: string, issuerPem: string, confi
 	logger.debug?.(`Issuer cert start: ${issuerPem.substring(0, 50)}...`);
 
 	try {
-		logger.debug?.(`Calling getCertStatus with timeout: ${timeout}`);
-		const response = await getCertStatus(certPem, { ca: issuerPem, timeout });
+		logger.debug?.(`Calling getCertStatus with timeout: ${timeout}${ocspUrls?.length ? `, using provided URL: ${ocspUrls[0]}` : ''}`);
+		const response = await getCertStatus(certPem, {
+			ca: issuerPem,
+			timeout,
+			...(ocspUrls?.length && { ocspUrl: ocspUrls[0] })
+		});
 		logger.debug?.(`OCSP response: ${response.status}`);
 
 		// Map response status to internal format

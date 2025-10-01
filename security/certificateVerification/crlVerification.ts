@@ -58,15 +58,15 @@ class CertificateRevocationListSource extends Resource {
 
 			const ttl = config?.cacheTtl ?? CRL_DEFAULTS.cacheTtl;
 
-			// Set expiration on the context
-			if (context) {
-				// Use the CRL's nextUpdate time or configured TTL, whichever is sooner
-				const crlExpiry = result.next_update;
-				const configExpiry = Date.now() + ttl;
-				context.expiresAt = Math.min(crlExpiry, configExpiry);
-			}
+			// Set expiration - use the CRL's nextUpdate time or configured TTL, whichever is sooner
+			const crlExpiry = result.next_update;
+			const configExpiry = Date.now() + ttl;
+			const expiresAt = Math.min(crlExpiry, configExpiry);
 
-			return result;
+			return {
+				...result,
+				expiresAt,
+			};
 		} catch (error) {
 			logger.error?.(`CRL fetch error for: ${distributionPoint} - ${error}`);
 
@@ -75,10 +75,6 @@ class CertificateRevocationListSource extends Resource {
 			if (failureMode === 'fail-closed') {
 				// Cache the error for faster recovery
 				const expiresAt = Date.now() + ERROR_CACHE_TTL;
-
-				if (context) {
-					context.expiresAt = expiresAt;
-				}
 
 				return {
 					crl_id: id,
@@ -211,12 +207,14 @@ function getCertificateCacheTable() {
  * @param certPem - Client certificate as Buffer (DER format)
  * @param issuerPem - Issuer (CA) certificate as Buffer (DER format)
  * @param config - CRL configuration
+ * @param crlUrls - Optional pre-extracted CRL distribution point URLs (avoids re-parsing)
  * @returns Promise resolving to verification result
  */
 export async function verifyCRL(
 	certPem: Buffer,
 	issuerPem: Buffer,
-	config?: CRLConfig
+	config?: CRLConfig,
+	crlUrls?: string[]
 ): Promise<CertificateVerificationResult> {
 	logger.debug?.('verifyCRL called');
 
@@ -232,8 +230,8 @@ export async function verifyCRL(
 		const certPemStr = bufferToPem(certPem, 'CERTIFICATE');
 		const issuerPemStr = bufferToPem(issuerPem, 'CERTIFICATE');
 
-		// Extract CRL distribution points from the certificate
-		const distributionPoints = extractCRLDistributionPoints(certPemStr);
+		// Extract CRL distribution points from the certificate (if not already provided)
+		const distributionPoints = crlUrls ?? extractCRLDistributionPoints(certPemStr);
 
 		if (distributionPoints.length === 0) {
 			logger.debug?.('Certificate has no CRL distribution points');
@@ -292,11 +290,12 @@ export async function verifyCRL(
  * @param certPem - Certificate in PEM format
  * @param issuerPem - Issuer certificate in PEM format
  * @param config - CRL configuration
+ * @param crlUrls - Optional pre-extracted CRL distribution point URLs (avoids re-parsing)
  * @returns CRL check result
  */
-export async function performCRLCheck(certPem: string, issuerPem: string, config: CRLConfig): Promise<CRLCheckResult> {
-	// Extract CRL distribution points from the certificate
-	const distributionPoints = extractCRLDistributionPoints(certPem);
+export async function performCRLCheck(certPem: string, issuerPem: string, config: CRLConfig, crlUrls?: string[]): Promise<CRLCheckResult> {
+	// Extract CRL distribution points from the certificate (if not already provided)
+	const distributionPoints = crlUrls ?? extractCRLDistributionPoints(certPem);
 
 	if (distributionPoints.length === 0) {
 		logger.debug?.('Certificate has no CRL distribution points');

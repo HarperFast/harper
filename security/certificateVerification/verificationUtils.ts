@@ -413,8 +413,8 @@ export function getCertificateCacheTable() {
 			},
 			{
 				name: 'expiresAt',
-				expiresAt: true, // This marks it as an expiration timestamp field
-				indexed: true, // Required for expiration functionality
+				expiresAt: true,
+				indexed: true,
 			},
 			{
 				name: 'method', // 'ocsp' or 'crl'
