@@ -426,52 +426,61 @@ export function makeTable(options) {
 								event.source = source;
 								if (event.type === 'end_txn') {
 									txnInProgress?.resolve();
+									let updateRecordedSequenceId: () => void;
 									if (event.localTime && lastSequenceId !== event.localTime) {
 										if (event.remoteNodeIds?.length > 0) {
-											// the key for tracking the sequence ids and txn times received from this node
-											const seqKey = [Symbol.for('seq'), event.remoteNodeIds[0]];
-											const existingSeq = dbisDb.get(seqKey);
-											let nodeStates = existingSeq?.nodes;
-											if (!nodeStates) {
-												// if we don't have a list of nodes, we need to create one, with the main one using the existing seqId
-												nodeStates = [];
-											}
-											// if we are not the only node in the list, we are getting proxied subscriptions, and we need
-											// to track this separately
-											// track the other nodes in the list
-											for (const nodeId of event.remoteNodeIds.slice(1)) {
-												let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
-												// remove any duplicates
-												nodeStates = nodeStates.filter(
-													(existingNode) => existingNode.id !== nodeId || existingNode === nodeState
+											updateRecordedSequenceId = () => {
+												// the key for tracking the sequence ids and txn times received from this node
+												const seqKey = [Symbol.for('seq'), event.remoteNodeIds[0]];
+												const existingSeq = dbisDb.get(seqKey);
+												let nodeStates = existingSeq?.nodes;
+												if (!nodeStates) {
+													// if we don't have a list of nodes, we need to create one, with the main one using the existing seqId
+													nodeStates = [];
+												}
+												// if we are not the only node in the list, we are getting proxied subscriptions, and we need
+												// to track this separately
+												// track the other nodes in the list
+												for (const nodeId of event.remoteNodeIds.slice(1)) {
+													let nodeState = nodeStates.find((existingNode) => existingNode.id === nodeId);
+													// remove any duplicates
+													nodeStates = nodeStates.filter(
+														(existingNode) => existingNode.id !== nodeId || existingNode === nodeState
+													);
+													if (!nodeState) {
+														nodeState = { id: nodeId, seqId: 0 };
+														nodeStates.push(nodeState);
+													}
+													nodeState.seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime);
+													if (nodeId === txnInProgress?.nodeId) {
+														nodeState.lastTxnTime = event.timestamp;
+													}
+												}
+												const seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime);
+												logger.trace?.(
+													'Received txn',
+													databaseName,
+													seqId,
+													new Date(seqId),
+													event.localTime,
+													new Date(event.localTime),
+													event.remoteNodeIds
 												);
-												if (!nodeState) {
-													nodeState = { id: nodeId, seqId: 0 };
-													nodeStates.push(nodeState);
-												}
-												nodeState.seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime);
-												if (nodeId === txnInProgress?.nodeId) {
-													nodeState.lastTxnTime = event.timestamp;
-												}
-											}
-											const seqId = Math.max(existingSeq?.seqId ?? 1, event.localTime);
-											logger.trace?.(
-												'Received txn',
-												databaseName,
-												seqId,
-												new Date(seqId),
-												event.localTime,
-												new Date(event.localTime),
-												event.remoteNodeIds
-											);
-											dbisDb.put(seqKey, {
-												seqId,
-												nodes: nodeStates,
-											});
+												dbisDb.put(seqKey, {
+													seqId,
+													nodes: nodeStates,
+												});
+											};
+											lastSequenceId = event.localTime;
 										}
-										lastSequenceId = event.localTime;
 									}
-									if (event.onCommit) txnInProgress?.committed.then(event.onCommit);
+									if (event.onCommit) {
+										// if there was an onCommit callback, call that. This function can be async
+										// and if so, we want to delay the recording of the sequence id until it finished
+										// (as it can be used to indicate more associated actions, like blob transfer, are in flight)
+										const onCommitFinished = txnInProgress?.committed.then(event.onCommit);
+										if (updateRecordedSequenceId) onCommitFinished.then(updateRecordedSequenceId);
+									} else if (updateRecordedSequenceId) updateRecordedSequenceId();
 									continue;
 								}
 								if (txnInProgress) {
@@ -480,7 +489,7 @@ export function makeTable(options) {
 										txnInProgress.resolve();
 									} else {
 										// write in the current transaction if one is in progress
-										txnInProgress.write_promises.push(writeUpdate(event, txnInProgress));
+										txnInProgress.writePromises.push(writeUpdate(event, txnInProgress));
 										continue;
 									}
 								}
@@ -527,10 +536,10 @@ export function makeTable(options) {
 											// event/context as transaction in progress and then future events
 											// are applied with that context until the next transaction begins/ends
 											txnInProgress = event;
-											txnInProgress.write_promises = [writeUpdate(event, event)];
+											txnInProgress.writePromises = [writeUpdate(event, event)];
 											return new Promise((resolve) => {
 												// callback for when this transaction is finished (will be called on next txn begin/end).
-												txnInProgress.resolve = () => resolve(Promise.all(txnInProgress.write_promises)); // and make sure we wait for the write update to finish
+												txnInProgress.resolve = () => resolve(Promise.all(txnInProgress.writePromises)); // and make sure we wait for the write update to finish
 											});
 										}
 										return writeUpdate(event, event);
@@ -1375,7 +1384,7 @@ export function makeTable(options) {
 				residencyId = getResidencyId(residency);
 			}
 			const metadata = 0;
-			logger.debug?.('Performing a relocate of an entry', existing_entry.key, entry.value, residency);
+			logger.debug?.('Performing a relocate of an entry', existingEntry.key, entry.value, residency);
 			const record = updateRecord(
 				existingEntry.key,
 				entry.value, // store the record we downloaded

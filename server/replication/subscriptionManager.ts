@@ -3,9 +3,8 @@
  * subscriptions that are needed and delegates them to the available threads. It also manages when connections are
  * lost and delegating subscriptions through other nodes
  */
-import { getDatabases, onUpdatedTable, table } from '../../resources/databases.ts';
+import { getDatabases } from '../../resources/databases.ts';
 import { workers, onMessageByType, whenThreadsStarted } from '../threads/manageThreads.js';
-import { tableUpdateListeners } from './replicationConnection.ts';
 import {
 	getThisNodeName,
 	getThisNodeUrl,
@@ -23,9 +22,26 @@ const { cloneDeep } = lodash;
 import env from '../../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS } from '../../utility/hdbTerms.ts';
 import { X509Certificate } from 'crypto';
+type ConnectedWorkerStatus = {
+	worker: Worker | null;
+	connected?: boolean;
+	latency?: number;
+};
+type ReplicationConnectionStatus = {
+	nodes: ({
+		name: string;
+		url: string;
+		replicates: boolean;
+		replicateByDefault: boolean;
+		startTime?: number;
+		endTime?: number;
+		shard?: string;
+	} & ConnectedWorkerStatus)[];
+} & ConnectedWorkerStatus;
+type DBReplicationStatusMap = Map<string, ReplicationConnectionStatus> & { iterator: any };
 
 const NODE_SUBSCRIBE_DELAY = 200; // delay before sending node subscribe to other nodes, so operations can complete first
-const connectionReplicationMap = new Map();
+const connectionReplicationMap = new Map<string, DBReplicationStatusMap>();
 export let disconnectedFromNode; // this is set by thread to handle when a node is disconnected (or notify main thread so it can handle)
 export let connectedToNode; // this is set by thread to handle when a node is connected (or notify main thread so it can handle)
 const nodeMap = new Map(); // this is a map of all nodes that are available to connect to
@@ -213,7 +229,9 @@ export async function startOnMainThread(options) {
 			} else if (shouldSubscribe) {
 				nextWorkerIndex = nextWorkerIndex % httpWorkers.length; // wrap around as necessary
 				worker = httpWorkers[nextWorkerIndex++];
-
+				if (!worker) {
+					logger.warn('No http workers available to subscribe to node', node.name, node.url);
+				}
 				dbReplicationWorkers.set(databaseName, {
 					worker,
 					nodes,
@@ -319,7 +337,7 @@ export async function startOnMainThread(options) {
 					nextIndex = (nextIndex + 1) % nodeNames.length;
 					continue;
 				}
-				const { worker, nodes } = failoverWorkerEntry;
+				const { nodes } = failoverWorkerEntry;
 				// record which node we are now redirecting to
 				let hasMovedNodes = false;
 				for (const node of existingWorkerEntry.nodes) {
@@ -329,21 +347,14 @@ export async function startOnMainThread(options) {
 					}
 					if (node.endTime < Date.now()) continue; // already expired
 					nodes.push(node);
+					logger.info(`Failing over ${connection.database} from ${connection.name} to ${nextNodeName}`);
+					connectToNextWorker(node, connection.database);
 					hasMovedNodes = true;
 				}
 				existingWorkerEntry.nodes = [existingWorkerEntry.nodes[0]]; // only keep our own subscription
 				if (!hasMovedNodes) {
 					logger.info(`Disconnected node ${connection.name} has no nodes to fail over to ${nextNodeName}`);
-					return;
 				}
-				logger.info(`Failing over ${connection.database} from ${connection.name} to ${nextNodeName}`);
-				if (worker) {
-					worker.postMessage({
-						type: 'subscribe-to-node',
-						database: connection.database,
-						nodes,
-					});
-				} else subscribeToNode({ database: connection.database, nodes });
 				return;
 			}
 			logger.warn('Unable to find any other node to fail over to', connection.name, connection.url);
@@ -389,19 +400,29 @@ export async function startOnMainThread(options) {
 			if (!failOverNodes) continue;
 			if (connected === false && failOverNodes[0].shard === restoredNode.shard) {
 				// if it is not connected and has extra nodes, grab them
+				for (let node of failOverNodes) {
+					connectToNextWorker(node, connection.database);
+				}
+
 				hasChanges = true;
 				mainWorkerEntry.nodes.push(failOverNodes[0]);
 			} else {
 				// remove the restored node from any other connections list of node
-				const filtered = failOverNodes.filter((node) => node && node.name !== restoredNode.name);
+				const filtered = failOverNodes.filter((node) => {
+					if (node) {
+						if (node.name === restoredNode.name && node.worker) {
+							node.worker.postMessage({
+								type: 'unsubscribe-to-node',
+								database: connection.database,
+							});
+							return false;
+						}
+						return true;
+					}
+				});
 				if (filtered.length < failOverNodes.length) {
-					// if we were in the list, reset the subscription
+					// if we were in the list, reset the nodes list
 					failOverConnections.nodes = filtered;
-					failOverWorker.postMessage({
-						type: 'subscribe-to-node',
-						database: connection.database,
-						nodes: failOverNodes,
-					});
 				}
 			}
 		}
@@ -414,6 +435,19 @@ export async function startOnMainThread(options) {
 			});
 		}
 	};
+	function connectToNextWorker(node, database) {
+		const httpWorkers = workers.filter((worker: any) => worker.name === 'http');
+		nextWorkerIndex = nextWorkerIndex % httpWorkers.length; // wrap around as necessary
+		const worker = httpWorkers[nextWorkerIndex++];
+		node.worker = worker;
+		if (worker) {
+			worker.postMessage({
+				type: 'subscribe-to-node',
+				database,
+				nodes: [node],
+			});
+		} else subscribeToNode({ database, nodes: [node] });
+	}
 	onMessageByType('disconnected-from-node', disconnectedFromNode);
 	onMessageByType('connected-to-node', connectedToNode);
 	onMessageByType('request-cluster-status', requestClusterStatus);

@@ -133,7 +133,6 @@ let leaderReplicationUrl;
  */
 module.exports = async function cloneNode(background = false, run = false) {
 	console.info(`Starting clone node from leader node: ${leaderUrl}`);
-	delete process.env.HDB_LEADER_URL;
 
 	rootPath = hdbUtils.getEnvCliRootPath();
 	if (!rootPath) {
