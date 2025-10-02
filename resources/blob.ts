@@ -558,7 +558,11 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 			if (!wroteSize) writeStream.write(DEFAULT_HEADER); // write the default header to the file
 			stream.pipe(writeStream);
 		}
-		stream.on('error', finished);
+		stream.on('error', (error) => {
+			// if the source stream emits an error, the whole pipe just falls apart; there may not be any more future events, but the stream isn't ready yet either
+			// so we delay so can at least try to do some cleanup once the fd is there.
+			setTimeout(() => finished(error), 10);
+		});
 		function createHeader(size: number | bigint): Uint8Array {
 			let headerValue = BigInt(size);
 			const header = new Uint8Array(HEADER_SIZE);
@@ -570,10 +574,12 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 		// when the stream is finished, we may need to flush, and then close the handle and resolve the promise
 		function finished(error?: Error) {
 			store.unlock(lockKey, 0);
-			//			logger.info?.('unlocked blob', lockKey);
 			const fd = writeStream.fd;
 			if (error) {
-				if (fd) close(fd);
+				if (fd) {
+					close(fd);
+					writeStream.fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
+				}
 				reject(error);
 			} else if (flush) {
 				// we just use fdatasync because we really aren't that concerned with flushing file metadata
