@@ -28,6 +28,17 @@ import type {
 	CRLCacheEntry,
 	RevokedCertificateEntry,
 } from './types.ts';
+
+/**
+ * Custom error for CRL signature verification failures
+ * This distinguishes security failures (invalid signatures) from operational failures (network, timeout)
+ */
+export class CRLSignatureVerificationError extends Error {
+	constructor(message: string) {
+		super(message);
+		this.name = 'CRLSignatureVerificationError';
+	}
+}
 import { CertificateVerificationSource } from './certificateVerificationSource.ts';
 
 const logger = loggerWithTag('crl-verification');
@@ -422,7 +433,12 @@ async function checkCRLFreshness(
 				return { upToDate: false, reason: 'crl-expired' };
 			}
 		} catch (error) {
-			// Continue to next distribution point
+			// Signature verification failures are security failures, not operational failures
+			// Rethrow them so they don't get swallowed as "unknown" status
+			if (error instanceof CRLSignatureVerificationError) {
+				throw error;
+			}
+			// Operational failures (network, timeout, parse errors) - continue to next distribution point
 		}
 	}
 
@@ -480,7 +496,11 @@ async function downloadAndParseCRL(
 		const signatureValid = await crl.verify({ issuerCertificate: issuerCert });
 
 		if (!signatureValid) {
-			logger.warn?.(`CRL signature verification failed for: ${distributionPoint}`);
+			// Invalid signature is a security failure - always reject regardless of fail-open/fail-closed mode
+			// Fail-open mode is for operational failures (network issues, timeouts), not security validation failures
+			const msg = `CRL signature verification failed for: ${distributionPoint}`;
+			logger.error?.(msg);
+			throw new CRLSignatureVerificationError(msg);
 		}
 
 		// Extract timing information

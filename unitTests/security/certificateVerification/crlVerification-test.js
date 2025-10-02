@@ -234,6 +234,120 @@ describe('certificateVerification/crlVerification.ts', function () {
 		});
 	});
 
+	describe('CRL signature verification', function () {
+		it('should reject invalid CRL signatures in fail-closed mode', async function () {
+			// This test verifies that invalid CRL signatures are rejected in fail-closed mode
+			const pkijs = require('pkijs');
+
+			// Mock distribution points
+			extractCRLDistributionPointsStub.returns(['http://crl.example.com/ca.crl']);
+
+			// Create a mock CRL with invalid signature
+			const mockCRL = {
+				verify: sinon.stub().resolves(false), // Invalid signature
+				thisUpdate: { value: new Date() },
+				nextUpdate: { value: new Date(Date.now() + 86400000) },
+				revokedCertificates: [],
+			};
+
+			// Mock CertificateRevocationList.fromBER to return our mock
+			const fromBERStub = sinon.stub(pkijs.CertificateRevocationList, 'fromBER').returns(mockCRL);
+
+			// Mock Certificate.fromBER for issuer cert
+			const mockIssuerCert = {
+				issuer: { typesAndValues: [] },
+			};
+			const certFromBERStub = sinon.stub(pkijs.Certificate, 'fromBER').returns(mockIssuerCert);
+
+			// Mock fetch to return CRL data
+			const originalFetch = globalThis.fetch;
+			globalThis.fetch = sinon.stub().resolves({
+				ok: true,
+				status: 200,
+				arrayBuffer: async () => new ArrayBuffer(8),
+			});
+
+			const config = {
+				enabled: true,
+				gracePeriod: 86400000,
+				failureMode: 'fail-closed',
+				timeout: 10000,
+				cacheTtl: 86400000,
+			};
+
+			const certBuffer = Buffer.from('test-cert');
+			const issuerBuffer = Buffer.from('test-issuer');
+
+			try {
+				// Test at verifyCRL level (public API) - signature failure should cause rejection in fail-closed mode
+				const result = await crlModule.verifyCRL(certBuffer, issuerBuffer, config);
+
+				// In fail-closed mode, invalid signature should result in valid: false
+				assert.strictEqual(result.valid, false, 'Certificate should be rejected with invalid CRL signature in fail-closed mode');
+				assert.ok(result.status === 'unknown' || result.status === 'error', 'Status should indicate unknown or error');
+			} finally {
+				fromBERStub.restore();
+				certFromBERStub.restore();
+				globalThis.fetch = originalFetch;
+			}
+		});
+
+		it('should reject invalid CRL signatures in fail-open mode', async function () {
+			// This test verifies the critical behavior: invalid signatures ALWAYS fail,
+			// regardless of fail-open/fail-closed mode
+			const pkijs = require('pkijs');
+
+			extractCRLDistributionPointsStub.returns(['http://crl.example.com/ca.crl']);
+
+			// Create a mock CRL with invalid signature
+			const mockCRL = {
+				verify: sinon.stub().resolves(false), // Invalid signature
+				thisUpdate: { value: new Date() },
+				nextUpdate: { value: new Date(Date.now() + 86400000) },
+				revokedCertificates: [],
+			};
+
+			const fromBERStub = sinon.stub(pkijs.CertificateRevocationList, 'fromBER').returns(mockCRL);
+
+			const mockIssuerCert = {
+				issuer: { typesAndValues: [] },
+			};
+			const certFromBERStub = sinon.stub(pkijs.Certificate, 'fromBER').returns(mockIssuerCert);
+
+			// Mock fetch to return CRL data
+			const originalFetch = globalThis.fetch;
+			globalThis.fetch = sinon.stub().resolves({
+				ok: true,
+				status: 200,
+				arrayBuffer: async () => new ArrayBuffer(8),
+			});
+
+			const config = {
+				enabled: true,
+				gracePeriod: 86400000,
+				failureMode: 'fail-open', // NOTE: fail-open mode
+				timeout: 10000,
+				cacheTtl: 86400000,
+			};
+
+			const certBuffer = Buffer.from('test-cert');
+			const issuerBuffer = Buffer.from('test-issuer');
+
+			try {
+				// Test at verifyCRL level - in fail-open mode, invalid signature should STILL cause rejection
+				const result = await crlModule.verifyCRL(certBuffer, issuerBuffer, config);
+
+				// Even in fail-open mode, invalid signature (security failure) should result in valid: false
+				assert.strictEqual(result.valid, false, 'Certificate should be rejected with invalid CRL signature even in fail-open mode (security failure)');
+				assert.ok(result.status === 'unknown' || result.status === 'error', 'Status should indicate unknown or error');
+			} finally {
+				fromBERStub.restore();
+				certFromBERStub.restore();
+				globalThis.fetch = originalFetch;
+			}
+		});
+	});
+
 	describe('performCRLCheck() core logic', function () {
 		const mockConfig = {
 			gracePeriod: 86400000, // 24 hours
