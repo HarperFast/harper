@@ -272,7 +272,7 @@ describe('Blob test', () => {
 				}
 			}
 		}
-		let blob = await createBlob(new BadStream());
+		let blob = createBlob(new BadStream());
 		await BlobTest.put({ id: 5, blob });
 		let eventError, thrownError;
 		blob.on('error', (err) => {

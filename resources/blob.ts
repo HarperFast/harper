@@ -28,7 +28,7 @@ import {
 } from 'node:fs';
 import type { StatsFs } from 'node:fs';
 import { createDeflate, deflate } from 'node:zlib';
-import { Readable } from 'node:stream';
+import { Readable, pipeline } from 'node:stream';
 import { ensureDirSync } from 'fs-extra';
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager';
 import { CONFIG_PARAMS } from '../utility/hdbTerms';
@@ -303,7 +303,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 									setTimeout(() => readMore(resolve, reject), 20).unref();
 								} else {
 									logger.debug?.('File was empty, throwing error', filePath, retries);
-									reject(new Error(`Blob ${storageInfo.fileId} was empty`));
+									onError(new Error(`Blob ${storageInfo.fileId} was empty`));
 								}
 								// else throw new Error();
 								return;
@@ -540,7 +540,7 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 		}
 		const writeStream = createWriteStream(filePath, { autoClose: false, flags: 'w' });
 		if (stream.errored) {
-			// if starts in an error state, record that immediately
+			// if it starts in an error state, record that immediately
 			const error = Buffer.from(stream.errored.toString());
 			writeStream.write(Buffer.concat([createHeader(BigInt(error.length) + 0xff000000000000n), error]));
 			finished(stream.errored);
@@ -556,16 +556,11 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 		if (compress) {
 			if (!wroteSize) writeStream.write(COMPRESS_HEADER); // write the default header to the file
 			compressedStream = createDeflate();
-			stream.pipe(compressedStream).pipe(writeStream);
+			pipeline(stream, compressedStream, writeStream, finished);
 		} else {
 			if (!wroteSize) writeStream.write(DEFAULT_HEADER); // write the default header to the file
-			stream.pipe(writeStream);
+			pipeline(stream, writeStream, finished);
 		}
-		stream.on('error', (error) => {
-			// if the source stream emits an error, the whole pipe just falls apart; there may not be any more future events, but the stream isn't ready yet either
-			// so we delay so can at least try to do some cleanup once the fd is there.
-			setTimeout(() => finished(error), 10);
-		});
 		function createHeader(size: number | bigint): Uint8Array {
 			let headerValue = BigInt(size);
 			const header = new Uint8Array(HEADER_SIZE);
@@ -576,35 +571,38 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 		}
 		// when the stream is finished, we may need to flush, and then close the handle and resolve the promise
 		function finished(error?: Error) {
-			store.unlock(lockKey, 0);
 			const fd = writeStream.fd;
 			if (error) {
+				store.unlock(lockKey, 0);
 				if (fd) {
 					close(fd);
 					writeStream.fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
 				}
 				reject(error);
-			} else if (flush) {
-				// we just use fdatasync because we really aren't that concerned with flushing file metadata
-				fdatasync(fd, (error) => {
-					if (error) reject(error);
+			} else {
+				if (!wroteSize) {
+					wroteSize = true;
+					const size = compressedStream ? compressedStream.bytesWritten : writeStream.bytesWritten - HEADER_SIZE;
+					blob.size = size;
+					write(fd, createHeader(size), 0, HEADER_SIZE, 0, finished);
+					return; // not finished yet, wait for this write and then we are finished
+				}
+				store.unlock(lockKey, 0);
+				if (flush) {
+					// we just use fdatasync because we really aren't that concerned with flushing file metadata
+					fdatasync(fd, (error) => {
+						if (error) reject(error);
+						resolve();
+						close(fd);
+						writeStream.fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
+					});
+				} else {
 					resolve();
 					close(fd);
-				});
-			} else {
-				resolve();
-				close(fd);
+					writeStream.fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
+				}
 			}
 		}
-		writeStream.on('error', finished).on('finish', () => {
-			if (wroteSize) finished();
-			// now that we know the size, we can write it, in case any other threads were waiting for this to complete
-			else {
-				const size = compressedStream ? compressedStream.bytesWritten : writeStream.bytesWritten - HEADER_SIZE;
-				blob.size = size;
-				write(writeStream.fd, createHeader(size), 0, HEADER_SIZE, 0, finished);
-			}
-		});
 	});
 	return blob;
 }
