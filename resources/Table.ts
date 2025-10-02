@@ -1039,8 +1039,9 @@ export function makeTable(options) {
 					// Note that if we do not have a select, we do not return any relationships by default.
 					if (!target) target = {};
 					if (select) {
+						const selectArray = Array.isArray(select) ? select : [select];
 						const attrsForType = attribute_permissions?.length > 0 && attributesAsObject(attribute_permissions, 'read');
-						target.select = select
+						target.select = selectArray
 							.map((property) => {
 								const propertyName = property.name || property;
 								if (!attrsForType || attrsForType[propertyName]) {
