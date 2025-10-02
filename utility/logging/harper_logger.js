@@ -261,6 +261,9 @@ module.exports.externalLogger = {
 	withTag(tag) {
 		return externalLogger.withTag(tag);
 	},
+	loggerWithTag(tag) {
+		return externalLogger.withTag(tag);
+	},
 };
 _assignPackageExport('logger', module.exports.externalLogger);
 let loggedFdErr;
