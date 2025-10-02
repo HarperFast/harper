@@ -356,7 +356,7 @@ describe('Caching', () => {
 		this.timeout(5000);
 		try {
 			timer = 2;
-			CachingTable.setTTLExpiration(0.01);
+			CachingTable.setTTLExpiration(100); // don't evict during this test since it will clear the history
 			let i = 0;
 			source_requests = 0;
 			let results = [];
@@ -367,7 +367,6 @@ describe('Caching', () => {
 					// clearing the cache kind of emulates what another thread would see
 					if (i % 4 == 0) CachingTable.primaryStore.cache.clear();
 					let raw_result = CachingTable.get(23);
-					let my_i = i;
 					let result = await raw_result;
 					results.push(result);
 				}
