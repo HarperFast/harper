@@ -80,7 +80,6 @@ export function extractCRLDistributionPoints(certPem: string): string[] {
 		}
 
 		// Parse the extension value
-		// We need to decode the extension value first
 		const asn1 = asn1js.fromBER(crlDistExt.extnValue.valueBlock.valueHexView);
 		if (asn1.offset === -1) {
 			throw new Error('Failed to parse ASN.1 structure in CRL Distribution Points extension');
@@ -111,7 +110,12 @@ export function extractCRLDistributionPoints(certPem: string): string[] {
 		logger.debug?.(`Found ${distributionPoints.length} CRL distribution points: ${distributionPoints}`);
 		return distributionPoints;
 	} catch (error) {
-		logger.error?.(`Failed to extract CRL distribution points: ${error}`);
+		// Parsing failures are treated as "no CRL URLs available"
+		// Rationale: The certificate was already validated by Node.js TLS (signature, trust chain)
+		// If PKI.js can't parse it, it's likely a library incompatibility or unsupported extension format
+		// Not a security issue since TLS already validated the cert - we just can't extract revocation URLs
+		// The higher-level fail-open/fail-closed configuration determines final behavior when no URLs found
+		logger.warn?.(`Failed to extract CRL distribution points: ${error}`);
 		return [];
 	}
 }
@@ -158,7 +162,7 @@ export function extractRevocationUrls(certPem: string): { crlUrls: string[]; ocs
 						}
 					}
 				} catch (crlError) {
-					logger.debug?.(`Failed to parse CRL Distribution Points extension: ${crlError}`);
+					logger.warn?.(`Failed to parse CRL Distribution Points extension: ${crlError}`);
 				}
 			} else if (ext.extnID === '1.3.6.1.5.5.7.1.1') {
 				// Authority Information Access extension
@@ -189,7 +193,7 @@ export function extractRevocationUrls(certPem: string): { crlUrls: string[]; ocs
 						}
 					}
 				} catch (ocspError) {
-					logger.debug?.(`Failed to parse Authority Information Access extension: ${ocspError}`);
+					logger.warn?.(`Failed to parse Authority Information Access extension: ${ocspError}`);
 				}
 			}
 		}
@@ -197,7 +201,12 @@ export function extractRevocationUrls(certPem: string): { crlUrls: string[]; ocs
 		logger.debug?.(`Found ${crlUrls.length} CRL distribution points and ${ocspUrls.length} OCSP responder URLs`);
 		return { crlUrls, ocspUrls };
 	} catch (error) {
-		logger.error?.(`Failed to extract revocation URLs: ${error}`);
+		// Parsing failures are treated as "no revocation URLs available"
+		// Rationale: The certificate was already validated by Node.js TLS (signature, trust chain)
+		// If PKI.js can't parse it, it's likely a library incompatibility or unsupported extension format
+		// Not a security issue since TLS already validated the cert - we just can't extract revocation URLs
+		// The higher-level fail-open/fail-closed configuration determines final behavior when no URLs found
+		logger.warn?.(`Failed to extract revocation URLs: ${error}`);
 		return { crlUrls: [], ocspUrls: [] };
 	}
 }

@@ -23,7 +23,8 @@ import { timestamp } from '../utils/timestamp.mjs';
  * http:
  * 	portRest: 9926
  * 	securePortRest: 9953
- * 	mtls: true
+ * 	mtls:
+ * 		certificateVerification: true
  * operationsApi:
  * 	network:
  * 		port: 9925
@@ -64,7 +65,8 @@ To run these tests, add this to your harperdb-config.yaml and restart Harper:
 http:
 	portRest: ${testData.portRest}
 	securePortRest: ${testData.securePortRest}
-	mtls:  true
+	mtls:
+		certificateVerification: true
 operationsApi:
 	network:
 		port: ${testData.port}
