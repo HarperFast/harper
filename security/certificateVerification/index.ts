@@ -15,10 +15,11 @@
  * - Ed25519/Ed448 certificate support
  *
  * Default behavior:
+ * - Certificate verification: disabled (must be explicitly enabled)
  * - Verification approach: CRL-first (with OCSP fallback)
  * - CRL timeout: 10 seconds, cache TTL: 24 hours
  * - OCSP timeout: 5 seconds, cache TTL: 1 hour
- * - Failure mode: fail-open (allows connections if verification fails)
+ * - Failure mode: fail-closed (rejects connections if verification fails)
  */
 
 import { loggerWithTag } from '../../utility/logging/logger.js';
