@@ -1294,7 +1294,7 @@ export function makeTable(options) {
 			// evictions never go in the audit log, so we can not record a deletion entry for the eviction
 			// as there is no corresponding audit entry and it would never get cleaned up. So we must simply
 			// removed the entry entirely
-			removeEntry(primary_store, entry ?? primary_store.getEntry(id), existing_version);
+			return removeEntry(primary_store, entry ?? primary_store.getEntry(id), existing_version);
 		}
 		/**
 		 * This is intended to acquire a lock on a record from the whole cluster.
