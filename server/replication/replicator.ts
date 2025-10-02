@@ -94,10 +94,10 @@ export function start(options) {
 
 	options = {
 		// We generally expect this to use the same settings as the operations API port
-		mtls: mtlsConfig, // mTLS with optional certificate verification
 		isOperationsServer: true, // we default to using the operations server ports
 		maxPayload: 10 * 1024 * 1024 * 1024, // 10 GB max payload, primarily to support replicating applications
 		...options,
+		mtls: mtlsConfig, // mTLS with optional certificate verification (always overrides)
 	};
 	// noinspection JSVoidFunctionReturnValueUsed
 	// @ts-expect-error
@@ -138,9 +138,9 @@ export function start(options) {
 					if (node) break;
 				}
 				if (node) {
-					// Perform certificate verification using OCSP
-					// Pass the full options object which contains mtls config - verifyCertificate will handle extraction
-					const verificationResult = await verifyCertificate(request.peerCertificate, options);
+					// Perform certificate verification
+					// Pass the mtls config (which may contain certificateVerification settings)
+					const verificationResult = await verifyCertificate(request.peerCertificate, options.mtls);
 					if (!verificationResult.valid) {
 						logger.warn(
 							'Certificate verification failed:',
