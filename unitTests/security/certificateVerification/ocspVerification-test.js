@@ -1,5 +1,4 @@
 const assert = require('node:assert/strict');
-const sinon = require('sinon');
 
 // First set up test environment
 const test_utils = require('../../test_utils');

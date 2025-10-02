@@ -206,7 +206,7 @@ describe('certificateVerification/index.ts', function () {
 				});
 				verifyOCSPStub.resolves({ valid: true, status: 'good', method: 'ocsp' });
 
-				const result = await indexModule.verifyCertificate(mockPeerCert, { certificateVerification: true });
+				await indexModule.verifyCertificate(mockPeerCert, { certificateVerification: true });
 
 				assert.strictEqual(verifyCRLStub.called, false);
 				assert.strictEqual(verifyOCSPStub.called, true);
@@ -219,7 +219,7 @@ describe('certificateVerification/index.ts', function () {
 				});
 				verifyOCSPStub.resolves({ valid: true, status: 'good', method: 'ocsp' });
 
-				const result = await indexModule.verifyCertificate(mockPeerCert, { certificateVerification: true });
+				await indexModule.verifyCertificate(mockPeerCert, { certificateVerification: true });
 
 				assert.strictEqual(verifyCRLStub.called, false);
 				assert.strictEqual(verifyOCSPStub.called, true);
@@ -290,7 +290,7 @@ describe('certificateVerification/index.ts', function () {
 					ocspUrls: [],
 				});
 
-				const result = await indexModule.verifyCertificate(mockPeerCert, { certificateVerification: true });
+				await indexModule.verifyCertificate(mockPeerCert, { certificateVerification: true });
 
 				assert.strictEqual(verifyOCSPStub.called, false);
 			});

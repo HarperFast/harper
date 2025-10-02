@@ -1,5 +1,4 @@
 const assert = require('node:assert/strict');
-const { createHash } = require('node:crypto');
 
 // First set up test environment
 const test_utils = require('../../test_utils');
@@ -115,6 +114,7 @@ describe('certificateVerification/verificationUtils.ts', function () {
 			assert.strictEqual(key1, key2);
 			assert.ok(key1.startsWith('crl:'));
 
+			// eslint-disable-next-line sonarjs/no-clear-text-protocols
 			const key3 = utilsModule.createCRLCacheKey('http://different.com/test.crl');
 			assert.notStrictEqual(key1, key3);
 		});
