@@ -25,10 +25,12 @@ import {
 	existsSync,
 	watch,
 	write,
+	statSync,
+	writeFile,
 } from 'node:fs';
 import type { StatsFs } from 'node:fs';
 import { createDeflate, deflate } from 'node:zlib';
-import { Readable } from 'node:stream';
+import { Readable, pipeline } from 'node:stream';
 import { ensureDirSync } from 'fs-extra';
 import { get as envGet, getHdbBasePath } from '../utility/environment/environmentManager.js';
 import { CONFIG_PARAMS } from '../utility/hdbTerms.ts';
@@ -38,6 +40,7 @@ import type { LMDBStore } from 'lmdb';
 import { asyncSerialization, hasAsyncSerialization } from '../server/serverHelpers/contentTypes.ts';
 import { HAS_BLOBS, readAuditEntry } from './auditStore.ts';
 import { getHeapStatistics } from 'node:v8';
+import * as buffer from 'node:buffer';
 
 type StorageInfo = {
 	storageIndex: number;
@@ -54,6 +57,7 @@ type StorageInfo = {
 	end?: number;
 	saving?: Promise<void>;
 	asString?: string;
+	deleteOnFailure?: boolean;
 };
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
 // We want to keep the file path private (but accessible to the extension)
@@ -163,7 +167,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 					rawBytes.copy(HEADER, 0, 0, HEADER_SIZE);
 					const headerValue = headerView.getBigUint64(0);
 					if (Number(headerValue >> 48n) === ERROR_TYPE) {
-						throw new Error('Error in blob: ' + buffer.subarray(HEADER_SIZE));
+						throw new Error('Error in blob: ' + rawBytes.subarray(HEADER_SIZE));
 					}
 
 					size = Number(headerValue & 0xffffffffffffn);
@@ -304,7 +308,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 									setTimeout(() => readMore(resolve, reject), 20).unref();
 								} else {
 									logger.debug?.('File was empty, throwing error', filePath, retries);
-									reject(new Error(`Blob ${storageInfo.fileId} was empty`));
+									onError(new Error(`Blob ${storageInfo.fileId} was empty`));
 								}
 								// else throw new Error();
 								return;
@@ -312,7 +316,7 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 							buffer.copy(HEADER, 0, 0, HEADER_SIZE);
 							const headerValue = headerView.getBigUint64(0);
 							if (Number(headerValue >> 48n) === ERROR_TYPE) {
-								return onError(new Error('Error in blob: ' + buffer.subarray(HEADER_SIZE)));
+								return onError(new Error('Error in blob: ' + buffer.subarray(HEADER_SIZE, bytesRead)));
 							}
 							size = Number(headerValue & 0xffffffffffffn);
 							if (size < UNKNOWN_SIZE && blob.size !== size) {
@@ -456,6 +460,9 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 		this.saveBeforeCommit = true;
 		return Promise.resolve();
 	}
+	get written() {
+		return storageInfoForBlob.get(this)?.saving ?? Promise.resolve();
+	}
 }
 let deletionDelay = 500;
 /**
@@ -510,7 +517,7 @@ global.createBlob = function (source: NodeJS.ReadableStream | NodeJS.Buffer, opt
 	return blob;
 };
 
-export function saveBlob(blob: FileBackedBlob) {
+export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 	let storageInfo = storageInfoForBlob.get(blob);
 	if (!storageInfo) {
 		storageInfo = { storageIndex: 0, fileId: null, store: currentStore };
@@ -519,6 +526,7 @@ export function saveBlob(blob: FileBackedBlob) {
 		if (storageInfo.fileId) return storageInfo; // if there is any file id, we are already saving and can return the info
 		storageInfo.store = currentStore;
 	}
+	storageInfo.deleteOnFailure = deleteOnFailure;
 
 	generateFilePath(storageInfo);
 	if (storageInfo.source) writeBlobWithStream(blob, storageInfo.source, storageInfo);
@@ -542,13 +550,6 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 			throw new Error(`Unable to get lock for blob file ${fileId}`);
 		}
 		const writeStream = createWriteStream(filePath, { autoClose: false, flags: 'w' });
-		if (stream.errored) {
-			// if starts in an error state, record that immediately
-			const error = Buffer.from(stream.errored.toString());
-			writeStream.write(Buffer.concat([createHeader(BigInt(error.length) + 0xff000000000000n), error]));
-			finished(stream.errored);
-			return;
-		}
 		let wroteSize = false;
 		if (blob.size !== undefined) {
 			// if we know the size, we can write the header immediately
@@ -559,12 +560,11 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 		if (compress) {
 			if (!wroteSize) writeStream.write(COMPRESS_HEADER); // write the default header to the file
 			compressedStream = createDeflate();
-			stream.pipe(compressedStream).pipe(writeStream);
+			pipeline(stream, compressedStream, writeStream, finished);
 		} else {
 			if (!wroteSize) writeStream.write(DEFAULT_HEADER); // write the default header to the file
-			stream.pipe(writeStream);
+			pipeline(stream, writeStream, finished);
 		}
-		stream.on('error', finished);
 		function createHeader(size: number | bigint): Uint8Array {
 			let headerValue = BigInt(size);
 			const header = new Uint8Array(HEADER_SIZE);
@@ -575,33 +575,59 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 		}
 		// when the stream is finished, we may need to flush, and then close the handle and resolve the promise
 		function finished(error?: Error) {
-			store.unlock(lockKey, 0);
-			//			logger.info?.('unlocked blob', lockKey);
 			const fd = writeStream.fd;
 			if (error) {
-				if (fd) close(fd);
+				store.unlock(lockKey, 0);
+				if (fd) {
+					close(fd);
+					writeStream.fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
+				}
+				if (storageInfo.deleteOnFailure) {
+					unlink(filePath, (error) => {
+						if (error) logger.debug?.('Error while deleting aborted blob file', error);
+					});
+				} else {
+					try {
+						if (statSync(filePath).size === 0) {
+							// if there was an error in the stream, nothing may have been written, so we can write the error message instead
+							const errorBuffer = Buffer.from(error.toString());
+							writeFile(
+								filePath,
+								Buffer.concat([createHeader(BigInt(errorBuffer.length) + 0xff000000000000n), errorBuffer]),
+								(error: Error) => {
+									if (error) logger.debug?.('Error write error message to blob file', error);
+								}
+							);
+						}
+					} catch (error) {
+						logger.debug?.('Error checking blob file after abort', error);
+					}
+				}
 				reject(error);
-			} else if (flush) {
-				// we just use fdatasync because we really aren't that concerned with flushing file metadata
-				fdatasync(fd, (error) => {
-					if (error) reject(error);
+			} else {
+				if (!wroteSize) {
+					wroteSize = true;
+					const size = compressedStream ? compressedStream.bytesWritten : writeStream.bytesWritten - HEADER_SIZE;
+					blob.size = size;
+					write(fd, createHeader(size), 0, HEADER_SIZE, 0, finished);
+					return; // not finished yet, wait for this write and then we are finished
+				}
+				store.unlock(lockKey, 0);
+				if (flush) {
+					// we just use fdatasync because we really aren't that concerned with flushing file metadata
+					fdatasync(fd, (error) => {
+						if (error) reject(error);
+						resolve();
+						close(fd);
+						writeStream.fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
+					});
+				} else {
 					resolve();
 					close(fd);
-				});
-			} else {
-				resolve();
-				close(fd);
+					writeStream.fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
+				}
 			}
 		}
-		writeStream.on('error', finished).on('finish', () => {
-			if (wroteSize) finished();
-			// now that we know the size, we can write it, in case any other threads were waiting for this to complete
-			else {
-				const size = compressedStream ? compressedStream.bytesWritten : writeStream.bytesWritten - HEADER_SIZE;
-				blob.size = size;
-				write(writeStream.fd, createHeader(size), 0, HEADER_SIZE, 0, finished);
-			}
-		});
 	});
 	return blob;
 }
@@ -954,7 +980,7 @@ export function startPreCommitBlobsForRecord(record: any, store: LMDBStore) {
 		const value = record[key];
 		if (value instanceof FileBackedBlob && value.saveBeforeCommit) {
 			currentStore = store;
-			const saving = saveBlob(value).saving ?? Promise.resolve();
+			const saving = saveBlob(value, true).saving ?? Promise.resolve();
 			completion = completion ? Promise.all(completion, saving) : saving;
 		}
 	}

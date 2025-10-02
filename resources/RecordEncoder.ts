@@ -399,7 +399,7 @@ export function recordUpdater(store, tableId, auditStore) {
 			if (options?.originatingOperation) extendedType |= HAS_ORIGINATING_OPERATION;
 			// we use resolveRecord outside of transaction, so must explicitly make it conditional
 			if (resolveRecord) putOptions.ifVersion = ifVersion = existingEntry?.version ?? null;
-			if (existingEntry && existingEntry.value && existingEntry.metadataFlags & HAS_BLOBS) {
+			if (existingEntry && existingEntry.value && type !== 'message' && existingEntry.metadataFlags & HAS_BLOBS) {
 				if (!auditStore.getBinaryFast(existingEntry.localTime)) {
 					// if it used to have blobs, and it doesn't exist in the audit store, we need to delete the old blobs
 					deleteBlobsInObject(existingEntry.value);
@@ -487,7 +487,7 @@ export function recordUpdater(store, tableId, auditStore) {
 }
 export function removeEntry(store: any, entry: any, existingVersion?: number) {
 	if (!entry) return;
-	if (entry.value && entry.metadataFlags & HAS_BLOBS && !store.auditStore.getBinaryFast(entry.localTime)) {
+	if (entry.value && entry.metadataFlags & HAS_BLOBS && !store.auditStore?.getBinaryFast(entry.localTime)) {
 		// if it used to have blobs, and it doesn't exist in the audit store, we need to delete the old blobs
 		deleteBlobsInObject(entry.value);
 	}

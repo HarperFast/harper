@@ -120,6 +120,25 @@ describe('Blob test', () => {
 		assert(retrievedBytes.equals(random));
 		assert.equal(record.blob.size, random.length);
 	});
+	it('create a blob from a stream with saveBeforeCommit and abort it', async () => {
+		let testString = 'this is a test string for deletion'.repeat(12);
+		let blob = await createBlob(
+			Readable.from(
+				(async function* () {
+					for (let i = 0; i < 5; i++) {
+						yield testString + i;
+					}
+					throw new Error('test error');
+				})()
+			),
+			{ saveBeforeCommit: true }
+		);
+		let caughtError;
+		await assert.rejects(() => BlobTest.put({ id: 111, blob }));
+		let filePath = getFilePathForBlob(blob);
+		await delay(20); // wait for the file to be deleted
+		assert(!existsSync(filePath));
+	});
 	it('create a blob from a buffer and call save() but then abort', async () => {
 		let blob;
 		try {
@@ -201,6 +220,18 @@ describe('Blob test', () => {
 		await delay(50); // wait for deletion
 		assert(!existsSync(filePath));
 
+		setAuditRetention(10); // give us time to check the blob file that is written
+		blob = await createBlob(Readable.from(testString));
+		await BlobTest.publish(4, { id: 4, blob });
+		await isSaving(blob);
+		assert.notEqual(filePath, getFilePathForBlob(blob)); // it should be a new file path
+		filePath = getFilePathForBlob(blob);
+		assert(existsSync(filePath));
+		setAuditRetention(0.01);
+		BlobTest.auditStore.scheduleAuditCleanup(1); // prune audit log, so the blob is actually deleted
+		await delay(50); // wait for audit log removal and deletion
+		assert(!existsSync(filePath));
+
 		blob = await createBlob(Readable.from(testString));
 		await BlobTest.put({ id: 4, blob });
 		assert.notEqual(filePath, getFilePathForBlob(blob)); // it should be a new file path
@@ -272,14 +303,16 @@ describe('Blob test', () => {
 				}
 			}
 		}
-		let blob = await createBlob(new BadStream());
+		let blob = createBlob(new BadStream());
 		await BlobTest.put({ id: 5, blob });
 		let eventError, thrownError;
 		blob.on('error', (err) => {
 			console.log('received error event');
 			eventError = err;
 		});
-		console.log('testing stream of aborted blob');
+		try {
+			await blob.written;
+		} catch (e) {}
 		try {
 			for await (let entry of blob.stream()) {
 				console.log('got entry');
@@ -291,7 +324,6 @@ describe('Blob test', () => {
 		assert(eventError);
 		thrownError = null;
 		eventError = null;
-		console.log('testing retrieval of aborted blob');
 		let record = await BlobTest.get(5);
 		record.blob.on('error', (err) => {
 			eventError = err;
@@ -371,6 +403,15 @@ describe('Blob test', () => {
 			);
 		}
 		await Promise.all(promises);
+	});
+	it('publishing over a record with blobs should not leave orphans', async () => {
+		let testString = 'this is a test string for deletion'.repeat(256);
+		let blob = await createBlob(Readable.from(testString));
+		await BlobTest.put({ id: 20, blob });
+		for (let i = 0; i < 5; i++) {
+			await BlobTest.publish(20, { id: 20, noBlobs: true });
+		}
+		// hopefully no orphans below
 	});
 	it('cleanupOrphans', async () => {
 		let orphansDeleted = await cleanupOrphans(getDatabases().test);

@@ -1430,14 +1430,10 @@ export function makeTable(options) {
 			primaryStore.ifVersion(id, existingVersion, () => {
 				updateIndices(id, existingRecord, null);
 			});
-			if (audit) {
-				// update the record to null it out, maintaining the reference to the audit history
-				return updateRecord(id, null, entry, existingVersion, EVICTED, null, null, null, true);
-			}
-			// if no timestamps for audit, just remove
-			else {
-				removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), existingVersion);
-			}
+			// evictions never go in the audit log, so we can not record a deletion entry for the eviction
+			// as there is no corresponding audit entry and it would never get cleaned up. So we must simply
+			// removed the entry entirely
+			return removeEntry(primaryStore, entry ?? primaryStore.getEntry(id), existingVersion);
 		}
 		/**
 		 * This is intended to acquire a lock on a record from the whole cluster.
