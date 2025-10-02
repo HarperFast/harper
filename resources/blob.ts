@@ -25,6 +25,8 @@ import {
 	existsSync,
 	watch,
 	write,
+	statSync,
+	writeFile,
 } from 'node:fs';
 import type { StatsFs } from 'node:fs';
 import { createDeflate, deflate } from 'node:zlib';
@@ -38,6 +40,7 @@ import type { LMDBStore } from 'lmdb';
 import { asyncSerialization, hasAsyncSerialization } from '../server/serverHelpers/contentTypes';
 import { HAS_BLOBS, readAuditEntry } from './auditStore';
 import { getHeapStatistics } from 'node:v8';
+import * as buffer from 'node:buffer';
 
 type StorageInfo = {
 	storageIndex: number;
@@ -54,6 +57,7 @@ type StorageInfo = {
 	end?: number;
 	saving?: Promise<void>;
 	asString?: string;
+	deleteOnFailure?: boolean;
 };
 const FILE_STORAGE_THRESHOLD = 8192; // if the file is below this size, we will store it in memory, or within the record itself, otherwise we will store it in a file
 // We want to keep the file path private (but accessible to the extension)
@@ -507,7 +511,7 @@ global.createBlob = function (source: NodeJS.ReadableStream | NodeJS.Buffer, opt
 	return blob;
 };
 
-export function saveBlob(blob: FileBackedBlob) {
+export function saveBlob(blob: FileBackedBlob, deleteOnFailure = false) {
 	let storageInfo = storageInfoForBlob.get(blob);
 	if (!storageInfo) {
 		storageInfo = { storageIndex: 0, fileId: null, store: currentStore };
@@ -516,6 +520,7 @@ export function saveBlob(blob: FileBackedBlob) {
 		if (storageInfo.fileId) return storageInfo; // if there is any file id, we are already saving and can return the info
 		storageInfo.store = currentStore;
 	}
+	storageInfo.deleteOnFailure = deleteOnFailure;
 
 	generateFilePath(storageInfo);
 	if (storageInfo.source) writeBlobWithStream(blob, storageInfo.source, storageInfo);
@@ -539,13 +544,6 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 			throw new Error(`Unable to get lock for blob file ${fileId}`);
 		}
 		const writeStream = createWriteStream(filePath, { autoClose: false, flags: 'w' });
-		if (stream.errored) {
-			// if it starts in an error state, record that immediately
-			const error = Buffer.from(stream.errored.toString());
-			writeStream.write(Buffer.concat([createHeader(BigInt(error.length) + 0xff000000000000n), error]));
-			finished(stream.errored);
-			return;
-		}
 		let wroteSize = false;
 		if (blob.size !== undefined) {
 			// if we know the size, we can write the header immediately
@@ -577,6 +575,27 @@ function writeBlobWithStream(blob: Blob, stream: NodeJS.ReadableStream, storageI
 				if (fd) {
 					close(fd);
 					writeStream.fd = null; // do not close the same fd twice, that is very dangerous because it might represent a new fd
+				}
+				if (storageInfo.deleteOnFailure) {
+					unlink(filePath, (error) => {
+						if (error) logger.debug?.('Error while deleting aborted blob file', error);
+					});
+				} else {
+					try {
+						if (statSync(filePath).size === 0) {
+							// if there was an error in the stream, nothing may have been written, so we can write the error message instead
+							const errorBuffer = Buffer.from(error.toString());
+							writeFile(
+								filePath,
+								Buffer.concat([createHeader(BigInt(errorBuffer.length) + 0xff000000000000n), errorBuffer]),
+								(error: Error) => {
+									if (error) logger.debug?.('Error write error message to blob file', error);
+								}
+							);
+						}
+					} catch (error) {
+						logger.debug?.('Error checking blob file after abort', error);
+					}
 				}
 				reject(error);
 			} else {
@@ -955,7 +974,7 @@ export function startPreCommitBlobsForRecord(record: any, store: LMDBStore) {
 		const value = record[key];
 		if (value instanceof FileBackedBlob && value.saveBeforeCommit) {
 			currentStore = store;
-			const saving = saveBlob(value).saving ?? Promise.resolve();
+			const saving = saveBlob(value, true).saving ?? Promise.resolve();
 			completion = completion ? Promise.all(completion, saving) : saving;
 		}
 	}
