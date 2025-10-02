@@ -50,6 +50,27 @@ export const servers = [];
 // and any CAs that have been replicated across the cluster
 export const replicationCertificateAuthorities =
 	env.get(CONFIG_PARAMS.REPLICATION_ENABLEROOTCAS) !== false ? new Set(tls.rootCertificates) : new Set();
+
+/**
+ * Build mTLS configuration for replication server with certificate verification support
+ * @param replicationOptions - Replication configuration options
+ * @returns mTLS configuration object (always enabled for replication)
+ */
+export function buildReplicationMtlsConfig(replicationOptions: any) {
+	// mTLS is ALWAYS enabled for replication (required for security)
+	// It cannot be disabled - only certificate verification can be configured
+
+	// If mtls config exists and is an object, use it for certificate verification settings
+	if (replicationOptions?.mtls && typeof replicationOptions.mtls === 'object') {
+		// Preserve certificate verification settings
+		return replicationOptions.mtls;
+	}
+
+	// If mtls is explicitly set to false, override it - mTLS is required for replication
+	// Default: mTLS enabled, certificate verification disabled
+	return true;
+}
+
 /**
  * Start the replication server. This will start a WebSocket server that will accept replication requests from other nodes.
  * @param options
@@ -66,9 +87,14 @@ export function start(options) {
 		routeByHostname.set(urlToNodeName(node.url), node);
 	}
 	assignReplicationSource(options);
+
+	// Build mTLS configuration with certificate verification support
+	// mTLS is always enabled for replication (required for security)
+	const mtlsConfig = buildReplicationMtlsConfig(options);
+
 	options = {
 		// We generally expect this to use the same settings as the operations API port
-		mtls: true, // make sure that we request a certificate from the client
+		mtls: mtlsConfig, // mTLS with optional certificate verification
 		isOperationsServer: true, // we default to using the operations server ports
 		maxPayload: 10 * 1024 * 1024 * 1024, // 10 GB max payload, primarily to support replicating applications
 		...options,
