@@ -450,6 +450,9 @@ class FileBackedBlob extends InstanceOfBlobWithNoConstructor {
 		this.saveBeforeCommit = true;
 		return Promise.resolve();
 	}
+	get written() {
+		return storageInfoForBlob.get(this)?.saving ?? Promise.resolve();
+	}
 }
 let deletion_delay = 500;
 /**

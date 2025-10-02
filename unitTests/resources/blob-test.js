@@ -279,6 +279,9 @@ describe('Blob test', () => {
 			console.log('received error event');
 			eventError = err;
 		});
+		try {
+			await blob.written;
+		} catch (e) {}
 		console.log('testing stream of aborted blob');
 		try {
 			for await (let entry of blob.stream()) {
