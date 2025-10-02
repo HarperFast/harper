@@ -4,19 +4,19 @@ const assert = require('node:assert/strict');
 const test_utils = require('../../test_utils');
 test_utils.preTestPrep();
 
-describe('certificateVerification/verificationConfig.ts', function() {
+describe('certificateVerification/verificationConfig.ts', function () {
 	let configModule;
 	let validationModule;
 
-	before(function() {
+	before(function () {
 		// Load the actual verification config module
 		configModule = require('../../../security/certificateVerification/verificationConfig.ts');
 		// Load validation module for defaults
 		validationModule = require('../../../security/certificateVerification/configValidation.ts');
 	});
 
-	describe('configuration constants', function() {
-		it('should export required constants', function() {
+	describe('configuration constants', function () {
+		it('should export required constants', function () {
 			assert.strictEqual(typeof configModule.CRL_DEFAULT_VALIDITY_PERIOD, 'number');
 			assert.strictEqual(typeof configModule.ERROR_CACHE_TTL, 'number');
 			assert.strictEqual(typeof configModule.CRL_USER_AGENT, 'string');
@@ -25,7 +25,7 @@ describe('certificateVerification/verificationConfig.ts', function() {
 			assert.strictEqual(configModule.ERROR_CACHE_TTL, 300000); // 5 minutes
 		});
 
-		it('should export OCSP defaults from validation module', function() {
+		it('should export OCSP defaults from validation module', function () {
 			assert.ok(validationModule.OCSP_DEFAULTS);
 			assert.strictEqual(validationModule.OCSP_DEFAULTS.timeout, 5000);
 			assert.strictEqual(validationModule.OCSP_DEFAULTS.cacheTtl, 3600000);
@@ -33,7 +33,7 @@ describe('certificateVerification/verificationConfig.ts', function() {
 			assert.strictEqual(validationModule.OCSP_DEFAULTS.failureMode, 'fail-closed');
 		});
 
-		it('should export CRL defaults from validation module', function() {
+		it('should export CRL defaults from validation module', function () {
 			assert.ok(validationModule.CRL_DEFAULTS);
 			assert.strictEqual(validationModule.CRL_DEFAULTS.timeout, 10000);
 			assert.strictEqual(validationModule.CRL_DEFAULTS.cacheTtl, 86400000);
@@ -41,7 +41,7 @@ describe('certificateVerification/verificationConfig.ts', function() {
 			assert.strictEqual(validationModule.CRL_DEFAULTS.gracePeriod, 86400000);
 		});
 
-		it('should generate User-Agent string with version', function() {
+		it('should generate User-Agent string with version', function () {
 			assert.ok(configModule.CRL_USER_AGENT.startsWith('Harper/'));
 			assert.ok(configModule.CRL_USER_AGENT.endsWith('CRL-Client'));
 
@@ -52,28 +52,28 @@ describe('certificateVerification/verificationConfig.ts', function() {
 		});
 	});
 
-	describe('cached configuration function', function() {
-		it('should export getCachedCertificateVerificationConfig function', function() {
+	describe('cached configuration function', function () {
+		it('should export getCachedCertificateVerificationConfig function', function () {
 			assert.strictEqual(typeof configModule.getCachedCertificateVerificationConfig, 'function');
 		});
 
-		it('should handle falsy mtls configurations', function() {
+		it('should handle falsy mtls configurations', function () {
 			assert.strictEqual(configModule.getCachedCertificateVerificationConfig(false), false);
 			assert.strictEqual(configModule.getCachedCertificateVerificationConfig(null), false);
 			assert.strictEqual(configModule.getCachedCertificateVerificationConfig(undefined), false);
 		});
 
-		it('should return false for mtls: true (cert verification disabled by default)', function() {
+		it('should return false for mtls: true (cert verification disabled by default)', function () {
 			const result = configModule.getCachedCertificateVerificationConfig(true);
 			assert.strictEqual(result, false); // Defaults to disabled for safe rollout
 		});
 
-		it('should handle complex configuration objects', function() {
+		it('should handle complex configuration objects', function () {
 			// Test with OCSP disabled
 			const ocspDisabled = configModule.getCachedCertificateVerificationConfig({
 				certificateVerification: {
-					ocsp: false
-				}
+					ocsp: false,
+				},
 			});
 			assert.ok(ocspDisabled);
 			assert.ok(ocspDisabled.ocsp);
@@ -84,21 +84,21 @@ describe('certificateVerification/verificationConfig.ts', function() {
 				certificateVerification: {
 					ocsp: {
 						timeout: 3000,
-						failureMode: 'fail-closed'
-					}
-				}
+						failureMode: 'fail-closed',
+					},
+				},
 			});
 			assert.ok(customOcsp.ocsp);
 			assert.strictEqual(customOcsp.ocsp.timeout, 3000);
 			assert.strictEqual(customOcsp.ocsp.failureMode, 'fail-closed');
 		});
 
-		it('should handle CRL configuration', function() {
+		it('should handle CRL configuration', function () {
 			// Test with CRL disabled
 			const crlDisabled = configModule.getCachedCertificateVerificationConfig({
 				certificateVerification: {
-					crl: false
-				}
+					crl: false,
+				},
 			});
 			assert.ok(crlDisabled);
 			assert.ok(crlDisabled.crl);
@@ -110,9 +110,9 @@ describe('certificateVerification/verificationConfig.ts', function() {
 					crl: {
 						timeout: 15000,
 						gracePeriod: 43200000,
-						failureMode: 'fail-closed'
-					}
-				}
+						failureMode: 'fail-closed',
+					},
+				},
 			});
 			assert.ok(customCrl.crl);
 			assert.strictEqual(customCrl.crl.timeout, 15000);
@@ -120,21 +120,21 @@ describe('certificateVerification/verificationConfig.ts', function() {
 			assert.strictEqual(customCrl.crl.failureMode, 'fail-closed');
 		});
 
-		it('should handle edge cases', function() {
+		it('should handle edge cases', function () {
 			// Test with empty object - defaults to disabled
 			const emptyObj = configModule.getCachedCertificateVerificationConfig({});
 			assert.strictEqual(emptyObj, false); // No certificateVerification key = disabled
 
 			// Test with explicit false certificateVerification
 			const falseVerification = configModule.getCachedCertificateVerificationConfig({
-				certificateVerification: false
+				certificateVerification: false,
 			});
 			assert.strictEqual(falseVerification, false);
 		});
 	});
 
-	describe('caching behavior', function() {
-		it('should cache results for repeated calls', function() {
+	describe('caching behavior', function () {
+		it('should cache results for repeated calls', function () {
 			// First call should compute result (false - disabled by default)
 			const result1 = configModule.getCachedCertificateVerificationConfig(true);
 			assert.strictEqual(result1, false);
@@ -148,7 +148,7 @@ describe('certificateVerification/verificationConfig.ts', function() {
 			assert.strictEqual(result3, false);
 		});
 
-		it('should handle object configurations', function() {
+		it('should handle object configurations', function () {
 			const configObj = { certificateVerification: true };
 
 			// First call with object
@@ -168,145 +168,145 @@ describe('certificateVerification/verificationConfig.ts', function() {
 			assert.strictEqual(result3.failureMode, 'fail-closed');
 		});
 
-		it('should handle complex nested configuration objects', function() {
+		it('should handle complex nested configuration objects', function () {
 			// Test with certificateVerification as complex object
 			const configObj = configModule.getCachedCertificateVerificationConfig({
 				certificateVerification: {
 					failureMode: 'fail-closed',
 					ocsp: {
 						enabled: true,
-						timeout: 3000
+						timeout: 3000,
 					},
-					crl: false
-				}
+					crl: false,
+				},
 			});
 			assert.ok(configObj);
 			assert.strictEqual(configObj.failureMode, 'fail-closed');
 		});
 
-		it('should handle invalid config gracefully with fail-safe behavior', function() {
+		it('should handle invalid config gracefully with fail-safe behavior', function () {
 			// Invalid failureMode should return false (disabled) as fail-safe behavior
 			const invalidMode = configModule.getCachedCertificateVerificationConfig({
 				certificateVerification: {
-					failureMode: 'invalid-mode'
-				}
+					failureMode: 'invalid-mode',
+				},
 			});
 			assert.strictEqual(invalidMode, false); // Fail-safe: invalid config = disabled
 
 			// Second call with same invalid config should return false immediately (cached error)
 			const secondCall = configModule.getCachedCertificateVerificationConfig({
 				certificateVerification: {
-					failureMode: 'invalid-mode'
-				}
+					failureMode: 'invalid-mode',
+				},
 			});
 			assert.strictEqual(secondCall, false);
 		});
 
-		it('should handle invalid timeout values gracefully', function() {
+		it('should handle invalid timeout values gracefully', function () {
 			// Timeout less than minimum should fail validation
 			const invalidTimeout = configModule.getCachedCertificateVerificationConfig({
 				certificateVerification: {
 					ocsp: {
-						timeout: 500 // Less than 1000ms minimum
-					}
-				}
+						timeout: 500, // Less than 1000ms minimum
+					},
+				},
 			});
 			assert.strictEqual(invalidTimeout, false); // Fail-safe: invalid config = disabled
 		});
 
-		it('should handle invalid cacheTtl values gracefully', function() {
+		it('should handle invalid cacheTtl values gracefully', function () {
 			// CacheTtl less than minimum should fail validation
 			const invalidCacheTtl = configModule.getCachedCertificateVerificationConfig({
 				certificateVerification: {
 					crl: {
-						cacheTtl: 100 // Less than 1000ms minimum
-					}
-				}
+						cacheTtl: 100, // Less than 1000ms minimum
+					},
+				},
 			});
 			assert.strictEqual(invalidCacheTtl, false); // Fail-safe: invalid config = disabled
 		});
 
-		it('should handle invalid errorCacheTtl values gracefully', function() {
+		it('should handle invalid errorCacheTtl values gracefully', function () {
 			// ErrorCacheTtl less than minimum should fail validation
 			const invalidErrorCacheTtl = configModule.getCachedCertificateVerificationConfig({
 				certificateVerification: {
 					ocsp: {
-						errorCacheTtl: 500 // Less than 1000ms minimum
-					}
-				}
+						errorCacheTtl: 500, // Less than 1000ms minimum
+					},
+				},
 			});
 			assert.strictEqual(invalidErrorCacheTtl, false); // Fail-safe: invalid config = disabled
 		});
 
-		it('should handle zero cacheTtl values gracefully', function() {
+		it('should handle zero cacheTtl values gracefully', function () {
 			// Zero cacheTtl should fail validation (minimum is 1000)
 			const zeroCacheTtl = configModule.getCachedCertificateVerificationConfig({
 				certificateVerification: {
 					crl: {
-						cacheTtl: 0
-					}
-				}
+						cacheTtl: 0,
+					},
+				},
 			});
 			assert.strictEqual(zeroCacheTtl, false); // Fail-safe: invalid config = disabled
 		});
 
-		it('should handle negative cacheTtl values gracefully', function() {
+		it('should handle negative cacheTtl values gracefully', function () {
 			// Negative cacheTtl should fail validation
 			const negativeCacheTtl = configModule.getCachedCertificateVerificationConfig({
 				certificateVerification: {
 					ocsp: {
-						cacheTtl: -1000
-					}
-				}
+						cacheTtl: -1000,
+					},
+				},
 			});
 			assert.strictEqual(negativeCacheTtl, false); // Fail-safe: invalid config = disabled
 		});
 
-		it('should accept very large cacheTtl values', function() {
+		it('should accept very large cacheTtl values', function () {
 			// Large but valid cacheTtl should be accepted
 			const largeCacheTtl = configModule.getCachedCertificateVerificationConfig({
 				certificateVerification: {
 					crl: {
-						cacheTtl: 86400000 * 30 // 30 days
-					}
-				}
+						cacheTtl: 86400000 * 30, // 30 days
+					},
+				},
 			});
 			assert.ok(largeCacheTtl);
 			assert.strictEqual(largeCacheTtl.crl.cacheTtl, 86400000 * 30);
 		});
 
-		it('should handle invalid gracePeriod values gracefully', function() {
+		it('should handle invalid gracePeriod values gracefully', function () {
 			// Negative gracePeriod should fail validation (minimum is 0)
 			const negativeGracePeriod = configModule.getCachedCertificateVerificationConfig({
 				certificateVerification: {
 					crl: {
-						gracePeriod: -1
-					}
-				}
+						gracePeriod: -1,
+					},
+				},
 			});
 			assert.strictEqual(negativeGracePeriod, false); // Fail-safe: invalid config = disabled
 		});
 
-		it('should accept zero gracePeriod', function() {
+		it('should accept zero gracePeriod', function () {
 			// Zero gracePeriod is valid (no grace period)
 			const zeroGracePeriod = configModule.getCachedCertificateVerificationConfig({
 				certificateVerification: {
 					crl: {
-						gracePeriod: 0
-					}
-				}
+						gracePeriod: 0,
+					},
+				},
 			});
 			assert.ok(zeroGracePeriod);
 			assert.strictEqual(zeroGracePeriod.crl.gracePeriod, 0);
 		});
 	});
 
-	describe('boolean shorthand config (crl: true, ocsp: true)', function() {
-		it('should handle crl: true shorthand with defaults', function() {
+	describe('boolean shorthand config (crl: true, ocsp: true)', function () {
+		it('should handle crl: true shorthand with defaults', function () {
 			const result = configModule.getCachedCertificateVerificationConfig({
 				certificateVerification: {
-					crl: true
-				}
+					crl: true,
+				},
 			});
 
 			assert.ok(result);
@@ -319,11 +319,11 @@ describe('certificateVerification/verificationConfig.ts', function() {
 			assert.strictEqual(result.crl.gracePeriod, validationModule.CRL_DEFAULTS.gracePeriod);
 		});
 
-		it('should handle ocsp: true shorthand with defaults', function() {
+		it('should handle ocsp: true shorthand with defaults', function () {
 			const result = configModule.getCachedCertificateVerificationConfig({
 				certificateVerification: {
-					ocsp: true
-				}
+					ocsp: true,
+				},
 			});
 
 			assert.ok(result);
@@ -336,12 +336,12 @@ describe('certificateVerification/verificationConfig.ts', function() {
 			assert.strictEqual(result.ocsp.failureMode, validationModule.OCSP_DEFAULTS.failureMode);
 		});
 
-		it('should handle both crl: true and ocsp: true together', function() {
+		it('should handle both crl: true and ocsp: true together', function () {
 			const result = configModule.getCachedCertificateVerificationConfig({
 				certificateVerification: {
 					crl: true,
-					ocsp: true
-				}
+					ocsp: true,
+				},
 			});
 
 			assert.ok(result);
@@ -354,12 +354,12 @@ describe('certificateVerification/verificationConfig.ts', function() {
 			assert.strictEqual(result.ocsp.timeout, validationModule.OCSP_DEFAULTS.timeout);
 		});
 
-		it('should handle crl: true with additional overrides', function() {
+		it('should handle crl: true with additional overrides', function () {
 			const result = configModule.getCachedCertificateVerificationConfig({
 				certificateVerification: {
 					crl: true,
-					failureMode: 'fail-open' // Override global failure mode
-				}
+					failureMode: 'fail-open', // Override global failure mode
+				},
 			});
 
 			assert.ok(result);
@@ -369,12 +369,12 @@ describe('certificateVerification/verificationConfig.ts', function() {
 			assert.strictEqual(result.failureMode, 'fail-open');
 		});
 
-		it('should handle ocsp: true with additional overrides', function() {
+		it('should handle ocsp: true with additional overrides', function () {
 			const result = configModule.getCachedCertificateVerificationConfig({
 				certificateVerification: {
 					ocsp: true,
-					failureMode: 'fail-open'
-				}
+					failureMode: 'fail-open',
+				},
 			});
 
 			assert.ok(result);

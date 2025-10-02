@@ -22,7 +22,7 @@ function findHarperKeysDir() {
 		join('/tmp', 'harperdb', 'keys'),
 		join('/var', 'harperdb', 'keys'),
 		// Check HARPERDB_ROOT env var if set
-		...(process.env.HARPERDB_ROOT ? [join(process.env.HARPERDB_ROOT, 'keys')] : [])
+		...(process.env.HARPERDB_ROOT ? [join(process.env.HARPERDB_ROOT, 'keys')] : []),
 	];
 
 	for (const path of possiblePaths) {
@@ -84,7 +84,7 @@ async function setupHarperCA() {
 	const caKeyPath = join(harperKeysDir, ca.private_key_name);
 	if (!existsSync(caKeyPath)) {
 		console.error(`\nERROR: CA private key not found at: ${caKeyPath}`);
-		console.error('Please check the path to Harper\'s keys directory');
+		console.error("Please check the path to Harper's keys directory");
 		console.error(`Expected Harper keys directory: ${harperKeysDir}`);
 		throw new Error('CA private key not found');
 	}
@@ -96,20 +96,10 @@ async function setupHarperCA() {
 
 function generateServerCertificate(filename = 'server', caKeyPath) {
 	console.log(`Generating ${filename} private key...`);
-	runOpenSSL([
-		'genpkey',
-		'-algorithm', 'Ed25519',
-		'-out', `${filename}.key`
-	]);
+	runOpenSSL(['genpkey', '-algorithm', 'Ed25519', '-out', `${filename}.key`]);
 
 	console.log(`Creating ${filename} certificate signing request...`);
-	runOpenSSL([
-		'req',
-		'-new',
-		'-key', `${filename}.key`,
-		'-out', `${filename}.csr`,
-		'-subj', `"${SERVER_SUBJECT}"`
-	]);
+	runOpenSSL(['req', '-new', '-key', `${filename}.key`, '-out', `${filename}.csr`, '-subj', `"${SERVER_SUBJECT}"`]);
 
 	// Create extensions file with CRL distribution point
 	const extensionsContent = `[v3_req]
@@ -133,15 +123,23 @@ URI.0 = ${CRL_URL}
 	console.log(`Signing ${filename} certificate with Harper CA using CA database...`);
 	runOpenSSL([
 		'ca',
-		'-in', `${filename}.csr`,
-		'-cert', 'harper-ca.crt',
-		'-keyfile', caKeyPath,
-		'-out', `${filename}.crt`,
-		'-days', '365',
-		'-extensions', 'v3_req',
-		'-extfile', `${filename}.ext`,
-		'-config', 'ca.conf',
-		'-batch'  // Don't prompt for confirmation
+		'-in',
+		`${filename}.csr`,
+		'-cert',
+		'harper-ca.crt',
+		'-keyfile',
+		caKeyPath,
+		'-out',
+		`${filename}.crt`,
+		'-days',
+		'365',
+		'-extensions',
+		'v3_req',
+		'-extfile',
+		`${filename}.ext`,
+		'-config',
+		'ca.conf',
+		'-batch', // Don't prompt for confirmation
 	]);
 
 	// Create certificate chain
@@ -155,20 +153,10 @@ function generateRevokedCertificate(caKeyPath) {
 	const REVOKED_SUBJECT = '/C=US/ST=CO/L=Denver/O=Harper Test/CN=revoked-client';
 
 	console.log('Generating revoked private key...');
-	runOpenSSL([
-		'genpkey',
-		'-algorithm', 'Ed25519',
-		'-out', 'revoked.key'
-	]);
+	runOpenSSL(['genpkey', '-algorithm', 'Ed25519', '-out', 'revoked.key']);
 
 	console.log('Creating revoked certificate signing request...');
-	runOpenSSL([
-		'req',
-		'-new',
-		'-key', 'revoked.key',
-		'-out', 'revoked.csr',
-		'-subj', `"${REVOKED_SUBJECT}"`
-	]);
+	runOpenSSL(['req', '-new', '-key', 'revoked.key', '-out', 'revoked.csr', '-subj', `"${REVOKED_SUBJECT}"`]);
 
 	// Create extensions file with CRL distribution point
 	const extensionsContent = `[v3_req]
@@ -192,15 +180,23 @@ URI.0 = ${CRL_URL}
 	console.log('Signing revoked certificate with Harper CA using CA database...');
 	runOpenSSL([
 		'ca',
-		'-in', 'revoked.csr',
-		'-cert', 'harper-ca.crt',
-		'-keyfile', caKeyPath,
-		'-out', 'revoked.crt',
-		'-days', '365',
-		'-extensions', 'v3_req',
-		'-extfile', 'revoked.ext',
-		'-config', 'ca.conf',
-		'-batch'  // Don't prompt for confirmation
+		'-in',
+		'revoked.csr',
+		'-cert',
+		'harper-ca.crt',
+		'-keyfile',
+		caKeyPath,
+		'-out',
+		'revoked.crt',
+		'-days',
+		'365',
+		'-extensions',
+		'v3_req',
+		'-extfile',
+		'revoked.ext',
+		'-config',
+		'ca.conf',
+		'-batch', // Don't prompt for confirmation
 	]);
 
 	// Create certificate chain
@@ -213,12 +209,7 @@ function generateCRL() {
 
 	// Create initial empty CRL
 	console.log('Generating initial empty CRL...');
-	runOpenSSL([
-		'ca',
-		'-config', 'ca.conf',
-		'-gencrl',
-		'-out', 'test.crl'
-	]);
+	runOpenSSL(['ca', '-config', 'ca.conf', '-gencrl', '-out', 'test.crl']);
 
 	// Sign the revoked certificate with CA to add it to database, then revoke it
 	console.log('Adding revoked certificate to CA database...');
@@ -226,21 +217,22 @@ function generateCRL() {
 		// Re-sign the revoked certificate to add it to the CA database
 		runOpenSSL([
 			'ca',
-			'-config', 'ca.conf',
-			'-in', 'revoked.csr',
-			'-out', 'revoked-signed.crt',
-			'-extensions', 'v3_req',
-			'-extfile', 'revoked.ext',
-			'-batch'
+			'-config',
+			'ca.conf',
+			'-in',
+			'revoked.csr',
+			'-out',
+			'revoked-signed.crt',
+			'-extensions',
+			'v3_req',
+			'-extfile',
+			'revoked.ext',
+			'-batch',
 		]);
 
 		// Now revoke it
 		console.log('Revoking certificate...');
-		runOpenSSL([
-			'ca',
-			'-config', 'ca.conf',
-			'-revoke', 'revoked-signed.crt'
-		]);
+		runOpenSSL(['ca', '-config', 'ca.conf', '-revoke', 'revoked-signed.crt']);
 	} catch (error) {
 		console.log('Error during certificate revocation process:', error.message);
 		// Continue anyway - we can still generate a CRL
@@ -248,29 +240,15 @@ function generateCRL() {
 
 	// Generate CRL with revoked certificate
 	console.log('Generating CRL with revoked certificate...');
-	runOpenSSL([
-		'ca',
-		'-config', 'ca.conf',
-		'-gencrl',
-		'-out', 'test.crl'
-	]);
+	runOpenSSL(['ca', '-config', 'ca.conf', '-gencrl', '-out', 'test.crl']);
 
 	// Verify CRL format
 	console.log('Verifying CRL...');
-	runOpenSSL([
-		'crl',
-		'-in', 'test.crl',
-		'-text', '-noout'
-	]);
+	runOpenSSL(['crl', '-in', 'test.crl', '-text', '-noout']);
 	console.log('CRL generated successfully');
 
 	// Convert to PEM format (ensure it's in PEM)
-	runOpenSSL([
-		'crl',
-		'-in', 'test.crl',
-		'-out', 'test-pem.crl',
-		'-outform', 'PEM'
-	]);
+	runOpenSSL(['crl', '-in', 'test.crl', '-out', 'test-pem.crl', '-outform', 'PEM']);
 }
 
 function createCRLServer() {
@@ -500,7 +478,7 @@ async function main() {
 		console.log('\\nNext steps:');
 		console.log('1. Start CRL server: node start-crl-server.js');
 		console.log('2. Run manual test: node test-crl-manual.js');
-		console.log('\\nNote: Certificates are signed by Harper\'s CA, so they should be trusted automatically.');
+		console.log("\\nNote: Certificates are signed by Harper's CA, so they should be trusted automatically.");
 	} catch (error) {
 		console.error('\\nError generating CRL test certificates:', error.message);
 		console.error('Make sure Harper is running and accessible at the configured URL.');

@@ -21,7 +21,7 @@ const CRL_FILE = path.join(CERTS_PATH, 'test.crl');
 
 const server = http.createServer((req, res) => {
 	console.log(`CRL Server: ${req.method} ${req.url}`);
-	
+
 	if (req.url === '/test.crl') {
 		try {
 			const crlData = fs.readFileSync(CRL_FILE);

@@ -5,14 +5,14 @@ const sinon = require('sinon');
 const test_utils = require('../../test_utils');
 test_utils.preTestPrep();
 
-describe('certificateVerification/certificateVerificationSource.ts', function() {
+describe('certificateVerification/certificateVerificationSource.ts', function () {
 	let CertificateVerificationSourceClass;
 	let crlModule;
 	let ocspModule;
 	let performCRLCheckStub;
 	let performOCSPCheckStub;
 
-	before(function() {
+	before(function () {
 		// Load the modules
 		crlModule = require('../../../security/certificateVerification/crlVerification.ts');
 		ocspModule = require('../../../security/certificateVerification/ocspVerification.ts');
@@ -20,31 +20,31 @@ describe('certificateVerification/certificateVerificationSource.ts', function() 
 		CertificateVerificationSourceClass = sourceModule.CertificateVerificationSource;
 	});
 
-	beforeEach(function() {
+	beforeEach(function () {
 		// Stub the verification functions
 		performCRLCheckStub = sinon.stub(crlModule, 'performCRLCheck');
 		performOCSPCheckStub = sinon.stub(ocspModule, 'performOCSPCheck');
 	});
 
-	afterEach(function() {
+	afterEach(function () {
 		sinon.restore();
 	});
 
-	describe('class exports', function() {
-		it('should export CertificateVerificationSource class', function() {
+	describe('class exports', function () {
+		it('should export CertificateVerificationSource class', function () {
 			assert.strictEqual(typeof CertificateVerificationSourceClass, 'function');
 			assert.strictEqual(CertificateVerificationSourceClass.name, 'CertificateVerificationSource');
 		});
 
-		it('should extend Resource class', function() {
+		it('should extend Resource class', function () {
 			const instance = new CertificateVerificationSourceClass();
 			// Should have Resource methods
 			assert.strictEqual(typeof instance.get, 'function');
 		});
 	});
 
-	describe('get() method - CRL verification', function() {
-		it('should handle CRL cache key and return result structure', async function() {
+	describe('get() method - CRL verification', function () {
+		it('should handle CRL cache key and return result structure', async function () {
 			const source = new CertificateVerificationSourceClass();
 
 			// Mock getContext to return request context
@@ -57,17 +57,17 @@ describe('certificateVerification/certificateVerificationSource.ts', function() 
 							cacheTtl: 3600000,
 							timeout: 10000,
 							failureMode: 'fail-closed',
-							gracePeriod: 86400000
-						}
-					}
-				}
+							gracePeriod: 86400000,
+						},
+					},
+				},
 			});
 
 			// Stub CRL check to return revoked status
 			performCRLCheckStub.resolves({
 				status: 'revoked',
 				reason: 'keyCompromise',
-				source: 'http://crl.example.com/ca.crl'
+				source: 'http://crl.example.com/ca.crl',
 			});
 
 			const result = await source.get({ id: 'crl:abc123' });
@@ -82,7 +82,7 @@ describe('certificateVerification/certificateVerificationSource.ts', function() 
 			assert.ok(['good', 'revoked', 'unknown'].includes(result.status));
 		});
 
-		it('should calculate expiresAt based on cacheTtl', async function() {
+		it('should calculate expiresAt based on cacheTtl', async function () {
 			const source = new CertificateVerificationSourceClass();
 			const cacheTtl = 3600000; // 1 hour
 			const beforeTime = Date.now();
@@ -92,9 +92,9 @@ describe('certificateVerification/certificateVerificationSource.ts', function() 
 					certPem: 'cert',
 					issuerPem: 'issuer',
 					config: {
-						crl: { cacheTtl, timeout: 10000, failureMode: 'fail-closed', gracePeriod: 86400000 }
-					}
-				}
+						crl: { cacheTtl, timeout: 10000, failureMode: 'fail-closed', gracePeriod: 86400000 },
+					},
+				},
 			});
 
 			performCRLCheckStub.resolves({ status: 'good' });
@@ -108,16 +108,16 @@ describe('certificateVerification/certificateVerificationSource.ts', function() 
 		});
 	});
 
-	describe('get() method - OCSP verification', function() {
-		it('should detect OCSP method from cache key prefix', function() {
+	describe('get() method - OCSP verification', function () {
+		it('should detect OCSP method from cache key prefix', function () {
 			// Test that OCSP prefix is recognized
 			const id = 'ocsp:test123';
 			assert.ok(id.startsWith('ocsp:'));
 		});
 	});
 
-	describe('get() method - error handling', function() {
-		it('should return null when no requestContext available', async function() {
+	describe('get() method - error handling', function () {
+		it('should return null when no requestContext available', async function () {
 			const source = new CertificateVerificationSourceClass();
 
 			sinon.stub(source, 'getContext').returns({
@@ -132,15 +132,15 @@ describe('certificateVerification/certificateVerificationSource.ts', function() 
 			assert.strictEqual(performOCSPCheckStub.called, false);
 		});
 
-		it('should return null when certPem is missing', async function() {
+		it('should return null when certPem is missing', async function () {
 			const source = new CertificateVerificationSourceClass();
 
 			sinon.stub(source, 'getContext').returns({
 				requestContext: {
 					// certPem missing
 					issuerPem: 'issuer',
-					config: {}
-				}
+					config: {},
+				},
 			});
 
 			const result = await source.get({ id: 'crl:test' });
@@ -148,15 +148,15 @@ describe('certificateVerification/certificateVerificationSource.ts', function() 
 			assert.strictEqual(result, null);
 		});
 
-		it('should return null when issuerPem is missing', async function() {
+		it('should return null when issuerPem is missing', async function () {
 			const source = new CertificateVerificationSourceClass();
 
 			sinon.stub(source, 'getContext').returns({
 				requestContext: {
 					certPem: 'cert',
 					// issuerPem missing
-					config: {}
-				}
+					config: {},
+				},
 			});
 
 			const result = await source.get({ id: 'crl:test' });
@@ -164,43 +164,39 @@ describe('certificateVerification/certificateVerificationSource.ts', function() 
 			assert.strictEqual(result, null);
 		});
 
-		it('should throw for unsupported verification method', async function() {
+		it('should throw for unsupported verification method', async function () {
 			const source = new CertificateVerificationSourceClass();
 
 			sinon.stub(source, 'getContext').returns({
 				requestContext: {
 					certPem: 'cert',
 					issuerPem: 'issuer',
-					config: {}
-				}
+					config: {},
+				},
 			});
 
-			await assert.rejects(
-				source.get({ id: 'invalid:test-key' }),
-				{ message: /Unsupported verification method: unknown/ }
-			);
+			await assert.rejects(source.get({ id: 'invalid:test-key' }), {
+				message: /Unsupported verification method: unknown/,
+			});
 		});
 
-		it('should throw for cache key with no prefix', async function() {
+		it('should throw for cache key with no prefix', async function () {
 			const source = new CertificateVerificationSourceClass();
 
 			sinon.stub(source, 'getContext').returns({
 				requestContext: {
 					certPem: 'cert',
 					issuerPem: 'issuer',
-					config: {}
-				}
+					config: {},
+				},
 			});
 
-			await assert.rejects(
-				source.get({ id: 'no-prefix-key' }),
-				{ message: /Unsupported verification method/ }
-			);
+			await assert.rejects(source.get({ id: 'no-prefix-key' }), { message: /Unsupported verification method/ });
 		});
 	});
 
-	describe('get() method - result consistency', function() {
-		it('should include checked_at timestamp', async function() {
+	describe('get() method - result consistency', function () {
+		it('should include checked_at timestamp', async function () {
 			const source = new CertificateVerificationSourceClass();
 			const beforeTime = Date.now();
 
@@ -209,9 +205,9 @@ describe('certificateVerification/certificateVerificationSource.ts', function() 
 					certPem: 'cert',
 					issuerPem: 'issuer',
 					config: {
-						crl: { cacheTtl: 3600000, timeout: 10000, failureMode: 'fail-closed', gracePeriod: 86400000 }
-					}
-				}
+						crl: { cacheTtl: 3600000, timeout: 10000, failureMode: 'fail-closed', gracePeriod: 86400000 },
+					},
+				},
 			});
 
 			performCRLCheckStub.resolves({ status: 'good' });
@@ -223,7 +219,7 @@ describe('certificateVerification/certificateVerificationSource.ts', function() 
 			assert.ok(result.checked_at <= afterTime);
 		});
 
-		it('should preserve certificate_id in result', async function() {
+		it('should preserve certificate_id in result', async function () {
 			const source = new CertificateVerificationSourceClass();
 			const cacheKey = 'crl:very-long-cache-key-with-hash-abc123def456';
 
@@ -232,9 +228,9 @@ describe('certificateVerification/certificateVerificationSource.ts', function() 
 					certPem: 'cert',
 					issuerPem: 'issuer',
 					config: {
-						crl: { cacheTtl: 3600000, timeout: 10000, failureMode: 'fail-closed', gracePeriod: 86400000 }
-					}
-				}
+						crl: { cacheTtl: 3600000, timeout: 10000, failureMode: 'fail-closed', gracePeriod: 86400000 },
+					},
+				},
 			});
 
 			performCRLCheckStub.resolves({ status: 'unknown' });
@@ -244,7 +240,7 @@ describe('certificateVerification/certificateVerificationSource.ts', function() 
 			assert.strictEqual(result.certificate_id, cacheKey);
 		});
 
-		it('should include all required fields in result', async function() {
+		it('should include all required fields in result', async function () {
 			const source = new CertificateVerificationSourceClass();
 
 			sinon.stub(source, 'getContext').returns({
@@ -252,9 +248,9 @@ describe('certificateVerification/certificateVerificationSource.ts', function() 
 					certPem: 'cert',
 					issuerPem: 'issuer',
 					config: {
-						crl: { cacheTtl: 3600000, timeout: 10000, failureMode: 'fail-closed', gracePeriod: 86400000 }
-					}
-				}
+						crl: { cacheTtl: 3600000, timeout: 10000, failureMode: 'fail-closed', gracePeriod: 86400000 },
+					},
+				},
 			});
 
 			performCRLCheckStub.resolves({ status: 'good' });
@@ -270,8 +266,8 @@ describe('certificateVerification/certificateVerificationSource.ts', function() 
 		});
 	});
 
-	describe('method detection', function() {
-		it('should detect CRL method from cache key prefix', async function() {
+	describe('method detection', function () {
+		it('should detect CRL method from cache key prefix', async function () {
 			const source = new CertificateVerificationSourceClass();
 
 			sinon.stub(source, 'getContext').returns({
@@ -279,9 +275,9 @@ describe('certificateVerification/certificateVerificationSource.ts', function() 
 					certPem: 'cert',
 					issuerPem: 'issuer',
 					config: {
-						crl: { cacheTtl: 3600000, timeout: 10000, failureMode: 'fail-closed', gracePeriod: 86400000 }
-					}
-				}
+						crl: { cacheTtl: 3600000, timeout: 10000, failureMode: 'fail-closed', gracePeriod: 86400000 },
+					},
+				},
 			});
 
 			performCRLCheckStub.resolves({ status: 'good' });
@@ -291,28 +287,25 @@ describe('certificateVerification/certificateVerificationSource.ts', function() 
 			assert.strictEqual(result.method, 'crl');
 		});
 
-		it('should identify OCSP vs CRL by prefix', function() {
+		it('should identify OCSP vs CRL by prefix', function () {
 			assert.ok('crl:test'.startsWith('crl:'));
 			assert.ok('ocsp:test'.startsWith('ocsp:'));
 			assert.ok(!'invalid:test'.startsWith('crl:'));
 			assert.ok(!'invalid:test'.startsWith('ocsp:'));
 		});
 
-		it('should detect unknown method for invalid prefix', async function() {
+		it('should detect unknown method for invalid prefix', async function () {
 			const source = new CertificateVerificationSourceClass();
 
 			sinon.stub(source, 'getContext').returns({
 				requestContext: {
 					certPem: 'cert',
 					issuerPem: 'issuer',
-					config: {}
-				}
+					config: {},
+				},
 			});
 
-			await assert.rejects(
-				source.get({ id: 'ldap:test' }),
-				{ message: /Unsupported verification method: unknown/ }
-			);
+			await assert.rejects(source.get({ id: 'ldap:test' }), { message: /Unsupported verification method: unknown/ });
 		});
 	});
 });

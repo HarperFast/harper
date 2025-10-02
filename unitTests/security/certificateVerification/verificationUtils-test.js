@@ -5,20 +5,20 @@ const { createHash } = require('node:crypto');
 const test_utils = require('../../test_utils');
 test_utils.preTestPrep();
 
-describe('certificateVerification/verificationUtils.ts', function() {
+describe('certificateVerification/verificationUtils.ts', function () {
 	let utilsModule;
 
-	before(function() {
+	before(function () {
 		// Load the actual verification utils module
 		utilsModule = require('../../../security/certificateVerification/verificationUtils.ts');
 	});
 
-	describe('bufferToPem function', function() {
-		it('should export bufferToPem function', function() {
+	describe('bufferToPem function', function () {
+		it('should export bufferToPem function', function () {
 			assert.strictEqual(typeof utilsModule.bufferToPem, 'function');
 		});
 
-		it('should convert buffer to PEM format correctly', function() {
+		it('should convert buffer to PEM format correctly', function () {
 			const buffer = Buffer.from('Hello World', 'utf8');
 			const result = utilsModule.bufferToPem(buffer, 'CERTIFICATE');
 
@@ -27,7 +27,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.ok(result.includes('SGVsbG8gV29ybGQ=')); // Base64 of "Hello World"
 		});
 
-		it('should handle empty buffer', function() {
+		it('should handle empty buffer', function () {
 			const buffer = Buffer.alloc(0);
 			const result = utilsModule.bufferToPem(buffer, 'CERTIFICATE');
 
@@ -35,7 +35,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.ok(result.endsWith('-----END CERTIFICATE-----'));
 		});
 
-		it('should split long base64 into appropriate lines', function() {
+		it('should split long base64 into appropriate lines', function () {
 			const buffer = Buffer.alloc(100, 'A'); // 100 bytes of 'A'
 			const result = utilsModule.bufferToPem(buffer, 'CERTIFICATE');
 
@@ -49,12 +49,12 @@ describe('certificateVerification/verificationUtils.ts', function() {
 		});
 	});
 
-	describe('pemToBuffer function', function() {
-		it('should export pemToBuffer function', function() {
+	describe('pemToBuffer function', function () {
+		it('should export pemToBuffer function', function () {
 			assert.strictEqual(typeof utilsModule.pemToBuffer, 'function');
 		});
 
-		it('should convert PEM to ArrayBuffer correctly', function() {
+		it('should convert PEM to ArrayBuffer correctly', function () {
 			const pem = '-----BEGIN CERTIFICATE-----\nSGVsbG8gV29ybGQ=\n-----END CERTIFICATE-----';
 			const result = utilsModule.pemToBuffer(pem);
 
@@ -64,7 +64,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.strictEqual(decoded, 'Hello World');
 		});
 
-		it('should handle PEM with whitespace', function() {
+		it('should handle PEM with whitespace', function () {
 			const pem = '-----BEGIN CERTIFICATE-----\n  SGVs\n  bG8g\n  V29y\n  bGQ= \n-----END CERTIFICATE-----';
 			const result = utilsModule.pemToBuffer(pem);
 
@@ -74,12 +74,12 @@ describe('certificateVerification/verificationUtils.ts', function() {
 		});
 	});
 
-	describe('cache key generation', function() {
-		it('should export createCacheKey function', function() {
+	describe('cache key generation', function () {
+		it('should export createCacheKey function', function () {
 			assert.strictEqual(typeof utilsModule.createCacheKey, 'function');
 		});
 
-		it('should create consistent cache keys', function() {
+		it('should create consistent cache keys', function () {
 			const certPem = '-----BEGIN CERTIFICATE-----\\ntest\\n-----END CERTIFICATE-----';
 			const issuerPem = '-----BEGIN CERTIFICATE-----\\nissuer\\n-----END CERTIFICATE-----';
 
@@ -90,7 +90,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.ok(key1.startsWith('ocsp:'));
 		});
 
-		it('should create different keys for different methods', function() {
+		it('should create different keys for different methods', function () {
 			const certPem = '-----BEGIN CERTIFICATE-----\\ntest\\n-----END CERTIFICATE-----';
 			const issuerPem = '-----BEGIN CERTIFICATE-----\\nissuer\\n-----END CERTIFICATE-----';
 
@@ -102,11 +102,11 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.ok(crlKey.startsWith('crl:'));
 		});
 
-		it('should export createCRLCacheKey function', function() {
+		it('should export createCRLCacheKey function', function () {
 			assert.strictEqual(typeof utilsModule.createCRLCacheKey, 'function');
 		});
 
-		it('should create CRL cache keys', function() {
+		it('should create CRL cache keys', function () {
 			const url = 'http://example.com/test.crl';
 
 			const key1 = utilsModule.createCRLCacheKey(url);
@@ -119,11 +119,11 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.notStrictEqual(key1, key3);
 		});
 
-		it('should export createRevokedCertificateId function', function() {
+		it('should export createRevokedCertificateId function', function () {
 			assert.strictEqual(typeof utilsModule.createRevokedCertificateId, 'function');
 		});
 
-		it('should create composite revoked certificate IDs', function() {
+		it('should create composite revoked certificate IDs', function () {
 			const issuerKeyId = 'abc123';
 			const serialNumber = 'def456';
 
@@ -137,14 +137,14 @@ describe('certificateVerification/verificationUtils.ts', function() {
 		});
 	});
 
-	describe('certificate chain extraction', function() {
-		it('should export extractCertificateChain function', function() {
+	describe('certificate chain extraction', function () {
+		it('should export extractCertificateChain function', function () {
 			assert.strictEqual(typeof utilsModule.extractCertificateChain, 'function');
 		});
 
-		it('should extract single certificate', function() {
+		it('should extract single certificate', function () {
 			const peerCert = {
-				raw: Buffer.from('cert1')
+				raw: Buffer.from('cert1'),
 			};
 
 			const result = utilsModule.extractCertificateChain(peerCert);
@@ -153,13 +153,13 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.deepStrictEqual(result[0], { cert: Buffer.from('cert1') });
 		});
 
-		it('should extract certificate chain with issuer', function() {
+		it('should extract certificate chain with issuer', function () {
 			const issuerCert = {
-				raw: Buffer.from('issuer1')
+				raw: Buffer.from('issuer1'),
 			};
 			const peerCert = {
 				raw: Buffer.from('cert1'),
-				issuerCertificate: issuerCert
+				issuerCertificate: issuerCert,
 			};
 
 			const result = utilsModule.extractCertificateChain(peerCert);
@@ -167,14 +167,14 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.strictEqual(result.length, 2);
 			assert.deepStrictEqual(result[0], {
 				cert: Buffer.from('cert1'),
-				issuer: Buffer.from('issuer1')
+				issuer: Buffer.from('issuer1'),
 			});
 			assert.deepStrictEqual(result[1], { cert: Buffer.from('issuer1') });
 		});
 
-		it('should handle self-signed certificate', function() {
+		it('should handle self-signed certificate', function () {
 			const peerCert = {
-				raw: Buffer.from('cert1')
+				raw: Buffer.from('cert1'),
 			};
 			peerCert.issuerCertificate = peerCert; // Self-signed
 
@@ -184,7 +184,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.deepStrictEqual(result[0], { cert: Buffer.from('cert1') });
 		});
 
-		it('should handle missing raw data', function() {
+		it('should handle missing raw data', function () {
 			const peerCert = {}; // No raw data
 
 			const result = utilsModule.extractCertificateChain(peerCert);
@@ -192,22 +192,22 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.strictEqual(result.length, 0);
 		});
 
-		it('should handle long certificate chains', function() {
+		it('should handle long certificate chains', function () {
 			// Create a 4-level chain: leaf -> intermediate1 -> intermediate2 -> root
 			const rootCert = {
-				raw: Buffer.from('root-cert')
+				raw: Buffer.from('root-cert'),
 			};
 			const intermediate2Cert = {
 				raw: Buffer.from('intermediate2-cert'),
-				issuerCertificate: rootCert
+				issuerCertificate: rootCert,
 			};
 			const intermediate1Cert = {
 				raw: Buffer.from('intermediate1-cert'),
-				issuerCertificate: intermediate2Cert
+				issuerCertificate: intermediate2Cert,
 			};
 			const leafCert = {
 				raw: Buffer.from('leaf-cert'),
-				issuerCertificate: intermediate1Cert
+				issuerCertificate: intermediate1Cert,
 			};
 
 			const result = utilsModule.extractCertificateChain(leafCert);
@@ -215,38 +215,38 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.strictEqual(result.length, 4);
 			assert.deepStrictEqual(result[0], {
 				cert: Buffer.from('leaf-cert'),
-				issuer: Buffer.from('intermediate1-cert')
+				issuer: Buffer.from('intermediate1-cert'),
 			});
 			assert.deepStrictEqual(result[1], {
 				cert: Buffer.from('intermediate1-cert'),
-				issuer: Buffer.from('intermediate2-cert')
+				issuer: Buffer.from('intermediate2-cert'),
 			});
 			assert.deepStrictEqual(result[2], {
 				cert: Buffer.from('intermediate2-cert'),
-				issuer: Buffer.from('root-cert')
+				issuer: Buffer.from('root-cert'),
 			});
 			assert.deepStrictEqual(result[3], {
-				cert: Buffer.from('root-cert')
+				cert: Buffer.from('root-cert'),
 			});
 		});
 
-		it('should handle null issuer certificate', function() {
+		it('should handle null issuer certificate', function () {
 			const peerCert = {
 				raw: Buffer.from('cert1'),
-				issuerCertificate: null // Explicitly null
+				issuerCertificate: null, // Explicitly null
 			};
 
 			const result = utilsModule.extractCertificateChain(peerCert);
 
 			assert.strictEqual(result.length, 1);
 			assert.deepStrictEqual(result[0], {
-				cert: Buffer.from('cert1')
+				cert: Buffer.from('cert1'),
 			});
 		});
 	});
 
-	describe('error handling for certificate parsing', function() {
-		it('should handle invalid certificates gracefully', function() {
+	describe('error handling for certificate parsing', function () {
+		it('should handle invalid certificates gracefully', function () {
 			const invalidPem = 'invalid-certificate-data';
 
 			// Functions that return empty arrays/objects on error
@@ -259,7 +259,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.throws(() => utilsModule.extractIssuerKeyId(invalidPem), /Failed to extract issuer key ID/);
 		});
 
-		it('should handle various PEM formats', function() {
+		it('should handle various PEM formats', function () {
 			// Test with different line endings
 			const pemWithCRLF = '-----BEGIN CERTIFICATE-----\r\nSGVsbG8=\r\n-----END CERTIFICATE-----';
 			const result1 = utilsModule.pemToBuffer(pemWithCRLF);
@@ -273,7 +273,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.strictEqual(String.fromCharCode(...view2), 'Hello');
 		});
 
-		it('should handle different certificate types in bufferToPem', function() {
+		it('should handle different certificate types in bufferToPem', function () {
 			const buffer = Buffer.from('test');
 
 			// Test with different certificate types
@@ -286,7 +286,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.ok(keyResult.includes('-----END PRIVATE KEY-----'));
 		});
 
-		it('should properly handle line wrapping in bufferToPem', function() {
+		it('should properly handle line wrapping in bufferToPem', function () {
 			// Create buffer that will result in >64 char base64
 			const longBuffer = Buffer.alloc(100, 'A'); // 100 bytes will create long base64
 			const result = utilsModule.bufferToPem(longBuffer, 'CERTIFICATE');
@@ -303,7 +303,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			}
 		});
 
-		it('should handle additional data in cache keys', function() {
+		it('should handle additional data in cache keys', function () {
 			const certPem = '-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----';
 			const issuerPem = '-----BEGIN CERTIFICATE-----\nissuer\n-----END CERTIFICATE-----';
 
@@ -315,8 +315,8 @@ describe('certificateVerification/verificationUtils.ts', function() {
 		});
 	});
 
-	describe('cache key edge cases', function() {
-		it('should handle createCacheKey without additional data', function() {
+	describe('cache key edge cases', function () {
+		it('should handle createCacheKey without additional data', function () {
 			const certPem = '-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----';
 			const issuerPem = '-----BEGIN CERTIFICATE-----\nissuer\n-----END CERTIFICATE-----';
 
@@ -326,7 +326,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.ok(key.startsWith('crl:'));
 		});
 
-		it('should create different keys for same cert with different methods', function() {
+		it('should create different keys for same cert with different methods', function () {
 			const certPem = '-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----';
 			const issuerPem = '-----BEGIN CERTIFICATE-----\nissuer\n-----END CERTIFICATE-----';
 
@@ -336,7 +336,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.notStrictEqual(crlKey, ocspKey);
 		});
 
-		it('should create different keys for different certificates', function() {
+		it('should create different keys for different certificates', function () {
 			const certPem1 = '-----BEGIN CERTIFICATE-----\ncert1\n-----END CERTIFICATE-----';
 			const certPem2 = '-----BEGIN CERTIFICATE-----\ncert2\n-----END CERTIFICATE-----';
 			const issuerPem = '-----BEGIN CERTIFICATE-----\nissuer\n-----END CERTIFICATE-----';
@@ -347,7 +347,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.notStrictEqual(key1, key2);
 		});
 
-		it('should create different keys for different issuers', function() {
+		it('should create different keys for different issuers', function () {
 			const certPem = '-----BEGIN CERTIFICATE-----\ntest\n-----END CERTIFICATE-----';
 			const issuerPem1 = '-----BEGIN CERTIFICATE-----\nissuer1\n-----END CERTIFICATE-----';
 			const issuerPem2 = '-----BEGIN CERTIFICATE-----\nissuer2\n-----END CERTIFICATE-----';
@@ -358,7 +358,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.notStrictEqual(key1, key2);
 		});
 
-		it('should handle createCRLCacheKey with various URL formats', function() {
+		it('should handle createCRLCacheKey with various URL formats', function () {
 			const httpUrl = 'http://example.com/ca.crl';
 			const httpsUrl = 'https://example.com/ca.crl';
 			const pathUrl = 'http://example.com/path/to/ca.crl';
@@ -378,7 +378,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.notStrictEqual(key2, key3);
 		});
 
-		it('should handle createRevokedCertificateId with special characters', function() {
+		it('should handle createRevokedCertificateId with special characters', function () {
 			const issuerKeyId = 'ABC:123:DEF';
 			const serialNumber = '456:789';
 
@@ -388,7 +388,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.strictEqual(result, 'ABC:123:DEF:456:789');
 		});
 
-		it('should handle createRevokedCertificateId with long values', function() {
+		it('should handle createRevokedCertificateId with long values', function () {
 			const longIssuerKeyId = 'A'.repeat(100);
 			const longSerialNumber = 'B'.repeat(100);
 
@@ -400,12 +400,12 @@ describe('certificateVerification/verificationUtils.ts', function() {
 		});
 	});
 
-	describe('table getter functions', function() {
-		it('should export getCertificateCacheTable function', function() {
+	describe('table getter functions', function () {
+		it('should export getCertificateCacheTable function', function () {
 			assert.strictEqual(typeof utilsModule.getCertificateCacheTable, 'function');
 		});
 
-		it('should return certificate cache table with correct structure', function() {
+		it('should return certificate cache table with correct structure', function () {
 			const table = utilsModule.getCertificateCacheTable();
 
 			assert.ok(table);
@@ -413,7 +413,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.ok(typeof table === 'function' || typeof table === 'object');
 		});
 
-		it('should return same table instance on multiple calls', function() {
+		it('should return same table instance on multiple calls', function () {
 			const table1 = utilsModule.getCertificateCacheTable();
 			const table2 = utilsModule.getCertificateCacheTable();
 
@@ -422,8 +422,8 @@ describe('certificateVerification/verificationUtils.ts', function() {
 		});
 	});
 
-	describe('PEM format edge cases', function() {
-		it('should handle pemToBuffer with minimal valid PEM', function() {
+	describe('PEM format edge cases', function () {
+		it('should handle pemToBuffer with minimal valid PEM', function () {
 			const minimalPem = '-----BEGIN CERTIFICATE-----\nAA==\n-----END CERTIFICATE-----';
 			const result = utilsModule.pemToBuffer(minimalPem);
 
@@ -431,7 +431,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.strictEqual(result.byteLength, 1); // "AA==" decodes to 1 byte (0x00)
 		});
 
-		it('should handle bufferToPem with empty buffer', function() {
+		it('should handle bufferToPem with empty buffer', function () {
 			const emptyBuffer = Buffer.alloc(0);
 			const result = utilsModule.bufferToPem(emptyBuffer, 'TEST');
 
@@ -439,7 +439,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.ok(result.includes('-----END TEST-----'));
 		});
 
-		it('should handle bufferToPem with exactly 64 chars of base64', function() {
+		it('should handle bufferToPem with exactly 64 chars of base64', function () {
 			// Create buffer that encodes to exactly 64 chars (48 bytes = 64 base64 chars)
 			const buffer = Buffer.alloc(48, 'X');
 			const result = utilsModule.bufferToPem(buffer, 'CERTIFICATE');
@@ -451,7 +451,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.strictEqual(lines[lines.length - 1], '-----END CERTIFICATE-----');
 		});
 
-		it('should handle pemToBuffer with Windows line endings', function() {
+		it('should handle pemToBuffer with Windows line endings', function () {
 			const pemWithCRLF = '-----BEGIN CERTIFICATE-----\r\nU0dWc2JHOD1\r\n-----END CERTIFICATE-----';
 			const result = utilsModule.pemToBuffer(pemWithCRLF);
 
@@ -460,7 +460,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.ok(view.length > 0);
 		});
 
-		it('should handle pemToBuffer with mixed line endings', function() {
+		it('should handle pemToBuffer with mixed line endings', function () {
 			const pemMixed = '-----BEGIN CERTIFICATE-----\r\nU0dW\nbGJHOD1\n-----END CERTIFICATE-----';
 			const result = utilsModule.pemToBuffer(pemMixed);
 
@@ -470,10 +470,10 @@ describe('certificateVerification/verificationUtils.ts', function() {
 		});
 	});
 
-	describe('extractCertificateChain edge cases', function() {
-		it('should handle certificate with undefined issuerCertificate property', function() {
+	describe('extractCertificateChain edge cases', function () {
+		it('should handle certificate with undefined issuerCertificate property', function () {
 			const peerCert = {
-				raw: Buffer.from('cert-data')
+				raw: Buffer.from('cert-data'),
 				// issuerCertificate is undefined (not set at all)
 			};
 
@@ -481,17 +481,17 @@ describe('certificateVerification/verificationUtils.ts', function() {
 
 			assert.strictEqual(result.length, 1);
 			assert.deepStrictEqual(result[0], {
-				cert: Buffer.from('cert-data')
+				cert: Buffer.from('cert-data'),
 			});
 		});
 
-		it('should handle very long certificate chains', function() {
+		it('should handle very long certificate chains', function () {
 			// Create a 10-level chain
 			let current = { raw: Buffer.from('root-10') };
 			for (let i = 9; i >= 1; i--) {
 				current = {
 					raw: Buffer.from(`cert-${i}`),
-					issuerCertificate: current
+					issuerCertificate: current,
 				};
 			}
 
@@ -502,7 +502,7 @@ describe('certificateVerification/verificationUtils.ts', function() {
 			assert.ok(result[9].cert.equals(Buffer.from('root-10')));
 		});
 
-		it('should handle certificate chain with identical adjacent certificates', function() {
+		it('should handle certificate chain with identical adjacent certificates', function () {
 			// Test detection of self-signed by comparing raw buffers
 			const certData = Buffer.from('same-cert');
 			const cert1 = { raw: certData };

@@ -16,6 +16,7 @@ npm run test:integration -- --grep "OCSP"
 ```
 
 Or in one line:
+
 ```bash
 HDB_ADMIN_USERNAME=admin HDB_ADMIN_PASSWORD=password npm run test:integration -- --grep "OCSP"
 ```
@@ -91,7 +92,7 @@ curl --cert generated/client-valid-chain.crt \
      --cacert generated/harper-ca.crt \
      https://localhost:9926/
 
-# Test with revoked certificate  
+# Test with revoked certificate
 curl --cert generated/client-revoked-chain.crt \
      --key generated/client-revoked.key \
      --cacert generated/harper-ca.crt \
@@ -108,9 +109,9 @@ http:
   securePort: 9926
   mtls:
     certificateVerification:
-      timeout: 5000           # OCSP timeout (ms)
-      cacheTtl: 3600000      # Cache TTL for success (ms) - 1 hour
-      errorCacheTtl: 300000  # Cache TTL for errors (ms) - 5 minutes
+      timeout: 5000 # OCSP timeout (ms)
+      cacheTtl: 3600000 # Cache TTL for success (ms) - 1 hour
+      errorCacheTtl: 300000 # Cache TTL for errors (ms) - 5 minutes
       failureMode: fail-open # Allow on OCSP failure
 ```
 

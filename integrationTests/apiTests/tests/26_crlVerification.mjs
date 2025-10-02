@@ -31,7 +31,7 @@ import { timestamp } from '../utils/timestamp.mjs';
  * ```
  */
 
-describe('25. CRL Certificate Verification Tests', () => {
+describe('26. CRL Certificate Verification Tests', () => {
 	beforeEach(timestamp);
 
 	let httpsAvailable = true;

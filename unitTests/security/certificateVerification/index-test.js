@@ -5,7 +5,7 @@ const sinon = require('sinon');
 const test_utils = require('../../test_utils');
 test_utils.preTestPrep();
 
-describe('certificateVerification/index.ts', function() {
+describe('certificateVerification/index.ts', function () {
 	let indexModule;
 	let verificationConfig;
 	let crlVerification;
@@ -19,7 +19,7 @@ describe('certificateVerification/index.ts', function() {
 	let verifyCRLStub;
 	let verifyOCSPStub;
 
-	before(function() {
+	before(function () {
 		// Load the modules
 		indexModule = require('../../../security/certificateVerification/index.ts');
 		verificationConfig = require('../../../security/certificateVerification/verificationConfig.ts');
@@ -28,45 +28,48 @@ describe('certificateVerification/index.ts', function() {
 		verificationUtils = require('../../../security/certificateVerification/verificationUtils.ts');
 	});
 
-	beforeEach(function() {
+	beforeEach(function () {
 		// Create stubs for all dependencies
-		getCachedCertificateVerificationConfigStub = sinon.stub(verificationConfig, 'getCachedCertificateVerificationConfig');
+		getCachedCertificateVerificationConfigStub = sinon.stub(
+			verificationConfig,
+			'getCachedCertificateVerificationConfig'
+		);
 		extractCertificateChainStub = sinon.stub(verificationUtils, 'extractCertificateChain');
 		extractRevocationUrlsStub = sinon.stub(verificationUtils, 'extractRevocationUrls');
 		verifyCRLStub = sinon.stub(crlVerification, 'verifyCRL');
 		verifyOCSPStub = sinon.stub(ocspVerification, 'verifyOCSP');
 	});
 
-	afterEach(function() {
+	afterEach(function () {
 		// Restore all stubs
 		sinon.restore();
 	});
 
-	describe('module exports', function() {
-		it('should export verifyCertificate function', function() {
+	describe('module exports', function () {
+		it('should export verifyCertificate function', function () {
 			assert.strictEqual(typeof indexModule.verifyCertificate, 'function');
 		});
 	});
 
-	describe('verifyCertificate() orchestration', function() {
+	describe('verifyCertificate() orchestration', function () {
 		const mockPeerCert = {
 			subject: { CN: 'test.example.com' },
-			raw: Buffer.from('mock-cert')
+			raw: Buffer.from('mock-cert'),
 		};
 
 		const mockCertChain = [
 			{
 				cert: Buffer.from('cert1'),
-				issuer: Buffer.from('issuer1')
+				issuer: Buffer.from('issuer1'),
 			},
 			{
 				cert: Buffer.from('cert2'),
-				issuer: null
-			}
+				issuer: null,
+			},
 		];
 
-		describe('disabled configuration', function() {
-			it('should return disabled status when config is false', async function() {
+		describe('disabled configuration', function () {
+			it('should return disabled status when config is false', async function () {
 				getCachedCertificateVerificationConfigStub.returns(false);
 
 				const result = await indexModule.verifyCertificate(mockPeerCert, false);
@@ -74,14 +77,14 @@ describe('certificateVerification/index.ts', function() {
 				assert.deepStrictEqual(result, {
 					valid: true,
 					status: 'disabled',
-					method: 'disabled'
+					method: 'disabled',
 				});
 
 				// Should not attempt any verification
 				assert.strictEqual(extractCertificateChainStub.called, false);
 			});
 
-			it('should return disabled status when mtlsConfig is null', async function() {
+			it('should return disabled status when mtlsConfig is null', async function () {
 				getCachedCertificateVerificationConfigStub.returns(false);
 
 				const result = await indexModule.verifyCertificate(mockPeerCert, null);
@@ -89,28 +92,26 @@ describe('certificateVerification/index.ts', function() {
 				assert.deepStrictEqual(result, {
 					valid: true,
 					status: 'disabled',
-					method: 'disabled'
+					method: 'disabled',
 				});
 			});
 		});
 
-		describe('insufficient certificate chain', function() {
-			it('should return no-issuer-cert when chain length < 2', async function() {
+		describe('insufficient certificate chain', function () {
+			it('should return no-issuer-cert when chain length < 2', async function () {
 				getCachedCertificateVerificationConfigStub.returns({
 					failureMode: 'fail-closed',
 					crl: { enabled: true },
-					ocsp: { enabled: true }
+					ocsp: { enabled: true },
 				});
-				extractCertificateChainStub.returns([
-					{ cert: Buffer.from('cert1'), issuer: null }
-				]);
+				extractCertificateChainStub.returns([{ cert: Buffer.from('cert1'), issuer: null }]);
 
 				const result = await indexModule.verifyCertificate(mockPeerCert, { certificateVerification: true });
 
 				assert.deepStrictEqual(result, {
 					valid: true,
 					status: 'no-issuer-cert',
-					method: 'disabled'
+					method: 'disabled',
 				});
 
 				// Should not attempt verification
@@ -118,15 +119,15 @@ describe('certificateVerification/index.ts', function() {
 				assert.strictEqual(verifyOCSPStub.called, false);
 			});
 
-			it('should return no-issuer-cert when first cert has no issuer', async function() {
+			it('should return no-issuer-cert when first cert has no issuer', async function () {
 				getCachedCertificateVerificationConfigStub.returns({
 					failureMode: 'fail-closed',
 					crl: { enabled: true },
-					ocsp: { enabled: true }
+					ocsp: { enabled: true },
 				});
 				extractCertificateChainStub.returns([
 					{ cert: Buffer.from('cert1'), issuer: null },
-					{ cert: Buffer.from('cert2'), issuer: null }
+					{ cert: Buffer.from('cert2'), issuer: null },
 				]);
 
 				const result = await indexModule.verifyCertificate(mockPeerCert, { certificateVerification: true });
@@ -136,20 +137,20 @@ describe('certificateVerification/index.ts', function() {
 			});
 		});
 
-		describe('CRL verification path', function() {
-			beforeEach(function() {
+		describe('CRL verification path', function () {
+			beforeEach(function () {
 				getCachedCertificateVerificationConfigStub.returns({
 					failureMode: 'fail-closed',
 					crl: { enabled: true, timeout: 10000 },
-					ocsp: { enabled: true, timeout: 5000 }
+					ocsp: { enabled: true, timeout: 5000 },
 				});
 				extractCertificateChainStub.returns(mockCertChain);
 			});
 
-			it('should attempt CRL verification when CRL URLs present and enabled', async function() {
+			it('should attempt CRL verification when CRL URLs present and enabled', async function () {
 				extractRevocationUrlsStub.returns({
 					crlUrls: ['http://crl.example.com/ca.crl'],
-					ocspUrls: []
+					ocspUrls: [],
 				});
 				verifyCRLStub.resolves({ valid: true, status: 'good', method: 'crl' });
 
@@ -161,10 +162,10 @@ describe('certificateVerification/index.ts', function() {
 				assert.strictEqual(result.method, 'crl');
 			});
 
-			it('should return immediately on CRL revoked result', async function() {
+			it('should return immediately on CRL revoked result', async function () {
 				extractRevocationUrlsStub.returns({
 					crlUrls: ['http://crl.example.com/ca.crl'],
-					ocspUrls: ['http://ocsp.example.com']
+					ocspUrls: ['http://ocsp.example.com'],
 				});
 				verifyCRLStub.resolves({ valid: false, status: 'revoked', method: 'crl', reason: 'keyCompromise' });
 
@@ -177,10 +178,10 @@ describe('certificateVerification/index.ts', function() {
 				assert.strictEqual(verifyOCSPStub.called, false);
 			});
 
-			it('should fall back to OCSP when CRL returns unknown', async function() {
+			it('should fall back to OCSP when CRL returns unknown', async function () {
 				extractRevocationUrlsStub.returns({
 					crlUrls: ['http://crl.example.com/ca.crl'],
-					ocspUrls: ['http://ocsp.example.com']
+					ocspUrls: ['http://ocsp.example.com'],
 				});
 				verifyCRLStub.resolves({ valid: true, status: 'unknown', method: 'crl' });
 				verifyOCSPStub.resolves({ valid: true, status: 'good', method: 'ocsp' });
@@ -193,15 +194,15 @@ describe('certificateVerification/index.ts', function() {
 				assert.strictEqual(result.method, 'ocsp');
 			});
 
-			it('should skip CRL when disabled in config', async function() {
+			it('should skip CRL when disabled in config', async function () {
 				getCachedCertificateVerificationConfigStub.returns({
 					failureMode: 'fail-closed',
 					crl: { enabled: false },
-					ocsp: { enabled: true, timeout: 5000 }
+					ocsp: { enabled: true, timeout: 5000 },
 				});
 				extractRevocationUrlsStub.returns({
 					crlUrls: ['http://crl.example.com/ca.crl'],
-					ocspUrls: ['http://ocsp.example.com']
+					ocspUrls: ['http://ocsp.example.com'],
 				});
 				verifyOCSPStub.resolves({ valid: true, status: 'good', method: 'ocsp' });
 
@@ -211,10 +212,10 @@ describe('certificateVerification/index.ts', function() {
 				assert.strictEqual(verifyOCSPStub.called, true);
 			});
 
-			it('should skip CRL when no distribution points', async function() {
+			it('should skip CRL when no distribution points', async function () {
 				extractRevocationUrlsStub.returns({
 					crlUrls: [],
-					ocspUrls: ['http://ocsp.example.com']
+					ocspUrls: ['http://ocsp.example.com'],
 				});
 				verifyOCSPStub.resolves({ valid: true, status: 'good', method: 'ocsp' });
 
@@ -224,10 +225,10 @@ describe('certificateVerification/index.ts', function() {
 				assert.strictEqual(verifyOCSPStub.called, true);
 			});
 
-			it('should handle CRL verification errors gracefully', async function() {
+			it('should handle CRL verification errors gracefully', async function () {
 				extractRevocationUrlsStub.returns({
 					crlUrls: ['http://crl.example.com/ca.crl'],
-					ocspUrls: ['http://ocsp.example.com']
+					ocspUrls: ['http://ocsp.example.com'],
 				});
 				verifyCRLStub.rejects(new Error('CRL download failed'));
 				verifyOCSPStub.resolves({ valid: true, status: 'good', method: 'ocsp' });
@@ -240,20 +241,20 @@ describe('certificateVerification/index.ts', function() {
 			});
 		});
 
-		describe('OCSP verification path', function() {
-			beforeEach(function() {
+		describe('OCSP verification path', function () {
+			beforeEach(function () {
 				getCachedCertificateVerificationConfigStub.returns({
 					failureMode: 'fail-closed',
 					crl: { enabled: true, timeout: 10000 },
-					ocsp: { enabled: true, timeout: 5000 }
+					ocsp: { enabled: true, timeout: 5000 },
 				});
 				extractCertificateChainStub.returns(mockCertChain);
 			});
 
-			it('should attempt OCSP verification when OCSP URLs present and enabled', async function() {
+			it('should attempt OCSP verification when OCSP URLs present and enabled', async function () {
 				extractRevocationUrlsStub.returns({
 					crlUrls: [],
-					ocspUrls: ['http://ocsp.example.com']
+					ocspUrls: ['http://ocsp.example.com'],
 				});
 				verifyOCSPStub.resolves({ valid: true, status: 'good', method: 'ocsp' });
 
@@ -264,15 +265,15 @@ describe('certificateVerification/index.ts', function() {
 				assert.strictEqual(result.valid, true);
 			});
 
-			it('should skip OCSP when disabled in config', async function() {
+			it('should skip OCSP when disabled in config', async function () {
 				getCachedCertificateVerificationConfigStub.returns({
 					failureMode: 'fail-open',
 					crl: { enabled: false },
-					ocsp: { enabled: false }
+					ocsp: { enabled: false },
 				});
 				extractRevocationUrlsStub.returns({
 					crlUrls: [],
-					ocspUrls: ['http://ocsp.example.com']
+					ocspUrls: ['http://ocsp.example.com'],
 				});
 
 				const result = await indexModule.verifyCertificate(mockPeerCert, { certificateVerification: true });
@@ -283,10 +284,10 @@ describe('certificateVerification/index.ts', function() {
 				assert.strictEqual(result.status, 'verification-unavailable-allowed');
 			});
 
-			it('should skip OCSP when no responder URLs', async function() {
+			it('should skip OCSP when no responder URLs', async function () {
 				extractRevocationUrlsStub.returns({
 					crlUrls: [],
-					ocspUrls: []
+					ocspUrls: [],
 				});
 
 				const result = await indexModule.verifyCertificate(mockPeerCert, { certificateVerification: true });
@@ -294,15 +295,15 @@ describe('certificateVerification/index.ts', function() {
 				assert.strictEqual(verifyOCSPStub.called, false);
 			});
 
-			it('should handle OCSP verification errors gracefully', async function() {
+			it('should handle OCSP verification errors gracefully', async function () {
 				getCachedCertificateVerificationConfigStub.returns({
 					failureMode: 'fail-open',
 					crl: { enabled: false },
-					ocsp: { enabled: true, timeout: 5000 }
+					ocsp: { enabled: true, timeout: 5000 },
 				});
 				extractRevocationUrlsStub.returns({
 					crlUrls: [],
-					ocspUrls: ['http://ocsp.example.com']
+					ocspUrls: ['http://ocsp.example.com'],
 				});
 				verifyOCSPStub.rejects(new Error('OCSP request failed'));
 
@@ -313,20 +314,20 @@ describe('certificateVerification/index.ts', function() {
 			});
 		});
 
-		describe('failure mode handling', function() {
-			beforeEach(function() {
+		describe('failure mode handling', function () {
+			beforeEach(function () {
 				extractCertificateChainStub.returns(mockCertChain);
 				extractRevocationUrlsStub.returns({
 					crlUrls: [],
-					ocspUrls: []
+					ocspUrls: [],
 				});
 			});
 
-			it('should reject when no verification available with fail-closed', async function() {
+			it('should reject when no verification available with fail-closed', async function () {
 				getCachedCertificateVerificationConfigStub.returns({
 					failureMode: 'fail-closed',
 					crl: { enabled: true },
-					ocsp: { enabled: true }
+					ocsp: { enabled: true },
 				});
 
 				const result = await indexModule.verifyCertificate(mockPeerCert, { certificateVerification: true });
@@ -335,11 +336,11 @@ describe('certificateVerification/index.ts', function() {
 				assert.strictEqual(result.status, 'no-verification-available');
 			});
 
-			it('should allow when no verification available with fail-open', async function() {
+			it('should allow when no verification available with fail-open', async function () {
 				getCachedCertificateVerificationConfigStub.returns({
 					failureMode: 'fail-open',
 					crl: { enabled: true },
-					ocsp: { enabled: true }
+					ocsp: { enabled: true },
 				});
 
 				const result = await indexModule.verifyCertificate(mockPeerCert, { certificateVerification: true });
@@ -348,15 +349,15 @@ describe('certificateVerification/index.ts', function() {
 				assert.strictEqual(result.status, 'verification-unavailable-allowed');
 			});
 
-			it('should reject when all methods fail with fail-closed', async function() {
+			it('should reject when all methods fail with fail-closed', async function () {
 				getCachedCertificateVerificationConfigStub.returns({
 					failureMode: 'fail-closed',
 					crl: { enabled: true },
-					ocsp: { enabled: true }
+					ocsp: { enabled: true },
 				});
 				extractRevocationUrlsStub.returns({
 					crlUrls: ['http://crl.example.com/ca.crl'],
-					ocspUrls: ['http://ocsp.example.com']
+					ocspUrls: ['http://ocsp.example.com'],
 				});
 				verifyCRLStub.rejects(new Error('CRL failed'));
 				verifyOCSPStub.rejects(new Error('OCSP failed'));
@@ -366,15 +367,15 @@ describe('certificateVerification/index.ts', function() {
 				assert.strictEqual(result.valid, false);
 			});
 
-			it('should allow when all methods fail with fail-open', async function() {
+			it('should allow when all methods fail with fail-open', async function () {
 				getCachedCertificateVerificationConfigStub.returns({
 					failureMode: 'fail-open',
 					crl: { enabled: true },
-					ocsp: { enabled: true }
+					ocsp: { enabled: true },
 				});
 				extractRevocationUrlsStub.returns({
 					crlUrls: ['http://crl.example.com/ca.crl'],
-					ocspUrls: ['http://ocsp.example.com']
+					ocspUrls: ['http://ocsp.example.com'],
 				});
 				verifyCRLStub.rejects(new Error('CRL failed'));
 				verifyOCSPStub.rejects(new Error('OCSP failed'));

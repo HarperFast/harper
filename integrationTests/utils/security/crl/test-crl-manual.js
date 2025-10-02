@@ -25,7 +25,7 @@ async function makeSecureRequest(certPath, keyPath, caCertPath, endpoint = 'oper
 			method: endpoint === 'rest' ? 'GET' : 'POST',
 			headers: {
 				'Content-Type': 'application/json',
-				'Authorization': 'Basic ' + Buffer.from('admin:password').toString('base64')
+				'Authorization': 'Basic ' + Buffer.from('admin:password').toString('base64'),
 			},
 			// mTLS configuration
 			cert: readFileSync(certPath),
@@ -33,7 +33,7 @@ async function makeSecureRequest(certPath, keyPath, caCertPath, endpoint = 'oper
 			ca: readFileSync(caCertPath),
 			rejectUnauthorized: true,
 			requestCert: true,
-			checkServerIdentity: () => undefined // Skip server identity check for localhost
+			checkServerIdentity: () => undefined, // Skip server identity check for localhost
 		};
 
 		const req = https.request(options, (res) => {
@@ -54,8 +54,8 @@ async function makeSecureRequest(certPath, keyPath, caCertPath, endpoint = 'oper
 					tlsInfo: {
 						protocol: res.socket.getProtocol(),
 						cipher: res.socket.getCipher(),
-						peerCertificate: res.socket.getPeerCertificate()
-					}
+						peerCertificate: res.socket.getPeerCertificate(),
+					},
 				});
 			});
 		});
@@ -64,15 +64,17 @@ async function makeSecureRequest(certPath, keyPath, caCertPath, endpoint = 'oper
 			console.log(`  Error: ${error.message}`);
 			resolve({
 				error: error.message,
-				statusCode: null
+				statusCode: null,
 			});
 		});
 
 		// Send a simple describe_all operation for operations endpoint
 		if (endpoint === 'operations') {
-			req.write(JSON.stringify({
-				operation: 'describe_all'
-			}));
+			req.write(
+				JSON.stringify({
+					operation: 'describe_all',
+				})
+			);
 		}
 
 		req.end();
@@ -92,9 +94,13 @@ async function testCRL() {
 		const revokedKeyPath = join(certsDir, 'revoked.key');
 		const caCertPath = join(certsDir, 'harper-ca.crt');
 
-		if (!existsSync(serverCertPath) || !existsSync(serverKeyPath) ||
-		    !existsSync(revokedCertPath) || !existsSync(revokedKeyPath) ||
-		    !existsSync(caCertPath)) {
+		if (
+			!existsSync(serverCertPath) ||
+			!existsSync(serverKeyPath) ||
+			!existsSync(revokedCertPath) ||
+			!existsSync(revokedKeyPath) ||
+			!existsSync(caCertPath)
+		) {
 			console.error('❌ Test certificates not found. Run generate-crl-certs.js first.');
 			process.exit(1);
 		}
@@ -148,7 +154,6 @@ async function testCRL() {
 		console.log('1. Check harperdb-config.yaml has certificateVerification enabled under mtls');
 		console.log('2. Ensure Harper is running on the expected secure ports');
 		console.log('3. Check Harper logs for CRL verification debug messages');
-
 	} catch (error) {
 		console.error('❌ Test failed:', error);
 		process.exit(1);

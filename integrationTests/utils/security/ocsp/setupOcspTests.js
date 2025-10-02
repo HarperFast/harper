@@ -29,28 +29,28 @@ async function runCommand(command, args, options = {}) {
 
 async function generateCertificates() {
 	console.log('Generating OCSP test certificates...');
-	
+
 	// Check if certificates already exist
 	if (existsSync(join(certsPath, 'client-valid.crt'))) {
 		console.log('Certificates already exist. Delete the generated/ directory to regenerate.');
 		return;
 	}
-	
+
 	// Run the certificate generation script
 	await runCommand('node', ['generate-ocsp-certs.js'], { cwd: __dirname });
-	
+
 	console.log('Certificates generated successfully!');
 }
 
 async function updateHarperConfig() {
 	console.log('\nUpdating Harper configuration for OCSP testing...');
-	
+
 	const configPath = join(process.cwd(), 'harperdb-config.yaml');
 	if (!existsSync(configPath)) {
 		console.error('harperdb-config.yaml not found. Please run this from the Harper root directory.');
 		return;
 	}
-	
+
 	console.log(`
 To enable OCSP testing, add the following to your harperdb-config.yaml:
 
@@ -80,20 +80,19 @@ mqtt:
 
 async function main() {
 	console.log('OCSP Integration Test Setup\n');
-	
+
 	try {
 		// Generate certificates if needed
 		await generateCertificates();
-		
+
 		// Show configuration instructions
 		await updateHarperConfig();
-		
+
 		console.log('\nSetup complete! To run OCSP tests:');
 		console.log('1. Update your harperdb-config.yaml with the configuration above');
 		console.log('2. Start Harper with the updated configuration');
 		console.log('3. Run: npm run test:integration -- --grep "OCSP"');
 		console.log('\nNote: The integration tests will automatically start/stop the OCSP responder');
-		
 	} catch (error) {
 		console.error('Setup failed:', error);
 		process.exit(1);
