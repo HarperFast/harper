@@ -107,18 +107,6 @@ class CertificateRevocationListSource extends Resource {
 	}
 }
 
-/**
- * Fast lookup source for individual revoked certificates
- */
-class RevokedCertificateSource extends Resource {
-	async get(id: string) {
-		// This source doesn't fetch from external sources - it only serves
-		// as a placeholder for the table configuration. The actual lookup
-		// logic is in the verifyCRL function which directly queries the table.
-		return null;
-	}
-}
-
 // Lazy-load Harper tables
 let crlCacheTable: ReturnType<typeof table>;
 let revokedCertificateTable: ReturnType<typeof table>;
@@ -200,9 +188,6 @@ function getRevokedCertificateTable() {
 				},
 			],
 		});
-
-		// Configure the source (though it won't be used for external fetching)
-		(revokedCertificateTable as any).sourcedFrom(RevokedCertificateSource);
 	}
 	return revokedCertificateTable;
 }
