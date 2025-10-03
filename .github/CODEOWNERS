@@ -3,11 +3,11 @@
 # Importantly, **the last matching pattern takes precedence**
 
 # By default, everything must be reviewed by someone in the core engineering team
-*          @HarperDB/development
+*          @HarperFast/development
 
 # Otherwise, certain paths may require other reviewers as well
-/.github/  @HarperDB/development @HarperDB/devops
-/upgrade/  @HarperDB/development @HarperDB/devops
-/utility/AWS/  @HarperDB/development @HarperDB/devops
-/utility/Docker/  @HarperDB/development @HarperDB/devops
-/utility/devops/  @HarperDB/development @HarperDB/devops
+/.github/  @HarperFast/development @HarperFast/devops
+/upgrade/  @HarperFast/development @HarperFast/devops
+/utility/AWS/  @HarperFast/development @HarperFast/devops
+/utility/Docker/  @HarperFast/development @HarperFast/devops
+/utility/devops/  @HarperFast/development @HarperFast/devops
