@@ -5,7 +5,7 @@ import logger from '../utility/logging/harper_logger.js';
 import { dirname, extname, join } from 'node:path';
 import { access, constants, cp, mkdir, mkdtemp, readdir, readFile, rm, stat, symlink } from 'node:fs/promises';
 import { spawn } from 'node:child_process';
-import { createReadStream, existsSync } from 'node:fs';
+import { createReadStream, existsSync, readdirSync } from 'node:fs';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
 
@@ -411,6 +411,18 @@ export async function installApplications() {
 	logger.info('All root applications loaded');
 }
 
+function getGitSSHCommand() {
+	const rootDir = getConfigValue(CONFIG_PARAMS.ROOTPATH);
+	const sshDir = join(rootDir, 'ssh');
+	if (existsSync(sshDir)) {
+		for (const file of readdirSync(sshDir)) {
+			if (file.includes('.key')) {
+				return `ssh -F ${join(sshDir, 'config')} -o UserKnownHostsFile=${join(sshDir, 'known_hosts')}`;
+			}
+		}
+	}
+}
+
 /**
  * Execute a command (using `spawn`) with stdin ignored.
  *
@@ -436,10 +448,18 @@ export function nonInteractiveSpawn(
 			.loggerWithTag(`${applicationName}:spawn:${command}`)
 			.debug(`Executing \`${command} ${args.join(' ')}\` in ${cwd}`);
 
+		const env = { ...process.env };
+
+		const gitSSHCommand = getGitSSHCommand();
+		if (gitSSHCommand) {
+			env.GIT_SSH_COMMAND = gitSSHCommand;
+		}
+
 		// eslint-disable-next-line sonarjs/os-command
 		const childProcess = spawn(command, args, {
 			shell: true,
 			cwd,
+			env,
 			stdio: ['ignore', 'pipe', 'pipe'],
 		});
 
